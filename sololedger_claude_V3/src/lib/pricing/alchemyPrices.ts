@@ -52,9 +52,14 @@ export async function fetchAlchemyHistoricalPriceUsd(
       return { priceUsd: null, error: `Alchemy Prices API returned ${res.status}` };
     }
     const data = await res.json();
-    // Response shape per Alchemy's docs nests a `data` array; parsed
-    // defensively since the exact field names weren't verified live.
-    const series: any[] = data?.data?.prices ?? data?.prices ?? data?.data?.[0]?.prices ?? [];
+    const raw = data?.data;
+    const series: unknown[] = Array.isArray(raw)
+      ? raw
+      : Array.isArray(raw?.prices)
+        ? raw.prices
+        : Array.isArray(data?.prices)
+          ? data.prices
+          : [];
     if (!Array.isArray(series) || series.length === 0) {
       return { priceUsd: null, error: 'No Alchemy price history for this token.' };
     }

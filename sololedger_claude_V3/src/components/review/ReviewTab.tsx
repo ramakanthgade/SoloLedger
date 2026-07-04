@@ -6,8 +6,7 @@ import { Button } from '@/components/ui/button';
 import type { TxType } from '@/types/transaction';
 import { formatCurrency } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
-import { fetchHistoricalPricesBatch } from '@/lib/pricing/coingecko';
-import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { applyMissingPrices, transactionsMissingPrices } from '@/lib/pricing/fetchMissingPrices';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle } from 'lucide-react';
 
@@ -61,42 +60,18 @@ export function ReviewTab() {
     return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
   }, [transactions, settings, hints]);
 
-  const missingPriceTxs = useMemo(
-    () => transactions.filter((t) => t.fiatValue == null && t.type !== 'transfer_in' && t.type !== 'transfer_out'),
-    [transactions]
-  );
+  const missingPriceTxs = useMemo(() => transactionsMissingPrices(transactions), [transactions]);
 
   const fetchMissingPrices = async () => {
     if (!settings?.priceApiEnabled || missingPriceTxs.length === 0) return;
     setFetchingPrices(true);
     setPriceErrors([]);
-    const results = await fetchHistoricalPricesBatch(
-      missingPriceTxs.map((t) => ({
-        asset: t.asset,
-        timestampMs: t.timestamp,
-        fiatCurrency: settings.reportingCurrency,
-        contractAddress: t.contractAddress,
-        platform: t.chain ? COINGECKO_PLATFORM[t.chain as ChainId] : undefined,
-        alchemyApiKey: settings.alchemyApiKey,
-        alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
-      })),
-      (done, total) => setPriceProgress({ done, total })
+    const { priced, errors } = await applyMissingPrices(missingPriceTxs, settings, (done, total) =>
+      setPriceProgress({ done, total })
     );
-    const errors: string[] = [];
-    await Promise.all(
-      results.map(async (r, i) => {
-        const tx = missingPriceTxs[i];
-        if (r.price != null) {
-          await db.transactions.update(tx.id, {
-            fiatValue: r.price * tx.amount,
-            fiatCurrency: r.currency,
-            flags: tx.flags.filter((f) => f !== 'missing_cost_basis')
-          });
-        } else if (r.error) {
-          errors.push(`${tx.asset} on ${r.date}: ${r.error}`);
-        }
-      })
-    );
+    if (priced === 0 && errors.length === 0 && missingPriceTxs.length > 0) {
+      errors.push('No prices could be resolved for the remaining transactions.');
+    }
     setPriceErrors(errors);
     setFetchingPrices(false);
     setPriceProgress(null);

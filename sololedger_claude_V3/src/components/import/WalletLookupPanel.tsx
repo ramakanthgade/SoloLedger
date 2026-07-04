@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses, upsertLookupAddress, deleteLookupAddress } from '@/lib/storage/db';
 import { CHAINS, lookupManyAddresses, type ChainId } from '@/lib/rpc/providers';
+import { applyMissingPrices } from '@/lib/pricing/fetchMissingPrices';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
 import { AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
@@ -18,9 +19,11 @@ export function WalletLookupPanel() {
   const [customAsset, setCustomAsset] = useState('');
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [result, setResult] = useState<{ imported: number; addressesQueried: number } | null>(null);
+  const [result, setResult] = useState<{ imported: number; addressesQueried: number; priced: number } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [failed, setFailed] = useState<{ address: string; message: string }[]>([]);
+  const [priceErrors, setPriceErrors] = useState<string[]>([]);
+  const [pricingProgress, setPricingProgress] = useState<{ done: number; total: number } | null>(null);
 
   const lookedUp = useLiveQuery(() => getLookupAddresses(), []) ?? [];
 
@@ -55,6 +58,8 @@ export function WalletLookupPanel() {
     setResult(null);
     setWarnings([]);
     setFailed([]);
+    setPriceErrors([]);
+    setPricingProgress(null);
     const addresses =
       addressesOverride ??
       addressText
@@ -63,25 +68,41 @@ export function WalletLookupPanel() {
         .filter(Boolean);
 
     try {
+      const activeSettings = await getSettings();
       const { transactions, warnings: w, failed: f, perAddress } = await lookupManyAddresses(
         addresses,
         {
           chain,
-          alchemyApiKey: settings.alchemyApiKey,
-          customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
-          customApiKey: customApiKey || settings.customExplorerApiKey,
+          alchemyApiKey: activeSettings.alchemyApiKey,
+          customBaseUrl: customBaseUrl || activeSettings.customExplorerBaseUrl,
+          customApiKey: customApiKey || activeSettings.customExplorerApiKey,
           customAsset
         },
         (done, total) => setProgress({ done, total })
       );
       if (transactions.length > 0) await db.transactions.bulkPut(transactions);
       await Promise.all(perAddress.map((p) => upsertLookupAddress(chainId, p.address, p.count)));
-      setResult({ imported: transactions.length, addressesQueried: addresses.length });
+
+      let priced = 0;
+      const priceLookupErrors: string[] = [];
+      if (activeSettings.priceApiEnabled && transactions.length > 0) {
+        // Brief pause after heavy RPC traffic before starting price lookups.
+        await new Promise((r) => setTimeout(r, 1500));
+        const priceResult = await applyMissingPrices(transactions, activeSettings, (done, total) =>
+          setPricingProgress({ done, total })
+        );
+        priced = priceResult.priced;
+        priceLookupErrors.push(...priceResult.errors);
+      }
+
+      setResult({ imported: transactions.length, addressesQueried: addresses.length, priced });
       setWarnings(w.map((x) => `${x.address}: ${x.message}`));
       setFailed(f);
+      setPriceErrors(priceLookupErrors);
     } finally {
       setLoading(false);
       setProgress(null);
+      setPricingProgress(null);
     }
   };
 
@@ -151,7 +172,9 @@ export function WalletLookupPanel() {
         <div className="flex items-center gap-3">
           <Button disabled={addressCount === 0 || loading || (needsAlchemyKey && missingAlchemyKey)} onClick={() => runLookup()}>
             {loading
-              ? `Looking up ${progress?.done ?? 0}/${progress?.total ?? addressCount}…`
+              ? pricingProgress
+                ? `Fetching prices ${pricingProgress.done}/${pricingProgress.total}…`
+                : `Looking up ${progress?.done ?? 0}/${progress?.total ?? addressCount}…`
               : `Look up ${addressCount || ''} address${addressCount === 1 ? '' : 'es'}`}
           </Button>
         </div>
@@ -159,9 +182,19 @@ export function WalletLookupPanel() {
         {result && (
           <Badge tone="emerald">
             {result.imported} transactions imported across {result.addressesQueried} address
-            {result.addressesQueried === 1 ? '' : 'es'} — including tokens and NFTs where the chain supports it.
-            Review to classify types and fill in values.
+            {result.addressesQueried === 1 ? '' : 'es'}
+            {settings.priceApiEnabled
+              ? ` — ${result.priced} priced automatically. Open Review for the full list.`
+              : ' — including tokens and NFTs where the chain supports it. Enable Live price lookup in Settings to fill in values automatically.'}
           </Badge>
+        )}
+        {priceErrors.length > 0 && (
+          <div className="space-y-1 rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
+            {priceErrors.slice(0, 5).map((e, i) => (
+              <p key={i}>{e}</p>
+            ))}
+            {priceErrors.length > 5 && <p>…and {priceErrors.length - 5} more price lookup errors.</p>}
+          </div>
         )}
         {warnings.length > 0 && (
           <div className="space-y-1 text-xs text-gold-600">
