@@ -1,0 +1,42 @@
+name: Deploy SoloLedger preview
+
+on:
+  push:
+    branches: [cursor/wallet-sync-lifetime-717a, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: sololedger-pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install and build
+        working-directory: sololedger_claude_V3
+        run: |
+          npm install
+          npm run build -- --base=/SoloLedger/
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: sololedger_claude_V3/dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
