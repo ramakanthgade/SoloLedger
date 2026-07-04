@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSettings, getLookupAddresses, upsertLookupAddress, deleteLookupAddress } from '@/lib/storage/db';
-import { CHAINS, lookupManyAddresses, type ChainId } from '@/lib/rpc/providers';
-import { applyMissingPrices } from '@/lib/pricing/fetchMissingPrices';
+import { getSettings, getLookupAddresses, deleteLookupAddress } from '@/lib/storage/db';
+import { CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { syncWalletAddresses, type SyncMode } from '@/lib/sync/walletSync';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
-import { AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
+import { AlertTriangle, History, RefreshCw, Trash2 } from 'lucide-react';
 
 const inputCls =
   'mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm text-mist focus:border-violet focus:outline-none';
@@ -18,12 +18,10 @@ export function WalletLookupPanel() {
   const [customApiKey, setCustomApiKey] = useState('');
   const [customAsset, setCustomAsset] = useState('');
   const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [statusDetail, setStatusDetail] = useState<string | null>(null);
   const [result, setResult] = useState<{ imported: number; addressesQueried: number; priced: number } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [failed, setFailed] = useState<{ address: string; message: string }[]>([]);
-  const [priceErrors, setPriceErrors] = useState<string[]>([]);
-  const [pricingProgress, setPricingProgress] = useState<{ done: number; total: number } | null>(null);
 
   const lookedUp = useLiveQuery(() => getLookupAddresses(), []) ?? [];
 
@@ -53,13 +51,13 @@ export function WalletLookupPanel() {
   const needsAlchemyKey = chain.provider === 'alchemy_evm' || chain.provider === 'alchemy_solana';
   const missingAlchemyKey = needsAlchemyKey && !settings.alchemyApiKey;
 
-  const runLookup = async (addressesOverride?: string[]) => {
+  const runSync = async (mode: SyncMode, addressesOverride?: string[]) => {
     setLoading(true);
     setResult(null);
     setWarnings([]);
     setFailed([]);
-    setPriceErrors([]);
-    setPricingProgress(null);
+    setStatusDetail(null);
+
     const addresses =
       addressesOverride ??
       addressText
@@ -69,44 +67,39 @@ export function WalletLookupPanel() {
 
     try {
       const activeSettings = await getSettings();
-      const { transactions, warnings: w, failed: f, perAddress } = await lookupManyAddresses(
+      const batch = await syncWalletAddresses({
+        chainId,
         addresses,
-        {
+        mode,
+        settings: activeSettings,
+        config: {
           chain,
           alchemyApiKey: activeSettings.alchemyApiKey,
           customBaseUrl: customBaseUrl || activeSettings.customExplorerBaseUrl,
           customApiKey: customApiKey || activeSettings.customExplorerApiKey,
           customAsset
         },
-        (done, total) => setProgress({ done, total })
-      );
-      if (transactions.length > 0) await db.transactions.bulkPut(transactions);
-      await Promise.all(perAddress.map((p) => upsertLookupAddress(chainId, p.address, p.count)));
+        onProgress: (p) => setStatusDetail(p.detail ?? p.address)
+      });
 
-      let priced = 0;
-      const priceLookupErrors: string[] = [];
-      if (activeSettings.priceApiEnabled && transactions.length > 0) {
-        // Brief pause after heavy RPC traffic before starting price lookups.
-        await new Promise((r) => setTimeout(r, 1500));
-        const priceResult = await applyMissingPrices(transactions, activeSettings, (done, total) =>
-          setPricingProgress({ done, total })
-        );
-        priced = priceResult.priced;
-        priceLookupErrors.push(...priceResult.errors);
-      }
+      const errs = batch.results.filter((r) => r.error).map((r) => ({ address: r.address, message: r.error! }));
+      const warns = batch.results.flatMap((r) => r.warnings);
 
-      setResult({ imported: transactions.length, addressesQueried: addresses.length, priced });
-      setWarnings(w.map((x) => `${x.address}: ${x.message}`));
-      setFailed(f);
-      setPriceErrors(priceLookupErrors);
+      setResult({
+        imported: batch.totalImported,
+        addressesQueried: addresses.length,
+        priced: batch.totalPriced
+      });
+      setFailed(errs);
+      setWarnings(warns);
     } finally {
       setLoading(false);
-      setProgress(null);
-      setPricingProgress(null);
+      setStatusDetail(null);
     }
   };
 
   const addressCount = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean).length;
+  const buttonsDisabled = loading || (needsAlchemyKey && missingAlchemyKey);
 
   return (
     <div className="space-y-4">
@@ -114,9 +107,9 @@ export function WalletLookupPanel() {
         <div className="flex items-start gap-2 rounded-lg bg-gold/10 px-3 py-2 text-xs text-gold-600">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            Whichever explorer answers this will see every address you query — that's true of any address lookup
-            service, free or paid. Bitcoin uses Blockstream (no key needed); other chains use your own Alchemy key
-            so the lookup runs under your account, not a shared one.
+            <strong className="font-medium">Sync new</strong> fetches only transactions since your last sync (fast, low
+            API usage). <strong className="font-medium">Full history</strong> paginates through the entire on-chain
+            ledger for each address — use once per wallet, then rely on sync-new and automatic sync-on-open.
           </span>
         </div>
 
@@ -134,11 +127,7 @@ export function WalletLookupPanel() {
         {missingAlchemyKey && (
           <p className="rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
             Add a free Alchemy API key in Settings first — one key covers this chain plus every other EVM chain and
-            Solana in this list. Get one at{' '}
-            <a href="https://www.alchemy.com" target="_blank" rel="noreferrer" className="underline">
-              alchemy.com
-            </a>{' '}
-            (free tier, no credit card).
+            Solana in this list.
           </p>
         )}
 
@@ -169,38 +158,39 @@ export function WalletLookupPanel() {
           />
         </label>
 
-        <div className="flex items-center gap-3">
-          <Button disabled={addressCount === 0 || loading || (needsAlchemyKey && missingAlchemyKey)} onClick={() => runLookup()}>
-            {loading
-              ? pricingProgress
-                ? `Fetching prices ${pricingProgress.done}/${pricingProgress.total}…`
-                : `Looking up ${progress?.done ?? 0}/${progress?.total ?? addressCount}…`
-              : `Look up ${addressCount || ''} address${addressCount === 1 ? '' : 'es'}`}
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            disabled={addressCount === 0 || buttonsDisabled}
+            onClick={() => runSync('incremental')}
+          >
+            <RefreshCw className="h-4 w-4" />
+            {loading ? statusDetail ?? 'Syncing…' : `Sync new (${addressCount || 0} address${addressCount === 1 ? '' : 'es'})`}
+          </Button>
+          <Button
+            variant="secondary"
+            disabled={addressCount === 0 || buttonsDisabled}
+            onClick={() => runSync('full')}
+          >
+            <History className="h-4 w-4" />
+            Import full history
           </Button>
         </div>
 
         {result && (
           <Badge tone="emerald">
-            {result.imported} transactions imported across {result.addressesQueried} address
-            {result.addressesQueried === 1 ? '' : 'es'}
-            {settings.priceApiEnabled
-              ? ` — ${result.priced} priced automatically. Open Review for the full list.`
-              : ' — including tokens and NFTs where the chain supports it. Enable Live price lookup in Settings to fill in values automatically.'}
+            {result.imported} transaction{result.imported === 1 ? '' : 's'} imported across {result.addressesQueried}{' '}
+            address{result.addressesQueried === 1 ? '' : 'es'}
+            {settings.autoPriceOnSync && settings.priceApiEnabled
+              ? ` — ${result.priced} priced. Open Review for the full list.`
+              : '. Enable auto-pricing in Settings to fill values after sync.'}
           </Badge>
         )}
-        {priceErrors.length > 0 && (
-          <div className="space-y-1 rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
-            {priceErrors.slice(0, 5).map((e, i) => (
-              <p key={i}>{e}</p>
-            ))}
-            {priceErrors.length > 5 && <p>…and {priceErrors.length - 5} more price lookup errors.</p>}
-          </div>
-        )}
         {warnings.length > 0 && (
-          <div className="space-y-1 text-xs text-gold-600">
+          <div className="space-y-1 rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
             {warnings.slice(0, 5).map((w, i) => (
               <p key={i}>{w}</p>
             ))}
+            {warnings.length > 5 && <p>…and {warnings.length - 5} more notices.</p>}
           </div>
         )}
         {failed.length > 0 && (
@@ -214,7 +204,10 @@ export function WalletLookupPanel() {
 
       {lookedUp.length > 0 && (
         <div className="rounded-lg border border-ink-700 bg-ink-800 p-4">
-          <h3 className="mb-3 text-sm font-medium text-mist">Already looked up</h3>
+          <h3 className="mb-1 text-sm font-medium text-mist">Tracked wallets</h3>
+          <p className="mb-3 text-xs text-mist-400">
+            These sync automatically when you open the app (if enabled in Settings).
+          </p>
           <div className="space-y-2">
             {lookedUp.map((row) => {
               const chainLabel = CHAINS.find((c) => c.id === row.chain)?.label ?? row.chain;
@@ -224,18 +217,29 @@ export function WalletLookupPanel() {
                   <span className="font-mono text-mist-300" title={row.address}>
                     {row.address.length > 16 ? `${row.address.slice(0, 8)}…${row.address.slice(-6)}` : row.address}
                   </span>
-                  <span className="text-mist-400">{row.txCount} transactions</span>
+                  <span className="text-mist-400">{row.txCount} rows stored</span>
+                  {row.fullHistoryComplete && <Badge tone="emerald">full history</Badge>}
                   <span className="text-mist-400">synced {new Date(row.lastSyncedAt).toLocaleDateString()}</span>
-                  <div className="ml-auto flex gap-2">
+                  <div className="ml-auto flex flex-wrap gap-2">
                     <button
                       className="flex items-center gap-1 text-emerald-600 hover:underline"
                       onClick={() => {
                         setChainId(row.chain as ChainId);
                         setAddressText(row.address);
-                        runLookup([row.address]);
+                        void runSync('incremental', [row.address]);
                       }}
                     >
-                      <RefreshCw className="h-3 w-3" /> Look up again
+                      <RefreshCw className="h-3 w-3" /> Sync new
+                    </button>
+                    <button
+                      className="flex items-center gap-1 text-violet hover:underline"
+                      onClick={() => {
+                        setChainId(row.chain as ChainId);
+                        setAddressText(row.address);
+                        void runSync('full', [row.address]);
+                      }}
+                    >
+                      <History className="h-3 w-3" /> Full history
                     </button>
                     <button
                       className="flex items-center gap-1 text-loss hover:underline"

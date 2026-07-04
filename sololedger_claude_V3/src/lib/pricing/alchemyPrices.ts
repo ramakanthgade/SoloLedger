@@ -53,13 +53,14 @@ export async function fetchAlchemyHistoricalPriceUsd(
     }
     const data = await res.json();
     const raw = data?.data;
-    const series: unknown[] = Array.isArray(raw)
-      ? raw
-      : Array.isArray(raw?.prices)
-        ? raw.prices
-        : Array.isArray(data?.prices)
-          ? data.prices
-          : [];
+    const series: { timestamp?: string; time?: string; date?: string; value?: number; price?: number; close?: number }[] =
+      Array.isArray(raw)
+        ? raw
+        : Array.isArray(raw?.prices)
+          ? raw.prices
+          : Array.isArray(data?.prices)
+            ? data.prices
+            : [];
     if (!Array.isArray(series) || series.length === 0) {
       return { priceUsd: null, error: 'No Alchemy price history for this token.' };
     }

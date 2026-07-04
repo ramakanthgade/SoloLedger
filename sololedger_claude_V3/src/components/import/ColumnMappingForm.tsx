@@ -24,7 +24,7 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
   const [asset, setAsset] = useState(headers[0] ?? '');
   const [amount, setAmount] = useState(headers[0] ?? '');
   const [fiatValue, setFiatValue] = useState('');
-  const [fiatCurrency, setFiatCurrency] = useState('');
+  const [fiatCurrency] = useState('');
   const [feeAmount, setFeeAmount] = useState('');
 
   const distinctTypeValues = Array.from(new Set(rows.map((r) => (r[typeCol] || '').trim()))).filter(Boolean).slice(0, 30);

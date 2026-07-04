@@ -88,6 +88,16 @@ export interface TaxSettings {
   defaultCostBasisMethod: 'FIFO' | 'SpecID';
   priceApiEnabled: boolean;
   rpcLookupEnabled: boolean;
+  /** Check saved wallets for new on-chain transactions when the app opens. */
+  syncOnOpen: boolean;
+  /** After a wallet sync, automatically fetch historical prices for imported rows. */
+  autoPriceOnSync: boolean;
+  /**
+   * When auto-pricing, only hit the price API for likely taxable rows (buys, sells,
+   * income, etc.) — not plain transfer_in/transfer_out. Saves API calls; use Review
+   * to price transfers manually if needed.
+   */
+  priceTaxableEventsOnly: boolean;
   /** One Alchemy key covers Ethereum + every EVM chain it supports + Solana. */
   alchemyApiKey?: string;
   /** For the "other EVM chain" manual fallback in wallet lookup. */

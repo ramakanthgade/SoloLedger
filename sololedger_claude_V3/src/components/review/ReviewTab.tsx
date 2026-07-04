@@ -60,7 +60,10 @@ export function ReviewTab() {
     return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
   }, [transactions, settings, hints]);
 
-  const missingPriceTxs = useMemo(() => transactionsMissingPrices(transactions), [transactions]);
+  const missingPriceTxs = useMemo(
+    () => transactionsMissingPrices(transactions, settings ?? undefined),
+    [transactions, settings]
+  );
 
   const fetchMissingPrices = async () => {
     if (!settings?.priceApiEnabled || missingPriceTxs.length === 0) return;

@@ -1,4 +1,3 @@
-import type { Lot } from '@/types/transaction';
 import type { CostBasisStrategy, LotSelection } from './strategy';
 import { fifoStrategy } from './fifo';
 

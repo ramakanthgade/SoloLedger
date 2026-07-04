@@ -17,7 +17,12 @@ export interface LookupAddressRow {
   chain: string;
   address: string;
   lastSyncedAt: number;
+  /** Total transaction rows stored for this wallet (after dedupe). */
   txCount: number;
+  /** Newest on-chain cursor synced — Solana signature or Bitcoin txid. */
+  newestCursor?: string;
+  /** True once a full-history backfill has completed for this wallet. */
+  fullHistoryComplete?: boolean;
 }
 
 class SoloLedgerDB extends Dexie {
@@ -43,6 +48,9 @@ class SoloLedgerDB extends Dexie {
     this.version(3).stores({
       lookupAddresses: 'id, chain, address, lastSyncedAt'
     });
+    this.version(4).stores({
+      lookupAddresses: 'id, chain, address, lastSyncedAt'
+    });
   }
 }
 
@@ -53,14 +61,17 @@ export const DEFAULT_SETTINGS: TaxSettings = {
   reportingCurrency: 'INR',
   defaultCostBasisMethod: 'FIFO',
   priceApiEnabled: false,
-  rpcLookupEnabled: false
+  rpcLookupEnabled: false,
+  syncOnOpen: true,
+  autoPriceOnSync: true,
+  priceTaxableEventsOnly: true
 };
 
 export async function getSettings(): Promise<TaxSettings> {
   const row = await db.settings.get('singleton');
   if (!row) return DEFAULT_SETTINGS;
   const { id: _id, ...settings } = row;
-  return settings;
+  return { ...DEFAULT_SETTINGS, ...settings };
 }
 
 export async function saveSettings(settings: TaxSettings): Promise<void> {
@@ -89,16 +100,36 @@ export async function saveSpecIdHint(txId: string, preferredLotIds: string[]): P
   await db.specIdHints.put({ txId, preferredLotIds });
 }
 
-export async function upsertLookupAddress(chain: string, address: string, txCount: number): Promise<void> {
+export async function upsertLookupAddress(
+  chain: string,
+  address: string,
+  patch: {
+    txCount?: number;
+    newestCursor?: string;
+    fullHistoryComplete?: boolean;
+    addTxCount?: number;
+  }
+): Promise<void> {
   const id = `${chain}:${address}`;
   const existing = await db.lookupAddresses.get(id);
+  const txCount = patch.txCount ?? (existing?.txCount ?? 0) + (patch.addTxCount ?? 0);
   await db.lookupAddresses.put({
     id,
     chain,
     address,
     lastSyncedAt: Date.now(),
-    txCount: (existing?.txCount ?? 0) + txCount
+    txCount,
+    newestCursor: patch.newestCursor ?? existing?.newestCursor,
+    fullHistoryComplete: patch.fullHistoryComplete ?? existing?.fullHistoryComplete ?? false
   });
+}
+
+export async function getLookupAddress(chain: string, address: string): Promise<LookupAddressRow | undefined> {
+  return db.lookupAddresses.get(`${chain}:${address}`);
+}
+
+export async function countWalletTransactions(chain: string, address: string): Promise<number> {
+  return db.transactions.filter((t) => t.walletAddress === address && t.chain === chain).count();
 }
 
 export async function getLookupAddresses(): Promise<LookupAddressRow[]> {

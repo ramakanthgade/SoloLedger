@@ -1,11 +1,36 @@
 import { db } from '@/lib/storage/db';
 import { fetchHistoricalPricesBatch, type PriceRequest, type PriceLookupResult, usdToCurrencyRate } from '@/lib/pricing/coingecko';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
-import type { TaxSettings, Transaction } from '@/types/transaction';
+import type { TaxSettings, Transaction, TxType } from '@/types/transaction';
+
+const TAXABLE_OR_BASIS_TYPES = new Set<TxType>([
+  'buy',
+  'sell',
+  'trade',
+  'income',
+  'gift_sent',
+  'gift_received',
+  'fee',
+  'nft_mint',
+  'nft_buy',
+  'nft_sell',
+  'defi_deposit',
+  'defi_withdraw',
+  'other'
+]);
 
 /** Transactions that still need a fiat value filled in. */
-export function transactionsMissingPrices(transactions: Transaction[]): Transaction[] {
-  return transactions.filter((t) => t.fiatValue == null && !t.isInternalTransfer);
+export function transactionsMissingPrices(
+  transactions: Transaction[],
+  settings?: Pick<TaxSettings, 'priceTaxableEventsOnly'>
+): Transaction[] {
+  return transactions.filter((t) => {
+    if (t.fiatValue != null || t.isInternalTransfer) return false;
+    if (settings?.priceTaxableEventsOnly) {
+      return TAXABLE_OR_BASIS_TYPES.has(t.type);
+    }
+    return true;
+  });
 }
 
 function priceCacheKey(request: PriceRequest): string {
@@ -31,11 +56,16 @@ export async function applyMissingPrices(
     return { priced: 0, errors: [] };
   }
 
-  if (settings.reportingCurrency.toUpperCase() !== 'USD' && txs.length > 0) {
-    await usdToCurrencyRate(txs[0].timestamp, settings.reportingCurrency);
+  const toPrice = transactionsMissingPrices(txs, settings);
+  if (toPrice.length === 0) {
+    return { priced: 0, errors: [] };
   }
 
-  const indexedRequests = txs.map((t, index) => ({
+  if (settings.reportingCurrency.toUpperCase() !== 'USD' && toPrice.length > 0) {
+    await usdToCurrencyRate(toPrice[0].timestamp, settings.reportingCurrency);
+  }
+
+  const indexedRequests = toPrice.map((t, index) => ({
     index,
     request: {
       asset: t.asset,
@@ -62,7 +92,7 @@ export async function applyMissingPrices(
     (done, total) => onProgress?.(done, total)
   );
 
-  const resultsByTxIndex: PriceLookupResult[] = new Array(txs.length);
+  const resultsByTxIndex: PriceLookupResult[] = new Array(toPrice.length);
   uniqueEntries.forEach((entry, i) => {
     for (const txIndex of entry.indices) resultsByTxIndex[txIndex] = uniqueResults[i];
   });
@@ -73,7 +103,7 @@ export async function applyMissingPrices(
 
   await Promise.all(
     resultsByTxIndex.map(async (r, i) => {
-      const tx = txs[i];
+      const tx = toPrice[i];
       if (r.price != null) {
         await db.transactions.update(tx.id, {
           fiatValue: r.price * tx.amount,
