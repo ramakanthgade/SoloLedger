@@ -166,7 +166,25 @@ async function fetchAlchemyEvm(address: string, network: string, apiKey: string,
 // ---- Solana via Alchemy's Solana RPC + DAS (native SOL, SPL tokens, and NFTs) ----
 const solanaAssetCache = new Map<string, { symbol: string; isNft: boolean }>();
 
+// Well-known Solana mint addresses — Alchemy DAS getAsset is often unavailable on
+// free tiers, but these symbols are stable and needed for price lookups.
+const SOLANA_KNOWN_MINTS: Record<string, { symbol: string; isNft?: boolean }> = {
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: { symbol: 'USDC' },
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: { symbol: 'USDT' },
+  So11111111111111111111111111111111111111112: { symbol: 'SOL' },
+  mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So: { symbol: 'mSOL' },
+  J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn: { symbol: 'JitoSOL' },
+  DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263: { symbol: 'BONK' },
+  '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj': { symbol: 'stSOL' }
+};
+
 async function getSolanaAssetMeta(url: string, mint: string): Promise<{ symbol: string; isNft: boolean }> {
+  const known = SOLANA_KNOWN_MINTS[mint];
+  if (known) {
+    const meta = { symbol: known.symbol, isNft: known.isNft ?? false };
+    solanaAssetCache.set(mint, meta);
+    return meta;
+  }
   if (solanaAssetCache.has(mint)) return solanaAssetCache.get(mint)!;
   try {
     const res = await fetch(url, {

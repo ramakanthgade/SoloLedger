@@ -5,6 +5,7 @@ import { ReviewTab } from '@/components/review/ReviewTab';
 import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
 import { ReportsTab } from '@/components/reports/ReportsTab';
 import { SettingsTab } from '@/components/settings/SettingsTab';
+import { WalletSyncOnOpen } from '@/components/sync/WalletSyncOnOpen';
 import { Upload, ListChecks, PieChart, FileText, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -60,6 +61,8 @@ export default function App() {
           })}
         </nav>
       </header>
+
+      <WalletSyncOnOpen />
 
       <main className="mx-auto max-w-6xl px-6 py-8">
         <ActiveComponent />

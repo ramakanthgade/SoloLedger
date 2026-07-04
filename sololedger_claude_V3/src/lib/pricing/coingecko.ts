@@ -42,6 +42,18 @@ function toCoinGeckoDate(timestampMs: number): string {
   return `${dd}-${mm}-${yyyy}`;
 }
 
+async function fetchWithRetry(url: string, attempts = 4): Promise<Response> {
+  let lastRes: Response | null = null;
+  for (let i = 0; i < attempts; i++) {
+    const res = await fetch(url);
+    lastRes = res;
+    if (res.status !== 429) return res;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, 2000 * (i + 1)));
+  }
+  return lastRes!;
+}
+
 /**
  * Fetches the historical fiat price for one asset on one date, by symbol.
  * Caller is responsible for checking `settings.priceApiEnabled` before
@@ -67,7 +79,7 @@ export async function fetchHistoricalPrice(
 
   try {
     const url = `${COINGECKO_BASE}/coins/${coinId}/history?date=${date}&localization=false`;
-    const res = await fetch(url);
+    const res = await fetchWithRetry(url);
     if (!res.ok) {
       return { asset: assetSymbol, date, price: null, currency: fiatCurrency, error: `Price API returned ${res.status}` };
     }
@@ -115,7 +127,7 @@ export async function fetchHistoricalPriceByContract(
 
   try {
     const url = `${COINGECKO_BASE}/coins/${platform}/contract/${contractAddress}/market_chart/range?vs_currency=${fiatCurrency.toLowerCase()}&from=${fromSec}&to=${toSec}`;
-    const res = await fetch(url);
+    const res = await fetchWithRetry(url);
     if (!res.ok) {
       return { asset: contractAddress, date, price: null, currency: fiatCurrency, error: `Price API returned ${res.status} for contract lookup` };
     }
@@ -161,7 +173,7 @@ export interface PriceRequest {
 const usdRateCache = new Map<string, number>();
 
 /** Same-day USD -> target currency rate, approximated via CoinGecko's USDT price in that currency. */
-async function usdToCurrencyRate(timestampMs: number, currency: string): Promise<number | null> {
+export async function usdToCurrencyRate(timestampMs: number, currency: string): Promise<number | null> {
   if (currency.toUpperCase() === 'USD') return 1;
   const key = `${toCoinGeckoDate(timestampMs)}:${currency.toUpperCase()}`;
   if (usdRateCache.has(key)) return usdRateCache.get(key)!;
@@ -170,23 +182,21 @@ async function usdToCurrencyRate(timestampMs: number, currency: string): Promise
   return r.price;
 }
 
-/** Sequential fetch with a small delay to stay well under CoinGecko's free-tier rate limit. */
+/** Sequential fetch with pacing to stay under free-tier rate limits. */
 export async function fetchHistoricalPricesBatch(
   requests: PriceRequest[],
   onProgress?: (done: number, total: number) => void
 ): Promise<PriceLookupResult[]> {
   const results: PriceLookupResult[] = [];
+  const preferAlchemy = requests.some((r) => !!r.alchemyApiKey);
+  const paceMs = preferAlchemy ? 600 : 2500;
+
   for (let i = 0; i < requests.length; i++) {
     const r = requests[i];
-    // eslint-disable-next-line no-await-in-loop
-    let result = await fetchHistoricalPrice(r.asset, r.timestampMs, r.fiatCurrency);
+    const date = toCoinGeckoDate(r.timestampMs);
+    let result: PriceLookupResult | null = null;
 
-    if (result.price == null && r.contractAddress && r.platform) {
-      // eslint-disable-next-line no-await-in-loop
-      result = await fetchHistoricalPriceByContract(r.platform, r.contractAddress, r.timestampMs, r.fiatCurrency);
-    }
-
-    if (result.price == null && r.alchemyApiKey) {
+    if (r.alchemyApiKey) {
       // eslint-disable-next-line no-await-in-loop
       const alchemyResult = await fetchAlchemyHistoricalPriceUsd(
         r.alchemyApiKey,
@@ -197,19 +207,49 @@ export async function fetchHistoricalPricesBatch(
         // eslint-disable-next-line no-await-in-loop
         const rate = await usdToCurrencyRate(r.timestampMs, r.fiatCurrency);
         if (rate != null) {
-          result = { asset: r.asset, date: toCoinGeckoDate(r.timestampMs), price: alchemyResult.priceUsd * rate, currency: r.fiatCurrency };
+          result = { asset: r.asset, date, price: alchemyResult.priceUsd * rate, currency: r.fiatCurrency };
         } else {
-          result = { ...result, error: `${result.error ? result.error + '; ' : ''}Alchemy found a USD price but currency conversion failed.` };
+          result = {
+            asset: r.asset,
+            date,
+            price: alchemyResult.priceUsd,
+            currency: 'USD',
+            error: `Used USD — ${r.fiatCurrency} conversion rate unavailable.`
+          };
         }
-      } else if (alchemyResult.error) {
-        result = { ...result, error: `${result.error ? result.error + '; ' : ''}${alchemyResult.error}` };
       }
     }
 
-    results.push(result);
+    if (result?.price == null) {
+      // eslint-disable-next-line no-await-in-loop
+      result = await fetchHistoricalPrice(r.asset, r.timestampMs, r.fiatCurrency);
+      if (result.price == null && r.contractAddress && r.platform) {
+        // eslint-disable-next-line no-await-in-loop
+        result = await fetchHistoricalPriceByContract(r.platform, r.contractAddress, r.timestampMs, r.fiatCurrency);
+      }
+      if (result.price == null && r.alchemyApiKey && !result.error?.includes('Alchemy')) {
+        // eslint-disable-next-line no-await-in-loop
+        const alchemyResult = await fetchAlchemyHistoricalPriceUsd(
+          r.alchemyApiKey,
+          r.contractAddress && r.alchemyNetwork ? { network: r.alchemyNetwork, address: r.contractAddress } : { symbol: r.asset },
+          r.timestampMs
+        );
+        if (alchemyResult.priceUsd != null) {
+          // eslint-disable-next-line no-await-in-loop
+          const rate = await usdToCurrencyRate(r.timestampMs, r.fiatCurrency);
+          if (rate != null) {
+            result = { asset: r.asset, date, price: alchemyResult.priceUsd * rate, currency: r.fiatCurrency };
+          }
+        } else if (alchemyResult.error) {
+          result = { ...result, error: `${result.error ? result.error + '; ' : ''}${alchemyResult.error}` };
+        }
+      }
+    }
+
+    results.push(result!);
     onProgress?.(i + 1, requests.length);
     // eslint-disable-next-line no-await-in-loop
-    if (i < requests.length - 1) await new Promise((r2) => setTimeout(r2, 1500));
+    if (i < requests.length - 1) await new Promise((r2) => setTimeout(r2, paceMs));
   }
   return results;
 }

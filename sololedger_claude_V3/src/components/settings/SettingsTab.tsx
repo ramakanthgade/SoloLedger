@@ -78,10 +78,9 @@ export function SettingsTab() {
               onChange={(e) => update({ priceApiEnabled: e.target.checked })}
             />
             <span>
-              <strong className="text-mist">Live price lookup.</strong> Sends asset/date pairs (never wallet
-              addresses or amounts) to CoinGecko's public price API to fill in market values. For tokens CoinGecko
-              doesn't track (small, DEX-only tokens), it falls back to your Alchemy key's Prices API and converts
-              the result into your reporting currency. Nothing fetches automatically — use the button in Review.
+              <strong className="text-mist">Live price lookup.</strong> Fetches historical market values via CoinGecko
+              (and your Alchemy Prices API as fallback). Used automatically after wallet sync when auto-pricing is on,
+              and manually from Review.
             </span>
           </label>
           <label className="flex items-start gap-3 text-sm text-mist-300">
@@ -94,11 +93,54 @@ export function SettingsTab() {
             <span>
               <strong className="text-mist">Wallet address lookup via public RPC/explorer.</strong> Sends the
               address you enter to an explorer to read transaction history. Bitcoin uses Blockstream (no key
-              needed); other chains use your own Alchemy key below, so the lookup runs under your account rather
-              than a shared one. Whichever service answers will see the address you query — see Import → Wallet
-              lookup for why that's unavoidable for any address lookup.
+              needed); other chains use your own Alchemy key below.
             </span>
           </label>
+
+          {settings.rpcLookupEnabled && (
+            <div className="ml-7 space-y-3 border-l border-ink-700 pl-4">
+              <label className="flex items-start gap-3 text-sm text-mist-300">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={settings.syncOnOpen}
+                  onChange={(e) => update({ syncOnOpen: e.target.checked })}
+                />
+                <span>
+                  <strong className="text-mist">Sync saved wallets on app open.</strong> Incrementally checks every
+                  tracked wallet for new on-chain transactions — fast and low API usage.
+                </span>
+              </label>
+              {settings.priceApiEnabled && (
+                <>
+                  <label className="flex items-start gap-3 text-sm text-mist-300">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={settings.autoPriceOnSync}
+                      onChange={(e) => update({ autoPriceOnSync: e.target.checked })}
+                    />
+                    <span>
+                      <strong className="text-mist">Auto-price after wallet sync.</strong> Fetches historical prices
+                      for newly imported rows right after a sync completes.
+                    </span>
+                  </label>
+                  <label className="flex items-start gap-3 text-sm text-mist-300">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5"
+                      checked={settings.priceTaxableEventsOnly}
+                      onChange={(e) => update({ priceTaxableEventsOnly: e.target.checked })}
+                    />
+                    <span>
+                      <strong className="text-mist">Price taxable events only.</strong> Skips plain transfer_in/out
+                      when auto-pricing (saves API calls). Uncheck to price every imported row, or use Review.
+                    </span>
+                  </label>
+                </>
+              )}
+            </div>
+          )}
 
           {settings.rpcLookupEnabled && (
             <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
