@@ -36,6 +36,12 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src')
     }
   },
+  server: {
+    // Cursor Cloud (and similar remote dev proxies) forward the app through
+    // a changing *.cursorvm.com / *.agent.cvm.dev hostname. Vite blocks unknown
+    // hosts by default to prevent DNS rebinding; allow those proxy domains in dev.
+    allowedHosts: ['.cursorvm.com', '.agent.cvm.dev', 'localhost']
+  },
   build: {
     target: 'es2020',
     sourcemap: false
