@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
+import { fileURLToPath, URL } from 'node:url';
 
 // All processing is client-side. This app makes zero network calls to any
 // SoloLedger-owned server by design — there is no backend. The only optional
@@ -8,6 +9,11 @@ import { VitePWA } from 'vite-plugin-pwa';
 // (b) a public blockchain RPC/explorer for read-only address lookups —
 // both off by default and gated behind explicit settings toggles.
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url))
+    }
+  },
   plugins: [
     react(),
     VitePWA({
