@@ -1,0 +1,69 @@
+import { useState } from 'react';
+import { Button } from '@/components/ui/button';
+import { Check, Pencil, Trash2 } from 'lucide-react';
+
+function mask(key: string): string {
+  if (key.length <= 10) return '•'.repeat(key.length);
+  return `${key.slice(0, 5)}${'•'.repeat(6)}${key.slice(-4)}`;
+}
+
+interface Props {
+  label: React.ReactNode;
+  value: string | undefined;
+  onSave: (value: string) => void;
+  onDelete: () => void;
+  placeholder?: string;
+}
+
+export function ApiKeyField({ label, value, onSave, onDelete, placeholder }: Props) {
+  const [draft, setDraft] = useState('');
+  const [editing, setEditing] = useState(!value);
+
+  const save = () => {
+    if (!draft.trim()) return;
+    onSave(draft.trim());
+    setDraft('');
+    setEditing(false);
+  };
+
+  return (
+    <div className="space-y-1.5">
+      <label className="block text-xs text-mist-400">{label}</label>
+      {!editing && value ? (
+        <div className="flex items-center gap-2 rounded-full border border-emerald/30 bg-emerald/10 px-3 py-1.5">
+          <span className="flex-1 font-mono text-sm text-mist">{mask(value)}</span>
+          <button
+            type="button"
+            onClick={() => {
+              setDraft(value);
+              setEditing(true);
+            }}
+            className="flex items-center gap-1 text-xs text-violet hover:underline"
+          >
+            <Pencil className="h-3 w-3" /> Edit
+          </button>
+          <button
+            type="button"
+            onClick={onDelete}
+            className="flex items-center gap-1 text-xs text-loss hover:underline"
+          >
+            <Trash2 className="h-3 w-3" /> Delete
+          </button>
+        </div>
+      ) : (
+        <div className="flex items-center gap-2">
+          <input
+            className="block w-full rounded-full border border-ink-600 bg-ink-800 px-3 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={placeholder}
+            autoFocus={editing && !!value}
+          />
+          <Button variant="secondary" className="shrink-0 gap-1 text-xs" onClick={save} disabled={!draft.trim()}>
+            <Check className="h-3.5 w-3.5" /> Save
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}

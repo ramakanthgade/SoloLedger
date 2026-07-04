@@ -1,0 +1,21 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+  ::selection {
+    background-color: rgba(124, 92, 252, 0.22);
+  }
+  * {
+    scrollbar-color: #D6C9F5 #F8F6FE;
+  }
+}
+
+@layer components {
+  .tabular-figures {
+    font-variant-numeric: tabular-nums;
+  }
+}
