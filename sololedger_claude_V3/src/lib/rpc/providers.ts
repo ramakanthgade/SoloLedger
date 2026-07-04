@@ -101,9 +101,20 @@ async function fetchBitcoin(address: string, baseUrl: string, asset: string): Pr
   return { transactions, warnings: [] };
 }
 
+function alchemyRpcUrl(network: string): string {
+  return `https://${network}.g.alchemy.com/v2`;
+}
+
+function alchemyHeaders(apiKey: string): HeadersInit {
+  return {
+    'Content-Type': 'application/json',
+    Authorization: `Bearer ${apiKey}`
+  };
+}
+
 // ---- EVM chains via Alchemy's alchemy_getAssetTransfers (native + ERC20 + NFTs) ----
 async function fetchAlchemyEvm(address: string, network: string, apiKey: string, asset: string, chainId: ChainId): Promise<LookupResult> {
-  const url = `https://${network}.g.alchemy.com/v2/${apiKey}`;
+  const url = alchemyRpcUrl(network);
   const body = (direction: 'from' | 'to') => ({
     jsonrpc: '2.0',
     id: 1,
@@ -119,9 +130,10 @@ async function fetchAlchemyEvm(address: string, network: string, apiKey: string,
     ]
   });
 
+  const headers = alchemyHeaders(apiKey);
   const [outgoingRes, incomingRes] = await Promise.all([
-    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body('from')) }),
-    fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body('to')) })
+    fetch(url, { method: 'POST', headers, body: JSON.stringify(body('from')) }),
+    fetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
   ]);
 
   if (!outgoingRes.ok || !incomingRes.ok) {
@@ -166,12 +178,12 @@ async function fetchAlchemyEvm(address: string, network: string, apiKey: string,
 // ---- Solana via Alchemy's Solana RPC + DAS (native SOL, SPL tokens, and NFTs) ----
 const solanaAssetCache = new Map<string, { symbol: string; isNft: boolean }>();
 
-async function getSolanaAssetMeta(url: string, mint: string): Promise<{ symbol: string; isNft: boolean }> {
+async function getSolanaAssetMeta(apiKey: string, mint: string): Promise<{ symbol: string; isNft: boolean }> {
   if (solanaAssetCache.has(mint)) return solanaAssetCache.get(mint)!;
   try {
-    const res = await fetch(url, {
+    const res = await fetch(alchemyRpcUrl('solana-mainnet'), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: alchemyHeaders(apiKey),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAsset', params: { id: mint } })
     });
     const data = await res.json();
@@ -189,11 +201,12 @@ async function getSolanaAssetMeta(url: string, mint: string): Promise<{ symbol: 
 }
 
 async function fetchAlchemySolana(address: string, apiKey: string): Promise<LookupResult> {
-  const url = `https://solana-mainnet.g.alchemy.com/v2/${apiKey}`;
+  const url = alchemyRpcUrl('solana-mainnet');
+  const headers = alchemyHeaders(apiKey);
 
   const sigRes = await fetch(url, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 50 }] })
   });
   if (!sigRes.ok) throw new Error(`Alchemy API returned ${sigRes.status} — check your API key`);
@@ -209,7 +222,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
     // eslint-disable-next-line no-await-in-loop
     const txRes = await fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTransaction', params: [sig.signature, { maxSupportedTransactionVersion: 0 }] })
     });
     // eslint-disable-next-line no-await-in-loop
@@ -258,7 +271,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
       if (Math.abs(delta) < 1e-9) continue;
 
       // eslint-disable-next-line no-await-in-loop
-      const meta = await getSolanaAssetMeta(url, mint);
+      const meta = await getSolanaAssetMeta(apiKey, mint);
       transactions.push({
         id: makeId('rpc'),
         timestamp,
