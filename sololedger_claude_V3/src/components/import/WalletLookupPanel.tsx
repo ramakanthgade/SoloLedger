@@ -28,7 +28,9 @@ export function WalletLookupPanel() {
     getSettings().then(setSettings);
   }, []);
 
-  if (settings === null) return null;
+  if (settings === null) {
+    return <p className="text-sm text-mist-400">Loading wallet lookup…</p>;
+  }
 
   if (!settings.rpcLookupEnabled) {
     return (

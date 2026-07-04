@@ -40,6 +40,16 @@ class SoloLedgerDB extends Dexie {
     this.version(2).stores({
       lookupAddresses: 'id, chain, address'
     });
+    // v2 only declared the new store (Dexie drops undeclared stores on upgrade).
+    // v3 restores the full schema and indexes lastSyncedAt for wallet-lookup sorting.
+    this.version(3).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt'
+    });
   }
 }
 
@@ -99,7 +109,8 @@ export async function upsertLookupAddress(chain: string, address: string, txCoun
 }
 
 export async function getLookupAddresses(): Promise<LookupAddressRow[]> {
-  return db.lookupAddresses.orderBy('lastSyncedAt').reverse().toArray();
+  const rows = await db.lookupAddresses.toArray();
+  return rows.sort((a, b) => b.lastSyncedAt - a.lastSyncedAt);
 }
 
 export async function deleteLookupAddress(id: string): Promise<void> {
