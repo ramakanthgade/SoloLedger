@@ -3,6 +3,30 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+/** Alchemy networks used by wallet lookup — proxied in dev to avoid browser CORS blocks. */
+const ALCHEMY_NETWORKS = [
+  'eth-mainnet',
+  'polygon-mainnet',
+  'arb-mainnet',
+  'base-mainnet',
+  'opt-mainnet',
+  'bnb-mainnet',
+  'avax-mainnet',
+  'solana-mainnet'
+] as const;
+
+const alchemyDevProxy = Object.fromEntries(
+  ALCHEMY_NETWORKS.map((network) => [
+    `/alchemy-rpc/${network}`,
+    {
+      target: `https://${network}.g.alchemy.com`,
+      changeOrigin: true,
+      secure: true,
+      rewrite: () => '/v2'
+    }
+  ])
+);
+
 // All processing is client-side. This app makes zero network calls to any
 // SoloLedger-owned server by design — there is no backend. The only optional
 // network calls a user can enable are (a) a price-lookup API and
@@ -40,7 +64,12 @@ export default defineConfig({
     // Cursor Cloud (and similar remote dev proxies) forward the app through
     // a changing *.cursorvm.com / *.agent.cvm.dev hostname. Vite blocks unknown
     // hosts by default to prevent DNS rebinding; allow those proxy domains in dev.
-    allowedHosts: ['.cursorvm.com', '.agent.cvm.dev', 'localhost']
+    allowedHosts: ['.cursorvm.com', '.agent.cvm.dev', 'localhost'],
+    // Browser → localhost → Vite → Alchemy. Avoids CORS blocks on direct Alchemy calls.
+    proxy: alchemyDevProxy
+  },
+  preview: {
+    proxy: alchemyDevProxy
   },
   build: {
     target: 'es2020',

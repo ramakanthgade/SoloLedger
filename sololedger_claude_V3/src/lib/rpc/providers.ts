@@ -102,7 +102,24 @@ async function fetchBitcoin(address: string, baseUrl: string, asset: string): Pr
 }
 
 function alchemyRpcUrl(network: string): string {
+  // When running via `npm run dev` / `npm run preview` on localhost, route through
+  // Vite's same-origin proxy (see vite.config.ts). Direct browser → Alchemy calls
+  // are blocked by CORS for some methods (e.g. alchemy_getAssetTransfers).
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') {
+      return `/alchemy-rpc/${network}`;
+    }
+  }
   return `https://${network}.g.alchemy.com/v2`;
+}
+
+function alchemyErrorMessage(status: number, body?: { error?: { code?: number; message?: string } }): string {
+  if (status === 429 || body?.error?.code === 429) {
+    return 'Alchemy rate limit — wait a few minutes and try again. (Free tier is fine; this is temporary traffic limiting.)';
+  }
+  if (body?.error?.message) return body.error.message;
+  return `Alchemy API returned ${status} — check your API key`;
 }
 
 function alchemyHeaders(apiKey: string): HeadersInit {
@@ -136,13 +153,14 @@ async function fetchAlchemyEvm(address: string, network: string, apiKey: string,
     fetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
   ]);
 
-  if (!outgoingRes.ok || !incomingRes.ok) {
-    throw new Error(`Alchemy API returned ${outgoingRes.status}/${incomingRes.status} — check your API key`);
-  }
-
   const [outgoing, incoming] = await Promise.all([outgoingRes.json(), incomingRes.json()]);
+  if (!outgoingRes.ok || !incomingRes.ok) {
+    const status = outgoingRes.ok ? incomingRes.status : outgoingRes.status;
+    throw new Error(alchemyErrorMessage(status, outgoing.error ? outgoing : incoming));
+  }
   if (outgoing.error || incoming.error) {
-    throw new Error(outgoing.error?.message || incoming.error?.message || 'Alchemy API error');
+    const err = outgoing.error ?? incoming.error;
+    throw new Error(alchemyErrorMessage(err?.code ?? 0, { error: err }));
   }
 
   const toTx = (t: any, direction: 'transfer_out' | 'transfer_in'): Transaction => {
@@ -209,9 +227,9 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
     headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 50 }] })
   });
-  if (!sigRes.ok) throw new Error(`Alchemy API returned ${sigRes.status} — check your API key`);
   const sigData = await sigRes.json();
-  if (sigData.error) throw new Error(sigData.error.message || 'Alchemy API error');
+  if (!sigRes.ok) throw new Error(alchemyErrorMessage(sigRes.status, sigData));
+  if (sigData.error) throw new Error(alchemyErrorMessage(sigData.error.code ?? 0, sigData));
   const signatures: { signature: string; blockTime: number | null }[] = sigData.result ?? [];
 
   if (signatures.length === 0) return { transactions: [], warnings: [] };
