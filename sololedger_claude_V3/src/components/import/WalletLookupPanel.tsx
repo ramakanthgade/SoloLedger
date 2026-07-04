@@ -28,7 +28,13 @@ export function WalletLookupPanel() {
     getSettings().then(setSettings);
   }, []);
 
-  if (settings === null) return null;
+  if (settings === null) {
+    return (
+      <div className="rounded-lg border border-ink-700 bg-ink-800 p-4 text-sm text-mist-400">
+        Loading wallet lookup settings…
+      </div>
+    );
+  }
 
   if (!settings.rpcLookupEnabled) {
     return (

@@ -38,7 +38,10 @@ class SoloLedgerDB extends Dexie {
       specIdHints: 'txId'
     });
     this.version(2).stores({
-      lookupAddresses: 'id, chain, address'
+      lookupAddresses: 'id, chain, address, lastSyncedAt'
+    });
+    this.version(3).stores({
+      lookupAddresses: 'id, chain, address, lastSyncedAt'
     });
   }
 }
@@ -99,7 +102,8 @@ export async function upsertLookupAddress(chain: string, address: string, txCoun
 }
 
 export async function getLookupAddresses(): Promise<LookupAddressRow[]> {
-  return db.lookupAddresses.orderBy('lastSyncedAt').reverse().toArray();
+  const rows = await db.lookupAddresses.toArray();
+  return rows.sort((a, b) => b.lastSyncedAt - a.lastSyncedAt);
 }
 
 export async function deleteLookupAddress(id: string): Promise<void> {
