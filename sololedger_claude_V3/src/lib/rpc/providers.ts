@@ -116,10 +116,35 @@ function alchemyRpcUrl(network: string): string {
 
 function alchemyErrorMessage(status: number, body?: { error?: { code?: number; message?: string } }): string {
   if (status === 429 || body?.error?.code === 429) {
-    return 'Alchemy rate limit — wait a few minutes and try again. (Free tier is fine; this is temporary traffic limiting.)';
+    return (
+      'Alchemy transfer lookup is rate-limited on the free plan (this can last hours during high traffic). ' +
+      'Add a free Etherscan API key in Settings — it is used automatically as a fallback for Ethereum and other EVM chains. ' +
+      'Get one at etherscan.io/apis'
+    );
   }
   if (body?.error?.message) return body.error.message;
   return `Alchemy API returned ${status} — check your API key`;
+}
+
+/** Etherscan multichain API v2 chain ids (one key covers all). */
+const ETHERSCAN_V2_CHAIN_IDS: Partial<Record<ChainId, number>> = {
+  ethereum: 1,
+  polygon: 137,
+  arbitrum: 42161,
+  base: 8453,
+  optimism: 10,
+  bsc: 56,
+  avalanche: 43114
+};
+
+function etherscanV2BaseUrl(chainId: ChainId): string | null {
+  const id = ETHERSCAN_V2_CHAIN_IDS[chainId];
+  return id != null ? `https://api.etherscan.io/v2/api?chainid=${id}` : null;
+}
+
+function isAlchemyRateLimitError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.includes('rate limit') || msg.includes('429') || msg.toLowerCase().includes('rate-limited');
 }
 
 function alchemyHeaders(apiKey: string): HeadersInit {
@@ -130,7 +155,13 @@ function alchemyHeaders(apiKey: string): HeadersInit {
 }
 
 // ---- EVM chains via Alchemy's alchemy_getAssetTransfers (native + ERC20 + NFTs) ----
-async function fetchAlchemyEvm(address: string, network: string, apiKey: string, asset: string, chainId: ChainId): Promise<LookupResult> {
+async function fetchAlchemyEvmInner(
+  address: string,
+  network: string,
+  apiKey: string,
+  asset: string,
+  chainId: ChainId
+): Promise<LookupResult> {
   const url = alchemyRpcUrl(network);
   const body = (direction: 'from' | 'to') => ({
     jsonrpc: '2.0',
@@ -191,6 +222,37 @@ async function fetchAlchemyEvm(address: string, network: string, apiKey: string,
   ];
 
   return { transactions, warnings: [] };
+}
+
+async function fetchAlchemyEvm(
+  address: string,
+  network: string,
+  apiKey: string,
+  asset: string,
+  chainId: ChainId,
+  etherscanApiKey?: string
+): Promise<LookupResult> {
+  try {
+    return await fetchAlchemyEvmInner(address, network, apiKey, asset, chainId);
+  } catch (err) {
+    if (!isAlchemyRateLimitError(err)) throw err;
+    const baseUrl = etherscanV2BaseUrl(chainId);
+    if (etherscanApiKey && baseUrl) {
+      const result = await fetchEtherscanCompatible(address, baseUrl, etherscanApiKey, asset);
+      return {
+        transactions: result.transactions,
+        warnings: [
+          {
+            address,
+            message:
+              'Alchemy transfer lookup was rate-limited; fetched via Etherscan instead (native + ERC-20 transfers).'
+          },
+          ...result.warnings
+        ]
+      };
+    }
+    throw err;
+  }
 }
 
 // ---- Solana via Alchemy's Solana RPC + DAS (native SOL, SPL tokens, and NFTs) ----
@@ -315,9 +377,23 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 }
 
 // ---- Generic Etherscan-compatible fallback (BYO key/endpoint) ----
+function etherscanRequestUrl(baseUrl: string, params: Record<string, string>, apiKey: string): string {
+  const qs = new URLSearchParams({ ...params, apikey: apiKey });
+  const sep = baseUrl.includes('?') ? '&' : '?';
+  let url = `${baseUrl}${sep}${qs.toString()}`;
+  // Same-origin proxy in dev avoids browser CORS blocks on explorer APIs.
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if ((host === 'localhost' || host === '127.0.0.1') && url.startsWith('https://api.etherscan.io')) {
+      url = url.replace('https://api.etherscan.io', '/etherscan-api');
+    }
+  }
+  return url;
+}
+
 async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey: string, asset: string): Promise<LookupResult> {
-  const nativeUrl = `${baseUrl}?module=account&action=txlist&address=${address}&sort=desc${apiKey ? `&apikey=${apiKey}` : ''}`;
-  const tokenUrl = `${baseUrl}?module=account&action=tokentx&address=${address}&sort=desc${apiKey ? `&apikey=${apiKey}` : ''}`;
+  const nativeUrl = etherscanRequestUrl(baseUrl, { module: 'account', action: 'txlist', address, sort: 'desc' }, apiKey);
+  const tokenUrl = etherscanRequestUrl(baseUrl, { module: 'account', action: 'tokentx', address, sort: 'desc' }, apiKey);
 
   const [nativeRes, tokenRes] = await Promise.all([fetch(nativeUrl), fetch(tokenUrl)]);
   if (!nativeRes.ok) throw new Error(`Explorer API returned ${nativeRes.status}`);
@@ -376,7 +452,14 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
   }
   if (chain.provider === 'alchemy_evm') {
     if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key in Settings first.');
-    return fetchAlchemyEvm(address, chain.alchemyNetwork!, config.alchemyApiKey, chain.asset, chain.id);
+    return fetchAlchemyEvm(
+      address,
+      chain.alchemyNetwork!,
+      config.alchemyApiKey,
+      chain.asset,
+      chain.id,
+      config.customApiKey
+    );
   }
   if (chain.provider === 'alchemy_solana') {
     if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key in Settings first.');

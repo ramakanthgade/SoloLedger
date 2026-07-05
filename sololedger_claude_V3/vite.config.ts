@@ -66,10 +66,24 @@ export default defineConfig({
     // hosts by default to prevent DNS rebinding; allow those proxy domains in dev.
     allowedHosts: ['.cursorvm.com', '.agent.cvm.dev', 'localhost'],
     // Browser → localhost → Vite → Alchemy. Avoids CORS blocks on direct Alchemy calls.
-    proxy: alchemyDevProxy
+    proxy: {
+      ...alchemyDevProxy,
+      '/etherscan-api': {
+        target: 'https://api.etherscan.io',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/etherscan-api/, '')
+      }
+    }
   },
   preview: {
-    proxy: alchemyDevProxy
+    proxy: {
+      ...alchemyDevProxy,
+      '/etherscan-api': {
+        target: 'https://api.etherscan.io',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/etherscan-api/, '')
+      }
+    }
   },
   build: {
     target: 'es2020',

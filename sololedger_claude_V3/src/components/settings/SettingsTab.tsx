@@ -119,7 +119,16 @@ export function SettingsTab() {
                 placeholder="Paste your Alchemy API key"
               />
               <ApiKeyField
-                label="Custom Etherscan-compatible API key (only needed for the 'Other EVM chain' fallback in Wallet lookup)"
+                label={
+                  <>
+                    Etherscan API key (recommended — free fallback when Alchemy transfer lookup is rate-limited;
+                    one key covers Ethereum, Polygon, Arbitrum, Base, and other EVM chains via{' '}
+                    <a href="https://etherscan.io/apis" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      etherscan.io/apis
+                    </a>
+                    )
+                  </>
+                }
                 value={settings.customExplorerApiKey}
                 onSave={(key) => update({ customExplorerApiKey: key })}
                 onDelete={() => update({ customExplorerApiKey: undefined })}
