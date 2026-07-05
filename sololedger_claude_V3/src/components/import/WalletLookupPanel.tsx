@@ -74,14 +74,14 @@ export function WalletLookupPanel() {
         (done, total) => setProgress({ done, total })
       );
       if (transactions.length > 0) await db.transactions.bulkPut(transactions);
-      const swapsDetected = transactions.length > 0 ? await reprocessSwapDetectionInDb() : 0;
+      const swapResult = transactions.length > 0
+        ? await reprocessSwapDetectionInDb(settings?.novesApiKey)
+        : null;
       await Promise.all(perAddress.map((p) => upsertLookupAddress(chainId, p.address, p.count)));
       setResult({ imported: transactions.length, addressesQueried: addresses.length });
       const apiWarnings = w.map((x) => `${x.address}: ${x.message}`);
-      if (swapsDetected > 0) {
-        apiWarnings.unshift(
-          `Detected ${swapsDetected} DEX swap${swapsDetected === 1 ? '' : 's'} from wallet imports — fetch prices in Review, then check Capital Gains.`
-        );
+      if (swapResult && (swapResult.tradesCreated > 0 || swapResult.reclassified > 0)) {
+        apiWarnings.unshift(swapResult.message);
       }
       setWarnings(apiWarnings);
       setFailed(f);

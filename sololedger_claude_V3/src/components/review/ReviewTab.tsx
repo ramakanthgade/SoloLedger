@@ -130,6 +130,7 @@ export function ReviewTab() {
   const [editValue, setEditValue] = useState('');
   const [detectingSwaps, setDetectingSwaps] = useState(false);
   const [swapDetectMsg, setSwapDetectMsg] = useState<string | null>(null);
+  const [novesProgress, setNovesProgress] = useState<{ done: number; total: number } | null>(null);
 
   const transactions = useLiveQuery(() => db.transactions.orderBy('timestamp').reverse().toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
@@ -196,9 +197,9 @@ export function ReviewTab() {
     const key = 'sololedger_swap_detect_v2';
     if (localStorage.getItem(key)) return;
     localStorage.setItem(key, '1');
-    void reprocessSwapDetectionInDb().then((n) => {
-      if (n > 0) {
-        setSwapDetectMsg(`Auto-detected ${n} DEX swap${n === 1 ? '' : 's'}. Fetch missing prices next, then check Capital Gains.`);
+    void reprocessSwapDetectionInDb(settings?.novesApiKey).then((result) => {
+      if (result.tradesCreated > 0 || result.reclassified > 0) {
+        setSwapDetectMsg(result.message);
       }
     });
   }, [potentialSwapPairs]);
@@ -282,15 +283,16 @@ export function ReviewTab() {
   const runSwapDetection = async () => {
     setDetectingSwaps(true);
     setSwapDetectMsg(null);
+    setNovesProgress(null);
     try {
-      const n = await reprocessSwapDetectionInDb();
-      setSwapDetectMsg(
-        n > 0
-          ? `Detected ${n} DEX swap${n === 1 ? '' : 's'} — check Capital Gains after fetching prices.`
-          : 'No new swap pairs found. Each swap needs one asset out + one in on the same transaction hash.'
+      const result = await reprocessSwapDetectionInDb(
+        settings?.novesApiKey,
+        (done, total) => setNovesProgress({ done, total })
       );
+      setSwapDetectMsg(result.message);
     } finally {
       setDetectingSwaps(false);
+      setNovesProgress(null);
     }
   };
 
@@ -367,7 +369,11 @@ export function ReviewTab() {
             </p>
           </div>
           <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0">
-            {detectingSwaps ? 'Detecting swaps…' : 'Detect DEX swaps'}
+            {detectingSwaps
+              ? novesProgress
+                ? `Noves ${novesProgress.done}/${novesProgress.total}…`
+                : 'Detecting swaps…'
+              : settings?.novesApiKey ? 'Detect swaps (Noves)' : 'Detect DEX swaps'}
           </Button>
         </div>
       )}
@@ -438,7 +444,11 @@ export function ReviewTab() {
         </select>
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
         <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0">
-          {detectingSwaps ? 'Detecting swaps…' : 'Detect DEX swaps'}
+          {detectingSwaps
+            ? novesProgress
+              ? `Noves ${novesProgress.done}/${novesProgress.total}…`
+              : 'Detecting swaps…'
+            : settings?.novesApiKey ? 'Detect swaps (Noves)' : 'Detect DEX swaps'}
         </Button>
         {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
           <Button
