@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses, upsertLookupAddress, deleteLookupAddressAndTransactions } from '@/lib/storage/db';
 import { CHAINS, lookupManyAddresses, type ChainId } from '@/lib/rpc/providers';
+import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
 import { AlertTriangle, RefreshCw, Trash2 } from 'lucide-react';
@@ -73,9 +74,16 @@ export function WalletLookupPanel() {
         (done, total) => setProgress({ done, total })
       );
       if (transactions.length > 0) await db.transactions.bulkPut(transactions);
+      const swapsDetected = transactions.length > 0 ? await reprocessSwapDetectionInDb() : 0;
       await Promise.all(perAddress.map((p) => upsertLookupAddress(chainId, p.address, p.count)));
       setResult({ imported: transactions.length, addressesQueried: addresses.length });
-      setWarnings(w.map((x) => `${x.address}: ${x.message}`));
+      const apiWarnings = w.map((x) => `${x.address}: ${x.message}`);
+      if (swapsDetected > 0) {
+        apiWarnings.unshift(
+          `Detected ${swapsDetected} DEX swap${swapsDetected === 1 ? '' : 's'} from wallet imports — fetch prices in Review, then check Capital Gains.`
+        );
+      }
+      setWarnings(apiWarnings);
       setFailed(f);
     } finally {
       setLoading(false);

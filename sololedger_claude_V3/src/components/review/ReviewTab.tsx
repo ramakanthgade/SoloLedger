@@ -10,6 +10,9 @@ import { fetchHistoricalPricesBatch } from '@/lib/pricing/coingecko';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
+import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
+import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
+import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle } from 'lucide-react';
 
@@ -61,6 +64,8 @@ export function ReviewTab() {
   const [priceErrors, setPriceErrors] = useState<string[]>([]);
   const [editingFiat, setEditingFiat] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
+  const [detectingSwaps, setDetectingSwaps] = useState(false);
+  const [swapDetectMsg, setSwapDetectMsg] = useState<string | null>(null);
 
   const transactions = useLiveQuery(() => db.transactions.orderBy('timestamp').reverse().toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
@@ -119,20 +124,39 @@ export function ReviewTab() {
     [transactions]
   );
 
+  const potentialSwapPairs = useMemo(() => countPotentialSwapPairs(transactions), [transactions]);
+
+  // One-time auto-detect for wallet imports stored before swap detection shipped.
+  useEffect(() => {
+    if (potentialSwapPairs === 0) return;
+    const key = 'sololedger_swap_detect_v2';
+    if (localStorage.getItem(key)) return;
+    localStorage.setItem(key, '1');
+    void reprocessSwapDetectionInDb().then((n) => {
+      if (n > 0) {
+        setSwapDetectMsg(`Auto-detected ${n} DEX swap${n === 1 ? '' : 's'}. Fetch missing prices next, then check Capital Gains.`);
+      }
+    });
+  }, [potentialSwapPairs]);
+
   const fetchMissingPrices = async () => {
     if (!settings?.priceApiEnabled || missingPriceTxs.length === 0) return;
     setFetchingPrices(true);
     setPriceErrors([]);
     try {
       const priceRequests = missingPriceTxs.map((t) => {
+        const priceAsset = resolvePriceAsset(t.asset, t.contractAddress, t.chain);
         const stableCounter =
           t.type === 'trade' &&
           t.counterAsset &&
-          ['USDC', 'USDT'].includes(t.counterAsset.toUpperCase()) &&
+          ['USDC', 'USDT'].includes(resolvePriceAsset(t.counterAsset, undefined, t.chain).toUpperCase()) &&
           t.counterAmount;
-        const asset = stableCounter ? t.counterAsset! : t.asset;
-        const contractAddress = stableCounter ? undefined : t.contractAddress;
-        const platform = stableCounter ? undefined : t.chain ? COINGECKO_PLATFORM[t.chain as ChainId] : undefined;
+        const asset = stableCounter
+          ? resolvePriceAsset(t.counterAsset!, undefined, t.chain)
+          : priceAsset;
+        const isStable = ['USDC', 'USDT', 'DAI'].includes(asset.toUpperCase());
+        const contractAddress = stableCounter || isStable ? undefined : t.contractAddress;
+        const platform = stableCounter || isStable ? undefined : t.chain ? COINGECKO_PLATFORM[t.chain as ChainId] : undefined;
         return {
           tx: t,
           request: {
@@ -141,6 +165,7 @@ export function ReviewTab() {
             fiatCurrency: settings.reportingCurrency,
             contractAddress,
             platform,
+            chain: t.chain,
             alchemyApiKey: settings.alchemyApiKey,
             alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
           },
@@ -173,8 +198,11 @@ export function ReviewTab() {
       const errors = [...errorCounts.entries()].map(([msg, count]) =>
         count > 1 ? `${msg} (×${count})` : msg
       );
-      if (updated > 0 && errors.length > 0) {
-        errors.unshift(`Updated ${updated} transaction${updated === 1 ? '' : 's'} successfully.`);
+      const failed = results.length - updated;
+      if (results.length > 0) {
+        errors.unshift(
+          `Finished ${results.length} price lookup${results.length === 1 ? '' : 's'}: ${updated} updated, ${failed} could not be priced.`
+        );
       }
       setPriceErrors(errors);
     } catch (err) {
@@ -182,6 +210,21 @@ export function ReviewTab() {
     } finally {
       setFetchingPrices(false);
       setPriceProgress(null);
+    }
+  };
+
+  const runSwapDetection = async () => {
+    setDetectingSwaps(true);
+    setSwapDetectMsg(null);
+    try {
+      const n = await reprocessSwapDetectionInDb();
+      setSwapDetectMsg(
+        n > 0
+          ? `Detected ${n} DEX swap${n === 1 ? '' : 's'} — check Capital Gains after fetching prices.`
+          : 'No new swap pairs found. Each swap needs one asset out + one in on the same transaction hash.'
+      );
+    } finally {
+      setDetectingSwaps(false);
     }
   };
 
@@ -246,6 +289,23 @@ export function ReviewTab() {
         <h2 className="font-display text-xl font-semibold text-mist">Review</h2>
         <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
       </div>
+      {potentialSwapPairs > 0 && (
+        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-mist">
+              {potentialSwapPairs} possible DEX swap{potentialSwapPairs === 1 ? '' : 's'} waiting to be merged
+            </p>
+            <p className="text-xs text-mist-400">
+              Wallet imports show as transfer_in/out until merged into trades. Click Detect DEX swaps, then fetch
+              prices — Capital Gains will show matched buy/sell rows.
+            </p>
+          </div>
+          <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0">
+            {detectingSwaps ? 'Detecting swaps…' : 'Detect DEX swaps'}
+          </Button>
+        </div>
+      )}
+
       {missingPriceTxs.length > 0 && (
         <div className="flex flex-col gap-3 rounded-lg border-2 border-gold bg-gold/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
@@ -279,9 +339,15 @@ export function ReviewTab() {
         </div>
       )}
       {priceErrors.length > 0 && (
-        <div className={`rounded-sm border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Updated') ? 'border-emerald/30 bg-emerald/10 text-emerald-700' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+        <div className={`rounded-sm border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Finished') ? 'border-emerald/30 bg-emerald/10 text-emerald-700' : 'border-loss/30 bg-loss/10 text-loss'}`}>
           {priceErrors.slice(0, 5).join(' · ')}
           {priceErrors.length > 5 ? ` · +${priceErrors.length - 5} more` : ''}
+        </div>
+      )}
+
+      {swapDetectMsg && (
+        <div className="rounded-sm border border-emerald/30 bg-emerald/10 px-3 py-2 text-xs text-emerald-700">
+          {swapDetectMsg}
         </div>
       )}
 
@@ -305,6 +371,9 @@ export function ReviewTab() {
           ))}
         </select>
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
+        <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0">
+          {detectingSwaps ? 'Detecting swaps…' : 'Detect DEX swaps'}
+        </Button>
         {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
           <Button
             disabled={fetchingPrices}
@@ -330,25 +399,27 @@ export function ReviewTab() {
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-ink-700">
-        <table className="w-full min-w-[760px] table-fixed text-sm">
+        <table className="w-full min-w-[920px] text-sm">
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
-              <th className="w-8 px-1 py-2"></th>
-              <th className="w-[4.5rem] px-1 py-2">Date</th>
-              <th className="w-[5.5rem] px-1 py-2">Type</th>
-              <th className="w-[4rem] px-1 py-2">Chain</th>
-              <th className="w-[5rem] px-1 py-2">Asset</th>
-              <th className="w-[4.5rem] px-1 py-2 text-right">Amount</th>
-              <th className="w-[5rem] px-1 py-2 text-right">Fiat</th>
-              <th className="sticky right-0 z-10 w-[9rem] bg-ink-800 px-1 py-2 shadow-[-4px_0_8px_rgba(0,0,0,0.08)]">
-                Flags
-              </th>
+              <th className="w-8 px-2 py-2"></th>
+              <th className="px-2 py-2">Date</th>
+              <th className="px-2 py-2">Type</th>
+              <th className="px-2 py-2">Chain</th>
+              <th className="px-2 py-2">Asset</th>
+              <th className="px-2 py-2 text-right">Amount</th>
+              <th className="px-2 py-2 text-right">Fiat</th>
+              <th className="px-2 py-2">From</th>
+              <th className="px-2 py-2">To</th>
+              <th className="min-w-[10rem] px-2 py-2">Flags</th>
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
             {filtered.slice(0, 200).map((t) => {
               const isDisposal = DISPOSAL_TYPES.has(t.type);
               const candidates = engineResult?.disposalCandidates[t.id] ?? [];
+              const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
+              const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
               const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : '—';
               const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
               const isEditing = editingFiat === t.id;
@@ -402,8 +473,14 @@ export function ReviewTab() {
                         </button>
                       )}
                     </td>
-                    <td className="sticky right-0 z-10 bg-ink-900/95 px-1 py-2 align-top shadow-[-4px_0_8px_rgba(0,0,0,0.06)]">
-                      <div className="flex flex-wrap gap-0.5">
+                    <td className="px-2 py-2 text-mist-400" title={fromAddr}>
+                      {truncateAddress(fromAddr)}
+                    </td>
+                    <td className="px-2 py-2 text-mist-400" title={toAddr}>
+                      {truncateAddress(toAddr)}
+                    </td>
+                    <td className="px-2 py-2 align-top">
+                      <div className="flex max-w-[14rem] flex-wrap gap-1 whitespace-normal">
                       {t.isInternalTransfer && <Badge tone="neutral">internal</Badge>}
                       {t.category === 'nft' && <Badge tone="pink">nft</Badge>}
                       {displayFlags(t).map((f) => (
@@ -424,7 +501,7 @@ export function ReviewTab() {
                   </tr>
                   {openLotPicker === t.id && (
                     <tr>
-                      <td colSpan={8} className="bg-ink-900/60 px-3 py-3">
+                      <td colSpan={10} className="bg-ink-900/60 px-3 py-3">
                         <LotPicker
                           txId={t.id}
                           candidates={candidates}

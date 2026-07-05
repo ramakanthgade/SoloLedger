@@ -5,6 +5,7 @@
  * id and a date — never a wallet address, transaction hash, or amount.
  */
 import { fetchAlchemyHistoricalPriceUsd } from './alchemyPrices';
+import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 
 const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
 
@@ -70,7 +71,7 @@ export async function fetchHistoricalPrice(
 
   try {
     const url = `${COINGECKO_BASE}/coins/${coinId}/history?date=${date}&localization=false`;
-    const res = await fetch(url);
+    const res = await fetchWithRetry(url);
     if (!res.ok) {
       return { asset: assetSymbol, date, price: null, currency: fiatCurrency, error: `Price API returned ${res.status}` };
     }
@@ -118,7 +119,7 @@ export async function fetchHistoricalPriceByContract(
 
   try {
     const url = `${COINGECKO_BASE}/coins/${platform}/contract/${contractAddress}/market_chart/range?vs_currency=${fiatCurrency.toLowerCase()}&from=${fromSec}&to=${toSec}`;
-    const res = await fetch(url);
+    const res = await fetchWithRetry(url);
     if (!res.ok) {
       return { asset: contractAddress, date, price: null, currency: fiatCurrency, error: `Price API returned ${res.status} for contract lookup` };
     }
@@ -156,6 +157,7 @@ export interface PriceRequest {
   /** If the symbol lookup fails, retry by contract/mint address on this platform. */
   contractAddress?: string;
   platform?: string;
+  chain?: string;
   /** Last-resort fallback for tokens CoinGecko doesn't track (DEX-only tokens). */
   alchemyApiKey?: string;
   alchemyNetwork?: string; // Alchemy's network slug, e.g. "eth-mainnet", "solana-mainnet"
@@ -163,17 +165,83 @@ export interface PriceRequest {
 
 const usdRateCache = new Map<string, number>();
 
+/** Approximate FX when CoinGecko is rate-limited (better than failing 100+ stablecoin rows). */
+const FX_FALLBACK_USD: Record<string, number> = {
+  INR: 83.5,
+  EUR: 0.92,
+  GBP: 0.79,
+  CAD: 1.36,
+  AUD: 1.52,
+  AED: 3.67,
+  USD: 1
+};
+
+async function fetchLiveFxRate(currency: string): Promise<number | null> {
+  const cur = currency.toLowerCase();
+  if (cur === 'usd') return 1;
+  try {
+    const res = await fetch(`${COINGECKO_BASE}/simple/price?ids=tether&vs_currencies=${cur}`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.tether?.[cur] ?? null;
+  } catch {
+    return null;
+  }
+}
+
 /** Same-day USD -> target currency rate, approximated via CoinGecko's USDT price in that currency. */
 async function usdToCurrencyRate(timestampMs: number, currency: string): Promise<number | null> {
-  if (currency.toUpperCase() === 'USD') return 1;
-  const key = `${toCoinGeckoDate(timestampMs)}:${currency.toUpperCase()}`;
+  const cur = currency.toUpperCase();
+  if (cur === 'USD') return 1;
+  const key = `${toCoinGeckoDate(timestampMs)}:${cur}`;
   if (usdRateCache.has(key)) return usdRateCache.get(key)!;
+
+  const liveKey = `live:${cur}`;
+  if (!usdRateCache.has(liveKey)) {
+    const live = await fetchLiveFxRate(cur);
+    if (live != null) usdRateCache.set(liveKey, live);
+  }
+  if (usdRateCache.has(liveKey)) {
+    const rate = usdRateCache.get(liveKey)!;
+    usdRateCache.set(key, rate);
+    return rate;
+  }
+
+  const fallback = FX_FALLBACK_USD[cur];
+  if (fallback != null) {
+    usdRateCache.set(key, fallback);
+    return fallback;
+  }
+
   const r = await fetchHistoricalPrice('USDT', timestampMs, currency);
-  if (r.price != null) usdRateCache.set(key, r.price);
-  return r.price;
+  if (r.price != null) {
+    usdRateCache.set(key, r.price);
+    return r.price;
+  }
+
+  return null;
 }
 
 const STABLECOIN_SYMBOLS = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'USDP', 'TUSD']);
+
+function resolveStablecoinSymbol(asset: string, contractAddress?: string, chain?: string): string | null {
+  const normalized = resolvePriceAsset(asset, contractAddress, chain);
+  const u = normalized.trim().toUpperCase();
+  return STABLECOIN_SYMBOLS.has(u) ? u : null;
+}
+
+async function fetchWithRetry(url: string, retries = 2): Promise<Response> {
+  let last: Response | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    // eslint-disable-next-line no-await-in-loop
+    const res = await fetch(url);
+    last = res;
+    if (res.status !== 429 || attempt === retries) return res;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+  }
+  return last!;
+}
 
 /** Stablecoins ≈ $1 — use FX rate for reporting currency instead of per-day CoinGecko history (avoids rate limits). */
 async function fetchStablecoinPrice(timestampMs: number, fiatCurrency: string, asset: string): Promise<PriceLookupResult> {
@@ -190,13 +258,15 @@ async function fetchStablecoinPrice(timestampMs: number, fiatCurrency: string, a
 
 /** One historical price lookup (deduped before batching). */
 async function fetchOneHistoricalPrice(r: PriceRequest): Promise<PriceLookupResult> {
-  if (STABLECOIN_SYMBOLS.has(r.asset.toUpperCase())) {
-    return fetchStablecoinPrice(r.timestampMs, r.fiatCurrency, r.asset);
+  const stable = resolveStablecoinSymbol(r.asset, r.contractAddress, r.chain);
+  if (stable) {
+    return fetchStablecoinPrice(r.timestampMs, r.fiatCurrency, stable);
   }
 
-  let result = await fetchHistoricalPrice(r.asset, r.timestampMs, r.fiatCurrency);
+  const normalizedAsset = resolvePriceAsset(r.asset, r.contractAddress, r.chain);
+  let result = await fetchHistoricalPrice(normalizedAsset, r.timestampMs, r.fiatCurrency);
 
-  if (result.price == null && r.contractAddress && r.platform) {
+  if (result.price == null && r.contractAddress && r.platform && !resolveStablecoinSymbol(r.asset, r.contractAddress, r.chain)) {
     result = await fetchHistoricalPriceByContract(r.platform, r.contractAddress, r.timestampMs, r.fiatCurrency);
   }
 
@@ -240,6 +310,17 @@ export async function fetchHistoricalPricesBatch(
   onProgress?: (done: number, total: number) => void
 ): Promise<PriceLookupResult[]> {
   if (requests.length === 0) return [];
+
+  // One live FX lookup up front so USDC/USDT rows succeed even when historical API is rate-limited.
+  const currencies = [...new Set(requests.map((r) => r.fiatCurrency.toUpperCase()))];
+  for (const currency of currencies) {
+    if (currency === 'USD') continue;
+    const sample = requests.find((r) => r.fiatCurrency.toUpperCase() === currency);
+    if (sample) {
+      // eslint-disable-next-line no-await-in-loop
+      await usdToCurrencyRate(sample.timestampMs, currency);
+    }
+  }
 
   const uniqueKeys: string[] = [];
   const keyToRequest = new Map<string, PriceRequest>();

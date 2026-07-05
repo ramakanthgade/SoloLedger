@@ -670,7 +670,8 @@ export interface LookupConfig {
 }
 
 function withDexSwapDetection(result: LookupResult): LookupResult {
-  return { ...result, transactions: detectDexSwaps(result.transactions) };
+  const { transactions } = detectDexSwaps(result.transactions);
+  return { ...result, transactions };
 }
 
 async function lookupOneAddress(address: string, config: LookupConfig): Promise<LookupResult> {
