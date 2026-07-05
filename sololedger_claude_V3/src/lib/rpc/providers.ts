@@ -6,10 +6,9 @@
  * - Bitcoin uses Blockstream/mempool.space-compatible APIs — free, no key,
  *   no account. Every such service still sees the address you query; there
  *   is no way around that for any hosted explorer (see Settings for why).
- * - Every other chain here goes through Alchemy, because one free Alchemy
- *   API key covers Ethereum, Polygon, Arbitrum, Base, BNB Smart Chain,
- *   Optimism, Avalanche, AND Solana.
- * - Etherscan-compatible is kept as a manual fallback.
+ * - Ethereum uses Blockscout first (free, no key). Alchemy is optional fallback.
+ * - Every other EVM chain here goes through Alchemy (one free key covers many chains).
+ * - Etherscan-compatible is kept as a manual fallback for other EVM chains / custom explorers.
  */
 import { makeId } from '@/lib/parsers/types';
 import type { Transaction } from '@/types/transaction';
@@ -224,6 +223,18 @@ async function fetchAlchemyEvmInner(
   return { transactions, warnings: [] };
 }
 
+function isNetworkFetchError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('ENOTFOUND') ||
+    msg.includes('getaddrinfo') ||
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('ETIMEDOUT')
+  );
+}
+
 async function fetchAlchemyEvm(
   address: string,
   network: string,
@@ -236,20 +247,44 @@ async function fetchAlchemyEvm(
     return await fetchAlchemyEvmInner(address, network, apiKey, asset, chainId);
   } catch (err) {
     if (!isAlchemyRateLimitError(err)) throw err;
-    const baseUrl = etherscanV2BaseUrl(chainId);
-    if (etherscanApiKey && baseUrl) {
-      const result = await fetchEtherscanCompatible(address, baseUrl, etherscanApiKey, asset);
+    if (chainId === 'ethereum') {
+      const result = await fetchBlockscoutEthereum(address);
       return {
         transactions: result.transactions,
         warnings: [
           {
             address,
             message:
-              'Alchemy transfer lookup was rate-limited; fetched via Etherscan instead (native + ERC-20 transfers).'
+              'Alchemy transfer lookup was rate-limited; fetched via Blockscout instead (native + ERC-20 transfers).'
           },
           ...result.warnings
         ]
       };
+    }
+    const baseUrl = etherscanV2BaseUrl(chainId);
+    if (etherscanApiKey && baseUrl) {
+      try {
+        const result = await fetchEtherscanCompatible(address, baseUrl, etherscanApiKey, asset);
+        return {
+          transactions: result.transactions,
+          warnings: [
+            {
+              address,
+              message:
+                'Alchemy transfer lookup was rate-limited; fetched via Etherscan instead (native + ERC-20 transfers).'
+            },
+            ...result.warnings
+          ]
+        };
+      } catch (etherscanErr) {
+        if (isNetworkFetchError(etherscanErr)) {
+          throw new Error(
+            'Alchemy transfer lookup is rate-limited and Etherscan could not be reached from your network. ' +
+              'Check your internet/DNS or try again later.'
+          );
+        }
+        throw etherscanErr;
+      }
     }
     throw err;
   }
@@ -472,30 +507,42 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
   return { transactions, warnings };
 }
 
-// ---- Ethereum via Blockscout (free, no API key — used when Alchemy/Etherscan fail) ----
+// ---- Ethereum via Blockscout (free, no API key — primary source for Ethereum) ----
+// Blockscout allows browser CORS (Access-Control-Allow-Origin: *), so we call it directly
+// instead of routing through the Vite dev proxy. That avoids ENOTFOUND proxy errors when a
+// machine's DNS cannot resolve api.etherscan.io or when the Node proxy stack misbehaves.
+const BLOCKSCOUT_ETHEREUM_API = 'https://eth.blockscout.com/api/v2';
+
 function blockscoutUrl(path: string): string {
-  const url = `https://eth.blockscout.com/api/v2${path}`;
-  if (typeof window !== 'undefined') {
-    const host = window.location.hostname;
-    if (host === 'localhost' || host === '127.0.0.1') {
-      return url.replace('https://eth.blockscout.com/api/v2', '/blockscout-api');
-    }
-  }
-  return url;
+  return `${BLOCKSCOUT_ETHEREUM_API}${path}`;
 }
 
 async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
   const addr = address.toLowerCase();
-  const [txRes, tokenRes] = await Promise.all([
-    fetch(blockscoutUrl(`/addresses/${address}/transactions`)),
-    fetch(blockscoutUrl(`/addresses/${address}/token-transfers`))
-  ]);
-
-  if (!txRes.ok) {
-    throw new Error(`Blockscout returned ${txRes.status} for transaction history.`);
+  let txRes: Response;
+  let tokenRes: Response;
+  try {
+    [txRes, tokenRes] = await Promise.all([
+      fetch(blockscoutUrl(`/addresses/${address}/transactions`)),
+      fetch(blockscoutUrl(`/addresses/${address}/token-transfers`))
+    ]);
+  } catch (err) {
+    throw new Error(
+      isNetworkFetchError(err)
+        ? 'Could not reach Blockscout (eth.blockscout.com). Check your internet connection and try again.'
+        : err instanceof Error
+          ? err.message
+          : 'Blockscout request failed.'
+    );
   }
 
-  const txData = await txRes.json();
+  if (!txRes.ok && !tokenRes.ok) {
+    throw new Error(
+      `Blockscout returned ${txRes.status} for transaction history and ${tokenRes.status} for token transfers.`
+    );
+  }
+
+  const txData = txRes.ok ? await txRes.json() : { items: [] };
   const tokenData = tokenRes.ok ? await tokenRes.json() : { items: [] };
   const transactions: Transaction[] = [];
   const seen = new Set<string>();
@@ -577,14 +624,9 @@ async function fetchEthereumAddress(address: string, config: LookupConfig): Prom
     errors.push(err instanceof Error ? err.message : 'Blockscout failed.');
   }
 
-  if (config.customApiKey) {
-    try {
-      const baseUrl = etherscanV2BaseUrl('ethereum');
-      if (baseUrl) return await fetchEtherscanCompatible(address, baseUrl, config.customApiKey, 'ETH');
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : 'Etherscan failed.');
-    }
-  }
+  // Ethereum no longer falls back to Etherscan automatically — many networks cannot resolve
+  // api.etherscan.io (ENOTFOUND), which spams the Vite dev console without helping the user.
+  // Blockscout is free and does not need an API key; Alchemy is the optional secondary source.
 
   if (config.alchemyApiKey) {
     try {
@@ -601,7 +643,10 @@ async function fetchEthereumAddress(address: string, config: LookupConfig): Prom
     }
   }
 
-  throw new Error(errors.join(' ') || 'Ethereum lookup failed.');
+  const hint = config.alchemyApiKey
+    ? 'Blockscout and Alchemy both failed.'
+    : 'Blockscout failed. Add an Alchemy API key in Settings for a secondary source.';
+  throw new Error(`${hint} ${errors.join(' ')}`.trim());
 }
 
 export interface LookupConfig {

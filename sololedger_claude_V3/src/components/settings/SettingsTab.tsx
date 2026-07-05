@@ -121,8 +121,9 @@ export function SettingsTab() {
               <ApiKeyField
                 label={
                   <>
-                    Etherscan API key (recommended — free fallback when Alchemy transfer lookup is rate-limited;
-                    one key covers Ethereum, Polygon, Arbitrum, Base, and other EVM chains via{' '}
+                    Etherscan API key (optional — fallback for Polygon, Arbitrum, Base, and other EVM chains when
+                    Alchemy transfer lookup is rate-limited; Ethereum uses Blockscout first and does not need this.
+                    One key covers many chains via{' '}
                     <a href="https://etherscan.io/apis" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
                       etherscan.io/apis
                     </a>
