@@ -48,6 +48,15 @@ export function ReviewTab() {
     const { id: _id, ...rest } = settingsRow;
     return rest;
   }, [settingsRow]);
+  const [openLotPicker, setOpenLotPicker] = useState<string | null>(null);
+  const [fetchingPrices, setFetchingPrices] = useState(false);
+  const [priceProgress, setPriceProgress] = useState<{ done: number; total: number } | null>(null);
+  const [priceErrors, setPriceErrors] = useState<string[]>([]);
+  const [editingFiat, setEditingFiat] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState('');
+
+  const transactions = useLiveQuery(() => db.transactions.orderBy('timestamp').reverse().toArray(), []) ?? [];
+  const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
 
   const engineResult = useMemo(() => {
     if (!settings) return null;
@@ -61,7 +70,8 @@ export function ReviewTab() {
         (t) =>
           t.fiatValue == null &&
           !t.isInternalTransfer &&
-          (t.flags.includes('missing_cost_basis') || (t.type !== 'transfer_in' && t.type !== 'transfer_out'))
+          (Array.isArray(t.flags) && t.flags.includes('missing_cost_basis')) ||
+          (t.type !== 'transfer_in' && t.type !== 'transfer_out'))
       ),
     [transactions]
   );
@@ -118,7 +128,7 @@ export function ReviewTab() {
           await db.transactions.update(tx.id, {
             fiatValue: r.price * qty,
             fiatCurrency: r.currency,
-            flags: tx.flags.filter((f) => f !== 'missing_cost_basis')
+            flags: (tx.flags ?? []).filter((f) => f !== 'missing_cost_basis')
           });
         } else if (r.error) {
           errors.push(`${tx.asset} on ${r.date}: ${r.error}`);
@@ -140,7 +150,7 @@ export function ReviewTab() {
     if (!Number.isFinite(parsed) || parsed < 0) return;
     await db.transactions.update(tx.id, {
       fiatValue: parsed,
-      flags: tx.flags.filter((f) => f !== 'missing_cost_basis')
+      flags: (tx.flags ?? []).filter((f) => f !== 'missing_cost_basis')
     });
     setEditingFiat(null);
   };
@@ -354,7 +364,7 @@ export function ReviewTab() {
                     <td className="px-3 py-2">
                       {t.isInternalTransfer && <Badge tone="neutral">internal</Badge>}
                       {t.category === 'nft' && <Badge tone="pink" className="mr-1">nft</Badge>}
-                      {t.flags.map((f) => (
+                      {(t.flags ?? []).map((f) => (
                         <Badge key={f} tone="gold" className="ml-1">
                           {f.replace(/_/g, ' ')}
                         </Badge>
