@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSettings, getLookupAddresses, upsertLookupAddress, deleteLookupAddress } from '@/lib/storage/db';
+import { db, getSettings, getLookupAddresses, upsertLookupAddress, deleteLookupAddressAndTransactions } from '@/lib/storage/db';
 import { CHAINS, lookupManyAddresses, type ChainId } from '@/lib/rpc/providers';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
@@ -21,6 +21,7 @@ export function WalletLookupPanel() {
   const [result, setResult] = useState<{ imported: number; addressesQueried: number } | null>(null);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [failed, setFailed] = useState<{ address: string; message: string }[]>([]);
+  const [removeConfirm, setRemoveConfirm] = useState<{ id: string; address: string; txCount: number } | null>(null);
 
   const lookedUp = useLiveQuery(() => getLookupAddresses(), []) ?? [];
 
@@ -203,7 +204,9 @@ export function WalletLookupPanel() {
                     </button>
                     <button
                       className="flex items-center gap-1 text-loss hover:underline"
-                      onClick={() => deleteLookupAddress(row.id)}
+                      onClick={() =>
+                        setRemoveConfirm({ id: row.id, address: row.address, txCount: row.txCount })
+                      }
                     >
                       <Trash2 className="h-3 w-3" /> Remove
                     </button>
@@ -211,6 +214,35 @@ export function WalletLookupPanel() {
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {removeConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/60 p-4">
+          <div className="max-w-md rounded-lg border border-ink-700 bg-ink-800 p-5 shadow-xl">
+            <h3 className="text-sm font-semibold text-mist">Remove wallet and its transactions?</h3>
+            <p className="mt-2 text-xs text-mist-400">
+              This deletes <strong className="text-mist">{removeConfirm.txCount}</strong> imported transaction
+              {removeConfirm.txCount === 1 ? '' : 's'} for{' '}
+              <span className="font-mono text-mist-300">{removeConfirm.address}</span> from Review and Portfolio.
+              This cannot be undone.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setRemoveConfirm(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="secondary"
+                className="border-loss/40 text-loss hover:bg-loss/10"
+                onClick={async () => {
+                  await deleteLookupAddressAndTransactions(removeConfirm.id);
+                  setRemoveConfirm(null);
+                }}
+              >
+                Remove wallet
+              </Button>
+            </div>
           </div>
         </div>
       )}

@@ -1,3 +1,6 @@
+import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
+import { getCachedTokenSymbol } from '@/lib/assets/tokenSymbols';
+
 /** Well-known Solana SPL mint addresses → ticker symbols. */
 export const SOLANA_KNOWN_MINTS: Record<string, string> = {
   EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC',
@@ -16,6 +19,13 @@ export function resolveSolanaMintSymbol(mint: string): string | undefined {
 
 /** Prefer a human ticker over a truncated mint placeholder like `AbCd…wxyz`. */
 export function resolveAssetLabel(asset: string, contractAddress?: string, chain?: string): string {
+  if (contractAddress && chain) {
+    const platform = COINGECKO_PLATFORM[chain as ChainId];
+    if (platform) {
+      const cached = getCachedTokenSymbol(platform, contractAddress);
+      if (cached) return cached;
+    }
+  }
   if (chain === 'solana' && contractAddress) {
     const known = resolveSolanaMintSymbol(contractAddress);
     if (known) return known;

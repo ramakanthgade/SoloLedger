@@ -1,14 +1,15 @@
-import { Fragment, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSpecIdHints } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import type { TxType } from '@/types/transaction';
+import type { TxType, Transaction } from '@/types/transaction';
 import { formatCurrency } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { fetchHistoricalPricesBatch } from '@/lib/pricing/coingecko';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
+import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle } from 'lucide-react';
 
@@ -38,6 +39,12 @@ function truncateAddress(addr?: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+function displayFlags(t: Transaction): string[] {
+  const flags = new Set(t.flags ?? []);
+  if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
+  return [...flags];
+}
+
 export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
@@ -57,6 +64,30 @@ export function ReviewTab() {
 
   const transactions = useLiveQuery(() => db.transactions.orderBy('timestamp').reverse().toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
+
+  // Resolve truncated contract addresses → tickers via CoinGecko (cached + saved to IndexedDB).
+  useEffect(() => {
+    let cancelled = false;
+    const unresolved = transactions.filter(
+      (t) => t.contractAddress && t.chain && (looksLikeTruncatedMint(t.asset) || t.asset.startsWith('0x'))
+    );
+    if (unresolved.length === 0) return;
+
+    (async () => {
+      for (const t of unresolved) {
+        if (cancelled) break;
+        const symbol = await resolveTokenSymbolFromContract(t.asset, t.contractAddress, t.chain);
+        if (symbol && symbol !== t.asset) {
+          await db.transactions.update(t.id, { asset: symbol });
+        }
+        await new Promise((r) => setTimeout(r, 350));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [transactions]);
 
   const engineResult = useMemo(() => {
     if (!settings) return null;
@@ -285,20 +316,20 @@ export function ReviewTab() {
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-ink-700">
-        <table className="w-full text-sm">
+        <table className="w-full min-w-[1080px] text-sm">
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
-              <th className="w-8 px-3 py-2"></th>
-              <th className="px-3 py-2">Date</th>
-              <th className="px-3 py-2">Type</th>
-              <th className="px-3 py-2">Chain</th>
-              <th className="px-3 py-2">Asset</th>
-              <th className="px-3 py-2 text-right">Amount</th>
-              <th className="px-3 py-2 text-right">Fiat value</th>
-              <th className="px-3 py-2">From</th>
-              <th className="px-3 py-2">To</th>
-              <th className="px-3 py-2">Source</th>
-              <th className="px-3 py-2">Flags</th>
+              <th className="w-8 px-2 py-2"></th>
+              <th className="w-24 px-2 py-2">Date</th>
+              <th className="w-28 px-2 py-2">Type</th>
+              <th className="w-20 px-2 py-2">Chain</th>
+              <th className="min-w-[7rem] px-2 py-2">Asset</th>
+              <th className="w-28 px-2 py-2 text-right">Amount</th>
+              <th className="w-28 px-2 py-2 text-right">Fiat value</th>
+              <th className="hidden w-24 px-2 py-2 md:table-cell">From</th>
+              <th className="hidden w-24 px-2 py-2 md:table-cell">To</th>
+              <th className="hidden w-28 px-2 py-2 lg:table-cell">Source</th>
+              <th className="min-w-[10rem] px-2 py-2">Flags</th>
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
@@ -358,17 +389,19 @@ export function ReviewTab() {
                         </button>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-mist-400" title={fromAddr}>{truncateAddress(fromAddr)}</td>
-                    <td className="px-3 py-2 text-mist-400" title={toAddr}>{truncateAddress(toAddr)}</td>
-                    <td className="px-3 py-2 text-mist-400">{t.source}</td>
-                    <td className="px-3 py-2">
+                    <td className="hidden px-2 py-2 text-mist-400 md:table-cell" title={fromAddr}>{truncateAddress(fromAddr)}</td>
+                    <td className="hidden px-2 py-2 text-mist-400 md:table-cell" title={toAddr}>{truncateAddress(toAddr)}</td>
+                    <td className="hidden px-2 py-2 text-mist-400 lg:table-cell">{t.source}</td>
+                    <td className="px-2 py-2 align-top">
+                      <div className="flex max-w-[14rem] flex-wrap gap-1">
                       {t.isInternalTransfer && <Badge tone="neutral">internal</Badge>}
-                      {t.category === 'nft' && <Badge tone="pink" className="mr-1">nft</Badge>}
-                      {(t.flags ?? []).map((f) => (
-                        <Badge key={f} tone="gold" className="ml-1">
+                      {t.category === 'nft' && <Badge tone="pink">nft</Badge>}
+                      {displayFlags(t).map((f) => (
+                        <Badge key={f} tone="gold">
                           {f.replace(/_/g, ' ')}
                         </Badge>
                       ))}
+                      </div>
                       {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
                         <button
                           className="ml-2 text-emerald-600 underline decoration-dotted"

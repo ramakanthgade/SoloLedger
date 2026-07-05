@@ -116,3 +116,31 @@ export async function getLookupAddresses(): Promise<LookupAddressRow[]> {
 export async function deleteLookupAddress(id: string): Promise<void> {
   await db.lookupAddresses.delete(id);
 }
+
+/** Remove a saved wallet and all transactions imported for that address on that chain. */
+export async function deleteLookupAddressAndTransactions(id: string): Promise<number> {
+  const row = await db.lookupAddresses.get(id);
+  if (!row) return 0;
+
+  const addrLower = row.address.toLowerCase();
+  const toDelete = await db.transactions
+    .filter(
+      (t) =>
+        t.chain === row.chain &&
+        t.walletAddress != null &&
+        t.walletAddress.toLowerCase() === addrLower
+    )
+    .toArray();
+
+  await db.transaction('rw', db.transactions, db.lookupAddresses, db.specIdHints, async () => {
+    if (toDelete.length > 0) {
+      await db.transactions.bulkDelete(toDelete.map((t) => t.id));
+    }
+    await db.lookupAddresses.delete(id);
+    for (const t of toDelete) {
+      await db.specIdHints.delete(t.id);
+    }
+  });
+
+  return toDelete.length;
+}

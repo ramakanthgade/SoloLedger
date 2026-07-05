@@ -173,46 +173,75 @@ async function usdToCurrencyRate(timestampMs: number, currency: string): Promise
   return r.price;
 }
 
-/** Sequential fetch with a small delay to stay well under CoinGecko's free-tier rate limit. */
+/** One historical price lookup (deduped before batching). */
+async function fetchOneHistoricalPrice(r: PriceRequest): Promise<PriceLookupResult> {
+  let result = await fetchHistoricalPrice(r.asset, r.timestampMs, r.fiatCurrency);
+
+  if (result.price == null && r.contractAddress && r.platform) {
+    result = await fetchHistoricalPriceByContract(r.platform, r.contractAddress, r.timestampMs, r.fiatCurrency);
+  }
+
+  if (result.price == null && r.alchemyApiKey) {
+    const alchemyResult = await fetchAlchemyHistoricalPriceUsd(
+      r.alchemyApiKey,
+      r.contractAddress && r.alchemyNetwork ? { network: r.alchemyNetwork, address: r.contractAddress } : { symbol: r.asset },
+      r.timestampMs
+    );
+    if (alchemyResult.priceUsd != null) {
+      const rate = await usdToCurrencyRate(r.timestampMs, r.fiatCurrency);
+      if (rate != null) {
+        result = {
+          asset: r.asset,
+          date: toCoinGeckoDate(r.timestampMs),
+          price: alchemyResult.priceUsd * rate,
+          currency: r.fiatCurrency
+        };
+      } else {
+        result = {
+          ...result,
+          error: `${result.error ? result.error + '; ' : ''}Alchemy found a USD price but currency conversion failed.`
+        };
+      }
+    } else if (alchemyResult.error) {
+      result = { ...result, error: `${result.error ? result.error + '; ' : ''}${alchemyResult.error}` };
+    }
+  }
+
+  return result;
+}
+
+function priceLookupKey(r: PriceRequest): string {
+  const date = toCoinGeckoDate(r.timestampMs);
+  return `${r.asset}|${date}|${r.fiatCurrency}|${r.contractAddress ?? ''}|${r.platform ?? ''}|${r.alchemyNetwork ?? ''}`;
+}
+
+/** Fetches unique asset/date pairs once, then maps results back — much faster for large imports. */
 export async function fetchHistoricalPricesBatch(
   requests: PriceRequest[],
   onProgress?: (done: number, total: number) => void
 ): Promise<PriceLookupResult[]> {
-  const results: PriceLookupResult[] = [];
-  for (let i = 0; i < requests.length; i++) {
-    const r = requests[i];
-    // eslint-disable-next-line no-await-in-loop
-    let result = await fetchHistoricalPrice(r.asset, r.timestampMs, r.fiatCurrency);
+  if (requests.length === 0) return [];
 
-    if (result.price == null && r.contractAddress && r.platform) {
-      // eslint-disable-next-line no-await-in-loop
-      result = await fetchHistoricalPriceByContract(r.platform, r.contractAddress, r.timestampMs, r.fiatCurrency);
+  const uniqueKeys: string[] = [];
+  const keyToRequest = new Map<string, PriceRequest>();
+  const requestToKey = requests.map((r) => {
+    const key = priceLookupKey(r);
+    if (!keyToRequest.has(key)) {
+      keyToRequest.set(key, r);
+      uniqueKeys.push(key);
     }
+    return key;
+  });
 
-    if (result.price == null && r.alchemyApiKey) {
-      // eslint-disable-next-line no-await-in-loop
-      const alchemyResult = await fetchAlchemyHistoricalPriceUsd(
-        r.alchemyApiKey,
-        r.contractAddress && r.alchemyNetwork ? { network: r.alchemyNetwork, address: r.contractAddress } : { symbol: r.asset },
-        r.timestampMs
-      );
-      if (alchemyResult.priceUsd != null) {
-        // eslint-disable-next-line no-await-in-loop
-        const rate = await usdToCurrencyRate(r.timestampMs, r.fiatCurrency);
-        if (rate != null) {
-          result = { asset: r.asset, date: toCoinGeckoDate(r.timestampMs), price: alchemyResult.priceUsd * rate, currency: r.fiatCurrency };
-        } else {
-          result = { ...result, error: `${result.error ? result.error + '; ' : ''}Alchemy found a USD price but currency conversion failed.` };
-        }
-      } else if (alchemyResult.error) {
-        result = { ...result, error: `${result.error ? result.error + '; ' : ''}${alchemyResult.error}` };
-      }
-    }
-
-    results.push(result);
-    onProgress?.(i + 1, requests.length);
+  const keyResults = new Map<string, PriceLookupResult>();
+  for (let i = 0; i < uniqueKeys.length; i++) {
+    const key = uniqueKeys[i];
     // eslint-disable-next-line no-await-in-loop
-    if (i < requests.length - 1) await new Promise((r2) => setTimeout(r2, 1500));
+    keyResults.set(key, await fetchOneHistoricalPrice(keyToRequest.get(key)!));
+    onProgress?.(i + 1, uniqueKeys.length);
+    // eslint-disable-next-line no-await-in-loop
+    if (i < uniqueKeys.length - 1) await new Promise((r2) => setTimeout(r2, 400));
   }
-  return results;
+
+  return requestToKey.map((key) => keyResults.get(key)!);
 }
