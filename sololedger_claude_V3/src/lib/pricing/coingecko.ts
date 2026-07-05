@@ -173,8 +173,27 @@ async function usdToCurrencyRate(timestampMs: number, currency: string): Promise
   return r.price;
 }
 
+const STABLECOIN_SYMBOLS = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'USDP', 'TUSD']);
+
+/** Stablecoins ≈ $1 — use FX rate for reporting currency instead of per-day CoinGecko history (avoids rate limits). */
+async function fetchStablecoinPrice(timestampMs: number, fiatCurrency: string, asset: string): Promise<PriceLookupResult> {
+  const date = toCoinGeckoDate(timestampMs);
+  if (fiatCurrency.toUpperCase() === 'USD') {
+    return { asset, date, price: 1, currency: fiatCurrency };
+  }
+  const rate = await usdToCurrencyRate(timestampMs, fiatCurrency);
+  if (rate == null) {
+    return { asset, date, price: null, currency: fiatCurrency, error: 'Could not convert USD stablecoin to reporting currency.' };
+  }
+  return { asset, date, price: rate, currency: fiatCurrency };
+}
+
 /** One historical price lookup (deduped before batching). */
 async function fetchOneHistoricalPrice(r: PriceRequest): Promise<PriceLookupResult> {
+  if (STABLECOIN_SYMBOLS.has(r.asset.toUpperCase())) {
+    return fetchStablecoinPrice(r.timestampMs, r.fiatCurrency, r.asset);
+  }
+
   let result = await fetchHistoricalPrice(r.asset, r.timestampMs, r.fiatCurrency);
 
   if (result.price == null && r.contractAddress && r.platform) {

@@ -3,15 +3,17 @@ import { LocalOnlyBadge } from '@/components/LocalOnlyBadge';
 import { ImportTab } from '@/components/import/ImportTab';
 import { ReviewTab } from '@/components/review/ReviewTab';
 import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
+import { CapitalGainsTab } from '@/components/capitalGains/CapitalGainsTab';
 import { ReportsTab } from '@/components/reports/ReportsTab';
 import { SettingsTab } from '@/components/settings/SettingsTab';
-import { Upload, ListChecks, PieChart, FileText, Settings } from 'lucide-react';
+import { Upload, ListChecks, PieChart, TrendingUp, FileText, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 const TABS = [
   { id: 'import', label: 'Import', icon: Upload, component: ImportTab, accent: 'violet' },
   { id: 'review', label: 'Review', icon: ListChecks, component: ReviewTab, accent: 'emerald' },
   { id: 'portfolio', label: 'Portfolio', icon: PieChart, component: PortfolioTab, accent: 'gold' },
+  { id: 'capital-gains', label: 'Capital Gains', icon: TrendingUp, component: CapitalGainsTab, accent: 'emerald' },
   { id: 'reports', label: 'Reports', icon: FileText, component: ReportsTab, accent: 'pink' },
   { id: 'settings', label: 'Settings', icon: Settings, component: SettingsTab, accent: 'mist' }
 ] as const;

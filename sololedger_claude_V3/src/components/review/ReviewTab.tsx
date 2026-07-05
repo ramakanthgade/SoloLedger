@@ -4,7 +4,7 @@ import { db, getSpecIdHints } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import type { TxType, Transaction } from '@/types/transaction';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, formatCompactAmount } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { fetchHistoricalPricesBatch } from '@/lib/pricing/coingecko';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
@@ -123,52 +123,66 @@ export function ReviewTab() {
     if (!settings?.priceApiEnabled || missingPriceTxs.length === 0) return;
     setFetchingPrices(true);
     setPriceErrors([]);
-    const priceRequests = missingPriceTxs.map((t) => {
-      const stableCounter =
-        t.type === 'trade' &&
-        t.counterAsset &&
-        ['USDC', 'USDT'].includes(t.counterAsset.toUpperCase()) &&
-        t.counterAmount;
-      const asset = stableCounter ? t.counterAsset! : t.asset;
-      const contractAddress = stableCounter ? undefined : t.contractAddress;
-      const platform = stableCounter ? undefined : t.chain ? COINGECKO_PLATFORM[t.chain as ChainId] : undefined;
-      return {
-        tx: t,
-        request: {
-          asset,
-          timestampMs: t.timestamp,
-          fiatCurrency: settings.reportingCurrency,
-          contractAddress,
-          platform,
-          alchemyApiKey: settings.alchemyApiKey,
-          alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
-        },
-        useCounterAmount: !!stableCounter
-      };
-    });
-    const results = await fetchHistoricalPricesBatch(
-      priceRequests.map((p) => p.request),
-      (done, total) => setPriceProgress({ done, total })
-    );
-    const errors: string[] = [];
-    await Promise.all(
-      results.map(async (r, i) => {
+    try {
+      const priceRequests = missingPriceTxs.map((t) => {
+        const stableCounter =
+          t.type === 'trade' &&
+          t.counterAsset &&
+          ['USDC', 'USDT'].includes(t.counterAsset.toUpperCase()) &&
+          t.counterAmount;
+        const asset = stableCounter ? t.counterAsset! : t.asset;
+        const contractAddress = stableCounter ? undefined : t.contractAddress;
+        const platform = stableCounter ? undefined : t.chain ? COINGECKO_PLATFORM[t.chain as ChainId] : undefined;
+        return {
+          tx: t,
+          request: {
+            asset,
+            timestampMs: t.timestamp,
+            fiatCurrency: settings.reportingCurrency,
+            contractAddress,
+            platform,
+            alchemyApiKey: settings.alchemyApiKey,
+            alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
+          },
+          useCounterAmount: !!stableCounter
+        };
+      });
+      const results = await fetchHistoricalPricesBatch(
+        priceRequests.map((p) => p.request),
+        (done, total) => setPriceProgress({ done, total })
+      );
+      const errorCounts = new Map<string, number>();
+      let updated = 0;
+      for (let i = 0; i < results.length; i++) {
+        const r = results[i];
         const { tx, useCounterAmount } = priceRequests[i];
         if (r.price != null) {
           const qty = useCounterAmount ? tx.counterAmount ?? tx.amount : tx.amount;
+          // eslint-disable-next-line no-await-in-loop
           await db.transactions.update(tx.id, {
             fiatValue: r.price * qty,
             fiatCurrency: r.currency,
             flags: (tx.flags ?? []).filter((f) => f !== 'missing_cost_basis')
           });
+          updated++;
         } else if (r.error) {
-          errors.push(`${tx.asset} on ${r.date}: ${r.error}`);
+          const key = `${tx.asset} (${r.date}): ${r.error.split(';')[0]}`;
+          errorCounts.set(key, (errorCounts.get(key) ?? 0) + 1);
         }
-      })
-    );
-    setPriceErrors(errors);
-    setFetchingPrices(false);
-    setPriceProgress(null);
+      }
+      const errors = [...errorCounts.entries()].map(([msg, count]) =>
+        count > 1 ? `${msg} (×${count})` : msg
+      );
+      if (updated > 0 && errors.length > 0) {
+        errors.unshift(`Updated ${updated} transaction${updated === 1 ? '' : 's'} successfully.`);
+      }
+      setPriceErrors(errors);
+    } catch (err) {
+      setPriceErrors([err instanceof Error ? err.message : 'Price fetch failed unexpectedly.']);
+    } finally {
+      setFetchingPrices(false);
+      setPriceProgress(null);
+    }
   };
 
   const startEditFiat = (txId: string, current?: number) => {
@@ -265,9 +279,9 @@ export function ReviewTab() {
         </div>
       )}
       {priceErrors.length > 0 && (
-        <div className="rounded-sm border border-loss/30 bg-loss/10 px-3 py-2 text-xs text-loss">
-          {priceErrors.length} price lookup(s) failed — {priceErrors.slice(0, 3).join('; ')}
-          {priceErrors.length > 3 ? '…' : ''}
+        <div className={`rounded-sm border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Updated') ? 'border-emerald/30 bg-emerald/10 text-emerald-700' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+          {priceErrors.slice(0, 5).join(' · ')}
+          {priceErrors.length > 5 ? ` · +${priceErrors.length - 5} more` : ''}
         </div>
       )}
 
@@ -316,28 +330,25 @@ export function ReviewTab() {
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-ink-700">
-        <table className="w-full min-w-[1080px] text-sm">
+        <table className="w-full min-w-[760px] table-fixed text-sm">
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
-              <th className="w-8 px-2 py-2"></th>
-              <th className="w-24 px-2 py-2">Date</th>
-              <th className="w-28 px-2 py-2">Type</th>
-              <th className="w-20 px-2 py-2">Chain</th>
-              <th className="min-w-[7rem] px-2 py-2">Asset</th>
-              <th className="w-28 px-2 py-2 text-right">Amount</th>
-              <th className="w-28 px-2 py-2 text-right">Fiat value</th>
-              <th className="hidden w-24 px-2 py-2 md:table-cell">From</th>
-              <th className="hidden w-24 px-2 py-2 md:table-cell">To</th>
-              <th className="hidden w-28 px-2 py-2 lg:table-cell">Source</th>
-              <th className="min-w-[10rem] px-2 py-2">Flags</th>
+              <th className="w-8 px-1 py-2"></th>
+              <th className="w-[4.5rem] px-1 py-2">Date</th>
+              <th className="w-[5.5rem] px-1 py-2">Type</th>
+              <th className="w-[4rem] px-1 py-2">Chain</th>
+              <th className="w-[5rem] px-1 py-2">Asset</th>
+              <th className="w-[4.5rem] px-1 py-2 text-right">Amount</th>
+              <th className="w-[5rem] px-1 py-2 text-right">Fiat</th>
+              <th className="sticky right-0 z-10 w-[9rem] bg-ink-800 px-1 py-2 shadow-[-4px_0_8px_rgba(0,0,0,0.08)]">
+                Flags
+              </th>
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
             {filtered.slice(0, 200).map((t) => {
               const isDisposal = DISPOSAL_TYPES.has(t.type);
               const candidates = engineResult?.disposalCandidates[t.id] ?? [];
-              const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
-              const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
               const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : '—';
               const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
               const isEditing = editingFiat === t.id;
@@ -360,7 +371,9 @@ export function ReviewTab() {
                         </span>
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right text-mist">{t.amount}</td>
+                    <td className="px-1 py-2 text-right text-mist" title={String(t.amount)}>
+                      {formatCompactAmount(t.amount)}
+                    </td>
                     <td className="px-3 py-2 text-right text-mist-300">
                       {isEditing ? (
                         <span className="flex items-center justify-end gap-1">
@@ -389,15 +402,12 @@ export function ReviewTab() {
                         </button>
                       )}
                     </td>
-                    <td className="hidden px-2 py-2 text-mist-400 md:table-cell" title={fromAddr}>{truncateAddress(fromAddr)}</td>
-                    <td className="hidden px-2 py-2 text-mist-400 md:table-cell" title={toAddr}>{truncateAddress(toAddr)}</td>
-                    <td className="hidden px-2 py-2 text-mist-400 lg:table-cell">{t.source}</td>
-                    <td className="px-2 py-2 align-top">
-                      <div className="flex max-w-[14rem] flex-wrap gap-1">
+                    <td className="sticky right-0 z-10 bg-ink-900/95 px-1 py-2 align-top shadow-[-4px_0_8px_rgba(0,0,0,0.06)]">
+                      <div className="flex flex-wrap gap-0.5">
                       {t.isInternalTransfer && <Badge tone="neutral">internal</Badge>}
                       {t.category === 'nft' && <Badge tone="pink">nft</Badge>}
                       {displayFlags(t).map((f) => (
-                        <Badge key={f} tone="gold">
+                        <Badge key={f} tone="gold" className="text-[10px]">
                           {f.replace(/_/g, ' ')}
                         </Badge>
                       ))}
@@ -414,7 +424,7 @@ export function ReviewTab() {
                   </tr>
                   {openLotPicker === t.id && (
                     <tr>
-                      <td colSpan={11} className="bg-ink-900/60 px-3 py-3">
+                      <td colSpan={8} className="bg-ink-900/60 px-3 py-3">
                         <LotPicker
                           txId={t.id}
                           candidates={candidates}
