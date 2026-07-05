@@ -2,22 +2,34 @@ import Dexie, { type Table } from 'dexie';
 import type { Transaction, Lot, Disposal, TaxSettings } from '@/types/transaction';
 
 /**
- * The entire app's data lives in this one IndexedDB database, scoped to the
- * browser origin. Nothing here is ever transmitted anywhere. Export/import
- * (see lib/storage/backup.ts) is the only way data leaves — and that's a
- * user-initiated file download, not a network call.
+ * The entire app's data lives in this IndexedDB database, scoped to the
+ * browser origin. Nothing here is ever transmitted anywhere.
+ *
+ * Data persists across browser close/restart. It is only cleared by the
+ * user explicitly via Settings → "Delete all data", or by clearing browser
+ * storage in DevTools. Incognito mode is the one exception — storage is wiped
+ * when the private window closes.
  */
 export interface SpecIdHintRow {
-  txId: string;           // original transaction id (pre trade-expansion)
+  txId: string;
   preferredLotIds: string[];
 }
 
 export interface LookupAddressRow {
-  id: string;         // `${chain}:${address}`
+  id: string;           // `${chain}:${address}`
   chain: string;
   address: string;
+  label?: string;       // user-assigned friendly name, e.g. "My Phantom wallet"
   lastSyncedAt: number;
   txCount: number;
+}
+
+/** Persistent historical price cache — avoids re-fetching the same asset+date+currency. */
+export interface PriceCacheRow {
+  /** `sym:${ASSET}:${dd-mm-yyyy}:${CURRENCY}` or `ctr:${platform}:${address}:${dd-mm-yyyy}:${CURRENCY}` */
+  key: string;
+  price: number;
+  fetchedAt: number;
 }
 
 class SoloLedgerDB extends Dexie {
@@ -27,6 +39,7 @@ class SoloLedgerDB extends Dexie {
   settings!: Table<TaxSettings & { id: string }, string>;
   specIdHints!: Table<SpecIdHintRow, string>;
   lookupAddresses!: Table<LookupAddressRow, string>;
+  priceCache!: Table<PriceCacheRow, string>;
 
   constructor() {
     super('sololedger_crypto_tax_db');
@@ -40,8 +53,6 @@ class SoloLedgerDB extends Dexie {
     this.version(2).stores({
       lookupAddresses: 'id, chain, address'
     });
-    // v2 only declared the new store (Dexie drops undeclared stores on upgrade).
-    // v3 restores the full schema and indexes lastSyncedAt for wallet-lookup sorting.
     this.version(3).stores({
       transactions: 'id, timestamp, asset, type, source, *flags',
       lots: 'id, asset, acquiredAt, sourceTxId',
@@ -49,6 +60,16 @@ class SoloLedgerDB extends Dexie {
       settings: 'id',
       specIdHints: 'txId',
       lookupAddresses: 'id, chain, address, lastSyncedAt'
+    });
+    // v4: add isSpam index to transactions, add priceCache table
+    this.version(4).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt'
     });
   }
 }
@@ -74,15 +95,19 @@ export async function saveSettings(settings: TaxSettings): Promise<void> {
   await db.settings.put({ id: 'singleton', ...settings });
 }
 
-/** Wipes all local data. Used by Settings > "Delete all data". Irreversible. */
 export async function clearAllData(): Promise<void> {
-  await db.transaction('rw', db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, async () => {
-    await db.transactions.clear();
-    await db.lots.clear();
-    await db.disposals.clear();
-    await db.specIdHints.clear();
-    await db.lookupAddresses.clear();
-  });
+  await db.transaction(
+    'rw',
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache],
+    async () => {
+      await db.transactions.clear();
+      await db.lots.clear();
+      await db.disposals.clear();
+      await db.specIdHints.clear();
+      await db.lookupAddresses.clear();
+      await db.priceCache.clear();
+    }
+  );
 }
 
 export async function getSpecIdHints(): Promise<Record<string, string[]>> {
@@ -96,16 +121,47 @@ export async function saveSpecIdHint(txId: string, preferredLotIds: string[]): P
   await db.specIdHints.put({ txId, preferredLotIds });
 }
 
+// ---- Price cache ----
+
+export function buildPriceCacheKey(
+  type: 'sym' | 'ctr',
+  assetOrAddress: string,
+  dateStr: string,
+  currency: string,
+  platform?: string
+): string {
+  if (type === 'ctr' && platform) {
+    return `ctr:${platform}:${assetOrAddress.toLowerCase()}:${dateStr}:${currency.toUpperCase()}`;
+  }
+  return `sym:${assetOrAddress.toUpperCase()}:${dateStr}:${currency.toUpperCase()}`;
+}
+
+export async function getCachedPrice(key: string): Promise<number | null> {
+  const row = await db.priceCache.get(key);
+  return row?.price ?? null;
+}
+
+export async function setCachedPrice(key: string, price: number): Promise<void> {
+  await db.priceCache.put({ key, price, fetchedAt: Date.now() });
+}
+
+// ---- Wallet addresses ----
+
 export async function upsertLookupAddress(chain: string, address: string, txCount: number): Promise<void> {
   const id = `${chain}:${address}`;
   const existing = await db.lookupAddresses.get(id);
   await db.lookupAddresses.put({
+    ...(existing ?? {}),
     id,
     chain,
     address,
     lastSyncedAt: Date.now(),
     txCount: (existing?.txCount ?? 0) + txCount
   });
+}
+
+export async function updateWalletLabel(id: string, label: string): Promise<void> {
+  await db.lookupAddresses.where('id').equals(id).modify({ label: label.trim() || undefined });
 }
 
 export async function getLookupAddresses(): Promise<LookupAddressRow[]> {
@@ -117,7 +173,6 @@ export async function deleteLookupAddress(id: string): Promise<void> {
   await db.lookupAddresses.delete(id);
 }
 
-/** Remove a saved wallet and all transactions imported for that address on that chain. */
 export async function deleteLookupAddressAndTransactions(id: string): Promise<number> {
   const row = await db.lookupAddresses.get(id);
   if (!row) return 0;
@@ -143,4 +198,12 @@ export async function deleteLookupAddressAndTransactions(id: string): Promise<nu
   });
 
   return toDelete.length;
+}
+
+/** Resolve a wallet address to its user-assigned label, or return a truncated address. */
+export async function getWalletLabel(address: string): Promise<string | undefined> {
+  const rows = await db.lookupAddresses
+    .filter((r) => r.address.toLowerCase() === address.toLowerCase())
+    .toArray();
+  return rows[0]?.label;
 }

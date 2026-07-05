@@ -102,8 +102,8 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
 
   const byAsset = new Map<string, Transaction[]>();
   for (const tx of transactions) {
-    if (tx.isInternalTransfer || tx.type === 'transfer_in' || tx.type === 'transfer_out' || tx.type === 'fee') {
-      continue; // non-taxable movement, doesn't affect basis
+    if (tx.isInternalTransfer || tx.isSpam || tx.type === 'transfer_in' || tx.type === 'transfer_out' || tx.type === 'fee') {
+      continue; // non-taxable or excluded
     }
     if (!byAsset.has(tx.asset)) byAsset.set(tx.asset, []);
     byAsset.get(tx.asset)!.push(tx);

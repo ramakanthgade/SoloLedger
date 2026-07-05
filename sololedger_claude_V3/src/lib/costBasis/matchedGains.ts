@@ -74,7 +74,7 @@ export function buildIncomeRows(transactions: Transaction[]): IncomeRow[] {
   const rows: IncomeRow[] = [];
 
   for (const t of transactions) {
-    if (t.isInternalTransfer) continue;
+    if (t.isInternalTransfer || t.isSpam) continue;
 
     if (t.type === 'income' || t.type === 'gift_received') {
       rows.push({

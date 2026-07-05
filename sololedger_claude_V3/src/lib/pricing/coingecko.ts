@@ -5,6 +5,7 @@
 import { fetchAlchemyHistoricalPriceUsd } from './alchemyPrices';
 import { fetchBirdeyeHistoricalPrice } from './birdeye';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
+import { getCachedPrice, setCachedPrice, buildPriceCacheKey } from '@/lib/storage/db';
 
 const COINGECKO_PUBLIC = 'https://api.coingecko.com/api/v3';
 const COINGECKO_PRO = 'https://pro-api.coingecko.com/api/v3';
@@ -204,6 +205,17 @@ async function usdToCurrencyRate(
 
 async function fetchOneHistoricalPrice(r: PriceRequest): Promise<PriceLookupResult> {
   const normalizedAsset = resolvePriceAsset(r.asset, r.contractAddress, r.chain);
+  const date = toCoinGeckoDate(r.timestampMs);
+
+  // --- Check persistent IndexedDB cache first (historical prices never change) ---
+  const cacheKey = r.contractAddress && r.platform
+    ? buildPriceCacheKey('ctr', r.contractAddress, date, r.fiatCurrency, r.platform)
+    : buildPriceCacheKey('sym', normalizedAsset, date, r.fiatCurrency);
+  const cached = await getCachedPrice(cacheKey);
+  if (cached != null) {
+    return { asset: r.asset, date, price: cached, currency: r.fiatCurrency };
+  }
+
   let result = await fetchHistoricalPrice(normalizedAsset, r.timestampMs, r.fiatCurrency, r.coingeckoApiKey);
 
   if (result.price == null && r.contractAddress && r.platform) {
@@ -242,18 +254,21 @@ async function fetchOneHistoricalPrice(r: PriceRequest): Promise<PriceLookupResu
     }
   }
 
+  // Store successful result in persistent cache for future imports.
+  if (result.price != null) {
+    void setCachedPrice(cacheKey, result.price);
+    return result;
+  }
+
   // Birdeye fallback: Solana tokens with a mint address and no price yet.
-  if (result.price == null && r.birdeyeApiKey && r.chain === 'solana' && r.contractAddress) {
+  if (r.birdeyeApiKey && r.chain === 'solana' && r.contractAddress) {
     const birdeyeResult = await fetchBirdeyeHistoricalPrice(r.birdeyeApiKey, r.contractAddress, r.timestampMs);
     if (birdeyeResult.priceUsd != null) {
       const rate = await usdToCurrencyRate(r.timestampMs, r.fiatCurrency, r.coingeckoApiKey);
       if (rate != null) {
-        result = {
-          asset: r.asset,
-          date: toCoinGeckoDate(r.timestampMs),
-          price: birdeyeResult.priceUsd * rate,
-          currency: r.fiatCurrency
-        };
+        const birdeyePrice = birdeyeResult.priceUsd * rate;
+        void setCachedPrice(cacheKey, birdeyePrice);
+        result = { asset: r.asset, date, price: birdeyePrice, currency: r.fiatCurrency };
       }
     } else if (birdeyeResult.error) {
       result = { ...result, error: `${result.error ? result.error + '; ' : ''}${birdeyeResult.error}` };

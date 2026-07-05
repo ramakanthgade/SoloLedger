@@ -6,15 +6,14 @@ import { Button } from '@/components/ui/button';
 import type { TxType, Transaction } from '@/types/transaction';
 import { formatCurrency, formatCompactAmount } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
-import { fetchHistoricalPricesBatch } from '@/lib/pricing/coingecko';
-import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
-import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
+import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle } from 'lucide-react';
+import { Check, X, Pencil, AlertTriangle, Ban } from 'lucide-react';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
@@ -115,6 +114,8 @@ function displayFlags(t: Transaction): string[] {
 export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
+  const [showNeedsPrice, setShowNeedsPrice] = useState(false);
+  const [showSpam, setShowSpam] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
   const settings = useMemo(() => {
@@ -164,11 +165,12 @@ export function ReviewTab() {
     return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
   }, [transactions, settings, hints]);
 
-  /** Any row flagged or typed as needing a fiat value — includes wallet-import transfers. */
+  /** Non-spam transactions missing a fiat value. */
   const missingPriceTxs = useMemo(
     () =>
       transactions.filter(
         (t) =>
+          !t.isSpam &&
           t.fiatValue == null &&
           !t.isInternalTransfer &&
           ((Array.isArray(t.flags) && t.flags.includes('missing_cost_basis')) ||
@@ -176,6 +178,8 @@ export function ReviewTab() {
       ),
     [transactions]
   );
+
+  const spamTxCount = useMemo(() => transactions.filter((t) => t.isSpam).length, [transactions]);
 
   const rpcTransferCount = useMemo(
     () =>
@@ -209,75 +213,26 @@ export function ReviewTab() {
     setFetchingPrices(true);
     setPriceErrors([]);
     try {
-      const priceRequests = missingPriceTxs.map((t) => {
-        const priceAsset = resolvePriceAsset(t.asset, t.contractAddress, t.chain);
-        const stableCounter =
-          t.type === 'trade' &&
-          t.counterAsset &&
-          ['USDC', 'USDT'].includes(resolvePriceAsset(t.counterAsset, undefined, t.chain).toUpperCase()) &&
-          t.counterAmount;
-        const asset = stableCounter
-          ? resolvePriceAsset(t.counterAsset!, undefined, t.chain)
-          : priceAsset;
-        const isStable = ['USDC', 'USDT', 'DAI'].includes(asset.toUpperCase());
-        const contractAddress = stableCounter || isStable ? undefined : t.contractAddress;
-        const platform = stableCounter || isStable ? undefined : t.chain ? COINGECKO_PLATFORM[t.chain as ChainId] : undefined;
-        return {
-          tx: t,
-          request: {
-            asset,
-            timestampMs: t.timestamp,
-            fiatCurrency: settings.reportingCurrency,
-            contractAddress,
-            platform,
-            chain: t.chain,
-            coingeckoApiKey: settings.coingeckoApiKey,
-            alchemyApiKey: settings.alchemyApiKey,
-            birdeyeApiKey: settings.birdeyeApiKey,
-            alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
-          },
-          useCounterAmount: !!stableCounter
-        };
-      });
-      const results = await fetchHistoricalPricesBatch(
-        priceRequests.map((p) => p.request),
-        (done, total) => setPriceProgress({ done, total })
+      const r = await fetchMissingPricesForAllTransactions(settings, (done, total) =>
+        setPriceProgress({ done, total })
       );
-      const errorCounts = new Map<string, number>();
-      let updated = 0;
-      for (let i = 0; i < results.length; i++) {
-        const r = results[i];
-        const { tx, useCounterAmount } = priceRequests[i];
-        if (r.price != null) {
-          const qty = useCounterAmount ? tx.counterAmount ?? tx.amount : tx.amount;
-          // eslint-disable-next-line no-await-in-loop
-          await db.transactions.update(tx.id, {
-            fiatValue: r.price * qty,
-            fiatCurrency: r.currency,
-            flags: (tx.flags ?? []).filter((f) => f !== 'missing_cost_basis')
-          });
-          updated++;
-        } else if (r.error) {
-          const key = `${tx.asset} (${r.date}): ${r.error.split(';')[0]}`;
-          errorCounts.set(key, (errorCounts.get(key) ?? 0) + 1);
-        }
-      }
-      const errors = [...errorCounts.entries()].map(([msg, count]) =>
-        count > 1 ? `${msg} (×${count})` : msg
-      );
-      const failed = results.length - updated;
-      if (results.length > 0) {
-        errors.unshift(
-          `Finished ${results.length} price lookup${results.length === 1 ? '' : 's'}: ${updated} updated, ${failed} could not be priced.`
-        );
-      }
-      setPriceErrors(errors);
+      const msg = `Finished: ${r.updated} updated, ${r.failed} could not be priced.`;
+      setPriceErrors([msg]);
     } catch (err) {
       setPriceErrors([err instanceof Error ? err.message : 'Price fetch failed unexpectedly.']);
     } finally {
       setFetchingPrices(false);
       setPriceProgress(null);
     }
+  };
+
+  const markSpam = async (txId: string, spam: boolean) => {
+    await db.transactions.update(txId, { isSpam: spam });
+  };
+
+  const bulkMarkSpam = async () => {
+    await Promise.all(Array.from(selected).map((id) => db.transactions.update(id, { isSpam: true })));
+    setSelected(new Set());
   };
 
   const runSwapDetection = async () => {
@@ -315,12 +270,15 @@ export function ReviewTab() {
 
   const filtered = useMemo(() => {
     return transactions.filter((t) => {
+      if (!showSpam && t.isSpam) return false;
+      if (showSpam && !t.isSpam) return false;
+      if (showNeedsPrice && !(t.fiatValue == null && !t.isInternalTransfer && !t.isSpam)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
       if (query && !`${t.asset} ${t.type} ${t.source} ${t.notes ?? ''}`.toLowerCase().includes(query.toLowerCase()))
         return false;
       return true;
     });
-  }, [transactions, assetFilter, query]);
+  }, [transactions, assetFilter, query, showNeedsPrice, showSpam]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -442,7 +400,25 @@ export function ReviewTab() {
             </option>
           ))}
         </select>
+
+        {/* Quick-filter toggles */}
+        <button
+          onClick={() => { setShowNeedsPrice((v) => !v); setShowSpam(false); }}
+          className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsPrice ? 'border-gold bg-gold/20 text-gold-600' : 'border-ink-600 text-mist-400 hover:text-mist'}`}
+        >
+          {showNeedsPrice ? `Needs price (${missingPriceTxs.length})` : `Needs price: ${missingPriceTxs.length}`}
+        </button>
+        {spamTxCount > 0 && (
+          <button
+            onClick={() => { setShowSpam((v) => !v); setShowNeedsPrice(false); }}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showSpam ? 'border-loss bg-loss/20 text-loss' : 'border-ink-600 text-mist-400 hover:text-mist'}`}
+          >
+            {showSpam ? `Spam (${spamTxCount}) ← back` : `Spam: ${spamTxCount}`}
+          </button>
+        )}
+
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
+
         <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0">
           {detectingSwaps
             ? novesProgress
@@ -450,27 +426,29 @@ export function ReviewTab() {
               : 'Detecting swaps…'
             : settings?.novesApiKey ? 'Detect swaps (Noves)' : 'Detect DEX swaps'}
         </Button>
+
         {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
-          <Button
-            disabled={fetchingPrices}
-            onClick={fetchMissingPrices}
-            className="ml-auto shrink-0"
-          >
+          <Button disabled={fetchingPrices} onClick={fetchMissingPrices} className="ml-auto shrink-0">
             {fetchingPrices
               ? `Fetching ${priceProgress?.done ?? 0}/${priceProgress?.total ?? missingPriceTxs.length}…`
               : `Fetch ${missingPriceTxs.length} price${missingPriceTxs.length === 1 ? '' : 's'}`}
           </Button>
         )}
-        {missingPriceTxs.length > 0 && settings && !settings.priceApiEnabled && (
-          <span className="ml-auto text-xs text-gold-600">
-            Enable Live price lookup in Settings to fetch {missingPriceTxs.length} price
-            {missingPriceTxs.length === 1 ? '' : 's'}
-          </span>
-        )}
+
         {selected.size > 0 && (
-          <Button variant="secondary" onClick={bulkMarkInternal} className={missingPriceTxs.length > 0 && settings?.priceApiEnabled ? '' : 'ml-auto'}>
-            Mark {selected.size} as internal transfer (non-taxable)
-          </Button>
+          <div className="ml-auto flex gap-2">
+            <Button variant="secondary" onClick={bulkMarkInternal}>
+              Mark {selected.size} as internal
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={bulkMarkSpam}
+              className="border-loss/40 text-loss hover:bg-loss/10"
+            >
+              <Ban className="mr-1 h-3 w-3" />
+              Mark {selected.size} as spam
+            </Button>
+          </div>
         )}
       </div>
 
@@ -501,7 +479,7 @@ export function ReviewTab() {
               const isEditing = editingFiat === t.id;
               return (
                 <Fragment key={t.id}>
-                  <tr className="border-t border-ink-700/60 hover:bg-ink-700/20">
+                  <tr className={`border-t border-ink-700/60 hover:bg-ink-700/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
                     <td className="px-3 py-2">
                       <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggle(t.id)} />
                     </td>
@@ -573,6 +551,13 @@ export function ReviewTab() {
                           match lots
                         </button>
                       )}
+                      <button
+                        onClick={() => void markSpam(t.id, !t.isSpam)}
+                        title={t.isSpam ? 'Remove spam flag' : 'Mark as spam (excluded from taxes)'}
+                        className={`ml-1 rounded px-1.5 py-0.5 text-[10px] transition ${t.isSpam ? 'bg-loss/20 text-loss hover:bg-loss/30' : 'text-mist-400 hover:bg-ink-700 hover:text-loss'}`}
+                      >
+                        {t.isSpam ? '🚫 spam' : '🚫'}
+                      </button>
                     </td>
                   </tr>
                   {openLotPicker === t.id && (

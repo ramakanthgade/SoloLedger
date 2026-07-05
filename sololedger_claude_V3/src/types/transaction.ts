@@ -50,6 +50,7 @@ export interface Transaction {
   notes?: string;
   flags: FlagReason[];
   isInternalTransfer: boolean;  // user-confirmed non-taxable transfer between own wallets
+  isSpam?: boolean;             // user-confirmed spam/phishing — excluded from all calculations
   category?: string;            // user-editable free-form tag
   raw?: Record<string, unknown>; // original parsed row, kept for traceability/debugging only
 }

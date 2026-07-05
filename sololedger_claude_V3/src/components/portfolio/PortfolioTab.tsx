@@ -95,7 +95,7 @@ export function PortfolioTab() {
 
   /** Transactions filtered to the chosen wallet and up to (and including) the selected year-end. */
   const filteredTxs = useMemo(() => {
-    let txs = transactions;
+    let txs = transactions.filter((t) => !t.isSpam);
     if (selectedWallet !== ALL_WALLETS_LABEL) {
       txs = txs.filter(
         (t) =>
