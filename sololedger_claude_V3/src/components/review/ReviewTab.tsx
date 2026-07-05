@@ -1,6 +1,6 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSettings, getSpecIdHints } from '@/lib/storage/db';
+import { db, getSpecIdHints } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import type { TxType } from '@/types/transaction';
@@ -42,33 +42,26 @@ export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [settings, setSettings] = useState<Awaited<ReturnType<typeof getSettings>> | null>(null);
-  const [openLotPicker, setOpenLotPicker] = useState<string | null>(null);
-  const [fetchingPrices, setFetchingPrices] = useState(false);
-  const [priceProgress, setPriceProgress] = useState<{ done: number; total: number } | null>(null);
-  const [priceErrors, setPriceErrors] = useState<string[]>([]);
-  const [editingFiat, setEditingFiat] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState('');
-
-  const transactions = useLiveQuery(() => db.transactions.orderBy('timestamp').reverse().toArray(), []) ?? [];
-  const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
-
-  useEffect(() => {
-    getSettings().then(setSettings);
-  }, []);
+  const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
+  const settings = useMemo(() => {
+    if (!settingsRow) return null;
+    const { id: _id, ...rest } = settingsRow;
+    return rest;
+  }, [settingsRow]);
 
   const engineResult = useMemo(() => {
     if (!settings) return null;
     return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
   }, [transactions, settings, hints]);
 
+  /** Any row flagged or typed as needing a fiat value — includes wallet-import transfers. */
   const missingPriceTxs = useMemo(
     () =>
       transactions.filter(
         (t) =>
           t.fiatValue == null &&
           !t.isInternalTransfer &&
-          (t.type !== 'transfer_in' && t.type !== 'transfer_out' || t.source.startsWith('rpc:'))
+          (t.flags.includes('missing_cost_basis') || (t.type !== 'transfer_in' && t.type !== 'transfer_out'))
       ),
     [transactions]
   );
@@ -257,8 +250,25 @@ export function ReviewTab() {
           ))}
         </select>
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
+        {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
+          <Button
+            disabled={fetchingPrices}
+            onClick={fetchMissingPrices}
+            className="ml-auto shrink-0"
+          >
+            {fetchingPrices
+              ? `Fetching ${priceProgress?.done ?? 0}/${priceProgress?.total ?? missingPriceTxs.length}…`
+              : `Fetch ${missingPriceTxs.length} price${missingPriceTxs.length === 1 ? '' : 's'}`}
+          </Button>
+        )}
+        {missingPriceTxs.length > 0 && settings && !settings.priceApiEnabled && (
+          <span className="ml-auto text-xs text-gold-600">
+            Enable Live price lookup in Settings to fetch {missingPriceTxs.length} price
+            {missingPriceTxs.length === 1 ? '' : 's'}
+          </span>
+        )}
         {selected.size > 0 && (
-          <Button variant="secondary" onClick={bulkMarkInternal} className="ml-auto">
+          <Button variant="secondary" onClick={bulkMarkInternal} className={missingPriceTxs.length > 0 && settings?.priceApiEnabled ? '' : 'ml-auto'}>
             Mark {selected.size} as internal transfer (non-taxable)
           </Button>
         )}
