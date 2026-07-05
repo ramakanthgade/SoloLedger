@@ -90,6 +90,8 @@ export interface TaxSettings {
   rpcLookupEnabled: boolean;
   /** One Alchemy key covers Ethereum + every EVM chain it supports + Solana. */
   alchemyApiKey?: string;
+  /** CoinGecko Pro key — historical prices by date (recommended for 100+ tx imports). */
+  coingeckoApiKey?: string;
   /** For the "other EVM chain" manual fallback in wallet lookup. */
   customExplorerBaseUrl?: string;
   customExplorerApiKey?: string;

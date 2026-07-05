@@ -139,8 +139,23 @@ export function SettingsTab() {
             </div>
           )}
 
-          {settings.priceApiEnabled && !settings.rpcLookupEnabled && (
+          {settings.priceApiEnabled && (
             <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
+              <ApiKeyField
+                label={
+                  <>
+                    CoinGecko Pro API key (recommended — historical USDC/USDT/INR prices by date; from{' '}
+                    <a href="https://www.coingecko.com/en/api/pricing" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      coingecko.com/api
+                    </a>
+                    , Basic plan ~$29/mo)
+                  </>
+                }
+                value={settings.coingeckoApiKey}
+                onSave={(key) => update({ coingeckoApiKey: key })}
+                onDelete={() => update({ coingeckoApiKey: undefined })}
+                placeholder="Paste your CoinGecko Pro API key"
+              />
               <ApiKeyField
                 label={
                   <>
@@ -157,6 +172,12 @@ export function SettingsTab() {
                 placeholder="Paste your Alchemy API key"
               />
             </div>
+          )}
+
+          {settings.priceApiEnabled && settings.rpcLookupEnabled && (
+            <p className="ml-7 text-xs text-mist-400">
+              Alchemy key above is shared for wallet lookup and price fallback.
+            </p>
           )}
         </CardContent>
       </Card>

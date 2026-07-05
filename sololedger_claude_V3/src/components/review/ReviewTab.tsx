@@ -166,6 +166,7 @@ export function ReviewTab() {
             contractAddress,
             platform,
             chain: t.chain,
+            coingeckoApiKey: settings.coingeckoApiKey,
             alchemyApiKey: settings.alchemyApiKey,
             alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
           },
