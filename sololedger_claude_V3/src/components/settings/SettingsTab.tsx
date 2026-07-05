@@ -82,6 +82,7 @@ export function SettingsTab() {
               addresses or amounts) to CoinGecko's public price API to fill in market values. For tokens CoinGecko
               doesn't track (small, DEX-only tokens), it falls back to your Alchemy key's Prices API and converts
               the result into your reporting currency. Nothing fetches automatically — use the button in Review.
+              For obscure DEX tokens, add your Alchemy API key below (used only for price fallback, not wallet lookup).
             </span>
           </label>
           <label className="flex items-start gap-3 text-sm text-mist-300">
@@ -133,6 +134,26 @@ export function SettingsTab() {
                 onSave={(key) => update({ customExplorerApiKey: key })}
                 onDelete={() => update({ customExplorerApiKey: undefined })}
                 placeholder="Paste an Etherscan-family API key"
+              />
+            </div>
+          )}
+
+          {settings.priceApiEnabled && !settings.rpcLookupEnabled && (
+            <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
+              <ApiKeyField
+                label={
+                  <>
+                    Alchemy API key (optional — price fallback for tokens CoinGecko does not track; get one free at{' '}
+                    <a href="https://www.alchemy.com" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      alchemy.com
+                    </a>
+                    )
+                  </>
+                }
+                value={settings.alchemyApiKey}
+                onSave={(key) => update({ alchemyApiKey: key })}
+                onDelete={() => update({ alchemyApiKey: undefined })}
+                placeholder="Paste your Alchemy API key"
               />
             </div>
           )}

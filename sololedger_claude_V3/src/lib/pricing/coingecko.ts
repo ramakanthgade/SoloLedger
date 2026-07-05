@@ -23,7 +23,10 @@ const SYMBOL_TO_ID: Record<string, string> = {
   DOT: 'polkadot',
   MATIC: 'matic-network',
   LTC: 'litecoin',
-  AVAX: 'avalanche-2'
+  AVAX: 'avalanche-2',
+  PUNDIX: 'pundi-x-2',
+  KNC: 'kyber-network-crystal',
+  NPXS: 'pundi-x'
 };
 
 export interface PriceLookupResult {

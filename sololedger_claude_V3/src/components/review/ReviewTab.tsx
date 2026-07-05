@@ -8,6 +8,7 @@ import { formatCurrency } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { fetchHistoricalPricesBatch } from '@/lib/pricing/coingecko';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle } from 'lucide-react';
 
@@ -62,7 +63,25 @@ export function ReviewTab() {
   }, [transactions, settings, hints]);
 
   const missingPriceTxs = useMemo(
-    () => transactions.filter((t) => t.fiatValue == null && t.type !== 'transfer_in' && t.type !== 'transfer_out'),
+    () =>
+      transactions.filter(
+        (t) =>
+          t.fiatValue == null &&
+          !t.isInternalTransfer &&
+          (t.type !== 'transfer_in' && t.type !== 'transfer_out' || t.source.startsWith('rpc:'))
+      ),
+    [transactions]
+  );
+
+  const rpcTransferCount = useMemo(
+    () =>
+      transactions.filter(
+        (t) =>
+          t.source.startsWith('rpc:') &&
+          (t.type === 'transfer_in' || t.type === 'transfer_out') &&
+          t.fiatValue == null &&
+          !t.isInternalTransfer
+      ).length,
     [transactions]
   );
 
@@ -70,25 +89,41 @@ export function ReviewTab() {
     if (!settings?.priceApiEnabled || missingPriceTxs.length === 0) return;
     setFetchingPrices(true);
     setPriceErrors([]);
+    const priceRequests = missingPriceTxs.map((t) => {
+      const stableCounter =
+        t.type === 'trade' &&
+        t.counterAsset &&
+        ['USDC', 'USDT'].includes(t.counterAsset.toUpperCase()) &&
+        t.counterAmount;
+      const asset = stableCounter ? t.counterAsset! : t.asset;
+      const contractAddress = stableCounter ? undefined : t.contractAddress;
+      const platform = stableCounter ? undefined : t.chain ? COINGECKO_PLATFORM[t.chain as ChainId] : undefined;
+      return {
+        tx: t,
+        request: {
+          asset,
+          timestampMs: t.timestamp,
+          fiatCurrency: settings.reportingCurrency,
+          contractAddress,
+          platform,
+          alchemyApiKey: settings.alchemyApiKey,
+          alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
+        },
+        useCounterAmount: !!stableCounter
+      };
+    });
     const results = await fetchHistoricalPricesBatch(
-      missingPriceTxs.map((t) => ({
-        asset: t.asset,
-        timestampMs: t.timestamp,
-        fiatCurrency: settings.reportingCurrency,
-        contractAddress: t.contractAddress,
-        platform: t.chain ? COINGECKO_PLATFORM[t.chain as ChainId] : undefined,
-        alchemyApiKey: settings.alchemyApiKey,
-        alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
-      })),
+      priceRequests.map((p) => p.request),
       (done, total) => setPriceProgress({ done, total })
     );
     const errors: string[] = [];
     await Promise.all(
       results.map(async (r, i) => {
-        const tx = missingPriceTxs[i];
+        const { tx, useCounterAmount } = priceRequests[i];
         if (r.price != null) {
+          const qty = useCounterAmount ? tx.counterAmount ?? tx.amount : tx.amount;
           await db.transactions.update(tx.id, {
-            fiatValue: r.price * tx.amount,
+            fiatValue: r.price * qty,
             fiatCurrency: r.currency,
             flags: tx.flags.filter((f) => f !== 'missing_cost_basis')
           });
@@ -175,7 +210,9 @@ export function ReviewTab() {
               </p>
               <p className="text-xs text-mist-400">
                 {settings?.priceApiEnabled
-                  ? 'Nothing happens automatically — click the button to fetch them now.'
+                  ? rpcTransferCount > 0
+                    ? 'Wallet imports are included — click the button to fetch historical prices. Swaps auto-detected as trades will feed cost basis after prices are filled.'
+                    : 'Nothing happens automatically — click the button to fetch them now.'
                   : 'Turn on "Live price lookup" in Settings, or click any dash below to type a value in yourself.'}
               </p>
             </div>
@@ -234,6 +271,7 @@ export function ReviewTab() {
               <th className="w-8 px-3 py-2"></th>
               <th className="px-3 py-2">Date</th>
               <th className="px-3 py-2">Type</th>
+              <th className="px-3 py-2">Chain</th>
               <th className="px-3 py-2">Asset</th>
               <th className="px-3 py-2 text-right">Amount</th>
               <th className="px-3 py-2 text-right">Fiat value</th>
@@ -249,6 +287,8 @@ export function ReviewTab() {
               const candidates = engineResult?.disposalCandidates[t.id] ?? [];
               const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
               const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
+              const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : '—';
+              const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
               const isEditing = editingFiat === t.id;
               return (
                 <Fragment key={t.id}>
@@ -260,7 +300,15 @@ export function ReviewTab() {
                     <td className="px-3 py-2">
                       <Badge tone={TYPE_TONE[t.type]}>{t.type}</Badge>
                     </td>
-                    <td className="px-3 py-2 text-mist">{t.asset}</td>
+                    <td className="px-3 py-2 text-mist-400">{chainLabel}</td>
+                    <td className="px-3 py-2 text-mist" title={t.contractAddress}>
+                      {assetLabel}
+                      {t.type === 'trade' && t.counterAsset && (
+                        <span className="ml-1 text-mist-400">
+                          → {resolveAssetLabel(t.counterAsset, undefined, t.chain)}
+                        </span>
+                      )}
+                    </td>
                     <td className="px-3 py-2 text-right text-mist">{t.amount}</td>
                     <td className="px-3 py-2 text-right text-mist-300">
                       {isEditing ? (
@@ -313,7 +361,7 @@ export function ReviewTab() {
                   </tr>
                   {openLotPicker === t.id && (
                     <tr>
-                      <td colSpan={10} className="bg-ink-900/60 px-3 py-3">
+                      <td colSpan={11} className="bg-ink-900/60 px-3 py-3">
                         <LotPicker
                           txId={t.id}
                           candidates={candidates}

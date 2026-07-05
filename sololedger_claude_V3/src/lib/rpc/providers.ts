@@ -11,7 +11,9 @@
  *   Optimism, Avalanche, AND Solana.
  * - Etherscan-compatible is kept as a manual fallback.
  */
+import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { makeId } from '@/lib/parsers/types';
+import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
 
 export type ChainId = 'bitcoin' | 'ethereum' | 'polygon' | 'arbitrum' | 'base' | 'bsc' | 'optimism' | 'avalanche' | 'solana' | 'custom_evm';
@@ -260,6 +262,12 @@ const solanaAssetCache = new Map<string, { symbol: string; isNft: boolean }>();
 
 async function getSolanaAssetMeta(apiKey: string, mint: string): Promise<{ symbol: string; isNft: boolean }> {
   if (solanaAssetCache.has(mint)) return solanaAssetCache.get(mint)!;
+  const known = resolveSolanaMintSymbol(mint);
+  if (known) {
+    const meta = { symbol: known, isNft: false };
+    solanaAssetCache.set(mint, meta);
+    return meta;
+  }
   try {
     const res = await fetch(alchemyRpcUrl('solana-mainnet'), {
       method: 'POST',
@@ -268,7 +276,11 @@ async function getSolanaAssetMeta(apiKey: string, mint: string): Promise<{ symbo
     });
     const data = await res.json();
     const asset = data.result;
-    const symbol = asset?.content?.metadata?.symbol || asset?.token_info?.symbol || `${mint.slice(0, 4)}…${mint.slice(-4)}`;
+    const symbol =
+      asset?.content?.metadata?.symbol ||
+      asset?.token_info?.symbol ||
+      asset?.content?.metadata?.name ||
+      `${mint.slice(0, 4)}…${mint.slice(-4)}`;
     const isNft = !!asset?.interface && asset.interface !== 'FungibleToken' && asset.interface !== 'FungibleAsset';
     const meta = { symbol, isNft };
     solanaAssetCache.set(mint, meta);
@@ -612,6 +624,10 @@ export interface LookupConfig {
   customAsset?: string;
 }
 
+function withDexSwapDetection(result: LookupResult): LookupResult {
+  return { ...result, transactions: detectDexSwaps(result.transactions) };
+}
+
 async function lookupOneAddress(address: string, config: LookupConfig): Promise<LookupResult> {
   const { chain } = config;
   if (chain.provider === 'blockstream') {
@@ -619,24 +635,28 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
   }
   if (chain.provider === 'alchemy_evm') {
     if (chain.id === 'ethereum') {
-      return fetchEthereumAddress(address, config);
+      return withDexSwapDetection(await fetchEthereumAddress(address, config));
     }
     if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key in Settings first.');
-    return fetchAlchemyEvm(
-      address,
-      chain.alchemyNetwork!,
-      config.alchemyApiKey,
-      chain.asset,
-      chain.id,
-      config.customApiKey
+    return withDexSwapDetection(
+      await fetchAlchemyEvm(
+        address,
+        chain.alchemyNetwork!,
+        config.alchemyApiKey,
+        chain.asset,
+        chain.id,
+        config.customApiKey
+      )
     );
   }
   if (chain.provider === 'alchemy_solana') {
     if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key in Settings first.');
-    return fetchAlchemySolana(address, config.alchemyApiKey);
+    return withDexSwapDetection(await fetchAlchemySolana(address, config.alchemyApiKey));
   }
   if (!config.customBaseUrl) throw new Error('Enter an explorer base URL.');
-  return fetchEtherscanCompatible(address, config.customBaseUrl, config.customApiKey ?? '', config.customAsset || 'TOKEN');
+  return withDexSwapDetection(
+    await fetchEtherscanCompatible(address, config.customBaseUrl, config.customApiKey ?? '', config.customAsset || 'TOKEN')
+  );
 }
 
 /**
