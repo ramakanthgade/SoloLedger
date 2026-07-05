@@ -43,7 +43,8 @@ export function WalletLookupPanel() {
   }
 
   const chain = CHAINS.find((c) => c.id === chainId)!;
-  const needsAlchemyKey = chain.provider === 'alchemy_evm' || chain.provider === 'alchemy_solana';
+  const needsAlchemyKey =
+    (chain.provider === 'alchemy_evm' && chain.id !== 'ethereum') || chain.provider === 'alchemy_solana';
   const missingAlchemyKey = needsAlchemyKey && !settings.alchemyApiKey;
 
   const runLookup = async (addressesOverride?: string[]) => {

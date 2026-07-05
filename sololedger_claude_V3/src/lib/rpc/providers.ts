@@ -472,6 +472,138 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
   return { transactions, warnings };
 }
 
+// ---- Ethereum via Blockscout (free, no API key — used when Alchemy/Etherscan fail) ----
+function blockscoutUrl(path: string): string {
+  const url = `https://eth.blockscout.com/api/v2${path}`;
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'localhost' || host === '127.0.0.1') {
+      return url.replace('https://eth.blockscout.com/api/v2', '/blockscout-api');
+    }
+  }
+  return url;
+}
+
+async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
+  const addr = address.toLowerCase();
+  const [txRes, tokenRes] = await Promise.all([
+    fetch(blockscoutUrl(`/addresses/${address}/transactions`)),
+    fetch(blockscoutUrl(`/addresses/${address}/token-transfers`))
+  ]);
+
+  if (!txRes.ok) {
+    throw new Error(`Blockscout returned ${txRes.status} for transaction history.`);
+  }
+
+  const txData = await txRes.json();
+  const tokenData = tokenRes.ok ? await tokenRes.json() : { items: [] };
+  const transactions: Transaction[] = [];
+  const seen = new Set<string>();
+
+  for (const row of txData.items ?? []) {
+    const from = row.from?.hash?.toLowerCase();
+    const to = row.to?.hash?.toLowerCase();
+    if (!from || !to) continue;
+    if (from !== addr && to !== addr) continue;
+    const valueWei = BigInt(row.value ?? '0');
+    if (valueWei === 0n) continue;
+    const key = `native:${row.hash}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    transactions.push({
+      id: makeId('rpc'),
+      timestamp: row.timestamp ? new Date(row.timestamp).getTime() : Date.now(),
+      type: from === addr ? 'transfer_out' : 'transfer_in',
+      asset: 'ETH',
+      amount: Number(valueWei) / 1e18,
+      fiatCurrency: 'USD',
+      fiatValue: undefined,
+      source: 'rpc:blockscout',
+      sourceRef: row.hash,
+      walletAddress: address,
+      counterpartyAddress: from === addr ? row.to?.hash : row.from?.hash,
+      chain: 'ethereum',
+      flags: ['possible_internal_transfer', 'missing_cost_basis'],
+      isInternalTransfer: false,
+      raw: row
+    });
+  }
+
+  for (const row of tokenData.items ?? []) {
+    const from = row.from?.hash?.toLowerCase();
+    const to = row.to?.hash?.toLowerCase();
+    if (!from || !to) continue;
+    if (from !== addr && to !== addr) continue;
+    const decimals = Number(row.token?.decimals ?? 18);
+    const raw = BigInt(row.total?.value ?? row.value ?? '0');
+    if (raw === 0n) continue;
+    const key = `token:${row.transaction_hash}:${row.log_index}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    transactions.push({
+      id: makeId('rpc'),
+      timestamp: row.timestamp ? new Date(row.timestamp).getTime() : Date.now(),
+      type: from === addr ? 'transfer_out' : 'transfer_in',
+      asset: row.token?.symbol || 'TOKEN',
+      amount: Number(raw) / 10 ** decimals,
+      fiatCurrency: 'USD',
+      fiatValue: undefined,
+      source: 'rpc:blockscout',
+      sourceRef: row.transaction_hash,
+      walletAddress: address,
+      counterpartyAddress: from === addr ? row.to?.hash : row.from?.hash,
+      contractAddress: row.token?.address_hash,
+      chain: 'ethereum',
+      flags: ['possible_internal_transfer', 'missing_cost_basis'],
+      isInternalTransfer: false,
+      raw: row
+    });
+  }
+
+  return {
+    transactions,
+    warnings: transactions.length
+      ? [{ address, message: 'Fetched via Blockscout (free explorer, no API key needed).' }]
+      : [{ address, message: 'No transactions found for this address on Ethereum mainnet.' }]
+  };
+}
+
+async function fetchEthereumAddress(address: string, config: LookupConfig): Promise<LookupResult> {
+  const errors: string[] = [];
+
+  try {
+    return await fetchBlockscoutEthereum(address);
+  } catch (err) {
+    errors.push(err instanceof Error ? err.message : 'Blockscout failed.');
+  }
+
+  if (config.customApiKey) {
+    try {
+      const baseUrl = etherscanV2BaseUrl('ethereum');
+      if (baseUrl) return await fetchEtherscanCompatible(address, baseUrl, config.customApiKey, 'ETH');
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : 'Etherscan failed.');
+    }
+  }
+
+  if (config.alchemyApiKey) {
+    try {
+      return await fetchAlchemyEvm(
+        address,
+        'eth-mainnet',
+        config.alchemyApiKey,
+        'ETH',
+        'ethereum',
+        config.customApiKey
+      );
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : 'Alchemy failed.');
+    }
+  }
+
+  throw new Error(errors.join(' ') || 'Ethereum lookup failed.');
+}
+
 export interface LookupConfig {
   chain: ChainDef;
   alchemyApiKey?: string;
@@ -486,6 +618,9 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     return fetchBitcoin(address, 'https://blockstream.info/api', chain.asset);
   }
   if (chain.provider === 'alchemy_evm') {
+    if (chain.id === 'ethereum') {
+      return fetchEthereumAddress(address, config);
+    }
     if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key in Settings first.');
     return fetchAlchemyEvm(
       address,

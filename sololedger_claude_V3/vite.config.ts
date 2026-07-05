@@ -72,6 +72,11 @@ export default defineConfig({
         target: 'https://api.etherscan.io',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/etherscan-api/, '')
+      },
+      '/blockscout-api': {
+        target: 'https://eth.blockscout.com/api/v2',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/blockscout-api/, '')
       }
     }
   },
@@ -82,6 +87,11 @@ export default defineConfig({
         target: 'https://api.etherscan.io',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/etherscan-api/, '')
+      },
+      '/blockscout-api': {
+        target: 'https://eth.blockscout.com/api/v2',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/blockscout-api/, '')
       }
     }
   },
