@@ -3,6 +3,7 @@
  * fallback for DEX-only tokens. Sends coin id + date — never wallet addresses.
  */
 import { fetchAlchemyHistoricalPriceUsd } from './alchemyPrices';
+import { fetchBirdeyeHistoricalPrice } from './birdeye';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 
 const COINGECKO_PUBLIC = 'https://api.coingecko.com/api/v3';
@@ -176,6 +177,8 @@ export interface PriceRequest {
   coingeckoApiKey?: string;
   alchemyApiKey?: string;
   alchemyNetwork?: string;
+  /** Birdeye API key — fallback for Solana long-tail tokens after CoinGecko+Alchemy fail. */
+  birdeyeApiKey?: string;
 }
 
 const usdRateCache = new Map<string, number>();
@@ -236,6 +239,24 @@ async function fetchOneHistoricalPrice(r: PriceRequest): Promise<PriceLookupResu
       }
     } else if (alchemyResult.error) {
       result = { ...result, error: `${result.error ? result.error + '; ' : ''}${alchemyResult.error}` };
+    }
+  }
+
+  // Birdeye fallback: Solana tokens with a mint address and no price yet.
+  if (result.price == null && r.birdeyeApiKey && r.chain === 'solana' && r.contractAddress) {
+    const birdeyeResult = await fetchBirdeyeHistoricalPrice(r.birdeyeApiKey, r.contractAddress, r.timestampMs);
+    if (birdeyeResult.priceUsd != null) {
+      const rate = await usdToCurrencyRate(r.timestampMs, r.fiatCurrency, r.coingeckoApiKey);
+      if (rate != null) {
+        result = {
+          asset: r.asset,
+          date: toCoinGeckoDate(r.timestampMs),
+          price: birdeyeResult.priceUsd * rate,
+          currency: r.fiatCurrency
+        };
+      }
+    } else if (birdeyeResult.error) {
+      result = { ...result, error: `${result.error ? result.error + '; ' : ''}${birdeyeResult.error}` };
     }
   }
 

@@ -18,6 +18,70 @@ import { Check, X, Pencil, AlertTriangle } from 'lucide-react';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
+const ALL_TYPES: TxType[] = [
+  'buy', 'sell', 'trade', 'transfer_in', 'transfer_out',
+  'income', 'gift_sent', 'gift_received', 'fee',
+  'nft_mint', 'nft_buy', 'nft_sell',
+  'defi_deposit', 'defi_withdraw', 'other'
+];
+
+function TypeSelector({
+  txId,
+  current,
+  flags
+}: {
+  txId: string;
+  current: TxType;
+  flags: string[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const reclassify = async (next: TxType) => {
+    if (next === current) { setOpen(false); return; }
+    setSaving(true);
+    const newFlags = (flags ?? []).filter(
+      (f) => f !== 'possible_internal_transfer' && f !== 'missing_cost_basis'
+    ) as import('@/types/transaction').FlagReason[];
+    await db.transactions.update(txId, { type: next, flags: newFlags });
+    setSaving(false);
+    setOpen(false);
+  };
+
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Click to reclassify this transaction"
+        className="inline-flex items-center gap-1"
+      >
+        <Badge tone={TYPE_TONE[current]}>{current}</Badge>
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl">
+          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-mist-400">Reclassify as</p>
+          {ALL_TYPES.map((t) => (
+            <button
+              key={t}
+              onClick={() => void reclassify(t)}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-700 ${t === current ? 'text-violet' : 'text-mist-300'}`}
+            >
+              <Badge tone={TYPE_TONE[t]} className="pointer-events-none text-[10px]">{t}</Badge>
+            </button>
+          ))}
+          <button
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-1 border-t border-ink-700 px-3 py-1.5 text-[10px] text-mist-400 hover:text-mist"
+          >
+            <X className="h-3 w-3" /> Cancel
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 const TYPE_TONE: Record<TxType, 'neutral' | 'emerald' | 'gold' | 'loss' | 'violet' | 'pink'> = {
   buy: 'emerald',
   sell: 'loss',
@@ -168,6 +232,7 @@ export function ReviewTab() {
             chain: t.chain,
             coingeckoApiKey: settings.coingeckoApiKey,
             alchemyApiKey: settings.alchemyApiKey,
+            birdeyeApiKey: settings.birdeyeApiKey,
             alchemyNetwork: t.chain ? CHAINS.find((c) => c.id === t.chain)?.alchemyNetwork : undefined
           },
           useCounterAmount: !!stableCounter
@@ -432,7 +497,7 @@ export function ReviewTab() {
                     </td>
                     <td className="px-3 py-2 text-mist-300">{new Date(t.timestamp).toISOString().slice(0, 10)}</td>
                     <td className="px-3 py-2">
-                      <Badge tone={TYPE_TONE[t.type]}>{t.type}</Badge>
+                      <TypeSelector txId={t.id} current={t.type} flags={t.flags} />
                     </td>
                     <td className="px-3 py-2 text-mist-400">{chainLabel}</td>
                     <td className="px-3 py-2 text-mist" title={t.contractAddress}>

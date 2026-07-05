@@ -179,6 +179,94 @@ export function SettingsTab() {
               Alchemy key above is shared for wallet lookup and price fallback.
             </p>
           )}
+
+          {settings.priceApiEnabled && (
+            <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
+              <ApiKeyField
+                label={
+                  <>
+                    Birdeye API key (Solana token pricing — covers any SPL token with a DEX pool; free plan from{' '}
+                    <a href="https://birdeye.so" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      birdeye.so
+                    </a>
+                    )
+                  </>
+                }
+                value={settings.birdeyeApiKey}
+                onSave={(key) => update({ birdeyeApiKey: key })}
+                onDelete={() => update({ birdeyeApiKey: undefined })}
+                placeholder="Paste your Birdeye API key"
+              />
+              <ApiKeyField
+                label={
+                  <>
+                    Noves API key (DeFi classification — auto-identifies swaps, staking, LP deposits, etc. on 120+
+                    chains; from{' '}
+                    <a href="https://noves.fi" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      noves.fi
+                    </a>{' '}
+                    or{' '}
+                    <a
+                      href="https://marketplace.quicknode.com/add-on/noves-translate-api"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-emerald-600 underline"
+                    >
+                      QuickNode Starter $50/mo
+                    </a>
+                    )
+                  </>
+                }
+                value={settings.novesApiKey}
+                onSave={(key) => update({ novesApiKey: key })}
+                onDelete={() => update({ novesApiKey: undefined })}
+                placeholder="Paste your Noves API key"
+              />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>AI Tax Advisor</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-mist-400">
+            Ask your taxes anything — in text or by voice. Uses{' '}
+            <a href="https://openrouter.ai" target="_blank" rel="noreferrer" className="text-violet underline">
+              OpenRouter
+            </a>{' '}
+            to route to Claude, GPT-4, Gemini and more. Your existing OpenRouter credits work immediately.
+            Your claude.ai subscription is a separate consumer product — for API access, use your{' '}
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-violet underline">
+              openrouter.ai/keys
+            </a>{' '}
+            key instead.
+          </p>
+          <ApiKeyField
+            label="OpenRouter API key (enables AI Tax Advisor — pay-per-use from your credits)"
+            value={settings.aiApiKey}
+            onSave={(key) => update({ aiApiKey: key })}
+            onDelete={() => update({ aiApiKey: undefined })}
+            placeholder="sk-or-v1-…"
+          />
+          {settings.aiApiKey && (
+            <label className="block text-sm text-mist-300">
+              AI model
+              <select
+                value={settings.aiModel ?? 'anthropic/claude-opus-4-5'}
+                onChange={(e) => update({ aiModel: e.target.value })}
+                className="mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-mist focus:border-violet focus:outline-none"
+              >
+                <option value="anthropic/claude-opus-4-5">Claude Sonnet 4.5 — recommended</option>
+                <option value="anthropic/claude-opus-4">Claude Opus 4 — most capable</option>
+                <option value="openai/gpt-4o">GPT-4o</option>
+                <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — fast & cheap</option>
+                <option value="anthropic/claude-3.5-haiku">Claude Haiku 3.5 — fastest</option>
+              </select>
+            </label>
+          )}
         </CardContent>
       </Card>
 

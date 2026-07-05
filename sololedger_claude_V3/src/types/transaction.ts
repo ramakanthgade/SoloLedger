@@ -92,6 +92,14 @@ export interface TaxSettings {
   alchemyApiKey?: string;
   /** CoinGecko Pro key — historical prices by date (recommended for 100+ tx imports). */
   coingeckoApiKey?: string;
+  /** Birdeye key — historical token prices for Solana long-tail tokens via DEX pools. */
+  birdeyeApiKey?: string;
+  /** Noves key — DeFi/swap/staking classification for EVM + Solana tx hashes. */
+  novesApiKey?: string;
+  /** OpenRouter API key — used for the AI Tax Advisor chat panel. */
+  aiApiKey?: string;
+  /** OpenRouter model id, e.g. anthropic/claude-opus-4-5 */
+  aiModel?: string;
   /** For the "other EVM chain" manual fallback in wallet lookup. */
   customExplorerBaseUrl?: string;
   customExplorerApiKey?: string;

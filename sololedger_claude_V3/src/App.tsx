@@ -6,6 +6,7 @@ import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
 import { CapitalGainsTab } from '@/components/capitalGains/CapitalGainsTab';
 import { ReportsTab } from '@/components/reports/ReportsTab';
 import { SettingsTab } from '@/components/settings/SettingsTab';
+import { AiAdvisor } from '@/components/ai/AiAdvisor';
 import { Upload, ListChecks, PieChart, TrendingUp, FileText, Settings } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -66,6 +67,8 @@ export default function App() {
       <main className="mx-auto max-w-6xl px-6 py-8">
         <ActiveComponent />
       </main>
+
+      <AiAdvisor />
     </div>
   );
 }
