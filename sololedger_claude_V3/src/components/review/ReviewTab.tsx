@@ -70,8 +70,8 @@ export function ReviewTab() {
         (t) =>
           t.fiatValue == null &&
           !t.isInternalTransfer &&
-          (Array.isArray(t.flags) && t.flags.includes('missing_cost_basis')) ||
-          (t.type !== 'transfer_in' && t.type !== 'transfer_out'))
+          ((Array.isArray(t.flags) && t.flags.includes('missing_cost_basis')) ||
+            (t.type !== 'transfer_in' && t.type !== 'transfer_out'))
       ),
     [transactions]
   );
