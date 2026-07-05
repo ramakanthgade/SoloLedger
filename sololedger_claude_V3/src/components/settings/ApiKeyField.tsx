@@ -31,7 +31,9 @@ export function ApiKeyField({ label, value, onSave, onDelete, placeholder }: Pro
       <label className="block text-xs text-mist-400">{label}</label>
       {!editing && value ? (
         <div className="flex items-center gap-2 rounded-full border border-emerald/30 bg-emerald/10 px-3 py-1.5">
-          <span className="flex-1 font-mono text-sm text-mist">{mask(value)}</span>
+          <span className="flex-1 font-mono text-sm text-mist" title="Masked for security — the full key is stored locally">
+            {mask(value)}
+          </span>
           <button
             type="button"
             onClick={() => {

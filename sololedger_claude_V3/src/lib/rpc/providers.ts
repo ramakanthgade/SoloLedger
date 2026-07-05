@@ -392,46 +392,81 @@ function etherscanRequestUrl(baseUrl: string, params: Record<string, string>, ap
 }
 
 async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey: string, asset: string): Promise<LookupResult> {
-  const nativeUrl = etherscanRequestUrl(baseUrl, { module: 'account', action: 'txlist', address, sort: 'desc' }, apiKey);
-  const tokenUrl = etherscanRequestUrl(baseUrl, { module: 'account', action: 'tokentx', address, sort: 'desc' }, apiKey);
-
-  const [nativeRes, tokenRes] = await Promise.all([fetch(nativeUrl), fetch(tokenUrl)]);
-  if (!nativeRes.ok) throw new Error(`Explorer API returned ${nativeRes.status}`);
-  const nativeData = await nativeRes.json();
-  const tokenData = tokenRes.ok ? await tokenRes.json() : { status: '0', result: [] };
-
-  const warnings: LookupWarning[] = [];
-  if (nativeData.status !== '1' || !Array.isArray(nativeData.result)) {
-    warnings.push({ address, message: nativeData.message || 'No native transactions returned.' });
+  if (!apiKey?.trim()) {
+    throw new Error('Add a free Etherscan API key in Settings (etherscan.io/apis).');
   }
 
-  const toTx = (row: Record<string, string>, isToken: boolean): Transaction => {
+  const commonParams = {
+    module: 'account',
+    address,
+    startblock: '0',
+    endblock: '99999999',
+    page: '1',
+    offset: '1000',
+    sort: 'desc'
+  };
+  const nativeUrl = etherscanRequestUrl(baseUrl, { ...commonParams, action: 'txlist' }, apiKey);
+  const tokenUrl = etherscanRequestUrl(baseUrl, { ...commonParams, action: 'tokentx' }, apiKey);
+
+  function toEtherscanTx(row: Record<string, string>, addr: string, nativeAsset: string, isToken: boolean): Transaction {
     const decimals = isToken ? Number(row.tokenDecimal || '18') : 18;
     const valueRaw = BigInt(row.value || '0');
     const amount = Number(valueRaw) / 10 ** decimals;
-    const isOutgoing = row.from?.toLowerCase() === address.toLowerCase();
+    const isOutgoing = row.from?.toLowerCase() === addr.toLowerCase();
     return {
       id: makeId('rpc'),
       timestamp: Number(row.timeStamp) * 1000,
       type: isOutgoing ? 'transfer_out' : 'transfer_in',
-      asset: isToken ? row.tokenSymbol || 'TOKEN' : asset,
+      asset: isToken ? row.tokenSymbol || 'TOKEN' : nativeAsset,
       amount,
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:etherscan_compatible',
       sourceRef: row.hash,
-      walletAddress: address,
+      walletAddress: addr,
       counterpartyAddress: isOutgoing ? row.to : row.from,
       contractAddress: isToken ? row.contractAddress : undefined,
       flags: ['possible_internal_transfer', 'missing_cost_basis'] as const,
       isInternalTransfer: false,
       raw: row
     } as Transaction;
+  }
+
+  const parseExplorerError = async (res: Response): Promise<string> => {
+    try {
+      const data = await res.json();
+      const detail = typeof data?.result === 'string' ? data.result : data?.message;
+      return detail || `Explorer API returned ${res.status}`;
+    } catch {
+      return `Explorer API returned ${res.status}`;
+    }
   };
 
+  const nativeRes = await fetch(nativeUrl);
+  if (!nativeRes.ok) throw new Error(await parseExplorerError(nativeRes));
+  const nativeData = await nativeRes.json();
+
+  const tokenRes = await fetch(tokenUrl);
+  const tokenData = tokenRes.ok ? await tokenRes.json() : { status: '0', result: [] };
+  if (!tokenRes.ok) {
+    // Token history is optional — native txs are still useful.
+    const tokenErr = await parseExplorerError(tokenRes);
+    const warnings: LookupWarning[] = [{ address, message: `Token transfer fetch failed: ${tokenErr}` }];
+    const transactions: Transaction[] = Array.isArray(nativeData.result)
+      ? nativeData.result.map((r: any) => toEtherscanTx(r, address, asset, false))
+      : [];
+    return { transactions, warnings };
+  }
+
+  const warnings: LookupWarning[] = [];
+  if (nativeData.status !== '1' || !Array.isArray(nativeData.result)) {
+    const detail = typeof nativeData.result === 'string' ? nativeData.result : nativeData.message;
+    throw new Error(detail || 'Etherscan returned no native transactions for this address.');
+  }
+
   const transactions: Transaction[] = [
-    ...(Array.isArray(nativeData.result) ? nativeData.result.map((r: any) => toTx(r, false)) : []),
-    ...(Array.isArray(tokenData.result) ? tokenData.result.map((r: any) => toTx(r, true)) : [])
+    ...nativeData.result.map((r: any) => toEtherscanTx(r, address, asset, false)),
+    ...(Array.isArray(tokenData.result) ? tokenData.result.map((r: any) => toEtherscanTx(r, address, asset, true)) : [])
   ];
 
   return { transactions, warnings };
