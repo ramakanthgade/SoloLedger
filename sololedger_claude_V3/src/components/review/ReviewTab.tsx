@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSpecIdHints } from '@/lib/storage/db';
+import { db, getSpecIdHints, getLookupAddresses } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import type { TxType, Transaction } from '@/types/transaction';
-import { formatCurrency, formatCompactAmount } from '@/lib/utils';
+import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/transaction';
+import { formatCurrency, formatCompactAmount, getFyBoundaries, getFyLabel, getAvailableFys } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
@@ -115,9 +115,13 @@ function displayFlags(t: Transaction): string[] {
 export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
+  const [walletFilter, setWalletFilter] = useState<string>('all');
+  const [fyFilter, setFyFilter] = useState<number | null>(null);
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
   const [showSpam, setShowSpam] = useState(false);
-  const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'wallet' | 'asset' | 'type'>('date_desc');
+  const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'wallet' | 'asset' | 'type' | 'fy'>('date_desc');
+  const [walletLabels, setWalletLabels] = useState<Map<string, string>>(new Map());
+  const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [dcaGroups, setDcaGroups] = useState<Awaited<ReturnType<typeof detectDcaGroups>>>([]);
   const [applyingDca, setApplyingDca] = useState(false);
@@ -139,6 +143,29 @@ export function ReviewTab() {
 
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
+
+  // Load wallet labels + jurisdiction on mount
+  useEffect(() => {
+    getLookupAddresses().then((rows) => {
+      const map = new Map<string, string>();
+      for (const r of rows) if (r.label) map.set(r.address.toLowerCase(), r.label);
+      setWalletLabels(map);
+    });
+    db.settings.get('singleton').then((s) => {
+      if (s?.jurisdiction) setJurisdiction(s.jurisdiction as Jurisdiction);
+    });
+  }, []);
+
+  const availableFys = useMemo(
+    () => getAvailableFys(transactions.map((t) => t.timestamp), jurisdiction),
+    [transactions, jurisdiction]
+  );
+  const availableWallets = useMemo(() => {
+    const ws = new Set<string>();
+    for (const t of transactions) if (t.walletAddress) ws.add(t.walletAddress);
+    return Array.from(ws);
+  }, [transactions]);
+
 
   // Resolve truncated contract addresses → tickers via CoinGecko (cached + saved to IndexedDB).
   useEffect(() => {
@@ -279,11 +306,14 @@ export function ReviewTab() {
   }, [transactions]);
 
   const filtered = useMemo(() => {
+    const fyBounds = fyFilter != null ? getFyBoundaries(fyFilter, jurisdiction) : null;
     const base = transactions.filter((t) => {
       if (!showSpam && t.isSpam) return false;
       if (showSpam && !t.isSpam) return false;
       if (showNeedsPrice && !(t.fiatValue == null && !t.isInternalTransfer && !t.isSpam)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
+      if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
+      if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;
       if (query && !`${t.asset} ${t.type} ${t.source} ${t.walletAddress ?? ''} ${t.notes ?? ''}`.toLowerCase().includes(query.toLowerCase()))
         return false;
       return true;
@@ -447,16 +477,39 @@ export function ReviewTab() {
           placeholder="Search transactions…"
           className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist placeholder:text-mist-400 focus:border-violet focus:outline-none"
         />
+        {/* Asset filter */}
         <select
           value={assetFilter}
           onChange={(e) => setAssetFilter(e.target.value)}
           className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
         >
           <option value="all">All assets</option>
-          {assets.map((a) => (
-            <option key={a} value={a}>
-              {a}
-            </option>
+          {assets.map((a) => (<option key={a} value={a}>{a}</option>))}
+        </select>
+
+        {/* Wallet filter */}
+        {availableWallets.length > 1 && (
+          <select
+            value={walletFilter}
+            onChange={(e) => setWalletFilter(e.target.value)}
+            className="max-w-[180px] truncate rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+          >
+            <option value="all">All wallets</option>
+            {availableWallets.map((w) => (
+              <option key={w} value={w}>{walletLabels.get(w.toLowerCase()) ?? `${w.slice(0, 8)}…`}</option>
+            ))}
+          </select>
+        )}
+
+        {/* FY filter */}
+        <select
+          value={fyFilter ?? ''}
+          onChange={(e) => setFyFilter(e.target.value ? Number(e.target.value) : null)}
+          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+        >
+          <option value="">All periods</option>
+          {availableFys.map((fy) => (
+            <option key={fy} value={fy}>{getFyLabel(fy, jurisdiction)}</option>
           ))}
         </select>
 
@@ -494,13 +547,14 @@ export function ReviewTab() {
 
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
 
-        <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0">
-          {detectingSwaps
-            ? novesProgress
-              ? `Noves ${novesProgress.done}/${novesProgress.total}…`
-              : 'Detecting swaps…'
-            : settings?.novesApiKey ? 'Detect swaps (Noves)' : 'Detect DEX swaps'}
-        </Button>
+        {/* Noves: only show for non-Helius users or as an explicit re-run option */}
+        {!settings?.heliusApiKey && (
+          <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0 text-xs">
+            {detectingSwaps
+              ? novesProgress ? `Noves ${novesProgress.done}/${novesProgress.total}…` : 'Detecting…'
+              : settings?.novesApiKey ? 'Classify (Noves)' : 'Detect swaps'}
+          </Button>
+        )}
 
         {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
           <Button disabled={fetchingPrices} onClick={fetchMissingPrices} className="ml-auto shrink-0">
@@ -604,10 +658,22 @@ export function ReviewTab() {
                       )}
                     </td>
                     <td className="px-2 py-2 text-mist-400" title={fromAddr}>
-                      {truncateAddress(fromAddr)}
+                      {fromAddr ? (
+                        <span title={fromAddr}>
+                          {walletLabels.get(fromAddr.toLowerCase())
+                            ? <span className="text-violet-400">{walletLabels.get(fromAddr.toLowerCase())}</span>
+                            : truncateAddress(fromAddr)}
+                        </span>
+                      ) : '—'}
                     </td>
                     <td className="px-2 py-2 text-mist-400" title={toAddr}>
-                      {truncateAddress(toAddr)}
+                      {toAddr ? (
+                        <span title={toAddr}>
+                          {walletLabels.get(toAddr.toLowerCase())
+                            ? <span className="text-violet-400">{walletLabels.get(toAddr.toLowerCase())}</span>
+                            : truncateAddress(toAddr)}
+                        </span>
+                      ) : '—'}
                     </td>
                     <td className="px-2 py-2 font-mono text-xs text-mist-400">
                       {t.sourceRef ? (
@@ -628,7 +694,25 @@ export function ReviewTab() {
                     </td>
                     <td className="px-2 py-2 align-top">
                       <div className="flex max-w-[14rem] flex-wrap gap-1 whitespace-normal">
-                      {t.isInternalTransfer && <Badge tone="neutral">internal</Badge>}
+                      {t.isInternalTransfer && (
+                        <div className="relative group/internal">
+                          <Badge tone="neutral" className="cursor-pointer hover:opacity-80">internal</Badge>
+                          <div className="absolute left-0 top-5 z-20 hidden group-hover/internal:flex flex-col rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl text-xs min-w-[15rem]">
+                            <button
+                              className="px-3 py-1.5 text-left text-mist-300 hover:bg-ink-700"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                await db.transactions.update(t.id, {
+                                  isInternalTransfer: false,
+                                  flags: ['possible_internal_transfer'] as FlagReason[]
+                                });
+                              }}
+                            >
+                              ↩ Undo — mark as NOT internal transfer
+                            </button>
+                          </div>
+                        </div>
+                      )}
                       {t.category === 'nft' && <Badge tone="pink">nft</Badge>}
                       {displayFlags(t).map((f) => (
                         f === 'possible_internal_transfer' ? (
