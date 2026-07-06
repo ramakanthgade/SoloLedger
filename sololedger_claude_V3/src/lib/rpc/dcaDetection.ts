@@ -28,6 +28,9 @@ export interface DcaGroup {
 
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** Native blockchain assets used to pay gas fees — never a DCA deposit. */
+const NATIVE_CHAIN_ASSETS = new Set(['SOL', 'ETH', 'BTC', 'BNB', 'MATIC', 'AVAX', 'ADA', 'DOT']);
+
 /** Detect DCA vault patterns from a flat list of RPC-sourced transactions. */
 export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
   const groups: DcaGroup[] = [];
@@ -108,11 +111,13 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
 
     const firstFillTime = Math.min(...fillTxs.map((f) => f.timestamp));
 
-    // Find the deposit: a transfer_out of a DIFFERENT asset, from the same wallet,
-    // within ±7 days of the first fill, not internal, not spam.
+    // Find the deposit: a transfer_out of a token (NOT native gas like SOL) from the
+    // same wallet, within ±7 days of the first fill.
+    // Gas fee transfers (tiny SOL) are excluded to prevent false positives.
     const depositCandidates = transactions.filter(
       (t) =>
         t.type === 'transfer_out' &&
+        !NATIVE_CHAIN_ASSETS.has(t.asset.toUpperCase()) && // exclude SOL/ETH gas fees
         t.asset.toUpperCase() !== outputAsset.toUpperCase() &&
         t.walletAddress?.toLowerCase() === walletAddr.toLowerCase() &&
         t.source.startsWith('rpc:') &&

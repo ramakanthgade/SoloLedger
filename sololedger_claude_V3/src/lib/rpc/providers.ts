@@ -11,7 +11,7 @@
  * - Etherscan-compatible is kept as a manual fallback for other EVM chains / custom explorers.
  */
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
-import { classifyDbtIncome } from '@/lib/assets/dabbaRegistry';
+import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
 import { makeId } from '@/lib/parsers/types';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
@@ -432,8 +432,22 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
       // eslint-disable-next-line no-await-in-loop
       const meta = await getSolanaAssetMeta(apiKey, mint);
 
-      // Auto-classify DBT income from known Dabba Foundation programs
-      const dbtIncome = delta > 0 ? classifyDbtIncome(mint, tokenCounterparty) : null;
+      // Auto-classify DBT income. Known programs get a specific label;
+      // any other inbound DBT (e.g. Streamflow genesis vesting) defaults to genesis_reward.
+      // DBT is Dabba-specific — all inbound transfers from non-user addresses are income.
+      const ownAddressSet = new Set([address.toLowerCase()]);
+      const isDbtIncome =
+        delta > 0 &&
+        isDbtToken(mint) &&
+        tokenCounterparty &&
+        !ownAddressSet.has(tokenCounterparty.toLowerCase());
+      const dbtIncome = isDbtIncome
+        ? classifyDbtIncome(mint, tokenCounterparty) ?? {
+            kind: 'genesis_reward' as const,
+            label: 'Dabba Network DBT reward',
+            notes: 'Auto-classified as DBT income (genesis/staking/mainnet reward)'
+          }
+        : null;
 
       transactions.push({
         id: makeId('rpc'),

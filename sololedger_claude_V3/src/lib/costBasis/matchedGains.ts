@@ -122,6 +122,11 @@ export function buildIncomeRows(
     if (t.type === 'transfer_in' && t.counterpartyAddress && t.fiatValue != null) {
       const cp = t.counterpartyAddress;
 
+      // Native chain assets (SOL, ETH, BTC) received from contracts are NEVER airdrops.
+      // They are gas rebates, fee returns, or transfers from personal wallets.
+      const NATIVE_CHAIN_ASSETS = new Set(['SOL', 'ETH', 'BTC', 'BNB', 'MATIC', 'AVAX']);
+      if (NATIVE_CHAIN_ASSETS.has(t.asset.toUpperCase())) continue;
+
       // Stablecoins received from contracts are ALWAYS trade proceeds, not airdrops.
       // USDC/USDT are never genuinely "airdropped" — they are payments or swap proceeds.
       const STABLECOIN_ASSETS = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'TUSD', 'USDP', 'USDB']);

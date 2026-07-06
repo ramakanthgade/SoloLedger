@@ -1,30 +1,55 @@
 import { db } from '@/lib/storage/db';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import { batchClassifyNoves } from '@/lib/rpc/noves';
-import { classifyDbtIncome } from '@/lib/assets/dabbaRegistry';
+import { classifyDbtIncome, DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 import type { Transaction, FlagReason } from '@/types/transaction';
 
 /**
- * Scan all existing DBT transfer_in rows and reclassify those from known
- * Dabba Foundation programs as `income`. Run this after importing a wallet
- * or when the user clicks "Detect swaps".
- * Returns the number of transactions reclassified.
+ * Classify all unclassified DBT `transfer_in` rows as Dabba income.
+ *
+ * Rule: DBT is a Dabba-specific token. Any inbound DBT that is:
+ *   1. NOT from one of the user's own wallets
+ *   2. NOT a DCA vault return (those are handled by DCA classification)
+ * is income from Dabba Network — either genesis reward, staking reward,
+ * mainnet emission, airdrop, or Streamflow vesting.
+ *
+ * Known programs are matched specifically; anything else defaults to genesis_reward.
+ * Users can always reclassify manually in Review if needed.
  */
 export async function reprocessDbtIncome(): Promise<number> {
   const all = await db.transactions.toArray();
+  const ownWallets = new Set(
+    all.map((t) => t.walletAddress?.toLowerCase()).filter(Boolean) as string[]
+  );
+
+  // Find DBT transfer_ins that are still unclassified (still transfer_in type)
   const candidates = all.filter(
-    (t) => t.type === 'transfer_in' && t.contractAddress && t.counterpartyAddress
+    (t) =>
+      t.type === 'transfer_in' &&
+      t.contractAddress === DBT_TOKEN_MINT &&
+      !t.isInternalTransfer &&
+      !t.isSpam
   );
 
   let updated = 0;
   for (const t of candidates) {
-    const income = classifyDbtIncome(t.contractAddress, t.counterpartyAddress);
-    if (!income) continue;
+    // Skip if the sender is one of the user's own wallets
+    if (t.counterpartyAddress && ownWallets.has(t.counterpartyAddress.toLowerCase())) continue;
+
+    // Attempt exact Dabba program match first
+    const knownProgram = t.counterpartyAddress
+      ? classifyDbtIncome(t.contractAddress, t.counterpartyAddress)
+      : null;
+
+    const kind = knownProgram?.kind ?? 'genesis_reward';
+    const label = knownProgram?.label ?? 'Dabba Network DBT reward';
+    const notes = `${label} — auto-classified as income`;
+
     // eslint-disable-next-line no-await-in-loop
     await db.transactions.update(t.id, {
       type: 'income',
-      category: income.kind,
-      notes: `${income.label} — auto-classified as DBT income`,
+      category: kind,
+      notes,
       flags: [] as FlagReason[],
       isInternalTransfer: false
     });
