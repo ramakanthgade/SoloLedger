@@ -1,19 +1,16 @@
 /**
- * Jupiter DCA / Recurring order pattern detection and classification.
+ * Jupiter DCA / Recurring order pattern detection — two-pass algorithm.
  *
- * How Jupiter DCA works on-chain:
- *   1. User sends input token (e.g. DBT) to a vault/DCA account.
- *   2. Jupiter keeper bots execute partial swaps from the vault periodically.
- *   3. Output token (e.g. USDC) is sent to the user's wallet in multiple fills.
+ * Pass 1 (counterparty match): Group transactions by counterpartyAddress.
+ *   Requires both the DBT transfer_out AND the USDC fills to have counterpartyAddress set.
+ *   Works after a wallet re-sync with the new Alchemy counterparty extraction.
  *
- * Tax treatment (Koinly / Awaken Tax / Indian VDA Section 115BBH standard):
- *   - Skip the initial deposit to the vault (non-taxable escrow).
- *   - Each fill = a TRADE: sold proportional input token, received output token.
- *   - Each fill sets its own cost basis for the acquired output token.
- *   - Capital gain = USDC proceeds (INR) − proportional DBT cost basis.
- *
- * Detection requires counterpartyAddress to be set (Solana wallet re-sync needed
- * for existing imports; new imports capture counterpartyAddress automatically).
+ * Pass 2 (fill-side only): If Pass 1 finds nothing, detect from the fills alone.
+ *   Identifies vault addresses that appear as counterpartyAddress in 2+ transfer_in
+ *   of the same asset (e.g. HLnpSz...TLcC sends USDC 10 times).
+ *   Then finds the deposit by looking for a transfer_out of a different asset (DBT)
+ *   in the same wallet within ±7 days of the first fill.
+ *   Works even when the DBT transfer_out has no counterpartyAddress (old imports).
  */
 import type { Transaction, FlagReason } from '@/types/transaction';
 import { db } from '@/lib/storage/db';
@@ -29,10 +26,19 @@ export interface DcaGroup {
   totalOutput: number;
 }
 
+const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
 /** Detect DCA vault patterns from a flat list of RPC-sourced transactions. */
 export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
-  const byVault = new Map<string, { outs: Transaction[]; ins: Transaction[] }>();
+  const groups: DcaGroup[] = [];
+  const ownWallets = new Set(
+    transactions.map((t) => t.walletAddress?.toLowerCase()).filter(Boolean) as string[]
+  );
 
+  // ──────────────────────────────────────────────────────────
+  // Pass 1: counterpartyAddress-based (requires both sides to have it set)
+  // ──────────────────────────────────────────────────────────
+  const byVault = new Map<string, { outs: Transaction[]; ins: Transaction[] }>();
   for (const t of transactions) {
     const vault = t.counterpartyAddress;
     if (!vault || !t.source.startsWith('rpc:') || t.isInternalTransfer || t.isSpam) continue;
@@ -40,9 +46,6 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     if (t.type === 'transfer_out') byVault.get(vault)!.outs.push(t);
     if (t.type === 'transfer_in') byVault.get(vault)!.ins.push(t);
   }
-
-  const groups: DcaGroup[] = [];
-  const ownWallets = new Set(transactions.map((t) => t.walletAddress?.toLowerCase()).filter(Boolean));
 
   for (const [vaultAddress, { outs, ins }] of byVault) {
     if (outs.length !== 1 || ins.length < 2) continue;
@@ -64,28 +67,88 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     });
   }
 
+  // ──────────────────────────────────────────────────────────
+  // Pass 2: fill-side only detection
+  // Works when the deposit (DBT transfer_out) has no counterpartyAddress set.
+  // Identify vaults purely from the recurring INBOUND fills, then find the
+  // matching outbound deposit by time proximity.
+  // ──────────────────────────────────────────────────────────
+  const fillOnlyGroups = new Map<
+    string,
+    { vaultAddr: string; walletAddr: string; outputAsset: string; fillTxs: Transaction[] }
+  >();
+
+  for (const t of transactions) {
+    if (
+      t.type !== 'transfer_in' ||
+      !t.counterpartyAddress ||
+      !t.source.startsWith('rpc:') ||
+      t.isSpam ||
+      t.isInternalTransfer
+    )
+      continue;
+    if (ownWallets.has(t.counterpartyAddress.toLowerCase())) continue;
+
+    const key = `${t.counterpartyAddress.toLowerCase()}:${t.asset.toUpperCase()}:${t.walletAddress?.toLowerCase() ?? ''}`;
+    if (!fillOnlyGroups.has(key)) {
+      fillOnlyGroups.set(key, {
+        vaultAddr: t.counterpartyAddress,
+        walletAddr: t.walletAddress ?? '',
+        outputAsset: t.asset,
+        fillTxs: []
+      });
+    }
+    fillOnlyGroups.get(key)!.fillTxs.push(t);
+  }
+
+  for (const [, { vaultAddr, walletAddr, outputAsset, fillTxs }] of fillOnlyGroups) {
+    if (fillTxs.length < 2) continue;
+    // Skip if Pass 1 already detected this vault
+    if (groups.some((g) => g.vaultAddress.toLowerCase() === vaultAddr.toLowerCase())) continue;
+
+    const firstFillTime = Math.min(...fillTxs.map((f) => f.timestamp));
+
+    // Find the deposit: a transfer_out of a DIFFERENT asset, from the same wallet,
+    // within ±7 days of the first fill, not internal, not spam.
+    const depositCandidates = transactions.filter(
+      (t) =>
+        t.type === 'transfer_out' &&
+        t.asset.toUpperCase() !== outputAsset.toUpperCase() &&
+        t.walletAddress?.toLowerCase() === walletAddr.toLowerCase() &&
+        t.source.startsWith('rpc:') &&
+        !t.isInternalTransfer &&
+        !t.isSpam &&
+        Math.abs(t.timestamp - firstFillTime) <= ONE_WEEK_MS
+    );
+
+    // Require exactly one deposit candidate to avoid false positives
+    if (depositCandidates.length !== 1) continue;
+
+    groups.push({
+      vaultAddress: vaultAddr,
+      depositTx: depositCandidates[0],
+      fillTxs: fillTxs.sort((a, b) => a.timestamp - b.timestamp),
+      inputAsset: depositCandidates[0].asset,
+      outputAsset,
+      totalInput: depositCandidates[0].amount,
+      totalOutput: fillTxs.reduce((s, t) => s + t.amount, 0)
+    });
+  }
+
   return groups;
 }
 
 /**
  * Apply DCA classification:
  * - Deposit tx → isInternalTransfer = true (escrow, non-taxable)
- * - Fill txs → type = 'trade':
- *     asset = inputAsset (what was sold, e.g. DBT)
- *     amount = proportional input amount per fill (from Jupiter API or estimated)
- *     counterAsset = outputAsset (what was received, e.g. USDC)
- *     counterAmount = fill output amount
- *
- * The cost basis engine matches the 'trade' disposal against open DBT lots
- * (created when DBT was classified as income from Dabba Foundation), computing
- * the correct capital gain.
+ * - Fill txs → type = 'trade' (sold inputAsset, received outputAsset)
+ *   Uses Jupiter Recurring API for exact per-fill amounts; falls back to proportional.
  */
 export async function applyDcaClassification(groups: DcaGroup[]): Promise<number> {
   if (groups.length === 0) return 0;
   let applied = 0;
 
   for (const g of groups) {
-    // Try Jupiter Recurring API for exact DBT amounts per fill
     const walletAddress = g.depositTx.walletAddress;
     const jupiterData = walletAddress
       ? await fetchJupiterRecurringHistory(walletAddress)
@@ -93,29 +156,25 @@ export async function applyDcaClassification(groups: DcaGroup[]): Promise<number
 
     const totalOutput = g.fillTxs.reduce((s, t) => s + t.amount, 0);
 
-    // Mark deposit as internal transfer (escrow into DCA vault, non-taxable)
     await db.transactions.update(g.depositTx.id, {
       isInternalTransfer: true,
       flags: [] as FlagReason[],
       notes:
-        `DCA deposit: ${g.totalInput.toFixed(4)} ${g.inputAsset} → vault ` +
-        `(${g.vaultAddress.slice(0, 8)}…${g.vaultAddress.slice(-4)}). ` +
-        `Escrow — not a disposal. Proceeds recognised per fill below.`
+        `DCA deposit: ${g.totalInput.toFixed(4)} ${g.inputAsset} → ` +
+        `vault (${g.vaultAddress.slice(0, 8)}…${g.vaultAddress.slice(-4)}). ` +
+        `Non-taxable escrow — proceeds recognised per fill.`
     });
 
-    // Reclassify each fill as a 'trade' (sell inputAsset, receive outputAsset)
     for (const fill of g.fillTxs) {
-      // Look up exact amount from Jupiter API (matched by tx signature)
       const jupFill = fill.sourceRef ? jupiterData.fillsByTxId.get(fill.sourceRef) : null;
       let inputAmountPerFill: number;
 
       if (jupFill) {
-        // Exact amount from Jupiter API
-        inputAmountPerFill = jupFill.fill.inputAmount > 0
-          ? jupFill.fill.inputAmount
-          : toHumanAmount(jupFill.fill.rawInputAmount, jupFill.order.inputMint);
+        inputAmountPerFill =
+          jupFill.fill.inputAmount > 0
+            ? jupFill.fill.inputAmount
+            : toHumanAmount(jupFill.fill.rawInputAmount, jupFill.order.inputMint);
       } else {
-        // Proportional estimate: input allocated proportional to output received
         inputAmountPerFill =
           totalOutput > 0
             ? (fill.amount / totalOutput) * g.totalInput
@@ -124,18 +183,15 @@ export async function applyDcaClassification(groups: DcaGroup[]): Promise<number
 
       await db.transactions.update(fill.id, {
         type: 'trade',
-        // The disposal (what was sold from DBT lot)
         asset: g.inputAsset,
         amount: parseFloat(inputAmountPerFill.toFixed(6)),
-        // The acquisition (what was received: USDC)
         counterAsset: g.outputAsset,
         counterAmount: fill.amount,
-        // contractAddress: preserve the output token's mint (from the fill tx)
         contractAddress: fill.contractAddress,
         flags: [] as FlagReason[],
         notes:
-          `DCA fill: sold ${inputAmountPerFill.toFixed(4)} ${g.inputAsset} for ` +
-          `${fill.amount.toFixed(4)} ${g.outputAsset}` +
+          `DCA fill: sold ${inputAmountPerFill.toFixed(4)} ${g.inputAsset} ` +
+          `for ${fill.amount.toFixed(4)} ${g.outputAsset}` +
           (jupFill ? ' (exact from Jupiter API)' : ' (proportional estimate)')
       });
     }

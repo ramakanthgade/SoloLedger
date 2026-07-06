@@ -122,6 +122,11 @@ export function buildIncomeRows(
     if (t.type === 'transfer_in' && t.counterpartyAddress && t.fiatValue != null) {
       const cp = t.counterpartyAddress;
 
+      // Stablecoins received from contracts are ALWAYS trade proceeds, not airdrops.
+      // USDC/USDT are never genuinely "airdropped" — they are payments or swap proceeds.
+      const STABLECOIN_ASSETS = new Set(['USDC', 'USDT', 'DAI', 'BUSD', 'TUSD', 'USDP', 'USDB']);
+      if (STABLECOIN_ASSETS.has(t.asset.toUpperCase())) continue;
+
       // Exclude DCA vault transfers
       if (dcaVaultAddresses?.has(cp.toLowerCase())) continue;
 
