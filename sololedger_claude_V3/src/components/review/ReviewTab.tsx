@@ -11,9 +11,10 @@ import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
+import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle, Ban } from 'lucide-react';
+import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown } from 'lucide-react';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
@@ -116,7 +117,10 @@ export function ReviewTab() {
   const [assetFilter, setAssetFilter] = useState<string>('all');
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
   const [showSpam, setShowSpam] = useState(false);
+  const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'wallet' | 'asset' | 'type'>('date_desc');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [dcaGroups, setDcaGroups] = useState<Awaited<ReturnType<typeof detectDcaGroups>>>([]);
+  const [applyingDca, setApplyingDca] = useState(false);
   const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
   const settings = useMemo(() => {
     if (!settingsRow) return null;
@@ -133,7 +137,7 @@ export function ReviewTab() {
   const [swapDetectMsg, setSwapDetectMsg] = useState<string | null>(null);
   const [novesProgress, setNovesProgress] = useState<{ done: number; total: number } | null>(null);
 
-  const transactions = useLiveQuery(() => db.transactions.orderBy('timestamp').reverse().toArray(), []) ?? [];
+  const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
 
   // Resolve truncated contract addresses → tickers via CoinGecko (cached + saved to IndexedDB).
@@ -268,17 +272,38 @@ export function ReviewTab() {
 
   const assets = useMemo(() => Array.from(new Set(transactions.map((t) => t.asset))).sort(), [transactions]);
 
+  // Detect DCA groups whenever transactions change (only if counterpartyAddress is populated)
+  useEffect(() => {
+    const groups = detectDcaGroups(transactions.filter((t) => !t.isInternalTransfer && !t.isSpam));
+    setDcaGroups(groups);
+  }, [transactions]);
+
   const filtered = useMemo(() => {
-    return transactions.filter((t) => {
+    const base = transactions.filter((t) => {
       if (!showSpam && t.isSpam) return false;
       if (showSpam && !t.isSpam) return false;
       if (showNeedsPrice && !(t.fiatValue == null && !t.isInternalTransfer && !t.isSpam)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
-      if (query && !`${t.asset} ${t.type} ${t.source} ${t.notes ?? ''}`.toLowerCase().includes(query.toLowerCase()))
+      if (query && !`${t.asset} ${t.type} ${t.source} ${t.walletAddress ?? ''} ${t.notes ?? ''}`.toLowerCase().includes(query.toLowerCase()))
         return false;
       return true;
     });
-  }, [transactions, assetFilter, query, showNeedsPrice, showSpam]);
+
+    return [...base].sort((a, b) => {
+      switch (sortBy) {
+        case 'date_asc': return a.timestamp - b.timestamp;
+        case 'wallet': {
+          const wa = a.walletAddress ?? '';
+          const wb = b.walletAddress ?? '';
+          return wa.localeCompare(wb) || b.timestamp - a.timestamp;
+        }
+        case 'asset': return a.asset.localeCompare(b.asset) || b.timestamp - a.timestamp;
+        case 'type': return a.type.localeCompare(b.type) || b.timestamp - a.timestamp;
+        case 'date_desc':
+        default: return b.timestamp - a.timestamp;
+      }
+    });
+  }, [transactions, assetFilter, query, showNeedsPrice, showSpam, sortBy]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -315,6 +340,40 @@ export function ReviewTab() {
         <h2 className="font-display text-xl font-semibold text-mist">Review</h2>
         <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
       </div>
+      {/* DCA / Recurring order banner */}
+      {dcaGroups.length > 0 && (
+        <div className="flex flex-col gap-3 rounded-lg border border-emerald/40 bg-emerald/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-mist">
+              {dcaGroups.length} DCA / Recurring order{dcaGroups.length === 1 ? '' : 's'} detected
+            </p>
+            <div className="mt-1 space-y-0.5 text-xs text-mist-400">
+              {dcaGroups.map((g) => (
+                <p key={g.vaultAddress}>
+                  {g.totalInput.toFixed(0)} {g.inputAsset} → {g.fillTxs.length} fills of {g.outputAsset} (vault {g.vaultAddress.slice(0, 8)}…{g.vaultAddress.slice(-4)})
+                </p>
+              ))}
+            </div>
+            <p className="mt-1 text-xs text-mist-400">
+              Koinly approach: mark the deposit as internal (non-taxable escrow), classify each fill as a buy.
+              Fetch prices after classifying.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            disabled={applyingDca}
+            onClick={async () => {
+              setApplyingDca(true);
+              await applyDcaClassification(dcaGroups);
+              setApplyingDca(false);
+            }}
+            className="shrink-0 border-emerald/40 text-emerald-600"
+          >
+            {applyingDca ? 'Classifying…' : 'Classify DCA fills'}
+          </Button>
+        </div>
+      )}
+
       {potentialSwapPairs > 0 && (
         <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
@@ -400,6 +459,22 @@ export function ReviewTab() {
             </option>
           ))}
         </select>
+
+        {/* Sort selector */}
+        <div className="flex items-center gap-1.5 rounded-full border border-ink-600 bg-ink-800 px-3 py-1.5">
+          <ArrowUpDown className="h-3.5 w-3.5 text-mist-400" />
+          <select
+            value={sortBy}
+            onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+            className="bg-transparent text-sm text-mist focus:outline-none"
+          >
+            <option value="date_desc">Date ↓ (newest)</option>
+            <option value="date_asc">Date ↑ (oldest)</option>
+            <option value="wallet">By wallet</option>
+            <option value="asset">By asset</option>
+            <option value="type">By type</option>
+          </select>
+        </div>
 
         {/* Quick-filter toggles */}
         <button

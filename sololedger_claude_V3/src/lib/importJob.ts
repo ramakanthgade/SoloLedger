@@ -6,7 +6,7 @@
  * the async work continues and the progress state is preserved.
  * When they return to Import, the component re-subscribes and sees live state.
  */
-import { db, getLookupAddresses, upsertLookupAddress } from '@/lib/storage/db';
+import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -192,6 +192,12 @@ export async function runWalletImport(
           (priceResult.failed > 0 ? ` ${priceResult.failed} could not be priced.` : '')
       );
     }
+  }
+
+  // Dedup after every import in case wallet was synced before
+  const dupsRemoved = await deduplicateTransactions();
+  if (dupsRemoved > 0) {
+    apiWarnings.unshift(`Removed ${dupsRemoved} duplicate transaction${dupsRemoved === 1 ? '' : 's'} (re-sync detected).`);
   }
 
   importJob._finish(

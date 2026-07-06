@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { LocalOnlyBadge } from '@/components/LocalOnlyBadge';
+import { deduplicateTransactions } from '@/lib/storage/db';
 import { ImportTab } from '@/components/import/ImportTab';
 import { ReviewTab } from '@/components/review/ReviewTab';
 import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
@@ -40,6 +41,14 @@ export default function App() {
   const [active, setActive] = useState<TabId>('import');
   const ActiveComponent = TABS.find((t) => t.id === active)!.component;
   const importState = useImportJob();
+
+  // One-time dedup per session (catches stale duplicates from earlier imports)
+  useEffect(() => {
+    const key = 'sololedger_dedup_session';
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+    void deduplicateTransactions();
+  }, []);
 
   return (
     <div className="min-h-screen bg-ink">

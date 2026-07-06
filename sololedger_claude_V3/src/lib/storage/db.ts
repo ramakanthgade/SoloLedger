@@ -207,3 +207,47 @@ export async function getWalletLabel(address: string): Promise<string | undefine
     .toArray();
   return rows[0]?.label;
 }
+
+/**
+ * Remove duplicate transactions from the database.
+ * Duplicates occur when a wallet is synced multiple times.
+ * Dedup key: sourceRef + walletAddress + asset + type (same on-chain event in same direction).
+ * Returns the number of duplicates removed.
+ */
+export async function deduplicateTransactions(): Promise<number> {
+  const all = await db.transactions.toArray();
+  const seen = new Map<string, string>(); // dedup key → first id seen
+  const toDelete: string[] = [];
+
+  for (const t of all) {
+    if (!t.sourceRef || !t.walletAddress) continue;
+    // Include amount rounded to 6 dp to avoid floating-point mismatches
+    const key = [
+      t.sourceRef,
+      t.walletAddress.toLowerCase(),
+      t.asset.toUpperCase(),
+      t.type,
+      t.amount.toFixed(6)
+    ].join('|');
+
+    if (seen.has(key)) {
+      // Keep whichever already has a fiatValue; otherwise keep the first
+      const firstId = seen.get(key)!;
+      const first = all.find((x) => x.id === firstId)!;
+      if (first.fiatValue == null && t.fiatValue != null) {
+        // The new one has a price — delete the old one, keep this
+        toDelete.push(firstId);
+        seen.set(key, t.id);
+      } else {
+        toDelete.push(t.id);
+      }
+    } else {
+      seen.set(key, t.id);
+    }
+  }
+
+  if (toDelete.length > 0) {
+    await db.transactions.bulkDelete(toDelete);
+  }
+  return toDelete.length;
+}

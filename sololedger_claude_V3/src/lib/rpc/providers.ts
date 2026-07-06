@@ -334,7 +334,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
   const sigRes = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 50 }] })
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 100 }] })
   });
   const sigData = await sigRes.json();
   if (!sigRes.ok) throw new Error(alchemyErrorMessage(sigRes.status, sigData));
@@ -360,12 +360,24 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 
     // --- Native SOL balance delta ---
     const accountKeys: string[] = tx.transaction?.message?.accountKeys?.map((k: any) => (typeof k === 'string' ? k : k.pubkey)) ?? [];
+    const allPreBalances: number[] = tx.meta?.preBalances ?? [];
+    const allPostBalances: number[] = tx.meta?.postBalances ?? [];
     const idx = accountKeys.indexOf(address);
     if (idx !== -1) {
-      const pre = tx.meta?.preBalances?.[idx] ?? 0;
-      const post = tx.meta?.postBalances?.[idx] ?? 0;
+      const pre = allPreBalances[idx] ?? 0;
+      const post = allPostBalances[idx] ?? 0;
       const delta = (post - pre) / 1e9;
       if (Math.abs(delta) > 0.000001) {
+        // Find counterparty: the other account with the opposite SOL balance change
+        let solCounterparty: string | undefined;
+        for (let i = 0; i < accountKeys.length; i++) {
+          if (i === idx) continue;
+          const counterDelta = ((allPostBalances[i] ?? 0) - (allPreBalances[i] ?? 0)) / 1e9;
+          if ((delta > 0 && counterDelta < -0.000001) || (delta < 0 && counterDelta > 0.000001)) {
+            solCounterparty = accountKeys[i];
+            break;
+          }
+        }
         transactions.push({
           id: makeId('rpc'),
           timestamp,
@@ -377,6 +389,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
           source: 'rpc:alchemy',
           sourceRef: sig.signature,
           walletAddress: address,
+          counterpartyAddress: solCounterparty,
           chain: 'solana',
           flags: ['possible_internal_transfer', 'missing_cost_basis'],
           isInternalTransfer: false,
@@ -386,8 +399,10 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
     }
 
     // --- SPL token / NFT balance deltas (USDC, other tokens, NFTs) ---
-    const pre = (tx.meta?.preTokenBalances ?? []).filter((b: any) => b.owner === address);
-    const post = (tx.meta?.postTokenBalances ?? []).filter((b: any) => b.owner === address);
+    const allPreToken: any[] = tx.meta?.preTokenBalances ?? [];
+    const allPostToken: any[] = tx.meta?.postTokenBalances ?? [];
+    const pre = allPreToken.filter((b: any) => b.owner === address);
+    const post = allPostToken.filter((b: any) => b.owner === address);
     const mints = new Set<string>([...pre.map((b: any) => b.mint), ...post.map((b: any) => b.mint)]);
 
     // eslint-disable-next-line no-await-in-loop
@@ -396,6 +411,22 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
       const postAmt = post.find((b: any) => b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
       const delta = postAmt - preAmt;
       if (Math.abs(delta) < 1e-9) continue;
+
+      // Find counterparty: the other owner whose balance of this mint changed in the opposite direction.
+      // This captures vault addresses in DCA/recurring orders (e.g. Jupiter DCA vault → USDC sent to wallet).
+      let tokenCounterparty: string | undefined;
+      const allMintsForToken = [...allPreToken, ...allPostToken]
+        .filter((b: any) => b.mint === mint && b.owner !== address)
+        .map((b: any) => b.owner);
+      for (const owner of new Set(allMintsForToken)) {
+        const cPre = allPreToken.find((b: any) => b.mint === mint && b.owner === owner)?.uiTokenAmount?.uiAmount ?? 0;
+        const cPost = allPostToken.find((b: any) => b.mint === mint && b.owner === owner)?.uiTokenAmount?.uiAmount ?? 0;
+        const counterDelta = cPost - cPre;
+        if ((delta > 0 && counterDelta < -1e-9) || (delta < 0 && counterDelta > 1e-9)) {
+          tokenCounterparty = owner;
+          break;
+        }
+      }
 
       // eslint-disable-next-line no-await-in-loop
       const meta = await getSolanaAssetMeta(apiKey, mint);
@@ -410,6 +441,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
         source: 'rpc:alchemy',
         sourceRef: sig.signature,
         walletAddress: address,
+        counterpartyAddress: tokenCounterparty,
         contractAddress: mint,
         chain: 'solana',
         category: meta.isNft ? 'nft' : undefined,
