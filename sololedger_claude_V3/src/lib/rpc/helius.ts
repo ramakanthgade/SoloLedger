@@ -1,0 +1,370 @@
+/**
+ * Helius Enhanced Transactions client for Solana.
+ *
+ * Primary data source for Solana wallets — returns pre-parsed, labelled
+ * transactions including Jupiter DCA fills, staking, NFT activity, etc.
+ *
+ * Endpoint: GET https://mainnet.helius-rpc.com/v0/addresses/{address}/transactions
+ * Docs: https://docs.helius.dev/enhanced-transactions/overview
+ *
+ * The Enhanced Transactions API is in maintenance mode (no new parsers) but
+ * all existing parsers continue to work — this covers Jupiter, Raydium, Orca,
+ * Marinade, Magic Eden, and hundreds more Solana protocols.
+ *
+ * Pricing: 100 CU per enhanced tx call (Developer plan: 25M CU/mo).
+ */
+
+import { makeId } from '@/lib/parsers/types';
+import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
+import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
+import { classifyFromHelius } from '@/lib/rpc/classificationEngine';
+import type { Transaction, FlagReason, TxType } from '@/types/transaction';
+
+const HELIUS_BASE = 'https://mainnet.helius-rpc.com';
+
+export interface HeliusTokenTransfer {
+  fromUserAccount: string;
+  toUserAccount: string;
+  fromTokenAccount?: string;
+  toTokenAccount?: string;
+  tokenAmount: number;
+  decimals?: number;
+  mint: string;
+  tokenStandard?: string;
+}
+
+export interface HeliusNativeTransfer {
+  fromUserAccount: string;
+  toUserAccount: string;
+  amount: number; // lamports
+}
+
+export interface HeliusSwapEvent {
+  nativeInput?: { account: string; amount: number };
+  nativeOutput?: { account: string; amount: number };
+  tokenInputs?: Array<{ userAccount: string; mint: string; rawTokenAmount: { tokenAmount: string; decimals: number } }>;
+  tokenOutputs?: Array<{ userAccount: string; mint: string; rawTokenAmount: { tokenAmount: string; decimals: number } }>;
+}
+
+export interface HeliusTransaction {
+  signature: string;
+  slot: number;
+  timestamp: number;
+  type: string;        // SWAP, TRANSFER, NFT_SALE, STAKE_SOL, etc.
+  source: string;      // JUPITER, RAYDIUM, ORCA, SYSTEM_PROGRAM, etc.
+  description: string;
+  fee: number;
+  feePayer: string;
+  tokenTransfers: HeliusTokenTransfer[];
+  nativeTransfers: HeliusNativeTransfer[];
+  accountData: Array<{ account: string; nativeBalanceChange: number; tokenBalanceChanges: any[] }>;
+  events?: {
+    swap?: HeliusSwapEvent;
+    nft?: any;
+  };
+}
+
+function resolveSymbol(mint: string): string {
+  const known = resolveSolanaMintSymbol(mint);
+  if (known) return known;
+  return `${mint.slice(0, 4)}…${mint.slice(-4)}`;
+}
+
+function rawAmountToDecimal(rawAmount: string, decimals: number): number {
+  return Number(BigInt(rawAmount)) / 10 ** decimals;
+}
+
+/**
+ * Convert a Helius SWAP transaction into a SoloLedger `trade` row.
+ * Uses events.swap for exact amounts; falls back to tokenTransfers.
+ */
+function heliusSwapToTrade(
+  htx: HeliusTransaction,
+  walletAddress: string
+): Transaction | null {
+  const swap = htx.events?.swap;
+
+  let inputMint: string | undefined;
+  let inputAmount: number | undefined;
+  let outputMint: string | undefined;
+  let outputAmount: number | undefined;
+
+  if (swap) {
+    // Prefer structured swap event
+    const inp = swap.tokenInputs?.[0];
+    const out = swap.tokenOutputs?.[0];
+    if (inp) {
+      inputMint = inp.mint;
+      inputAmount = rawAmountToDecimal(inp.rawTokenAmount.tokenAmount, inp.rawTokenAmount.decimals);
+    }
+    if (out) {
+      outputMint = out.mint;
+      outputAmount = rawAmountToDecimal(out.rawTokenAmount.tokenAmount, out.rawTokenAmount.decimals);
+    }
+    // Handle native SOL as input/output
+    if (!inputMint && swap.nativeInput) {
+      inputMint = 'So11111111111111111111111111111111111111112';
+      inputAmount = swap.nativeInput.amount / 1e9;
+    }
+    if (!outputMint && swap.nativeOutput) {
+      outputMint = 'So11111111111111111111111111111111111111112';
+      outputAmount = swap.nativeOutput.amount / 1e9;
+    }
+  }
+
+  // Fallback: derive from tokenTransfers
+  if (!inputMint || !outputMint) {
+    const sent = htx.tokenTransfers.filter((t) => t.fromUserAccount === walletAddress);
+    const received = htx.tokenTransfers.filter((t) => t.toUserAccount === walletAddress);
+    if (sent.length > 0 && !inputMint) {
+      inputMint = sent[0].mint;
+      inputAmount = sent.reduce((s, t) => s + t.tokenAmount, 0);
+    }
+    if (received.length > 0 && !outputMint) {
+      outputMint = received[0].mint;
+      outputAmount = received.reduce((s, t) => s + t.tokenAmount, 0);
+    }
+  }
+
+  if (!inputMint || !outputMint) return null;
+
+  const inputSymbol = resolveSymbol(inputMint);
+  const outputSymbol = resolveSymbol(outputMint);
+
+  // If input is DBT, check if it's a Dabba income classification
+  // (shouldn't happen for swaps, but guard against it)
+  const isBtdIncome = isDbtToken(inputMint) && false; // swaps are never income
+  void isBtdIncome;
+
+  return {
+    id: makeId('rpc'),
+    timestamp: htx.timestamp * 1000,
+    type: 'trade',
+    asset: inputSymbol,
+    amount: inputAmount ?? 0,
+    counterAsset: outputSymbol,
+    counterAmount: outputAmount,
+    contractAddress: inputMint,
+    fiatCurrency: 'USD',
+    fiatValue: undefined,
+    source: `rpc:helius`,
+    sourceRef: htx.signature,
+    walletAddress,
+    chain: 'solana',
+    notes: htx.description || `Swapped ${inputSymbol} for ${outputSymbol} on ${htx.source}`,
+    flags: ['missing_cost_basis'] as FlagReason[],
+    isInternalTransfer: false
+  };
+}
+
+/**
+ * Convert a Helius TRANSFER (or other simple) transaction into
+ * one or more SoloLedger rows.
+ */
+function heliusTransferToRows(
+  htx: HeliusTransaction,
+  walletAddress: string
+): Transaction[] {
+  const rows: Transaction[] = [];
+  const ts = htx.timestamp * 1000;
+
+  // SPL token transfers
+  const tokensSent = htx.tokenTransfers.filter((t) => t.fromUserAccount === walletAddress);
+  const tokensReceived = htx.tokenTransfers.filter((t) => t.toUserAccount === walletAddress);
+
+  for (const t of tokensSent) {
+    const asset = resolveSymbol(t.mint);
+    // Check DBT income (shouldn't be outbound income, but handles edge cases)
+    rows.push({
+      id: makeId('rpc'),
+      timestamp: ts,
+      type: 'transfer_out',
+      asset,
+      amount: t.tokenAmount,
+      contractAddress: t.mint,
+      fiatCurrency: 'USD',
+      fiatValue: undefined,
+      source: 'rpc:helius',
+      sourceRef: htx.signature,
+      walletAddress,
+      counterpartyAddress: t.toUserAccount,
+      chain: 'solana',
+      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+      isInternalTransfer: false
+    });
+  }
+
+  for (const t of tokensReceived) {
+    const asset = resolveSymbol(t.mint);
+    // Auto-classify DBT income from known Dabba programs
+    const dbtIncome = isDbtToken(t.mint) && t.fromUserAccount !== walletAddress
+      ? classifyDbtIncome(t.mint, t.fromUserAccount) ?? {
+          kind: 'genesis_reward' as const,
+          label: 'Dabba Network DBT reward',
+          notes: 'Auto-classified as DBT income'
+        }
+      : null;
+
+    rows.push({
+      id: makeId('rpc'),
+      timestamp: ts,
+      type: dbtIncome ? 'income' : 'transfer_in',
+      asset,
+      amount: t.tokenAmount,
+      contractAddress: t.mint,
+      fiatCurrency: 'USD',
+      fiatValue: undefined,
+      source: 'rpc:helius',
+      sourceRef: htx.signature,
+      walletAddress,
+      counterpartyAddress: t.fromUserAccount,
+      chain: 'solana',
+      category: dbtIncome?.kind,
+      notes: dbtIncome?.notes,
+      flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+      isInternalTransfer: false
+    });
+  }
+
+  // Native SOL transfers
+  const solSent = htx.nativeTransfers.filter((t) => t.fromUserAccount === walletAddress);
+  const solReceived = htx.nativeTransfers.filter((t) => t.toUserAccount === walletAddress);
+
+  for (const t of solSent) {
+    const sol = t.amount / 1e9;
+    if (Math.abs(sol) < 0.000001) continue; // skip dust/rent
+    rows.push({
+      id: makeId('rpc'),
+      timestamp: ts,
+      type: 'transfer_out',
+      asset: 'SOL',
+      amount: sol,
+      fiatCurrency: 'USD',
+      fiatValue: undefined,
+      source: 'rpc:helius',
+      sourceRef: htx.signature,
+      walletAddress,
+      counterpartyAddress: t.toUserAccount,
+      chain: 'solana',
+      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+      isInternalTransfer: false
+    });
+  }
+
+  for (const t of solReceived) {
+    const sol = t.amount / 1e9;
+    if (Math.abs(sol) < 0.000001) continue;
+    rows.push({
+      id: makeId('rpc'),
+      timestamp: ts,
+      type: 'transfer_in',
+      asset: 'SOL',
+      amount: sol,
+      fiatCurrency: 'USD',
+      fiatValue: undefined,
+      source: 'rpc:helius',
+      sourceRef: htx.signature,
+      walletAddress,
+      counterpartyAddress: t.fromUserAccount,
+      chain: 'solana',
+      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+      isInternalTransfer: false
+    });
+  }
+
+  return rows;
+}
+
+/**
+ * Convert one Helius transaction into SoloLedger transaction rows.
+ * A single Helius tx may produce 0-N rows (e.g. multi-leg swaps).
+ */
+function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transaction[] {
+  const classified = classifyFromHelius(htx.type, htx.source, htx.description);
+
+  // SWAP → single trade row
+  if (htx.type === 'SWAP' || classified?.type === 'trade') {
+    const trade = heliusSwapToTrade(htx, walletAddress);
+    if (trade) return [trade];
+    // If swap extraction fails, fall through to transfer parsing
+  }
+
+  // DeFi (stake, unstake, liquidity) → one row from the primary token flow
+  const defiType = classified?.type;
+  if (defiType && ['defi_deposit', 'defi_withdraw', 'nft_mint', 'nft_sell', 'nft_buy'].includes(defiType)) {
+    const rows = heliusTransferToRows(htx, walletAddress);
+    return rows.map((r) => ({
+      ...r,
+      type: defiType as TxType,
+      flags: ['missing_cost_basis'] as FlagReason[],
+      notes: htx.description || classified?.notes
+    }));
+  }
+
+  // TRANSFER / UNKNOWN → parse all token/SOL balance changes
+  return heliusTransferToRows(htx, walletAddress);
+}
+
+export interface HeliusLookupResult {
+  transactions: Transaction[];
+  warnings: string[];
+}
+
+/**
+ * Fetch and parse full transaction history for a Solana address via Helius.
+ * Uses the Enhanced Transactions API (v0) which returns labelled data.
+ * Paginates automatically up to `maxPages` (default: 5 = 500 transactions).
+ */
+export async function fetchHeliusSolana(
+  address: string,
+  apiKey: string,
+  maxPages = 5
+): Promise<HeliusLookupResult> {
+  const transactions: Transaction[] = [];
+  const warnings: string[] = [];
+
+  let beforeSignature: string | undefined;
+  let page = 0;
+
+  while (page < maxPages) {
+    let url =
+      `${HELIUS_BASE}/v0/addresses/${address}/transactions` +
+      `?api-key=${apiKey}&limit=100`;
+    if (beforeSignature) url += `&before=${beforeSignature}`;
+
+    // eslint-disable-next-line no-await-in-loop
+    const res = await fetch(url);
+
+    if (res.status === 401) {
+      warnings.push('Helius: invalid API key — check Settings.');
+      break;
+    }
+    if (res.status === 429) {
+      warnings.push('Helius: rate limited — try again in a moment.');
+      break;
+    }
+    if (!res.ok) {
+      warnings.push(`Helius: returned ${res.status}`);
+      break;
+    }
+
+    // eslint-disable-next-line no-await-in-loop
+    const data: HeliusTransaction[] = await res.json();
+    if (!Array.isArray(data) || data.length === 0) break;
+
+    for (const htx of data) {
+      const rows = heliusTxToRows(htx, address);
+      transactions.push(...rows);
+    }
+
+    if (data.length < 100) break; // last page
+    beforeSignature = data[data.length - 1].signature;
+    page++;
+
+    // Small delay between pages to respect rate limits
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, 300));
+  }
+
+  return { transactions, warnings };
+}
