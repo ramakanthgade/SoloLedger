@@ -8,7 +8,8 @@
  */
 import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
-import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
+import { reprocessSwapDetectionInDb, reprocessDbtIncome } from '@/lib/rpc/reprocessSwaps';
+import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import type { TaxSettings } from '@/types/transaction';
 
@@ -163,18 +164,52 @@ export async function runWalletImport(
 
   await Promise.all(perAddress.map((p) => upsertLookupAddress(chain.id, p.address, p.count)));
 
-  // --- Phase 2: Noves / swap classification ---
+  // --- Phase 2: Classification + DCA auto-detection ---
   importJob._setPhase('classifying');
   let swapsDetected = 0;
+
   if (txsToStore.length > 0) {
-    const swapResult = await reprocessSwapDetectionInDb(
-      settings.novesApiKey,
-      (done, total) => importJob._setProgress({ done, total })
+    // Phase 2a: Reclassify DBT income (always free, no API)
+    await reprocessDbtIncome();
+
+    // Phase 2b: Noves swap classification — ONLY for non-Helius/Moralis sources.
+    // Helius and Moralis already return pre-classified transactions; calling Noves
+    // again would be redundant and waste API credits.
+    const hasRichSourceTxs = txsToStore.some(
+      (t) => t.source === 'rpc:helius' || t.source === 'rpc:moralis'
     );
-    swapsDetected = swapResult.tradesCreated;
-    if (swapResult.tradesCreated > 0 || swapResult.reclassified > 0) {
-      apiWarnings.unshift(swapResult.message);
+    const hasLegacyTxs = txsToStore.some(
+      (t) => t.source.startsWith('rpc:') && t.source !== 'rpc:helius' && t.source !== 'rpc:moralis'
+    );
+
+    if (!hasRichSourceTxs || hasLegacyTxs) {
+      // Only run Noves for Alchemy/Blockscout/Etherscan-sourced transactions
+      const swapResult = await reprocessSwapDetectionInDb(
+        settings.novesApiKey,
+        (done, total) => importJob._setProgress({ done, total })
+      );
+      swapsDetected = swapResult.tradesCreated;
+      if (swapResult.tradesCreated > 0 || swapResult.reclassified > 0) {
+        apiWarnings.unshift(swapResult.message);
+      }
     }
+
+    // Phase 2c: DCA auto-classification (always run — works for Helius/Moralis AND legacy sources)
+    // Re-reads the DB after Phase 2a/2b so newly classified income rows are available.
+    importJob._setProgress({ done: 0, total: 1 });
+    const allAfterClassification = await db.transactions.toArray();
+    const dcaGroups = detectDcaGroups(allAfterClassification);
+    if (dcaGroups.length > 0) {
+      const dcaApplied = await applyDcaClassification(dcaGroups);
+      swapsDetected += dcaApplied;
+      if (dcaApplied > 0) {
+        apiWarnings.unshift(
+          `Auto-classified ${dcaApplied} DCA order${dcaApplied === 1 ? '' : 's'}: ` +
+            `deposit marked non-taxable, fills classified as trades. Fetch prices to calculate P&L.`
+        );
+      }
+    }
+    importJob._setProgress(null);
   }
 
   // --- Phase 3: Auto price fetch ---

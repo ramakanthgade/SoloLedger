@@ -126,16 +126,23 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
         Math.abs(t.timestamp - firstFillTime) <= ONE_WEEK_MS
     );
 
-    // Require exactly one deposit candidate to avoid false positives
-    if (depositCandidates.length !== 1) continue;
+    if (depositCandidates.length === 0) continue;
+
+    // If multiple deposit candidates (e.g. two DCA orders placed on the same day),
+    // pick the one closest in time to the first fill.
+    const depositTx = depositCandidates.reduce((best, candidate) => {
+      const bestDiff = Math.abs(best.timestamp - firstFillTime);
+      const candDiff = Math.abs(candidate.timestamp - firstFillTime);
+      return candDiff <= bestDiff ? candidate : best;
+    });
 
     groups.push({
       vaultAddress: vaultAddr,
-      depositTx: depositCandidates[0],
+      depositTx,
       fillTxs: fillTxs.sort((a, b) => a.timestamp - b.timestamp),
-      inputAsset: depositCandidates[0].asset,
+      inputAsset: depositTx.asset,
       outputAsset,
-      totalInput: depositCandidates[0].amount,
+      totalInput: depositTx.amount,
       totalOutput: fillTxs.reduce((s, t) => s + t.amount, 0)
     });
   }

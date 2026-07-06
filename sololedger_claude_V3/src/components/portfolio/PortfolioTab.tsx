@@ -130,7 +130,9 @@ export function PortfolioTab() {
       <div>
         <h2 className="font-display text-xl font-semibold text-mist">Portfolio</h2>
         <p className="mt-1 text-sm text-mist-400">
-          Holdings and cost basis (average-cost). Use filters to cross-check vs your wallet balances.
+          Holdings and cost basis (average-cost). Use filters to cross-check vs your wallet.
+          Note: SOL may show slightly higher than your wallet because Solana reserves ~0.002 SOL rent
+          per token account — this is locked in your wallet but counts as a transfer.
         </p>
       </div>
 
