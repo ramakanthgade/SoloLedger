@@ -50,6 +50,7 @@ export interface Transaction {
   notes?: string;
   flags: FlagReason[];
   isInternalTransfer: boolean;  // user-confirmed non-taxable transfer between own wallets
+  isSpam?: boolean;             // user-confirmed spam/phishing — excluded from all calculations
   category?: string;            // user-editable free-form tag
   raw?: Record<string, unknown>; // original parsed row, kept for traceability/debugging only
 }
@@ -90,6 +91,16 @@ export interface TaxSettings {
   rpcLookupEnabled: boolean;
   /** One Alchemy key covers Ethereum + every EVM chain it supports + Solana. */
   alchemyApiKey?: string;
+  /** CoinGecko Pro key — historical prices by date (recommended for 100+ tx imports). */
+  coingeckoApiKey?: string;
+  /** Birdeye key — historical token prices for Solana long-tail tokens via DEX pools. */
+  birdeyeApiKey?: string;
+  /** Noves key — DeFi/swap/staking classification for EVM + Solana tx hashes. */
+  novesApiKey?: string;
+  /** OpenRouter API key — used for the AI Tax Advisor chat panel. */
+  aiApiKey?: string;
+  /** OpenRouter model id, e.g. anthropic/claude-opus-4-5 */
+  aiModel?: string;
   /** For the "other EVM chain" manual fallback in wallet lookup. */
   customExplorerBaseUrl?: string;
   customExplorerApiKey?: string;

@@ -6,12 +6,14 @@
  * - Bitcoin uses Blockstream/mempool.space-compatible APIs — free, no key,
  *   no account. Every such service still sees the address you query; there
  *   is no way around that for any hosted explorer (see Settings for why).
- * - Every other chain here goes through Alchemy, because one free Alchemy
- *   API key covers Ethereum, Polygon, Arbitrum, Base, BNB Smart Chain,
- *   Optimism, Avalanche, AND Solana.
- * - Etherscan-compatible is kept as a manual fallback.
+ * - Ethereum uses Blockscout first (free, no key). Alchemy is optional fallback.
+ * - Every other EVM chain here goes through Alchemy (one free key covers many chains).
+ * - Etherscan-compatible is kept as a manual fallback for other EVM chains / custom explorers.
  */
+import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
+import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
 import { makeId } from '@/lib/parsers/types';
+import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
 
 export type ChainId = 'bitcoin' | 'ethereum' | 'polygon' | 'arbitrum' | 'base' | 'bsc' | 'optimism' | 'avalanche' | 'solana' | 'custom_evm';
@@ -224,6 +226,18 @@ async function fetchAlchemyEvmInner(
   return { transactions, warnings: [] };
 }
 
+function isNetworkFetchError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return (
+    msg.includes('Failed to fetch') ||
+    msg.includes('NetworkError') ||
+    msg.includes('ENOTFOUND') ||
+    msg.includes('getaddrinfo') ||
+    msg.includes('ECONNREFUSED') ||
+    msg.includes('ETIMEDOUT')
+  );
+}
+
 async function fetchAlchemyEvm(
   address: string,
   network: string,
@@ -236,20 +250,44 @@ async function fetchAlchemyEvm(
     return await fetchAlchemyEvmInner(address, network, apiKey, asset, chainId);
   } catch (err) {
     if (!isAlchemyRateLimitError(err)) throw err;
-    const baseUrl = etherscanV2BaseUrl(chainId);
-    if (etherscanApiKey && baseUrl) {
-      const result = await fetchEtherscanCompatible(address, baseUrl, etherscanApiKey, asset);
+    if (chainId === 'ethereum') {
+      const result = await fetchBlockscoutEthereum(address);
       return {
         transactions: result.transactions,
         warnings: [
           {
             address,
             message:
-              'Alchemy transfer lookup was rate-limited; fetched via Etherscan instead (native + ERC-20 transfers).'
+              'Alchemy transfer lookup was rate-limited; fetched via Blockscout instead (native + ERC-20 transfers).'
           },
           ...result.warnings
         ]
       };
+    }
+    const baseUrl = etherscanV2BaseUrl(chainId);
+    if (etherscanApiKey && baseUrl) {
+      try {
+        const result = await fetchEtherscanCompatible(address, baseUrl, etherscanApiKey, asset);
+        return {
+          transactions: result.transactions,
+          warnings: [
+            {
+              address,
+              message:
+                'Alchemy transfer lookup was rate-limited; fetched via Etherscan instead (native + ERC-20 transfers).'
+            },
+            ...result.warnings
+          ]
+        };
+      } catch (etherscanErr) {
+        if (isNetworkFetchError(etherscanErr)) {
+          throw new Error(
+            'Alchemy transfer lookup is rate-limited and Etherscan could not be reached from your network. ' +
+              'Check your internet/DNS or try again later.'
+          );
+        }
+        throw etherscanErr;
+      }
     }
     throw err;
   }
@@ -260,6 +298,12 @@ const solanaAssetCache = new Map<string, { symbol: string; isNft: boolean }>();
 
 async function getSolanaAssetMeta(apiKey: string, mint: string): Promise<{ symbol: string; isNft: boolean }> {
   if (solanaAssetCache.has(mint)) return solanaAssetCache.get(mint)!;
+  const known = resolveSolanaMintSymbol(mint);
+  if (known) {
+    const meta = { symbol: known, isNft: false };
+    solanaAssetCache.set(mint, meta);
+    return meta;
+  }
   try {
     const res = await fetch(alchemyRpcUrl('solana-mainnet'), {
       method: 'POST',
@@ -268,7 +312,11 @@ async function getSolanaAssetMeta(apiKey: string, mint: string): Promise<{ symbo
     });
     const data = await res.json();
     const asset = data.result;
-    const symbol = asset?.content?.metadata?.symbol || asset?.token_info?.symbol || `${mint.slice(0, 4)}…${mint.slice(-4)}`;
+    const symbol =
+      asset?.content?.metadata?.symbol ||
+      asset?.token_info?.symbol ||
+      asset?.content?.metadata?.name ||
+      `${mint.slice(0, 4)}…${mint.slice(-4)}`;
     const isNft = !!asset?.interface && asset.interface !== 'FungibleToken' && asset.interface !== 'FungibleAsset';
     const meta = { symbol, isNft };
     solanaAssetCache.set(mint, meta);
@@ -287,7 +335,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
   const sigRes = await fetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 50 }] })
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 100 }] })
   });
   const sigData = await sigRes.json();
   if (!sigRes.ok) throw new Error(alchemyErrorMessage(sigRes.status, sigData));
@@ -313,12 +361,24 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 
     // --- Native SOL balance delta ---
     const accountKeys: string[] = tx.transaction?.message?.accountKeys?.map((k: any) => (typeof k === 'string' ? k : k.pubkey)) ?? [];
+    const allPreBalances: number[] = tx.meta?.preBalances ?? [];
+    const allPostBalances: number[] = tx.meta?.postBalances ?? [];
     const idx = accountKeys.indexOf(address);
     if (idx !== -1) {
-      const pre = tx.meta?.preBalances?.[idx] ?? 0;
-      const post = tx.meta?.postBalances?.[idx] ?? 0;
+      const pre = allPreBalances[idx] ?? 0;
+      const post = allPostBalances[idx] ?? 0;
       const delta = (post - pre) / 1e9;
       if (Math.abs(delta) > 0.000001) {
+        // Find counterparty: the other account with the opposite SOL balance change
+        let solCounterparty: string | undefined;
+        for (let i = 0; i < accountKeys.length; i++) {
+          if (i === idx) continue;
+          const counterDelta = ((allPostBalances[i] ?? 0) - (allPreBalances[i] ?? 0)) / 1e9;
+          if ((delta > 0 && counterDelta < -0.000001) || (delta < 0 && counterDelta > 0.000001)) {
+            solCounterparty = accountKeys[i];
+            break;
+          }
+        }
         transactions.push({
           id: makeId('rpc'),
           timestamp,
@@ -330,6 +390,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
           source: 'rpc:alchemy',
           sourceRef: sig.signature,
           walletAddress: address,
+          counterpartyAddress: solCounterparty,
           chain: 'solana',
           flags: ['possible_internal_transfer', 'missing_cost_basis'],
           isInternalTransfer: false,
@@ -339,8 +400,10 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
     }
 
     // --- SPL token / NFT balance deltas (USDC, other tokens, NFTs) ---
-    const pre = (tx.meta?.preTokenBalances ?? []).filter((b: any) => b.owner === address);
-    const post = (tx.meta?.postTokenBalances ?? []).filter((b: any) => b.owner === address);
+    const allPreToken: any[] = tx.meta?.preTokenBalances ?? [];
+    const allPostToken: any[] = tx.meta?.postTokenBalances ?? [];
+    const pre = allPreToken.filter((b: any) => b.owner === address);
+    const post = allPostToken.filter((b: any) => b.owner === address);
     const mints = new Set<string>([...pre.map((b: any) => b.mint), ...post.map((b: any) => b.mint)]);
 
     // eslint-disable-next-line no-await-in-loop
@@ -350,12 +413,46 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
       const delta = postAmt - preAmt;
       if (Math.abs(delta) < 1e-9) continue;
 
+      // Find counterparty: the other owner whose balance of this mint changed in the opposite direction.
+      // This captures vault addresses in DCA/recurring orders (e.g. Jupiter DCA vault → USDC sent to wallet).
+      let tokenCounterparty: string | undefined;
+      const allMintsForToken = [...allPreToken, ...allPostToken]
+        .filter((b: any) => b.mint === mint && b.owner !== address)
+        .map((b: any) => b.owner);
+      for (const owner of new Set(allMintsForToken)) {
+        const cPre = allPreToken.find((b: any) => b.mint === mint && b.owner === owner)?.uiTokenAmount?.uiAmount ?? 0;
+        const cPost = allPostToken.find((b: any) => b.mint === mint && b.owner === owner)?.uiTokenAmount?.uiAmount ?? 0;
+        const counterDelta = cPost - cPre;
+        if ((delta > 0 && counterDelta < -1e-9) || (delta < 0 && counterDelta > 1e-9)) {
+          tokenCounterparty = owner;
+          break;
+        }
+      }
+
       // eslint-disable-next-line no-await-in-loop
       const meta = await getSolanaAssetMeta(apiKey, mint);
+
+      // Auto-classify DBT income. Known programs get a specific label;
+      // any other inbound DBT (e.g. Streamflow genesis vesting) defaults to genesis_reward.
+      // DBT is Dabba-specific — all inbound transfers from non-user addresses are income.
+      const ownAddressSet = new Set([address.toLowerCase()]);
+      const isDbtIncome =
+        delta > 0 &&
+        isDbtToken(mint) &&
+        tokenCounterparty &&
+        !ownAddressSet.has(tokenCounterparty.toLowerCase());
+      const dbtIncome = isDbtIncome
+        ? classifyDbtIncome(mint, tokenCounterparty) ?? {
+            kind: 'genesis_reward' as const,
+            label: 'Dabba Network DBT reward',
+            notes: 'Auto-classified as DBT income (genesis/staking/mainnet reward)'
+          }
+        : null;
+
       transactions.push({
         id: makeId('rpc'),
         timestamp,
-        type: delta > 0 ? 'transfer_in' : 'transfer_out',
+        type: dbtIncome ? 'income' : (delta > 0 ? 'transfer_in' : 'transfer_out'),
         asset: meta.symbol,
         amount: Math.abs(delta),
         fiatCurrency: 'USD',
@@ -363,10 +460,14 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
         source: 'rpc:alchemy',
         sourceRef: sig.signature,
         walletAddress: address,
+        counterpartyAddress: tokenCounterparty,
         contractAddress: mint,
         chain: 'solana',
-        category: meta.isNft ? 'nft' : undefined,
-        flags: ['possible_internal_transfer', 'missing_cost_basis'],
+        category: meta.isNft ? 'nft' : dbtIncome ? dbtIncome.kind : undefined,
+        notes: dbtIncome
+          ? `${dbtIncome.label} — auto-classified as DBT income`
+          : undefined,
+        flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'],
         isInternalTransfer: false,
         raw: tx
       });
@@ -472,30 +573,42 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
   return { transactions, warnings };
 }
 
-// ---- Ethereum via Blockscout (free, no API key — used when Alchemy/Etherscan fail) ----
+// ---- Ethereum via Blockscout (free, no API key — primary source for Ethereum) ----
+// Blockscout allows browser CORS (Access-Control-Allow-Origin: *), so we call it directly
+// instead of routing through the Vite dev proxy. That avoids ENOTFOUND proxy errors when a
+// machine's DNS cannot resolve api.etherscan.io or when the Node proxy stack misbehaves.
+const BLOCKSCOUT_ETHEREUM_API = 'https://eth.blockscout.com/api/v2';
+
 function blockscoutUrl(path: string): string {
-  const url = `https://eth.blockscout.com/api/v2${path}`;
-  if (typeof window !== 'undefined') {
-    const host = window.location.hostname;
-    if (host === 'localhost' || host === '127.0.0.1') {
-      return url.replace('https://eth.blockscout.com/api/v2', '/blockscout-api');
-    }
-  }
-  return url;
+  return `${BLOCKSCOUT_ETHEREUM_API}${path}`;
 }
 
 async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
   const addr = address.toLowerCase();
-  const [txRes, tokenRes] = await Promise.all([
-    fetch(blockscoutUrl(`/addresses/${address}/transactions`)),
-    fetch(blockscoutUrl(`/addresses/${address}/token-transfers`))
-  ]);
-
-  if (!txRes.ok) {
-    throw new Error(`Blockscout returned ${txRes.status} for transaction history.`);
+  let txRes: Response;
+  let tokenRes: Response;
+  try {
+    [txRes, tokenRes] = await Promise.all([
+      fetch(blockscoutUrl(`/addresses/${address}/transactions`)),
+      fetch(blockscoutUrl(`/addresses/${address}/token-transfers`))
+    ]);
+  } catch (err) {
+    throw new Error(
+      isNetworkFetchError(err)
+        ? 'Could not reach Blockscout (eth.blockscout.com). Check your internet connection and try again.'
+        : err instanceof Error
+          ? err.message
+          : 'Blockscout request failed.'
+    );
   }
 
-  const txData = await txRes.json();
+  if (!txRes.ok && !tokenRes.ok) {
+    throw new Error(
+      `Blockscout returned ${txRes.status} for transaction history and ${tokenRes.status} for token transfers.`
+    );
+  }
+
+  const txData = txRes.ok ? await txRes.json() : { items: [] };
   const tokenData = tokenRes.ok ? await tokenRes.json() : { items: [] };
   const transactions: Transaction[] = [];
   const seen = new Set<string>();
@@ -577,14 +690,9 @@ async function fetchEthereumAddress(address: string, config: LookupConfig): Prom
     errors.push(err instanceof Error ? err.message : 'Blockscout failed.');
   }
 
-  if (config.customApiKey) {
-    try {
-      const baseUrl = etherscanV2BaseUrl('ethereum');
-      if (baseUrl) return await fetchEtherscanCompatible(address, baseUrl, config.customApiKey, 'ETH');
-    } catch (err) {
-      errors.push(err instanceof Error ? err.message : 'Etherscan failed.');
-    }
-  }
+  // Ethereum no longer falls back to Etherscan automatically — many networks cannot resolve
+  // api.etherscan.io (ENOTFOUND), which spams the Vite dev console without helping the user.
+  // Blockscout is free and does not need an API key; Alchemy is the optional secondary source.
 
   if (config.alchemyApiKey) {
     try {
@@ -601,7 +709,10 @@ async function fetchEthereumAddress(address: string, config: LookupConfig): Prom
     }
   }
 
-  throw new Error(errors.join(' ') || 'Ethereum lookup failed.');
+  const hint = config.alchemyApiKey
+    ? 'Blockscout and Alchemy both failed.'
+    : 'Blockscout failed. Add an Alchemy API key in Settings for a secondary source.';
+  throw new Error(`${hint} ${errors.join(' ')}`.trim());
 }
 
 export interface LookupConfig {
@@ -612,6 +723,11 @@ export interface LookupConfig {
   customAsset?: string;
 }
 
+function withDexSwapDetection(result: LookupResult): LookupResult {
+  const { transactions } = detectDexSwaps(result.transactions);
+  return { ...result, transactions };
+}
+
 async function lookupOneAddress(address: string, config: LookupConfig): Promise<LookupResult> {
   const { chain } = config;
   if (chain.provider === 'blockstream') {
@@ -619,24 +735,28 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
   }
   if (chain.provider === 'alchemy_evm') {
     if (chain.id === 'ethereum') {
-      return fetchEthereumAddress(address, config);
+      return withDexSwapDetection(await fetchEthereumAddress(address, config));
     }
     if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key in Settings first.');
-    return fetchAlchemyEvm(
-      address,
-      chain.alchemyNetwork!,
-      config.alchemyApiKey,
-      chain.asset,
-      chain.id,
-      config.customApiKey
+    return withDexSwapDetection(
+      await fetchAlchemyEvm(
+        address,
+        chain.alchemyNetwork!,
+        config.alchemyApiKey,
+        chain.asset,
+        chain.id,
+        config.customApiKey
+      )
     );
   }
   if (chain.provider === 'alchemy_solana') {
     if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key in Settings first.');
-    return fetchAlchemySolana(address, config.alchemyApiKey);
+    return withDexSwapDetection(await fetchAlchemySolana(address, config.alchemyApiKey));
   }
   if (!config.customBaseUrl) throw new Error('Enter an explorer base URL.');
-  return fetchEtherscanCompatible(address, config.customBaseUrl, config.customApiKey ?? '', config.customAsset || 'TOKEN');
+  return withDexSwapDetection(
+    await fetchEtherscanCompatible(address, config.customBaseUrl, config.customApiKey ?? '', config.customAsset || 'TOKEN')
+  );
 }
 
 /**

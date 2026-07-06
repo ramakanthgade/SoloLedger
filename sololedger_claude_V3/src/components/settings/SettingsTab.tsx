@@ -82,6 +82,7 @@ export function SettingsTab() {
               addresses or amounts) to CoinGecko's public price API to fill in market values. For tokens CoinGecko
               doesn't track (small, DEX-only tokens), it falls back to your Alchemy key's Prices API and converts
               the result into your reporting currency. Nothing fetches automatically — use the button in Review.
+              For obscure DEX tokens, add your Alchemy API key below (used only for price fallback, not wallet lookup).
             </span>
           </label>
           <label className="flex items-start gap-3 text-sm text-mist-300">
@@ -121,8 +122,9 @@ export function SettingsTab() {
               <ApiKeyField
                 label={
                   <>
-                    Etherscan API key (recommended — free fallback when Alchemy transfer lookup is rate-limited;
-                    one key covers Ethereum, Polygon, Arbitrum, Base, and other EVM chains via{' '}
+                    Etherscan API key (optional — fallback for Polygon, Arbitrum, Base, and other EVM chains when
+                    Alchemy transfer lookup is rate-limited; Ethereum uses Blockscout first and does not need this.
+                    One key covers many chains via{' '}
                     <a href="https://etherscan.io/apis" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
                       etherscan.io/apis
                     </a>
@@ -135,6 +137,135 @@ export function SettingsTab() {
                 placeholder="Paste an Etherscan-family API key"
               />
             </div>
+          )}
+
+          {settings.priceApiEnabled && (
+            <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
+              <ApiKeyField
+                label={
+                  <>
+                    CoinGecko Pro API key (recommended — historical USDC/USDT/INR prices by date; from{' '}
+                    <a href="https://www.coingecko.com/en/api/pricing" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      coingecko.com/api
+                    </a>
+                    , Basic plan ~$29/mo)
+                  </>
+                }
+                value={settings.coingeckoApiKey}
+                onSave={(key) => update({ coingeckoApiKey: key })}
+                onDelete={() => update({ coingeckoApiKey: undefined })}
+                placeholder="Paste your CoinGecko Pro API key"
+              />
+              <ApiKeyField
+                label={
+                  <>
+                    Alchemy API key (optional — price fallback for tokens CoinGecko does not track; get one free at{' '}
+                    <a href="https://www.alchemy.com" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      alchemy.com
+                    </a>
+                    )
+                  </>
+                }
+                value={settings.alchemyApiKey}
+                onSave={(key) => update({ alchemyApiKey: key })}
+                onDelete={() => update({ alchemyApiKey: undefined })}
+                placeholder="Paste your Alchemy API key"
+              />
+            </div>
+          )}
+
+          {settings.priceApiEnabled && settings.rpcLookupEnabled && (
+            <p className="ml-7 text-xs text-mist-400">
+              Alchemy key above is shared for wallet lookup and price fallback.
+            </p>
+          )}
+
+          {settings.priceApiEnabled && (
+            <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
+              <ApiKeyField
+                label={
+                  <>
+                    Birdeye API key (Solana token pricing — covers any SPL token with a DEX pool; free plan from{' '}
+                    <a href="https://birdeye.so" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      birdeye.so
+                    </a>
+                    )
+                  </>
+                }
+                value={settings.birdeyeApiKey}
+                onSave={(key) => update({ birdeyeApiKey: key })}
+                onDelete={() => update({ birdeyeApiKey: undefined })}
+                placeholder="Paste your Birdeye API key"
+              />
+              <ApiKeyField
+                label={
+                  <>
+                    Noves API key (DeFi classification — auto-identifies swaps, staking, LP deposits, etc. on 120+
+                    chains; from{' '}
+                    <a href="https://noves.fi" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      noves.fi
+                    </a>{' '}
+                    or{' '}
+                    <a
+                      href="https://marketplace.quicknode.com/add-on/noves-translate-api"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-emerald-600 underline"
+                    >
+                      QuickNode Starter $50/mo
+                    </a>
+                    )
+                  </>
+                }
+                value={settings.novesApiKey}
+                onSave={(key) => update({ novesApiKey: key })}
+                onDelete={() => update({ novesApiKey: undefined })}
+                placeholder="Paste your Noves API key"
+              />
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>AI Tax Advisor</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-xs text-mist-400">
+            Ask your taxes anything — in text or by voice. Uses{' '}
+            <a href="https://openrouter.ai" target="_blank" rel="noreferrer" className="text-violet underline">
+              OpenRouter
+            </a>{' '}
+            to route to Claude, GPT-4, Gemini and more. Your existing OpenRouter credits work immediately.
+            Your claude.ai subscription is a separate consumer product — for API access, use your{' '}
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-violet underline">
+              openrouter.ai/keys
+            </a>{' '}
+            key instead.
+          </p>
+          <ApiKeyField
+            label="OpenRouter API key (enables AI Tax Advisor — pay-per-use from your credits)"
+            value={settings.aiApiKey}
+            onSave={(key) => update({ aiApiKey: key })}
+            onDelete={() => update({ aiApiKey: undefined })}
+            placeholder="sk-or-v1-…"
+          />
+          {settings.aiApiKey && (
+            <label className="block text-sm text-mist-300">
+              AI model
+              <select
+                value={settings.aiModel ?? 'anthropic/claude-opus-4-5'}
+                onChange={(e) => update({ aiModel: e.target.value })}
+                className="mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-mist focus:border-violet focus:outline-none"
+              >
+                <option value="anthropic/claude-opus-4-5">Claude Sonnet 4.5 — recommended</option>
+                <option value="anthropic/claude-opus-4">Claude Opus 4 — most capable</option>
+                <option value="openai/gpt-4o">GPT-4o</option>
+                <option value="google/gemini-2.5-flash">Gemini 2.5 Flash — fast & cheap</option>
+                <option value="anthropic/claude-3.5-haiku">Claude Haiku 3.5 — fastest</option>
+              </select>
+            </label>
           )}
         </CardContent>
       </Card>
