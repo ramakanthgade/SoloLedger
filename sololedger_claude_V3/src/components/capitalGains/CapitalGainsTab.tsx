@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getSpecIdHints } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { buildIncomeRows, buildMatchedGainRows } from '@/lib/costBasis/matchedGains';
+import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,6 +15,10 @@ const INCOME_KIND_LABEL: Record<string, string> = {
   income: 'Income',
   gift_received: 'Gift received',
   airdrop_suspected: 'Suspected airdrop',
+  genesis_reward: 'Dabba Genesis Reward',
+  staking_reward: 'Dabba Staking Reward',
+  mainnet_reward: 'Dabba Mainnet Reward',
+  airdrop: 'Dabba Campaign / Airdrop',
   staking_suspected: 'Suspected staking'
 };
 
@@ -43,7 +48,15 @@ export function CapitalGainsTab() {
     [disposals, lots, transactions]
   );
 
-  const incomeRows = useMemo(() => buildIncomeRows(transactions), [transactions]);
+  const dcaVaultAddresses = useMemo(() => {
+    const groups = detectDcaGroups(transactions);
+    return new Set(groups.map((g) => g.vaultAddress.toLowerCase()));
+  }, [transactions]);
+
+  const incomeRows = useMemo(
+    () => buildIncomeRows(transactions, dcaVaultAddresses),
+    [transactions, dcaVaultAddresses]
+  );
 
   const years = useMemo(() => {
     const set = new Set([
@@ -245,7 +258,7 @@ export function CapitalGainsTab() {
                     <td className="px-2 py-2 text-mist-300">{formatDateTime(r.date)}</td>
                     <td className="px-2 py-2">
                       <Badge tone={r.kind.includes('suspected') ? 'gold' : 'emerald'}>
-                        {INCOME_KIND_LABEL[r.kind] ?? r.kind}
+                        {r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind}
                       </Badge>
                     </td>
                     <td className="px-2 py-2 text-mist">

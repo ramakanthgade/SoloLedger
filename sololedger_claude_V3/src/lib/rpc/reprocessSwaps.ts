@@ -1,7 +1,37 @@
 import { db } from '@/lib/storage/db';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import { batchClassifyNoves } from '@/lib/rpc/noves';
+import { classifyDbtIncome } from '@/lib/assets/dabbaRegistry';
 import type { Transaction, FlagReason } from '@/types/transaction';
+
+/**
+ * Scan all existing DBT transfer_in rows and reclassify those from known
+ * Dabba Foundation programs as `income`. Run this after importing a wallet
+ * or when the user clicks "Detect swaps".
+ * Returns the number of transactions reclassified.
+ */
+export async function reprocessDbtIncome(): Promise<number> {
+  const all = await db.transactions.toArray();
+  const candidates = all.filter(
+    (t) => t.type === 'transfer_in' && t.contractAddress && t.counterpartyAddress
+  );
+
+  let updated = 0;
+  for (const t of candidates) {
+    const income = classifyDbtIncome(t.contractAddress, t.counterpartyAddress);
+    if (!income) continue;
+    // eslint-disable-next-line no-await-in-loop
+    await db.transactions.update(t.id, {
+      type: 'income',
+      category: income.kind,
+      notes: `${income.label} — auto-classified as DBT income`,
+      flags: [] as FlagReason[],
+      isInternalTransfer: false
+    });
+    updated++;
+  }
+  return updated;
+}
 
 export interface ReprocessResult {
   tradesCreated: number;
@@ -18,6 +48,9 @@ export async function reprocessSwapDetectionInDb(
   novesApiKey?: string,
   onProgress?: (done: number, total: number) => void
 ): Promise<ReprocessResult> {
+  // --- Phase 0: DBT income reclassification (Dabba Foundation programs) ---
+  const dbtIncomeUpdated = await reprocessDbtIncome();
+
   const all = await db.transactions.toArray();
 
   // --- Phase 1: local heuristic ---
@@ -187,6 +220,7 @@ export async function reprocessSwapDetectionInDb(
     : '';
 
   const parts: string[] = [];
+  if (dbtIncomeUpdated > 0) parts.push(`${dbtIncomeUpdated} DBT reward${dbtIncomeUpdated === 1 ? '' : 's'} classified as income`);
   if (total > 0) parts.push(`${total} swap${total === 1 ? '' : 's'} detected`);
   if (novesReclassified > 0) parts.push(`${novesReclassified} reclassified (staking/income/DeFi)`);
 

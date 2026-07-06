@@ -1,4 +1,5 @@
 import type { Disposal, Lot, Transaction } from '@/types/transaction';
+import { identifyDabbaProgram, DABBA_KIND_LABEL, type DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
 
 export interface MatchedGainRow {
   id: string;
@@ -56,6 +57,13 @@ export function buildMatchedGainRows(
   return rows.sort((a, b) => b.sellDate - a.sellDate);
 }
 
+export type IncomeKind =
+  | 'income'
+  | 'gift_received'
+  | 'airdrop_suspected'
+  | 'staking_suspected'
+  | DabbaIncomeKind;
+
 export interface IncomeRow {
   id: string;
   date: number;
@@ -63,20 +71,36 @@ export interface IncomeRow {
   amount: number;
   fiatValue: number;
   source: string;
-  kind: 'income' | 'gift_received' | 'airdrop_suspected' | 'staking_suspected';
+  kind: IncomeKind;
+  kindLabel?: string;
   chain?: string;
   counterparty?: string;
   txId: string;
 }
 
-/** Income-like rows for the Capital Gains tab (Koinly-style "Income" section). */
-export function buildIncomeRows(transactions: Transaction[]): IncomeRow[] {
+/**
+ * Income-like rows for the Capital Gains tab.
+ * Includes explicit `income` type rows AND suspected airdrops/staking from heuristics.
+ * DCA vault transfers are excluded via dcaVaultAddresses set.
+ */
+export function buildIncomeRows(
+  transactions: Transaction[],
+  /** Addresses identified as DCA vaults — exclude their transfer_ins from income heuristic. */
+  dcaVaultAddresses?: Set<string>
+): IncomeRow[] {
   const rows: IncomeRow[] = [];
 
   for (const t of transactions) {
     if (t.isInternalTransfer || t.isSpam) continue;
 
+    // Explicitly classified income (auto-classified or user-set)
     if (t.type === 'income' || t.type === 'gift_received') {
+      // Dabba-specific income classification using category field
+      const dabbaKind = t.category as DabbaIncomeKind | undefined;
+      const dabbaLabel = dabbaKind && DABBA_KIND_LABEL[dabbaKind]
+        ? DABBA_KIND_LABEL[dabbaKind]
+        : undefined;
+
       rows.push({
         id: t.id,
         date: t.timestamp,
@@ -84,7 +108,8 @@ export function buildIncomeRows(transactions: Transaction[]): IncomeRow[] {
         amount: t.amount,
         fiatValue: t.fiatValue ?? 0,
         source: t.source,
-        kind: t.type === 'gift_received' ? 'gift_received' : 'income',
+        kind: dabbaKind ?? (t.type === 'gift_received' ? 'gift_received' : 'income'),
+        kindLabel: dabbaLabel,
         chain: t.chain,
         counterparty: t.counterpartyAddress,
         txId: t.id
@@ -92,14 +117,22 @@ export function buildIncomeRows(transactions: Transaction[]): IncomeRow[] {
       continue;
     }
 
-    // Heuristic: inbound transfer from a contract/program (not a personal wallet) may be reward/airdrop.
+    // Heuristic: unclassified inbound transfer from a contract/program address.
+    // Skip if it's from a known DCA vault (those are trade proceeds, not income).
     if (t.type === 'transfer_in' && t.counterpartyAddress && t.fiatValue != null) {
       const cp = t.counterpartyAddress;
+
+      // Exclude DCA vault transfers
+      if (dcaVaultAddresses?.has(cp.toLowerCase())) continue;
+
       const looksLikeContract =
         (t.chain === 'ethereum' && cp.startsWith('0x') && cp.length === 42) ||
         (t.chain === 'solana' && cp.length > 32);
       const fromUserWallet = t.walletAddress && cp.toLowerCase() === t.walletAddress.toLowerCase();
+
       if (looksLikeContract && !fromUserWallet) {
+        // Check if it's a known Dabba program (even if not yet reclassified)
+        const dabbaProgram = identifyDabbaProgram(cp);
         rows.push({
           id: `income-candidate:${t.id}`,
           date: t.timestamp,
@@ -107,7 +140,12 @@ export function buildIncomeRows(transactions: Transaction[]): IncomeRow[] {
           amount: t.amount,
           fiatValue: t.fiatValue,
           source: t.source,
-          kind: t.category === 'staking' ? 'staking_suspected' : 'airdrop_suspected',
+          kind: dabbaProgram
+            ? dabbaProgram.kind
+            : t.category === 'staking'
+              ? 'staking_suspected'
+              : 'airdrop_suspected',
+          kindLabel: dabbaProgram ? dabbaProgram.label : undefined,
           chain: t.chain,
           counterparty: cp,
           txId: t.id

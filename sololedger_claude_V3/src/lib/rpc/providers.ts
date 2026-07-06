@@ -11,6 +11,7 @@
  * - Etherscan-compatible is kept as a manual fallback for other EVM chains / custom explorers.
  */
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
+import { classifyDbtIncome } from '@/lib/assets/dabbaRegistry';
 import { makeId } from '@/lib/parsers/types';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
@@ -430,10 +431,14 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 
       // eslint-disable-next-line no-await-in-loop
       const meta = await getSolanaAssetMeta(apiKey, mint);
+
+      // Auto-classify DBT income from known Dabba Foundation programs
+      const dbtIncome = delta > 0 ? classifyDbtIncome(mint, tokenCounterparty) : null;
+
       transactions.push({
         id: makeId('rpc'),
         timestamp,
-        type: delta > 0 ? 'transfer_in' : 'transfer_out',
+        type: dbtIncome ? 'income' : (delta > 0 ? 'transfer_in' : 'transfer_out'),
         asset: meta.symbol,
         amount: Math.abs(delta),
         fiatCurrency: 'USD',
@@ -444,8 +449,11 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
         counterpartyAddress: tokenCounterparty,
         contractAddress: mint,
         chain: 'solana',
-        category: meta.isNft ? 'nft' : undefined,
-        flags: ['possible_internal_transfer', 'missing_cost_basis'],
+        category: meta.isNft ? 'nft' : dbtIncome ? dbtIncome.kind : undefined,
+        notes: dbtIncome
+          ? `${dbtIncome.label} — auto-classified as DBT income`
+          : undefined,
+        flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'],
         isInternalTransfer: false,
         raw: tx
       });
