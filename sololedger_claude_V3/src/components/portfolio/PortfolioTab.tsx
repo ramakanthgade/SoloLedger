@@ -3,56 +3,48 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { formatCurrency, formatCompactCurrency, getFyBoundaries, getFyLabel, getCurrentFy, getAvailableFys } from '@/lib/utils';
+import {
+  formatCurrency, formatCompactCurrency,
+  getFyBoundaries, getFyLabel, getCurrentFy, getAvailableFys
+} from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
 import { fetchAllLiveBalances, type WalletBalancesConfig } from '@/lib/rpc/walletBalances';
 import { RefreshCw } from 'lucide-react';
 
 function applyTransactionToHoldings(
-  map: Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string }>,
+  map: Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>,
   t: Transaction
 ) {
-  // Skip internal transfers: assets are still "yours" in another wallet/vault — don't double-count.
-  if (t.isInternalTransfer) return;
+  if (t.isInternalTransfer || t.isSpam) return;
 
-  const applyLeg = (
+  const upsert = (
     asset: string, amount: number, sign: 1 | -1,
-    costBasisAdd: number, chain?: string, contractAddress?: string
+    costAdd: number, chain?: string, ca?: string
   ) => {
-    const key = `${chain ?? 'unknown'}:${asset}:${contractAddress ?? ''}`;
-    if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress });
+    const key = `${chain ?? 'x'}:${asset.toUpperCase()}:${(ca ?? '').toLowerCase()}`;
+    if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress: ca, asset });
     const h = map.get(key)!;
-    if (sign > 0) { h.amount += amount; h.costBasis += costBasisAdd; return; }
+    if (sign > 0) { h.amount += amount; h.costBasis += costAdd; return; }
     if (h.amount > 1e-9) {
-      const removeQty = Math.min(amount, h.amount);
-      h.costBasis -= h.costBasis * (removeQty / h.amount);
-      h.amount -= removeQty;
+      const q = Math.min(amount, h.amount);
+      h.costBasis -= h.costBasis * (q / h.amount);
+      h.amount -= q;
     }
   };
 
-  if (t.isSpam) return;
-
   if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
-    applyLeg(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
-    applyLeg(t.counterAsset, t.counterAmount, 1, t.fiatValue ?? 0, t.chain, undefined);
+    upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
+    upsert(t.counterAsset, t.counterAmount, 1, t.fiatValue ?? 0, t.chain, undefined);
     return;
   }
 
   const sign =
-    t.type === 'buy' || t.type === 'transfer_in' || t.type === 'income' || t.type === 'gift_received' ? 1
-    : t.type === 'sell' || t.type === 'transfer_out' || t.type === 'gift_sent' ? -1
+    ['buy', 'transfer_in', 'income', 'gift_received'].includes(t.type) ? 1
+    : ['sell', 'transfer_out', 'gift_sent'].includes(t.type) ? -1
     : 0;
-
-  const key = `${t.chain ?? 'unknown'}:${t.asset}:${t.contractAddress ?? ''}`;
-  if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain: t.chain, contractAddress: t.contractAddress });
-  const h = map.get(key)!;
-  if (sign > 0) { h.amount += t.amount; h.costBasis += t.fiatValue ?? 0; }
-  else if (sign < 0 && h.amount > 1e-9) {
-    const removeQty = Math.min(t.amount, h.amount);
-    h.costBasis -= h.costBasis * (removeQty / h.amount);
-    h.amount -= removeQty;
-  }
+  if (sign === 0) return;
+  upsert(t.asset, t.amount, sign as 1 | -1, sign > 0 ? (t.fiatValue ?? 0) : 0, t.chain, t.contractAddress);
 }
 
 const ALL_WALLETS = 'All wallets';
@@ -61,7 +53,7 @@ export function PortfolioTab() {
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const [reportingCurrency, setReportingCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
-  const [selectedFy, setSelectedFy] = useState<number | null>(null); // null = all time
+  const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [selectedWallet, setSelectedWallet] = useState<string>(ALL_WALLETS);
   const [liveBalances, setLiveBalances] = useState<Map<string, { amount: number; contractAddress?: string; chain: string }> | null>(null);
   const [loadingLive, setLoadingLive] = useState(false);
@@ -71,12 +63,9 @@ export function PortfolioTab() {
   useEffect(() => {
     getSettings().then((s) => {
       setReportingCurrency(s.reportingCurrency);
-      setJurisdiction(s.jurisdiction ?? 'IN');
-      setApiConfig({
-        heliusApiKey: s.heliusApiKey,
-        moralisApiKey: s.moralisApiKey,
-        alchemyApiKey: s.alchemyApiKey
-      });
+      const jur = s.jurisdiction ?? 'IN';
+      setJurisdiction(jur);
+      setApiConfig({ heliusApiKey: s.heliusApiKey, moralisApiKey: s.moralisApiKey, alchemyApiKey: s.alchemyApiKey });
     });
   }, []);
 
@@ -91,12 +80,10 @@ export function PortfolioTab() {
     return Array.from(ws);
   }, [transactions]);
 
-  /** Transactions filtered by FY and wallet (for cost basis calculation). */
   const filteredTxs = useMemo(() => {
     let txs = transactions.filter((t) => !t.isSpam);
-    if (selectedWallet !== ALL_WALLETS) {
+    if (selectedWallet !== ALL_WALLETS)
       txs = txs.filter((t) => t.walletAddress?.toLowerCase() === selectedWallet.toLowerCase());
-    }
     if (selectedFy != null) {
       const { end } = getFyBoundaries(selectedFy, jurisdiction);
       txs = txs.filter((t) => t.timestamp <= end);
@@ -104,70 +91,55 @@ export function PortfolioTab() {
     return txs;
   }, [transactions, selectedWallet, selectedFy, jurisdiction]);
 
-  /** Transaction-derived holdings (cost basis always from transactions). */
   const txHoldings = useMemo(() => {
-    const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string }>();
-    const sorted = [...filteredTxs].sort((a, b) => a.timestamp - b.timestamp);
-    for (const t of sorted) applyTransactionToHoldings(map, t);
+    const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>();
+    [...filteredTxs].sort((a, b) => a.timestamp - b.timestamp).forEach((t) => applyTransactionToHoldings(map, t));
     return map;
   }, [filteredTxs]);
 
-  /** The FY selected is the current FY and we have live balances → use live for quantity. */
-  const isCurrentFySelected = selectedFy === null || selectedFy === currentFy;
-  const showLive = isCurrentFySelected && liveBalances !== null && liveBalances.size > 0;
+  const isCurrentFy = selectedFy === null || selectedFy === currentFy;
+  const hasLive = liveBalances !== null && liveBalances.size > 0;
+  const useLive = isCurrentFy && hasLive;
 
-  /** Merged holdings: live quantity (if current FY + live available) + transaction cost basis. */
+  /**
+   * Final merged holdings.
+   * Live mode: quantity from API (exact), cost basis from transactions.
+   * Historical: both from transactions.
+   * Keys are normalised so there are NO duplicates.
+   */
   const holdings = useMemo(() => {
-    const rows: Array<{
-      key: string; asset: string; quantity: number; liveQuantity: number | null;
-      costBasis: number; chain?: string; contractAddress?: string;
-    }> = [];
+    if (useLive) {
+      // Map: normalised_key → row
+      const rows = new Map<string, { asset: string; quantity: number; costBasis: number; chain: string; contractAddress?: string; variance?: number }>();
 
-    if (showLive) {
-      // Merge live balances with transaction cost basis
-      for (const [key, live] of liveBalances!) {
-        const parts = key.split(':');
-        const asset = parts[1] ?? key;
-        const txEntry = txHoldings.get(key);
-        rows.push({
-          key, asset,
-          quantity: live.amount,      // live from chain
-          liveQuantity: live.amount,
-          costBasis: txEntry?.costBasis ?? 0,
-          chain: live.chain,
-          contractAddress: live.contractAddress
-        });
+      for (const [liveKey, live] of liveBalances!) {
+        const [chain, assetUpper, ca] = liveKey.split(':');
+        // Normalise key to match txHoldings
+        const normKey = `${chain}:${assetUpper}:${(ca ?? '').toLowerCase()}`;
+        const txEntry = txHoldings.get(normKey);
+        const costBasis = txEntry?.costBasis ?? 0;
+        const txQty = txEntry?.amount ?? 0;
+        const variance = txQty > 0.001 ? Math.abs(live.amount - txQty) / txQty : 0;
+        const asset = txEntry?.asset ?? assetUpper;
+        rows.set(normKey, { asset, quantity: live.amount, costBasis, chain, contractAddress: live.contractAddress, variance });
       }
-      // Also include tx holdings that might not be in live (e.g. historical assets sold)
+      // Add any tx-only holdings (assets fully sold or not in live)
       for (const [key, h] of txHoldings) {
-        if (liveBalances!.has(key)) continue;
+        if (rows.has(key)) continue;
         if (Math.abs(h.amount) <= 1e-9) continue;
-        const parts = key.split(':');
-        const asset = parts[1] ?? key;
-        rows.push({
-          key, asset,
-          quantity: h.amount,
-          liveQuantity: 0, // not in live = fully sold
-          costBasis: h.costBasis,
-          chain: h.chain,
-          contractAddress: h.contractAddress
-        });
+        rows.set(key, { asset: h.asset, quantity: h.amount, costBasis: h.costBasis, chain: h.chain ?? '', contractAddress: h.contractAddress });
       }
-    } else {
-      // Historical: purely transaction-based
-      for (const [key, h] of txHoldings) {
-        if (Math.abs(h.amount) <= 1e-9) continue;
-        const parts = key.split(':');
-        const asset = parts[1] ?? key;
-        rows.push({ key, asset, quantity: h.amount, liveQuantity: null, costBasis: h.costBasis, chain: h.chain, contractAddress: h.contractAddress });
-      }
+      return Array.from(rows.values()).sort((a, b) => b.costBasis - a.costBasis);
     }
 
-    return rows.sort((a, b) => b.costBasis - a.costBasis);
-  }, [txHoldings, liveBalances, showLive]);
+    return Array.from(txHoldings.values())
+      .filter((h) => Math.abs(h.amount) > 1e-9)
+      .map((h) => ({ ...h, quantity: h.amount, variance: undefined }))
+      .sort((a, b) => b.costBasis - a.costBasis);
+  }, [txHoldings, liveBalances, useLive]);
 
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
-  const missingPriceCount = filteredTxs.filter((t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis')).length;
+  const missingPriceCount = filteredTxs.filter((t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer).length;
 
   const fetchLive = async () => {
     setLoadingLive(true);
@@ -177,11 +149,12 @@ export function PortfolioTab() {
       const filtered = selectedWallet === ALL_WALLETS
         ? wallets
         : wallets.filter((w) => w.address.toLowerCase() === selectedWallet.toLowerCase());
-      const result = await fetchAllLiveBalances(
+      // Build live balance map with SAME key format as txHoldings: chain:ASSET:contractAddress
+      const raw = await fetchAllLiveBalances(
         filtered.map((w) => ({ address: w.address, chain: w.chain })),
         apiConfig
       );
-      setLiveBalances(result);
+      setLiveBalances(raw);
     } catch {
       setLiveError('Could not fetch live balances — check API keys in Settings.');
     } finally {
@@ -198,25 +171,21 @@ export function PortfolioTab() {
         <p className="mt-1 text-sm text-mist-400">
           Current FY: live balances from blockchain (exact match with your wallet).
           Historical FYs: calculated from transactions.
-          Cost basis always from transaction history.
-          {' '}Note: SOL may show ~0.002 SOL higher per token account (Solana rent reserve).
+          Note: SOL may show ~0.002 SOL higher per token account (Solana rent reserve).
         </p>
       </div>
 
-      {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
           <span className="text-xs text-mist-400">Period:</span>
           <select
             value={selectedFy ?? ''}
-            onChange={(e) => setSelectedFy(e.target.value ? Number(e.target.value) : null)}
+            onChange={(e) => { setSelectedFy(e.target.value ? Number(e.target.value) : null); setLiveBalances(null); }}
             className="rounded-full border border-ink-600 bg-ink-800 px-3 py-1 text-sm text-mist focus:border-violet focus:outline-none"
           >
             <option value="">All time</option>
             {availableFys.map((fy) => (
-              <option key={fy} value={fy}>
-                {getFyLabel(fy, jurisdiction)}
-              </option>
+              <option key={fy} value={fy}>{getFyLabel(fy, jurisdiction)}</option>
             ))}
           </select>
         </div>
@@ -226,56 +195,43 @@ export function PortfolioTab() {
             <span className="text-xs text-mist-400">Wallet:</span>
             <select
               value={selectedWallet}
-              onChange={(e) => setSelectedWallet(e.target.value)}
-              className="max-w-[220px] truncate rounded-full border border-ink-600 bg-ink-800 px-3 py-1 text-sm text-mist focus:border-violet focus:outline-none"
+              onChange={(e) => { setSelectedWallet(e.target.value); setLiveBalances(null); }}
+              className="max-w-[200px] truncate rounded-full border border-ink-600 bg-ink-800 px-3 py-1 text-sm text-mist"
             >
               <option value={ALL_WALLETS}>{ALL_WALLETS}</option>
               {availableWallets.map((w) => (
-                <option key={w} value={w}>
-                  {w.length > 20 ? `${w.slice(0, 8)}…${w.slice(-6)}` : w}
-                </option>
+                <option key={w} value={w}>{w.length > 20 ? `${w.slice(0, 8)}…${w.slice(-6)}` : w}</option>
               ))}
             </select>
           </div>
         )}
 
-        {isCurrentFySelected && hasApiKey && (
-          <Button
-            variant="secondary"
-            onClick={() => void fetchLive()}
-            disabled={loadingLive}
-            className="flex items-center gap-1.5"
-          >
+        {isCurrentFy && hasApiKey && (
+          <Button variant="secondary" onClick={() => void fetchLive()} disabled={loadingLive}
+            className="flex items-center gap-1.5">
             <RefreshCw className={`h-3.5 w-3.5 ${loadingLive ? 'animate-spin' : ''}`} />
-            {loadingLive ? 'Fetching…' : showLive ? 'Refresh live' : 'Fetch live balances'}
+            {loadingLive ? 'Fetching…' : useLive ? 'Refresh live' : 'Fetch live balances'}
           </Button>
         )}
-        {showLive && (
+        {useLive && (
           <span className="rounded-full bg-emerald/10 px-2.5 py-0.5 text-xs font-medium text-emerald-600">
             ✓ Live from chain
           </span>
         )}
-        {isCurrentFySelected && !hasApiKey && (
-          <span className="text-xs text-mist-400">Add Helius/Moralis key in Settings for live balances</span>
-        )}
-        {!isCurrentFySelected && (
+        {!isCurrentFy && (
           <span className="rounded-full bg-gold/10 px-2.5 py-0.5 text-xs text-gold-600">
             Historical — calculated from transactions
           </span>
         )}
-
         <span className="ml-auto text-xs text-mist-400">
           {holdings.length} asset{holdings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
         </span>
       </div>
 
-      {liveError && (
-        <div className="rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-xs text-loss">{liveError}</div>
-      )}
-
+      {liveError && <div className="rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-xs text-loss">{liveError}</div>}
       {missingPriceCount > 0 && (
         <div className="rounded-lg border border-gold/40 bg-gold/10 px-4 py-3 text-sm text-mist-300">
-          {missingPriceCount} transaction{missingPriceCount === 1 ? '' : 's'} still lack a fiat value — cost basis will be understated.
+          {missingPriceCount} transaction{missingPriceCount === 1 ? '' : 's'} still lack a fiat value — cost basis understated.
           Go to Review → <strong className="text-mist">Fetch missing prices</strong>.
         </div>
       )}
@@ -283,15 +239,14 @@ export function PortfolioTab() {
       <Card>
         <CardHeader>
           <CardTitle>
-            Total cost basis
-            {selectedFy != null && ` — ${getFyLabel(selectedFy, jurisdiction)}`}
+            Total cost basis{selectedFy != null && ` — ${getFyLabel(selectedFy, jurisdiction)}`}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <p className="font-mono text-3xl text-gold-600">{formatCurrency(totalCostBasis, reportingCurrency)}</p>
           <p className="mt-1 text-xs text-mist-400">
-            {formatCompactCurrency(totalCostBasis, reportingCurrency)} · cost basis
-            {selectedFy == null ? ' (all time)' : ` · ${getFyLabel(selectedFy, jurisdiction)}`}
+            {formatCompactCurrency(totalCostBasis, reportingCurrency)}
+            {selectedFy == null ? ' · all time' : ` · ${getFyLabel(selectedFy, jurisdiction)}`}
           </p>
         </CardContent>
       </Card>
@@ -301,47 +256,33 @@ export function PortfolioTab() {
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
               <th className="px-3 py-2">Asset</th>
-              <th className="px-3 py-2 text-right">Quantity</th>
-              {showLive && <th className="px-3 py-2 text-right">Tx-derived qty</th>}
+              <th className="px-3 py-2 text-right">
+                Quantity {useLive ? <span className="normal-case text-emerald-600">(live)</span> : ''}
+              </th>
               <th className="px-3 py-2 text-right">Cost basis</th>
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
-            {holdings.map((h) => {
-              const txDerived = txHoldings.get(h.key)?.amount ?? 0;
-              const variance = showLive && h.liveQuantity != null && txDerived > 0
-                ? Math.abs(h.liveQuantity - txDerived) / txDerived
-                : 0;
-              return (
-                <tr key={h.key} className="border-t border-ink-700/60 hover:bg-ink-700/20">
-                  <td className="px-3 py-2 text-mist">
-                    {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
-                  </td>
-                  <td className="px-3 py-2 text-right text-mist-300">
-                    {h.quantity.toFixed(8)}
-                    {showLive && variance > 0.001 && (
-                      <span className="ml-1 text-[10px] text-gold-600" title={`Tx-derived: ${txDerived.toFixed(8)}`}>
-                        △{(variance * 100).toFixed(1)}%
-                      </span>
-                    )}
-                  </td>
-                  {showLive && (
-                    <td className="px-3 py-2 text-right text-mist-400 text-xs">
-                      {txDerived.toFixed(8)}
-                    </td>
+            {holdings.map((h, i) => (
+              <tr key={i} className="border-t border-ink-700/60 hover:bg-ink-700/20">
+                <td className="px-3 py-2 text-mist">
+                  {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
+                </td>
+                <td className="px-3 py-2 text-right text-mist-300">
+                  {h.quantity.toFixed(8)}
+                  {useLive && h.variance != null && h.variance > 0.005 && (
+                    <span className="ml-1 text-[10px] text-gold-600" title="Variance between live and calculated">
+                      △{(h.variance * 100).toFixed(1)}%
+                    </span>
                   )}
-                  <td className="px-3 py-2 text-right text-gold-600">
-                    {formatCurrency(h.costBasis, reportingCurrency)}
-                  </td>
-                </tr>
-              );
-            })}
-            {holdings.length === 0 && (
-              <tr>
-                <td colSpan={showLive ? 4 : 3} className="px-3 py-8 text-center text-mist-400">
-                  No holdings for this period.
+                </td>
+                <td className="px-3 py-2 text-right text-gold-600">
+                  {formatCurrency(h.costBasis, reportingCurrency)}
                 </td>
               </tr>
+            ))}
+            {holdings.length === 0 && (
+              <tr><td colSpan={3} className="px-3 py-8 text-center text-mist-400">No holdings for this period.</td></tr>
             )}
           </tbody>
         </table>

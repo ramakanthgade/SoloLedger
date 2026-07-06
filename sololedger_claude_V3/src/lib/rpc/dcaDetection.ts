@@ -81,6 +81,8 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     )
       continue;
     if (ownWallets.has(t.counterpartyAddress.toLowerCase())) continue;
+    // Native chain assets (SOL, ETH) are never DCA output fills — only tokens are
+    if (NATIVE_CHAIN_ASSETS.has(t.asset.toUpperCase())) continue;
 
     const key = `${t.counterpartyAddress.toLowerCase()}:${t.asset.toUpperCase()}:${t.walletAddress?.toLowerCase() ?? ''}`;
     if (!fillOnlyGroups.has(key)) {
