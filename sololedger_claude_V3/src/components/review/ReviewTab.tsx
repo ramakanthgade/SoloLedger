@@ -631,9 +631,40 @@ export function ReviewTab() {
                       {t.isInternalTransfer && <Badge tone="neutral">internal</Badge>}
                       {t.category === 'nft' && <Badge tone="pink">nft</Badge>}
                       {displayFlags(t).map((f) => (
-                        <Badge key={f} tone="gold" className="text-[10px]">
-                          {f.replace(/_/g, ' ')}
-                        </Badge>
+                        f === 'possible_internal_transfer' ? (
+                          // Clickable: let user confirm as internal or dismiss
+                          <div key={f} className="relative group/flag">
+                            <Badge tone="gold" className="cursor-pointer text-[10px] hover:bg-gold/40">
+                              {f.replace(/_/g, ' ')}
+                            </Badge>
+                            <div className="absolute left-0 top-5 z-20 hidden group-hover/flag:flex flex-col rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl text-xs min-w-[14rem]">
+                              <button
+                                className="px-3 py-1.5 text-left text-emerald-600 hover:bg-ink-700"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  await db.transactions.update(t.id, { isInternalTransfer: true, flags: [] });
+                                }}
+                              >
+                                ✓ Confirm as internal transfer
+                              </button>
+                              <button
+                                className="px-3 py-1.5 text-left text-mist-400 hover:bg-ink-700"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  await db.transactions.update(t.id, {
+                                    flags: (t.flags ?? []).filter((x) => x !== 'possible_internal_transfer') as import('@/types/transaction').FlagReason[]
+                                  });
+                                }}
+                              >
+                                ✕ Remove flag (not internal)
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <Badge key={f} tone="gold" className="text-[10px]">
+                            {f.replace(/_/g, ' ')}
+                          </Badge>
+                        )
                       ))}
                       </div>
                       {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
@@ -644,8 +675,8 @@ export function ReviewTab() {
                           match lots
                         </button>
                       )}
-                      {/* Show spam button only for unclassified/transfer rows, or when already spammed */}
-                      {(t.isSpam || ['transfer_in', 'transfer_out', 'other'].includes(t.type)) && (
+                      {/* Show spam button only for unclassified transfers, or when already spammed */}
+                      {(t.isSpam || (['transfer_in', 'transfer_out', 'other'].includes(t.type) && !t.isInternalTransfer)) && (
                         <button
                           onClick={() => void markSpam(t.id, !t.isSpam)}
                           title={t.isSpam ? 'Remove spam flag' : 'Mark as spam (excluded from taxes)'}
