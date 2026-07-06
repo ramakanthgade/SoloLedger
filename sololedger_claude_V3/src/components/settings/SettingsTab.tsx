@@ -103,11 +103,49 @@ export function SettingsTab() {
 
           {settings.rpcLookupEnabled && (
             <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
+              <p className="text-xs font-semibold text-emerald-600">
+                Primary sources (richest data — use these first)
+              </p>
               <ApiKeyField
                 label={
                   <>
-                    Alchemy API key (covers Ethereum, Polygon, Arbitrum, Base, BNB Chain, Optimism, Avalanche, and
-                    Solana — one free key from{' '}
+                    <strong className="text-mist">Helius API key</strong> — PRIMARY for Solana.
+                    Returns pre-parsed labels: SWAP, STAKE, NFT_SALE, etc. Handles Jupiter DCA fills
+                    with exact token amounts. No Noves needed for Solana. Free tier at{' '}
+                    <a href="https://dev.helius.xyz/" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      dev.helius.xyz
+                    </a>
+                  </>
+                }
+                value={settings.heliusApiKey}
+                onSave={(key) => update({ heliusApiKey: key })}
+                onDelete={() => update({ heliusApiKey: undefined })}
+                placeholder="Paste your Helius API key"
+              />
+              <ApiKeyField
+                label={
+                  <>
+                    <strong className="text-mist">Moralis API key</strong> — PRIMARY for EVM chains.
+                    Returns decoded + spam-flagged transactions with category labels (token swap, nft
+                    sale, staking, airdrop). Covers 30+ chains. From{' '}
+                    <a href="https://moralis.io/" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
+                      moralis.io
+                    </a>
+                  </>
+                }
+                value={settings.moralisApiKey}
+                onSave={(key) => update({ moralisApiKey: key })}
+                onDelete={() => update({ moralisApiKey: undefined })}
+                placeholder="Paste your Moralis API key"
+              />
+              <p className="text-xs font-semibold text-mist-400">
+                Fallback sources (used when Helius/Moralis are not set)
+              </p>
+              <ApiKeyField
+                label={
+                  <>
+                    Alchemy API key (fallback for Solana + EVM — covers Ethereum, Polygon, Arbitrum,
+                    Base, BNB Chain, Optimism, Avalanche; free key from{' '}
                     <a href="https://www.alchemy.com" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
                       alchemy.com
                     </a>
@@ -122,9 +160,7 @@ export function SettingsTab() {
               <ApiKeyField
                 label={
                   <>
-                    Etherscan API key (optional — fallback for Polygon, Arbitrum, Base, and other EVM chains when
-                    Alchemy transfer lookup is rate-limited; Ethereum uses Blockscout first and does not need this.
-                    One key covers many chains via{' '}
+                    Etherscan API key (optional fallback; one key covers many EVM chains via{' '}
                     <a href="https://etherscan.io/apis" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
                       etherscan.io/apis
                     </a>

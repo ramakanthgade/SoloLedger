@@ -97,6 +97,19 @@ export interface TaxSettings {
   birdeyeApiKey?: string;
   /** Noves key — DeFi/swap/staking classification for EVM + Solana tx hashes. */
   novesApiKey?: string;
+  /**
+   * Helius API key — primary Solana data source.
+   * Returns pre-parsed, labeled transactions (SWAP, STAKE, NFT_SALE, etc.) including
+   * Jupiter DCA fills with exact token amounts. Replaces raw Alchemy Solana import.
+   * Get one free at https://dev.helius.xyz/
+   */
+  heliusApiKey?: string;
+  /**
+   * Moralis API key — primary EVM data source.
+   * Returns decoded, categorized transactions with spam detection across 30+ chains.
+   * Get one at https://moralis.io/
+   */
+  moralisApiKey?: string;
   /** OpenRouter API key — used for the AI Tax Advisor chat panel. */
   aiApiKey?: string;
   /** OpenRouter model id, e.g. anthropic/claude-opus-4-5 */

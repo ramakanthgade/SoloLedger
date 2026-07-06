@@ -91,6 +91,8 @@ export function WalletLookupPanel() {
     void runWalletImport(addrs, chain, settings, {
       chain,
       alchemyApiKey: settings.alchemyApiKey,
+      heliusApiKey: settings.heliusApiKey,
+      moralisApiKey: settings.moralisApiKey,
       customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
       customApiKey: customApiKey || settings.customExplorerApiKey,
       customAsset
@@ -296,6 +298,8 @@ export function WalletLookupPanel() {
                         void runWalletImport([row.address], c, settings, {
                           chain: c,
                           alchemyApiKey: settings.alchemyApiKey,
+                          heliusApiKey: settings.heliusApiKey,
+                          moralisApiKey: settings.moralisApiKey,
                           customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
                           customApiKey: customApiKey || settings.customExplorerApiKey,
                           customAsset
