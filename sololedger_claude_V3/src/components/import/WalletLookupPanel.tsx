@@ -1,16 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
-  db,
   getSettings,
   getLookupAddresses,
-  upsertLookupAddress,
   deleteLookupAddressAndTransactions,
   updateWalletLabel
 } from '@/lib/storage/db';
-import { CHAINS, lookupManyAddresses, type ChainId } from '@/lib/rpc/providers';
-import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
-import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { runWalletImport, useImportJob, importJob } from '@/lib/importJob';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
 import { AlertTriangle, RefreshCw, Trash2, Pencil, Check, X } from 'lucide-react';
@@ -18,139 +15,91 @@ import { AlertTriangle, RefreshCw, Trash2, Pencil, Check, X } from 'lucide-react
 const inputCls =
   'mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm text-mist focus:border-violet focus:outline-none';
 
+/** Detect blockchain from wallet address format — works for BTC, Solana; EVM still needs chain selection. */
+function detectChainFromAddress(address: string): ChainId | null {
+  const a = address.trim();
+  if (!a) return null;
+  // Bitcoin: 1..., 3..., bc1...
+  if (/^(1[1-9A-HJ-NP-Za-km-z]{25,34}|3[1-9A-HJ-NP-Za-km-z]{25,34}|bc1[ac-hj-np-z02-9]{6,87})$/i.test(a)) return 'bitcoin';
+  // Ethereum / EVM: 0x + 40 hex chars
+  if (/^0x[a-fA-F0-9]{40}$/.test(a)) return 'ethereum';
+  // Solana: base58, 32–44 chars, no 0x prefix
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a) && !a.startsWith('bc1')) return 'solana';
+  return null;
+}
+
+const EVM_CHAIN_IDS: ChainId[] = ['ethereum', 'polygon', 'arbitrum', 'base', 'bsc', 'optimism', 'avalanche'];
+
 export function WalletLookupPanel() {
   const [settings, setSettings] = useState<Awaited<ReturnType<typeof getSettings>> | null>(null);
-  const [chainId, setChainId] = useState<ChainId>('bitcoin');
+  const [chainId, setChainId] = useState<ChainId>('solana');
   const [addressText, setAddressText] = useState('');
   const [customBaseUrl, setCustomBaseUrl] = useState('');
   const [customApiKey, setCustomApiKey] = useState('');
   const [customAsset, setCustomAsset] = useState('');
-  const [loading, setLoading] = useState(false);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [phase, setPhase] = useState<'importing' | 'classifying' | 'pricing' | null>(null);
-  const [result, setResult] = useState<{
-    imported: number;
-    addressesQueried: number;
-    pricesUpdated?: number;
-  } | null>(null);
-  const [warnings, setWarnings] = useState<string[]>([]);
-  const [failed, setFailed] = useState<{ address: string; message: string }[]>([]);
-  const [removeConfirm, setRemoveConfirm] = useState<{ id: string; address: string; txCount: number } | null>(null);
   const [editingLabel, setEditingLabel] = useState<string | null>(null);
   const [labelDraft, setLabelDraft] = useState('');
+  const [removeConfirm, setRemoveConfirm] = useState<{ id: string; address: string; txCount: number } | null>(null);
   const labelInputRef = useRef<HTMLInputElement>(null);
+
+  // Global import job state — persists across tab navigation
+  const job = useImportJob();
 
   const lookedUp = useLiveQuery(() => getLookupAddresses(), []) ?? [];
 
-  useEffect(() => {
-    getSettings().then(setSettings);
-  }, []);
+  useEffect(() => { getSettings().then(setSettings); }, []);
+  useEffect(() => { if (editingLabel) setTimeout(() => labelInputRef.current?.focus(), 30); }, [editingLabel]);
 
+  // Auto-detect chain when addresses are typed
   useEffect(() => {
-    if (editingLabel) setTimeout(() => labelInputRef.current?.focus(), 30);
-  }, [editingLabel]);
+    const first = addressText.split(/[\n,]/)[0]?.trim();
+    if (!first) return;
+    const detected = detectChainFromAddress(first);
+    if (detected && detected !== chainId) setChainId(detected);
+  }, [addressText]);
 
   if (settings === null) return <p className="text-sm text-mist-400">Loading wallet lookup…</p>;
 
   if (!settings.rpcLookupEnabled) {
     return (
       <div className="rounded-lg border border-ink-700 bg-ink-800 p-4 text-sm text-mist-400">
-        Wallet lookup is off. Enable "Wallet address lookup via public RPC/explorer" in Settings to use it.
+        Wallet lookup is off. Enable "Wallet address lookup via public RPC/explorer" in Settings.
       </div>
     );
   }
 
   const chain = CHAINS.find((c) => c.id === chainId)!;
+  const isEvm = EVM_CHAIN_IDS.includes(chainId);
+  const isBitcoin = chainId === 'bitcoin';
+  const isSolana = chainId === 'solana';
   const needsAlchemyKey =
     (chain.provider === 'alchemy_evm' && chain.id !== 'ethereum') || chain.provider === 'alchemy_solana';
   const missingAlchemyKey = needsAlchemyKey && !settings.alchemyApiKey;
 
-  const runLookup = async (addressesOverride?: string[]) => {
-    setLoading(true);
-    setResult(null);
-    setWarnings([]);
-    setFailed([]);
-    setProgress(null);
-    setPhase('importing');
-    const addresses =
-      addressesOverride ??
-      addressText
-        .split(/[\n,]/)
-        .map((a) => a.trim())
-        .filter(Boolean);
+  const parsedAddresses = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean);
+  const alreadyImported = parsedAddresses.filter((a) =>
+    lookedUp.some((r) => r.chain === chainId && r.address.toLowerCase() === a.toLowerCase())
+  );
+  const freshAddresses = parsedAddresses.filter((a) =>
+    !lookedUp.some((r) => r.chain === chainId && r.address.toLowerCase() === a.toLowerCase())
+  );
 
-    try {
-      const { transactions, warnings: w, failed: f, perAddress } = await lookupManyAddresses(
-        addresses,
-        {
-          chain,
-          alchemyApiKey: settings.alchemyApiKey,
-          customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
-          customApiKey: customApiKey || settings.customExplorerApiKey,
-          customAsset
-        },
-        (done, total) => setProgress({ done, total })
-      );
-
-      if (transactions.length > 0) {
-        await db.transactions.bulkPut(transactions);
-      }
-
-      // --- Phase 2: Swap / DeFi classification ---
-      setPhase('classifying');
-      setProgress(null);
-      const swapResult = transactions.length > 0
-        ? await reprocessSwapDetectionInDb(
-            settings.novesApiKey,
-            (done, total) => setProgress({ done, total })
-          )
-        : null;
-
-      await Promise.all(perAddress.map((p) => upsertLookupAddress(chainId, p.address, p.count)));
-
-      const apiWarnings = w.map((x) => `${x.address}: ${x.message}`);
-      if (swapResult && (swapResult.tradesCreated > 0 || swapResult.reclassified > 0)) {
-        apiWarnings.unshift(swapResult.message);
-      }
-
-      // --- Phase 3: Auto-fetch prices (if enabled) ---
-      let pricesUpdated = 0;
-      if (settings.priceApiEnabled && transactions.length > 0) {
-        setPhase('pricing');
-        setProgress(null);
-        const priceResult = await fetchMissingPricesForAllTransactions(settings, (done, total) =>
-          setProgress({ done, total })
-        );
-        pricesUpdated = priceResult.updated;
-        if (priceResult.updated > 0) {
-          apiWarnings.unshift(
-            `Fetched prices for ${priceResult.updated} transaction${priceResult.updated === 1 ? '' : 's'}. ` +
-              (priceResult.failed > 0 ? `${priceResult.failed} could not be priced (obscure/spam tokens).` : '')
-          );
-        }
-      }
-
-      setResult({ imported: transactions.length, addressesQueried: addresses.length, pricesUpdated });
-      setWarnings(apiWarnings);
-      setFailed(f);
-    } finally {
-      setLoading(false);
-      setProgress(null);
-      setPhase(null);
-    }
+  const startImport = (addressesOverride?: string[]) => {
+    const addrs = addressesOverride ?? freshAddresses;
+    if (addrs.length === 0 || job.active) return;
+    importJob.reset();
+    void runWalletImport(addrs, chain, settings, {
+      chain,
+      alchemyApiKey: settings.alchemyApiKey,
+      customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
+      customApiKey: customApiKey || settings.customExplorerApiKey,
+      customAsset
+    });
   };
 
   const saveLabel = async (id: string) => {
     await updateWalletLabel(id, labelDraft);
     setEditingLabel(null);
-  };
-
-  const addressCount = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean).length;
-
-  const phaseLabel = {
-    importing: `Importing ${progress ? `${progress.done}/${progress.total}` : ''}…`,
-    classifying: `Classifying swaps ${progress ? `${progress.done}/${progress.total}` : ''}…`,
-    pricing: `Fetching prices ${progress ? `${progress.done}/${progress.total}` : ''}…`
   };
 
   return (
@@ -165,20 +114,57 @@ export function WalletLookupPanel() {
         </div>
 
         <label className="text-xs text-mist-400">
-          Chain
-          <select className={inputCls} value={chainId} onChange={(e) => setChainId(e.target.value as ChainId)}>
-            {CHAINS.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.label} {c.needsKey ? '' : '(no key needed)'}
-              </option>
-            ))}
-          </select>
+          Wallet addresses — one per line or comma-separated
+          <textarea
+            className={`${inputCls} h-24 font-mono`}
+            value={addressText}
+            onChange={(e) => setAddressText(e.target.value)}
+            placeholder={
+              'Paste any wallet addresses here.\nThe app auto-detects BTC, Solana, and Ethereum.\nFor other EVM chains, select below.'
+            }
+          />
         </label>
+
+        {/* Chain selector — shown for EVM (needed) or custom; hidden for auto-detected BTC/Solana */}
+        {parsedAddresses.length === 0 || isEvm || chainId === 'custom_evm' ? (
+          <label className="text-xs text-mist-400">
+            Chain
+            {(isBitcoin || isSolana) && <span className="ml-1 text-emerald-600">(auto-detected)</span>}
+            <select className={inputCls} value={chainId} onChange={(e) => setChainId(e.target.value as ChainId)}>
+              {CHAINS.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label} {c.needsKey ? '' : '(no key needed)'}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <div className="flex items-center gap-2 text-xs text-emerald-600">
+            <Check className="h-3.5 w-3.5" />
+            Auto-detected: <strong>{chain.label}</strong>
+            <button
+              className="text-mist-400 underline hover:text-mist"
+              onClick={() => {/* show full selector */}}
+            >
+              change
+            </button>
+            <select
+              className="rounded border border-ink-600 bg-ink-800 px-2 py-0.5 text-xs text-mist"
+              value={chainId}
+              onChange={(e) => setChainId(e.target.value as ChainId)}
+            >
+              {CHAINS.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.label}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
 
         {missingAlchemyKey && (
           <p className="rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
-            Add a free Alchemy API key in Settings first — one key covers this chain plus all other EVM chains and
-            Solana.
+            Add a free Alchemy API key in Settings — one key covers this chain plus all others.
           </p>
         )}
 
@@ -186,12 +172,7 @@ export function WalletLookupPanel() {
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="text-xs text-mist-400 sm:col-span-2">
               Explorer base URL
-              <input
-                className={inputCls}
-                value={customBaseUrl}
-                onChange={(e) => setCustomBaseUrl(e.target.value)}
-                placeholder="https://api.etherscan.io/v2/api?chainid=..."
-              />
+              <input className={inputCls} value={customBaseUrl} onChange={(e) => setCustomBaseUrl(e.target.value)} placeholder="https://api.etherscan.io/v2/api?chainid=..." />
             </label>
             <label className="text-xs text-mist-400">
               API key
@@ -199,63 +180,58 @@ export function WalletLookupPanel() {
             </label>
             <label className="text-xs text-mist-400">
               Asset label
-              <input
-                className={inputCls}
-                value={customAsset}
-                onChange={(e) => setCustomAsset(e.target.value)}
-                placeholder="e.g. FTM"
-              />
+              <input className={inputCls} value={customAsset} onChange={(e) => setCustomAsset(e.target.value)} placeholder="e.g. FTM" />
             </label>
           </div>
         )}
 
-        <label className="text-xs text-mist-400">
-          Wallet addresses — one per line or comma-separated
-          <textarea
-            className={`${inputCls} h-24 font-mono`}
-            value={addressText}
-            onChange={(e) => setAddressText(e.target.value)}
-            placeholder={'0x1234...\n0xabcd...\nbc1q...'}
-          />
-        </label>
+        {alreadyImported.length > 0 && freshAddresses.length === 0 && (
+          <div className="rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
+            {alreadyImported.length === 1
+              ? 'This wallet is already imported.'
+              : `All ${alreadyImported.length} addresses are already imported.`}{' '}
+            Use <strong>Sync</strong> in the list below to refresh.
+          </div>
+        )}
+        {alreadyImported.length > 0 && freshAddresses.length > 0 && (
+          <div className="rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
+            {alreadyImported.length} already imported (will be skipped). {freshAddresses.length} new will be imported.
+          </div>
+        )}
 
         <div className="flex flex-wrap items-center gap-3">
           <Button
-            disabled={addressCount === 0 || loading || (needsAlchemyKey && missingAlchemyKey)}
-            onClick={() => runLookup()}
+            disabled={freshAddresses.length === 0 || job.active || (needsAlchemyKey && missingAlchemyKey)}
+            onClick={() => startImport()}
           >
-            {loading
-              ? phaseLabel[phase!] ?? 'Working…'
-              : `Import ${addressCount || ''} wallet${addressCount === 1 ? '' : 's'}`}
+            Import {freshAddresses.length || ''} wallet{freshAddresses.length === 1 ? '' : 's'}
           </Button>
-          {settings.priceApiEnabled && !loading && (
-            <span className="text-xs text-emerald-600">✓ Prices will be fetched automatically after import</span>
+          {settings.priceApiEnabled && !job.active && freshAddresses.length > 0 && (
+            <span className="text-xs text-emerald-600">✓ Swap detection + price fetch runs automatically</span>
           )}
         </div>
 
-        {result && (
+        {/* Job result (shown after job completes) */}
+        {!job.active && job.result && (
           <div className="rounded-lg border border-emerald/30 bg-emerald/10 px-3 py-2 text-xs text-emerald-700">
-            <strong>{result.imported}</strong> transactions imported
-            {result.pricesUpdated != null && result.pricesUpdated > 0
-              ? `, ${result.pricesUpdated} prices fetched`
-              : ''}
-            . {settings.priceApiEnabled ? 'Head to Review for any remaining missing prices.' : 'Enable price lookup in Settings to auto-fetch prices.'}
+            <strong>{job.result.imported}</strong> transactions imported
+            {job.result.swapsDetected > 0 ? `, ${job.result.swapsDetected} swaps detected` : ''}
+            {job.result.pricesUpdated > 0 ? `, ${job.result.pricesUpdated} prices fetched` : ''}.
           </div>
         )}
-        {warnings.length > 0 && (
+        {job.error && (
+          <div className="rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-xs text-loss">
+            {job.error}
+          </div>
+        )}
+        {!job.active && job.warnings.length > 0 && (
           <div className="space-y-1 text-xs text-gold-600">
-            {warnings.slice(0, 5).map((w, i) => (
-              <p key={i}>{w}</p>
-            ))}
+            {job.warnings.slice(0, 6).map((w, i) => <p key={i}>{w}</p>)}
           </div>
         )}
-        {failed.length > 0 && (
+        {!job.active && job.failed.length > 0 && (
           <div className="space-y-1 rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-xs text-loss">
-            {failed.map((f, i) => (
-              <p key={i}>
-                {f.address}: {f.message}
-              </p>
-            ))}
+            {job.failed.map((f, i) => <p key={i}>{f.address}: {f.message}</p>)}
           </div>
         )}
       </div>
@@ -269,13 +245,9 @@ export function WalletLookupPanel() {
               const chainLabel = CHAINS.find((c) => c.id === row.chain)?.label ?? row.chain;
               const isEditing = editingLabel === row.id;
               return (
-                <div
-                  key={row.id}
-                  className="flex flex-wrap items-center gap-2 rounded-lg bg-ink-700/40 px-3 py-2 text-xs"
-                >
+                <div key={row.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-ink-700/40 px-3 py-2 text-xs">
                   <Badge tone="violet">{chainLabel}</Badge>
 
-                  {/* Wallet name / label */}
                   {isEditing ? (
                     <span className="flex items-center gap-1">
                       <input
@@ -286,34 +258,21 @@ export function WalletLookupPanel() {
                           if (e.key === 'Enter') void saveLabel(row.id);
                           if (e.key === 'Escape') setEditingLabel(null);
                         }}
-                        className="w-40 rounded border border-violet bg-ink-800 px-2 py-0.5 text-xs text-mist focus:outline-none"
+                        className="w-44 rounded border border-violet bg-ink-800 px-2 py-0.5 text-xs text-mist focus:outline-none"
                         placeholder="e.g. My Phantom wallet"
                       />
-                      <button onClick={() => void saveLabel(row.id)} className="text-emerald-600">
-                        <Check className="h-3.5 w-3.5" />
-                      </button>
-                      <button onClick={() => setEditingLabel(null)} className="text-mist-400">
-                        <X className="h-3.5 w-3.5" />
-                      </button>
+                      <button onClick={() => void saveLabel(row.id)} className="text-emerald-600"><Check className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => setEditingLabel(null)} className="text-mist-400"><X className="h-3.5 w-3.5" /></button>
                     </span>
                   ) : (
                     <button
-                      onClick={() => {
-                        setEditingLabel(row.id);
-                        setLabelDraft(row.label ?? '');
-                      }}
+                      onClick={() => { setEditingLabel(row.id); setLabelDraft(row.label ?? ''); }}
                       className="flex items-center gap-1 text-mist-300 hover:text-mist"
                       title={row.address}
                     >
-                      {row.label ? (
-                        <span className="font-medium text-mist">{row.label}</span>
-                      ) : (
-                        <span className="font-mono">
-                          {row.address.length > 16
-                            ? `${row.address.slice(0, 8)}…${row.address.slice(-6)}`
-                            : row.address}
-                        </span>
-                      )}
+                      {row.label
+                        ? <span className="font-medium text-mist">{row.label}</span>
+                        : <span className="font-mono">{row.address.length > 16 ? `${row.address.slice(0, 8)}…${row.address.slice(-6)}` : row.address}</span>}
                       <Pencil className="h-3 w-3 opacity-40" />
                     </button>
                   )}
@@ -329,20 +288,25 @@ export function WalletLookupPanel() {
 
                   <div className="ml-auto flex gap-2">
                     <button
-                      className="flex items-center gap-1 text-emerald-600 hover:underline"
+                      className="flex items-center gap-1 text-emerald-600 hover:underline disabled:opacity-40"
+                      disabled={job.active}
                       onClick={() => {
-                        setChainId(row.chain as ChainId);
-                        setAddressText(row.address);
-                        void runLookup([row.address]);
+                        const c = CHAINS.find((ch) => ch.id === row.chain);
+                        if (!c) return;
+                        void runWalletImport([row.address], c, settings, {
+                          chain: c,
+                          alchemyApiKey: settings.alchemyApiKey,
+                          customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
+                          customApiKey: customApiKey || settings.customExplorerApiKey,
+                          customAsset
+                        });
                       }}
                     >
                       <RefreshCw className="h-3 w-3" /> Sync
                     </button>
                     <button
                       className="flex items-center gap-1 text-loss hover:underline"
-                      onClick={() =>
-                        setRemoveConfirm({ id: row.id, address: row.address, txCount: row.txCount })
-                      }
+                      onClick={() => setRemoveConfirm({ id: row.id, address: row.address, txCount: row.txCount })}
                     >
                       <Trash2 className="h-3 w-3" /> Remove
                     </button>
@@ -354,20 +318,18 @@ export function WalletLookupPanel() {
         </div>
       )}
 
-      {/* Remove confirmation modal */}
+      {/* Remove confirmation */}
       {removeConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/60 p-4">
           <div className="max-w-md rounded-lg border border-ink-700 bg-ink-800 p-5 shadow-xl">
             <h3 className="text-sm font-semibold text-mist">Remove wallet and its transactions?</h3>
             <p className="mt-2 text-xs text-mist-400">
-              This deletes <strong className="text-mist">{removeConfirm.txCount}</strong> imported transaction
+              Deletes <strong className="text-mist">{removeConfirm.txCount}</strong> transaction
               {removeConfirm.txCount === 1 ? '' : 's'} for{' '}
               <span className="font-mono text-mist-300">{removeConfirm.address}</span>. Cannot be undone.
             </p>
             <div className="mt-4 flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setRemoveConfirm(null)}>
-                Cancel
-              </Button>
+              <Button variant="secondary" onClick={() => setRemoveConfirm(null)}>Cancel</Button>
               <Button
                 variant="secondary"
                 className="border-loss/40 text-loss hover:bg-loss/10"

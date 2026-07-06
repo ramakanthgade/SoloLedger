@@ -56,11 +56,19 @@ export interface NovesTxResult {
   };
 }
 
-/** Map Noves type strings → SoloLedger TxType. Unmapped types return null (keep existing). */
-const NOVES_TO_TX_TYPE: Record<string, TxType | null> = {
+/** Exact-match type map (most common types). */
+const NOVES_TYPE_EXACT: Record<string, TxType | null> = {
   swap: 'trade',
+  tokenSwap: 'trade',
+  dexSwap: 'trade',
+  exchange: 'trade',
+  jupiterSwap: 'trade',
+  raydiumSwap: 'trade',
+  orcaSwap: 'trade',
   claimRewards: 'income',
   collectRewards: 'income',
+  claimStakingRewards: 'income',
+  rewardsClaim: 'income',
   airdrop: 'income',
   nftMint: 'nft_mint',
   nftSale: 'nft_sell',
@@ -68,14 +76,18 @@ const NOVES_TO_TX_TYPE: Record<string, TxType | null> = {
   nftBuy: 'nft_buy',
   stakeDeposit: 'defi_deposit',
   stake: 'defi_deposit',
+  staking: 'defi_deposit',
   stakeWithdrawal: 'defi_withdraw',
   unstake: 'defi_withdraw',
+  unstaking: 'defi_withdraw',
   addLiquidity: 'defi_deposit',
   removeLiquidity: 'defi_withdraw',
+  depositLiquidity: 'defi_deposit',
+  withdrawLiquidity: 'defi_withdraw',
   lendingDeposit: 'defi_deposit',
   lendingWithdrawal: 'defi_withdraw',
   bridge: 'transfer_out',
-  // transfers stay as-is
+  // keep as-is
   transferERC20: null,
   transferNFT: null,
   transfer: null,
@@ -83,8 +95,31 @@ const NOVES_TO_TX_TYPE: Record<string, TxType | null> = {
   unknownTransaction: null
 };
 
+/**
+ * Maps a Noves type string to a SoloLedger TxType.
+ * First tries exact match, then falls back to substring/fuzzy matching.
+ * This handles protocol-specific variants like "jupiterSwap", "raydiumSwap", etc.
+ */
 export function novesTxTypeToSoloLedger(novesType: string): TxType | null {
-  return NOVES_TO_TX_TYPE[novesType] ?? null;
+  if (novesType in NOVES_TYPE_EXACT) return NOVES_TYPE_EXACT[novesType];
+
+  const lower = novesType.toLowerCase();
+  // Fuzzy: swap/exchange/trade variants
+  if (lower.includes('swap') || lower.includes('exchange') || lower.includes('trade')) return 'trade';
+  // Fuzzy: staking
+  if ((lower.includes('stake') || lower.includes('staking')) && !lower.includes('unstake')) return 'defi_deposit';
+  if (lower.includes('unstake') || (lower.includes('stake') && lower.includes('withdrawal'))) return 'defi_withdraw';
+  // Fuzzy: rewards / income
+  if (lower.includes('claim') || lower.includes('reward') || lower.includes('airdrop')) return 'income';
+  // Fuzzy: liquidity
+  if (lower.includes('addliquidity') || lower.includes('deposit')) return 'defi_deposit';
+  if (lower.includes('removeliquidity') || lower.includes('withdraw')) return 'defi_withdraw';
+  // Fuzzy: NFT
+  if (lower.includes('nftmint') || lower.includes('mint')) return 'nft_mint';
+  if (lower.includes('nftsale') || lower.includes('sale')) return 'nft_sell';
+  if (lower.includes('nftbuy') || lower.includes('nftpurchase')) return 'nft_buy';
+
+  return null;
 }
 
 async function fetchNovesTx(

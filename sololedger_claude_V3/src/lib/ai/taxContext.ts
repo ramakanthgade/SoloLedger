@@ -64,9 +64,22 @@ export async function buildTaxContext(year?: number): Promise<string> {
 
   const spamCount = allTxs.filter((t) => (t.flags ?? []).includes('possible_internal_transfer')).length;
 
+  // --- Duplicate detection ---
+  const sourceRefCounts = new Map<string, number>();
+  for (const t of allTxs) {
+    if (t.sourceRef) sourceRefCounts.set(t.sourceRef, (sourceRefCounts.get(t.sourceRef) ?? 0) + 1);
+  }
+  const duplicateSourceRefs = [...sourceRefCounts.entries()].filter(([, count]) => count > 1);
+  const duplicateAssetAmountCounts = new Map<string, number>();
+  for (const t of allTxs) {
+    const key = `${t.asset}:${t.amount.toFixed(6)}:${t.timestamp}`;
+    duplicateAssetAmountCounts.set(key, (duplicateAssetAmountCounts.get(key) ?? 0) + 1);
+  }
+  const possibleDuplicateTxs = [...duplicateAssetAmountCounts.entries()].filter(([, c]) => c > 1).length;
+
   const lines = [
     `You are SoloLedger's AI Tax Advisor — a friendly, expert crypto tax assistant.`,
-    `All data is 100% local on the user's device. Never ask for wallet addresses or private keys.`,
+    `All data is 100% local on the user's device. You can only access the summary data shown below.`,
     ``,
     `## User's Tax Data Summary (${fy})`,
     `- Jurisdiction: ${jurisdiction.label} — ${jurisdiction.notes.slice(0, 120)}`,
@@ -75,6 +88,8 @@ export async function buildTaxContext(year?: number): Promise<string> {
     `- Total transactions in DB: ${allTxs.length}`,
     `- Transactions still missing a price: ${missingCount}`,
     `- Possible internal transfers (unverified): ${spamCount}`,
+    `- Duplicate transaction hashes (same sourceRef, multiple DB rows): ${duplicateSourceRefs.length}`,
+    `- Possible exact duplicates (same asset+amount+time): ${possibleDuplicateTxs}`,
     ``,
     `## ${fy} Tax Year`,
     `- Realized gain/loss: ${fmt(totalGain)} across ${yearMatches.length} disposal(s)`,
@@ -92,8 +107,10 @@ export async function buildTaxContext(year?: number): Promise<string> {
     `- Answer questions clearly and concisely. Use ${cur} for all monetary figures.`,
     `- For India: mention the 30% flat VDA tax rate (Section 115BBH), no loss setoff, 1% TDS where relevant.`,
     `- If asked about specific tax advice, recommend consulting a CA (Chartered Accountant).`,
-    `- If data is missing (e.g. prices), explain what step to take in SoloLedger (Review → Fetch prices).`,
-    `- Keep responses short unless asked for detail. Use bullet points for lists.`
+    `- If data is missing, explain what step to take in SoloLedger (Review → Fetch prices, Import → Sync).`,
+    `- Keep responses short unless asked for detail. Use bullet points for lists.`,
+    `- If asked about duplicates: share the duplicate counts above. Duplicates often appear when a wallet is re-synced before Noves trades are protected. Suggest: Review → select duplicates → mark as internal or spam.`,
+    `- You cannot see individual transaction rows — only the aggregated summaries above. Be honest about this.`
   ];
 
   return lines.join('\n');
