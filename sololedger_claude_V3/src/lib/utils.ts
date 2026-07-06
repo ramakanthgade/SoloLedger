@@ -1,5 +1,6 @@
 import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import type { Jurisdiction } from '@/types/transaction';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
@@ -7,9 +8,7 @@ export function cn(...inputs: ClassValue[]) {
 
 /**
  * Format a monetary amount in the user's reporting currency.
- * Uses Indian locale (en-IN) for INR to produce the correct lakh/crore grouping:
- *   42,36,073.33 instead of 4,236,073.33
- * All other currencies use en-US grouping.
+ * Uses Indian locale (en-IN) for INR: ₹42,36,073.33 (lakh/crore grouping).
  */
 export function formatCurrency(amount: number, currency: string): string {
   try {
@@ -25,10 +24,7 @@ export function formatCurrency(amount: number, currency: string): string {
   }
 }
 
-/**
- * Compact number label for table columns (avoids 16-digit strings breaking layout).
- * For INR, uses Indian compact suffixes: L = lakh, Cr = crore.
- */
+/** Compact number for table columns. */
 export function formatCompactAmount(amount: number): string {
   const abs = Math.abs(amount);
   if (abs >= 1000) return amount.toFixed(2);
@@ -37,10 +33,7 @@ export function formatCompactAmount(amount: number): string {
   return amount.toPrecision(4);
 }
 
-/**
- * Indian-style compact currency label: ₹1.2Cr, ₹42.3L, ₹1,23,456.
- * Use this for large totals where you want short labels (charts, summary cards).
- */
+/** Indian-style compact currency label: ₹42.3L, ₹1.2Cr. */
 export function formatCompactCurrency(amount: number, currency: string): string {
   if (currency.toUpperCase() !== 'INR') return formatCurrency(amount, currency);
   const abs = Math.abs(amount);
@@ -53,4 +46,81 @@ export function formatCompactCurrency(amount: number, currency: string): string 
 export function formatDateTime(timestampMs: number): string {
   const d = new Date(timestampMs);
   return d.toISOString().slice(0, 16).replace('T', ' ');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Financial Year utilities
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Returns the start and end timestamps (ms) of a financial year.
+ *
+ * India:      FY N    = Apr 1, N  →  Mar 31, N+1  (23:59:59.999 UTC)
+ * US/CA/AE:  Year N  = Jan 1, N  →  Dec 31, N
+ */
+export function getFyBoundaries(
+  fy: number,
+  jurisdiction: Jurisdiction
+): { start: number; end: number } {
+  if (jurisdiction === 'IN') {
+    const start = Date.UTC(fy, 3, 1);        // Apr 1 00:00 UTC
+    const end   = Date.UTC(fy + 1, 3, 1) - 1; // Mar 31 23:59:59.999
+    return { start, end };
+  }
+  const start = Date.UTC(fy, 0, 1);
+  const end   = Date.UTC(fy + 1, 0, 1) - 1;
+  return { start, end };
+}
+
+/**
+ * Returns the "FY number" for a given UTC timestamp.
+ * India:  timestamp in Apr 2025 – Mar 2026  → 2025
+ * Others: timestamp in 2025                  → 2025
+ */
+export function getFyForTimestamp(
+  timestampMs: number,
+  jurisdiction: Jurisdiction
+): number {
+  const d = new Date(timestampMs);
+  if (jurisdiction === 'IN') {
+    // FY starts April (month 3 in 0-indexed)
+    return d.getUTCMonth() >= 3 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
+  }
+  return d.getUTCFullYear();
+}
+
+/**
+ * Returns the current financial year number.
+ * India: if today is Jul 2026 → 2026 (FY 2026-27)
+ */
+export function getCurrentFy(jurisdiction: Jurisdiction): number {
+  return getFyForTimestamp(Date.now(), jurisdiction);
+}
+
+/**
+ * Human-readable label for a financial year.
+ * India:  2025 → "FY 2025-26"
+ * Others: 2025 → "2025"
+ */
+export function getFyLabel(fy: number, jurisdiction: Jurisdiction): string {
+  if (jurisdiction === 'IN') {
+    const next = (fy + 1).toString().slice(-2);
+    return `FY ${fy}-${next}`;
+}
+  return String(fy);
+}
+
+/**
+ * Returns all unique FY numbers that appear in a set of timestamps.
+ * Always includes the current FY.
+ */
+export function getAvailableFys(
+  timestampsMs: number[],
+  jurisdiction: Jurisdiction
+): number[] {
+  const fys = new Set<number>([getCurrentFy(jurisdiction)]);
+  for (const ts of timestampsMs) {
+    fys.add(getFyForTimestamp(ts, jurisdiction));
+  }
+  return Array.from(fys).sort((a, b) => b - a);
 }

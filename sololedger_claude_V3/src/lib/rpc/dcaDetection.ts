@@ -222,6 +222,68 @@ export async function applyDcaClassification(
         `Non-taxable escrow.`
     });
 
+    // Also mark any OTHER transfer_outs to the same vault that weren't the primary deposit
+    // (handles the case where the user has multiple DCA orders to the same vault address)
+    const otherVaultDeposits = await db.transactions
+      .filter(
+        (t) =>
+          t.type === 'transfer_out' &&
+          !t.isInternalTransfer &&
+          t.counterpartyAddress?.toLowerCase() === g.vaultAddress.toLowerCase()
+      )
+      .toArray();
+    for (const dep of otherVaultDeposits) {
+      if (dep.id === g.depositTx.id) continue; // already handled above
+      // eslint-disable-next-line no-await-in-loop
+      await db.transactions.update(dep.id, {
+        isInternalTransfer: true,
+        flags: [] as FlagReason[],
+        notes: `DCA deposit to vault (${g.vaultAddress.slice(0, 8)}…) — non-taxable escrow`
+      });
+    }
+
+    // Mark tiny SOL transfers (< 0.01 SOL) in the same transactions as the DCA deposit as fee
+    // These are rent deposits for token accounts created by Jupiter DCA
+    const TINY_SOL_THRESHOLD = 0.01;
+    const depositSourceRefs = [
+      g.depositTx.sourceRef,
+      ...otherVaultDeposits.map((d) => d.sourceRef)
+    ].filter(Boolean) as string[];
+
+    const tinySOLTxs = await db.transactions
+      .filter(
+        (t) =>
+          t.asset === 'SOL' &&
+          t.amount < TINY_SOL_THRESHOLD &&
+          t.type !== 'fee' &&
+          !t.isInternalTransfer &&
+          (t.type === 'transfer_in' || t.type === 'transfer_out')
+      )
+      .toArray();
+
+    for (const sol of tinySOLTxs) {
+      // If same tx as a DCA deposit → rent deposit for token account creation
+      if (sol.sourceRef && depositSourceRefs.includes(sol.sourceRef)) {
+        // eslint-disable-next-line no-await-in-loop
+        await db.transactions.update(sol.id, {
+          isInternalTransfer: true,
+          flags: [] as FlagReason[],
+          notes: 'Token account rent deposit (Jupiter DCA setup) — non-taxable'
+        });
+        continue;
+      }
+      // Also handle standalone tiny SOL receipts from known system patterns (account close refunds)
+      // These come from CloseAccount instructions when DCA order finishes
+      if (sol.type === 'transfer_in' && sol.sourceRef) {
+        // eslint-disable-next-line no-await-in-loop
+        await db.transactions.update(sol.id, {
+          isInternalTransfer: true,
+          flags: [] as FlagReason[],
+          notes: 'Token account rent refund (DCA account close) — non-taxable'
+        });
+      }
+    }
+
     for (const fill of g.fillTxs) {
       const jupFill = fill.sourceRef ? jupiterData.fillsByTxId.get(fill.sourceRef) : null;
       let inputAmountPerFill: number;

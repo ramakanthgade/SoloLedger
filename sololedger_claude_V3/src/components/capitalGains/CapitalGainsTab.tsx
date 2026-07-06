@@ -7,7 +7,7 @@ import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { formatCurrency, formatCompactAmount, formatDateTime } from '@/lib/utils';
+import { formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyLabel, getCurrentFy, getAvailableFys } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
 
@@ -26,7 +26,7 @@ export function CapitalGainsTab() {
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
   const [method, setMethod] = useState<'FIFO' | 'SpecID'>('FIFO');
-  const [year, setYear] = useState(new Date().getFullYear());
+  const [fy, setFy] = useState(getCurrentFy('IN'));
   const [currency, setCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
 
@@ -34,7 +34,9 @@ export function CapitalGainsTab() {
     getSettings().then((s) => {
       setMethod(s.defaultCostBasisMethod);
       setCurrency(s.reportingCurrency);
-      setJurisdiction(s.jurisdiction);
+      const jur = s.jurisdiction ?? 'IN';
+      setJurisdiction(jur);
+      setFy(getCurrentFy(jur));
     });
   }, []);
 
@@ -58,23 +60,21 @@ export function CapitalGainsTab() {
     [transactions, dcaVaultAddresses]
   );
 
-  const years = useMemo(() => {
-    const set = new Set([
-      ...matchedRows.map((r) => new Date(r.sellDate).getUTCFullYear()),
-      ...incomeRows.map((r) => new Date(r.date).getUTCFullYear()),
-      new Date().getUTCFullYear()
-    ]);
-    return Array.from(set).sort((a, b) => b - a);
-  }, [matchedRows, incomeRows]);
+  const availableFys = useMemo(
+    () => getAvailableFys([...matchedRows.map((r) => r.sellDate), ...incomeRows.map((r) => r.date)], jurisdiction),
+    [matchedRows, incomeRows, jurisdiction]
+  );
+
+  const fyBounds = useMemo(() => getFyBoundaries(fy, jurisdiction), [fy, jurisdiction]);
 
   const yearMatches = useMemo(
-    () => matchedRows.filter((r) => new Date(r.sellDate).getUTCFullYear() === year),
-    [matchedRows, year]
+    () => matchedRows.filter((r) => r.sellDate >= fyBounds.start && r.sellDate <= fyBounds.end),
+    [matchedRows, fyBounds]
   );
 
   const yearIncome = useMemo(
-    () => incomeRows.filter((r) => new Date(r.date).getUTCFullYear() === year),
-    [incomeRows, year]
+    () => incomeRows.filter((r) => r.date >= fyBounds.start && r.date <= fyBounds.end),
+    [incomeRows, fyBounds]
   );
 
   const totalGain = yearMatches.reduce((s, r) => s + r.gain, 0);
@@ -105,13 +105,13 @@ export function CapitalGainsTab() {
 
       <div className="flex flex-wrap items-center gap-3">
         <select
-          value={year}
-          onChange={(e) => setYear(Number(e.target.value))}
+          value={fy}
+          onChange={(e) => setFy(Number(e.target.value))}
           className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist"
         >
-          {years.map((y) => (
+          {availableFys.map((y) => (
             <option key={y} value={y}>
-              {y}
+              {getFyLabel(y, jurisdiction)}
             </option>
           ))}
         </select>
@@ -145,7 +145,7 @@ export function CapitalGainsTab() {
       <div className="grid gap-4 sm:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Realized gain / loss — {year}</CardTitle>
+            <CardTitle>Realized gain / loss — {getFyLabel(fy, jurisdiction)}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className={`font-mono text-3xl ${totalGain >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
@@ -157,7 +157,7 @@ export function CapitalGainsTab() {
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Income — {year}</CardTitle>
+            <CardTitle>Income — {getFyLabel(fy, jurisdiction)}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="font-mono text-3xl text-gold-600">{formatCurrency(totalIncome, currency)}</p>
@@ -170,7 +170,7 @@ export function CapitalGainsTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Matched disposals — {year}</CardTitle>
+          <CardTitle>Matched disposals — {getFyLabel(fy, jurisdiction)}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -225,7 +225,7 @@ export function CapitalGainsTab() {
                 {yearMatches.length === 0 && (
                   <tr>
                     <td colSpan={9} className="px-2 py-8 text-center text-mist-400">
-                      No matched disposals in {year}. Classify sells/trades in Review or import exchange CSVs.
+                      No matched disposals in {getFyLabel(fy, jurisdiction)}. Classify sells/trades in Review or import exchange CSVs.
                     </td>
                   </tr>
                 )}
@@ -237,7 +237,7 @@ export function CapitalGainsTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Income &amp; rewards — {year}</CardTitle>
+          <CardTitle>Income &amp; rewards — {getFyLabel(fy, jurisdiction)}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -274,7 +274,7 @@ export function CapitalGainsTab() {
                 {yearIncome.length === 0 && (
                   <tr>
                     <td colSpan={6} className="px-2 py-8 text-center text-mist-400">
-                      No income events in {year}.
+                      No income events in {getFyLabel(fy, jurisdiction)}.
                     </td>
                   </tr>
                 )}
