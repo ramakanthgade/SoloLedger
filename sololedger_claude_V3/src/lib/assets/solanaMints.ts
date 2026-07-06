@@ -19,6 +19,19 @@ export function resolveSolanaMintSymbol(mint: string): string | undefined {
 
 /** Prefer a human ticker over a truncated mint placeholder like `AbCd…wxyz`. */
 export function resolveAssetLabel(asset: string, contractAddress?: string, chain?: string): string {
+  // If asset is an explicit human-readable symbol (not a raw/truncated address), ALWAYS trust it.
+  // This prevents contractAddress lookups from overriding explicit asset names like 'DBT'.
+  const looksLikeAddress =
+    asset.includes('…') ||                      // truncated mint, e.g. AbCd…wxyz
+    asset.startsWith('0x') ||                   // EVM contract address
+    /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(asset); // full Solana base58 address
+
+  if (!looksLikeAddress) {
+    // Already a clean symbol ('DBT', 'USDC', 'SOL', etc.) — return as-is
+    return asset;
+  }
+
+  // For truncated/raw addresses, try to resolve from contractAddress
   if (contractAddress && chain) {
     const platform = COINGECKO_PLATFORM[chain as ChainId];
     if (platform) {
@@ -27,10 +40,6 @@ export function resolveAssetLabel(asset: string, contractAddress?: string, chain
     }
   }
   if (chain === 'solana' && contractAddress) {
-    const known = resolveSolanaMintSymbol(contractAddress);
-    if (known) return known;
-  }
-  if (asset.includes('…') && contractAddress && chain === 'solana') {
     const known = resolveSolanaMintSymbol(contractAddress);
     if (known) return known;
   }

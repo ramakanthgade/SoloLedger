@@ -200,7 +200,8 @@ export async function runWalletImport(
     const allAfterClassification = await db.transactions.toArray();
     const dcaGroups = detectDcaGroups(allAfterClassification);
     if (dcaGroups.length > 0) {
-      const dcaApplied = await applyDcaClassification(dcaGroups);
+      // Pass Alchemy key so exact DBT amounts are fetched on-chain per fill tx
+      const dcaApplied = await applyDcaClassification(dcaGroups, settings.alchemyApiKey);
       swapsDetected += dcaApplied;
       if (dcaApplied > 0) {
         apiWarnings.unshift(

@@ -364,7 +364,7 @@ export function ReviewTab() {
             disabled={applyingDca}
             onClick={async () => {
               setApplyingDca(true);
-              await applyDcaClassification(dcaGroups);
+              await applyDcaClassification(dcaGroups, settings?.alchemyApiKey);
               setApplyingDca(false);
             }}
             className="shrink-0 border-emerald/40 text-emerald-600"
@@ -540,6 +540,7 @@ export function ReviewTab() {
               <th className="px-2 py-2 text-right">Fiat</th>
               <th className="px-2 py-2">From</th>
               <th className="px-2 py-2">To</th>
+              <th className="px-2 py-2">Tx Hash</th>
               <th className="min-w-[10rem] px-2 py-2">Flags</th>
             </tr>
           </thead>
@@ -608,6 +609,23 @@ export function ReviewTab() {
                     <td className="px-2 py-2 text-mist-400" title={toAddr}>
                       {truncateAddress(toAddr)}
                     </td>
+                    <td className="px-2 py-2 font-mono text-xs text-mist-400">
+                      {t.sourceRef ? (
+                        <a
+                          href={
+                            t.chain === 'solana'
+                              ? `https://solscan.io/tx/${t.sourceRef}`
+                              : `https://etherscan.io/tx/${t.sourceRef}`
+                          }
+                          target="_blank"
+                          rel="noreferrer"
+                          title={t.sourceRef}
+                          className="hover:text-violet"
+                        >
+                          {t.sourceRef.slice(0, 8)}…
+                        </a>
+                      ) : '—'}
+                    </td>
                     <td className="px-2 py-2 align-top">
                       <div className="flex max-w-[14rem] flex-wrap gap-1 whitespace-normal">
                       {t.isInternalTransfer && <Badge tone="neutral">internal</Badge>}
@@ -626,18 +644,21 @@ export function ReviewTab() {
                           match lots
                         </button>
                       )}
-                      <button
-                        onClick={() => void markSpam(t.id, !t.isSpam)}
-                        title={t.isSpam ? 'Remove spam flag' : 'Mark as spam (excluded from taxes)'}
-                        className={`ml-1 rounded px-1.5 py-0.5 text-[10px] transition ${t.isSpam ? 'bg-loss/20 text-loss hover:bg-loss/30' : 'text-mist-400 hover:bg-ink-700 hover:text-loss'}`}
-                      >
-                        {t.isSpam ? '🚫 spam' : '🚫'}
-                      </button>
+                      {/* Show spam button only for unclassified/transfer rows, or when already spammed */}
+                      {(t.isSpam || ['transfer_in', 'transfer_out', 'other'].includes(t.type)) && (
+                        <button
+                          onClick={() => void markSpam(t.id, !t.isSpam)}
+                          title={t.isSpam ? 'Remove spam flag' : 'Mark as spam (excluded from taxes)'}
+                          className={`ml-1 rounded px-1.5 py-0.5 text-[10px] transition ${t.isSpam ? 'bg-loss/20 text-loss hover:bg-loss/30' : 'text-mist-400 hover:bg-ink-700 hover:text-loss'}`}
+                        >
+                          {t.isSpam ? '🚫 spam' : '🚫'}
+                        </button>
+                      )}
                     </td>
                   </tr>
                   {openLotPicker === t.id && (
                     <tr>
-                      <td colSpan={10} className="bg-ink-900/60 px-3 py-3">
+                      <td colSpan={11} className="bg-ink-900/60 px-3 py-3">
                         <LotPicker
                           txId={t.id}
                           candidates={candidates}
