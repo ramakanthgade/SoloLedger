@@ -16,7 +16,7 @@ import { convertTransactionsToReportingCurrency } from '@/lib/pricing/fiatConver
 import type { Transaction } from '@/types/transaction';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
-import { Upload, FileCheck2, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
+import { Upload, FileCheck2, AlertTriangle, CheckCircle2, Trash2, Loader2 } from 'lucide-react';
 import { ColumnMappingForm } from './ColumnMappingForm';
 import { ManualEntryForm } from './ManualEntryForm';
 import { WalletLookupPanel } from './WalletLookupPanel';
@@ -39,47 +39,22 @@ export function ImportTab() {
   const [savedCount, setSavedCount] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [removeConfirm, setRemoveConfirm] = useState<{ id: string; fileName: string; txCount: number } | null>(null);
-
   const [conversionNote, setConversionNote] = useState<string | null>(null);
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
 
   const csvImports = useLiveQuery(() => getCsvImports(), []) ?? [];
 
-  const handleFile = useCallback(async (file: File) => {
-    setSavedCount(null);
-    setDuplicateBlocked(false);
-    setFileName(file.name);
-    const text = await file.text();
-    const hash = await hashFileContent(text);
-    setFileHash(hash);
-
-    const existing = await db.csvImports.get(hash);
-    if (existing) {
-      setDuplicateBlocked(true);
-      setOutcome(null);
-      return;
-    }
-
-    const result = await parseCsvFile(file);
-    setOutcome(result);
-  }, []);
-
-  const onDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragOver(false);
-      const file = e.dataTransfer.files?.[0];
-      if (file) void handleFile(file);
-    },
-    [handleFile]
-  );
-
-  const persistTransactions = async (txs: Transaction[], parserId: string | null) => {
-    if (txs.length === 0 || !fileHash) return;
+  const persistTransactions = async (
+    txs: Transaction[],
+    parserId: string | null,
+    hash: string,
+    name: string
+  ): Promise<{ converted: number; failed: number; warnings: string[] }> => {
     setConversionNote(null);
     const settings = await getSettings();
     const stamped = txs.map((t) => ({
       ...t,
-      importBatchId: fileHash,
+      importBatchId: hash,
       source: parserId ?? t.source
     }));
     const { transactions: converted, converted: nConverted, failed: nFailed } =
@@ -97,30 +72,72 @@ export function ImportTab() {
     }
     await db.transactions.bulkPut(converted);
     await deduplicateTransactions();
-    const count = await countCsvImportTransactions(fileHash);
-    await upsertCsvImport(fileHash, fileName, parserId, count);
+    const count = await countCsvImportTransactions(hash);
+    await upsertCsvImport(hash, name, parserId, count);
+    return { converted: nConverted, failed: nFailed, warnings: [] };
   };
 
-  const save = async () => {
-    if (!outcome || outcome.transactions.length === 0) return;
-    setSaving(true);
-    await persistTransactions(outcome.transactions, outcome.detectedParser);
-    setSaving(false);
-    setSavedCount(outcome.transactions.length);
+  const handleFile = useCallback(async (file: File) => {
+    setSavedCount(null);
+    setDuplicateBlocked(false);
+    setImportWarnings([]);
+    setConversionNote(null);
     setOutcome(null);
-    setFileName('');
-    setFileHash('');
-  };
+    setFileName(file.name);
+
+    const text = await file.text();
+    const hash = await hashFileContent(text);
+    setFileHash(hash);
+
+    const existing = await db.csvImports.get(hash);
+    if (existing) {
+      setDuplicateBlocked(true);
+      return;
+    }
+
+    const result = await parseCsvFile(file);
+
+    // Auto-save when format is recognized and rows were parsed
+    if (result.detectedParser && result.transactions.length > 0) {
+      setSaving(true);
+      try {
+        await persistTransactions(result.transactions, result.detectedParser, hash, file.name);
+        setSavedCount(result.transactions.length);
+        setImportWarnings(result.warnings);
+        setFileName('');
+        setFileHash('');
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
+
+    setOutcome(result);
+  }, []);
+
+  const onDrop = useCallback(
+    (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragOver(false);
+      const file = e.dataTransfer.files?.[0];
+      if (file) void handleFile(file);
+    },
+    [handleFile]
+  );
 
   const saveMapped = async (mapped: ReturnType<typeof parseWithMapping>) => {
-    if (mapped.transactions.length === 0) return;
+    if (mapped.transactions.length === 0 || !fileHash) return;
     setSaving(true);
-    await persistTransactions(mapped.transactions, 'manual_mapping');
-    setSaving(false);
-    setSavedCount(mapped.transactions.length);
-    setOutcome(null);
-    setFileName('');
-    setFileHash('');
+    try {
+      await persistTransactions(mapped.transactions, 'manual_mapping', fileHash, fileName);
+      setSavedCount(mapped.transactions.length);
+      setImportWarnings(mapped.warnings);
+      setOutcome(null);
+      setFileName('');
+      setFileHash('');
+    } finally {
+      setSaving(false);
+    }
   };
 
   const modes: { id: Mode; label: string }[] = [
@@ -167,24 +184,36 @@ export function ImportTab() {
               (dragOver ? 'border-violet bg-violet-100' : 'border-ink-600 bg-ink-800')
             }
           >
-            <Upload className="mb-3 h-6 w-6 text-violet" />
-            <p className="text-sm text-mist-300">Drop your CSV here — we'll take it from there, or</p>
-            <label className="mt-3">
-              <input
-                type="file"
-                accept=".csv,.txt"
-                className="hidden"
-                onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) void handleFile(file);
-                  e.target.value = '';
-                }}
-              />
-              <span className="cursor-pointer rounded-full bg-violet px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-violet-600 active:scale-95">
-                Choose file
-              </span>
-            </label>
-            {fileName && !duplicateBlocked && <p className="mt-3 font-mono text-xs text-mist-400">{fileName}</p>}
+            {saving ? (
+              <>
+                <Loader2 className="mb-3 h-6 w-6 animate-spin text-violet" />
+                <p className="text-sm text-mist-300">Importing and saving transactions…</p>
+              </>
+            ) : (
+              <>
+                <Upload className="mb-3 h-6 w-6 text-violet" />
+                <p className="text-sm text-mist-300">Drop your CSV here — we'll import it automatically, or</p>
+                <label className="mt-3">
+                  <input
+                    type="file"
+                    accept=".csv,.txt"
+                    className="hidden"
+                    disabled={saving}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) void handleFile(file);
+                      e.target.value = '';
+                    }}
+                  />
+                  <span className="cursor-pointer rounded-full bg-violet px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-violet-600 active:scale-95">
+                    Choose file
+                  </span>
+                </label>
+              </>
+            )}
+            {fileName && !duplicateBlocked && !saving && outcome && (
+              <p className="mt-3 font-mono text-xs text-mist-400">{fileName}</p>
+            )}
           </div>
 
           {duplicateBlocked && (
@@ -211,7 +240,9 @@ export function ImportTab() {
           {outcome && (
             <Card>
               <CardHeader>
-                <CardTitle>Parse result</CardTitle>
+                <CardTitle>
+                  {outcome.detectedParser ? 'Import issue' : 'Map your columns'}
+                </CardTitle>
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -235,10 +266,10 @@ export function ImportTab() {
                   <ColumnMappingForm headers={outcome.headers} rows={outcome.rows} onMapped={saveMapped} />
                 )}
 
-                {outcome.detectedParser && outcome.transactions.length > 0 && (
-                  <Button onClick={() => void save()} disabled={saving}>
-                    {saving ? 'Saving locally…' : `Save ${outcome.transactions.length} transactions to SoloLedger`}
-                  </Button>
+                {outcome.detectedParser && outcome.transactions.length === 0 && (
+                  <p className="text-sm text-mist-400">
+                    No transactions could be imported from this file. Check the warnings above or try a different export.
+                  </p>
                 )}
               </CardContent>
             </Card>
@@ -284,6 +315,12 @@ export function ImportTab() {
             Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local database. Head to Review to
             categorize them.
           </div>
+          {importWarnings.map((w, i) => (
+            <div key={i} className="flex items-start gap-2 rounded-sm bg-gold/5 px-3 py-2 text-xs text-gold-600">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{w}</span>
+            </div>
+          ))}
           {conversionNote && (
             <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-mist-300">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-violet" />

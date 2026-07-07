@@ -97,8 +97,12 @@ export function getCurrentFy(jurisdiction: Jurisdiction): number {
   return getFyForTimestamp(Date.now(), jurisdiction);
 }
 
+export function isInFy(timestampMs: number, fy: number, jurisdiction: Jurisdiction): boolean {
+  const { start, end } = getFyBoundaries(fy, jurisdiction);
+  return timestampMs >= start && timestampMs <= end;
+}
+
 /**
- * Human-readable label for a financial year.
  * India:  2025 → "FY 2025-26"
  * Others: 2025 → "2025"
  */
@@ -106,7 +110,7 @@ export function getFyLabel(fy: number, jurisdiction: Jurisdiction): string {
   if (jurisdiction === 'IN') {
     const next = (fy + 1).toString().slice(-2);
     return `FY ${fy}-${next}`;
-}
+  }
   return String(fy);
 }
 

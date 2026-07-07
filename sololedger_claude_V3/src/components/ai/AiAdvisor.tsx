@@ -3,6 +3,8 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '@/lib/storage/db';
 import { streamChatCompletion, AI_MODELS, DEFAULT_AI_MODEL, type ChatMessage } from '@/lib/ai/openrouter';
 import { buildTaxContext } from '@/lib/ai/taxContext';
+import { getAvailableFys, getCurrentFy, getFyLabel } from '@/lib/utils';
+import type { Jurisdiction } from '@/types/transaction';
 import { Bot, Mic, MicOff, Send, X, ChevronDown } from 'lucide-react';
 
 const SUGGESTED_QUESTIONS = [
@@ -46,8 +48,10 @@ declare global {
 
 export function AiAdvisor() {
   const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
+  const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const aiApiKey = settingsRow?.aiApiKey;
   const aiModel = settingsRow?.aiModel ?? DEFAULT_AI_MODEL;
+  const jurisdiction = (settingsRow?.jurisdiction ?? 'IN') as Jurisdiction;
 
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -55,7 +59,13 @@ export function AiAdvisor() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [listening, setListening] = useState(false);
-  const [year, setYear] = useState(new Date().getFullYear());
+  const [year, setYear] = useState(getCurrentFy('IN'));
+
+  const availableYears = getAvailableFys(transactions.map((t) => t.timestamp), jurisdiction);
+
+  useEffect(() => {
+    setYear(getCurrentFy(jurisdiction));
+  }, [jurisdiction]);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -155,7 +165,7 @@ export function AiAdvisor() {
     }
   };
 
-  const years = Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - i);
+  const years = availableYears.length > 0 ? availableYears : [getCurrentFy(jurisdiction)];
 
   if (!aiApiKey) {
     return (
@@ -210,7 +220,7 @@ export function AiAdvisor() {
                 >
                   {years.map((y) => (
                     <option key={y} value={y}>
-                      FY {y}
+                      {getFyLabel(y, jurisdiction)}
                     </option>
                   ))}
                 </select>

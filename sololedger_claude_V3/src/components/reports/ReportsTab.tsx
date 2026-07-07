@@ -7,14 +7,14 @@ import { deidentifyTransactions } from '@/lib/reports/deidentify';
 import type { Jurisdiction } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, getAvailableFys, getCurrentFy, getFyLabel, isInFy } from '@/lib/utils';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
 export function ReportsTab() {
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [method, setMethod] = useState<'FIFO' | 'SpecID'>('FIFO');
-  const [year, setYear] = useState<number>(new Date().getFullYear());
+  const [year, setYear] = useState<number>(getCurrentFy('IN'));
   const [deidentify, setDeidentify] = useState(false);
 
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
@@ -22,8 +22,10 @@ export function ReportsTab() {
 
   useEffect(() => {
     getSettings().then((s) => {
-      setJurisdiction(s.jurisdiction);
+      const jur = s.jurisdiction;
+      setJurisdiction(jur);
       setMethod(s.defaultCostBasisMethod);
+      setYear(getCurrentFy(jur));
     });
   }, []);
 
@@ -33,7 +35,10 @@ export function ReportsTab() {
   );
 
   const incomeEvents = useMemo(
-    () => transactions.filter((t) => t.type === 'income').map((t) => ({ fiatValue: t.fiatValue ?? 0 })),
+    () =>
+      transactions
+        .filter((t) => t.type === 'income')
+        .map((t) => ({ fiatValue: t.fiatValue ?? 0, timestamp: t.timestamp })),
     [transactions]
   );
 
@@ -43,16 +48,24 @@ export function ReportsTab() {
   );
 
   const yearDisposals = useMemo(
-    () => disposals.filter((d) => new Date(d.disposedAt).getUTCFullYear() === year),
-    [disposals, year]
+    () => disposals.filter((d) => isInFy(d.disposedAt, year, jurisdiction)),
+    [disposals, year, jurisdiction]
   );
 
   const rules = JURISDICTIONS[jurisdiction];
-  const years = useMemo(() => {
-    const set = new Set(transactions.map((t) => new Date(t.timestamp).getUTCFullYear()));
-    set.add(new Date().getUTCFullYear());
-    return Array.from(set).sort((a, b) => b - a);
-  }, [transactions]);
+  const yearLabel = getFyLabel(year, jurisdiction);
+
+  const years = useMemo(
+    () =>
+      getAvailableFys(
+        [
+          ...transactions.map((t) => t.timestamp),
+          ...disposals.map((d) => d.disposedAt)
+        ],
+        jurisdiction
+      ),
+    [transactions, disposals, jurisdiction]
+  );
 
   const buildDeidentifiedTxMap = async () => {
     if (!deidentify) return new Map(transactions.map((t) => [t.id, t]));
@@ -67,7 +80,7 @@ export function ReportsTab() {
     doc.setFontSize(16);
     doc.text('SoloLedger \u2014 Capital Gains Report', 14, 18);
     doc.setFontSize(10);
-    doc.text(`Jurisdiction: ${rules.label} \u00b7 Tax year: ${year} \u00b7 Method: ${method}`, 14, 26);
+    doc.text(`Jurisdiction: ${rules.label} \u00b7 Tax year: ${yearLabel} \u00b7 Method: ${method}`, 14, 26);
     doc.text(deidentify ? 'De-identified: wallet/tx references pseudonymized' : 'Full detail (not de-identified)', 14, 32);
 
     autoTable(doc, {
@@ -116,7 +129,7 @@ export function ReportsTab() {
     const splitNotes = doc.splitTextToSize(rules.notes, 180);
     doc.text(splitNotes, 14, (doc as any).lastAutoTable.finalY + 10);
 
-    doc.save(`sololedger-${jurisdiction}-${year}-report.pdf`);
+    doc.save(`sololedger-${jurisdiction}-${yearLabel.replace(/\s/g, '')}-report.pdf`);
   };
 
   const downloadBlob = (content: string, mime: string, filename: string) => {
@@ -146,7 +159,11 @@ export function ReportsTab() {
         tx?.sourceRef ?? ''
       ].join(',');
     });
-    downloadBlob([header.join(','), ...rows].join('\n'), 'text/csv', `sololedger-${jurisdiction}-${year}-disposals.csv`);
+    downloadBlob(
+      [header.join(','), ...rows].join('\n'),
+      'text/csv',
+      `sololedger-${jurisdiction}-${yearLabel.replace(/\s/g, '')}-disposals.csv`
+    );
   };
 
   const exportJson = async () => {
@@ -154,12 +171,17 @@ export function ReportsTab() {
     const payload = {
       jurisdiction,
       year,
+      yearLabel,
       method,
       deidentified: deidentify,
       summary,
       disposals: yearDisposals.map((d) => ({ ...d, sourceTx: txMap.get(d.sourceTxId) }))
     };
-    downloadBlob(JSON.stringify(payload, null, 2), 'application/json', `sololedger-${jurisdiction}-${year}-report.json`);
+    downloadBlob(
+      JSON.stringify(payload, null, 2),
+      'application/json',
+      `sololedger-${jurisdiction}-${yearLabel.replace(/\s/g, '')}-report.json`
+    );
   };
 
   return (
@@ -172,7 +194,11 @@ export function ReportsTab() {
       <div className="flex flex-wrap items-center gap-3">
         <select
           value={jurisdiction}
-          onChange={(e) => setJurisdiction(e.target.value as Jurisdiction)}
+          onChange={(e) => {
+            const jur = e.target.value as Jurisdiction;
+            setJurisdiction(jur);
+            setYear(getCurrentFy(jur));
+          }}
           className="rounded border border-ink-600 bg-ink-800 px-3 py-1.5 text-sm text-mist focus:border-emerald focus:outline-none"
         >
           {Object.values(JURISDICTIONS).map((j) => (
@@ -188,7 +214,7 @@ export function ReportsTab() {
         >
           {years.map((y) => (
             <option key={y} value={y}>
-              {y}
+              {getFyLabel(y, jurisdiction)}
             </option>
           ))}
         </select>
@@ -264,7 +290,7 @@ export function ReportsTab() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Disposals — {year}</CardTitle>
+          <CardTitle>Disposals — {yearLabel}</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
@@ -296,7 +322,7 @@ export function ReportsTab() {
                 ))}
                 {yearDisposals.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-6 text-center text-mist-400">No disposals in {year}.</td>
+                    <td colSpan={7} className="py-6 text-center text-mist-400">No disposals in {yearLabel}.</td>
                   </tr>
                 )}
               </tbody>

@@ -90,7 +90,10 @@ function makeTx(
   };
 }
 
-function pairByAmount<T extends { amount: number }>(left: T[], right: { amount: number }[]): T[] {
+function pairByAmount<T extends { amount: number }>(
+  left: T[],
+  right: { amount: number }[]
+): (T & { pairedAmount?: number })[] {
   const l = [...left].sort((a, b) => a.amount - b.amount);
   const r = [...right].sort((a, b) => a.amount - b.amount);
   return l.map((item, i) => ({ ...item, pairedAmount: r[i]?.amount }));
