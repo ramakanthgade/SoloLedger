@@ -7,6 +7,7 @@
  * When they return to Import, the component re-subscribes and sees live state.
  */
 import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions } from '@/lib/storage/db';
+import { autoMarkInternalTransfers } from '@/lib/rpc/internalTransfers';
 import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
 import { reprocessSwapDetectionInDb, reprocessDbtIncome } from '@/lib/rpc/reprocessSwaps';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
@@ -260,6 +261,14 @@ export async function runWalletImport(
   const dupsRemoved = await deduplicateTransactions();
   if (dupsRemoved > 0) {
     apiWarnings.unshift(`Removed ${dupsRemoved} duplicate transaction${dupsRemoved === 1 ? '' : 's'} (re-sync detected).`);
+  }
+
+  // Auto-match transfers between imported wallets (e.g. 0.1 SOL out of wallet A → in to wallet B)
+  const internalsMarked = await autoMarkInternalTransfers();
+  if (internalsMarked > 0) {
+    apiWarnings.unshift(
+      `Marked ${internalsMarked} transaction${internalsMarked === 1 ? '' : 's'} as internal transfers between your wallets.`
+    );
   }
 
   importJob._finish(

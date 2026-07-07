@@ -6,7 +6,7 @@ import {
   deleteLookupAddressAndTransactions,
   updateWalletLabel
 } from '@/lib/storage/db';
-import { CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { CHAINS, type ChainId, type ChainDef } from '@/lib/rpc/providers';
 import { runWalletImport, useImportJob, importJob } from '@/lib/importJob';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
@@ -77,26 +77,49 @@ export function WalletLookupPanel() {
   const missingAlchemyKey = needsAlchemyKey && !settings.alchemyApiKey;
 
   const parsedAddresses = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean);
-  const alreadyImported = parsedAddresses.filter((a) =>
-    lookedUp.some((r) => r.chain === chainId && r.address.toLowerCase() === a.toLowerCase())
-  );
-  const freshAddresses = parsedAddresses.filter((a) =>
-    !lookedUp.some((r) => r.chain === chainId && r.address.toLowerCase() === a.toLowerCase())
-  );
 
-  const startImport = (addressesOverride?: string[]) => {
+  const chainForAddress = (addr: string): ChainId => detectChainFromAddress(addr) ?? chainId;
+
+  const isAlreadyImported = (addr: string) => {
+    const c = chainForAddress(addr);
+    return lookedUp.some((r) => r.chain === c && r.address.toLowerCase() === addr.toLowerCase());
+  };
+
+  const alreadyImported = parsedAddresses.filter(isAlreadyImported);
+  const freshAddresses = parsedAddresses.filter((a) => !isAlreadyImported(a));
+
+  const freshChains = [...new Set(freshAddresses.map(chainForAddress))];
+  const mixedChainImport = freshChains.length > 1;
+
+  const makeLookupConfig = (c: ChainDef) => ({
+    chain: c,
+    alchemyApiKey: settings.alchemyApiKey,
+    heliusApiKey: settings.heliusApiKey,
+    moralisApiKey: settings.moralisApiKey,
+    customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
+    customApiKey: customApiKey || settings.customExplorerApiKey,
+    customAsset
+  });
+
+  const startImport = async (addressesOverride?: string[]) => {
     const addrs = addressesOverride ?? freshAddresses;
     if (addrs.length === 0 || job.active) return;
     importJob.reset();
-    void runWalletImport(addrs, chain, settings, {
-      chain,
-      alchemyApiKey: settings.alchemyApiKey,
-      heliusApiKey: settings.heliusApiKey,
-      moralisApiKey: settings.moralisApiKey,
-      customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
-      customApiKey: customApiKey || settings.customExplorerApiKey,
-      customAsset
-    });
+
+    const byChain = new Map<ChainId, string[]>();
+    for (const a of addrs) {
+      const cid = chainForAddress(a);
+      const list = byChain.get(cid) ?? [];
+      list.push(a);
+      byChain.set(cid, list);
+    }
+
+    for (const [cid, chainAddrs] of byChain) {
+      const c = CHAINS.find((ch) => ch.id === cid);
+      if (!c || chainAddrs.length === 0) continue;
+      // eslint-disable-next-line no-await-in-loop
+      await runWalletImport(chainAddrs, c, settings, makeLookupConfig(c));
+    }
   };
 
   const saveLabel = async (id: string) => {
@@ -209,7 +232,10 @@ export function WalletLookupPanel() {
             Import {freshAddresses.length || ''} wallet{freshAddresses.length === 1 ? '' : 's'}
           </Button>
           {settings.priceApiEnabled && !job.active && freshAddresses.length > 0 && (
-            <span className="text-xs text-emerald-600">✓ Swap detection + price fetch runs automatically</span>
+            <span className="text-xs text-emerald-600">
+              ✓ Swap detection + price fetch runs automatically
+              {mixedChainImport ? ` (${freshChains.length} chains detected)` : ''}
+            </span>
           )}
         </div>
 
@@ -308,7 +334,7 @@ export function WalletLookupPanel() {
                             customApiKey: customApiKey || settings.customExplorerApiKey,
                             customAsset
                           },
-                          true  // isSync: bypass already-imported guard, always fetch latest
+                          true
                         );
                       }}
                     >
