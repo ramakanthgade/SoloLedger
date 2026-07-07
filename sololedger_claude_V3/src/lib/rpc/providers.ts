@@ -730,6 +730,8 @@ export interface LookupConfig {
   afterSignature?: string;
   /** When true, do not fall back to Alchemy if Helius returns zero rows. */
   incrementalOnly?: boolean;
+  /** Signatures already in DB — never re-import these on sync. */
+  skipSignatures?: Set<string>;
 }
 
 function withDexSwapDetection(result: LookupResult): LookupResult {
@@ -781,7 +783,13 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     if (config.heliusApiKey) {
       try {
         const { fetchHeliusSolana } = await import('@/lib/rpc/helius');
-        const result = await fetchHeliusSolana(address, config.heliusApiKey, config.afterSignature ? 10 : 20, config.afterSignature);
+        const result = await fetchHeliusSolana(
+          address,
+          config.heliusApiKey,
+          config.afterSignature ? 10 : 20,
+          config.afterSignature,
+          config.skipSignatures
+        );
         if (result.transactions.length > 0 || config.incrementalOnly) {
           return {
             ...withDexSwapDetection({

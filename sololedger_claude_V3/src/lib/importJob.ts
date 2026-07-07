@@ -11,7 +11,7 @@ import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc
 import { reprocessSwapDetectionInDb, reprocessDbtIncome } from '@/lib/rpc/reprocessSwaps';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
-import type { TaxSettings, Transaction } from '@/types/transaction';
+import type { TaxSettings } from '@/types/transaction';
 
 // ---- State shape ----
 
@@ -169,7 +169,6 @@ export async function runWalletImport(
   importJob._setPhase('importing');
 
   let transactions: Awaited<ReturnType<typeof lookupManyAddresses>>['transactions'] = [];
-  let perAddress: Awaited<ReturnType<typeof lookupManyAddresses>>['perAddress'] = [];
   let failed: Awaited<ReturnType<typeof lookupManyAddresses>>['failed'] = [];
   let apiWarnings: string[] = [...warnings];
 
@@ -178,10 +177,22 @@ export async function runWalletImport(
   if (isSync && fresh.length === 1) {
     const addr = fresh[0];
     const afterSignature = await resolveSyncCursor(chain.id, addr);
+    const existingTxs = await db.transactions
+      .filter(
+        (t) =>
+          t.walletAddress?.toLowerCase() === addr.toLowerCase() &&
+          !!t.sourceRef &&
+          t.source.startsWith('rpc:')
+      )
+      .toArray();
+    const skipSignatures = new Set(
+      existingTxs.map((t) => t.sourceRef!).filter(Boolean)
+    );
     syncConfig = {
       ...config,
       afterSignature,
-      incrementalOnly: true
+      incrementalOnly: true,
+      skipSignatures
     };
   }
 
@@ -192,7 +203,6 @@ export async function runWalletImport(
       (done, total) => importJob._setProgress({ done, total })
     );
     transactions = result.transactions;
-    perAddress = result.perAddress;
     failed = result.failed;
     apiWarnings = [
       ...warnings,
@@ -208,6 +218,7 @@ export async function runWalletImport(
 
   // --- Protect trades + skip rows already in DB ---
   let txsToStore = transactions;
+  let newlyStored = 0;
   if (transactions.length > 0) {
     const tradedSourceRefs = new Set(
       (await db.transactions.filter((t) => t.type === 'trade' && !!t.sourceRef).toArray()).map(
@@ -218,23 +229,14 @@ export async function runWalletImport(
       (t) => !t.sourceRef || !tradedSourceRefs.has(t.sourceRef)
     );
     txsToStore = await filterAlreadyImported(txsToStore);
+    newlyStored = txsToStore.length;
     if (txsToStore.length > 0) {
       await db.transactions.bulkPut(txsToStore);
     }
   }
 
   await Promise.all(
-    perAddress.map((p) => {
-      const sig =
-        p.newestSignature ??
-        transactions
-          .filter((t) => t.walletAddress?.toLowerCase() === p.address.toLowerCase() && t.sourceRef)
-          .reduce<Transaction | undefined>(
-            (best, t) => (!best || t.timestamp > best.timestamp ? t : best),
-            undefined
-          )?.sourceRef;
-      return upsertLookupAddress(chain.id, p.address, p.count, sig);
-    })
+    fresh.map((addr) => upsertLookupAddress(chain.id, addr, newlyStored))
   );
 
   // --- Phase 2: Classification + DCA auto-detection ---
@@ -309,17 +311,15 @@ export async function runWalletImport(
     apiWarnings.unshift(`Removed ${dupsRemoved} duplicate transaction${dupsRemoved === 1 ? '' : 's'} (re-sync detected).`);
   }
 
-  // Refresh wallet tx counts after dedup
-  await Promise.all(
-    perAddress.map((p) => upsertLookupAddress(chain.id, p.address, 0, p.newestSignature))
-  );
+  // Refresh wallet tx counts + sync cursor after dedup
+  await Promise.all(fresh.map((addr) => upsertLookupAddress(chain.id, addr, newlyStored)));
 
-  if (isSync && txsToStore.length === 0) {
+  if (isSync && newlyStored === 0) {
     apiWarnings.unshift('No new transactions found since last sync.');
   }
 
   importJob._finish(
-    { imported: txsToStore.length, pricesUpdated, swapsDetected },
+    { imported: newlyStored, pricesUpdated, swapsDetected },
     apiWarnings,
     failed
   );

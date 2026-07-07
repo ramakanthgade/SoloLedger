@@ -303,7 +303,9 @@ export async function fetchHeliusSolana(
   address: string,
   apiKey: string,
   maxPages = 20,
-  afterSignature?: string
+  afterSignature?: string,
+  /** On sync: skip any signatures already stored for this wallet. */
+  skipSignatures?: Set<string>
 ): Promise<HeliusLookupResult> {
   const transactions: Transaction[] = [];
   const warnings: string[] = [];
@@ -351,6 +353,10 @@ export async function fetchHeliusSolana(
     if (!Array.isArray(data) || data.length === 0) break;
 
     for (const htx of data) {
+      // Helius after-signature is inclusive — the cursor tx may be returned again
+      if (skipSignatures?.has(htx.signature)) continue;
+      if (isIncremental && afterSignature && htx.signature === afterSignature) continue;
+
       const rows = heliusTxToRows(htx, address);
       transactions.push(...rows);
       if (htx.timestamp >= newestTimestamp) {

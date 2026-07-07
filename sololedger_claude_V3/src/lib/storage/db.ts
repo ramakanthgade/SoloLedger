@@ -159,10 +159,46 @@ export async function setCachedPrice(key: string, price: number): Promise<void> 
 
 // ---- Wallet addresses ----
 
+/** Stable amount for dedup keys — large SPL amounts lose precision with toFixed(6). */
+function normalizeImportAmount(amount: number): string {
+  const a = Math.abs(amount);
+  if (a >= 1) return a.toFixed(2);
+  if (a >= 0.0001) return a.toFixed(6);
+  return a.toFixed(9);
+}
+
 /** Dedup key for on-chain rows — intentionally excludes `type` so re-imported transfer_in rows match reclassified income. */
 export function transactionImportKey(t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount'>): string | null {
   if (!t.sourceRef || !t.walletAddress) return null;
-  return [t.sourceRef, t.walletAddress.toLowerCase(), t.asset.toUpperCase(), t.amount.toFixed(6)].join('|');
+  return [
+    t.sourceRef,
+    t.walletAddress.toLowerCase(),
+    t.asset.toUpperCase(),
+    normalizeImportAmount(t.amount)
+  ].join('|');
+}
+
+/** wallet + on-chain tx hash + asset — catches sync re-fetches even when float amount differs slightly. */
+export function transactionSourceKey(
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset'>
+): string | null {
+  if (!t.sourceRef || !t.walletAddress) return null;
+  return [t.walletAddress.toLowerCase(), t.sourceRef, t.asset.toUpperCase()].join('|');
+}
+
+/** Newest sourceRef stored for a wallet (by transaction timestamp). */
+export async function newestStoredSignature(chain: string, address: string): Promise<string | undefined> {
+  const addrLower = address.toLowerCase();
+  const txs = await db.transactions
+    .filter(
+      (t) =>
+        t.chain === chain &&
+        t.walletAddress?.toLowerCase() === addrLower &&
+        !!t.sourceRef
+    )
+    .toArray();
+  if (txs.length === 0) return undefined;
+  return txs.reduce((best, t) => (t.timestamp > best.timestamp ? t : best)).sourceRef;
 }
 
 /** Count transactions stored for a wallet on a chain. */
@@ -187,6 +223,7 @@ export async function upsertLookupAddress(
   const id = `${chain}:${address}`;
   const existing = await db.lookupAddresses.get(id);
   const txCount = await countWalletTransactions(chain, address);
+  const newestInDb = await newestStoredSignature(chain, address);
   await db.lookupAddresses.put({
     ...(existing ?? {}),
     id,
@@ -194,7 +231,7 @@ export async function upsertLookupAddress(
     address,
     lastSyncedAt: Date.now(),
     txCount,
-    lastSyncedSignature: lastSyncedSignature ?? existing?.lastSyncedSignature
+    lastSyncedSignature: lastSyncedSignature ?? newestInDb ?? existing?.lastSyncedSignature
   });
 }
 
@@ -256,20 +293,20 @@ export async function deduplicateTransactions(): Promise<number> {
   const seen = new Map<string, string>();
   const toDelete: string[] = [];
 
+  const score = (row: Transaction) =>
+    (row.fiatValue != null ? 4 : 0) +
+    (row.type === 'income' || row.type === 'trade' ? 2 : 0) +
+    (row.flags.length === 0 ? 1 : 0);
+
   for (const t of all) {
-    const key = transactionImportKey(t);
+    const sourceKey = transactionSourceKey(t);
+    const key = sourceKey ? `src:${sourceKey}` : transactionImportKey(t);
     if (!key) continue;
 
     if (seen.has(key)) {
       const firstId = seen.get(key)!;
       const first = all.find((x) => x.id === firstId)!;
-      // Prefer classified row (income/trade) over raw transfer_in/out
-      const score = (row: Transaction) =>
-        (row.fiatValue != null ? 4 : 0) +
-        (row.type === 'income' || row.type === 'trade' ? 2 : 0) +
-        (row.flags.length === 0 ? 1 : 0);
-      const keepNew = score(t) > score(first);
-      if (keepNew) {
+      if (score(t) > score(first)) {
         toDelete.push(firstId);
         seen.set(key, t.id);
       } else {
@@ -280,10 +317,11 @@ export async function deduplicateTransactions(): Promise<number> {
     }
   }
 
-  if (toDelete.length > 0) {
-    await db.transactions.bulkDelete(toDelete);
+  const uniqueDeletes = [...new Set(toDelete)];
+  if (uniqueDeletes.length > 0) {
+    await db.transactions.bulkDelete(uniqueDeletes);
   }
-  return toDelete.length;
+  return uniqueDeletes.length;
 }
 
 /**
@@ -296,7 +334,12 @@ export async function filterAlreadyImported(transactions: Transaction[]): Promis
   const existingKeys = new Set(
     existing.map((t) => transactionImportKey(t)).filter(Boolean) as string[]
   );
+  const existingSourceKeys = new Set(
+    existing.map((t) => transactionSourceKey(t)).filter(Boolean) as string[]
+  );
   return transactions.filter((t) => {
+    const sourceKey = transactionSourceKey(t);
+    if (sourceKey && existingSourceKeys.has(sourceKey)) return false;
     const key = transactionImportKey(t);
     return !key || !existingKeys.has(key);
   });
