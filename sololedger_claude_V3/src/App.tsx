@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { LocalOnlyBadge } from '@/components/LocalOnlyBadge';
 import { deduplicateTransactions } from '@/lib/storage/db';
+import { autoMarkInternalTransfers } from '@/lib/rpc/internalTransfers';
 import { ImportTab } from '@/components/import/ImportTab';
 import { ReviewTab } from '@/components/review/ReviewTab';
 import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
@@ -47,7 +48,7 @@ export default function App() {
     const key = 'sololedger_dedup_session';
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
-    void deduplicateTransactions();
+    void deduplicateTransactions().then(() => autoMarkInternalTransfers());
   }, []);
 
   return (
