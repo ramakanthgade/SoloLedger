@@ -723,6 +723,12 @@ export interface LookupConfig {
   customBaseUrl?: string;
   customApiKey?: string;
   customAsset?: string;
+  /**
+   * For incremental sync: only fetch transactions NEWER than this signature.
+   * When set, Helius uses `after-signature` with ascending sort, returning only
+   * new transactions since the last sync. This avoids re-importing existing rows.
+   */
+  afterSignature?: string;
 }
 
 function withDexSwapDetection(result: LookupResult): LookupResult {
@@ -774,7 +780,7 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     if (config.heliusApiKey) {
       try {
         const { fetchHeliusSolana } = await import('@/lib/rpc/helius');
-        const result = await fetchHeliusSolana(address, config.heliusApiKey);
+        const result = await fetchHeliusSolana(address, config.heliusApiKey, 5, config.afterSignature);
         if (result.transactions.length > 0) {
           // Helius returns swaps directly — DCA heuristic still runs as a safety net
           return withDexSwapDetection({
