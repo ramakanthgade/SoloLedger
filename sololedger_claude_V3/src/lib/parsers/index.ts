@@ -1,9 +1,10 @@
 import Papa from 'papaparse';
 import { coinbaseParser } from './coinbase';
 import { binanceParser } from './binance';
+import { binanceSpotParser } from './binanceSpot';
 import type { ExchangeParser, ParseResult } from './types';
 
-export const PARSERS: ExchangeParser[] = [coinbaseParser, binanceParser];
+export const PARSERS: ExchangeParser[] = [binanceSpotParser, coinbaseParser, binanceParser];
 
 export interface FileParseOutcome extends ParseResult {
   detectedParser: string | null; // parser id, or null if manual mapping needed
@@ -39,6 +40,6 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
   return { ...result, detectedParser: matched.id, headers, rows };
 }
 
-export { coinbaseParser, binanceParser };
+export { coinbaseParser, binanceParser, binanceSpotParser };
 export * from './types';
 export * from './generic';

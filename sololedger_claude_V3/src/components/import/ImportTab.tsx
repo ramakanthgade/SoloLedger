@@ -1,10 +1,19 @@
 import { useCallback, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { parseCsvFile, type FileParseOutcome } from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
-import { db } from '@/lib/storage/db';
+import {
+  db,
+  getCsvImports,
+  hashFileContent,
+  upsertCsvImport,
+  deleteCsvImportAndTransactions,
+  countCsvImportTransactions
+} from '@/lib/storage/db';
+import type { Transaction } from '@/types/transaction';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
-import { Upload, FileCheck2, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { Upload, FileCheck2, AlertTriangle, CheckCircle2, Trash2 } from 'lucide-react';
 import { ColumnMappingForm } from './ColumnMappingForm';
 import { ManualEntryForm } from './ManualEntryForm';
 import { WalletLookupPanel } from './WalletLookupPanel';
@@ -14,20 +23,37 @@ type Mode = 'csv' | 'manual' | 'wallet';
 
 const SUPPORTED = [
   { id: 'coinbase', label: 'Coinbase', guide: 'Settings → Reports → Generate custom report → Transaction history CSV' },
-  { id: 'binance', label: 'Binance', guide: 'Wallet → Transaction History → Export (choose the generic CSV export)' }
+  { id: 'binance', label: 'Binance', guide: 'Spot trades: Wallet → Orders → Trade History → Export. Or generic transaction history CSV.' }
 ];
 
 export function ImportTab() {
   const [mode, setMode] = useState<Mode>('csv');
   const [outcome, setOutcome] = useState<FileParseOutcome | null>(null);
   const [fileName, setFileName] = useState<string>('');
+  const [fileHash, setFileHash] = useState<string>('');
+  const [duplicateBlocked, setDuplicateBlocked] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedCount, setSavedCount] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [removeConfirm, setRemoveConfirm] = useState<{ id: string; fileName: string; txCount: number } | null>(null);
+
+  const csvImports = useLiveQuery(() => getCsvImports(), []) ?? [];
 
   const handleFile = useCallback(async (file: File) => {
     setSavedCount(null);
+    setDuplicateBlocked(false);
     setFileName(file.name);
+    const text = await file.text();
+    const hash = await hashFileContent(text);
+    setFileHash(hash);
+
+    const existing = await db.csvImports.get(hash);
+    if (existing) {
+      setDuplicateBlocked(true);
+      setOutcome(null);
+      return;
+    }
+
     const result = await parseCsvFile(file);
     setOutcome(result);
   }, []);
@@ -37,27 +63,43 @@ export function ImportTab() {
       e.preventDefault();
       setDragOver(false);
       const file = e.dataTransfer.files?.[0];
-      if (file) handleFile(file);
+      if (file) void handleFile(file);
     },
     [handleFile]
   );
 
+  const persistTransactions = async (txs: Transaction[], parserId: string | null) => {
+    if (txs.length === 0 || !fileHash) return;
+    const stamped = txs.map((t) => ({
+      ...t,
+      importBatchId: fileHash,
+      source: parserId ?? t.source
+    }));
+    await db.transactions.bulkPut(stamped);
+    const count = await countCsvImportTransactions(fileHash);
+    await upsertCsvImport(fileHash, fileName, parserId, count);
+  };
+
   const save = async () => {
     if (!outcome || outcome.transactions.length === 0) return;
     setSaving(true);
-    await db.transactions.bulkPut(outcome.transactions);
+    await persistTransactions(outcome.transactions, outcome.detectedParser);
     setSaving(false);
     setSavedCount(outcome.transactions.length);
     setOutcome(null);
+    setFileName('');
+    setFileHash('');
   };
 
   const saveMapped = async (mapped: ReturnType<typeof parseWithMapping>) => {
     if (mapped.transactions.length === 0) return;
     setSaving(true);
-    await db.transactions.bulkPut(mapped.transactions);
+    await persistTransactions(mapped.transactions, 'manual_mapping');
     setSaving(false);
     setSavedCount(mapped.transactions.length);
     setOutcome(null);
+    setFileName('');
+    setFileHash('');
   };
 
   const modes: { id: Mode; label: string }[] = [
@@ -109,19 +151,27 @@ export function ImportTab() {
             <label className="mt-3">
               <input
                 type="file"
-                accept=".csv"
+                accept=".csv,.txt"
                 className="hidden"
                 onChange={(e) => {
                   const file = e.target.files?.[0];
-                  if (file) handleFile(file);
+                  if (file) void handleFile(file);
+                  e.target.value = '';
                 }}
               />
               <span className="cursor-pointer rounded-full bg-violet px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-violet-600 active:scale-95">
                 Choose file
               </span>
             </label>
-            {fileName && <p className="mt-3 font-mono text-xs text-mist-400">{fileName}</p>}
+            {fileName && !duplicateBlocked && <p className="mt-3 font-mono text-xs text-mist-400">{fileName}</p>}
           </div>
+
+          {duplicateBlocked && (
+            <div className="rounded-lg border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-gold-600">
+              <strong>{fileName}</strong> was already imported. Remove it from{' '}
+              <strong>CSV files already imported</strong> below to upload it again with different mapping.
+            </div>
+          )}
 
           <div className="grid gap-3 sm:grid-cols-2">
             {SUPPORTED.map((s) => (
@@ -147,7 +197,7 @@ export function ImportTab() {
                   {outcome.detectedParser ? (
                     <Badge tone="emerald">Detected: {outcome.detectedParser}</Badge>
                   ) : (
-                    <Badge tone="gold">Format not recognized</Badge>
+                    <Badge tone="gold">Format not recognized — use AI auto-map or map manually</Badge>
                   )}
                   <Badge tone="neutral">{outcome.transactions.length} transactions parsed</Badge>
                   {outcome.skippedRows > 0 && <Badge tone="loss">{outcome.skippedRows} rows skipped</Badge>}
@@ -165,12 +215,39 @@ export function ImportTab() {
                 )}
 
                 {outcome.detectedParser && outcome.transactions.length > 0 && (
-                  <Button onClick={save} disabled={saving}>
+                  <Button onClick={() => void save()} disabled={saving}>
                     {saving ? 'Saving locally…' : `Save ${outcome.transactions.length} transactions to SoloLedger`}
                   </Button>
                 )}
               </CardContent>
             </Card>
+          )}
+
+          {csvImports.length > 0 && (
+            <div className="rounded-lg border border-ink-700 bg-ink-800 p-4">
+              <h3 className="mb-3 text-sm font-medium text-mist">CSV files already imported</h3>
+              <div className="space-y-2">
+                {csvImports.map((row) => (
+                  <div
+                    key={row.id}
+                    className="flex flex-wrap items-center gap-2 rounded-lg bg-ink-700/40 px-3 py-2 text-xs"
+                  >
+                    <Badge tone="violet">{row.parserId ?? 'mapped'}</Badge>
+                    <span className="font-medium text-mist" title={row.fileName}>
+                      {row.fileName.length > 40 ? `${row.fileName.slice(0, 28)}…${row.fileName.slice(-10)}` : row.fileName}
+                    </span>
+                    <span className="text-mist-400">{row.txCount} txs</span>
+                    <span className="text-mist-400">imported {new Date(row.importedAt).toLocaleDateString()}</span>
+                    <button
+                      className="ml-auto flex items-center gap-1 text-loss hover:underline"
+                      onClick={() => setRemoveConfirm({ id: row.id, fileName: row.fileName, txCount: row.txCount })}
+                    >
+                      <Trash2 className="h-3 w-3" /> Remove
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
           )}
         </>
       )}
@@ -184,6 +261,32 @@ export function ImportTab() {
           <CheckCircle2 className="h-4 w-4" />
           Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local database. Head to Review to
           categorize them.
+        </div>
+      )}
+
+      {removeConfirm && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/60 p-4">
+          <div className="max-w-md rounded-lg border border-ink-700 bg-ink-800 p-5 shadow-xl">
+            <h3 className="text-sm font-semibold text-mist">Remove CSV import and its transactions?</h3>
+            <p className="mt-2 text-xs text-mist-400">
+              Deletes <strong className="text-mist">{removeConfirm.txCount}</strong> transaction
+              {removeConfirm.txCount === 1 ? '' : 's'} from{' '}
+              <span className="text-mist-300">{removeConfirm.fileName}</span>. You can re-import the file after.
+            </p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button variant="secondary" onClick={() => setRemoveConfirm(null)}>Cancel</Button>
+              <Button
+                variant="secondary"
+                className="border-loss/40 text-loss hover:bg-loss/10"
+                onClick={async () => {
+                  await deleteCsvImportAndTransactions(removeConfirm.id);
+                  setRemoveConfirm(null);
+                }}
+              >
+                Remove file
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

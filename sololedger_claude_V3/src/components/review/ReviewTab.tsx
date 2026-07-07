@@ -343,6 +343,22 @@ export function ReviewTab() {
     });
   };
 
+  const visibleIds = useMemo(() => filtered.slice(0, 200).map((t) => t.id), [filtered]);
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      });
+    } else {
+      setSelected((prev) => new Set([...prev, ...visibleIds]));
+    }
+  };
+
   const bulkMarkInternal = async () => {
     await Promise.all(
       Array.from(selected).map((id) => db.transactions.update(id, { isInternalTransfer: true, flags: [] }))
@@ -604,7 +620,15 @@ export function ReviewTab() {
         <table className="w-full min-w-[920px] text-sm">
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
-              <th className="w-8 px-2 py-2"></th>
+              <th className="w-8 px-2 py-2">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAll}
+                  title="Select all shown rows"
+                  aria-label="Select all shown rows"
+                />
+              </th>
               <th className="px-2 py-2">Date</th>
               <th className="px-2 py-2">Type</th>
               <th className="px-2 py-2">Chain</th>

@@ -26,7 +26,14 @@ export interface LookupAddressRow {
   lastSyncedSignature?: string;
 }
 
-/** Persistent historical price cache — avoids re-fetching the same asset+date+currency. */
+export interface CsvImportRow {
+  id: string;           // SHA-256 hash prefix of file content
+  fileName: string;
+  importedAt: number;
+  txCount: number;
+  parserId: string | null;
+}
+
 export interface PriceCacheRow {
   /** `sym:${ASSET}:${dd-mm-yyyy}:${CURRENCY}` or `ctr:${platform}:${address}:${dd-mm-yyyy}:${CURRENCY}` */
   key: string;
@@ -42,6 +49,7 @@ class SoloLedgerDB extends Dexie {
   specIdHints!: Table<SpecIdHintRow, string>;
   lookupAddresses!: Table<LookupAddressRow, string>;
   priceCache!: Table<PriceCacheRow, string>;
+  csvImports!: Table<CsvImportRow, string>;
 
   constructor() {
     super('sololedger_crypto_tax_db');
@@ -83,6 +91,16 @@ class SoloLedgerDB extends Dexie {
       lookupAddresses: 'id, chain, address, lastSyncedAt',
       priceCache: 'key, fetchedAt'
     });
+    this.version(6).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName'
+    });
   }
 }
 
@@ -110,7 +128,7 @@ export async function saveSettings(settings: TaxSettings): Promise<void> {
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -118,6 +136,7 @@ export async function clearAllData(): Promise<void> {
       await db.specIdHints.clear();
       await db.lookupAddresses.clear();
       await db.priceCache.clear();
+      await db.csvImports.clear();
     }
   );
 }
@@ -306,6 +325,50 @@ export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
   }
 
   return rows.length;
+}
+
+// ---- CSV imports ----
+
+export async function hashFileContent(text: string): Promise<string> {
+  const sample = text.length > 100_000 ? text.slice(0, 100_000) : text;
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sample));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
+}
+
+export async function getCsvImports(): Promise<CsvImportRow[]> {
+  const rows = await db.csvImports.toArray();
+  return rows.sort((a, b) => b.importedAt - a.importedAt);
+}
+
+export async function upsertCsvImport(
+  id: string,
+  fileName: string,
+  parserId: string | null,
+  txCount: number
+): Promise<void> {
+  await db.csvImports.put({
+    id,
+    fileName,
+    parserId,
+    importedAt: Date.now(),
+    txCount
+  });
+}
+
+export async function countCsvImportTransactions(importId: string): Promise<number> {
+  return db.transactions.filter((t) => t.importBatchId === importId).count();
+}
+
+export async function deleteCsvImportAndTransactions(importId: string): Promise<number> {
+  const toDelete = await db.transactions.filter((t) => t.importBatchId === importId).toArray();
+  await db.transaction('rw', db.transactions, db.csvImports, db.specIdHints, async () => {
+    if (toDelete.length > 0) {
+      await db.transactions.bulkDelete(toDelete.map((t) => t.id));
+      for (const t of toDelete) await db.specIdHints.delete(t.id);
+    }
+    await db.csvImports.delete(importId);
+  });
+  return toDelete.length;
 }
 
 /**
