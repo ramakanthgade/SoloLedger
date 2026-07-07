@@ -185,7 +185,7 @@ export interface PriceRequest {
 const usdRateCache = new Map<string, number>();
 
 /** Historical USD → reporting currency on a specific date (via USDT price in that currency). */
-async function usdToCurrencyRate(
+export async function usdToCurrencyRate(
   timestampMs: number,
   currency: string,
   coingeckoApiKey?: string

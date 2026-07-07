@@ -5,12 +5,14 @@ import { parseWithMapping } from '@/lib/parsers/generic';
 import {
   db,
   getCsvImports,
+  getSettings,
   hashFileContent,
   upsertCsvImport,
   deleteCsvImportAndTransactions,
   countCsvImportTransactions,
   deduplicateTransactions
 } from '@/lib/storage/db';
+import { convertTransactionsToReportingCurrency } from '@/lib/pricing/fiatConvert';
 import type { Transaction } from '@/types/transaction';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
@@ -37,6 +39,8 @@ export function ImportTab() {
   const [savedCount, setSavedCount] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [removeConfirm, setRemoveConfirm] = useState<{ id: string; fileName: string; txCount: number } | null>(null);
+
+  const [conversionNote, setConversionNote] = useState<string | null>(null);
 
   const csvImports = useLiveQuery(() => getCsvImports(), []) ?? [];
 
@@ -71,12 +75,27 @@ export function ImportTab() {
 
   const persistTransactions = async (txs: Transaction[], parserId: string | null) => {
     if (txs.length === 0 || !fileHash) return;
+    setConversionNote(null);
+    const settings = await getSettings();
     const stamped = txs.map((t) => ({
       ...t,
       importBatchId: fileHash,
       source: parserId ?? t.source
     }));
-    await db.transactions.bulkPut(stamped);
+    const { transactions: converted, converted: nConverted, failed: nFailed } =
+      await convertTransactionsToReportingCurrency(stamped, settings);
+    if (nConverted > 0) {
+      setConversionNote(
+        `Converted ${nConverted} value${nConverted === 1 ? '' : 's'} to ${settings.reportingCurrency} using historical exchange rates.`
+      );
+    }
+    if (nFailed > 0) {
+      setConversionNote(
+        (prev) =>
+          `${prev ? `${prev} ` : ''}${nFailed} value${nFailed === 1 ? '' : 's'} could not be converted — enable CoinGecko in Settings or edit in Review.`
+      );
+    }
+    await db.transactions.bulkPut(converted);
     await deduplicateTransactions();
     const count = await countCsvImportTransactions(fileHash);
     await upsertCsvImport(fileHash, fileName, parserId, count);
@@ -259,10 +278,18 @@ export function ImportTab() {
       {mode === 'wallet' && <WalletLookupPanel />}
 
       {savedCount !== null && (
-        <div className="flex items-center gap-2 rounded-lg border border-emerald/30 bg-emerald/15 px-4 py-2.5 text-sm text-emerald-600">
-          <CheckCircle2 className="h-4 w-4" />
-          Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local database. Head to Review to
-          categorize them.
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 rounded-lg border border-emerald/30 bg-emerald/15 px-4 py-2.5 text-sm text-emerald-600">
+            <CheckCircle2 className="h-4 w-4" />
+            Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local database. Head to Review to
+            categorize them.
+          </div>
+          {conversionNote && (
+            <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-mist-300">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-violet" />
+              <span>{conversionNote}</span>
+            </div>
+          )}
         </div>
       )}
 

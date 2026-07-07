@@ -5,6 +5,7 @@
  */
 import { db } from '@/lib/storage/db';
 import { fetchHistoricalPricesBatch } from './coingecko';
+import { convertTransactionsToReportingCurrency, normalizeFiatCurrency } from './fiatConvert';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
 import type { Transaction, TaxSettings, FlagReason } from '@/types/transaction';
@@ -83,37 +84,69 @@ export async function fetchMissingPricesForAllTransactions(
   onProgress?: (done: number, total: number) => void
 ): Promise<AutoFetchResult> {
   const all = await db.transactions.toArray();
-  const needs = all.filter(
+  const needsPrice = all.filter(
     (t) => t.fiatValue == null && !t.isInternalTransfer && !t.isSpam
   );
-
-  if (needs.length === 0) return { updated: 0, failed: 0, total: 0 };
-
-  const items = buildPriceRequestsForTransactions(needs, settings);
-  const results = await fetchHistoricalPricesBatch(
-    items.map((p) => p.request),
-    onProgress
+  const needsConversion = all.filter(
+    (t) =>
+      t.fiatValue != null &&
+      t.fiatValue > 0 &&
+      !t.isInternalTransfer &&
+      !t.isSpam &&
+      t.fiatCurrency.toUpperCase() !== settings.reportingCurrency.toUpperCase() &&
+      normalizeFiatCurrency(t.fiatCurrency) !== settings.reportingCurrency.toUpperCase()
   );
+
+  if (needsPrice.length === 0 && needsConversion.length === 0) {
+    return { updated: 0, failed: 0, total: 0 };
+  }
 
   let updated = 0;
   let failed = 0;
 
-  for (let i = 0; i < results.length; i++) {
-    const r = results[i];
-    const { tx, useCounterAmount } = items[i];
-    if (r.price != null) {
-      const qty = useCounterAmount ? (tx.counterAmount ?? tx.amount) : tx.amount;
-      // eslint-disable-next-line no-await-in-loop
-      await db.transactions.update(tx.id, {
-        fiatValue: r.price * qty,
-        fiatCurrency: r.currency,
-        flags: (tx.flags ?? []).filter((f) => f !== 'missing_cost_basis') as FlagReason[]
-      });
-      updated++;
-    } else {
-      failed++;
+  if (needsConversion.length > 0) {
+    const { transactions: converted, converted: nConv, failed: nFail } =
+      await convertTransactionsToReportingCurrency(needsConversion, settings);
+    for (const t of converted) {
+      if (t.fiatCurrency.toUpperCase() === settings.reportingCurrency.toUpperCase()) {
+        // eslint-disable-next-line no-await-in-loop
+        await db.transactions.update(t.id, {
+          fiatValue: t.fiatValue,
+          fiatCurrency: t.fiatCurrency,
+          flags: t.flags
+        });
+      }
+    }
+    updated += nConv;
+    failed += nFail;
+  }
+
+  const needs = needsPrice;
+
+  if (needs.length > 0) {
+    const items = buildPriceRequestsForTransactions(needs, settings);
+    const results = await fetchHistoricalPricesBatch(
+      items.map((p) => p.request),
+      onProgress
+    );
+
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      const { tx, useCounterAmount } = items[i];
+      if (r.price != null) {
+        const qty = useCounterAmount ? (tx.counterAmount ?? tx.amount) : tx.amount;
+        // eslint-disable-next-line no-await-in-loop
+        await db.transactions.update(tx.id, {
+          fiatValue: r.price * qty,
+          fiatCurrency: r.currency,
+          flags: (tx.flags ?? []).filter((f) => f !== 'missing_cost_basis') as FlagReason[]
+        });
+        updated++;
+      } else {
+        failed++;
+      }
     }
   }
 
-  return { updated, failed, total: needs.length };
+  return { updated, failed, total: needsPrice.length + needsConversion.length };
 }
