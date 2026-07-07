@@ -283,6 +283,31 @@ export async function getWalletLabel(address: string): Promise<string | undefine
   return rows[0]?.label;
 }
 
+export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+
+  const rows = (await db.transactions.bulkGet(ids)).filter((t): t is Transaction => !!t);
+  const wallets = new Map<string, { chain: string; address: string }>();
+  for (const t of rows) {
+    if (t.walletAddress && t.chain) {
+      wallets.set(`${t.chain}:${t.walletAddress.toLowerCase()}`, { chain: t.chain, address: t.walletAddress });
+    }
+  }
+
+  await db.transaction('rw', db.transactions, db.specIdHints, async () => {
+    await db.transactions.bulkDelete(ids);
+    for (const id of ids) {
+      await db.specIdHints.delete(id);
+    }
+  });
+
+  for (const { chain, address } of wallets.values()) {
+    await upsertLookupAddress(chain, address, 0);
+  }
+
+  return rows.length;
+}
+
 /**
  * Remove duplicate transactions from the database.
  * Dedup key: sourceRef + wallet + asset + amount (type excluded — reclassified rows

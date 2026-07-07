@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSpecIdHints, getLookupAddresses } from '@/lib/storage/db';
+import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/transaction';
@@ -14,7 +14,7 @@ import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown } from 'lucide-react';
+import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
@@ -350,6 +350,17 @@ export function ReviewTab() {
     setSelected(new Set());
   };
 
+  const bulkDelete = async () => {
+    const n = selected.size;
+    if (n === 0) return;
+    const ok = window.confirm(
+      `Permanently delete ${n} transaction${n === 1 ? '' : 's'}?\n\nThis cannot be undone. Use this to remove duplicate rows.`
+    );
+    if (!ok) return;
+    await deleteTransactionsByIds(Array.from(selected));
+    setSelected(new Set());
+  };
+
   if (transactions.length === 0) {
     return (
       <div className="space-y-6">
@@ -576,6 +587,14 @@ export function ReviewTab() {
             >
               <Ban className="mr-1 h-3 w-3" />
               Mark {selected.size} as spam
+            </Button>
+            <Button
+              variant="secondary"
+              onClick={() => void bulkDelete()}
+              className="border-loss/40 text-loss hover:bg-loss/10"
+            >
+              <Trash2 className="mr-1 h-3 w-3" />
+              Delete {selected.size}
             </Button>
           </div>
         )}
