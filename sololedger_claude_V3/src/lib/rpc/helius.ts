@@ -311,26 +311,39 @@ export interface HeliusLookupResult {
 }
 
 /**
- * Fetch and parse full transaction history for a Solana address via Helius.
- * Uses the Enhanced Transactions API (v0) which returns labelled data.
- * Paginates automatically up to `maxPages` (default: 5 = 500 transactions).
+ * Fetch and parse Solana transaction history for one address via Helius.
+ *
+ * @param afterSignature  When set (incremental sync), only returns transactions
+ *   NEWER than this signature. Helius uses `after-signature` + ascending sort,
+ *   so we get exactly the delta since the last sync — no duplicates possible.
+ *   When not set (first import), fetches the latest 500 transactions.
  */
 export async function fetchHeliusSolana(
   address: string,
   apiKey: string,
-  maxPages = 5
+  maxPages = 5,
+  afterSignature?: string
 ): Promise<HeliusLookupResult> {
   const transactions: Transaction[] = [];
   const warnings: string[] = [];
 
-  let beforeSignature: string | undefined;
+  const isIncremental = !!afterSignature;
+  let cursorSignature: string | undefined;
   let page = 0;
 
   while (page < maxPages) {
     let url =
       `${HELIUS_BASE}/v0/addresses/${address}/transactions` +
       `?api-key=${apiKey}&limit=100`;
-    if (beforeSignature) url += `&before=${beforeSignature}`;
+
+    if (isIncremental) {
+      // Incremental sync: get only NEW transactions after the last known one
+      url += `&after-signature=${afterSignature}&sort-order=asc`;
+      if (cursorSignature) url += `&before=${cursorSignature}`;
+    } else {
+      // Full import: newest first
+      if (cursorSignature) url += `&before=${cursorSignature}`;
+    }
 
     // eslint-disable-next-line no-await-in-loop
     const res = await fetch(url);
@@ -358,7 +371,7 @@ export async function fetchHeliusSolana(
     }
 
     if (data.length < 100) break; // last page
-    beforeSignature = data[data.length - 1].signature;
+    cursorSignature = data[data.length - 1].signature;
     page++;
 
     // Small delay between pages to respect rate limits

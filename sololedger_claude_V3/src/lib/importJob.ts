@@ -105,7 +105,11 @@ export async function runWalletImport(
   chain: ChainDef,
   settings: TaxSettings,
   config: LookupConfig,
-  /** Set to true when syncing an existing wallet — bypasses the already-imported guard. */
+  /**
+   * Set to true when syncing an existing wallet.
+   * Uses incremental fetch (after-signature) to get only NEW transactions
+   * since the last import — avoids duplicating existing rows.
+   */
   isSync = false
 ): Promise<void> {
   const existing = await getLookupAddresses();
@@ -115,8 +119,8 @@ export async function runWalletImport(
   const warnings: string[] = [];
 
   if (isSync) {
-    // Sync: always re-fetch all addresses, even if already imported.
-    // This is the only way to pick up new on-chain transactions (e.g. freshly claimed rewards).
+    // Sync: fetch ONLY new transactions since the last known one.
+    // Find the most recent transaction signature for each address.
     fresh = addresses;
   } else {
     const alreadyKnown = addresses.filter((a) => existingIds.has(`${chain.id}:${a.toLowerCase()}`));
@@ -138,10 +142,27 @@ export async function runWalletImport(
   let failed: Awaited<ReturnType<typeof lookupManyAddresses>>['failed'] = [];
   let apiWarnings: string[] = [...warnings];
 
+  // For incremental sync: find the most recent transaction signature for each address.
+  // Helius will return only transactions AFTER this signature — no duplicates.
+  let syncConfig = config;
+  if (isSync && fresh.length === 1) {
+    const addr = fresh[0].toLowerCase();
+    const existingTxs = await db.transactions
+      .filter((t) => t.walletAddress?.toLowerCase() === addr && !!t.sourceRef && t.source.startsWith('rpc:'))
+      .toArray();
+    if (existingTxs.length > 0) {
+      // Find the most recent transaction by timestamp, use its sourceRef as the cursor
+      const mostRecent = existingTxs.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
+      if (mostRecent.sourceRef) {
+        syncConfig = { ...config, afterSignature: mostRecent.sourceRef };
+      }
+    }
+  }
+
   try {
     const result = await lookupManyAddresses(
       fresh,
-      config,
+      syncConfig,
       (done, total) => importJob._setProgress({ done, total })
     );
     transactions = result.transactions;
