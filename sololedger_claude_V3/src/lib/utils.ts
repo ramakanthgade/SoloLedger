@@ -24,6 +24,41 @@ export function formatCurrency(amount: number, currency: string): string {
   }
 }
 
+/** Locale-aware number grouping without a currency symbol (for exports). */
+export function formatNumberLocale(amount: number, currency: string): string {
+  const locale = currency.toUpperCase() === 'INR' ? 'en-IN' : 'en-US';
+  return new Intl.NumberFormat(locale, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(Math.abs(amount));
+}
+
+/**
+ * PDF-safe currency string. jsPDF's built-in fonts cannot render ₹ (U+20B9) or
+ * other Unicode currency symbols — they appear as stray glyphs and break spacing.
+ */
+export function formatCurrencyForPdf(amount: number, currency: string): string {
+  const num = formatNumberLocale(amount, currency);
+  const sign = amount < 0 ? '-' : '';
+  switch (currency.toUpperCase()) {
+    case 'INR':
+      return `${sign}Rs. ${num}`;
+    case 'USD':
+      return `${sign}$${num}`;
+    case 'CAD':
+      return `${sign}CA$${num}`;
+    case 'AED':
+      return `${sign}AED ${num}`;
+    default:
+      return `${sign}${num} ${currency.toUpperCase()}`;
+  }
+}
+
+/** CSV column suffix for monetary fields, e.g. "proceeds (INR)". */
+export function monetaryColumnLabel(base: string, currency: string): string {
+  return `${base} (${currency.toUpperCase()})`;
+}
+
 /** Compact number for table columns. */
 export function formatCompactAmount(amount: number): string {
   const abs = Math.abs(amount);
