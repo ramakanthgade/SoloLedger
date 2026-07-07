@@ -104,25 +104,30 @@ export async function runWalletImport(
   addresses: string[],
   chain: ChainDef,
   settings: TaxSettings,
-  config: LookupConfig
+  config: LookupConfig,
+  /** Set to true when syncing an existing wallet — bypasses the already-imported guard. */
+  isSync = false
 ): Promise<void> {
-  // --- Guard: check if any address is already imported ---
   const existing = await getLookupAddresses();
   const existingIds = new Set(existing.map((r) => `${r.chain}:${r.address.toLowerCase()}`));
-  const alreadyKnown = addresses.filter((a) => existingIds.has(`${chain.id}:${a.toLowerCase()}`));
-  const fresh = addresses.filter((a) => !existingIds.has(`${chain.id}:${a.toLowerCase()}`));
 
-  const warnings: string[] = alreadyKnown.map(
-    (a) => `${a.slice(0, 8)}…${a.slice(-4)}: already imported — use Sync to refresh.`
-  );
+  let fresh: string[];
+  const warnings: string[] = [];
 
-  if (fresh.length === 0) {
-    importJob._finish(
-      { imported: 0, pricesUpdated: 0, swapsDetected: 0 },
-      warnings,
-      []
-    );
-    return;
+  if (isSync) {
+    // Sync: always re-fetch all addresses, even if already imported.
+    // This is the only way to pick up new on-chain transactions (e.g. freshly claimed rewards).
+    fresh = addresses;
+  } else {
+    const alreadyKnown = addresses.filter((a) => existingIds.has(`${chain.id}:${a.toLowerCase()}`));
+    fresh = addresses.filter((a) => !existingIds.has(`${chain.id}:${a.toLowerCase()}`));
+    for (const a of alreadyKnown) {
+      warnings.push(`${a.slice(0, 8)}…${a.slice(-4)}: already imported — use Sync to refresh.`);
+    }
+    if (fresh.length === 0) {
+      importJob._finish({ imported: 0, pricesUpdated: 0, swapsDetected: 0 }, warnings, []);
+      return;
+    }
   }
 
   // --- Phase 1: Import from RPC ---
