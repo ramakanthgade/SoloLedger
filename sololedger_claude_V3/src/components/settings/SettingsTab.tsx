@@ -81,7 +81,8 @@ export function SettingsTab() {
               <strong className="text-mist">Live price lookup.</strong> Sends asset/date pairs (never wallet
               addresses or amounts) to CoinGecko's public price API to fill in market values. For tokens CoinGecko
               doesn't track (small, DEX-only tokens), it falls back to your Alchemy key's Prices API and converts
-              the result into your reporting currency. Nothing fetches automatically — use the button in Review.
+              the result into your reporting currency. Prices are fetched automatically after CSV import and wallet
+              sync; you can also re-run from Review → Fetch missing prices.
               For obscure DEX tokens, add your Alchemy API key below (used only for price fallback, not wallet lookup).
             </span>
           </label>

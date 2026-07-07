@@ -13,6 +13,7 @@ import {
   deduplicateTransactions
 } from '@/lib/storage/db';
 import { convertTransactionsToReportingCurrency } from '@/lib/pricing/fiatConvert';
+import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import type { Transaction } from '@/types/transaction';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
@@ -40,7 +41,9 @@ export function ImportTab() {
   const [dragOver, setDragOver] = useState(false);
   const [removeConfirm, setRemoveConfirm] = useState<{ id: string; fileName: string; txCount: number } | null>(null);
   const [conversionNote, setConversionNote] = useState<string | null>(null);
+  const [priceFetchNote, setPriceFetchNote] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
+  const [importPhase, setImportPhase] = useState<'saving' | 'pricing' | null>(null);
 
   const csvImports = useLiveQuery(() => getCsvImports(), []) ?? [];
 
@@ -49,8 +52,9 @@ export function ImportTab() {
     parserId: string | null,
     hash: string,
     name: string
-  ): Promise<{ converted: number; failed: number; warnings: string[] }> => {
+  ): Promise<{ converted: number; failed: number; pricesUpdated: number; pricesFailed: number; warnings: string[] }> => {
     setConversionNote(null);
+    setPriceFetchNote(null);
     const settings = await getSettings();
     const stamped = txs.map((t) => ({
       ...t,
@@ -74,7 +78,25 @@ export function ImportTab() {
     await deduplicateTransactions();
     const count = await countCsvImportTransactions(hash);
     await upsertCsvImport(hash, name, parserId, count);
-    return { converted: nConverted, failed: nFailed, warnings: [] };
+
+    setImportPhase('pricing');
+    const priceResult = await fetchMissingPricesForAllTransactions(settings);
+    if (priceResult.updated > 0 || priceResult.failed > 0) {
+      setPriceFetchNote(
+        priceResult.updated > 0
+          ? `Fetched prices for ${priceResult.updated} transaction${priceResult.updated === 1 ? '' : 's'}.` +
+              (priceResult.failed > 0 ? ` ${priceResult.failed} could not be priced — edit in Review.` : '')
+          : `${priceResult.failed} transaction${priceResult.failed === 1 ? '' : 's'} could not be priced — add a CoinGecko API key in Settings or edit in Review.`
+      );
+    }
+
+    return {
+      converted: nConverted,
+      failed: nFailed,
+      pricesUpdated: priceResult.updated,
+      pricesFailed: priceResult.failed,
+      warnings: []
+    };
   };
 
   const handleFile = useCallback(async (file: File) => {
@@ -82,6 +104,7 @@ export function ImportTab() {
     setDuplicateBlocked(false);
     setImportWarnings([]);
     setConversionNote(null);
+    setPriceFetchNote(null);
     setOutcome(null);
     setFileName(file.name);
 
@@ -100,6 +123,7 @@ export function ImportTab() {
     // Auto-save when format is recognized and rows were parsed
     if (result.detectedParser && result.transactions.length > 0) {
       setSaving(true);
+      setImportPhase('saving');
       try {
         await persistTransactions(result.transactions, result.detectedParser, hash, file.name);
         setSavedCount(result.transactions.length);
@@ -108,6 +132,7 @@ export function ImportTab() {
         setFileHash('');
       } finally {
         setSaving(false);
+        setImportPhase(null);
       }
       return;
     }
@@ -128,6 +153,7 @@ export function ImportTab() {
   const saveMapped = async (mapped: ReturnType<typeof parseWithMapping>) => {
     if (mapped.transactions.length === 0 || !fileHash) return;
     setSaving(true);
+    setImportPhase('saving');
     try {
       await persistTransactions(mapped.transactions, 'manual_mapping', fileHash, fileName);
       setSavedCount(mapped.transactions.length);
@@ -137,6 +163,7 @@ export function ImportTab() {
       setFileHash('');
     } finally {
       setSaving(false);
+      setImportPhase(null);
     }
   };
 
@@ -187,7 +214,11 @@ export function ImportTab() {
             {saving ? (
               <>
                 <Loader2 className="mb-3 h-6 w-6 animate-spin text-violet" />
-                <p className="text-sm text-mist-300">Importing and saving transactions…</p>
+                <p className="text-sm text-mist-300">
+                  {importPhase === 'pricing'
+                    ? 'Fetching missing market prices…'
+                    : 'Importing and saving transactions…'}
+                </p>
               </>
             ) : (
               <>
@@ -325,6 +356,12 @@ export function ImportTab() {
             <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-mist-300">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-violet" />
               <span>{conversionNote}</span>
+            </div>
+          )}
+          {priceFetchNote && (
+            <div className="flex items-start gap-2 rounded-lg border border-emerald/30 bg-emerald/10 px-4 py-2.5 text-sm text-emerald-600">
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+              <span>{priceFetchNote}</span>
             </div>
           )}
         </div>

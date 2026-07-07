@@ -291,7 +291,7 @@ export async function runWalletImport(
   // --- Phase 3: Auto price fetch ---
   importJob._setPhase('pricing');
   let pricesUpdated = 0;
-  if (settings.priceApiEnabled && txsToStore.length > 0) {
+  if (txsToStore.length > 0) {
     const priceResult = await fetchMissingPricesForAllTransactions(
       settings,
       (done, total) => importJob._setProgress({ done, total })
