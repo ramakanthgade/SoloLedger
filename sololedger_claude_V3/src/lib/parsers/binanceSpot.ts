@@ -1,5 +1,5 @@
 import type { Transaction } from '@/types/transaction';
-import { makeId, safeNumber, safeTimestamp, type ExchangeParser } from './types';
+import { makeId, safeQuantity, safeTimestamp, exchangeSourceRef, type ExchangeParser } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 
 /**
@@ -49,12 +49,16 @@ export const binanceSpotParser: ExchangeParser = {
     const pairCol = col(map, 'pair', 'symbol', 'market');
     const sideCol = col(map, 'side', 'type', 'direction');
     const priceCol = col(map, 'price', 'avgprice', 'averageprice');
-    const amountCol = col(map, 'amount', 'qty', 'quantity', 'executed');
-    const totalCol = col(map, 'total', 'quoteqty', 'quotequantity', 'value');
+    // Binance Trade History uses Executed=crypto qty, Amount=quote total (opposite of some other exports)
+    const executedCol = col(map, 'executed', 'qty', 'quantity');
+    const amountCol = col(map, 'amount', 'total', 'quoteqty', 'quotequantity', 'value');
+    const totalOnlyCol = col(map, 'total', 'quoteqty', 'quotequantity', 'value');
     const feeCol = col(map, 'fee', 'commission');
     const feeCoinCol = col(map, 'feecoin', 'commissionasset', 'feecurrency');
 
-    if (!timeCol || !pairCol || !sideCol || !amountCol) {
+    const qtyCol = executedCol ?? amountCol;
+
+    if (!timeCol || !pairCol || !sideCol || !qtyCol) {
       return {
         transactions: [],
         skippedRows: rows.length,
@@ -75,9 +79,15 @@ export const binanceSpotParser: ExchangeParser = {
       const timestamp = safeTimestamp(row[timeCol]);
       const pairRaw = (row[pairCol] || '').trim();
       const { base, quote } = parseTradingPair(pairRaw);
-      const qty = Math.abs(safeNumber(row[amountCol]));
-      const price = priceCol ? Math.abs(safeNumber(row[priceCol])) : 0;
-      const total = totalCol ? Math.abs(safeNumber(row[totalCol])) : 0;
+      const qty = safeQuantity(row[qtyCol]);
+      const price = priceCol ? safeQuantity(row[priceCol]) : 0;
+      // Quote total: prefer Amount column when Executed holds crypto; else Total/Amount
+      const quoteTotal =
+        executedCol && amountCol && amountCol !== executedCol
+          ? safeQuantity(row[amountCol])
+          : totalOnlyCol
+            ? safeQuantity(row[totalOnlyCol])
+            : 0;
 
       if (!base || !Number.isFinite(timestamp) || qty === 0) {
         skippedRows++;
@@ -86,13 +96,13 @@ export const binanceSpotParser: ExchangeParser = {
 
       let fiatValue: number | undefined;
       let fiatCurrency = quoteToFiatCurrency(quote) ?? 'USD';
-      if (total > 0) {
-        fiatValue = total;
+      if (quoteTotal > 0) {
+        fiatValue = quoteTotal;
       } else if (price > 0 && qty > 0) {
         fiatValue = price * qty;
       }
 
-      const feeAmount = feeCol ? Math.abs(safeNumber(row[feeCol])) : undefined;
+      const feeAmount = feeCol ? safeQuantity(row[feeCol]) : undefined;
       const feeAsset = feeCoinCol ? (row[feeCoinCol] || '').trim().toUpperCase() : undefined;
 
       transactions.push({
@@ -102,13 +112,13 @@ export const binanceSpotParser: ExchangeParser = {
         asset: base,
         amount: qty,
         counterAsset: quote,
-        counterAmount: total > 0 ? total : price > 0 ? price * qty : undefined,
+        counterAmount: quoteTotal > 0 ? quoteTotal : price > 0 ? price * qty : undefined,
         fiatCurrency,
         fiatValue,
         feeAmount: feeAmount && feeAmount > 0 ? feeAmount : undefined,
         feeAsset: feeAsset || undefined,
         source: 'binance_spot',
-        sourceRef: `row:${i}`,
+        sourceRef: exchangeSourceRef('binance', timestamp, isBuy ? 'buy' : 'sell', base, qty),
         notes: pairRaw !== base ? `Pair ${pairRaw}` : undefined,
         flags: fiatValue != null && fiatValue > 0 ? [] : ['missing_cost_basis'],
         isInternalTransfer: false,

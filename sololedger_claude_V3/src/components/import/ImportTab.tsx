@@ -8,7 +8,8 @@ import {
   hashFileContent,
   upsertCsvImport,
   deleteCsvImportAndTransactions,
-  countCsvImportTransactions
+  countCsvImportTransactions,
+  deduplicateTransactions
 } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
 import { Button } from '@/components/ui/button';
@@ -23,7 +24,7 @@ type Mode = 'csv' | 'manual' | 'wallet';
 
 const SUPPORTED = [
   { id: 'coinbase', label: 'Coinbase', guide: 'Settings → Reports → Generate custom report → Transaction history CSV' },
-  { id: 'binance', label: 'Binance', guide: 'Spot trades: Wallet → Orders → Trade History → Export. Or generic transaction history CSV.' }
+  { id: 'binance', label: 'Binance', guide: 'Recommended: Wallet → Transaction History → Export (full ledger). Also: Orders → Spot → Trade History for spot trades only.' }
 ];
 
 export function ImportTab() {
@@ -76,6 +77,7 @@ export function ImportTab() {
       source: parserId ?? t.source
     }));
     await db.transactions.bulkPut(stamped);
+    await deduplicateTransactions();
     const count = await countCsvImportTransactions(fileHash);
     await upsertCsvImport(fileHash, fileName, parserId, count);
   };

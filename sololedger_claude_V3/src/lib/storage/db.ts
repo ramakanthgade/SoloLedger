@@ -178,6 +178,16 @@ export async function setCachedPrice(key: string, price: number): Promise<void> 
 
 // ---- Wallet addresses ----
 
+/** Dedup key for exchange CSV rows (Binance, Coinbase) — uses sourceRef when set. */
+export function transactionExchangeKey(
+  t: Pick<Transaction, 'source' | 'sourceRef'>
+): string | null {
+  if (!t.sourceRef) return null;
+  if (t.source.startsWith('binance') || t.source === 'coinbase') {
+    return `ex:${t.sourceRef}`;
+  }
+  return null;
+}
 /** Stable amount for dedup keys — large SPL amounts lose precision with toFixed(6). */
 function normalizeImportAmount(amount: number): string {
   const a = Math.abs(amount);
@@ -387,8 +397,13 @@ export async function deduplicateTransactions(): Promise<number> {
     (row.flags.length === 0 ? 1 : 0);
 
   for (const t of all) {
+    const exchangeKey = transactionExchangeKey(t);
     const sourceKey = transactionSourceKey(t);
-    const key = sourceKey ? `src:${sourceKey}` : transactionImportKey(t);
+    const key = exchangeKey
+      ? exchangeKey
+      : sourceKey
+        ? `src:${sourceKey}`
+        : transactionImportKey(t);
     if (!key) continue;
 
     if (seen.has(key)) {
@@ -425,7 +440,12 @@ export async function filterAlreadyImported(transactions: Transaction[]): Promis
   const existingSourceKeys = new Set(
     existing.map((t) => transactionSourceKey(t)).filter(Boolean) as string[]
   );
+  const existingExchangeKeys = new Set(
+    existing.map((t) => transactionExchangeKey(t)).filter(Boolean) as string[]
+  );
   return transactions.filter((t) => {
+    const exKey = transactionExchangeKey(t);
+    if (exKey && existingExchangeKeys.has(exKey)) return false;
     const sourceKey = transactionSourceKey(t);
     if (sourceKey && existingSourceKeys.has(sourceKey)) return false;
     const key = transactionImportKey(t);
