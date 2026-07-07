@@ -292,6 +292,49 @@ const INCOME_OPS = new Set([
   'launchpool interest'
 ]);
 
+function isP2pOperation(operation: string): boolean {
+  return operation.toLowerCase().includes('p2p');
+}
+
+/** Remark field sometimes references P2P when operation is Withdraw. */
+function isP2pRemark(remark?: string): boolean {
+  return !!remark && /\bp2p\b/i.test(remark);
+}
+
+/**
+ * Binance P2P trades with a counterparty are taxable buy/sell events, not wallet
+ * transfers. User can still mark any row as internal transfer in Review.
+ * - Incoming crypto (funding / buy side) → buy (opens a cost-basis lot)
+ * - Outgoing crypto (sell side) → sell (taxable disposal in capital gains)
+ */
+function stitchP2pRows(rows: BinanceLedgerRow[]): Transaction[] {
+  const out: Transaction[] = [];
+
+  for (const r of rows) {
+    const op = r.operation.toLowerCase();
+    const amount = Math.abs(r.change);
+    const isP2p = isP2pOperation(op) || (op === 'withdraw' && isP2pRemark(r.remark));
+    if (!isP2p) continue;
+
+    const type: TxType = r.change > 0 ? 'buy' : 'sell';
+    out.push(
+      makeTx({
+        timestamp: r.timestamp,
+        type,
+        asset: r.coin,
+        amount,
+        sourceRef: exchangeSourceRef('binance', r.timestamp, type, r.coin, amount),
+        notes: r.remark ? `P2P: ${r.remark}` : 'P2P trading',
+        flags: ['missing_cost_basis'],
+        category: 'p2p',
+        raw: r.raw
+      })
+    );
+  }
+
+  return out;
+}
+
 function stitchSimpleRows(rows: BinanceLedgerRow[]): Transaction[] {
   const out: Transaction[] = [];
   const tradeOps = new Set([
@@ -305,12 +348,12 @@ function stitchSimpleRows(rows: BinanceLedgerRow[]): Transaction[] {
 
   for (const r of rows) {
     const op = r.operation.toLowerCase();
-    if (tradeOps.has(op) || op.includes('transfer between')) continue;
+    if (tradeOps.has(op) || op.includes('transfer between') || isP2pOperation(op)) continue;
+    if (op === 'withdraw' && isP2pRemark(r.remark)) continue;
 
     let type: TxType | null = null;
     if (op === 'deposit') type = 'transfer_in';
     else if (op === 'withdraw') type = 'transfer_out';
-    else if (op === 'p2p trading') type = r.change > 0 ? 'transfer_in' : 'transfer_out';
     else if (INCOME_OPS.has(op)) type = 'income';
     else if (op === 'fee') type = 'fee';
     else if (op === 'transfer') type = r.change > 0 ? 'transfer_in' : 'transfer_out';
@@ -368,6 +411,7 @@ export function stitchBinanceTransactionHistory(rows: Record<string, string>[]):
       ...stitchSells(group),
       ...stitchConverts(group),
       ...stitchInternalTransfers(group),
+      ...stitchP2pRows(group),
       ...stitchSimpleRows(group)
     );
   }
@@ -387,6 +431,14 @@ export function stitchBinanceTransactionHistory(rows: Record<string, string>[]):
   }
   const deposits = transactions.filter((t) => t.type === 'transfer_in').length;
   const withdrawals = transactions.filter((t) => t.type === 'transfer_out').length;
+  const p2pTrades = transactions.filter((t) => t.category === 'p2p').length;
+  if (p2pTrades > 0) {
+    const p2pSells = transactions.filter((t) => t.category === 'p2p' && t.type === 'sell').length;
+    const p2pBuys = transactions.filter((t) => t.category === 'p2p' && t.type === 'buy').length;
+    warnings.push(
+      `${p2pTrades} P2P trade(s) classified as buy/sell (${p2pBuys} buy, ${p2pSells} sell) — included in capital gains unless you mark internal transfer in Review.`
+    );
+  }
   if (deposits + withdrawals > 0) {
     warnings.push(
       `${deposits} deposit(s) and ${withdrawals} withdrawal(s) imported — mark internal transfers in Review if moving between your own wallets.`
