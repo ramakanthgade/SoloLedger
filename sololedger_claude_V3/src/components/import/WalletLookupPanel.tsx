@@ -295,18 +295,24 @@ export function WalletLookupPanel() {
                       onClick={() => {
                         const c = CHAINS.find((ch) => ch.id === row.chain);
                         if (!c) return;
-                        void runWalletImport([row.address], c, settings, {
-                          chain: c,
-                          alchemyApiKey: settings.alchemyApiKey,
-                          heliusApiKey: settings.heliusApiKey,
-                          moralisApiKey: settings.moralisApiKey,
-                          customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
-                          customApiKey: customApiKey || settings.customExplorerApiKey,
-                          customAsset
-                        });
+                        void runWalletImport(
+                          [row.address],
+                          c,
+                          settings,
+                          {
+                            chain: c,
+                            alchemyApiKey: settings.alchemyApiKey,
+                            heliusApiKey: settings.heliusApiKey,
+                            moralisApiKey: settings.moralisApiKey,
+                            customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
+                            customApiKey: customApiKey || settings.customExplorerApiKey,
+                            customAsset
+                          },
+                          true  // isSync: bypass already-imported guard, always fetch latest
+                        );
                       }}
                     >
-                      <RefreshCw className="h-3 w-3" /> Sync
+                      <RefreshCw className="h-3 w-3" /> Sync (fetch new txs)
                     </button>
                     <button
                       className="flex items-center gap-1 text-loss hover:underline"
