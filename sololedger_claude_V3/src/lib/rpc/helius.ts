@@ -5,13 +5,11 @@
  * transactions including Jupiter DCA fills, staking, NFT activity, etc.
  *
  * Endpoint: GET https://mainnet.helius-rpc.com/v0/addresses/{address}/transactions
- * Docs: https://docs.helius.dev/enhanced-transactions/overview
+ * Docs: https://docs.helius.dev/enhanced-transactions/transaction-history
  *
- * The Enhanced Transactions API is in maintenance mode (no new parsers) but
- * all existing parsers continue to work — this covers Jupiter, Raydium, Orca,
- * Marinade, Magic Eden, and hundreds more Solana protocols.
- *
- * Pricing: 100 CU per enhanced tx call (Developer plan: 25M CU/mo).
+ * Important: `token-accounts=balanceChanged` is required to include SPL token
+ * receipts (e.g. DBT rewards) that land in associated token accounts, not only
+ * txs that reference the wallet pubkey directly.
  */
 
 import { makeId } from '@/lib/parsers/types';
@@ -90,7 +88,6 @@ function heliusSwapToTrade(
   let outputAmount: number | undefined;
 
   if (swap) {
-    // Prefer structured swap event
     const inp = swap.tokenInputs?.[0];
     const out = swap.tokenOutputs?.[0];
     if (inp) {
@@ -101,7 +98,6 @@ function heliusSwapToTrade(
       outputMint = out.mint;
       outputAmount = rawAmountToDecimal(out.rawTokenAmount.tokenAmount, out.rawTokenAmount.decimals);
     }
-    // Handle native SOL as input/output
     if (!inputMint && swap.nativeInput) {
       inputMint = 'So11111111111111111111111111111111111111112';
       inputAmount = swap.nativeInput.amount / 1e9;
@@ -112,7 +108,6 @@ function heliusSwapToTrade(
     }
   }
 
-  // Fallback: derive from tokenTransfers
   if (!inputMint || !outputMint) {
     const sent = htx.tokenTransfers.filter((t) => t.fromUserAccount === walletAddress);
     const received = htx.tokenTransfers.filter((t) => t.toUserAccount === walletAddress);
@@ -130,11 +125,6 @@ function heliusSwapToTrade(
 
   const inputSymbol = resolveSymbol(inputMint);
   const outputSymbol = resolveSymbol(outputMint);
-
-  // If input is DBT, check if it's a Dabba income classification
-  // (shouldn't happen for swaps, but guard against it)
-  const isBtdIncome = isDbtToken(inputMint) && false; // swaps are never income
-  void isBtdIncome;
 
   return {
     id: makeId('rpc'),
@@ -168,13 +158,11 @@ function heliusTransferToRows(
   const rows: Transaction[] = [];
   const ts = htx.timestamp * 1000;
 
-  // SPL token transfers
   const tokensSent = htx.tokenTransfers.filter((t) => t.fromUserAccount === walletAddress);
   const tokensReceived = htx.tokenTransfers.filter((t) => t.toUserAccount === walletAddress);
 
   for (const t of tokensSent) {
     const asset = resolveSymbol(t.mint);
-    // Check DBT income (shouldn't be outbound income, but handles edge cases)
     rows.push({
       id: makeId('rpc'),
       timestamp: ts,
@@ -196,7 +184,6 @@ function heliusTransferToRows(
 
   for (const t of tokensReceived) {
     const asset = resolveSymbol(t.mint);
-    // Auto-classify DBT income from known Dabba programs
     const dbtIncome = isDbtToken(t.mint) && t.fromUserAccount !== walletAddress
       ? classifyDbtIncome(t.mint, t.fromUserAccount) ?? {
           kind: 'genesis_reward' as const,
@@ -226,13 +213,12 @@ function heliusTransferToRows(
     });
   }
 
-  // Native SOL transfers
   const solSent = htx.nativeTransfers.filter((t) => t.fromUserAccount === walletAddress);
   const solReceived = htx.nativeTransfers.filter((t) => t.toUserAccount === walletAddress);
 
   for (const t of solSent) {
     const sol = t.amount / 1e9;
-    if (Math.abs(sol) < 0.000001) continue; // skip dust/rent
+    if (Math.abs(sol) < 0.000001) continue;
     rows.push({
       id: makeId('rpc'),
       timestamp: ts,
@@ -277,19 +263,15 @@ function heliusTransferToRows(
 
 /**
  * Convert one Helius transaction into SoloLedger transaction rows.
- * A single Helius tx may produce 0-N rows (e.g. multi-leg swaps).
  */
 function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transaction[] {
   const classified = classifyFromHelius(htx.type, htx.source, htx.description);
 
-  // SWAP → single trade row
   if (htx.type === 'SWAP' || classified?.type === 'trade') {
     const trade = heliusSwapToTrade(htx, walletAddress);
     if (trade) return [trade];
-    // If swap extraction fails, fall through to transfer parsing
   }
 
-  // DeFi (stake, unstake, liquidity) → one row from the primary token flow
   const defiType = classified?.type;
   if (defiType && ['defi_deposit', 'defi_withdraw', 'nft_mint', 'nft_sell', 'nft_buy'].includes(defiType)) {
     const rows = heliusTransferToRows(htx, walletAddress);
@@ -301,48 +283,51 @@ function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transact
     }));
   }
 
-  // TRANSFER / UNKNOWN → parse all token/SOL balance changes
   return heliusTransferToRows(htx, walletAddress);
 }
 
 export interface HeliusLookupResult {
   transactions: Transaction[];
   warnings: string[];
+  /** Newest on-chain signature returned in this fetch (for incremental sync cursor). */
+  newestSignature?: string;
 }
 
 /**
  * Fetch and parse Solana transaction history for one address via Helius.
  *
- * @param afterSignature  When set (incremental sync), only returns transactions
- *   NEWER than this signature. Helius uses `after-signature` + ascending sort,
- *   so we get exactly the delta since the last sync — no duplicates possible.
- *   When not set (first import), fetches the latest 500 transactions.
+ * @param afterSignature  Incremental sync: only txs strictly after this signature
+ *   (uses sort-order=asc + after-signature per Helius docs).
  */
 export async function fetchHeliusSolana(
   address: string,
   apiKey: string,
-  maxPages = 5,
+  maxPages = 20,
   afterSignature?: string
 ): Promise<HeliusLookupResult> {
   const transactions: Transaction[] = [];
   const warnings: string[] = [];
 
   const isIncremental = !!afterSignature;
-  let cursorSignature: string | undefined;
+  let cursorSignature: string | undefined = afterSignature;
   let page = 0;
+  let newestTimestamp = 0;
+  let newestSignature: string | undefined;
 
   while (page < maxPages) {
     let url =
       `${HELIUS_BASE}/v0/addresses/${address}/transactions` +
-      `?api-key=${apiKey}&limit=100`;
+      `?api-key=${apiKey}&limit=100` +
+      `&token-accounts=balanceChanged` +
+      `&commitment=confirmed`;
 
     if (isIncremental) {
-      // Incremental sync: get only NEW transactions after the last known one
-      url += `&after-signature=${afterSignature}&sort-order=asc`;
-      if (cursorSignature) url += `&before=${cursorSignature}`;
+      // Ascending: fetch txs strictly after the cursor signature
+      url += `&sort-order=asc&after-signature=${cursorSignature}`;
     } else {
-      // Full import: newest first
-      if (cursorSignature) url += `&before=${cursorSignature}`;
+      // Full import: newest first, paginate backwards
+      url += `&sort-order=desc`;
+      if (cursorSignature) url += `&before-signature=${cursorSignature}`;
     }
 
     // eslint-disable-next-line no-await-in-loop
@@ -368,16 +353,21 @@ export async function fetchHeliusSolana(
     for (const htx of data) {
       const rows = heliusTxToRows(htx, address);
       transactions.push(...rows);
+      if (htx.timestamp >= newestTimestamp) {
+        newestTimestamp = htx.timestamp;
+        newestSignature = htx.signature;
+      }
     }
 
-    if (data.length < 100) break; // last page
-    cursorSignature = data[data.length - 1].signature;
+    if (data.length < 100) break;
+
+    const lastSig = data[data.length - 1].signature;
+    cursorSignature = lastSig;
     page++;
 
-    // Small delay between pages to respect rate limits
     // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  return { transactions, warnings };
+  return { transactions, warnings, newestSignature };
 }

@@ -725,10 +725,11 @@ export interface LookupConfig {
   customAsset?: string;
   /**
    * For incremental sync: only fetch transactions NEWER than this signature.
-   * When set, Helius uses `after-signature` with ascending sort, returning only
-   * new transactions since the last sync. This avoids re-importing existing rows.
+   * When set, Helius uses `after-signature` with ascending sort.
    */
   afterSignature?: string;
+  /** When true, do not fall back to Alchemy if Helius returns zero rows. */
+  incrementalOnly?: boolean;
 }
 
 function withDexSwapDetection(result: LookupResult): LookupResult {
@@ -736,7 +737,7 @@ function withDexSwapDetection(result: LookupResult): LookupResult {
   return { ...result, transactions };
 }
 
-async function lookupOneAddress(address: string, config: LookupConfig): Promise<LookupResult> {
+async function lookupOneAddress(address: string, config: LookupConfig): Promise<LookupResult & { newestSignature?: string }> {
   const { chain } = config;
   if (chain.provider === 'blockstream') {
     return fetchBitcoin(address, 'https://blockstream.info/api', chain.asset);
@@ -780,15 +781,20 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     if (config.heliusApiKey) {
       try {
         const { fetchHeliusSolana } = await import('@/lib/rpc/helius');
-        const result = await fetchHeliusSolana(address, config.heliusApiKey, 5, config.afterSignature);
-        if (result.transactions.length > 0) {
-          // Helius returns swaps directly — DCA heuristic still runs as a safety net
-          return withDexSwapDetection({
-            transactions: result.transactions,
-            warnings: result.warnings.map((msg) => ({ address, message: msg }))
-          });
+        const result = await fetchHeliusSolana(address, config.heliusApiKey, config.afterSignature ? 10 : 20, config.afterSignature);
+        if (result.transactions.length > 0 || config.incrementalOnly) {
+          return {
+            ...withDexSwapDetection({
+              transactions: result.transactions,
+              warnings: result.warnings.map((msg) => ({ address, message: msg }))
+            }),
+            newestSignature: result.newestSignature
+          };
         }
-      } catch { /* fall through to Alchemy */ }
+      } catch { /* fall through to Alchemy on full import only */ }
+    }
+    if (config.incrementalOnly) {
+      return { transactions: [], warnings: [{ address, message: 'No new transactions since last sync.' }] };
     }
     if (!config.alchemyApiKey) throw new Error('Add your Helius API key (or Alchemy API key) in Settings first.');
     return withDexSwapDetection(await fetchAlchemySolana(address, config.alchemyApiKey));
@@ -811,12 +817,12 @@ export async function lookupManyAddresses(
   transactions: Transaction[];
   warnings: LookupWarning[];
   failed: LookupWarning[];
-  perAddress: { address: string; count: number }[];
+  perAddress: { address: string; count: number; newestSignature?: string }[];
 }> {
   const transactions: Transaction[] = [];
   const warnings: LookupWarning[] = [];
   const failed: LookupWarning[] = [];
-  const perAddress: { address: string; count: number }[] = [];
+  const perAddress: { address: string; count: number; newestSignature?: string }[] = [];
 
   for (let i = 0; i < addresses.length; i++) {
     const address = addresses[i].trim();
@@ -826,7 +832,11 @@ export async function lookupManyAddresses(
       const result = await lookupOneAddress(address, config);
       transactions.push(...result.transactions);
       warnings.push(...result.warnings);
-      perAddress.push({ address, count: result.transactions.length });
+      perAddress.push({
+        address,
+        count: result.transactions.length,
+        newestSignature: result.newestSignature
+      });
     } catch (err) {
       failed.push({ address, message: err instanceof Error ? err.message : 'Lookup failed.' });
     }

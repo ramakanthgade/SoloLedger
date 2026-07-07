@@ -6,12 +6,12 @@
  * the async work continues and the progress state is preserved.
  * When they return to Import, the component re-subscribes and sees live state.
  */
-import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions } from '@/lib/storage/db';
+import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions, filterAlreadyImported } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
 import { reprocessSwapDetectionInDb, reprocessDbtIncome } from '@/lib/rpc/reprocessSwaps';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
-import type { TaxSettings } from '@/types/transaction';
+import type { TaxSettings, Transaction } from '@/types/transaction';
 
 // ---- State shape ----
 
@@ -100,6 +100,37 @@ export function useImportJob(): ImportJobState {
 
 // ---- Main import function (runs independently of any React component) ----
 
+/** Resolve the Helius after-signature cursor for incremental sync. */
+async function resolveSyncCursor(chainId: string, address: string): Promise<string | undefined> {
+  const row = await db.lookupAddresses.get(`${chainId}:${address}`);
+  if (row?.lastSyncedSignature) return row.lastSyncedSignature;
+
+  const existingTxs = await db.transactions
+    .filter(
+      (t) =>
+        t.walletAddress?.toLowerCase() === address.toLowerCase() &&
+        !!t.sourceRef &&
+        t.source.startsWith('rpc:')
+    )
+    .toArray();
+  if (existingTxs.length === 0) return undefined;
+
+  const newestBySig = new Map<string, number>();
+  for (const t of existingTxs) {
+    const prev = newestBySig.get(t.sourceRef!) ?? 0;
+    if (t.timestamp > prev) newestBySig.set(t.sourceRef!, t.timestamp);
+  }
+  let bestSig: string | undefined;
+  let bestTs = 0;
+  for (const [sig, ts] of newestBySig) {
+    if (ts > bestTs) {
+      bestTs = ts;
+      bestSig = sig;
+    }
+  }
+  return bestSig;
+}
+
 export async function runWalletImport(
   addresses: string[],
   chain: ChainDef,
@@ -142,21 +173,16 @@ export async function runWalletImport(
   let failed: Awaited<ReturnType<typeof lookupManyAddresses>>['failed'] = [];
   let apiWarnings: string[] = [...warnings];
 
-  // For incremental sync: find the most recent transaction signature for each address.
-  // Helius will return only transactions AFTER this signature — no duplicates.
-  let syncConfig = config;
+  // For incremental sync: use stored cursor so Helius returns only NEW txs.
+  let syncConfig: LookupConfig = config;
   if (isSync && fresh.length === 1) {
-    const addr = fresh[0].toLowerCase();
-    const existingTxs = await db.transactions
-      .filter((t) => t.walletAddress?.toLowerCase() === addr && !!t.sourceRef && t.source.startsWith('rpc:'))
-      .toArray();
-    if (existingTxs.length > 0) {
-      // Find the most recent transaction by timestamp, use its sourceRef as the cursor
-      const mostRecent = existingTxs.reduce((a, b) => (a.timestamp > b.timestamp ? a : b));
-      if (mostRecent.sourceRef) {
-        syncConfig = { ...config, afterSignature: mostRecent.sourceRef };
-      }
-    }
+    const addr = fresh[0];
+    const afterSignature = await resolveSyncCursor(chain.id, addr);
+    syncConfig = {
+      ...config,
+      afterSignature,
+      incrementalOnly: true
+    };
   }
 
   try {
@@ -168,13 +194,19 @@ export async function runWalletImport(
     transactions = result.transactions;
     perAddress = result.perAddress;
     failed = result.failed;
-    apiWarnings = [...warnings, ...result.warnings.map((w) => `${w.address}: ${w.message}`)];
+    apiWarnings = [
+      ...warnings,
+      ...(isSync && syncConfig.afterSignature
+        ? [`Syncing new transactions after ${syncConfig.afterSignature.slice(0, 8)}…`]
+        : []),
+      ...result.warnings.map((w) => `${w.address}: ${w.message}`)
+    ];
   } catch (err) {
     importJob._error(err instanceof Error ? err.message : 'Import failed.');
     return;
   }
 
-  // --- Protect trades: don't overwrite Noves-classified transactions ---
+  // --- Protect trades + skip rows already in DB ---
   let txsToStore = transactions;
   if (transactions.length > 0) {
     const tradedSourceRefs = new Set(
@@ -185,10 +217,25 @@ export async function runWalletImport(
     txsToStore = transactions.filter(
       (t) => !t.sourceRef || !tradedSourceRefs.has(t.sourceRef)
     );
-    await db.transactions.bulkPut(txsToStore);
+    txsToStore = await filterAlreadyImported(txsToStore);
+    if (txsToStore.length > 0) {
+      await db.transactions.bulkPut(txsToStore);
+    }
   }
 
-  await Promise.all(perAddress.map((p) => upsertLookupAddress(chain.id, p.address, p.count)));
+  await Promise.all(
+    perAddress.map((p) => {
+      const sig =
+        p.newestSignature ??
+        transactions
+          .filter((t) => t.walletAddress?.toLowerCase() === p.address.toLowerCase() && t.sourceRef)
+          .reduce<Transaction | undefined>(
+            (best, t) => (!best || t.timestamp > best.timestamp ? t : best),
+            undefined
+          )?.sourceRef;
+      return upsertLookupAddress(chain.id, p.address, p.count, sig);
+    })
+  );
 
   // --- Phase 2: Classification + DCA auto-detection ---
   importJob._setPhase('classifying');
@@ -260,6 +307,15 @@ export async function runWalletImport(
   const dupsRemoved = await deduplicateTransactions();
   if (dupsRemoved > 0) {
     apiWarnings.unshift(`Removed ${dupsRemoved} duplicate transaction${dupsRemoved === 1 ? '' : 's'} (re-sync detected).`);
+  }
+
+  // Refresh wallet tx counts after dedup
+  await Promise.all(
+    perAddress.map((p) => upsertLookupAddress(chain.id, p.address, 0, p.newestSignature))
+  );
+
+  if (isSync && txsToStore.length === 0) {
+    apiWarnings.unshift('No new transactions found since last sync.');
   }
 
   importJob._finish(

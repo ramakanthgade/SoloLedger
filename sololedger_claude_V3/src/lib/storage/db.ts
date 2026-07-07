@@ -22,6 +22,8 @@ export interface LookupAddressRow {
   label?: string;       // user-assigned friendly name, e.g. "My Phantom wallet"
   lastSyncedAt: number;
   txCount: number;
+  /** Newest on-chain signature seen for this wallet (Helius incremental sync cursor). */
+  lastSyncedSignature?: string;
 }
 
 /** Persistent historical price cache — avoids re-fetching the same asset+date+currency. */
@@ -63,6 +65,16 @@ class SoloLedgerDB extends Dexie {
     });
     // v4: add isSpam index to transactions, add priceCache table
     this.version(4).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt'
+    });
+    // v5: lastSyncedSignature on lookupAddresses (field only — no index change needed)
+    this.version(5).stores({
       transactions: 'id, timestamp, asset, type, source, *flags, isSpam',
       lots: 'id, asset, acquiredAt, sourceTxId',
       disposals: 'id, asset, disposedAt, sourceTxId',
@@ -147,16 +159,42 @@ export async function setCachedPrice(key: string, price: number): Promise<void> 
 
 // ---- Wallet addresses ----
 
-export async function upsertLookupAddress(chain: string, address: string, txCount: number): Promise<void> {
+/** Dedup key for on-chain rows — intentionally excludes `type` so re-imported transfer_in rows match reclassified income. */
+export function transactionImportKey(t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount'>): string | null {
+  if (!t.sourceRef || !t.walletAddress) return null;
+  return [t.sourceRef, t.walletAddress.toLowerCase(), t.asset.toUpperCase(), t.amount.toFixed(6)].join('|');
+}
+
+/** Count transactions stored for a wallet on a chain. */
+export async function countWalletTransactions(chain: string, address: string): Promise<number> {
+  const addrLower = address.toLowerCase();
+  return db.transactions
+    .filter(
+      (t) =>
+        t.chain === chain &&
+        t.walletAddress != null &&
+        t.walletAddress.toLowerCase() === addrLower
+    )
+    .count();
+}
+
+export async function upsertLookupAddress(
+  chain: string,
+  address: string,
+  _importedCount: number,
+  lastSyncedSignature?: string
+): Promise<void> {
   const id = `${chain}:${address}`;
   const existing = await db.lookupAddresses.get(id);
+  const txCount = await countWalletTransactions(chain, address);
   await db.lookupAddresses.put({
     ...(existing ?? {}),
     id,
     chain,
     address,
     lastSyncedAt: Date.now(),
-    txCount: (existing?.txCount ?? 0) + txCount
+    txCount,
+    lastSyncedSignature: lastSyncedSignature ?? existing?.lastSyncedSignature
   });
 }
 
@@ -210,32 +248,28 @@ export async function getWalletLabel(address: string): Promise<string | undefine
 
 /**
  * Remove duplicate transactions from the database.
- * Duplicates occur when a wallet is synced multiple times.
- * Dedup key: sourceRef + walletAddress + asset + type (same on-chain event in same direction).
- * Returns the number of duplicates removed.
+ * Dedup key: sourceRef + wallet + asset + amount (type excluded — reclassified rows
+ * like transfer_in → income must still match a raw re-import).
  */
 export async function deduplicateTransactions(): Promise<number> {
   const all = await db.transactions.toArray();
-  const seen = new Map<string, string>(); // dedup key → first id seen
+  const seen = new Map<string, string>();
   const toDelete: string[] = [];
 
   for (const t of all) {
-    if (!t.sourceRef || !t.walletAddress) continue;
-    // Include amount rounded to 6 dp to avoid floating-point mismatches
-    const key = [
-      t.sourceRef,
-      t.walletAddress.toLowerCase(),
-      t.asset.toUpperCase(),
-      t.type,
-      t.amount.toFixed(6)
-    ].join('|');
+    const key = transactionImportKey(t);
+    if (!key) continue;
 
     if (seen.has(key)) {
-      // Keep whichever already has a fiatValue; otherwise keep the first
       const firstId = seen.get(key)!;
       const first = all.find((x) => x.id === firstId)!;
-      if (first.fiatValue == null && t.fiatValue != null) {
-        // The new one has a price — delete the old one, keep this
+      // Prefer classified row (income/trade) over raw transfer_in/out
+      const score = (row: Transaction) =>
+        (row.fiatValue != null ? 4 : 0) +
+        (row.type === 'income' || row.type === 'trade' ? 2 : 0) +
+        (row.flags.length === 0 ? 1 : 0);
+      const keepNew = score(t) > score(first);
+      if (keepNew) {
         toDelete.push(firstId);
         seen.set(key, t.id);
       } else {
@@ -250,4 +284,20 @@ export async function deduplicateTransactions(): Promise<number> {
     await db.transactions.bulkDelete(toDelete);
   }
   return toDelete.length;
+}
+
+/**
+ * Drop incoming rows that already exist in the DB (by on-chain import key).
+ * Call before bulkPut on sync to prevent duplicates.
+ */
+export async function filterAlreadyImported(transactions: Transaction[]): Promise<Transaction[]> {
+  if (transactions.length === 0) return transactions;
+  const existing = await db.transactions.toArray();
+  const existingKeys = new Set(
+    existing.map((t) => transactionImportKey(t)).filter(Boolean) as string[]
+  );
+  return transactions.filter((t) => {
+    const key = transactionImportKey(t);
+    return !key || !existingKeys.has(key);
+  });
 }
