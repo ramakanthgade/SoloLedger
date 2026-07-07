@@ -34,24 +34,17 @@ export function formatNumberLocale(amount: number, currency: string): string {
 }
 
 /**
- * PDF-safe currency string. jsPDF's built-in fonts cannot render ₹ (U+20B9) or
- * other Unicode currency symbols — they appear as stray glyphs and break spacing.
+ * Export-safe amount string (PDF/CSV). Currency is shown in column headers —
+ * values are plain locale-formatted numbers without a repeated symbol prefix.
  */
-export function formatCurrencyForPdf(amount: number, currency: string): string {
-  const num = formatNumberLocale(amount, currency);
+export function formatAmountForExport(amount: number, currency: string): string {
   const sign = amount < 0 ? '-' : '';
-  switch (currency.toUpperCase()) {
-    case 'INR':
-      return `${sign}Rs. ${num}`;
-    case 'USD':
-      return `${sign}$${num}`;
-    case 'CAD':
-      return `${sign}CA$${num}`;
-    case 'AED':
-      return `${sign}AED ${num}`;
-    default:
-      return `${sign}${num} ${currency.toUpperCase()}`;
-  }
+  return `${sign}${formatNumberLocale(amount, currency)}`;
+}
+
+/** @deprecated Use formatAmountForExport — kept for any external references. */
+export function formatCurrencyForPdf(amount: number, currency: string): string {
+  return formatAmountForExport(amount, currency);
 }
 
 /** CSV column suffix for monetary fields, e.g. "proceeds (INR)". */

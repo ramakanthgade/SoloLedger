@@ -7,7 +7,7 @@ import { deidentifyTransactions } from '@/lib/reports/deidentify';
 import type { Jurisdiction } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { formatCurrency, formatCurrencyForPdf, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel } from '@/lib/utils';
+import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel } from '@/lib/utils';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -76,7 +76,7 @@ export function ReportsTab() {
 
   const exportPdf = async () => {
     const txMap = await buildDeidentifiedTxMap();
-    const fmt = (n: number) => formatCurrencyForPdf(n, rules.currency);
+    const fmt = (n: number) => formatAmountForExport(n, rules.currency);
     const doc = new jsPDF();
     doc.setFontSize(16);
     doc.text('SoloLedger \u2014 Capital Gains Report', 14, 18);
@@ -176,7 +176,7 @@ export function ReportsTab() {
       ].join(',');
     });
     downloadBlob(
-      [`# Currency: ${cur}`, header.join(','), ...rows].join('\n'),
+      [header.join(','), ...rows].join('\n'),
       'text/csv',
       `sololedger-${jurisdiction}-${yearLabel.replace(/\s/g, '')}-disposals.csv`
     );
