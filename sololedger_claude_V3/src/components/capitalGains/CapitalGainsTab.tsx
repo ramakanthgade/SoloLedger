@@ -10,6 +10,9 @@ import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui
 import { formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
+import { Button } from '@/components/ui/button';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const INCOME_KIND_LABEL: Record<string, string> = {
   income: 'Income',
@@ -99,6 +102,107 @@ export function CapitalGainsTab() {
     (t) => !t.isInternalTransfer && !['transfer_in', 'transfer_out', 'fee'].includes(t.type)
   ).length;
 
+  const downloadBlob = (content: string, mime: string, filename: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const confirmPdfExport = () =>
+    window.confirm(
+      'PDF is best for quick summaries. For detailed CA review, CSV/JSON is recommended.\n\nContinue with PDF export?'
+    );
+
+  const exportCapitalGainsCsv = () => {
+    const header = [
+      'row_type',
+      'date',
+      'asset',
+      'quantity',
+      'proceeds',
+      'cost_basis',
+      'gain_loss',
+      'income_kind',
+      'income_value',
+      'holding_days',
+      'method'
+    ];
+    const gainRows = yearMatches.map((r) =>
+      ['capital_gain', new Date(r.sellDate).toISOString(), r.asset, r.sellAmount, r.proceeds, r.costBasis, r.gain, '', '', r.holdingDays, r.method]
+        .map((v) => `"${String(v)}"`).join(',')
+    );
+    const incomeCsvRows = yearIncome.map((r) =>
+      ['income', new Date(r.date).toISOString(), r.asset, r.amount, '', '', '', r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind, r.fiatValue, '', '']
+        .map((v) => `"${String(v)}"`).join(',')
+    );
+    downloadBlob(
+      [header.join(','), ...gainRows, ...incomeCsvRows].join('\n'),
+      'text/csv',
+      `sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.csv`
+    );
+  };
+
+  const exportCapitalGainsJson = () => {
+    downloadBlob(
+      JSON.stringify(
+        {
+          jurisdiction,
+          fy,
+          fyLabel: getFyLabel(fy, jurisdiction),
+          method,
+          currency,
+          totals: { totalGain, totalIncome },
+          matchedDisposals: yearMatches,
+          incomeRows: yearIncome
+        },
+        null,
+        2
+      ),
+      'application/json',
+      `sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.json`
+    );
+  };
+
+  const exportCapitalGainsPdf = () => {
+    if (!confirmPdfExport()) return;
+    const doc = new jsPDF({ orientation: 'landscape' });
+    doc.setFontSize(14);
+    doc.text('SoloLedger — Capital Gains Detail', 14, 16);
+    doc.setFontSize(9);
+    doc.text(`FY: ${getFyLabel(fy, jurisdiction)} · Method: ${method} · Jurisdiction: ${JURISDICTIONS[jurisdiction].label}`, 14, 22);
+    doc.text(`Realized gain/loss: ${formatCurrency(totalGain, currency)} · Income: ${formatCurrency(totalIncome, currency)}`, 14, 28);
+    autoTable(doc, {
+      startY: 34,
+      head: [['Sell date', 'Asset', 'Qty', 'Proceeds', 'Buy date', 'Cost basis', 'P&L']],
+      body: yearMatches.map((r) => [
+        formatDateTime(r.sellDate),
+        r.asset,
+        formatCompactAmount(r.sellAmount),
+        formatCurrency(r.proceeds, currency),
+        formatDateTime(r.buyDate),
+        formatCurrency(r.costBasis, currency),
+        formatCurrency(r.gain, currency)
+      ]),
+      styles: { fontSize: 7 }
+    });
+    autoTable(doc, {
+      head: [['Income date', 'Kind', 'Asset', 'Amount', 'Value']],
+      body: yearIncome.map((r) => [
+        formatDateTime(r.date),
+        r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind,
+        r.asset,
+        formatCompactAmount(r.amount),
+        formatCurrency(r.fiatValue, currency)
+      ]),
+      styles: { fontSize: 7 }
+    });
+    doc.save(`sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.pdf`);
+  };
+
   if (transactions.length === 0) {
     return (
       <div className="space-y-4">
@@ -142,6 +246,12 @@ export function CapitalGainsTab() {
           <option value="SpecID">Specific ID</option>
         </select>
         <span className="text-xs text-mist-400">{JURISDICTIONS[jurisdiction].label}</span>
+        <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
+        <div className="ml-auto flex gap-2">
+          <Button variant="secondary" onClick={exportCapitalGainsCsv}>CSV</Button>
+          <Button variant="secondary" onClick={exportCapitalGainsJson}>JSON</Button>
+          <Button variant="secondary" onClick={exportCapitalGainsPdf}>PDF</Button>
+        </div>
       </div>
 
       {taxableTxCount === 0 && (

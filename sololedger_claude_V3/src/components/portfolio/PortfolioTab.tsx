@@ -8,6 +8,9 @@ import {
 } from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
+import { Button } from '@/components/ui/button';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 /**
  * Transaction-based holdings calculator.
@@ -125,6 +128,65 @@ export function PortfolioTab() {
     (t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer
   ).length;
 
+  const downloadBlob = (content: string, mime: string, filename: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const confirmPdfExport = () =>
+    window.confirm(
+      'PDF is best for quick summaries. For detailed CA review, CSV/JSON is recommended.\n\nContinue with PDF export?'
+    );
+
+  const exportHoldingsCsv = () => {
+    const header = ['asset', 'chain', 'contract_address', 'quantity', 'cost_basis', 'reporting_currency'];
+    const rows = holdings.map((h) =>
+      [h.asset, h.chain ?? '', h.contractAddress ?? '', h.amount.toFixed(8), h.costBasis.toFixed(2), reportingCurrency]
+        .map((v) => `"${String(v)}"`).join(',')
+    );
+    downloadBlob([header.join(','), ...rows].join('\n'), 'text/csv', 'sololedger-portfolio-holdings.csv');
+  };
+
+  const exportHoldingsJson = () => {
+    downloadBlob(
+      JSON.stringify(
+        {
+          period: selectedFy == null ? 'all_time' : getFyLabel(selectedFy, jurisdiction),
+          wallet: selectedWallet,
+          reportingCurrency,
+          totalCostBasis,
+          holdings
+        },
+        null,
+        2
+      ),
+      'application/json',
+      'sololedger-portfolio-holdings.json'
+    );
+  };
+
+  const exportHoldingsPdf = () => {
+    if (!confirmPdfExport()) return;
+    const doc = new jsPDF();
+    doc.setFontSize(14);
+    doc.text('SoloLedger — Portfolio Holdings', 14, 16);
+    doc.setFontSize(9);
+    doc.text(`Period: ${selectedFy == null ? 'All time' : getFyLabel(selectedFy, jurisdiction)} · Wallet: ${selectedWallet}`, 14, 22);
+    doc.text(`Total cost basis: ${formatCurrency(totalCostBasis, reportingCurrency)}`, 14, 28);
+    autoTable(doc, {
+      startY: 34,
+      head: [['Asset', 'Quantity', `Cost basis (${reportingCurrency})`]],
+      body: holdings.map((h) => [resolveAssetLabel(h.asset, h.contractAddress, h.chain), h.amount.toFixed(8), h.costBasis.toFixed(2)]),
+      styles: { fontSize: 8 }
+    });
+    doc.save('sololedger-portfolio-holdings.pdf');
+  };
+
   return (
     <div className="space-y-6">
       <div>
@@ -171,6 +233,12 @@ export function PortfolioTab() {
         <span className="ml-auto text-xs text-mist-400">
           {holdings.length} asset{holdings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
         </span>
+        <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={exportHoldingsCsv} className="text-xs">CSV</Button>
+          <Button variant="secondary" onClick={exportHoldingsJson} className="text-xs">JSON</Button>
+          <Button variant="secondary" onClick={exportHoldingsPdf} className="text-xs">PDF</Button>
+        </div>
       </div>
 
       {missingPriceCount > 0 && (

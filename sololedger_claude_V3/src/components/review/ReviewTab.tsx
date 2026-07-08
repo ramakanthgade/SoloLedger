@@ -15,6 +15,8 @@ import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection'
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
@@ -377,6 +379,89 @@ export function ReviewTab() {
     setSelected(new Set());
   };
 
+  const downloadBlob = (content: string, mime: string, filename: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const confirmPdfExport = () =>
+    window.confirm(
+      'PDF is best for sharing summaries. For detailed CA review, CSV/JSON is recommended.\n\nContinue with PDF export?'
+    );
+
+  const exportFilteredCsv = () => {
+    const header = [
+      'date',
+      'type',
+      'chain',
+      'asset',
+      'amount',
+      'fiat_value',
+      'fiat_currency',
+      'from',
+      'to',
+      'source_ref',
+      'flags',
+      'is_internal_transfer',
+      'is_spam',
+      'notes'
+    ];
+    const rows = filtered.map((t) => {
+      const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
+      const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
+      return [
+        new Date(t.timestamp).toISOString(),
+        t.type,
+        t.chain ?? '',
+        t.asset,
+        t.amount,
+        t.fiatValue ?? '',
+        t.fiatCurrency,
+        fromAddr ?? '',
+        toAddr ?? '',
+        t.sourceRef ?? '',
+        displayFlags(t).join('|'),
+        t.isInternalTransfer ? 'yes' : 'no',
+        t.isSpam ? 'yes' : 'no',
+        (t.notes ?? '').replace(/"/g, '""')
+      ].map((v) => `"${String(v)}"`).join(',');
+    });
+    downloadBlob([header.join(','), ...rows].join('\n'), 'text/csv', 'sololedger-review-transactions.csv');
+  };
+
+  const exportFilteredJson = () => {
+    downloadBlob(JSON.stringify({ count: filtered.length, transactions: filtered }, null, 2), 'application/json', 'sololedger-review-transactions.json');
+  };
+
+  const exportFilteredPdf = () => {
+    if (!confirmPdfExport()) return;
+    const doc = new jsPDF({ orientation: 'landscape' });
+    doc.setFontSize(14);
+    doc.text('SoloLedger — Review Transactions', 14, 16);
+    doc.setFontSize(9);
+    doc.text(`Rows: ${filtered.length}`, 14, 22);
+    autoTable(doc, {
+      startY: 28,
+      head: [['Date', 'Type', 'Asset', 'Amount', 'Fiat', 'Flags', 'Source Ref']],
+      body: filtered.map((t) => [
+        new Date(t.timestamp).toISOString().slice(0, 10),
+        t.type,
+        t.asset,
+        formatCompactAmount(t.amount),
+        t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : '—',
+        displayFlags(t).join(', ') || '—',
+        t.sourceRef ?? '—'
+      ]),
+      styles: { fontSize: 7 }
+    });
+    doc.save('sololedger-review-transactions.pdf');
+  };
+
   if (transactions.length === 0) {
     return (
       <div className="space-y-6">
@@ -573,6 +658,13 @@ export function ReviewTab() {
         )}
 
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
+        <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
+
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={exportFilteredCsv} className="text-xs">CSV</Button>
+          <Button variant="secondary" onClick={exportFilteredJson} className="text-xs">JSON</Button>
+          <Button variant="secondary" onClick={exportFilteredPdf} className="text-xs">PDF</Button>
+        </div>
 
         {/* Noves: only show for non-Helius users or as an explicit re-run option */}
         {!settings?.heliusApiKey && (
