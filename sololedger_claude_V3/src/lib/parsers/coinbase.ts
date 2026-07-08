@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { makeId, safeNumber, safeTimestamp, type ExchangeParser } from './types';
+import { makeId, normalizeFiatMagnitude, safeNumber, safeTimestamp, type ExchangeParser } from './types';
 
 /**
  * Coinbase "Transaction History" CSV export.
@@ -35,6 +35,16 @@ function col(row: Record<string, string>, ...keys: string[]): string {
   return '';
 }
 
+function parseCounterLeg(notes?: string): { counterAsset?: string; counterAmount?: number } {
+  if (!notes) return {};
+  const m = notes.match(/\bfor\s+([0-9][0-9,]*(?:\.[0-9]+)?)\s+([A-Za-z0-9._-]+)\s+on\b/i);
+  if (!m) return {};
+  const amount = Math.abs(safeNumber(m[1]));
+  const asset = (m[2] || '').trim().toUpperCase();
+  if (!asset || amount <= 0) return {};
+  return { counterAsset: asset, counterAmount: amount };
+}
+
 export const coinbaseParser: ExchangeParser = {
   id: 'coinbase',
   label: 'Coinbase',
@@ -61,21 +71,28 @@ export const coinbaseParser: ExchangeParser = {
         continue;
       }
 
+      const notes = col(row, 'Notes') || undefined;
+      const counter = parseCounterLeg(notes);
+
       transactions.push({
         id: makeId('cb'),
         timestamp,
         type: mapped,
         asset,
         amount,
+        counterAsset: counter.counterAsset,
+        counterAmount: counter.counterAmount,
         fiatCurrency: (col(row, 'Spot Price Currency', 'Price Currency', 'Currency') || 'USD').trim(),
-        fiatValue: safeNumber(
-          col(row, 'Subtotal', 'Total (inclusive of fees)', 'Total (inclusive of fees and/or spread)', 'Total')
+        fiatValue: normalizeFiatMagnitude(
+          safeNumber(
+            col(row, 'Subtotal', 'Total (inclusive of fees)', 'Total (inclusive of fees and/or spread)', 'Total')
+          )
         ),
         feeAsset: undefined,
-        feeAmount: safeNumber(col(row, 'Fees', 'Fees and/or Spread')),
+        feeAmount: normalizeFiatMagnitude(safeNumber(col(row, 'Fees', 'Fees and/or Spread'))),
         source: 'coinbase',
         sourceRef: col(row, 'ID') || undefined,
-        notes: col(row, 'Notes') || undefined,
+        notes,
         flags: mapped === 'transfer_in' || mapped === 'transfer_out' ? ['possible_internal_transfer'] : [],
         isInternalTransfer: false,
         raw: row

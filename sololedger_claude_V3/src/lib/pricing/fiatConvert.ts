@@ -4,6 +4,7 @@
  * approach as wallet price fetch (CoinGecko USDT rate on transaction date).
  */
 import type { Transaction, TaxSettings } from '@/types/transaction';
+import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import { usdToCurrencyRate } from './coingecko';
 
 const USD_EQUIVALENT = new Set(['USD', 'USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI']);
@@ -186,17 +187,18 @@ export async function convertTransactionsToReportingCurrency(
 
   const out: Transaction[] = [];
   for (const t of transactions) {
-    if (t.fiatValue == null || Math.abs(t.fiatValue) < 1e-12) {
+    const magnitude = normalizeFiatMagnitude(t.fiatValue);
+    if (magnitude == null) {
       out.push(t);
       continue;
     }
     if (!needsFiatConversion(t.fiatCurrency, reporting)) {
-      out.push({ ...t, fiatCurrency: reporting });
+      out.push({ ...t, fiatValue: magnitude, fiatCurrency: reporting });
       continue;
     }
 
     const result = await convertFiatAmount(
-      t.fiatValue,
+      magnitude,
       t.fiatCurrency,
       reporting,
       t.timestamp,

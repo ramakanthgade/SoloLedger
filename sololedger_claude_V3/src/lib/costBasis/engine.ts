@@ -27,7 +27,7 @@ function expandTrades(transactions: Transaction[]): Transaction[] {
       expanded.push(tx);
       continue;
     }
-    const fmv = tx.fiatValue ?? 0;
+    const fmv = Math.abs(tx.fiatValue ?? 0);
     expanded.push({
       ...tx,
       id: `${tx.id}__disposal`,
@@ -115,7 +115,7 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
 
     for (const tx of sorted) {
       if (ACQUISITION_TYPES.includes(tx.type)) {
-        const costBasisTotal = tx.fiatValue ?? 0;
+        const costBasisTotal = Math.abs(tx.fiatValue ?? 0);
         const lot: Lot = {
           id: makeId('lot'),
           asset,
@@ -162,7 +162,7 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
           return { lotId: lot.id, amount: sel.amount, costBasis: consumedCost };
         });
 
-        const proceeds = tx.fiatValue ?? 0;
+        const proceeds = Math.abs(tx.fiatValue ?? 0);
         const earliestLotDate = lotConsumption.length
           ? Math.min(...lotConsumption.map((lc) => openLots.find((l) => l.id === lc.lotId)!.acquiredAt))
           : tx.timestamp;

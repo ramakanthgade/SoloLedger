@@ -15,6 +15,7 @@ import {
 } from '@/lib/storage/db';
 import { convertTransactionsToReportingCurrency } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import type { Transaction } from '@/types/transaction';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
@@ -61,7 +62,9 @@ export function ImportTab() {
     const stamped = txs.map((t) => ({
       ...t,
       importBatchId: hash,
-      source: parserId ?? t.source
+      source: parserId ?? t.source,
+      fiatValue: normalizeFiatMagnitude(t.fiatValue),
+      feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
     }));
     const { transactions: converted, converted: nConverted, failed: nFailed } =
       await convertTransactionsToReportingCurrency(stamped, settings);

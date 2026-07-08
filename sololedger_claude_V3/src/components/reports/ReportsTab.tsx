@@ -189,6 +189,10 @@ export function ReportsTab() {
       year,
       yearLabel,
       method,
+      exportMeta: {
+        reportingCurrency: rules.currency.toUpperCase(),
+        monetaryFields: ['summary.totalProceeds', 'summary.totalCostBasis', 'summary.totalGain', 'summary.totalIncome', 'disposals[].proceeds', 'disposals[].costBasis', 'disposals[].gain']
+      },
       deidentified: deidentify,
       summary,
       disposals: yearDisposals.map((d) => ({ ...d, sourceTx: txMap.get(d.sourceTxId) }))
