@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { makeId, safeNumber, safeTimestamp } from './types';
+import { makeId, normalizeFiatMagnitude, safeNumber, safeTimestamp } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 
 /** User-defined mapping from their CSV's headers to our fields, used when
@@ -55,7 +55,7 @@ function resolveFiat(
   mapping: ColumnMapping,
   quote?: string
 ): { fiatValue?: number; fiatCurrency: string } {
-  const explicit = mapping.fiatValue ? safeNumber(row[mapping.fiatValue]) : 0;
+  const explicit = mapping.fiatValue ? Math.abs(safeNumber(row[mapping.fiatValue])) : 0;
   if (explicit > 0) {
     const cur =
       (mapping.fiatCurrency && row[mapping.fiatCurrency]?.trim().toUpperCase()) ||
@@ -64,7 +64,7 @@ function resolveFiat(
     return { fiatValue: explicit, fiatCurrency: cur };
   }
 
-  const total = mapping.totalValue ? safeNumber(row[mapping.totalValue]) : 0;
+  const total = mapping.totalValue ? Math.abs(safeNumber(row[mapping.totalValue])) : 0;
   if (total > 0) {
     return { fiatValue: total, fiatCurrency: quoteToFiatCurrency(quote) ?? 'USD' };
   }
@@ -115,13 +115,13 @@ export function parseWithMapping(
       amount,
       counterAsset: quote,
       fiatCurrency: fiatCurrency || reportingCurrency,
-      fiatValue: fiatValue && fiatValue > 0 ? fiatValue : undefined,
+      fiatValue: normalizeFiatMagnitude(fiatValue),
       feeAmount: feeAmount && feeAmount > 0 ? feeAmount : undefined,
       feeAsset: feeAsset || undefined,
       source: 'manual_mapping',
       sourceRef: `row:${i}`,
       notes: mapping.notes ? row[mapping.notes] : assetRaw !== base ? `Pair ${assetRaw}` : undefined,
-      flags: fiatValue && fiatValue > 0 ? [] : ['missing_cost_basis'],
+      flags: fiatValue != null && Math.abs(fiatValue) > 0 ? [] : ['missing_cost_basis'],
       isInternalTransfer: false,
       raw: row
     });

@@ -26,6 +26,13 @@ export function safeNumber(v: string | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Fiat value magnitude — exchanges often export outflows as negative subtotals. */
+export function normalizeFiatMagnitude(value: number | undefined | null): number | undefined {
+  if (value == null || !Number.isFinite(value)) return undefined;
+  const abs = Math.abs(value);
+  return abs < 1e-12 ? undefined : abs;
+}
+
 /** Parse values like "0.34SOL", "49.2286USDT", or plain "144.79". */
 export function safeQuantity(v: string | undefined): number {
   if (!v) return 0;

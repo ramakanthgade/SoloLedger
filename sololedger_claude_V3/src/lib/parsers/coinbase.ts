@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { makeId, safeNumber, safeTimestamp, type ExchangeParser } from './types';
+import { makeId, normalizeFiatMagnitude, safeNumber, safeTimestamp, type ExchangeParser } from './types';
 
 /**
  * Coinbase "Transaction History" CSV export.
@@ -68,11 +68,13 @@ export const coinbaseParser: ExchangeParser = {
         asset,
         amount,
         fiatCurrency: (col(row, 'Spot Price Currency', 'Price Currency', 'Currency') || 'USD').trim(),
-        fiatValue: safeNumber(
-          col(row, 'Subtotal', 'Total (inclusive of fees)', 'Total (inclusive of fees and/or spread)', 'Total')
+        fiatValue: normalizeFiatMagnitude(
+          safeNumber(
+            col(row, 'Subtotal', 'Total (inclusive of fees)', 'Total (inclusive of fees and/or spread)', 'Total')
+          )
         ),
         feeAsset: undefined,
-        feeAmount: safeNumber(col(row, 'Fees', 'Fees and/or Spread')),
+        feeAmount: normalizeFiatMagnitude(safeNumber(col(row, 'Fees', 'Fees and/or Spread'))),
         source: 'coinbase',
         sourceRef: col(row, 'ID') || undefined,
         notes: col(row, 'Notes') || undefined,
