@@ -5,10 +5,9 @@ import {
   guessTypeValueMap,
   type ColumnMapping
 } from '@/lib/parsers/generic';
-import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
 import { getSettings } from '@/lib/storage/db';
 import { Button } from '@/components/ui/button';
-import { Sparkles, HelpCircle } from 'lucide-react';
+import { HelpCircle } from 'lucide-react';
 
 const TX_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out', 'income',
@@ -64,8 +63,6 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
   const [feeAsset, setFeeAsset] = useState('');
   const [assetIsTradingPair, setAssetIsTradingPair] = useState(true);
   const [typeValueMap, setTypeValueMap] = useState<Record<string, TxType>>({});
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiMsg, setAiMsg] = useState<string | null>(null);
 
   useEffect(() => {
     const lower = headers.map((h) => h.toLowerCase());
@@ -96,42 +93,6 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
     setTypeValueMap((prev) => ({ ...guessTypeValueMap(distinctTypeValues), ...prev }));
   }, [typeCol, distinctTypeValues.join('|')]);
 
-  const runAiMapping = async () => {
-    setAiLoading(true);
-    setAiMsg(null);
-    try {
-      const settings = await getSettings();
-      if (!settings.aiApiKey) {
-        setAiMsg('Add your OpenRouter API key in Settings → AI Advisor to use AI mapping.');
-        return;
-      }
-      const suggestion = await suggestCsvMappingWithAi(
-        settings.aiApiKey,
-        headers,
-        rows,
-        settings.aiModel
-      );
-      const m = suggestion.mapping;
-      if (m.timestamp) setTimestamp(m.timestamp);
-      if (m.type) setTypeCol(m.type);
-      if (m.asset) setAsset(m.asset);
-      if (m.amount) setAmount(m.amount);
-      setTotalValue(m.totalValue ?? '');
-      setPricePerUnit(m.pricePerUnit ?? '');
-      setFiatValue(m.fiatValue ?? '');
-      setFiatCurrency(m.fiatCurrency ?? '');
-      setFeeAmount(m.feeAmount ?? '');
-      setFeeAsset(m.feeAsset ?? '');
-      if (m.assetIsTradingPair != null) setAssetIsTradingPair(m.assetIsTradingPair);
-      if (m.typeValueMap) setTypeValueMap(m.typeValueMap);
-      setAiMsg(`AI (${suggestion.confidence} confidence): ${suggestion.explanation}`);
-    } catch (err) {
-      setAiMsg(err instanceof Error ? err.message : 'AI mapping failed.');
-    } finally {
-      setAiLoading(false);
-    }
-  };
-
   const runMapping = async () => {
     const settings = await getSettings();
     const mapping: ColumnMapping = {
@@ -161,17 +122,7 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
           Map your file's columns to the fields SoloLedger needs. Only <strong>date, type, asset, and quantity</strong>{' '}
           are required — fiat and fee columns are optional. Trading pairs like SOLUSDT are split automatically.
         </p>
-        <Button variant="secondary" disabled={aiLoading} onClick={() => void runAiMapping()} className="shrink-0">
-          <Sparkles className="mr-1.5 h-4 w-4" />
-          {aiLoading ? 'AI mapping…' : 'Auto-map with AI'}
-        </Button>
       </div>
-
-      {aiMsg && (
-        <p className={`text-xs ${aiMsg.includes('failed') || aiMsg.includes('Add your') ? 'text-gold-600' : 'text-emerald-600'}`}>
-          {aiMsg}
-        </p>
-      )}
 
       <div className="grid gap-3 sm:grid-cols-2">
         <label className="text-xs text-mist-400">

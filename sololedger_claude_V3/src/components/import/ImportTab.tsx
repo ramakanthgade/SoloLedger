@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { parseCsvFile, type FileParseOutcome } from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
+import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
 import {
   db,
   getCsvImports,
@@ -42,6 +43,7 @@ export function ImportTab() {
   const [removeConfirm, setRemoveConfirm] = useState<{ id: string; fileName: string; txCount: number } | null>(null);
   const [conversionNote, setConversionNote] = useState<string | null>(null);
   const [priceFetchNote, setPriceFetchNote] = useState<string | null>(null);
+  const [extractionNote, setExtractionNote] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [importPhase, setImportPhase] = useState<'saving' | 'pricing' | null>(null);
 
@@ -105,6 +107,7 @@ export function ImportTab() {
     setImportWarnings([]);
     setConversionNote(null);
     setPriceFetchNote(null);
+    setExtractionNote(null);
     setOutcome(null);
     setFileName(file.name);
 
@@ -119,6 +122,10 @@ export function ImportTab() {
     }
 
     const result = await parseCsvFile(file);
+    const preambleWarning = result.warnings.find((w) =>
+      w.toLowerCase().startsWith('ignored ') && w.toLowerCase().includes('before the detected header row')
+    );
+    if (preambleWarning) setExtractionNote(preambleWarning);
 
     // Auto-save when format is recognized and rows were parsed
     if (result.detectedParser && result.transactions.length > 0) {
@@ -135,6 +142,62 @@ export function ImportTab() {
         setImportPhase(null);
       }
       return;
+    }
+
+    // Auto-apply AI mapping when format isn't directly recognized.
+    if (!result.detectedParser && result.rows.length > 0) {
+      const settings = await getSettings();
+      if (settings.aiApiKey) {
+        try {
+          const suggestion = await suggestCsvMappingWithAi(
+            settings.aiApiKey,
+            result.headers,
+            result.rows,
+            settings.aiModel
+          );
+          const autoMapped = parseWithMapping(
+            result.rows,
+            {
+              timestamp: suggestion.mapping.timestamp ?? '',
+              type: suggestion.mapping.type ?? '',
+              asset: suggestion.mapping.asset ?? '',
+              amount: suggestion.mapping.amount ?? '',
+              totalValue: suggestion.mapping.totalValue,
+              pricePerUnit: suggestion.mapping.pricePerUnit,
+              fiatValue: suggestion.mapping.fiatValue,
+              fiatCurrency: suggestion.mapping.fiatCurrency,
+              feeAmount: suggestion.mapping.feeAmount,
+              feeAsset: suggestion.mapping.feeAsset,
+              assetIsTradingPair: suggestion.mapping.assetIsTradingPair,
+              typeValueMap: suggestion.mapping.typeValueMap ?? {}
+            },
+            settings.reportingCurrency
+          );
+
+          if (autoMapped.transactions.length > 0) {
+            setSaving(true);
+            setImportPhase('saving');
+            try {
+              await persistTransactions(autoMapped.transactions, 'ai_mapping', hash, file.name);
+              setSavedCount(autoMapped.transactions.length);
+              setImportWarnings([
+                ...(preambleWarning ? [preambleWarning] : []),
+                `AI auto-mapped file (${suggestion.confidence} confidence): ${suggestion.explanation}`,
+                ...autoMapped.warnings
+              ]);
+              setFileName('');
+              setFileHash('');
+              setOutcome(null);
+            } finally {
+              setSaving(false);
+              setImportPhase(null);
+            }
+            return;
+          }
+        } catch {
+          // Fall through to manual mapping UI with parse warnings.
+        }
+      }
     }
 
     setOutcome(result);
@@ -254,6 +317,12 @@ export function ImportTab() {
             </div>
           )}
 
+          {extractionNote && (
+            <div className="rounded-lg border border-violet/30 bg-violet/10 px-4 py-3 text-sm text-mist-300">
+              {extractionNote}
+            </div>
+          )}
+
           <div className="grid gap-3 sm:grid-cols-2">
             {SUPPORTED.map((s) => (
               <Card key={s.id}>
@@ -280,7 +349,7 @@ export function ImportTab() {
                   {outcome.detectedParser ? (
                     <Badge tone="emerald">Detected: {outcome.detectedParser}</Badge>
                   ) : (
-                    <Badge tone="gold">Format not recognized — use AI auto-map or map manually</Badge>
+                    <Badge tone="gold">Format not recognized — auto extraction applied, review mapping below</Badge>
                   )}
                   <Badge tone="neutral">{outcome.transactions.length} transactions parsed</Badge>
                   {outcome.skippedRows > 0 && <Badge tone="loss">{outcome.skippedRows} rows skipped</Badge>}
