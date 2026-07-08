@@ -7,7 +7,7 @@ import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyLabel, getCurrentFy, getAvailableFys } from '@/lib/utils';
+import { formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
 
@@ -29,6 +29,7 @@ export function CapitalGainsTab() {
   const [fy, setFy] = useState(getCurrentFy('IN'));
   const [currency, setCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
+  const [fyInitialized, setFyInitialized] = useState(false);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -64,6 +65,20 @@ export function CapitalGainsTab() {
     () => getAvailableFys([...matchedRows.map((r) => r.sellDate), ...incomeRows.map((r) => r.date)], jurisdiction),
     [matchedRows, incomeRows, jurisdiction]
   );
+
+  const activeFys = useMemo(() => {
+    const fys = new Set<number>();
+    for (const r of matchedRows) fys.add(getFyForTimestamp(r.sellDate, jurisdiction));
+    for (const r of incomeRows) fys.add(getFyForTimestamp(r.date, jurisdiction));
+    return Array.from(fys).sort((a, b) => b - a);
+  }, [matchedRows, incomeRows, jurisdiction]);
+
+  useEffect(() => {
+    if (fyInitialized) return;
+    if (activeFys.length === 0) return;
+    setFy(activeFys[0]);
+    setFyInitialized(true);
+  }, [activeFys, fyInitialized]);
 
   const fyBounds = useMemo(() => getFyBoundaries(fy, jurisdiction), [fy, jurisdiction]);
 
@@ -106,7 +121,10 @@ export function CapitalGainsTab() {
       <div className="flex flex-wrap items-center gap-3">
         <select
           value={fy}
-          onChange={(e) => setFy(Number(e.target.value))}
+          onChange={(e) => {
+            setFy(Number(e.target.value));
+            setFyInitialized(true);
+          }}
           className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist"
         >
           {availableFys.map((y) => (

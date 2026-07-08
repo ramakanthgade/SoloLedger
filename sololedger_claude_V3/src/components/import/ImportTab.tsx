@@ -73,7 +73,7 @@ export function ImportTab() {
     if (nFailed > 0) {
       setConversionNote(
         (prev) =>
-          `${prev ? `${prev} ` : ''}${nFailed} value${nFailed === 1 ? '' : 's'} could not be converted — enable CoinGecko in Settings or edit in Review.`
+          `${prev ? `${prev} ` : ''}${nFailed} value${nFailed === 1 ? '' : 's'} could not be converted to ${settings.reportingCurrency} — edit in Review if needed.`
       );
     }
     await db.transactions.bulkPut(converted);
@@ -88,7 +88,7 @@ export function ImportTab() {
         priceResult.updated > 0
           ? `Fetched prices for ${priceResult.updated} transaction${priceResult.updated === 1 ? '' : 's'}.` +
               (priceResult.failed > 0 ? ` ${priceResult.failed} could not be priced — edit in Review.` : '')
-          : `${priceResult.failed} transaction${priceResult.failed === 1 ? '' : 's'} could not be priced — add a CoinGecko API key in Settings or edit in Review.`
+          : `${priceResult.failed} transaction${priceResult.failed === 1 ? '' : 's'} could not be priced — edit in Review.`
       );
     }
 
