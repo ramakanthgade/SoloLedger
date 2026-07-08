@@ -12,6 +12,8 @@ import { makeId, safeNumber, safeTimestamp, type ExchangeParser } from './types'
 const TYPE_MAP: Record<string, TxType> = {
   buy: 'buy',
   sell: 'sell',
+  'advanced trade buy': 'buy',
+  'advanced trade sell': 'sell',
   send: 'transfer_out',
   receive: 'transfer_in',
   convert: 'trade',
@@ -21,6 +23,17 @@ const TYPE_MAP: Record<string, TxType> = {
   rewards: 'income',
   airdrop: 'income'
 };
+
+function col(row: Record<string, string>, ...keys: string[]): string {
+  const lower = Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v])
+  );
+  for (const k of keys) {
+    const hit = lower[k.toLowerCase().replace(/[^a-z0-9]/g, '')];
+    if (hit != null && hit !== '') return hit;
+  }
+  return '';
+}
 
 export const coinbaseParser: ExchangeParser = {
   id: 'coinbase',
@@ -37,11 +50,11 @@ export const coinbaseParser: ExchangeParser = {
     let skippedRows = 0;
 
     for (const row of rows) {
-      const rawType = (row['Transaction Type'] || '').trim().toLowerCase();
+      const rawType = col(row, 'Transaction Type').trim().toLowerCase();
       const mapped = TYPE_MAP[rawType];
-      const timestamp = safeTimestamp(row['Timestamp']);
-      const asset = (row['Asset'] || '').trim();
-      const amount = Math.abs(safeNumber(row['Quantity Transacted']));
+      const timestamp = safeTimestamp(col(row, 'Timestamp', 'Date', 'Time'));
+      const asset = col(row, 'Asset', 'Coin').trim();
+      const amount = Math.abs(safeNumber(col(row, 'Quantity Transacted', 'Quantity', 'Amount')));
 
       if (!mapped || !asset || !Number.isFinite(timestamp) || amount === 0) {
         skippedRows += 1;
@@ -54,13 +67,15 @@ export const coinbaseParser: ExchangeParser = {
         type: mapped,
         asset,
         amount,
-        fiatCurrency: (row['Spot Price Currency'] || 'USD').trim(),
-        fiatValue: safeNumber(row['Subtotal'] || row['Total (inclusive of fees)']),
+        fiatCurrency: (col(row, 'Spot Price Currency', 'Price Currency', 'Currency') || 'USD').trim(),
+        fiatValue: safeNumber(
+          col(row, 'Subtotal', 'Total (inclusive of fees)', 'Total (inclusive of fees and/or spread)', 'Total')
+        ),
         feeAsset: undefined,
-        feeAmount: safeNumber(row['Fees']),
+        feeAmount: safeNumber(col(row, 'Fees', 'Fees and/or Spread')),
         source: 'coinbase',
-        sourceRef: row['ID'] || undefined,
-        notes: row['Notes'],
+        sourceRef: col(row, 'ID') || undefined,
+        notes: col(row, 'Notes') || undefined,
         flags: mapped === 'transfer_in' || mapped === 'transfer_out' ? ['possible_internal_transfer'] : [],
         isInternalTransfer: false,
         raw: row

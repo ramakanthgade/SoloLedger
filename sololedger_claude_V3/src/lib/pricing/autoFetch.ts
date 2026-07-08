@@ -90,7 +90,7 @@ export async function fetchMissingPricesForAllTransactions(
   const needsConversion = all.filter(
     (t) =>
       t.fiatValue != null &&
-      t.fiatValue > 0 &&
+      Math.abs(t.fiatValue) > 1e-12 &&
       !t.isInternalTransfer &&
       !t.isSpam &&
       t.fiatCurrency.toUpperCase() !== settings.reportingCurrency.toUpperCase() &&

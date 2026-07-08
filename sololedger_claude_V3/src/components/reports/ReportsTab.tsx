@@ -7,7 +7,7 @@ import { deidentifyTransactions } from '@/lib/reports/deidentify';
 import type { Jurisdiction } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { formatCurrency, getAvailableFys, getCurrentFy, getFyLabel, isInFy } from '@/lib/utils';
+import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel } from '@/lib/utils';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
@@ -76,48 +76,53 @@ export function ReportsTab() {
 
   const exportPdf = async () => {
     const txMap = await buildDeidentifiedTxMap();
+    const fmt = (n: number) => formatAmountForExport(n, rules.currency);
     const doc = new jsPDF();
     doc.setFontSize(16);
     doc.text('SoloLedger \u2014 Capital Gains Report', 14, 18);
     doc.setFontSize(10);
     doc.text(`Jurisdiction: ${rules.label} \u00b7 Tax year: ${yearLabel} \u00b7 Method: ${method}`, 14, 26);
-    doc.text(deidentify ? 'De-identified: wallet/tx references pseudonymized' : 'Full detail (not de-identified)', 14, 32);
+    doc.text(
+      `Currency: ${rules.currency} \u00b7 ${deidentify ? 'De-identified: wallet/tx references pseudonymized' : 'Full detail (not de-identified)'}`,
+      14,
+      32
+    );
 
     autoTable(doc, {
       startY: 40,
-      head: [['Metric', 'Value']],
+      head: [['Metric', `Value (${rules.currency})`]],
       body: [
-        ['Total proceeds', formatCurrency(summary.totalProceeds, rules.currency)],
-        ['Total cost basis', formatCurrency(summary.totalCostBasis, rules.currency)],
-        ['Total gain / loss', formatCurrency(summary.totalGain, rules.currency)],
-        ...(summary.shortTermGain != null ? [['Short-term gain', formatCurrency(summary.shortTermGain, rules.currency)]] : []),
-        ...(summary.longTermGain != null ? [['Long-term gain', formatCurrency(summary.longTermGain, rules.currency)]] : []),
-        ['Income (staking/airdrops/etc.)', formatCurrency(summary.totalIncome, rules.currency)],
+        ['Total proceeds', fmt(summary.totalProceeds)],
+        ['Total cost basis', fmt(summary.totalCostBasis)],
+        ['Total gain / loss', fmt(summary.totalGain)],
+        ...(summary.shortTermGain != null ? [['Short-term gain', fmt(summary.shortTermGain)]] : []),
+        ...(summary.longTermGain != null ? [['Long-term gain', fmt(summary.longTermGain)]] : []),
+        ['Income (staking/airdrops/etc.)', fmt(summary.totalIncome)],
         ['Disposal events', String(summary.disposalsCount)]
       ]
     });
 
     autoTable(doc, {
-      head: [['Asset', 'Proceeds', 'Cost basis', 'Gain/Loss']],
+      head: [['Asset', `Proceeds (${rules.currency})`, `Cost basis (${rules.currency})`, `Gain/Loss (${rules.currency})`]],
       body: Object.entries(summary.byAsset).map(([asset, v]) => [
         asset,
-        formatCurrency(v.proceeds, rules.currency),
-        formatCurrency(v.costBasis, rules.currency),
-        formatCurrency(v.gain, rules.currency)
+        fmt(v.proceeds),
+        fmt(v.costBasis),
+        fmt(v.gain)
       ])
     });
 
     autoTable(doc, {
-      head: [['Date', 'Asset', 'Amount', 'Proceeds', 'Cost basis', 'Gain/Loss', 'Held (days)', deidentify ? 'Ref' : 'Source tx']],
+      head: [['Date', 'Asset', 'Amount', `Proceeds (${rules.currency})`, `Cost basis (${rules.currency})`, `Gain/Loss (${rules.currency})`, 'Held (days)', deidentify ? 'Ref' : 'Source tx']],
       body: yearDisposals.map((d) => {
         const tx = txMap.get(d.sourceTxId);
         return [
           new Date(d.disposedAt).toISOString().slice(0, 10),
           d.asset,
           d.amount.toFixed(6),
-          formatCurrency(d.proceeds, rules.currency),
-          formatCurrency(d.costBasis, rules.currency),
-          formatCurrency(d.gain, rules.currency),
+          fmt(d.proceeds),
+          fmt(d.costBasis),
+          fmt(d.gain),
           String(d.holdingPeriodDays),
           deidentify ? (tx?.sourceRef ?? '\u2014') : (tx?.sourceRef ?? tx?.source ?? '\u2014')
         ];
@@ -144,7 +149,18 @@ export function ReportsTab() {
 
   const exportCsv = async () => {
     const txMap = await buildDeidentifiedTxMap();
-    const header = ['date', 'asset', 'amount', 'proceeds', 'cost_basis', 'gain_loss', 'holding_days', 'method', 'source_ref'];
+    const cur = rules.currency.toUpperCase();
+    const header = [
+      'date',
+      'asset',
+      'amount',
+      monetaryColumnLabel('proceeds', cur),
+      monetaryColumnLabel('cost_basis', cur),
+      monetaryColumnLabel('gain_loss', cur),
+      'holding_days',
+      'method',
+      'source_ref'
+    ];
     const rows = yearDisposals.map((d) => {
       const tx = txMap.get(d.sourceTxId);
       return [

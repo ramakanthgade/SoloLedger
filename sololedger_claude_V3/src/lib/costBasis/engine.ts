@@ -172,7 +172,7 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
           id: makeId('disp'),
           asset,
           disposedAt: tx.timestamp,
-          amount: matchedAmount,
+          amount: tx.amount,
           proceeds,
           costBasis,
           gain: proceeds - costBasis,
