@@ -4,7 +4,7 @@ import { db, getSettings } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   formatCurrency, formatCompactCurrency,
-  getFyBoundaries, getFyLabel, getCurrentFy, getAvailableFys
+  getFyBoundaries, getFyLabel, getAvailableFys
 } from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
@@ -49,6 +49,19 @@ function applyTxToHoldings(
   };
 
   if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
+    upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
+    upsert(t.counterAsset, t.counterAmount, 1, t.fiatValue ?? 0, t.chain, undefined);
+    return;
+  }
+
+  // Some CSV formats (e.g. Coinbase Advanced Trade Buy/Sell) carry the
+  // quote-asset leg in notes rather than as a `trade` row type.
+  if (t.type === 'buy' && t.counterAsset && t.counterAmount) {
+    upsert(t.asset, t.amount, 1, t.fiatValue ?? 0, t.chain, t.contractAddress);
+    upsert(t.counterAsset, t.counterAmount, -1, 0, t.chain, undefined);
+    return;
+  }
+  if (t.type === 'sell' && t.counterAsset && t.counterAmount) {
     upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
     upsert(t.counterAsset, t.counterAmount, 1, t.fiatValue ?? 0, t.chain, undefined);
     return;
