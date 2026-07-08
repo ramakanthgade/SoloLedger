@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeQuantity, safeTimestamp } from './types';
+import { exchangeSourceRef, makeId, safeTimestamp } from './types';
 import { quoteToFiatCurrency } from './pairUtils';
 
 const STABLECOINS = new Set(['USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI', 'USD', 'EUR', 'GBP']);
