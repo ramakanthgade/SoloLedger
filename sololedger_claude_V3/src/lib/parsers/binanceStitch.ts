@@ -18,7 +18,7 @@ export interface BinanceLedgerRow {
 function col(row: Record<string, string>, ...keys: string[]): string {
   const lower = Object.fromEntries(Object.entries(row).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v]));
   for (const k of keys) {
-    const hit = lower[k.replace(/[^a-z0-9]/g, '')];
+    const hit = lower[k.toLowerCase().replace(/[^a-z0-9]/g, '')];
     if (hit != null && hit !== '') return hit;
   }
   return '';

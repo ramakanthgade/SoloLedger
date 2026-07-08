@@ -12,6 +12,8 @@ import { makeId, safeNumber, safeTimestamp, type ExchangeParser } from './types'
 const TYPE_MAP: Record<string, TxType> = {
   buy: 'buy',
   sell: 'sell',
+  'advanced trade buy': 'buy',
+  'advanced trade sell': 'sell',
   send: 'transfer_out',
   receive: 'transfer_in',
   convert: 'trade',
@@ -27,7 +29,7 @@ function col(row: Record<string, string>, ...keys: string[]): string {
     Object.entries(row).map(([k, v]) => [k.toLowerCase().replace(/[^a-z0-9]/g, ''), v])
   );
   for (const k of keys) {
-    const hit = lower[k.replace(/[^a-z0-9]/g, '')];
+    const hit = lower[k.toLowerCase().replace(/[^a-z0-9]/g, '')];
     if (hit != null && hit !== '') return hit;
   }
   return '';
