@@ -4,7 +4,7 @@ import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from 
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/transaction';
-import { formatCurrency, formatCompactAmount, getFyBoundaries, getFyLabel, getAvailableFys } from '@/lib/utils';
+import { formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
@@ -395,13 +395,14 @@ export function ReviewTab() {
     );
 
   const exportFilteredCsv = () => {
+    const exportCurrency = (settings?.reportingCurrency ?? 'INR').toUpperCase();
     const header = [
       'date',
       'type',
       'chain',
       'asset',
       'amount',
-      'fiat_value',
+      monetaryColumnLabel('fiat_value', exportCurrency),
       'fiat_currency',
       'from',
       'to',
@@ -435,7 +436,22 @@ export function ReviewTab() {
   };
 
   const exportFilteredJson = () => {
-    downloadBlob(JSON.stringify({ count: filtered.length, transactions: filtered }, null, 2), 'application/json', 'sololedger-review-transactions.json');
+    downloadBlob(
+      JSON.stringify(
+        {
+          count: filtered.length,
+          exportMeta: {
+            reportingCurrency: (settings?.reportingCurrency ?? 'INR').toUpperCase(),
+            monetaryFields: ['fiatValue']
+          },
+          transactions: filtered
+        },
+        null,
+        2
+      ),
+      'application/json',
+      'sololedger-review-transactions.json'
+    );
   };
 
   const exportFilteredPdf = () => {
@@ -447,13 +463,27 @@ export function ReviewTab() {
     doc.text(`Rows: ${filtered.length}`, 14, 22);
     autoTable(doc, {
       startY: 28,
-      head: [['Date', 'Type', 'Asset', 'Amount', 'Fiat', 'Flags', 'Source Ref']],
+      head: [[
+        'Date',
+        'Type',
+        'Chain',
+        'Asset',
+        'Amount',
+        `Fiat (${(settings?.reportingCurrency ?? 'INR').toUpperCase()})`,
+        'From',
+        'To',
+        'Flags',
+        'Source Ref'
+      ]],
       body: filtered.map((t) => [
         new Date(t.timestamp).toISOString().slice(0, 10),
         t.type,
+        t.chain ?? '—',
         t.asset,
         formatCompactAmount(t.amount),
-        t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : '—',
+        t.fiatValue != null ? formatAmountForExport(t.fiatValue, t.fiatCurrency) : '—',
+        t.type === 'transfer_out' ? (t.walletAddress ?? '—') : (t.counterpartyAddress ?? '—'),
+        t.type === 'transfer_out' ? (t.counterpartyAddress ?? '—') : (t.walletAddress ?? '—'),
         displayFlags(t).join(', ') || '—',
         t.sourceRef ?? '—'
       ]),

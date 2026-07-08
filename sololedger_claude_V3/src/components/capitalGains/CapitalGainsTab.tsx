@@ -7,7 +7,7 @@ import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys } from '@/lib/utils';
+import { formatAmountForExport, formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
 import { Button } from '@/components/ui/button';
@@ -118,29 +118,58 @@ export function CapitalGainsTab() {
     );
 
   const exportCapitalGainsCsv = () => {
+    const cur = currency.toUpperCase();
     const header = [
-      'row_type',
-      'date',
+      'sell_date',
+      'buy_date',
       'asset',
       'quantity',
-      'proceeds',
-      'cost_basis',
-      'gain_loss',
-      'income_kind',
-      'income_value',
+      monetaryColumnLabel('proceeds', cur),
+      monetaryColumnLabel('cost_basis', cur),
+      monetaryColumnLabel('gain_loss', cur),
       'holding_days',
       'method'
     ];
     const gainRows = yearMatches.map((r) =>
-      ['capital_gain', new Date(r.sellDate).toISOString(), r.asset, r.sellAmount, r.proceeds, r.costBasis, r.gain, '', '', r.holdingDays, r.method]
+      [
+        new Date(r.sellDate).toISOString(),
+        new Date(r.buyDate).toISOString(),
+        r.asset,
+        r.sellAmount,
+        r.proceeds,
+        r.costBasis,
+        r.gain,
+        r.holdingDays,
+        r.method
+      ]
         .map((v) => `"${String(v)}"`).join(',')
     );
+    const incomeHeader = [
+      'income_date',
+      'income_kind',
+      'asset',
+      'amount',
+      monetaryColumnLabel('income_value', cur)
+    ];
     const incomeCsvRows = yearIncome.map((r) =>
-      ['income', new Date(r.date).toISOString(), r.asset, r.amount, '', '', '', r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind, r.fiatValue, '', '']
+      [
+        new Date(r.date).toISOString(),
+        r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind,
+        r.asset,
+        r.amount,
+        r.fiatValue
+      ]
         .map((v) => `"${String(v)}"`).join(',')
     );
     downloadBlob(
-      [header.join(','), ...gainRows, ...incomeCsvRows].join('\n'),
+      [
+        header.join(','),
+        ...gainRows,
+        '',
+        '"income_rewards_section"',
+        incomeHeader.join(','),
+        ...incomeCsvRows
+      ].join('\n'),
       'text/csv',
       `sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.csv`
     );
@@ -154,7 +183,11 @@ export function CapitalGainsTab() {
           fy,
           fyLabel: getFyLabel(fy, jurisdiction),
           method,
-          currency,
+          exportMeta: {
+            reportingCurrency: currency.toUpperCase(),
+            monetaryFields: ['totals.totalGain', 'totals.totalIncome', 'matchedDisposals[].proceeds', 'matchedDisposals[].costBasis', 'matchedDisposals[].gain', 'incomeRows[].fiatValue']
+          },
+          currency: currency.toUpperCase(),
           totals: { totalGain, totalIncome },
           matchedDisposals: yearMatches,
           incomeRows: yearIncome
@@ -174,29 +207,29 @@ export function CapitalGainsTab() {
     doc.text('SoloLedger — Capital Gains Detail', 14, 16);
     doc.setFontSize(9);
     doc.text(`FY: ${getFyLabel(fy, jurisdiction)} · Method: ${method} · Jurisdiction: ${JURISDICTIONS[jurisdiction].label}`, 14, 22);
-    doc.text(`Realized gain/loss: ${formatCurrency(totalGain, currency)} · Income: ${formatCurrency(totalIncome, currency)}`, 14, 28);
+    doc.text(`Realized gain/loss (${currency.toUpperCase()}): ${formatAmountForExport(totalGain, currency)} · Income (${currency.toUpperCase()}): ${formatAmountForExport(totalIncome, currency)}`, 14, 28);
     autoTable(doc, {
       startY: 34,
-      head: [['Sell date', 'Asset', 'Qty', 'Proceeds', 'Buy date', 'Cost basis', 'P&L']],
+      head: [['Sell date', 'Asset', 'Qty', `Proceeds (${currency.toUpperCase()})`, 'Buy date', `Cost basis (${currency.toUpperCase()})`, `P&L (${currency.toUpperCase()})`]],
       body: yearMatches.map((r) => [
         formatDateTime(r.sellDate),
         r.asset,
         formatCompactAmount(r.sellAmount),
-        formatCurrency(r.proceeds, currency),
+        formatAmountForExport(r.proceeds, currency),
         formatDateTime(r.buyDate),
-        formatCurrency(r.costBasis, currency),
-        formatCurrency(r.gain, currency)
+        formatAmountForExport(r.costBasis, currency),
+        formatAmountForExport(r.gain, currency)
       ]),
       styles: { fontSize: 7 }
     });
     autoTable(doc, {
-      head: [['Income date', 'Kind', 'Asset', 'Amount', 'Value']],
+      head: [['Income date', 'Kind', 'Asset', 'Amount', `Value (${currency.toUpperCase()})`]],
       body: yearIncome.map((r) => [
         formatDateTime(r.date),
         r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind,
         r.asset,
         formatCompactAmount(r.amount),
-        formatCurrency(r.fiatValue, currency)
+        formatAmountForExport(r.fiatValue, currency)
       ]),
       styles: { fontSize: 7 }
     });

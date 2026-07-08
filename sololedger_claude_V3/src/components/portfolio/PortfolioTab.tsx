@@ -3,8 +3,8 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
-  formatCurrency, formatCompactCurrency,
-  getFyBoundaries, getFyLabel, getAvailableFys
+  formatAmountForExport, formatCurrency, formatCompactCurrency,
+  getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel
 } from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
@@ -144,7 +144,8 @@ export function PortfolioTab() {
     );
 
   const exportHoldingsCsv = () => {
-    const header = ['asset', 'chain', 'contract_address', 'quantity', 'cost_basis', 'reporting_currency'];
+    const cur = reportingCurrency.toUpperCase();
+    const header = ['asset', 'chain', 'contract_address', 'quantity', monetaryColumnLabel('cost_basis', cur), 'reporting_currency'];
     const rows = holdings.map((h) =>
       [h.asset, h.chain ?? '', h.contractAddress ?? '', h.amount.toFixed(8), h.costBasis.toFixed(2), reportingCurrency]
         .map((v) => `"${String(v)}"`).join(',')
@@ -158,7 +159,11 @@ export function PortfolioTab() {
         {
           period: selectedFy == null ? 'all_time' : getFyLabel(selectedFy, jurisdiction),
           wallet: selectedWallet,
-          reportingCurrency,
+          exportMeta: {
+            reportingCurrency: reportingCurrency.toUpperCase(),
+            monetaryFields: ['totalCostBasis', 'holdings[].costBasis']
+          },
+          reportingCurrency: reportingCurrency.toUpperCase(),
           totalCostBasis,
           holdings
         },
@@ -177,11 +182,15 @@ export function PortfolioTab() {
     doc.text('SoloLedger — Portfolio Holdings', 14, 16);
     doc.setFontSize(9);
     doc.text(`Period: ${selectedFy == null ? 'All time' : getFyLabel(selectedFy, jurisdiction)} · Wallet: ${selectedWallet}`, 14, 22);
-    doc.text(`Total cost basis: ${formatCurrency(totalCostBasis, reportingCurrency)}`, 14, 28);
+    doc.text(`Total cost basis (${reportingCurrency.toUpperCase()}): ${formatAmountForExport(totalCostBasis, reportingCurrency)}`, 14, 28);
     autoTable(doc, {
       startY: 34,
       head: [['Asset', 'Quantity', `Cost basis (${reportingCurrency})`]],
-      body: holdings.map((h) => [resolveAssetLabel(h.asset, h.contractAddress, h.chain), h.amount.toFixed(8), h.costBasis.toFixed(2)]),
+      body: holdings.map((h) => [
+        resolveAssetLabel(h.asset, h.contractAddress, h.chain),
+        h.amount.toFixed(8),
+        formatAmountForExport(h.costBasis, reportingCurrency)
+      ]),
       styles: { fontSize: 8 }
     });
     doc.save('sololedger-portfolio-holdings.pdf');
