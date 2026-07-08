@@ -260,7 +260,13 @@
     }
     .brand { display: flex; align-items: center; gap: 14px; }
     .brand-logo { display: flex; flex-direction: column; gap: 6px; }
-    .brand-lockup { height: 34px; width: auto; display: block; }
+    .brand-lockup-row { display: flex; align-items: center; gap: 12px; }
+    .brand-icon { height: 38px; width: 38px; flex-shrink: 0; }
+    .brand-wordmark {
+      font-size: 1.25rem; font-weight: 700; color: #fff;
+      letter-spacing: -0.02em; line-height: 1;
+    }
+    .brand-lockup { height: 32px; width: auto; display: block; }
     .brand-tagline {
       font-size: 0.68rem; color: rgba(148,163,184,.85); font-weight: 500;
       letter-spacing: 0.06em; text-transform: none; padding-left: 2px;
@@ -475,18 +481,17 @@
 
           <div class="ds-section">
             <h2>Logo &amp; wordmark</h2>
-            <p>Your bar-chart <strong>S</strong> lockup in cyan (<code>#22D3EE</code>) + white wordmark. Tagline sits below the lockup in the header — not baked into the logo file.</p>
+            <p>Bar-chart <strong>S</strong> built from three stair-step clusters (top-right, middle waist, bottom-left) — same geometry as the Data-Heavy theme logo. Tagline sits below the lockup.</p>
             <div class="logo-compare">
               <div class="logo-compare-item dark">
-                <div class="lbl">On navy header (primary)</div>
-                <img src="assets/logo-sololedger-lockup.svg" alt="SoloLedger lockup" style="height:36px" />
+                <div class="lbl">Full lockup on navy (PNG)</div>
+                <img src="assets/logo-sololedger-lockup.png" alt="SoloLedger lockup" style="height:36px" />
               </div>
-              <div class="logo-compare-item light">
-                <div class="lbl">Icon only — favicon / small uses</div>
-                <img src="assets/logo-sololedger-icon.svg" alt="SoloLedger icon" style="height:36px" />
+              <div class="logo-compare-item dark">
+                <div class="lbl">S icon only (SVG)</div>
+                <img src="assets/logo-sololedger-icon.svg" alt="SoloLedger icon" style="height:40px" />
               </div>
             </div>
-            <p style="margin-top:14px;font-size:0.8rem;color:var(--slate-500)">Drop your original PNG/SVG into <code>assets/</code> to replace the traced SVG for pixel-perfect match.</p>
           </div>
 
           <div class="ds-section">
@@ -524,7 +529,10 @@
             <div class="app-header-top">
               <div class="brand">
                 <div class="brand-logo">
-                  <img class="brand-lockup" src="assets/logo-sololedger-lockup.svg" alt="SoloLedger" />
+                  <div class="brand-lockup-row">
+                    <img class="brand-icon" src="assets/logo-sololedger-icon.svg" alt="" />
+                    <span class="brand-wordmark">SoloLedger</span>
+                  </div>
                   <div class="brand-tagline">Private. Precise. Yours.</div>
                 </div>
               </div>
