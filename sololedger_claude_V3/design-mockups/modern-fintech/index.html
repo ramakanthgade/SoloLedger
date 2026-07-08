@@ -259,9 +259,20 @@
       padding: 16px 0 12px;
     }
     .brand { display: flex; align-items: center; gap: 14px; }
-    .brand-logo { display: flex; align-items: center; gap: 10px; }
-    .brand-wordmark { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; }
-    .brand-tagline { font-size: 0.7rem; color: rgba(148,163,184,.9); font-weight: 500; margin-top: 1px; }
+    .brand-logo { display: flex; flex-direction: column; gap: 6px; }
+    .brand-lockup { height: 34px; width: auto; display: block; }
+    .brand-tagline {
+      font-size: 0.68rem; color: rgba(148,163,184,.85); font-weight: 500;
+      letter-spacing: 0.06em; text-transform: none; padding-left: 2px;
+    }
+    .logo-compare { display: flex; gap: 24px; flex-wrap: wrap; align-items: flex-end; margin-top: 12px; }
+    .logo-compare-item {
+      padding: 16px 20px; border-radius: var(--radius-lg); border: 1px solid var(--border);
+    }
+    .logo-compare-item.dark { background: var(--navy-900); }
+    .logo-compare-item.light { background: #fff; }
+    .logo-compare-item .lbl { font-size: 0.65rem; text-transform: uppercase; letter-spacing: .06em; color: var(--slate-400); margin-bottom: 10px; }
+    .logo-compare-item.dark .lbl { color: rgba(148,163,184,.7); }
 
     .local-badge-premium {
       display: inline-flex; align-items: center; gap: 8px;
@@ -464,22 +475,18 @@
 
           <div class="ds-section">
             <h2>Logo &amp; wordmark</h2>
-            <div class="logo-treatment">
-              <img src="assets/logo-sololedger-fintech-v2.png" alt="SoloLedger logo" />
-              <svg class="logo-svg" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <rect width="40" height="40" rx="10" fill="#0B1F3A"/>
-                <rect x="11" y="10" width="18" height="22" rx="2" stroke="#2DD4BF" stroke-width="1.5" fill="none"/>
-                <line x1="14" y1="16" x2="26" y2="16" stroke="#2DD4BF" stroke-width="1.2" opacity=".7"/>
-                <line x1="14" y1="20" x2="24" y2="20" stroke="#2DD4BF" stroke-width="1.2" opacity=".5"/>
-                <line x1="14" y1="24" x2="22" y2="24" stroke="#2DD4BF" stroke-width="1.2" opacity=".35"/>
-                <circle cx="30" cy="12" r="3" fill="#14B8A6"/>
-              </svg>
-              <div>
-                <div class="t-h1" style="margin-bottom:2px">SoloLedger</div>
-                <div class="t-caption">Private. Precise. Yours.</div>
+            <p>Your bar-chart <strong>S</strong> lockup in cyan (<code>#22D3EE</code>) + white wordmark. Tagline sits below the lockup in the header — not baked into the logo file.</p>
+            <div class="logo-compare">
+              <div class="logo-compare-item dark">
+                <div class="lbl">On navy header (primary)</div>
+                <img src="assets/logo-sololedger-lockup.svg" alt="SoloLedger lockup" style="height:36px" />
+              </div>
+              <div class="logo-compare-item light">
+                <div class="lbl">Icon only — favicon / small uses</div>
+                <img src="assets/logo-sololedger-icon.svg" alt="SoloLedger icon" style="height:36px" />
               </div>
             </div>
-            <p style="margin-top:12px;font-size:0.8rem;color:var(--slate-500)">Icon: ledger page + solo dot (teal on navy). Wordmark: Plus Jakarta Sans 700, tight tracking.</p>
+            <p style="margin-top:14px;font-size:0.8rem;color:var(--slate-500)">Drop your original PNG/SVG into <code>assets/</code> to replace the traced SVG for pixel-perfect match.</p>
           </div>
 
           <div class="ds-section">
@@ -517,11 +524,8 @@
             <div class="app-header-top">
               <div class="brand">
                 <div class="brand-logo">
-                  <svg width="36" height="36" viewBox="0 0 40 40" fill="none"><rect width="40" height="40" rx="10" fill="#152D4A"/><rect x="11" y="10" width="18" height="22" rx="2" stroke="#2DD4BF" stroke-width="1.5" fill="none"/><line x1="14" y1="16" x2="26" y2="16" stroke="#2DD4BF" stroke-width="1.2" opacity=".7"/><line x1="14" y1="20" x2="24" y2="20" stroke="#2DD4BF" stroke-width="1.2" opacity=".5"/><circle cx="30" cy="12" r="3" fill="#14B8A6"/></svg>
-                  <div>
-                    <div class="brand-wordmark">SoloLedger</div>
-                    <div class="brand-tagline">Private. Precise. Yours.</div>
-                  </div>
+                  <img class="brand-lockup" src="assets/logo-sololedger-lockup.svg" alt="SoloLedger" />
+                  <div class="brand-tagline">Private. Precise. Yours.</div>
                 </div>
               </div>
               <div class="local-badge-premium"><span class="dot"></span> 100% Local</div>
