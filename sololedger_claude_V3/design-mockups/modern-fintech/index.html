@@ -1,0 +1,629 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SoloLedger — Modern Fintech Design System &amp; Reports Mockup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    /* ═══════════════════════════════════════════════════════════
+       SOLOLEDGER DESIGN SYSTEM v2 — Modern Fintech
+       shadcn/ui-inspired tokens · Tailwind-compatible naming
+    ═══════════════════════════════════════════════════════════ */
+    :root {
+      /* Primary navy */
+      --navy-950: #061525;
+      --navy-900: #0B1F3A;
+      --navy-800: #0F2744;
+      --navy-700: #152D4A;
+      --navy-600: #1E3A5F;
+
+      /* Teal accent (primary action) */
+      --teal-600: #0D9488;
+      --teal-500: #14B8A6;
+      --teal-400: #2DD4BF;
+      --teal-50:  #F0FDFA;
+
+      /* Neutrals */
+      --slate-50:  #F8FAFC;
+      --slate-100: #F1F5F9;
+      --slate-200: #E2E8F0;
+      --slate-300: #CBD5E1;
+      --slate-400: #94A3B8;
+      --slate-500: #64748B;
+      --slate-600: #475569;
+      --slate-700: #334155;
+      --slate-800: #1E293B;
+      --slate-900: #0F172A;
+
+      /* Semantic */
+      --success-600: #059669;
+      --success-50:  #ECFDF5;
+      --warning-600: #D97706;
+      --warning-50:  #FFFBEB;
+      --danger-600:  #DC2626;
+      --danger-50:   #FEF2F2;
+
+      /* Surfaces */
+      --background: var(--slate-50);
+      --foreground: var(--slate-800);
+      --card: #FFFFFF;
+      --card-foreground: var(--slate-800);
+      --muted: var(--slate-100);
+      --muted-foreground: var(--slate-500);
+      --border: var(--slate-200);
+      --input: var(--slate-200);
+      --ring: var(--teal-500);
+      --primary: var(--teal-600);
+      --primary-foreground: #FFFFFF;
+
+      /* Typography */
+      --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+      --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+
+      /* Spacing scale (4px base) */
+      --space-1: 4px;  --space-2: 8px;  --space-3: 12px;
+      --space-4: 16px; --space-5: 20px; --space-6: 24px;
+      --space-8: 32px; --space-10: 40px; --space-12: 48px;
+
+      /* Radius — shadcn-like */
+      --radius-sm: 6px;
+      --radius-md: 8px;
+      --radius-lg: 12px;
+      --radius-xl: 16px;
+      --radius-full: 9999px;
+
+      /* Shadows */
+      --shadow-xs: 0 1px 2px rgba(15, 39, 68, 0.04);
+      --shadow-sm: 0 1px 3px rgba(15, 39, 68, 0.06), 0 1px 2px rgba(15, 39, 68, 0.04);
+      --shadow-md: 0 4px 12px rgba(15, 39, 68, 0.08), 0 2px 4px rgba(15, 39, 68, 0.04);
+      --shadow-lg: 0 12px 32px rgba(15, 39, 68, 0.10), 0 4px 8px rgba(15, 39, 68, 0.04);
+
+      /* Motion */
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --duration-fast: 120ms;
+      --duration-normal: 200ms;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--font-sans);
+      background: #E8ECF1;
+      color: var(--foreground);
+      line-height: 1.5;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ── Mockup chrome ── */
+    .chrome {
+      position: sticky; top: 0; z-index: 200;
+      background: #fff; border-bottom: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+    .chrome-inner {
+      max-width: 1200px; margin: 0 auto; padding: 14px 24px;
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px;
+    }
+    .chrome h1 { font-size: 0.95rem; font-weight: 700; color: var(--navy-900); }
+    .chrome p { font-size: 0.75rem; color: var(--slate-500); }
+    .view-tabs { display: flex; gap: 6px; }
+    .view-tab {
+      padding: 8px 16px; border-radius: var(--radius-md); border: 1px solid var(--border);
+      background: #fff; font-size: 0.8rem; font-weight: 600; color: var(--slate-600);
+      cursor: pointer; transition: all var(--duration-normal) var(--ease-out);
+    }
+    .view-tab:hover { background: var(--slate-50); border-color: var(--slate-300); }
+    .view-tab.active { background: var(--navy-900); color: #fff; border-color: var(--navy-900); }
+
+    .panel { display: none; }
+    .panel.active { display: block; }
+
+    .frame-wrap { max-width: 1200px; margin: 24px auto 48px; padding: 0 24px; }
+    .frame-label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: .08em; color: var(--slate-400); margin-bottom: 8px; font-weight: 600; }
+    .frame {
+      border-radius: var(--radius-xl); overflow: hidden;
+      box-shadow: var(--shadow-lg); border: 1px solid var(--border);
+    }
+
+    /* ══════════════════════════════════════
+       DESIGN SYSTEM PANEL
+    ══════════════════════════════════════ */
+    .ds-page { background: var(--background); padding: var(--space-10) var(--space-8); }
+    .ds-section { margin-bottom: var(--space-10); }
+    .ds-section h2 {
+      font-size: 1.1rem; font-weight: 700; color: var(--navy-900);
+      margin-bottom: var(--space-2); letter-spacing: -0.02em;
+    }
+    .ds-section > p { font-size: 0.85rem; color: var(--slate-500); margin-bottom: var(--space-5); max-width: 640px; }
+
+    .swatch-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 12px; }
+    .swatch {
+      border-radius: var(--radius-lg); overflow: hidden; border: 1px solid var(--border);
+      background: #fff; box-shadow: var(--shadow-xs);
+    }
+    .swatch-color { height: 56px; }
+    .swatch-info { padding: 10px 12px; }
+    .swatch-name { font-size: 0.75rem; font-weight: 600; color: var(--slate-700); }
+    .swatch-hex { font-family: var(--font-mono); font-size: 0.68rem; color: var(--slate-400); margin-top: 2px; }
+
+    .type-sample { margin-bottom: 16px; }
+    .type-sample .label { font-size: 0.68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--slate-400); margin-bottom: 4px; font-weight: 600; }
+    .t-display { font-size: 2rem; font-weight: 700; letter-spacing: -0.03em; color: var(--navy-900); }
+    .t-h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.02em; color: var(--navy-900); }
+    .t-h2 { font-size: 1.125rem; font-weight: 600; color: var(--slate-800); }
+    .t-body { font-size: 0.875rem; color: var(--slate-600); }
+    .t-caption { font-size: 0.75rem; color: var(--slate-500); }
+    .t-mono { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 500; font-variant-numeric: tabular-nums; color: var(--navy-900); }
+
+    .token-row { display: flex; flex-wrap: wrap; gap: 16px; }
+    .token-chip {
+      padding: 12px 16px; background: #fff; border: 1px solid var(--border);
+      border-radius: var(--radius-lg); font-size: 0.78rem;
+    }
+    .token-chip strong { display: block; font-size: 0.68rem; text-transform: uppercase; letter-spacing: .05em; color: var(--slate-400); margin-bottom: 4px; }
+
+    .comp-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+    .comp-card {
+      background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 20px; box-shadow: var(--shadow-xs);
+    }
+    .comp-card h3 { font-size: 0.8rem; font-weight: 600; color: var(--slate-700); margin-bottom: 14px; }
+
+    /* shadcn-style components (design system demos) */
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      height: 36px; padding: 0 16px; border-radius: var(--radius-md);
+      font-size: 0.8125rem; font-weight: 600; font-family: var(--font-sans);
+      border: 1px solid transparent; cursor: default;
+      transition: all var(--duration-fast) var(--ease-out);
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn-primary { background: var(--teal-600); color: #fff; box-shadow: var(--shadow-xs); }
+    .btn-primary:hover { background: #0f766e; }
+    .btn-secondary { background: #fff; color: var(--slate-700); border-color: var(--border); }
+    .btn-secondary:hover { background: var(--slate-50); }
+    .btn-ghost { background: transparent; color: var(--slate-600); }
+    .btn-ghost:hover { background: var(--slate-100); }
+    .btn-outline { background: transparent; color: var(--teal-600); border-color: var(--teal-500); }
+    .btn-sm { height: 32px; padding: 0 12px; font-size: 0.75rem; }
+
+    .badge {
+      display: inline-flex; align-items: center; gap: 5px;
+      padding: 3px 10px; border-radius: var(--radius-full);
+      font-size: 0.6875rem; font-weight: 600; letter-spacing: .01em;
+    }
+    .badge-success { background: var(--success-50); color: var(--success-600); border: 1px solid #A7F3D0; }
+    .badge-warning { background: var(--warning-50); color: var(--warning-600); border: 1px solid #FDE68A; }
+    .badge-neutral { background: var(--slate-100); color: var(--slate-600); border: 1px solid var(--slate-200); }
+    .badge-premium {
+      background: linear-gradient(135deg, rgba(20,184,166,.12), rgba(11,31,58,.06));
+      color: var(--teal-600); border: 1px solid rgba(20,184,166,.25);
+      padding: 5px 12px; font-size: 0.6875rem;
+    }
+    .badge-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: pulse 2s ease infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+
+    .select-demo {
+      height: 36px; padding: 0 12px; border-radius: var(--radius-md);
+      border: 1px solid var(--input); background: #fff; font-size: 0.8125rem;
+      color: var(--slate-700); font-family: var(--font-sans);
+    }
+    .select-demo:focus { outline: none; box-shadow: 0 0 0 2px #fff, 0 0 0 4px var(--ring); border-color: var(--teal-500); }
+
+    .card-demo {
+      background: var(--card); border: 1px solid var(--border);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-sm);
+      overflow: hidden; transition: box-shadow var(--duration-normal) var(--ease-out);
+    }
+    .card-demo:hover { box-shadow: var(--shadow-md); }
+    .card-demo-header { padding: 16px 20px 0; }
+    .card-demo-title { font-size: 0.8125rem; font-weight: 500; color: var(--slate-500); }
+    .card-demo-body { padding: 8px 20px 20px; }
+
+    .table-demo { width: 100%; border-collapse: collapse; font-size: 0.8125rem; }
+    .table-demo th {
+      text-align: left; padding: 10px 16px; font-weight: 500; font-size: 0.75rem;
+      color: var(--slate-500); background: var(--slate-50); border-bottom: 1px solid var(--border);
+    }
+    .table-demo th.num, .table-demo td.num { text-align: right; }
+    .table-demo td { padding: 12px 16px; border-bottom: 1px solid var(--slate-100); font-variant-numeric: tabular-nums; }
+    .table-demo tr:hover td { background: var(--slate-50); }
+    .text-gain { color: var(--success-600); font-weight: 600; }
+    .text-loss { color: var(--danger-600); font-weight: 600; }
+
+    .logo-treatment { display: flex; align-items: center; gap: 20px; flex-wrap: wrap; }
+    .logo-treatment img { height: 44px; }
+    .logo-svg { height: 40px; width: 40px; }
+
+    .apply-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; }
+    .apply-item {
+      padding: 14px 16px; background: var(--slate-50); border-radius: var(--radius-lg);
+      border: 1px solid var(--border); font-size: 0.8rem;
+    }
+    .apply-item strong { color: var(--navy-900); display: block; margin-bottom: 4px; }
+
+    /* ══════════════════════════════════════
+       REPORTS APP MOCKUP
+    ══════════════════════════════════════ */
+    .app { background: var(--background); min-height: 900px; }
+    .app-header {
+      background: linear-gradient(180deg, var(--navy-900) 0%, var(--navy-800) 100%);
+      color: #fff; padding: 0 32px;
+      border-bottom: 1px solid rgba(255,255,255,.06);
+    }
+    .app-header-top {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 0 12px;
+    }
+    .brand { display: flex; align-items: center; gap: 14px; }
+    .brand-logo { display: flex; align-items: center; gap: 10px; }
+    .brand-wordmark { font-size: 1.15rem; font-weight: 700; letter-spacing: -0.02em; }
+    .brand-tagline { font-size: 0.7rem; color: rgba(148,163,184,.9); font-weight: 500; margin-top: 1px; }
+
+    .local-badge-premium {
+      display: inline-flex; align-items: center; gap: 8px;
+      padding: 6px 14px; border-radius: var(--radius-full);
+      background: rgba(20,184,166,.12); border: 1px solid rgba(45,212,191,.28);
+      font-size: 0.6875rem; font-weight: 600; letter-spacing: .04em;
+      color: #5EEAD4; text-transform: uppercase;
+      backdrop-filter: blur(8px);
+    }
+    .local-badge-premium .dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: #2DD4BF; box-shadow: 0 0 8px rgba(45,212,191,.6);
+      animation: pulse 2.5s ease infinite;
+    }
+
+    .app-nav { display: flex; gap: 4px; padding-bottom: 0; overflow-x: auto; }
+    .nav-item {
+      display: inline-flex; align-items: center; gap: 7px;
+      padding: 10px 16px; border-radius: var(--radius-md) var(--radius-md) 0 0;
+      font-size: 0.8125rem; font-weight: 500; color: rgba(148,163,184,.85);
+      border: none; background: transparent; cursor: default;
+      transition: all var(--duration-normal) var(--ease-out);
+      border-bottom: 2px solid transparent; margin-bottom: -1px;
+    }
+    .nav-item svg { width: 15px; height: 15px; opacity: .75; }
+    .nav-item:hover { color: #E2E8F0; background: rgba(255,255,255,.04); }
+    .nav-item.active {
+      color: #fff; font-weight: 600;
+      background: rgba(255,255,255,.06);
+      border-bottom-color: var(--teal-400);
+    }
+
+    .app-main { padding: 28px 32px 40px; max-width: 1120px; margin: 0 auto; }
+
+    .page-header { margin-bottom: 24px; }
+    .page-header h2 { font-size: 1.375rem; font-weight: 700; color: var(--navy-900); letter-spacing: -0.02em; }
+    .page-header p { font-size: 0.875rem; color: var(--slate-500); margin-top: 4px; }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px;
+      padding: 14px 16px; background: #fff; border: 1px solid var(--border);
+      border-radius: var(--radius-lg); box-shadow: var(--shadow-xs); margin-bottom: 24px;
+    }
+    .toolbar .select-demo { min-width: 120px; }
+    .toolbar-check {
+      display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; color: var(--slate-600);
+      margin-left: 4px;
+    }
+    .toolbar-check input { accent-color: var(--teal-600); width: 15px; height: 15px; }
+    .toolbar-actions { margin-left: auto; display: flex; gap: 8px; }
+
+    .alert-banner {
+      display: flex; align-items: flex-start; gap: 12px;
+      padding: 12px 16px; border-radius: var(--radius-lg);
+      background: var(--warning-50); border: 1px solid #FDE68A;
+      font-size: 0.8125rem; color: #92400E; margin-bottom: 24px;
+    }
+    .alert-banner svg { flex-shrink: 0; margin-top: 1px; }
+
+    .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+    @media (max-width: 800px) { .stats { grid-template-columns: repeat(2, 1fr); } }
+
+    .stat-card {
+      background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg);
+      padding: 20px; box-shadow: var(--shadow-xs);
+      transition: transform var(--duration-normal) var(--ease-out), box-shadow var(--duration-normal) var(--ease-out);
+    }
+    .stat-card:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
+    .stat-card.featured { border-color: rgba(20,184,166,.3); background: linear-gradient(135deg, #fff 0%, var(--teal-50) 100%); }
+    .stat-label {
+      font-size: 0.75rem; font-weight: 500; color: var(--slate-500);
+      text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px;
+    }
+    .stat-value {
+      font-family: var(--font-mono); font-size: 1.5rem; font-weight: 600;
+      font-variant-numeric: tabular-nums; color: var(--navy-900); letter-spacing: -0.02em;
+    }
+    .stat-value.gain { color: var(--success-600); }
+    .stat-value.income { color: var(--warning-600); }
+    .stat-delta { font-size: 0.7rem; color: var(--slate-400); margin-top: 6px; font-family: var(--font-sans); }
+
+    .data-panel {
+      background: #fff; border: 1px solid var(--border); border-radius: var(--radius-lg);
+      box-shadow: var(--shadow-sm); overflow: hidden; margin-bottom: 20px;
+    }
+    .data-panel-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px; border-bottom: 1px solid var(--border);
+    }
+    .data-panel-head h3 { font-size: 0.9375rem; font-weight: 600; color: var(--navy-900); }
+    .data-panel-meta { font-size: 0.75rem; color: var(--slate-400); }
+
+    .rules-panel { padding: 20px; }
+    .rules-panel p { font-size: 0.875rem; color: var(--slate-600); line-height: 1.65; max-width: 720px; }
+    .rules-panel .badge { margin-top: 14px; }
+
+    .micro-demo { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+    .micro-box {
+      width: 80px; height: 40px; background: var(--teal-600); border-radius: var(--radius-md);
+      transition: transform var(--duration-fast) var(--ease-out), box-shadow var(--duration-normal) var(--ease-out);
+      cursor: pointer;
+    }
+    .micro-box:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
+    .micro-box:active { transform: scale(0.97); }
+  </style>
+</head>
+<body>
+
+  <div class="chrome">
+    <div class="chrome-inner">
+      <div>
+        <h1>SoloLedger — Modern Fintech Design System</h1>
+        <p>Mockup only · shadcn/ui + Tailwind CSS direction · Reports as primary preview</p>
+      </div>
+      <div class="view-tabs">
+        <button class="view-tab" data-view="system">Design System</button>
+        <button class="view-tab active" data-view="reports">Reports Preview</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ DESIGN SYSTEM ═══════════ -->
+  <div class="panel" id="panel-system">
+    <div class="frame-wrap">
+      <div class="frame">
+        <div class="ds-page">
+
+          <div class="ds-section">
+            <h2>Color palette</h2>
+            <p>Deep navy anchors trust; teal drives primary actions. Neutrals from slate scale. Semantic greens and ambers for gains, income, and warnings.</p>
+            <div class="swatch-grid">
+              <div class="swatch"><div class="swatch-color" style="background:#0B1F3A"></div><div class="swatch-info"><div class="swatch-name">Navy 900 · Header</div><div class="swatch-hex">#0B1F3A</div></div></div>
+              <div class="swatch"><div class="swatch-color" style="background:#0F2744"></div><div class="swatch-info"><div class="swatch-name">Navy 800</div><div class="swatch-hex">#0F2744</div></div></div>
+              <div class="swatch"><div class="swatch-color" style="background:#14B8A6"></div><div class="swatch-info"><div class="swatch-name">Teal 500 · Primary</div><div class="swatch-hex">#14B8A6</div></div></div>
+              <div class="swatch"><div class="swatch-color" style="background:#0D9488"></div><div class="swatch-info"><div class="swatch-name">Teal 600 · Hover</div><div class="swatch-hex">#0D9488</div></div></div>
+              <div class="swatch"><div class="swatch-color" style="background:#F8FAFC;border-bottom:1px solid #E2E8F0"></div><div class="swatch-info"><div class="swatch-name">Slate 50 · BG</div><div class="swatch-hex">#F8FAFC</div></div></div>
+              <div class="swatch"><div class="swatch-color" style="background:#FFFFFF;border-bottom:1px solid #E2E8F0"></div><div class="swatch-info"><div class="swatch-name">White · Cards</div><div class="swatch-hex">#FFFFFF</div></div></div>
+              <div class="swatch"><div class="swatch-color" style="background:#059669"></div><div class="swatch-info"><div class="swatch-name">Success · Gains</div><div class="swatch-hex">#059669</div></div></div>
+              <div class="swatch"><div class="swatch-color" style="background:#D97706"></div><div class="swatch-info"><div class="swatch-name">Warning · Income</div><div class="swatch-hex">#D97706</div></div></div>
+              <div class="swatch"><div class="swatch-color" style="background:#DC2626"></div><div class="swatch-info"><div class="swatch-name">Danger · Loss</div><div class="swatch-hex">#DC2626</div></div></div>
+            </div>
+          </div>
+
+          <div class="ds-section">
+            <h2>Typography</h2>
+            <p><strong>Plus Jakarta Sans</strong> for UI and headings. <strong>IBM Plex Mono</strong> for financial figures (tabular nums). Tight letter-spacing on headings.</p>
+            <div class="type-sample"><div class="label">Display / Page title</div><div class="t-display">₹283,350.00</div></div>
+            <div class="type-sample"><div class="label">Heading 1</div><div class="t-h1">Reports</div></div>
+            <div class="type-sample"><div class="label">Heading 2 / Card title</div><div class="t-h2">Disposals — 2024</div></div>
+            <div class="type-sample"><div class="label">Body</div><div class="t-body">Generated locally — files are written directly on your device.</div></div>
+            <div class="type-sample"><div class="label">Caption / Table header</div><div class="t-caption">Proceeds (INR) · Cost basis (INR)</div></div>
+            <div class="type-sample"><div class="label">Data / Mono</div><div class="t-mono">₹107,830.00</div></div>
+          </div>
+
+          <div class="ds-section">
+            <h2>Spacing, shadows &amp; radius</h2>
+            <div class="token-row">
+              <div class="token-chip"><strong>Spacing</strong>4px base · 16/20/24/32px sections</div>
+              <div class="token-chip"><strong>Radius sm/md/lg</strong>6px · 8px · 12px</div>
+              <div class="token-chip"><strong>Shadow sm</strong>Subtle card elevation</div>
+              <div class="token-chip"><strong>Shadow md</strong>Hover / dropdown</div>
+              <div class="token-chip"><strong>Border</strong>1px slate-200 on cards</div>
+            </div>
+          </div>
+
+          <div class="ds-section">
+            <h2>Components (shadcn/ui style)</h2>
+            <div class="comp-grid">
+              <div class="comp-card">
+                <h3>Buttons</h3>
+                <div style="display:flex;flex-wrap:wrap;gap:8px">
+                  <button class="btn btn-primary">Export PDF</button>
+                  <button class="btn btn-secondary">CSV</button>
+                  <button class="btn btn-ghost">Cancel</button>
+                  <button class="btn btn-outline btn-sm">JSON</button>
+                </div>
+              </div>
+              <div class="comp-card">
+                <h3>Badges</h3>
+                <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center">
+                  <span class="badge badge-premium"><span class="badge-dot"></span> 100% Local</span>
+                  <span class="badge badge-success">Gain</span>
+                  <span class="badge badge-warning">Income</span>
+                  <span class="badge badge-neutral">Not tax advice</span>
+                </div>
+              </div>
+              <div class="comp-card">
+                <h3>Dropdown</h3>
+                <select class="select-demo"><option>India (IN)</option><option>United States (US)</option></select>
+              </div>
+              <div class="comp-card">
+                <h3>Stat card</h3>
+                <div class="card-demo">
+                  <div class="card-demo-header"><div class="card-demo-title">Total gain / loss</div></div>
+                  <div class="card-demo-body"><div class="t-mono" style="color:#059669;font-size:1.35rem">₹107,830.00</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ds-section">
+            <h2>Logo &amp; wordmark</h2>
+            <div class="logo-treatment">
+              <img src="assets/logo-sololedger-fintech-v2.png" alt="SoloLedger logo" />
+              <svg class="logo-svg" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+                <rect width="40" height="40" rx="10" fill="#0B1F3A"/>
+                <rect x="11" y="10" width="18" height="22" rx="2" stroke="#2DD4BF" stroke-width="1.5" fill="none"/>
+                <line x1="14" y1="16" x2="26" y2="16" stroke="#2DD4BF" stroke-width="1.2" opacity=".7"/>
+                <line x1="14" y1="20" x2="24" y2="20" stroke="#2DD4BF" stroke-width="1.2" opacity=".5"/>
+                <line x1="14" y1="24" x2="22" y2="24" stroke="#2DD4BF" stroke-width="1.2" opacity=".35"/>
+                <circle cx="30" cy="12" r="3" fill="#14B8A6"/>
+              </svg>
+              <div>
+                <div class="t-h1" style="margin-bottom:2px">SoloLedger</div>
+                <div class="t-caption">Private. Precise. Yours.</div>
+              </div>
+            </div>
+            <p style="margin-top:12px;font-size:0.8rem;color:var(--slate-500)">Icon: ledger page + solo dot (teal on navy). Wordmark: Plus Jakarta Sans 700, tight tracking.</p>
+          </div>
+
+          <div class="ds-section">
+            <h2>Micro-interactions</h2>
+            <p>120–200ms ease-out transitions. Buttons scale to 0.98 on press. Cards lift 1px on hover. Focus rings: 2px teal offset. Local badge dot pulses gently.</p>
+            <div class="micro-demo">
+              <div class="micro-box" title="Hover me"></div>
+              <span class="t-caption">Hover / click the teal box →</span>
+            </div>
+          </div>
+
+          <div class="ds-section">
+            <h2>Applying to other tabs</h2>
+            <div class="apply-grid">
+              <div class="apply-item"><strong>Import</strong>Navy header + white dropzone card. Teal primary CTA. Progress bar in teal on slate-100.</div>
+              <div class="apply-item"><strong>Review</strong>Data table with same typography. Flag badges use warning/danger semantic colors.</div>
+              <div class="apply-item"><strong>Portfolio</strong>Stat cards for holdings. Asset pills on slate-100. Mono for quantities.</div>
+              <div class="apply-item"><strong>Capital Gains</strong>Matched-lot table + income section divider. Gain/loss color coding.</div>
+              <div class="apply-item"><strong>Settings</strong>Grouped cards with subtle borders. Toggle switches in teal. Local badge stays in header.</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════ REPORTS PREVIEW ═══════════ -->
+  <div class="panel active" id="panel-reports">
+    <div class="frame-wrap">
+      <div class="frame-label">Reports page — Modern Fintech preview</div>
+      <div class="frame">
+        <div class="app">
+          <header class="app-header">
+            <div class="app-header-top">
+              <div class="brand">
+                <div class="brand-logo">
+                  <svg width="36" height="36" viewBox="0 0 40 40" fill="none"><rect width="40" height="40" rx="10" fill="#152D4A"/><rect x="11" y="10" width="18" height="22" rx="2" stroke="#2DD4BF" stroke-width="1.5" fill="none"/><line x1="14" y1="16" x2="26" y2="16" stroke="#2DD4BF" stroke-width="1.2" opacity=".7"/><line x1="14" y1="20" x2="24" y2="20" stroke="#2DD4BF" stroke-width="1.2" opacity=".5"/><circle cx="30" cy="12" r="3" fill="#14B8A6"/></svg>
+                  <div>
+                    <div class="brand-wordmark">SoloLedger</div>
+                    <div class="brand-tagline">Private. Precise. Yours.</div>
+                  </div>
+                </div>
+              </div>
+              <div class="local-badge-premium"><span class="dot"></span> 100% Local</div>
+            </div>
+            <nav class="app-nav">
+              <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg> Import</button>
+              <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11"/></svg> Review</button>
+              <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.21 15.89A10 10 0 118 2.83"/><path d="M22 12A10 10 0 0012 2v10z"/></svg> Portfolio</button>
+              <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg> Capital Gains</button>
+              <button class="nav-item active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg> Reports</button>
+              <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg> Settings</button>
+            </nav>
+          </header>
+
+          <main class="app-main">
+            <div class="page-header">
+              <h2>Reports</h2>
+              <p>Generated locally — files are written directly on your device.</p>
+            </div>
+
+            <div class="toolbar">
+              <select class="select-demo"><option>India (IN)</option></select>
+              <select class="select-demo"><option>2024</option></select>
+              <select class="select-demo"><option>FIFO</option><option>Specific Identification</option></select>
+              <label class="toolbar-check"><input type="checkbox" /> De-identify for sharing</label>
+              <div class="toolbar-actions">
+                <button class="btn btn-secondary btn-sm">CSV</button>
+                <button class="btn btn-secondary btn-sm">JSON</button>
+                <button class="btn btn-primary btn-sm">Export PDF</button>
+              </div>
+            </div>
+
+            <div class="alert-banner">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+              <span>1 disposal references more of an asset than your import history shows acquired — cost basis may be understated. Review flagged transactions to fix.</span>
+            </div>
+
+            <div class="stats">
+              <div class="stat-card featured">
+                <div class="stat-label">Total gain / loss</div>
+                <div class="stat-value gain">₹107,830.00</div>
+                <div class="stat-delta">FY 2024 · FIFO</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Proceeds</div>
+                <div class="stat-value">₹283,350.00</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Cost basis</div>
+                <div class="stat-value">₹175,520.00</div>
+              </div>
+              <div class="stat-card">
+                <div class="stat-label">Income events</div>
+                <div class="stat-value income">₹12,450.00</div>
+              </div>
+            </div>
+
+            <div class="data-panel">
+              <div class="data-panel-head">
+                <h3>Disposals — 2024</h3>
+                <span class="data-panel-meta">5 events · Showing all</span>
+              </div>
+              <table class="table-demo">
+                <thead>
+                  <tr>
+                    <th>Date</th><th>Asset</th><th class="num">Amount</th>
+                    <th class="num">Proceeds (INR)</th><th class="num">Cost basis (INR)</th>
+                    <th class="num">Gain/Loss (INR)</th><th class="num">Held (days)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr><td>2024-03-15</td><td><strong>HONEY</strong></td><td class="num">1250.000000</td><td class="num">42,350.00</td><td class="num">38,120.00</td><td class="num text-gain">4,230.00</td><td class="num">47</td></tr>
+                  <tr><td>2024-03-02</td><td><strong>USDC</strong></td><td class="num">500.000000</td><td class="num">41,500.00</td><td class="num">41,200.00</td><td class="num text-gain">300.00</td><td class="num">12</td></tr>
+                  <tr><td>2024-02-18</td><td><strong>ETH</strong></td><td class="num">0.450000</td><td class="num">98,200.00</td><td class="num">0.00</td><td class="num text-gain">98,200.00</td><td class="num">180</td></tr>
+                  <tr><td>2024-02-05</td><td><strong>BTC</strong></td><td class="num">0.012000</td><td class="num">72,400.00</td><td class="num">65,000.00</td><td class="num text-gain">7,400.00</td><td class="num">365</td></tr>
+                  <tr><td>2024-01-22</td><td><strong>SOL</strong></td><td class="num">15.500000</td><td class="num">28,900.00</td><td class="num">31,200.00</td><td class="num text-loss">−2,300.00</td><td class="num">90</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="data-panel">
+              <div class="data-panel-head"><h3>India rules note</h3></div>
+              <div class="rules-panel">
+                <p>Crypto is treated as a virtual digital asset. Gains on disposal are taxable per current IT rules. Short-term vs long-term classification depends on holding period. Verify current rates with a qualified professional.</p>
+                <span class="badge badge-neutral">Not tax advice — verify with a professional</span>
+              </div>
+            </div>
+          </main>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    document.querySelectorAll('.view-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.view-tab').forEach(t => t.classList.remove('active'));
+        document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+        tab.classList.add('active');
+        document.getElementById('panel-' + tab.dataset.view).classList.add('active');
+      });
+    });
+  </script>
+</body>
+</html>
