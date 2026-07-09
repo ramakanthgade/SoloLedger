@@ -28,7 +28,7 @@ export function SettingsTab() {
   return (
     <div className="max-w-2xl space-y-6">
       <div>
-        <h2 className="font-display text-xl font-semibold text-mist">Settings</h2>
+        <h2 className="page-title">Settings</h2>
         <p className="mt-1 text-sm text-mist-400">Stored locally in IndexedDB. Nothing here is synced anywhere.</p>
       </div>
 
@@ -271,12 +271,12 @@ export function SettingsTab() {
         <CardContent className="space-y-4">
           <p className="text-xs text-mist-400">
             Ask your taxes anything — in text or by voice. Uses{' '}
-            <a href="https://openrouter.ai" target="_blank" rel="noreferrer" className="text-violet underline">
+            <a href="https://openrouter.ai" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
               OpenRouter
             </a>{' '}
             to route to Claude, GPT-4, Gemini and more. Your existing OpenRouter credits work immediately.
             Your claude.ai subscription is a separate consumer product — for API access, use your{' '}
-            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-violet underline">
+            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer" className="text-emerald-600 underline">
               openrouter.ai/keys
             </a>{' '}
             key instead.
@@ -294,7 +294,7 @@ export function SettingsTab() {
               <select
                 value={settings.aiModel ?? 'anthropic/claude-opus-4-5'}
                 onChange={(e) => update({ aiModel: e.target.value })}
-                className="mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-mist focus:border-violet focus:outline-none"
+                className="mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-3 py-2 text-mist focus:border-emerald focus:outline-none"
               >
                 <option value="anthropic/claude-opus-4-5">Claude Sonnet 4.5 — recommended</option>
                 <option value="anthropic/claude-opus-4">Claude Opus 4 — most capable</option>

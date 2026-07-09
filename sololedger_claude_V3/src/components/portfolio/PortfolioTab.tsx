@@ -8,8 +8,9 @@ import {
 } from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
+import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
-import jsPDF from 'jspdf';
+import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
 /**
@@ -177,35 +178,32 @@ export function PortfolioTab() {
 
   const exportHoldingsPdf = () => {
     if (!confirmPdfExport()) return;
-    const doc = new jsPDF();
-    doc.setFontSize(14);
-    doc.text('SoloLedger — Portfolio Holdings', 14, 16);
-    doc.setFontSize(9);
-    doc.text(`Period: ${selectedFy == null ? 'All time' : getFyLabel(selectedFy, jurisdiction)} · Wallet: ${selectedWallet}`, 14, 22);
-    doc.text(`Total cost basis (${reportingCurrency.toUpperCase()}): ${formatAmountForExport(totalCostBasis, reportingCurrency)}`, 14, 28);
+    const { doc, startY } = createBrandedPdf({
+      reportTitle: 'Portfolio Holdings',
+      metaLines: [
+        `Period: ${selectedFy == null ? 'All time' : getFyLabel(selectedFy, jurisdiction)} · Wallet: ${selectedWallet}`,
+        `Total cost basis (${reportingCurrency.toUpperCase()}): ${formatAmountForExport(totalCostBasis, reportingCurrency)}`
+      ]
+    });
     autoTable(doc, {
-      startY: 34,
+      startY,
+      ...pdfTableStyles(8),
       head: [['Asset', 'Quantity', `Cost basis (${reportingCurrency})`]],
       body: holdings.map((h) => [
         resolveAssetLabel(h.asset, h.contractAddress, h.chain),
         h.amount.toFixed(8),
         formatAmountForExport(h.costBasis, reportingCurrency)
-      ]),
-      styles: { fontSize: 8 }
+      ])
     });
     doc.save('sololedger-portfolio-holdings.pdf');
   };
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="font-display text-xl font-semibold text-mist">Portfolio</h2>
-        <p className="mt-1 text-sm text-mist-400">
-          Holdings and cost basis calculated from your transaction history.
-          Quantities match your wallet balances — import all your wallets for a complete picture.
-          Note: SOL may show ~0.002 SOL higher per token account (Solana rent reserve locked in wallet).
-        </p>
-      </div>
+      <PageHeader
+        title="Portfolio"
+        subtitle="Holdings and cost basis from your transaction history. Import all wallets for a complete picture."
+      />
 
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
@@ -214,7 +212,7 @@ export function PortfolioTab() {
           <select
             value={selectedFy ?? ''}
             onChange={(e) => setSelectedFy(e.target.value ? Number(e.target.value) : null)}
-            className="rounded-full border border-ink-600 bg-ink-800 px-3 py-1 text-sm text-mist focus:border-violet focus:outline-none"
+            className="sl-select"
           >
             <option value="">All time</option>
             {availableFys.map((fy) => (

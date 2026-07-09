@@ -40,7 +40,7 @@ export function ApiKeyField({ label, value, onSave, onDelete, placeholder }: Pro
               setDraft(value);
               setEditing(true);
             }}
-            className="flex items-center gap-1 text-xs text-violet hover:underline"
+            className="flex items-center gap-1 text-xs text-emerald-600 hover:underline"
           >
             <Pencil className="h-3 w-3" /> Edit
           </button>
@@ -55,7 +55,7 @@ export function ApiKeyField({ label, value, onSave, onDelete, placeholder }: Pro
       ) : (
         <div className="flex items-center gap-2">
           <input
-            className="block w-full rounded-full border border-ink-600 bg-ink-800 px-3 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+            className="block w-full rounded-full border border-ink-600 bg-ink-800 px-3 py-1.5 text-sm text-mist focus:border-emerald focus:outline-none"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder={placeholder}

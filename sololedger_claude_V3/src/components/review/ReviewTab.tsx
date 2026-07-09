@@ -15,7 +15,7 @@ import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection'
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
-import jsPDF from 'jspdf';
+import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
@@ -58,16 +58,16 @@ function TypeSelector({
         className="inline-flex items-center gap-1"
       >
         <Badge tone={TYPE_TONE[current]}>{current}</Badge>
-        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-emerald" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl">
+        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700">
           <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-mist-400">Reclassify as</p>
           {ALL_TYPES.map((t) => (
             <button
               key={t}
               onClick={() => void reclassify(t)}
-              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-700 ${t === current ? 'text-violet' : 'text-mist-300'}`}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-900 ${t === current ? 'text-emerald-600' : 'text-mist-300'}`}
             >
               <Badge tone={TYPE_TONE[t]} className="pointer-events-none text-[10px]">{t}</Badge>
             </button>
@@ -456,24 +456,19 @@ export function ReviewTab() {
 
   const exportFilteredPdf = () => {
     if (!confirmPdfExport()) return;
-    const doc = new jsPDF({ orientation: 'landscape' });
-    doc.setFontSize(14);
-    doc.text('SoloLedger — Review Transactions', 14, 16);
-    doc.setFontSize(9);
-    doc.text(`Rows: ${filtered.length}`, 14, 22);
+    const cur = (settings?.reportingCurrency ?? 'INR').toUpperCase();
+    const { doc, startY } = createBrandedPdf({
+      reportTitle: 'Review Transactions',
+      metaLines: [`Rows: ${filtered.length} · Currency: ${cur}`],
+      landscape: true
+    });
+    const tbl = pdfTableStyles(7);
     autoTable(doc, {
-      startY: 28,
+      startY,
+      ...tbl,
       head: [[
-        'Date',
-        'Type',
-        'Chain',
-        'Asset',
-        'Amount',
-        `Fiat (${(settings?.reportingCurrency ?? 'INR').toUpperCase()})`,
-        'From',
-        'To',
-        'Flags',
-        'Source Ref'
+        'Date', 'Type', 'Chain', 'Asset', 'Amount',
+        `Fiat (${cur})`, 'From', 'To', 'Flags', 'Source Ref'
       ]],
       body: filtered.map((t) => [
         new Date(t.timestamp).toISOString().slice(0, 10),
@@ -486,8 +481,7 @@ export function ReviewTab() {
         t.type === 'transfer_out' ? (t.counterpartyAddress ?? '—') : (t.walletAddress ?? '—'),
         displayFlags(t).join(', ') || '—',
         t.sourceRef ?? '—'
-      ]),
-      styles: { fontSize: 7 }
+      ])
     });
     doc.save('sololedger-review-transactions.pdf');
   };
@@ -496,7 +490,7 @@ export function ReviewTab() {
     return (
       <div className="space-y-6">
         <div>
-          <h2 className="font-display text-xl font-semibold text-mist">Review</h2>
+          <h2 className="page-title">Review</h2>
           <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
         </div>
         <div className="rounded-lg border-2 border-dashed border-ink-600 bg-ink-800 px-6 py-14 text-center text-sm text-mist-400">
@@ -509,7 +503,7 @@ export function ReviewTab() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="font-display text-xl font-semibold text-mist">Review</h2>
+        <h2 className="page-title">Review</h2>
         <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
       </div>
       {/* DCA / Recurring order banner */}
@@ -547,7 +541,7 @@ export function ReviewTab() {
       )}
 
       {potentialSwapPairs > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-emerald/40 bg-emerald/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold text-mist">
               {potentialSwapPairs} possible DEX swap{potentialSwapPairs === 1 ? '' : 's'} waiting to be merged
@@ -617,13 +611,13 @@ export function ReviewTab() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search transactions…"
-          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist placeholder:text-mist-400 focus:border-violet focus:outline-none"
+          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft placeholder:text-mist-400 focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
         />
         {/* Asset filter */}
         <select
           value={assetFilter}
           onChange={(e) => setAssetFilter(e.target.value)}
-          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
         >
           <option value="all">All assets</option>
           {assets.map((a) => (<option key={a} value={a}>{a}</option>))}
@@ -634,7 +628,7 @@ export function ReviewTab() {
           <select
             value={walletFilter}
             onChange={(e) => setWalletFilter(e.target.value)}
-            className="max-w-[180px] truncate rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+            className="max-w-[180px] truncate rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
           >
             <option value="all">All wallets</option>
             {availableWallets.map((w) => (
@@ -647,7 +641,7 @@ export function ReviewTab() {
         <select
           value={fyFilter ?? ''}
           onChange={(e) => setFyFilter(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
         >
           <option value="">All periods</option>
           {availableFys.map((fy) => (
@@ -774,7 +768,7 @@ export function ReviewTab() {
               const isEditing = editingFiat === t.id;
               return (
                 <Fragment key={t.id}>
-                  <tr className={`border-t border-ink-700/60 hover:bg-ink-700/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
+                  <tr className={`border-t border-ink-700/60 hover:bg-ink-900/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
                     <td className="px-3 py-2">
                       <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggle(t.id)} />
                     </td>
@@ -801,7 +795,7 @@ export function ReviewTab() {
                             autoFocus
                             value={editValue}
                             onChange={(e) => setEditValue(e.target.value)}
-                            className="w-24 rounded border border-violet bg-white px-2 py-0.5 text-right text-xs text-mist focus:outline-none"
+                            className="w-24 rounded border border-emerald bg-white px-2 py-0.5 text-right text-xs text-mist focus:outline-none"
                             placeholder="0.00"
                           />
                           <button onClick={() => saveFiat(t)} className="text-emerald-600" aria-label="Save">
@@ -814,7 +808,7 @@ export function ReviewTab() {
                       ) : (
                         <button
                           onClick={() => startEditFiat(t.id, t.fiatValue)}
-                          className="group inline-flex items-center gap-1 hover:text-violet"
+                          className="group inline-flex items-center gap-1 hover:text-emerald-600"
                           title="Click to enter a fiat value manually"
                         >
                           {t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : '—'}
@@ -826,7 +820,7 @@ export function ReviewTab() {
                       {fromAddr ? (
                         <span title={fromAddr}>
                           {walletLabels.get(fromAddr.toLowerCase())
-                            ? <span className="text-violet-400">{walletLabels.get(fromAddr.toLowerCase())}</span>
+                            ? <span className="text-emerald-500">{walletLabels.get(fromAddr.toLowerCase())}</span>
                             : truncateAddress(fromAddr)}
                         </span>
                       ) : '—'}
@@ -835,7 +829,7 @@ export function ReviewTab() {
                       {toAddr ? (
                         <span title={toAddr}>
                           {walletLabels.get(toAddr.toLowerCase())
-                            ? <span className="text-violet-400">{walletLabels.get(toAddr.toLowerCase())}</span>
+                            ? <span className="text-emerald-500">{walletLabels.get(toAddr.toLowerCase())}</span>
                             : truncateAddress(toAddr)}
                         </span>
                       ) : '—'}
@@ -851,7 +845,7 @@ export function ReviewTab() {
                           target="_blank"
                           rel="noreferrer"
                           title={t.sourceRef}
-                          className="hover:text-violet"
+                          className="hover:text-emerald-600"
                         >
                           {t.sourceRef.slice(0, 8)}…
                         </a>
@@ -862,9 +856,9 @@ export function ReviewTab() {
                       {t.isInternalTransfer && (
                         <div className="relative group/internal">
                           <Badge tone="neutral" className="cursor-pointer hover:opacity-80">internal</Badge>
-                          <div className="absolute left-0 top-5 z-20 hidden group-hover/internal:flex flex-col rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl text-xs min-w-[15rem]">
+                          <div className="absolute left-0 top-5 z-20 hidden group-hover/internal:flex flex-col rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700 text-xs min-w-[15rem]">
                             <button
-                              className="px-3 py-1.5 text-left text-mist-300 hover:bg-ink-700"
+                              className="px-3 py-1.5 text-left text-mist-300 hover:bg-ink-900"
                               onClick={async (e) => {
                                 e.stopPropagation();
                                 await db.transactions.update(t.id, {
@@ -886,9 +880,9 @@ export function ReviewTab() {
                             <Badge tone="gold" className="cursor-pointer text-[10px] hover:bg-gold/40">
                               {f.replace(/_/g, ' ')}
                             </Badge>
-                            <div className="absolute left-0 top-5 z-20 hidden group-hover/flag:flex flex-col rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl text-xs min-w-[14rem]">
+                            <div className="absolute left-0 top-5 z-20 hidden group-hover/flag:flex flex-col rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700 text-xs min-w-[14rem]">
                               <button
-                                className="px-3 py-1.5 text-left text-emerald-600 hover:bg-ink-700"
+                                className="px-3 py-1.5 text-left text-emerald-600 hover:bg-ink-900"
                                 onClick={async (e) => {
                                   e.stopPropagation();
                                   await db.transactions.update(t.id, { isInternalTransfer: true, flags: [] });
@@ -897,7 +891,7 @@ export function ReviewTab() {
                                 ✓ Confirm as internal transfer
                               </button>
                               <button
-                                className="px-3 py-1.5 text-left text-mist-400 hover:bg-ink-700"
+                                className="px-3 py-1.5 text-left text-mist-400 hover:bg-ink-900"
                                 onClick={async (e) => {
                                   e.stopPropagation();
                                   await db.transactions.update(t.id, {
@@ -929,7 +923,7 @@ export function ReviewTab() {
                         <button
                           onClick={() => void markSpam(t.id, !t.isSpam)}
                           title={t.isSpam ? 'Remove spam flag' : 'Mark as spam (excluded from taxes)'}
-                          className={`ml-1 rounded px-1.5 py-0.5 text-[10px] transition ${t.isSpam ? 'bg-loss/20 text-loss hover:bg-loss/30' : 'text-mist-400 hover:bg-ink-700 hover:text-loss'}`}
+                          className={`ml-1 rounded px-1.5 py-0.5 text-[10px] transition ${t.isSpam ? 'bg-loss/20 text-loss hover:bg-loss/30' : 'text-mist-400 hover:bg-ink-900 hover:text-loss'}`}
                         >
                           {t.isSpam ? '🚫 spam' : '🚫'}
                         </button>

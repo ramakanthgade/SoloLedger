@@ -10,8 +10,9 @@ import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui
 import { formatAmountForExport, formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
+import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
-import jsPDF from 'jspdf';
+import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
 const INCOME_KIND_LABEL: Record<string, string> = {
@@ -202,14 +203,18 @@ export function CapitalGainsTab() {
 
   const exportCapitalGainsPdf = () => {
     if (!confirmPdfExport()) return;
-    const doc = new jsPDF({ orientation: 'landscape' });
-    doc.setFontSize(14);
-    doc.text('SoloLedger — Capital Gains Detail', 14, 16);
-    doc.setFontSize(9);
-    doc.text(`FY: ${getFyLabel(fy, jurisdiction)} · Method: ${method} · Jurisdiction: ${JURISDICTIONS[jurisdiction].label}`, 14, 22);
-    doc.text(`Realized gain/loss (${currency.toUpperCase()}): ${formatAmountForExport(totalGain, currency)} · Income (${currency.toUpperCase()}): ${formatAmountForExport(totalIncome, currency)}`, 14, 28);
+    const { doc, startY } = createBrandedPdf({
+      reportTitle: 'Capital Gains Detail',
+      metaLines: [
+        `FY: ${getFyLabel(fy, jurisdiction)} · Method: ${method} · Jurisdiction: ${JURISDICTIONS[jurisdiction].label}`,
+        `Realized gain/loss (${currency.toUpperCase()}): ${formatAmountForExport(totalGain, currency)} · Income: ${formatAmountForExport(totalIncome, currency)}`
+      ],
+      landscape: true
+    });
+    const tbl = pdfTableStyles(7);
     autoTable(doc, {
-      startY: 34,
+      startY,
+      ...tbl,
       head: [['Sell date', 'Asset', 'Qty', `Proceeds (${currency.toUpperCase()})`, 'Buy date', `Cost basis (${currency.toUpperCase()})`, `P&L (${currency.toUpperCase()})`]],
       body: yearMatches.map((r) => [
         formatDateTime(r.sellDate),
@@ -219,10 +224,10 @@ export function CapitalGainsTab() {
         formatDateTime(r.buyDate),
         formatAmountForExport(r.costBasis, currency),
         formatAmountForExport(r.gain, currency)
-      ]),
-      styles: { fontSize: 7 }
+      ])
     });
     autoTable(doc, {
+      ...tbl,
       head: [['Income date', 'Kind', 'Asset', 'Amount', `Value (${currency.toUpperCase()})`]],
       body: yearIncome.map((r) => [
         formatDateTime(r.date),
@@ -230,8 +235,7 @@ export function CapitalGainsTab() {
         r.asset,
         formatCompactAmount(r.amount),
         formatAmountForExport(r.fiatValue, currency)
-      ]),
-      styles: { fontSize: 7 }
+      ])
     });
     doc.save(`sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.pdf`);
   };
@@ -239,21 +243,17 @@ export function CapitalGainsTab() {
   if (transactions.length === 0) {
     return (
       <div className="space-y-4">
-        <h2 className="font-display text-xl font-semibold text-mist">Capital Gains</h2>
-        <p className="text-sm text-mist-400">Import transactions first to see matched buy/sell pairs and P&amp;L.</p>
+        <PageHeader title="Capital Gains" subtitle="Import transactions first to see matched buy/sell pairs and P&amp;L." />
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="font-display text-xl font-semibold text-mist">Capital Gains</h2>
-        <p className="mt-1 text-sm text-mist-400">
-          Realized gains with matched acquisitions — same concept as Koinly&apos;s{' '}
-          <em>Capital gains</em> report or CoinTracker&apos;s <em>Tax Center</em> disposal view.
-        </p>
-      </div>
+      <PageHeader
+        title="Capital Gains"
+        subtitle="Realized gains with matched acquisitions — disposal-level detail for tax filing."
+      />
 
       <div className="flex flex-wrap items-center gap-3">
         <select

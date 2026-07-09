@@ -7,15 +7,56 @@
     color-scheme: light;
   }
   ::selection {
-    background-color: rgba(124, 92, 252, 0.22);
+    background-color: rgba(20, 184, 166, 0.2);
   }
   * {
-    scrollbar-color: #D6C9F5 #F8F6FE;
+    scrollbar-color: #CBD5E1 #F4F7FA;
   }
 }
 
 @layer components {
   .tabular-figures {
     font-variant-numeric: tabular-nums;
+  }
+
+  .page-title {
+    @apply text-2xl font-bold tracking-tight text-ink-950;
+  }
+
+  .page-subtitle {
+    @apply mt-2 max-w-2xl text-sm leading-relaxed text-mist-400;
+  }
+
+  .sl-select {
+    @apply h-9 rounded-md border border-ink-700 bg-ink-800 px-3 text-sm text-mist shadow-soft
+      transition-colors focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20;
+  }
+
+  .toolbar-card {
+    @apply flex flex-wrap items-center gap-3 rounded-lg border border-ink-700 bg-ink-800 p-4 shadow-soft;
+  }
+
+  .stat-card {
+    @apply rounded-lg border border-ink-700 bg-ink-800 p-5 shadow-soft transition-shadow hover:shadow-card-hover;
+  }
+
+  .stat-card-featured {
+    @apply border-emerald/25 bg-gradient-to-br from-ink-800 to-teal-50 shadow-card;
+  }
+
+  .data-panel {
+    @apply overflow-hidden rounded-lg border border-ink-700 bg-ink-800 shadow-card;
+  }
+
+  .data-panel-head {
+    @apply flex items-center justify-between border-b border-ink-700 bg-ink-900/80 px-5 py-4;
+  }
+
+  .alert-warning {
+    @apply grid grid-cols-[auto_1fr] gap-3.5 rounded-lg border border-amber-200 bg-gradient-to-br from-amber-50 to-amber-50/50 p-4 shadow-soft;
+  }
+
+  .empty-state {
+    @apply rounded-lg border border-dashed border-ink-600 bg-ink-800 px-6 py-14 text-center text-sm text-mist-400;
   }
 }
