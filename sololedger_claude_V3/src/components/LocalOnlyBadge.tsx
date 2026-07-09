@@ -1,11 +1,6 @@
 import { useSyncExternalStore } from 'react';
+import { cn } from '@/lib/utils';
 
-/**
- * Always-visible reminder that no data has left the device. This is the
- * app's signature element: it's a live status (not decoration) — it flips
- * to a warning tone the moment the user enables the optional price API or
- * RPC lookup, so the privacy trade-off is never silent or buried in Settings.
- */
 let listeners: (() => void)[] = [];
 let networkFeaturesEnabled = false;
 
@@ -26,18 +21,25 @@ export function LocalOnlyBadge() {
 
   return (
     <div
-      className={
-        'flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-medium ' +
-        (enabled ? 'border-gold/40 bg-gold/15 text-gold-600' : 'border-emerald/30 bg-emerald/15 text-emerald-600')
-      }
+      className={cn(
+        'inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 text-[0.625rem] font-semibold uppercase tracking-wider',
+        enabled
+          ? 'border-amber-300/40 bg-amber-500/10 text-amber-200'
+          : 'border-white/12 bg-white/[0.06] text-slate-200 shadow-[inset_0_1px_0_rgba(255,255,255,0.06)]'
+      )}
       title={
         enabled
           ? 'You have enabled an optional network feature (price lookup or RPC). Everything else stays local.'
           : 'No data has left this device. All calculations and storage are local to your browser.'
       }
     >
-      <span className={'h-1.5 w-1.5 rounded-full ' + (enabled ? 'bg-gold' : 'bg-emerald animate-pulse')} />
-      {enabled ? 'Local + 1 network feature on' : '100% local'}
+      <span
+        className={cn(
+          'h-1.5 w-1.5 rounded-full',
+          enabled ? 'bg-gold' : 'animate-pulse bg-emerald-400 shadow-[0_0_0_3px_rgba(45,212,191,0.2)]'
+        )}
+      />
+      {enabled ? 'Local + network on' : '100% Local'}
     </div>
   );
 }

@@ -189,7 +189,7 @@ export function AiAdvisor() {
                 href="https://openrouter.ai/keys"
                 target="_blank"
                 rel="noreferrer"
-                className="text-violet underline"
+                className="text-emerald-600 underline"
               >
                 openrouter.ai/keys
               </a>
@@ -208,7 +208,7 @@ export function AiAdvisor() {
           {/* Header */}
           <div className="flex shrink-0 items-center justify-between border-b border-ink-700 bg-ink-800 px-4 py-3">
             <div className="flex items-center gap-2">
-              <Bot className="h-5 w-5 text-violet" />
+              <Bot className="h-5 w-5 text-emerald-600" />
               <span className="text-sm font-semibold text-mist">AI Tax Advisor</span>
             </div>
             <div className="flex items-center gap-2">
@@ -244,7 +244,7 @@ export function AiAdvisor() {
                     <button
                       key={q}
                       onClick={() => void sendMessage(q)}
-                      className="block w-full rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-left text-xs text-mist-300 hover:border-violet hover:bg-ink-700"
+                      className="block w-full rounded-lg border border-ink-600 bg-ink-800 px-3 py-2 text-left text-xs text-mist-300 hover:border-emerald hover:bg-ink-700"
                     >
                       {q}
                     </button>
@@ -258,7 +258,7 @@ export function AiAdvisor() {
                 <div
                   className={`max-w-[85%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
                     msg.role === 'user'
-                      ? 'bg-violet text-white'
+                      ? 'bg-emerald text-white'
                       : 'bg-ink-800 text-mist-200'
                   }`}
                 >
@@ -299,7 +299,7 @@ export function AiAdvisor() {
               <button
                 onClick={() => void sendMessage(input)}
                 disabled={loading || !input.trim()}
-                className="shrink-0 text-violet disabled:text-mist-400 hover:text-violet/80"
+                className="shrink-0 text-emerald-600 disabled:text-mist-400 hover:text-emerald-600/80"
               >
                 <Send className="h-4 w-4" />
               </button>
@@ -316,7 +316,7 @@ export function AiAdvisor() {
         onClick={() => setOpen((o) => !o)}
         title="AI Tax Advisor"
         className={`flex h-14 w-14 items-center justify-center rounded-full shadow-lg ring-1 transition ${
-          open ? 'bg-violet ring-violet/40 text-white' : 'bg-ink-700 ring-ink-600 text-violet hover:bg-ink-600'
+          open ? 'bg-emerald ring-emerald/40 text-white' : 'bg-ink-700 ring-ink-600 text-emerald-600 hover:bg-ink-600'
         }`}
       >
         {open ? <X className="h-5 w-5" /> : <Bot className="h-6 w-6" />}

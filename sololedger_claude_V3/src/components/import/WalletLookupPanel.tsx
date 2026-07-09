@@ -13,7 +13,7 @@ import { Badge } from '@/components/ui/card';
 import { AlertTriangle, RefreshCw, Trash2, Pencil, Check, X } from 'lucide-react';
 
 const inputCls =
-  'mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm text-mist focus:border-violet focus:outline-none';
+  'mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm text-mist focus:border-emerald focus:outline-none';
 
 /** Detect blockchain from wallet address format — works for BTC, Solana; EVM still needs chain selection. */
 function detectChainFromAddress(address: string): ChainId | null {
@@ -260,7 +260,7 @@ export function WalletLookupPanel() {
                           if (e.key === 'Enter') void saveLabel(row.id);
                           if (e.key === 'Escape') setEditingLabel(null);
                         }}
-                        className="w-44 rounded border border-violet bg-ink-800 px-2 py-0.5 text-xs text-mist focus:outline-none"
+                        className="w-44 rounded border border-emerald bg-ink-800 px-2 py-0.5 text-xs text-mist focus:outline-none"
                         placeholder="e.g. My Phantom wallet"
                       />
                       <button onClick={() => void saveLabel(row.id)} className="text-emerald-600"><Check className="h-3.5 w-3.5" /></button>

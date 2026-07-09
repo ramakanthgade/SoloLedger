@@ -1,61 +1,72 @@
 import type { Config } from 'tailwindcss';
 
+/** Modern Fintech v3 — navy header, teal accents, slate neutrals */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
       colors: {
-        // Same class names as before (ink-*, mist-*, emerald, gold, loss) so
-        // every component keeps working — only the values changed, from a
-        // dark "ledger" palette to a light, warm, playful one.
         ink: {
-          DEFAULT: '#F8F6FE', // page background — soft periwinkle-white
-          950: '#332B5C',      // dark plum, used only as text-on-accent
-          900: '#F0EBFC',      // soft lavender tint (expanded/recessed panels)
-          800: '#FFFFFF',      // card & input background
-          700: '#E8E1F9',      // default border
-          600: '#D6C9F5'       // stronger border / dashed accents
+          DEFAULT: '#F4F7FA',
+          950: '#0B1F3A',
+          900: '#F8FAFC',
+          800: '#FFFFFF',
+          700: '#E2E8F0',
+          600: '#CBD5E1'
         },
         mist: {
-          DEFAULT: '#372F5C', // primary text — warm deep plum, not black
-          400: '#7B72A3',      // secondary / muted text
-          300: '#9A91C0',      // lighter muted text
-          100: '#F5F2FF'
+          DEFAULT: '#1E293B',
+          400: '#64748B',
+          300: '#94A3B8',
+          100: '#F1F5F9'
         },
         emerald: {
-          DEFAULT: '#14C9B4', // brand teal — privacy, success, primary actions
-          600: '#0FA895',
-          400: '#5BE0D0'
+          DEFAULT: '#14B8A6',
+          600: '#0D9488',
+          400: '#2DD4BF'
         },
         gold: {
-          DEFAULT: '#FFB020', // sunny amber — income, highlights
-          600: '#E89A15',
-          400: '#FFC85C'
+          DEFAULT: '#D97706',
+          600: '#B45309',
+          400: '#F59E0B'
         },
-        loss: '#FF6B6B',      // coral — losses, warnings
+        loss: '#DC2626',
         violet: {
-          DEFAULT: '#7C5CFC', // second brand accent — playful nav/highlights
-          600: '#6A46F5',
-          100: '#EEE8FF'
+          DEFAULT: '#0B1F3A',
+          600: '#0F2744',
+          100: '#F0FDFA'
         },
         pink: {
-          DEFAULT: '#FF6FA5',
-          100: '#FFE6F0'
+          DEFAULT: '#0D9488',
+          100: '#F0FDFA'
+        },
+        navy: {
+          DEFAULT: '#0B1F3A',
+          800: '#0F2744',
+          700: '#152D4A'
+        },
+        teal: {
+          DEFAULT: '#14B8A6',
+          600: '#0D9488',
+          50: '#F0FDFA'
         }
       },
       fontFamily: {
-        display: ['"Baloo 2"', '"Plus Jakarta Sans"', 'sans-serif'],
-        body: ['"Plus Jakarta Sans"', 'sans-serif'],
-        mono: ['"JetBrains Mono"', 'monospace']
+        display: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+        body: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+        mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace']
       },
       borderRadius: {
-        sm: '8px',
-        DEFAULT: '14px',
-        lg: '20px'
+        sm: '6px',
+        DEFAULT: '8px',
+        lg: '12px',
+        xl: '16px'
       },
       boxShadow: {
-        soft: '0 2px 10px -2px rgba(124, 92, 252, 0.12), 0 1px 2px rgba(51, 43, 92, 0.06)',
-        pop: '0 6px 20px -4px rgba(124, 92, 252, 0.25)'
+        soft: '0 1px 2px rgba(15, 39, 68, 0.04), 0 0 0 1px rgba(15, 39, 68, 0.03)',
+        card: '0 1px 3px rgba(15, 39, 68, 0.06), 0 1px 2px rgba(15, 39, 68, 0.04)',
+        'card-hover': '0 8px 24px rgba(15, 39, 68, 0.07), 0 2px 6px rgba(15, 39, 68, 0.04)',
+        pop: '0 4px 14px rgba(20, 184, 166, 0.22)'
       }
     }
   },

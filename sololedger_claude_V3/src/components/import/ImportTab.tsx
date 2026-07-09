@@ -242,7 +242,7 @@ export function ImportTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="font-display text-xl font-semibold text-mist">Bring in your transactions</h2>
+        <h2 className="page-title">Bring in your transactions</h2>
         <p className="mt-1 text-sm text-mist-400">
           Everything's read right here in your browser — nothing gets uploaded anywhere.
         </p>
@@ -255,7 +255,7 @@ export function ImportTab() {
             onClick={() => setMode(m.id)}
             className={cn(
               'rounded-full px-4 py-2 text-sm font-medium transition-all hover:scale-[1.03] active:scale-95',
-              mode === m.id ? 'bg-violet text-white shadow-pop' : 'bg-ink-700/50 text-mist-400 hover:text-mist'
+              mode === m.id ? 'bg-emerald text-white shadow-pop' : 'bg-ink-700/50 text-mist-400 hover:text-mist'
             )}
           >
             {m.label}
@@ -274,12 +274,12 @@ export function ImportTab() {
             onDrop={onDrop}
             className={
               'flex flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-14 text-center transition-colors ' +
-              (dragOver ? 'border-violet bg-violet-100' : 'border-ink-600 bg-ink-800')
+              (dragOver ? 'border-emerald bg-emerald-100' : 'border-ink-600 bg-ink-800')
             }
           >
             {saving ? (
               <>
-                <Loader2 className="mb-3 h-6 w-6 animate-spin text-violet" />
+                <Loader2 className="mb-3 h-6 w-6 animate-spin text-emerald-600" />
                 <p className="text-sm text-mist-300">
                   {importPhase === 'pricing'
                     ? 'Fetching missing market prices…'
@@ -288,7 +288,7 @@ export function ImportTab() {
               </>
             ) : (
               <>
-                <Upload className="mb-3 h-6 w-6 text-violet" />
+                <Upload className="mb-3 h-6 w-6 text-emerald-600" />
                 <p className="text-sm text-mist-300">Drop your CSV here — we'll import it automatically, or</p>
                 <label className="mt-3">
                   <input
@@ -302,7 +302,7 @@ export function ImportTab() {
                       e.target.value = '';
                     }}
                   />
-                  <span className="cursor-pointer rounded-full bg-violet px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-violet-600 active:scale-95">
+                  <span className="cursor-pointer rounded-full bg-emerald px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-emerald-600 active:scale-95">
                     Choose file
                   </span>
                 </label>
@@ -321,7 +321,7 @@ export function ImportTab() {
           )}
 
           {extractionNote && (
-            <div className="rounded-lg border border-violet/30 bg-violet/10 px-4 py-3 text-sm text-mist-300">
+            <div className="rounded-lg border border-emerald/30 bg-emerald/10 px-4 py-3 text-sm text-mist-300">
               {extractionNote}
             </div>
           )}
@@ -425,8 +425,8 @@ export function ImportTab() {
             </div>
           ))}
           {conversionNote && (
-            <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-mist-300">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-violet" />
+            <div className="flex items-start gap-2 rounded-lg border border-emerald/30 bg-emerald/10 px-4 py-2.5 text-sm text-mist-300">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
               <span>{conversionNote}</span>
             </div>
           )}
