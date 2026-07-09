@@ -18,6 +18,8 @@ export interface UserRecord {
   subscriptionStatus: 'active' | 'trialing' | 'past_due' | 'canceled' | 'none';
   subscriptionExpiresAt: string | null;
   stripeCustomerId?: string;
+  /** Admin override — if set, replaces plan default tx limit */
+  customTxLimit?: number | null;
   createdAt: string;
 }
 

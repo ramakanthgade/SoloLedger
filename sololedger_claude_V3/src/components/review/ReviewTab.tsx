@@ -454,10 +454,10 @@ export function ReviewTab() {
     );
   };
 
-  const exportFilteredPdf = () => {
+  const exportFilteredPdf = async () => {
     if (!confirmPdfExport()) return;
     const cur = (settings?.reportingCurrency ?? 'INR').toUpperCase();
-    const { doc, startY } = createBrandedPdf({
+    const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Review Transactions',
       metaLines: [`Rows: ${filtered.length} · Currency: ${cur}`],
       landscape: true

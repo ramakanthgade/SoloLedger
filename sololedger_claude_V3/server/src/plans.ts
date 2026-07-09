@@ -34,7 +34,8 @@ export const PLANS: Record<Exclude<PlanId, 'trial'>, Plan> = {
 
 export const TRIAL_TX_LIMIT = 25;
 
-export function getPlanTxLimit(plan: PlanId): number {
+export function getPlanTxLimit(plan: PlanId, customTxLimit?: number | null): number {
+  if (customTxLimit != null && customTxLimit > 0) return customTxLimit;
   if (plan === 'trial') return TRIAL_TX_LIMIT;
   return PLANS[plan].txLimit;
 }

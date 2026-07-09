@@ -176,9 +176,9 @@ export function PortfolioTab() {
     );
   };
 
-  const exportHoldingsPdf = () => {
+  const exportHoldingsPdf = async () => {
     if (!confirmPdfExport()) return;
-    const { doc, startY } = createBrandedPdf({
+    const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Portfolio Holdings',
       metaLines: [
         `Period: ${selectedFy == null ? 'All time' : getFyLabel(selectedFy, jurisdiction)} · Wallet: ${selectedWallet}`,

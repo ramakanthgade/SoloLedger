@@ -51,8 +51,8 @@ class SoloLedgerDB extends Dexie {
   priceCache!: Table<PriceCacheRow, string>;
   csvImports!: Table<CsvImportRow, string>;
 
-  constructor() {
-    super('sololedger_crypto_tax_db');
+  constructor(name: string) {
+    super(name);
     this.version(1).stores({
       transactions: 'id, timestamp, asset, type, source, *flags',
       lots: 'id, asset, acquiredAt, sourceTxId',
@@ -104,7 +104,34 @@ class SoloLedgerDB extends Dexie {
   }
 }
 
-export const db = new SoloLedgerDB();
+const LOCAL_DB_NAME = 'sololedger_local';
+
+function createDb(name: string): SoloLedgerDB {
+  return new SoloLedgerDB(name);
+}
+
+/** Active IndexedDB — swapped per user in SaaS mode. */
+export let db = createDb(LOCAL_DB_NAME);
+
+let activeUserId: string | null = null;
+
+export function getActiveDatabaseUserId(): string | null {
+  return activeUserId;
+}
+
+/** In SaaS mode each account gets an isolated database. Standalone uses one shared local DB. */
+export async function switchUserDatabase(userId: string | null): Promise<void> {
+  const nextName = userId ? `sololedger_${userId}` : LOCAL_DB_NAME;
+  if (activeUserId === userId && db.name === nextName) return;
+  try {
+    await db.close();
+  } catch {
+    /* first open */
+  }
+  activeUserId = userId;
+  db = createDb(nextName);
+  await db.open();
+}
 
 export const DEFAULT_SETTINGS: TaxSettings = {
   jurisdiction: 'IN',

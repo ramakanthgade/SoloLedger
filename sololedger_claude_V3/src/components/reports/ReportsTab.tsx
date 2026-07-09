@@ -79,7 +79,7 @@ export function ReportsTab() {
   const exportPdf = async () => {
     const txMap = await buildDeidentifiedTxMap();
     const fmt = (n: number) => formatAmountForExport(n, rules.currency);
-    const { doc, startY } = createBrandedPdf({
+    const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Capital Gains Report',
       metaLines: [
         `Jurisdiction: ${rules.label} · Tax year: ${yearLabel} · Method: ${method}`,

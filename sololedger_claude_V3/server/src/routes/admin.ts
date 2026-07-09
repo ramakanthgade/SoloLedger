@@ -15,7 +15,7 @@ import {
   type AuthedRequest
 } from '../auth.js';
 import { getServerConfig, updateServerConfig } from '../store.js';
-import { getStore } from '../store.js';
+import { getStore, upsertUser, findUserById, type UserRecord } from '../store.js';
 import { publicUser } from '../auth.js';
 
 export const adminRouter = Router();
@@ -83,6 +83,28 @@ adminRouter.delete('/api-keys/:name', (req, res) => {
 
 adminRouter.get('/api-keys-status', (_req, res) => {
   res.json(apiKeysStatus());
+});
+
+adminRouter.patch('/users/:id', (req, res) => {
+  const user = findUserById(req.params.id);
+  if (!user) {
+    res.status(404).json({ error: 'User not found' });
+    return;
+  }
+  const body = req.body ?? {};
+  const updated: UserRecord = {
+    ...user,
+    plan: body.plan ?? user.plan,
+    subscriptionStatus: body.subscriptionStatus ?? user.subscriptionStatus,
+    customTxLimit:
+      body.customTxLimit === null || body.customTxLimit === ''
+        ? undefined
+        : body.customTxLimit != null
+          ? Number(body.customTxLimit)
+          : user.customTxLimit
+  };
+  upsertUser(updated);
+  res.json({ user: publicUser(updated) });
 });
 
 adminRouter.post('/check-subscription', authMiddleware, (req: AuthedRequest, res) => {

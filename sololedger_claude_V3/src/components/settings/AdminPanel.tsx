@@ -1,111 +1,67 @@
 import { useEffect, useState } from 'react';
-import { useAuth } from '@/lib/saas/authContext';
-import { apiFetch } from '@/lib/saas/api';
-import { invalidateServerConfigCache } from '@/lib/saas/effectiveSettings';
-import { Button } from '@/components/ui/button';
+import { apiFetch, type PublicUser } from '@/lib/saas/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-
-interface ServerConfig {
-  priceApiEnabled: boolean;
-  rpcLookupEnabled: boolean;
-  aiAdvisorEnabled: boolean;
-}
+import { Button } from '@/components/ui/button';
 
 interface KeyStatus {
-  alchemy: boolean;
-  coingecko: boolean;
-  helius: boolean;
-  moralis: boolean;
-  birdeye: boolean;
-  noves: boolean;
-  openrouter: boolean;
-  etherscan: boolean;
+  alchemyApiKey: boolean;
+  coingeckoApiKey: boolean;
+  heliusApiKey: boolean;
+  moralisApiKey: boolean;
+  birdeyeApiKey: boolean;
+  novesApiKey: boolean;
+  openrouterApiKey: boolean;
+  etherscanApiKey: boolean;
 }
 
+const PLANS = ['trial', 'starter', 'standard', 'pro'] as const;
+
 export function AdminPanel() {
-  const { user, logout } = useAuth();
-  const [config, setConfig] = useState<ServerConfig | null>(null);
   const [keys, setKeys] = useState<KeyStatus | null>(null);
-  const [users, setUsers] = useState<unknown[]>([]);
+  const [users, setUsers] = useState<PublicUser[]>([]);
   const [message, setMessage] = useState<string | null>(null);
 
+  const load = async () => {
+    const [keyRes, usersRes] = await Promise.all([
+      apiFetch('/api/admin/api-keys-status'),
+      apiFetch('/api/admin/users')
+    ]);
+    if (keyRes.ok) setKeys(await keyRes.json());
+    if (usersRes.ok) setUsers((await usersRes.json()).users);
+  };
+
   useEffect(() => {
-    if (user?.role !== 'admin') return;
-    void (async () => {
-      const [cfgRes, keyRes, usersRes] = await Promise.all([
-        apiFetch('/api/admin/config'),
-        apiFetch('/api/admin/api-keys-status'),
-        apiFetch('/api/admin/users')
-      ]);
-      if (cfgRes.ok) setConfig((await cfgRes.json()).config);
-      if (keyRes.ok) setKeys(await keyRes.json());
-      if (usersRes.ok) setUsers((await usersRes.json()).users);
-    })();
-  }, [user]);
+    void load();
+  }, []);
 
-  if (user?.role !== 'admin') return null;
-
-  const saveConfig = async (patch: Partial<ServerConfig>) => {
-    const res = await apiFetch('/api/admin/config', {
-      method: 'PUT',
-      body: JSON.stringify({ ...config, ...patch })
+  const saveUser = async (id: string, patch: Record<string, unknown>) => {
+    const res = await apiFetch(`/api/admin/users/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch)
     });
     if (res.ok) {
       const data = await res.json();
-      setConfig(data.config);
-      invalidateServerConfigCache();
-      setMessage('Saved — subscribers will see updated defaults on next load.');
+      setUsers((prev) => prev.map((u) => (u.id === id ? data.user : u)));
+      setMessage('User updated.');
     }
   };
 
   return (
-    <div className="max-w-2xl space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h2 className="page-title">Admin</h2>
-          <p className="mt-1 text-sm text-mist-400">API keys live in server .env — never in the browser.</p>
-        </div>
-        <Button variant="ghost" onClick={logout}>Sign out</Button>
+    <div className="max-w-4xl space-y-6">
+      <div>
+        <h2 className="page-title">Admin</h2>
+        <p className="mt-1 text-sm text-mist-400">
+          Manage subscribers here. API keys and network defaults are in <strong>Settings</strong>.
+        </p>
       </div>
 
       <Card>
-        <CardHeader><CardTitle>Subscriber defaults</CardTitle></CardHeader>
-        <CardContent className="space-y-3 text-sm text-mist-300">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={config?.priceApiEnabled ?? true}
-              onChange={(e) => void saveConfig({ priceApiEnabled: e.target.checked })}
-            />
-            Live price lookup (on for all subscribers by default)
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={config?.rpcLookupEnabled ?? true}
-              onChange={(e) => void saveConfig({ rpcLookupEnabled: e.target.checked })}
-            />
-            Wallet address lookup (on for all subscribers by default)
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={config?.aiAdvisorEnabled ?? true}
-              onChange={(e) => void saveConfig({ aiAdvisorEnabled: e.target.checked })}
-            />
-            AI Tax Advisor
-          </label>
-          {message && <p className="text-xs text-emerald-600">{message}</p>}
-        </CardContent>
-      </Card>
-
-      <Card>
         <CardHeader><CardTitle>API keys on server</CardTitle></CardHeader>
-        <CardContent className="grid grid-cols-2 gap-2 text-sm">
+        <CardContent className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
           {keys &&
             Object.entries(keys).map(([name, ok]) => (
               <div key={name} className={ok ? 'text-emerald-600' : 'text-loss'}>
-                {name}: {ok ? 'configured' : 'missing'}
+                {name.replace('ApiKey', '')}: {ok ? '✓' : 'missing'}
               </div>
             ))}
         </CardContent>
@@ -113,10 +69,97 @@ export function AdminPanel() {
 
       <Card>
         <CardHeader><CardTitle>Users ({users.length})</CardTitle></CardHeader>
-        <CardContent className="max-h-48 overflow-auto text-xs text-mist-400">
-          <pre>{JSON.stringify(users, null, 2)}</pre>
+        <CardContent className="overflow-x-auto">
+          <table className="w-full min-w-[640px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-ink-700 text-xs uppercase tracking-wide text-mist-400">
+                <th className="py-2 pr-3">Email</th>
+                <th className="py-2 pr-3">Role</th>
+                <th className="py-2 pr-3">Plan</th>
+                <th className="py-2 pr-3">Status</th>
+                <th className="py-2 pr-3">Tx limit</th>
+                <th className="py-2">Save</th>
+              </tr>
+            </thead>
+            <tbody>
+              {users.map((u) => (
+                <UserRow key={u.id} user={u} onSave={(patch) => saveUser(u.id, patch)} />
+              ))}
+            </tbody>
+          </table>
+          {message && <p className="mt-3 text-xs text-emerald-600">{message}</p>}
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+function UserRow({
+  user,
+  onSave
+}: {
+  user: PublicUser;
+  onSave: (patch: Record<string, unknown>) => void;
+}) {
+  const [plan, setPlan] = useState(user.plan);
+  const [status, setStatus] = useState(user.subscriptionStatus);
+  const [txLimit, setTxLimit] = useState(String(user.txLimit));
+
+  return (
+    <tr className="border-b border-ink-700/60">
+      <td className="py-3 pr-3 font-medium text-mist">{user.email}</td>
+      <td className="py-3 pr-3 capitalize text-mist-300">{user.role}</td>
+      <td className="py-3 pr-3">
+        <select
+          value={plan}
+          onChange={(e) => setPlan(e.target.value as PublicUser['plan'])}
+          className="sl-select text-xs"
+          disabled={user.role === 'admin'}
+        >
+          {PLANS.map((p) => (
+            <option key={p} value={p}>{p}</option>
+          ))}
+        </select>
+      </td>
+      <td className="py-3 pr-3">
+        <select
+          value={status}
+          onChange={(e) => setStatus(e.target.value)}
+          className="sl-select text-xs"
+          disabled={user.role === 'admin'}
+        >
+          {['active', 'trialing', 'past_due', 'canceled', 'none'].map((s) => (
+            <option key={s} value={s}>{s}</option>
+          ))}
+        </select>
+      </td>
+      <td className="py-3 pr-3">
+        <input
+          type="number"
+          min={1}
+          value={txLimit}
+          onChange={(e) => setTxLimit(e.target.value)}
+          className="w-24 rounded border border-ink-600 bg-ink-800 px-2 py-1 text-xs"
+          disabled={user.role === 'admin'}
+        />
+      </td>
+      <td className="py-3">
+        {user.role !== 'admin' && (
+          <Button
+            variant="secondary"
+            className="text-xs"
+            onClick={() =>
+              onSave({
+                plan,
+                subscriptionStatus: status,
+                customTxLimit: Number(txLimit)
+              })
+            }
+          >
+            Save
+          </Button>
+        )}
+      </td>
+    </tr>
   );
 }

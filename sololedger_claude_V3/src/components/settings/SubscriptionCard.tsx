@@ -1,14 +1,54 @@
 import { useState } from 'react';
 import { useAuth } from '@/lib/saas/authContext';
 import { startCheckout } from '@/lib/saas/api';
-import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Sparkles, Zap, Crown } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
-const PLANS = [
-  { id: 'starter', name: 'Starter', price: '$50/yr', limit: '100 transactions' },
-  { id: 'standard', name: 'Standard', price: '$100/yr', limit: '500 transactions' },
-  { id: 'pro', name: 'Pro', price: '$500/yr', limit: '1,000 transactions' }
-] as const;
+type PlanCard = {
+  id: 'starter' | 'standard' | 'pro';
+  name: string;
+  price: string;
+  period: string;
+  limit: string;
+  icon: typeof Zap;
+  accent: string;
+  ring: string;
+  featured?: boolean;
+};
+
+const PLANS: PlanCard[] = [
+  {
+    id: 'starter',
+    name: 'Starter',
+    price: '$50',
+    period: '/year',
+    limit: '100 transactions',
+    icon: Zap,
+    accent: 'from-teal-500 to-emerald-600',
+    ring: 'ring-teal-400/40'
+  },
+  {
+    id: 'standard',
+    name: 'Standard',
+    price: '$100',
+    period: '/year',
+    limit: '500 transactions',
+    icon: Sparkles,
+    accent: 'from-emerald-500 to-teal-600',
+    ring: 'ring-emerald-400/50',
+    featured: true
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    price: '$500',
+    period: '/year',
+    limit: '1,000 transactions',
+    icon: Crown,
+    accent: 'from-navy to-teal-700',
+    ring: 'ring-navy/30'
+  }
+];
 
 export function SubscriptionCard() {
   const { user } = useAuth();
@@ -32,40 +72,62 @@ export function SubscriptionCard() {
   };
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Subscription</CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <p className="text-sm text-mist-300">
-          Plan: <strong className="text-mist capitalize">{user.plan}</strong>
-          {' · '}
-          Limit: <strong className="text-mist">{user.txLimit.toLocaleString()} transactions</strong>
+    <div className="overflow-hidden rounded-2xl border border-teal-200 bg-gradient-to-br from-teal-50 via-white to-emerald-50 shadow-md">
+      <div className="border-b border-teal-100 bg-gradient-to-r from-navy to-teal-800 px-6 py-5 text-white">
+        <p className="text-xs font-semibold uppercase tracking-[0.2em] text-teal-100">Your subscription</p>
+        <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h3 className="font-display text-2xl font-bold capitalize">{user.plan} plan</h3>
+            <p className="mt-1 text-sm text-teal-100">
+              Up to <strong className="text-white">{user.txLimit.toLocaleString()}</strong> transactions per year
+            </p>
+          </div>
           {!user.subscriptionActive && (
-            <span className="ml-2 text-loss">(inactive — renew to use wallet lookup & pricing)</span>
+            <span className="rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-navy">Renew to continue</span>
           )}
-        </p>
+        </div>
         {user.plan === 'trial' && (
-          <p className="text-xs text-mist-400">
-            14-day trial includes wallet lookup and live pricing via SoloLedger&apos;s API keys — no setup required.
+          <p className="mt-3 text-sm text-teal-50">
+            14-day trial — wallet lookup & live pricing included. No API keys to configure.
           </p>
         )}
-        <div className="grid gap-2 sm:grid-cols-3">
-          {PLANS.map((p) => (
-            <Button
+      </div>
+
+      <div className="grid gap-4 p-6 sm:grid-cols-3">
+        {PLANS.map((p) => {
+          const Icon = p.icon;
+          return (
+            <button
               key={p.id}
-              variant="secondary"
+              type="button"
               disabled={busy === p.id}
               onClick={() => upgrade(p.id)}
-              className="flex h-auto flex-col items-start gap-1 py-3 text-left"
+              className={cn(
+                'group relative flex flex-col rounded-xl border bg-white p-4 text-left shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg',
+                p.featured ? 'border-emerald-300 ring-2 ring-emerald-300/50' : 'border-slate-200',
+                busy === p.id && 'opacity-60'
+              )}
             >
-              <span className="font-semibold">{p.name}</span>
-              <span className="text-xs opacity-80">{p.price} · {p.limit}</span>
-            </Button>
-          ))}
-        </div>
-        {error && <p className="text-sm text-loss">{error}</p>}
-      </CardContent>
-    </Card>
+              {p.featured && (
+                <span className="absolute -top-2.5 left-4 rounded-full bg-emerald-500 px-2 py-0.5 text-[10px] font-bold uppercase text-white">
+                  Popular
+                </span>
+              )}
+              <div className={cn('mb-3 inline-flex h-10 w-10 items-center justify-center rounded-lg bg-gradient-to-br text-white', p.accent)}>
+                <Icon className="h-5 w-5" />
+              </div>
+              <span className="text-lg font-bold text-navy">{p.name}</span>
+              <span className="mt-1 font-display text-2xl font-bold text-emerald-700">
+                {p.price}
+                <span className="text-sm font-normal text-mist-400">{p.period}</span>
+              </span>
+              <span className="mt-2 text-sm text-mist-400">{p.limit}</span>
+              <span className="mt-4 text-sm font-semibold text-teal-700 group-hover:underline">Upgrade →</span>
+            </button>
+          );
+        })}
+      </div>
+      {error && <p className="px-6 pb-4 text-sm text-loss">{error}</p>}
+    </div>
   );
 }

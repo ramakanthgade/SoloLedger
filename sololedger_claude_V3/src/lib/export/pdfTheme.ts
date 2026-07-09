@@ -17,32 +17,79 @@ export type BrandedPdfOptions = {
 };
 
 const HEADER_H = 24;
+let logoCache: string | null | undefined;
 
-/** Create a jsPDF with SoloLedger navy header bar and branding. Returns doc and Y for first table. */
-export function createBrandedPdf({ reportTitle, metaLines = [], landscape }: BrandedPdfOptions): {
+async function fetchLogoPngDataUrl(): Promise<string | null> {
+  if (logoCache !== undefined) return logoCache;
+  try {
+    const url = `${import.meta.env.BASE_URL}assets/logo-ledger-shield.svg`;
+    const res = await fetch(url);
+    if (!res.ok) {
+      logoCache = null;
+      return null;
+    }
+    const svgText = await res.text();
+    const blob = new Blob([svgText], { type: 'image/svg+xml' });
+    const objectUrl = URL.createObjectURL(blob);
+    logoCache = await new Promise<string | null>((resolve) => {
+      const img = new Image();
+      img.onload = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(null);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, 128, 128);
+        URL.revokeObjectURL(objectUrl);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        resolve(null);
+      };
+      img.src = objectUrl;
+    });
+    return logoCache;
+  } catch {
+    logoCache = null;
+    return null;
+  }
+}
+
+/** Create a jsPDF with SoloLedger navy header bar, logo, and branding. */
+export async function createBrandedPdf({ reportTitle, metaLines = [], landscape }: BrandedPdfOptions): Promise<{
   doc: jsPDF;
   startY: number;
-} {
+}> {
   const doc = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'mm', format: 'a4' });
   const pageW = landscape ? 297 : 210;
 
   doc.setFillColor(...PDF.navy);
   doc.rect(0, 0, pageW, HEADER_H, 'F');
 
+  const logo = await fetchLogoPngDataUrl();
+  if (logo) {
+    doc.addImage(logo, 'PNG', 12, 4.5, 15, 15);
+  }
+
+  const textX = logo ? 30 : 14;
   doc.setTextColor(...PDF.white);
   doc.setFontSize(12);
   doc.setFont('helvetica', 'bold');
-  doc.text('SoloLedger', 14, 9);
+  doc.text('SoloLedger', textX, 9);
 
   doc.setFontSize(6.5);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(203, 213, 225);
-  doc.text('Private. Precise. Yours.', 14, 13.5);
+  doc.text('Private. Precise. Yours.', textX, 13.5);
 
   doc.setFontSize(9.5);
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(...PDF.white);
-  doc.text(reportTitle, 14, 19.5);
+  doc.text(reportTitle, textX, 19.5);
 
   let y = HEADER_H + 6;
   doc.setTextColor(...PDF.navy);

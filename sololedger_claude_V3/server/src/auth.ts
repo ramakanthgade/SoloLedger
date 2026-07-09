@@ -86,7 +86,8 @@ export function publicUser(user: UserRecord) {
     plan: user.plan,
     subscriptionStatus: user.subscriptionStatus,
     subscriptionExpiresAt: user.subscriptionExpiresAt,
-    txLimit: getPlanTxLimit(user.plan),
+    txLimit: getPlanTxLimit(user.plan, user.customTxLimit),
+    customTxLimit: user.customTxLimit ?? null,
     subscriptionActive: isSubscriptionActive(user)
   };
 }

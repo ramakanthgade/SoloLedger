@@ -15,6 +15,18 @@ import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
 import { makeId } from '@/lib/parsers/types';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+
+function hasRpcCredential(key?: string): boolean {
+  if (isSaasMode()) return true;
+  return Boolean(key?.trim());
+}
+
+function rpcCredential(key?: string): string {
+  return key?.trim() || (isSaasMode() ? SAAS_PROXY_KEY : '');
+}
 
 export type ChainId = 'bitcoin' | 'ethereum' | 'polygon' | 'arbitrum' | 'base' | 'bsc' | 'optimism' | 'avalanche' | 'solana' | 'custom_evm';
 
@@ -102,9 +114,6 @@ async function fetchBitcoin(address: string, baseUrl: string, asset: string): Pr
 
   return { transactions, warnings: [] };
 }
-
-import { isSaasMode, getApiBase } from '@/lib/saas/config';
-import { saasProxyFetch } from '@/lib/saas/api';
 
 function alchemyRpcUrl(network: string): string {
   if (isSaasMode()) {
@@ -763,13 +772,13 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
   }
   if (chain.provider === 'alchemy_evm') {
     // Moralis is the primary EVM source when key is provided — returns decoded + spam-flagged data
-    if (config.moralisApiKey) {
+    if (hasRpcCredential(config.moralisApiKey)) {
       const { getMoralisChain, fetchMoralisEvm } = await import('@/lib/rpc/moralis');
       const moralisChain = getMoralisChain(chain.id);
       if (moralisChain) {
         try {
-          const result = await fetchMoralisEvm(address, chain.id, chain.asset, config.moralisApiKey);
-          if (result.transactions.length > 0 || !config.alchemyApiKey) {
+          const result = await fetchMoralisEvm(address, chain.id, chain.asset, rpcCredential(config.moralisApiKey));
+          if (result.transactions.length > 0 || !hasRpcCredential(config.alchemyApiKey)) {
             return withDexSwapDetection({
               transactions: result.transactions,
               warnings: result.warnings.map((msg) => ({ address, message: msg }))
@@ -781,12 +790,12 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     if (chain.id === 'ethereum') {
       return withDexSwapDetection(await fetchEthereumAddress(address, config));
     }
-    if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key (or Moralis API key) in Settings first.');
+    if (!hasRpcCredential(config.alchemyApiKey)) throw new Error('Add your Alchemy API key (or Moralis API key) in Settings first.');
     return withDexSwapDetection(
       await fetchAlchemyEvm(
         address,
         chain.alchemyNetwork!,
-        config.alchemyApiKey,
+        rpcCredential(config.alchemyApiKey),
         chain.asset,
         chain.id,
         config.customApiKey
@@ -797,12 +806,12 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     // Helius is the primary Solana source when key is provided.
     // It returns pre-parsed type labels (SWAP, STAKE, NFT_SALE, etc.) including
     // Jupiter DCA fills with exact token amounts — eliminates need for Noves on Solana.
-    if (config.heliusApiKey) {
+    if (hasRpcCredential(config.heliusApiKey)) {
       try {
         const { fetchHeliusSolana } = await import('@/lib/rpc/helius');
         const result = await fetchHeliusSolana(
           address,
-          config.heliusApiKey,
+          rpcCredential(config.heliusApiKey),
           config.afterSignature ? 10 : 20,
           config.afterSignature,
           config.skipSignatures
@@ -821,8 +830,8 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     if (config.incrementalOnly) {
       return { transactions: [], warnings: [{ address, message: 'No new transactions since last sync.' }] };
     }
-    if (!config.alchemyApiKey) throw new Error('Add your Helius API key (or Alchemy API key) in Settings first.');
-    return withDexSwapDetection(await fetchAlchemySolana(address, config.alchemyApiKey));
+    if (!hasRpcCredential(config.alchemyApiKey)) throw new Error('Add your Helius API key (or Alchemy API key) in Settings first.');
+    return withDexSwapDetection(await fetchAlchemySolana(address, rpcCredential(config.alchemyApiKey)));
   }
   if (!config.customBaseUrl) throw new Error('Enter an explorer base URL.');
   return withDexSwapDetection(

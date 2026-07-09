@@ -14,7 +14,7 @@ export function BrandLogo({
   iconClassName
 }: BrandLogoProps) {
   const isLight = variant === 'light';
-  const iconSrc = isLight ? '/assets/logo-ledger-shield.svg' : '/assets/logo-ledger-shield-navy.svg';
+  const iconSrc = `${import.meta.env.BASE_URL}assets/${isLight ? 'logo-ledger-shield.svg' : 'logo-ledger-shield-navy.svg'}`;
 
   return (
     <div className={cn('flex items-center gap-3.5', className)}>

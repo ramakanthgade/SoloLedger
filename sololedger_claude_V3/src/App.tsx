@@ -11,6 +11,7 @@ import { SettingsTab } from '@/components/settings/SettingsTab';
 import { AdminPanel } from '@/components/settings/AdminPanel';
 import { AiAdvisor } from '@/components/ai/AiAdvisor';
 import { AuthGate } from '@/components/auth/AuthGate';
+import { UserProfileMenu } from '@/components/auth/UserProfileMenu';
 import { useAuth } from '@/lib/saas/authContext';
 import { useImportJob } from '@/lib/importJob';
 import {
@@ -38,26 +39,37 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 export default function App() {
-  const { user } = useAuth();
+  const { user, dbReady } = useAuth();
   const tabs = user?.role === 'admin' ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS;
   const [active, setActive] = useState<TabId>('import');
   const ActiveComponent = tabs.find((t) => t.id === active)!.component;
   const importState = useImportJob();
 
   useEffect(() => {
-    const key = 'sololedger_dedup_session';
+    const key = `sololedger_dedup_session_${user?.id ?? 'local'}`;
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
     void deduplicateTransactions();
-  }, []);
+  }, [user?.id]);
+
+  if (!dbReady) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-ink text-sm text-mist-400">
+        Loading your workspace…
+      </div>
+    );
+  }
 
   return (
     <AuthGate>
-    <div className="min-h-screen bg-ink">
+    <div className="min-h-screen bg-ink" key={user?.id ?? 'guest'}>
       <header className="bg-gradient-to-br from-navy via-navy-800 to-navy-700">
-        <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4 lg:px-8">
+        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
           <BrandLogo variant="light" />
-          <LocalOnlyBadge />
+          <div className="flex items-center gap-3">
+            <LocalOnlyBadge />
+            <UserProfileMenu onOpenSettings={() => setActive('settings')} />
+          </div>
         </div>
       </header>
 

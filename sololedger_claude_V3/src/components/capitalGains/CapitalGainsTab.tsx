@@ -201,9 +201,9 @@ export function CapitalGainsTab() {
     );
   };
 
-  const exportCapitalGainsPdf = () => {
+  const exportCapitalGainsPdf = async () => {
     if (!confirmPdfExport()) return;
-    const { doc, startY } = createBrandedPdf({
+    const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Capital Gains Detail',
       metaLines: [
         `FY: ${getFyLabel(fy, jurisdiction)} · Method: ${method} · Jurisdiction: ${JURISDICTIONS[jurisdiction].label}`,

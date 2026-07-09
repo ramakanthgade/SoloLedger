@@ -15,7 +15,7 @@ import { useAuth } from '@/lib/saas/authContext';
 
 export function SettingsTab() {
   const saas = isSaasMode();
-  const { user, logout } = useAuth();
+  const { user } = useAuth();
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
 
@@ -45,17 +45,12 @@ export function SettingsTab() {
           <h2 className="page-title">Settings</h2>
           <p className="mt-1 text-sm text-mist-400">
             {isAdmin
-              ? 'Admin: manage server API keys and subscriber defaults below. Tax preferences are still local.'
+              ? 'Admin: manage server API keys below. Tax preferences are still local to this browser.'
               : saas
                 ? 'Tax preferences stored locally. Network features run through SoloLedger — no API keys needed.'
                 : 'Stored locally in IndexedDB. Nothing here is synced anywhere.'}
           </p>
         </div>
-        {saas && user && (
-          <Button variant="ghost" onClick={logout} className="shrink-0">
-            Sign out
-          </Button>
-        )}
       </div>
 
       {saas && user?.role !== 'admin' && <SubscriptionCard />}
