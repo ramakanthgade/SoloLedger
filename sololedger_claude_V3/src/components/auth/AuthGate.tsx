@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react';
 import { useAuth } from '@/lib/saas/authContext';
-import { LoginPanel } from './LoginPanel';
 
+/** Pass-through guard for local mode; SaaS unauthenticated users are handled in App.tsx. */
 export function AuthGate({ children }: { children: ReactNode }) {
   const { saas, user, loading } = useAuth();
 
@@ -13,6 +13,6 @@ export function AuthGate({ children }: { children: ReactNode }) {
       </div>
     );
   }
-  if (!user) return <LoginPanel />;
+  if (!user) return null;
   return <>{children}</>;
 }

@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/PageHeader';
 import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel } from '@/lib/utils';
-import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer } from '@/lib/export/pdfTheme';
+import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { AlertTriangle } from 'lucide-react';
 
@@ -114,9 +114,20 @@ export function ReportsTab() {
     autoTable(doc, {
       ...tbl,
       styles: { ...tbl.styles, fontSize: 7 },
+      columnStyles: {
+        0: { cellWidth: 22 },
+        1: { cellWidth: 14 },
+        2: { cellWidth: 22 },
+        3: { cellWidth: 24 },
+        4: { cellWidth: 24 },
+        5: { cellWidth: 24 },
+        6: { cellWidth: 16 },
+        7: { cellWidth: 28, overflow: 'linebreak' }
+      },
       head: [['Date', 'Asset', 'Amount', `Proceeds (${rules.currency})`, `Cost basis (${rules.currency})`, `Gain/Loss (${rules.currency})`, 'Held (days)', deidentify ? 'Ref' : 'Source tx']],
       body: yearDisposals.map((d) => {
         const tx = txMap.get(d.sourceTxId);
+        const ref = tx?.sourceRef ?? tx?.source;
         return [
           new Date(d.disposedAt).toISOString().slice(0, 10),
           d.asset,
@@ -125,7 +136,7 @@ export function ReportsTab() {
           fmt(d.costBasis),
           fmt(d.gain),
           String(d.holdingPeriodDays),
-          deidentify ? (tx?.sourceRef ?? '\u2014') : (tx?.sourceRef ?? tx?.source ?? '\u2014')
+          deidentify ? truncatePdfRef(ref) : truncatePdfRef(ref)
         ];
       })
     });

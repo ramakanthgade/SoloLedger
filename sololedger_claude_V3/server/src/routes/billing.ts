@@ -15,7 +15,8 @@ function getStripe(): Stripe | null {
 const PRICE_MAP: Partial<Record<PlanId, string | undefined>> = {
   starter: process.env.STRIPE_PRICE_STARTER,
   standard: process.env.STRIPE_PRICE_STANDARD,
-  pro: process.env.STRIPE_PRICE_PRO
+  pro: process.env.STRIPE_PRICE_PRO,
+  small_business: process.env.STRIPE_PRICE_SMALL_BUSINESS
 };
 
 billingRouter.get('/plans', (_req, res) => {
@@ -33,7 +34,7 @@ billingRouter.post('/checkout', authMiddleware, async (req: AuthedRequest, res) 
   }
 
   const plan = req.body?.plan as PlanId;
-  if (!plan || plan === 'trial' || !PLANS[plan as keyof typeof PLANS]) {
+  if (!plan || plan === 'trial' || plan === 'enterprise' || !(plan in PLANS)) {
     res.status(400).json({ error: 'Invalid plan' });
     return;
   }

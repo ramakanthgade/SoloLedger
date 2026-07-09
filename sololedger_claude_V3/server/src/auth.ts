@@ -9,8 +9,7 @@ import {
   type UserRecord,
   type UserRole
 } from './store.js';
-import type { PlanId } from './plans.js';
-import { getPlanTxLimit } from './plans.js';
+import { getPlanTxLimit, UNLIMITED_TX, type PlanId } from './plans.js';
 
 const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-only-change-me';
 
@@ -79,14 +78,18 @@ export function isSubscriptionActive(user: UserRecord): boolean {
 }
 
 export function publicUser(user: UserRecord) {
+  const isAdmin = user.role === 'admin';
+  const plan: PlanId = isAdmin ? 'enterprise' : user.plan;
+  const txLimit = isAdmin ? UNLIMITED_TX : getPlanTxLimit(user.plan, user.customTxLimit);
   return {
     id: user.id,
     email: user.email,
     role: user.role,
-    plan: user.plan,
-    subscriptionStatus: user.subscriptionStatus,
+    plan,
+    subscriptionStatus: isAdmin ? 'active' : user.subscriptionStatus,
     subscriptionExpiresAt: user.subscriptionExpiresAt,
-    txLimit: getPlanTxLimit(user.plan, user.customTxLimit),
+    txLimit,
+    txLimitUnlimited: isAdmin || txLimit >= UNLIMITED_TX,
     customTxLimit: user.customTxLimit ?? null,
     subscriptionActive: isSubscriptionActive(user)
   };
@@ -100,7 +103,13 @@ export async function ensureAdminUser(): Promise<void> {
   const existing = findUserByEmail(email);
   if (existing) {
     if (existing.role !== 'admin') {
-      upsertUser({ ...existing, role: 'admin', plan: 'pro', subscriptionStatus: 'active' });
+      upsertUser({
+        ...existing,
+        role: 'admin',
+        plan: 'enterprise',
+        subscriptionStatus: 'active',
+        customTxLimit: UNLIMITED_TX
+      });
     }
     return;
   }
@@ -110,8 +119,9 @@ export async function ensureAdminUser(): Promise<void> {
     email,
     passwordHash: await hashPassword(password),
     role: 'admin',
-    plan: 'pro',
+    plan: 'enterprise',
     subscriptionStatus: 'active',
+    customTxLimit: UNLIMITED_TX,
     subscriptionExpiresAt: null,
     createdAt: new Date().toISOString()
   };

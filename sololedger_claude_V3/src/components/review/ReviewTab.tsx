@@ -15,7 +15,7 @@ import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection'
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
-import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
+import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
@@ -480,7 +480,7 @@ export function ReviewTab() {
         t.type === 'transfer_out' ? (t.walletAddress ?? '—') : (t.counterpartyAddress ?? '—'),
         t.type === 'transfer_out' ? (t.counterpartyAddress ?? '—') : (t.walletAddress ?? '—'),
         displayFlags(t).join(', ') || '—',
-        t.sourceRef ?? '—'
+        t.sourceRef ? truncatePdfRef(t.sourceRef) : '—'
       ])
     });
     doc.save('sololedger-review-transactions.pdf');

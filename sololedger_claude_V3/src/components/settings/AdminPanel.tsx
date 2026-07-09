@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { apiFetch, type PublicUser } from '@/lib/saas/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { formatPlanLabel } from '@/lib/saas/plans';
 
 interface KeyStatus {
   alchemyApiKey: boolean;
@@ -14,7 +15,7 @@ interface KeyStatus {
   etherscanApiKey: boolean;
 }
 
-const PLANS = ['trial', 'starter', 'standard', 'pro'] as const;
+const PLANS = ['trial', 'starter', 'standard', 'pro', 'small_business', 'enterprise'] as const;
 
 export function AdminPanel() {
   const [keys, setKeys] = useState<KeyStatus | null>(null);
@@ -101,9 +102,31 @@ function UserRow({
   user: PublicUser;
   onSave: (patch: Record<string, unknown>) => void;
 }) {
+  const isAdmin = user.role === 'admin';
   const [plan, setPlan] = useState(user.plan);
   const [status, setStatus] = useState(user.subscriptionStatus);
-  const [txLimit, setTxLimit] = useState(String(user.txLimit));
+  const [txLimit, setTxLimit] = useState(
+    user.txLimitUnlimited ? 'Unlimited' : String(user.txLimit)
+  );
+
+  if (isAdmin) {
+    return (
+      <tr className="border-b border-ink-700/60 bg-emerald/5">
+        <td className="py-3 pr-3 font-medium text-mist">{user.email}</td>
+        <td className="py-3 pr-3 capitalize text-mist-300">Admin</td>
+        <td className="py-3 pr-3">
+          <span className="rounded-full bg-navy/10 px-2 py-0.5 text-xs font-semibold capitalize text-navy">
+            {formatPlanLabel('enterprise')}
+          </span>
+        </td>
+        <td className="py-3 pr-3">
+          <span className="text-xs font-medium text-emerald-700">active</span>
+        </td>
+        <td className="py-3 pr-3 text-xs font-semibold text-emerald-700">Unlimited</td>
+        <td className="py-3 text-xs text-mist-400">—</td>
+      </tr>
+    );
+  }
 
   return (
     <tr className="border-b border-ink-700/60">
@@ -114,10 +137,9 @@ function UserRow({
           value={plan}
           onChange={(e) => setPlan(e.target.value as PublicUser['plan'])}
           className="sl-select text-xs"
-          disabled={user.role === 'admin'}
         >
-          {PLANS.map((p) => (
-            <option key={p} value={p}>{p}</option>
+          {PLANS.filter((p) => p !== 'trial').map((p) => (
+            <option key={p} value={p}>{formatPlanLabel(p)}</option>
           ))}
         </select>
       </td>
@@ -126,7 +148,6 @@ function UserRow({
           value={status}
           onChange={(e) => setStatus(e.target.value)}
           className="sl-select text-xs"
-          disabled={user.role === 'admin'}
         >
           {['active', 'trialing', 'past_due', 'canceled', 'none'].map((s) => (
             <option key={s} value={s}>{s}</option>
@@ -135,30 +156,27 @@ function UserRow({
       </td>
       <td className="py-3 pr-3">
         <input
-          type="number"
-          min={1}
+          type="text"
           value={txLimit}
           onChange={(e) => setTxLimit(e.target.value)}
-          className="w-24 rounded border border-ink-600 bg-ink-800 px-2 py-1 text-xs"
-          disabled={user.role === 'admin'}
+          className="w-28 rounded border border-ink-600 bg-ink-800 px-2 py-1 text-xs"
         />
       </td>
       <td className="py-3">
-        {user.role !== 'admin' && (
-          <Button
-            variant="secondary"
-            className="text-xs"
-            onClick={() =>
-              onSave({
-                plan,
-                subscriptionStatus: status,
-                customTxLimit: Number(txLimit)
-              })
-            }
-          >
-            Save
-          </Button>
-        )}
+        <Button
+          variant="secondary"
+          className="text-xs"
+          onClick={() =>
+            onSave({
+              plan,
+              subscriptionStatus: status,
+              customTxLimit:
+                txLimit.toLowerCase() === 'unlimited' ? 9999999 : Number(txLimit)
+            })
+          }
+        >
+          Save
+        </Button>
       </td>
     </tr>
   );

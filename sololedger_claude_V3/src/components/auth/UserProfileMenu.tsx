@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { User, LogOut, Settings, CreditCard, Shield } from 'lucide-react';
 import { useAuth } from '@/lib/saas/authContext';
+import { formatPlanLabel, formatTxLimit } from '@/lib/saas/plans';
 import { cn } from '@/lib/utils';
 
 type ProfileModalProps = {
@@ -27,7 +28,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
           <div>
             <p className="font-semibold text-mist">{user.email}</p>
             <p className="text-xs capitalize text-mist-400">
-              {user.role === 'admin' ? 'Administrator' : user.plan} plan
+              {user.role === 'admin' ? 'Administrator · Unlimited' : `${formatPlanLabel(user.plan)} plan`}
             </p>
           </div>
         </div>
@@ -37,7 +38,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
             <dt className="text-mist-400">Role</dt>
             <dd className="font-medium capitalize text-mist">{user.role}</dd>
           </div>
-          {user.role !== 'admin' && (
+              {user.role !== 'admin' && (
             <>
               <div className="flex justify-between gap-4">
                 <dt className="text-mist-400">Subscription</dt>
@@ -45,7 +46,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
               </div>
               <div className="flex justify-between gap-4">
                 <dt className="text-mist-400">Transaction limit</dt>
-                <dd className="font-medium text-mist">{user.txLimit.toLocaleString()} / year</dd>
+                <dd className="font-medium text-mist">{formatTxLimit(user.txLimit)} / year</dd>
               </div>
               {user.subscriptionExpiresAt && (
                 <div className="flex justify-between gap-4">

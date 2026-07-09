@@ -1,13 +1,17 @@
 import { AUTH_TOKEN_KEY, getApiBase, isSaasMode } from './config';
+import type { PlanId } from './plans';
+
+export type { PlanId };
 
 export interface PublicUser {
   id: string;
   email: string;
   role: 'subscriber' | 'admin';
-  plan: 'starter' | 'standard' | 'pro' | 'trial';
+  plan: PlanId;
   subscriptionStatus: string;
   subscriptionExpiresAt: string | null;
   txLimit: number;
+  txLimitUnlimited?: boolean;
   subscriptionActive: boolean;
 }
 

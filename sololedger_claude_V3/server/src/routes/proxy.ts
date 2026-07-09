@@ -102,7 +102,8 @@ proxyRouter.all('/helius/*', async (req: AuthedRequest, res) => {
   }
   const suffix = req.params[0] ?? '';
   const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
-  await forward(`https://mainnet.helius-rpc.com/${suffix}${qs}?api-key=${key}`, req, res);
+  const sep = qs ? '&' : '?';
+  await forward(`https://mainnet.helius-rpc.com/${suffix}${qs}${sep}api-key=${key}`, req, res);
 });
 
 /** Moralis — GET/POST /api/proxy/moralis/* */

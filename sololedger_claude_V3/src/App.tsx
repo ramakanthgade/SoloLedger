@@ -11,8 +11,11 @@ import { SettingsTab } from '@/components/settings/SettingsTab';
 import { AdminPanel } from '@/components/settings/AdminPanel';
 import { AiAdvisor } from '@/components/ai/AiAdvisor';
 import { AuthGate } from '@/components/auth/AuthGate';
+import { AuthPage } from '@/components/auth/AuthPage';
+import { LandingPage } from '@/components/auth/LandingPage';
 import { UserProfileMenu } from '@/components/auth/UserProfileMenu';
 import { useAuth } from '@/lib/saas/authContext';
+import { isSaasMode } from '@/lib/saas/config';
 import { useImportJob } from '@/lib/importJob';
 import {
   Upload, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2, Shield
@@ -31,6 +34,7 @@ const BASE_TABS = [
 const ADMIN_TAB = { id: 'admin', label: 'Admin', icon: Shield, component: AdminPanel } as const;
 
 type TabId = (typeof BASE_TABS)[number]['id'] | typeof ADMIN_TAB.id;
+type PublicView = 'landing' | 'login' | 'register';
 
 const PHASE_LABEL: Record<string, string> = {
   importing: 'Importing transactions',
@@ -38,7 +42,15 @@ const PHASE_LABEL: Record<string, string> = {
   pricing: 'Fetching prices'
 };
 
-export default function App() {
+function LoadingScreen({ message }: { message: string }) {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-ink text-sm text-mist-400">
+      {message}
+    </div>
+  );
+}
+
+function MainApp() {
   const { user, dbReady } = useAuth();
   const tabs = user?.role === 'admin' ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS;
   const [active, setActive] = useState<TabId>('import');
@@ -53,15 +65,10 @@ export default function App() {
   }, [user?.id]);
 
   if (!dbReady) {
-    return (
-      <div className="flex min-h-screen items-center justify-center bg-ink text-sm text-mist-400">
-        Loading your workspace…
-      </div>
-    );
+    return <LoadingScreen message="Loading your workspace…" />;
   }
 
   return (
-    <AuthGate>
     <div className="min-h-screen bg-ink" key={user?.id ?? 'guest'}>
       <header className="bg-gradient-to-br from-navy via-navy-800 to-navy-700">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
@@ -124,6 +131,35 @@ export default function App() {
 
       <AiAdvisor />
     </div>
+  );
+}
+
+export default function App() {
+  const { user, loading } = useAuth();
+  const saas = isSaasMode();
+  const [publicView, setPublicView] = useState<PublicView>('landing');
+
+  if (saas && !user) {
+    if (loading) return <LoadingScreen message="Loading session…" />;
+    if (publicView === 'landing') {
+      return (
+        <LandingPage
+          onSignIn={() => setPublicView('login')}
+          onGetStarted={() => setPublicView('register')}
+        />
+      );
+    }
+    return (
+      <AuthPage
+        initialMode={publicView === 'register' ? 'register' : 'login'}
+        onBack={() => setPublicView('landing')}
+      />
+    );
+  }
+
+  return (
+    <AuthGate>
+      <MainApp />
     </AuthGate>
   );
 }

@@ -132,6 +132,13 @@ export function pdfTableStyles(fontSize = 8) {
   };
 }
 
+/** Shorten long on-chain refs so PDF tables don't blow out column widths. */
+export function truncatePdfRef(ref?: string | null, start = 10, end = 6): string {
+  if (!ref) return '—';
+  if (ref.length <= start + end + 1) return ref;
+  return `${ref.slice(0, start)}…${ref.slice(-end)}`;
+}
+
 /** Footer disclaimer on the last page. */
 export function addPdfDisclaimer(doc: jsPDF, text: string) {
   const y = (doc as jsPDF & { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? 40;

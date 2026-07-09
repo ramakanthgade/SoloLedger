@@ -1,19 +1,20 @@
 import { useState } from 'react';
 import { useAuth } from '@/lib/saas/authContext';
 import { startCheckout } from '@/lib/saas/api';
-import { Sparkles, Zap, Crown } from 'lucide-react';
+import { formatPlanLabel, formatTxLimit } from '@/lib/saas/plans';
+import { Sparkles, Zap, Crown, Building2, Rocket } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
 type PlanCard = {
-  id: 'starter' | 'standard' | 'pro';
+  id: 'starter' | 'standard' | 'pro' | 'small_business' | 'enterprise';
   name: string;
   price: string;
   period: string;
   limit: string;
   icon: typeof Zap;
   accent: string;
-  ring: string;
   featured?: boolean;
+  contactOnly?: boolean;
 };
 
 const PLANS: PlanCard[] = [
@@ -24,8 +25,7 @@ const PLANS: PlanCard[] = [
     period: '/year',
     limit: '100 transactions',
     icon: Zap,
-    accent: 'from-teal-500 to-emerald-600',
-    ring: 'ring-teal-400/40'
+    accent: 'from-teal-500 to-emerald-600'
   },
   {
     id: 'standard',
@@ -35,7 +35,6 @@ const PLANS: PlanCard[] = [
     limit: '500 transactions',
     icon: Sparkles,
     accent: 'from-emerald-500 to-teal-600',
-    ring: 'ring-emerald-400/50',
     featured: true
   },
   {
@@ -45,8 +44,26 @@ const PLANS: PlanCard[] = [
     period: '/year',
     limit: '1,000 transactions',
     icon: Crown,
-    accent: 'from-navy to-teal-700',
-    ring: 'ring-navy/30'
+    accent: 'from-navy to-teal-700'
+  },
+  {
+    id: 'small_business',
+    name: 'Small business',
+    price: '$1,500',
+    period: '/year',
+    limit: '5,000 transactions',
+    icon: Building2,
+    accent: 'from-violet-600 to-teal-600'
+  },
+  {
+    id: 'enterprise',
+    name: 'Enterprise',
+    price: 'Contact',
+    period: ' us',
+    limit: 'Unlimited transactions',
+    icon: Rocket,
+    accent: 'from-amber-500 to-orange-600',
+    contactOnly: true
   }
 ];
 
@@ -58,6 +75,10 @@ export function SubscriptionCard() {
   if (!user || user.role === 'admin') return null;
 
   const upgrade = async (plan: string) => {
+    if (plan === 'enterprise') {
+      setError('Enterprise plans — contact support for unlimited volume pricing.');
+      return;
+    }
     setBusy(plan);
     setError(null);
     try {
@@ -73,27 +94,31 @@ export function SubscriptionCard() {
 
   return (
     <div className="overflow-hidden rounded-2xl border border-teal-200 bg-gradient-to-br from-teal-50 via-white to-emerald-50 shadow-md">
-      <div className="border-b border-teal-100 bg-gradient-to-r from-navy to-teal-800 px-6 py-5 text-white">
+      <div className="border-b border-teal-100 bg-gradient-to-r from-navy via-teal-900 to-emerald-800 px-6 py-6 text-white">
         <p className="text-xs font-semibold uppercase tracking-[0.2em] text-teal-100">Your subscription</p>
         <div className="mt-2 flex flex-wrap items-end justify-between gap-3">
           <div>
-            <h3 className="font-display text-2xl font-bold capitalize">{user.plan} plan</h3>
-            <p className="mt-1 text-sm text-teal-100">
-              Up to <strong className="text-white">{user.txLimit.toLocaleString()}</strong> transactions per year
+            <h3 className="font-display text-3xl font-bold capitalize">{formatPlanLabel(user.plan)}</h3>
+            <p className="mt-2 text-base text-teal-50">
+              Up to{' '}
+              <strong className="text-2xl text-white">{formatTxLimit(user.txLimit)}</strong>{' '}
+              <span className="text-teal-100">transactions per year</span>
             </p>
           </div>
           {!user.subscriptionActive && (
-            <span className="rounded-full bg-amber-400 px-3 py-1 text-xs font-bold text-navy">Renew to continue</span>
+            <span className="rounded-full bg-amber-400 px-4 py-1.5 text-sm font-bold text-navy shadow">
+              Renew to continue
+            </span>
           )}
         </div>
         {user.plan === 'trial' && (
-          <p className="mt-3 text-sm text-teal-50">
+          <p className="mt-4 rounded-xl bg-white/10 px-4 py-3 text-sm text-teal-50">
             14-day trial — wallet lookup & live pricing included. No API keys to configure.
           </p>
         )}
       </div>
 
-      <div className="grid gap-4 p-6 sm:grid-cols-3">
+      <div className="grid gap-4 p-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         {PLANS.map((p) => {
           const Icon = p.icon;
           return (
@@ -122,7 +147,9 @@ export function SubscriptionCard() {
                 <span className="text-sm font-normal text-mist-400">{p.period}</span>
               </span>
               <span className="mt-2 text-sm text-mist-400">{p.limit}</span>
-              <span className="mt-4 text-sm font-semibold text-teal-700 group-hover:underline">Upgrade →</span>
+              <span className="mt-4 text-sm font-semibold text-teal-700 group-hover:underline">
+                {p.contactOnly ? 'Contact us →' : 'Upgrade →'}
+              </span>
             </button>
           );
         })}
