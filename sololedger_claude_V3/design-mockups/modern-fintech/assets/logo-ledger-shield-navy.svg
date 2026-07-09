@@ -1,8 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none" role="img" aria-label="SoloLedger">
-  <path d="M20 3.5 33 9v11.5c0 7.2-13 16-13 16s-13-8.8-13-16V9L20 3.5Z"
-    stroke="#0B1F3A" stroke-width="1.6" stroke-linejoin="round"/>
-  <path d="M20 12.5v17" stroke="#0B1F3A" stroke-width="1.2" stroke-linecap="round" opacity="0.45"/>
-  <path d="M11.5 16h7M11.5 20h6.5M11.5 24h5.5" stroke="#0B1F3A" stroke-width="1.2" stroke-linecap="round" opacity="0.85"/>
-  <path d="M21.5 16H29M22 20h7M22.5 24h6.5" stroke="#0B1F3A" stroke-width="1.2" stroke-linecap="round" opacity="0.85"/>
-  <circle cx="20" cy="10.5" r="2.2" fill="#14B8A6"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" role="img" aria-label="SoloLedger">
+  <!-- Shield -->
+  <path d="M24 4 38 10v13c0 8.5-14 17.5-14 17.5S10 31.5 10 23V10L24 4Z"
+    stroke="#0B1F3A" stroke-width="1.75" stroke-linejoin="round"/>
+  <!-- Ledger spine -->
+  <path d="M24 13v20" stroke="#0B1F3A" stroke-width="1.35" stroke-linecap="round" opacity="0.5"/>
+  <!-- Left page -->
+  <path d="M13.5 17h8.5M13.5 21h8M13.5 25h7.5M13.5 29h7"
+    stroke="#0B1F3A" stroke-width="1.25" stroke-linecap="round" opacity="0.88"/>
+  <!-- Right page -->
+  <path d="M26 17h8.5M26.5 21h8M27 25h7.5M27.5 29h7"
+    stroke="#0B1F3A" stroke-width="1.25" stroke-linecap="round" opacity="0.88"/>
+  <!-- Teal checkmark -->
+  <path d="M29.5 35.5 33.5 39.5 41.5 29.5"
+    stroke="#14B8A6" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

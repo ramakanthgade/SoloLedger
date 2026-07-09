@@ -184,9 +184,9 @@
       transition: all var(--duration-fast) var(--ease-out);
     }
     .btn:active { transform: scale(0.98); }
-    .btn-primary { background: var(--teal-600); color: #fff; box-shadow: var(--shadow-xs); }
+    .btn-primary { background: var(--teal-600); color: #fff; box-shadow: 0 1px 2px rgba(13,148,136,.25); }
     .btn-primary:hover { background: #0f766e; }
-    .btn-secondary { background: #fff; color: var(--slate-700); border-color: var(--border); }
+    .btn-secondary { background: #fff; color: var(--slate-700); border-color: var(--border); box-shadow: 0 1px 2px rgba(15,39,68,.04); }
     .btn-secondary:hover { background: var(--slate-50); }
     .btn-ghost { background: transparent; color: var(--slate-600); }
     .btn-ghost:hover { background: var(--slate-100); }
@@ -264,7 +264,7 @@
       padding: 18px 32px 16px;
     }
     .brand-lockup-row { display: flex; align-items: center; gap: 14px; }
-    .brand-icon { height: 36px; width: 36px; color: #fff; flex-shrink: 0; }
+    .brand-icon { height: 40px; width: 40px; flex-shrink: 0; }
     .brand-text { display: flex; flex-direction: column; gap: 3px; }
     .brand-wordmark {
       font-size: 1.2rem; font-weight: 700; color: #fff;
@@ -591,12 +591,12 @@
 
           <div class="ds-section">
             <h2>Logo &amp; wordmark</h2>
-            <p><strong>Ledger + Shield</strong> — geometric open book inside a shield outline. Teal accent dot signals privacy. <code>currentColor</code> SVG works on navy and white surfaces.</p>
+            <p><strong>Ledger + Shield</strong> — open book inside a shield with a <strong>teal checkmark</strong> (verified / precise). Navy strokes on light surfaces; white strokes on the navy header.</p>
             <div class="logo-compare">
               <div class="logo-compare-item dark">
                 <div class="lbl">On navy header</div>
                 <div class="logo-lockup-demo light-icon">
-                  <img src="assets/logo-ledger-shield.svg" alt="" style="height:36px;width:36px" />
+                  <img src="assets/logo-ledger-shield.svg" alt="" style="height:40px;width:40px" />
                   <div>
                     <div style="font-weight:700;font-size:1.1rem;color:#fff;letter-spacing:-.02em">SoloLedger</div>
                     <div style="font-size:.6rem;letter-spacing:.14em;text-transform:uppercase;color:rgba(203,213,225,.7);margin-top:3px">Private. Precise. Yours.</div>
@@ -606,7 +606,7 @@
               <div class="logo-compare-item light">
                 <div class="lbl">On light surface</div>
                 <div class="logo-lockup-demo dark-icon">
-                  <img src="assets/logo-ledger-shield-navy.svg" alt="" style="height:36px;width:36px" />
+                  <img src="assets/logo-ledger-shield-navy.svg" alt="" style="height:40px;width:40px" />
                   <div>
                     <div style="font-weight:700;font-size:1.1rem;color:#0B1F3A;letter-spacing:-.02em">SoloLedger</div>
                     <div style="font-size:.6rem;letter-spacing:.14em;text-transform:uppercase;color:#94A3B8;margin-top:3px">Private. Precise. Yours.</div>
@@ -724,6 +724,7 @@
                 <h3>Disposals — 2024</h3>
                 <span class="data-panel-meta">5 events · Showing all</span>
               </div>
+              <div class="table-wrap">
               <table class="table-demo">
                 <thead>
                   <tr>
