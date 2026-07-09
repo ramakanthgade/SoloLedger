@@ -43,9 +43,15 @@ app.use('/api/admin', adminRouter);
 app.use('/api/proxy', proxyRouter);
 app.use('/api/billing', billingRouter);
 
-void ensureAdminUser().then(() => {
-  app.listen(port, () => {
-    console.log(`SoloLedger API listening on http://localhost:${port}`);
-    console.log(`CORS origins: ${allowedOrigins.join(', ')}`);
+void ensureAdminUser()
+  .then(() => {
+    app.listen(port, () => {
+      console.log(`SoloLedger API listening on http://localhost:${port}`);
+      console.log(`CORS origins: ${allowedOrigins.join(', ')}`);
+      console.log('Health check: http://localhost:' + port + '/health');
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to start SoloLedger API:', err);
+    process.exit(1);
   });
-});
