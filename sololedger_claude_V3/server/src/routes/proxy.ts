@@ -6,6 +6,7 @@ import {
   type AuthedRequest
 } from '../auth.js';
 import { getServerConfig } from '../store.js';
+import { resolveApiKey } from '../apiKeys.js';
 
 export const proxyRouter = Router();
 
@@ -60,7 +61,7 @@ proxyRouter.post('/alchemy/:network', async (req: AuthedRequest, res) => {
     res.status(403).json({ error: 'Wallet lookup is disabled by admin' });
     return;
   }
-  const key = process.env.ALCHEMY_API_KEY;
+  const key = resolveApiKey('alchemyApiKey');
   if (!key) {
     res.status(503).json({ error: 'Alchemy API key not configured on server' });
     return;
@@ -77,7 +78,7 @@ proxyRouter.all('/coingecko/*', async (req: AuthedRequest, res) => {
     res.status(403).json({ error: 'Price lookup is disabled by admin' });
     return;
   }
-  const key = process.env.COINGECKO_API_KEY?.trim();
+  const key = resolveApiKey('coingeckoApiKey');
   const base = key ? 'https://pro-api.coingecko.com/api/v3' : 'https://api.coingecko.com/api/v3';
   const suffix = req.params[0] ?? '';
   const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
@@ -94,7 +95,7 @@ proxyRouter.all('/helius/*', async (req: AuthedRequest, res) => {
     res.status(403).json({ error: 'Wallet lookup is disabled by admin' });
     return;
   }
-  const key = process.env.HELIUS_API_KEY;
+  const key = resolveApiKey('heliusApiKey');
   if (!key) {
     res.status(503).json({ error: 'Helius API key not configured on server' });
     return;
@@ -112,7 +113,7 @@ proxyRouter.all('/moralis/*', async (req: AuthedRequest, res) => {
     res.status(403).json({ error: 'Wallet lookup is disabled by admin' });
     return;
   }
-  const key = process.env.MORALIS_API_KEY;
+  const key = resolveApiKey('moralisApiKey');
   if (!key) {
     res.status(503).json({ error: 'Moralis API key not configured on server' });
     return;
@@ -132,7 +133,7 @@ proxyRouter.all('/birdeye/*', async (req: AuthedRequest, res) => {
     res.status(403).json({ error: 'Price lookup is disabled by admin' });
     return;
   }
-  const key = process.env.BIRDEYE_API_KEY;
+  const key = resolveApiKey('birdeyeApiKey');
   if (!key) {
     res.status(503).json({ error: 'Birdeye API key not configured on server' });
     return;
@@ -148,7 +149,7 @@ proxyRouter.all('/birdeye/*', async (req: AuthedRequest, res) => {
 /** Noves — POST /api/proxy/noves/* */
 proxyRouter.all('/noves/*', async (req: AuthedRequest, res) => {
   if (!requireActiveSubscription(req, res)) return;
-  const key = process.env.NOVES_API_KEY;
+  const key = resolveApiKey('novesApiKey');
   if (!key) {
     res.status(503).json({ error: 'Noves API key not configured on server' });
     return;
@@ -168,7 +169,7 @@ proxyRouter.all('/openrouter/*', async (req: AuthedRequest, res) => {
     res.status(403).json({ error: 'AI Advisor is disabled by admin' });
     return;
   }
-  const key = process.env.OPENROUTER_API_KEY;
+  const key = resolveApiKey('openrouterApiKey');
   if (!key) {
     res.status(503).json({ error: 'OpenRouter API key not configured on server' });
     return;
@@ -185,7 +186,7 @@ proxyRouter.all('/openrouter/*', async (req: AuthedRequest, res) => {
 /** Etherscan family — GET /api/proxy/etherscan */
 proxyRouter.get('/etherscan', async (req: AuthedRequest, res) => {
   if (!requireActiveSubscription(req, res)) return;
-  const key = process.env.ETHERSCAN_API_KEY;
+  const key = resolveApiKey('etherscanApiKey');
   if (!key) {
     res.status(503).json({ error: 'Etherscan API key not configured on server' });
     return;
@@ -211,7 +212,7 @@ proxyRouter.post('/alchemy-prices/*', async (req: AuthedRequest, res) => {
     res.status(403).json({ error: 'Price lookup is disabled by admin' });
     return;
   }
-  const key = process.env.ALCHEMY_API_KEY;
+  const key = resolveApiKey('alchemyApiKey');
   if (!key) {
     res.status(503).json({ error: 'Alchemy API key not configured on server' });
     return;

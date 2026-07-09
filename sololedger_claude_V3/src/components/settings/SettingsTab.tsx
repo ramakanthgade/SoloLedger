@@ -7,6 +7,7 @@ import type { TaxSettings, Jurisdiction } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ApiKeyField } from './ApiKeyField';
+import { AdminServerSettings } from './AdminServerSettings';
 import { SubscriptionCard } from './SubscriptionCard';
 import { isSaasMode } from '@/lib/saas/config';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
@@ -35,15 +36,19 @@ export function SettingsTab() {
     setNetworkFeaturesEnabled(effective.priceApiEnabled || effective.rpcLookupEnabled);
   };
 
+  const isAdmin = saas && user?.role === 'admin';
+
   return (
     <div className="max-w-2xl space-y-6">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="page-title">Settings</h2>
           <p className="mt-1 text-sm text-mist-400">
-            {saas
-              ? 'Tax preferences stored locally. Network features run through SoloLedger — no API keys needed.'
-              : 'Stored locally in IndexedDB. Nothing here is synced anywhere.'}
+            {isAdmin
+              ? 'Admin: manage server API keys and subscriber defaults below. Tax preferences are still local.'
+              : saas
+                ? 'Tax preferences stored locally. Network features run through SoloLedger — no API keys needed.'
+                : 'Stored locally in IndexedDB. Nothing here is synced anywhere.'}
           </p>
         </div>
         {saas && user && (
@@ -53,7 +58,9 @@ export function SettingsTab() {
         )}
       </div>
 
-      {saas && <SubscriptionCard />}
+      {saas && user?.role !== 'admin' && <SubscriptionCard />}
+
+      {isAdmin && <AdminServerSettings />}
 
       <Card>
         <CardHeader>

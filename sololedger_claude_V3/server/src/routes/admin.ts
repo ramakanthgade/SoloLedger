@@ -1,3 +1,11 @@
+import {
+  apiKeysStatus,
+  deleteStoredApiKey,
+  getStoredApiKeys,
+  resolveApiKey,
+  updateStoredApiKeys,
+  type ApiKeyName
+} from '../apiKeys.js';
 import { Router } from 'express';
 import {
   adminMiddleware,
@@ -33,17 +41,48 @@ adminRouter.get('/users', (_req, res) => {
   res.json({ users });
 });
 
+adminRouter.get('/api-keys', (_req, res) => {
+  const names: ApiKeyName[] = [
+    'alchemyApiKey',
+    'coingeckoApiKey',
+    'heliusApiKey',
+    'moralisApiKey',
+    'birdeyeApiKey',
+    'novesApiKey',
+    'openrouterApiKey',
+    'etherscanApiKey'
+  ];
+  const effective = Object.fromEntries(names.map((n) => [n, resolveApiKey(n)])) as Record<ApiKeyName, string | undefined>;
+  res.json({ keys: effective, stored: getStoredApiKeys(), configured: apiKeysStatus() });
+});
+
+adminRouter.put('/api-keys', (req, res) => {
+  const keys = updateStoredApiKeys(req.body ?? {});
+  res.json({ keys, configured: apiKeysStatus() });
+});
+
+adminRouter.delete('/api-keys/:name', (req, res) => {
+  const name = req.params.name as ApiKeyName;
+  const valid: ApiKeyName[] = [
+    'alchemyApiKey',
+    'coingeckoApiKey',
+    'heliusApiKey',
+    'moralisApiKey',
+    'birdeyeApiKey',
+    'novesApiKey',
+    'openrouterApiKey',
+    'etherscanApiKey'
+  ];
+  if (!valid.includes(name)) {
+    res.status(400).json({ error: 'Unknown API key name' });
+    return;
+  }
+  const keys = deleteStoredApiKey(name);
+  res.json({ keys, configured: apiKeysStatus() });
+});
+
 adminRouter.get('/api-keys-status', (_req, res) => {
-  res.json({
-    alchemy: Boolean(process.env.ALCHEMY_API_KEY),
-    coingecko: Boolean(process.env.COINGECKO_API_KEY),
-    helius: Boolean(process.env.HELIUS_API_KEY),
-    moralis: Boolean(process.env.MORALIS_API_KEY),
-    birdeye: Boolean(process.env.BIRDEYE_API_KEY),
-    noves: Boolean(process.env.NOVES_API_KEY),
-    openrouter: Boolean(process.env.OPENROUTER_API_KEY),
-    etherscan: Boolean(process.env.ETHERSCAN_API_KEY)
-  });
+  res.json(apiKeysStatus());
 });
 
 adminRouter.post('/check-subscription', authMiddleware, (req: AuthedRequest, res) => {

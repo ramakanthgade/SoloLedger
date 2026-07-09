@@ -27,9 +27,21 @@ export interface ServerConfig {
   aiAdvisorEnabled: boolean;
 }
 
+export interface ServerApiKeys {
+  alchemyApiKey?: string;
+  coingeckoApiKey?: string;
+  heliusApiKey?: string;
+  moralisApiKey?: string;
+  birdeyeApiKey?: string;
+  novesApiKey?: string;
+  openrouterApiKey?: string;
+  etherscanApiKey?: string;
+}
+
 interface StoreData {
   users: UserRecord[];
   serverConfig: ServerConfig;
+  apiKeys: ServerApiKeys;
 }
 
 const DEFAULT_CONFIG: ServerConfig = {
@@ -41,14 +53,19 @@ const DEFAULT_CONFIG: ServerConfig = {
 function ensureStore(): StoreData {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(STORE_FILE)) {
-    const initial: StoreData = { users: [], serverConfig: { ...DEFAULT_CONFIG } };
+    const initial: StoreData = { users: [], serverConfig: { ...DEFAULT_CONFIG }, apiKeys: {} };
     fs.writeFileSync(STORE_FILE, JSON.stringify(initial, null, 2));
     return initial;
   }
   return JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')) as StoreData;
 }
 
-let cache: StoreData = ensureStore();
+function migrateStore(data: StoreData): StoreData {
+  if (!data.apiKeys) data.apiKeys = {};
+  return data;
+}
+
+let cache: StoreData = migrateStore(ensureStore());
 
 function persist(): void {
   fs.writeFileSync(STORE_FILE, JSON.stringify(cache, null, 2));
