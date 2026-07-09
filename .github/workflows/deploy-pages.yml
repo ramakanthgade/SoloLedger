@@ -1,0 +1,46 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches:
+      - cursor/saas-architecture-7be7
+      - cursor/modern-fintech-redesign-0f68
+      - main
+    paths:
+      - 'sololedger_claude_V3/**'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sololedger_claude_V3
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: sololedger_claude_V3/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build for GitHub Pages
+        run: npm run build
+        env:
+          VITE_BASE_PATH: /sololedger/
+          VITE_SAAS_MODE: 'false'
+
+      - name: Deploy to gh-pages branch
+        uses: JamesIves/github-pages-deploy-action@v4
+        with:
+          folder: sololedger_claude_V3/dist
+          branch: gh-pages
+          clean: true
+          single-commit: true

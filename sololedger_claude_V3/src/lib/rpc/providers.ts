@@ -103,7 +103,13 @@ async function fetchBitcoin(address: string, baseUrl: string, asset: string): Pr
   return { transactions, warnings: [] };
 }
 
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+
 function alchemyRpcUrl(network: string): string {
+  if (isSaasMode()) {
+    return `${getApiBase()}/api/proxy/alchemy/${network}`;
+  }
   // When running via `npm run dev` / `npm run preview` on localhost, route through
   // Vite's same-origin proxy (see vite.config.ts). Direct browser → Alchemy calls
   // are blocked by CORS for some methods (e.g. alchemy_getAssetTransfers).
@@ -114,6 +120,14 @@ function alchemyRpcUrl(network: string): string {
     }
   }
   return `https://${network}.g.alchemy.com/v2`;
+}
+
+function alchemyFetch(url: string, init: RequestInit): Promise<Response> {
+  if (isSaasMode()) {
+    const path = url.replace(getApiBase(), '');
+    return saasProxyFetch(path, init);
+  }
+  return fetch(url, init);
 }
 
 function alchemyErrorMessage(status: number, body?: { error?: { code?: number; message?: string } }): string {
@@ -150,6 +164,9 @@ function isAlchemyRateLimitError(err: unknown): boolean {
 }
 
 function alchemyHeaders(apiKey: string): HeadersInit {
+  if (isSaasMode()) {
+    return { 'Content-Type': 'application/json' };
+  }
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`
@@ -182,8 +199,8 @@ async function fetchAlchemyEvmInner(
 
   const headers = alchemyHeaders(apiKey);
   const [outgoingRes, incomingRes] = await Promise.all([
-    fetch(url, { method: 'POST', headers, body: JSON.stringify(body('from')) }),
-    fetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
+    alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('from')) }),
+    alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
   ]);
 
   const [outgoing, incoming] = await Promise.all([outgoingRes.json(), incomingRes.json()]);
@@ -305,7 +322,7 @@ async function getSolanaAssetMeta(apiKey: string, mint: string): Promise<{ symbo
     return meta;
   }
   try {
-    const res = await fetch(alchemyRpcUrl('solana-mainnet'), {
+    const res = await alchemyFetch(alchemyRpcUrl('solana-mainnet'), {
       method: 'POST',
       headers: alchemyHeaders(apiKey),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAsset', params: { id: mint } })
@@ -332,7 +349,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
   const url = alchemyRpcUrl('solana-mainnet');
   const headers = alchemyHeaders(apiKey);
 
-  const sigRes = await fetch(url, {
+  const sigRes = await alchemyFetch(url, {
     method: 'POST',
     headers,
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 100 }] })
@@ -348,7 +365,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 
   for (const sig of signatures) {
     // eslint-disable-next-line no-await-in-loop
-    const txRes = await fetch(url, {
+    const txRes = await alchemyFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTransaction', params: [sig.signature, { maxSupportedTransactionVersion: 0 }] })

@@ -1,4 +1,3 @@
-import type { Lot } from '@/types/transaction';
 import type { CostBasisStrategy, LotSelection } from './strategy';
 
 /** First-In-First-Out: consumes the oldest open lots first. */

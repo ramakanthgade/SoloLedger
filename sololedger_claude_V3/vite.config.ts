@@ -33,6 +33,8 @@ const alchemyDevProxy = Object.fromEntries(
 // (b) a public blockchain RPC/explorer for read-only address lookups —
 // both off by default and gated behind explicit settings toggles.
 export default defineConfig({
+  // GitHub Pages project site: https://ramakanthgade.github.io/sololedger/
+  base: process.env.VITE_BASE_PATH ?? '/sololedger/',
   plugins: [
     react(),
     VitePWA({

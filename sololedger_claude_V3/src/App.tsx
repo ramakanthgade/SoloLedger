@@ -8,14 +8,17 @@ import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
 import { CapitalGainsTab } from '@/components/capitalGains/CapitalGainsTab';
 import { ReportsTab } from '@/components/reports/ReportsTab';
 import { SettingsTab } from '@/components/settings/SettingsTab';
+import { AdminPanel } from '@/components/settings/AdminPanel';
 import { AiAdvisor } from '@/components/ai/AiAdvisor';
+import { AuthGate } from '@/components/auth/AuthGate';
+import { useAuth } from '@/lib/saas/authContext';
 import { useImportJob } from '@/lib/importJob';
 import {
-  Upload, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2
+  Upload, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2, Shield
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-const TABS = [
+const BASE_TABS = [
   { id: 'import', label: 'Import', icon: Upload, component: ImportTab },
   { id: 'review', label: 'Review', icon: ListChecks, component: ReviewTab },
   { id: 'portfolio', label: 'Portfolio', icon: PieChart, component: PortfolioTab },
@@ -24,7 +27,9 @@ const TABS = [
   { id: 'settings', label: 'Settings', icon: Settings, component: SettingsTab }
 ] as const;
 
-type TabId = (typeof TABS)[number]['id'];
+const ADMIN_TAB = { id: 'admin', label: 'Admin', icon: Shield, component: AdminPanel } as const;
+
+type TabId = (typeof BASE_TABS)[number]['id'] | typeof ADMIN_TAB.id;
 
 const PHASE_LABEL: Record<string, string> = {
   importing: 'Importing transactions',
@@ -33,8 +38,10 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 export default function App() {
+  const { user } = useAuth();
+  const tabs = user?.role === 'admin' ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS;
   const [active, setActive] = useState<TabId>('import');
-  const ActiveComponent = TABS.find((t) => t.id === active)!.component;
+  const ActiveComponent = tabs.find((t) => t.id === active)!.component;
   const importState = useImportJob();
 
   useEffect(() => {
@@ -45,6 +52,7 @@ export default function App() {
   }, []);
 
   return (
+    <AuthGate>
     <div className="min-h-screen bg-ink">
       <header className="bg-gradient-to-br from-navy via-navy-800 to-navy-700">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-6 py-4 lg:px-8">
@@ -55,7 +63,7 @@ export default function App() {
 
       <div className="border-b border-ink-700 bg-ink-800/95 shadow-sm backdrop-blur-sm">
         <nav className="mx-auto flex max-w-5xl gap-0 overflow-x-auto px-4 lg:px-6">
-          {TABS.map((tab) => {
+          {tabs.map((tab) => {
             const Icon = tab.icon;
             const isActive = tab.id === active;
             return (
@@ -104,5 +112,6 @@ export default function App() {
 
       <AiAdvisor />
     </div>
+    </AuthGate>
   );
 }

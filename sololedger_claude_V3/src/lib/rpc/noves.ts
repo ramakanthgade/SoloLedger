@@ -14,6 +14,8 @@
  * Starter plan: 300k CU free, then ~$250/mo for 20M CU.
  */
 import type { TxType } from '@/types/transaction';
+import { isSaasMode } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
 
 const NOVES_BASE = 'https://translate.noves.fi';
 
@@ -145,7 +147,12 @@ async function fetchNovesTx(
   }
 
   try {
-    const res = await fetch(url, { headers: { apiKey } });
+    const proxyPath = isSaasMode()
+      ? `/api/proxy/noves/${isSolana ? `solana/tx/${txHash}` : `evm/${novesChain}/tx/${txHash}`}${walletAddress ? `?viewAsAccountAddress=${walletAddress}` : ''}`
+      : null;
+    const res = proxyPath
+      ? await saasProxyFetch(proxyPath)
+      : await fetch(url, { headers: { apiKey } });
     if (res.status === 404) return null; // tx not found
     if (res.status === 429) throw new Error('Noves rate limit — slow down');
     if (!res.ok) return null;

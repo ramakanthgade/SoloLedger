@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
-  getSettings,
   getLookupAddresses,
   deleteLookupAddressAndTransactions,
   updateWalletLabel
 } from '@/lib/storage/db';
+import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveSettings';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { runWalletImport, useImportJob, importJob } from '@/lib/importJob';
 import { Button } from '@/components/ui/button';
@@ -31,7 +31,7 @@ function detectChainFromAddress(address: string): ChainId | null {
 const EVM_CHAIN_IDS: ChainId[] = ['ethereum', 'polygon', 'arbitrum', 'base', 'bsc', 'optimism', 'avalanche'];
 
 export function WalletLookupPanel() {
-  const [settings, setSettings] = useState<Awaited<ReturnType<typeof getSettings>> | null>(null);
+  const [settings, setSettings] = useState<Awaited<ReturnType<typeof getEffectiveSettings>> | null>(null);
   const [chainId, setChainId] = useState<ChainId>('solana');
   const [addressText, setAddressText] = useState('');
   const [customBaseUrl, setCustomBaseUrl] = useState('');
@@ -47,7 +47,7 @@ export function WalletLookupPanel() {
 
   const lookedUp = useLiveQuery(() => getLookupAddresses(), []) ?? [];
 
-  useEffect(() => { getSettings().then(setSettings); }, []);
+  useEffect(() => { getEffectiveSettings().then(setSettings); }, []);
   useEffect(() => { if (editingLabel) setTimeout(() => labelInputRef.current?.focus(), 30); }, [editingLabel]);
 
   // Auto-detect chain when addresses are typed
@@ -74,7 +74,7 @@ export function WalletLookupPanel() {
   const isSolana = chainId === 'solana';
   const needsAlchemyKey =
     (chain.provider === 'alchemy_evm' && chain.id !== 'ethereum') || chain.provider === 'alchemy_solana';
-  const missingAlchemyKey = needsAlchemyKey && !settings.alchemyApiKey;
+  const missingAlchemyKey = needsAlchemyKey && !hasWalletLookupKeys(settings);
 
   const parsedAddresses = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean);
   const alreadyImported = parsedAddresses.filter((a) =>

@@ -17,6 +17,8 @@ import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
 import { classifyFromHelius } from '@/lib/rpc/classificationEngine';
 import type { Transaction, FlagReason, TxType } from '@/types/transaction';
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
 
 const HELIUS_BASE = 'https://mainnet.helius-rpc.com';
 
@@ -318,10 +320,9 @@ export async function fetchHeliusSolana(
 
   while (page < maxPages) {
     let url =
-      `${HELIUS_BASE}/v0/addresses/${address}/transactions` +
-      `?api-key=${apiKey}&limit=100` +
-      `&token-accounts=balanceChanged` +
-      `&commitment=confirmed`;
+      isSaasMode()
+        ? `${getApiBase()}/api/proxy/helius/v0/addresses/${address}/transactions?limit=100&token-accounts=balanceChanged&commitment=confirmed`
+        : `${HELIUS_BASE}/v0/addresses/${address}/transactions?api-key=${apiKey}&limit=100&token-accounts=balanceChanged&commitment=confirmed`;
 
     if (isIncremental) {
       // Ascending: fetch txs strictly after the cursor signature
@@ -333,7 +334,9 @@ export async function fetchHeliusSolana(
     }
 
     // eslint-disable-next-line no-await-in-loop
-    const res = await fetch(url);
+    const res = isSaasMode()
+      ? await saasProxyFetch(url.replace(getApiBase(), ''))
+      : await fetch(url);
 
     if (res.status === 401) {
       warnings.push('Helius: invalid API key — check Settings.');
