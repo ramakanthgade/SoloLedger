@@ -34,7 +34,7 @@ jobs:
       - name: Build for GitHub Pages
         run: npm run build
         env:
-          VITE_BASE_PATH: /sololedger/
+          VITE_BASE_PATH: /SoloLedger/
           VITE_SAAS_MODE: 'false'
 
       - name: Deploy to gh-pages branch

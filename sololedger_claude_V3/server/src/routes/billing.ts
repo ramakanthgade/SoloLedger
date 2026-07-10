@@ -52,8 +52,8 @@ billingRouter.post('/checkout', authMiddleware, async (req: AuthedRequest, res) 
     mode: 'subscription',
     customer_email: user.email,
     line_items: [{ price: priceId, quantity: 1 }],
-    success_url: `${origin}/sololedger/?billing=success`,
-    cancel_url: `${origin}/sololedger/?billing=canceled`,
+    success_url: `${origin}/SoloLedger/?billing=success`,
+    cancel_url: `${origin}/SoloLedger/?billing=canceled`,
     metadata: { userId: user.id, plan }
   });
 
