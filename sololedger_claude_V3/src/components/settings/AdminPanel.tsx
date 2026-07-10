@@ -56,6 +56,20 @@ export function AdminPanel() {
         </p>
       </div>
 
+      <Card className="border-amber-300/40 bg-amber-50/50">
+        <CardHeader><CardTitle>User persistence (Railway)</CardTitle></CardHeader>
+        <CardContent className="space-y-2 text-sm text-mist-300">
+          <p>
+            Subscriber accounts are stored in <code className="text-mist">store.json</code> on the API server. On
+            Railway, attach a <strong>Volume</strong> and set <code className="text-mist">DATA_DIR=/data</code> so
+            users survive redeploys.
+          </p>
+          <p className="text-mist-400">
+            Without a volume, redeploys wipe registered users — they will need to register again.
+          </p>
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader><CardTitle>API keys on server</CardTitle></CardHeader>
         <CardContent className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">

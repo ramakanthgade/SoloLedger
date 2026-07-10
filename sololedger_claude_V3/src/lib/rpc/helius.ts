@@ -19,6 +19,7 @@ import { classifyFromHelius } from '@/lib/rpc/classificationEngine';
 import type { Transaction, FlagReason, TxType } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
+import { transactionSourceKey } from '@/lib/storage/db';
 
 const HELIUS_BASE = 'https://mainnet.helius-rpc.com';
 
@@ -159,38 +160,49 @@ function heliusTransferToRows(
 ): Transaction[] {
   const rows: Transaction[] = [];
   const ts = htx.timestamp * 1000;
-  const processedMints = new Set<string>();
 
-  const tokensSent = htx.tokenTransfers.filter((t) => t.fromUserAccount === walletAddress);
-  const tokensReceived = htx.tokenTransfers.filter((t) => t.toUserAccount === walletAddress);
+  // Aggregate SPL legs by mint so one tx never creates duplicate rows for the same asset.
+  const sentByMint = new Map<string, { amount: number; counterparty?: string }>();
+  const receivedByMint = new Map<string, { amount: number; counterparty?: string }>();
 
-  for (const t of tokensSent) {
-    processedMints.add(t.mint);
-    const asset = resolveSymbol(t.mint);
+  for (const t of htx.tokenTransfers.filter((x) => x.fromUserAccount === walletAddress)) {
+    const prev = sentByMint.get(t.mint);
+    sentByMint.set(t.mint, {
+      amount: (prev?.amount ?? 0) + t.tokenAmount,
+      counterparty: t.toUserAccount
+    });
+  }
+  for (const t of htx.tokenTransfers.filter((x) => x.toUserAccount === walletAddress)) {
+    const prev = receivedByMint.get(t.mint);
+    receivedByMint.set(t.mint, {
+      amount: (prev?.amount ?? 0) + t.tokenAmount,
+      counterparty: t.fromUserAccount
+    });
+  }
+
+  for (const [mint, { amount, counterparty }] of sentByMint) {
     rows.push({
       id: makeId('rpc'),
       timestamp: ts,
       type: 'transfer_out',
-      asset,
-      amount: t.tokenAmount,
-      contractAddress: t.mint,
+      asset: resolveSymbol(mint),
+      amount,
+      contractAddress: mint,
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:helius',
       sourceRef: htx.signature,
       walletAddress,
-      counterpartyAddress: t.toUserAccount,
+      counterpartyAddress: counterparty,
       chain: 'solana',
       flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
       isInternalTransfer: false
     });
   }
 
-  for (const t of tokensReceived) {
-    processedMints.add(t.mint);
-    const asset = resolveSymbol(t.mint);
-    const dbtIncome = isDbtToken(t.mint) && t.fromUserAccount !== walletAddress
-      ? classifyDbtIncome(t.mint, t.fromUserAccount) ?? {
+  for (const [mint, { amount, counterparty }] of receivedByMint) {
+    const dbtIncome = isDbtToken(mint) && counterparty !== walletAddress
+      ? classifyDbtIncome(mint, counterparty) ?? {
           kind: 'genesis_reward' as const,
           label: 'Dabba Network DBT reward',
           notes: 'Auto-classified as DBT income'
@@ -201,15 +213,15 @@ function heliusTransferToRows(
       id: makeId('rpc'),
       timestamp: ts,
       type: dbtIncome ? 'income' : 'transfer_in',
-      asset,
-      amount: t.tokenAmount,
-      contractAddress: t.mint,
+      asset: resolveSymbol(mint),
+      amount,
+      contractAddress: mint,
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:helius',
       sourceRef: htx.signature,
       walletAddress,
-      counterpartyAddress: t.fromUserAccount,
+      counterpartyAddress: counterparty,
       chain: 'solana',
       category: dbtIncome?.kind,
       notes: dbtIncome?.notes,
@@ -218,14 +230,20 @@ function heliusTransferToRows(
     });
   }
 
-  // SPL claims (e.g. DBT rewards) sometimes appear only in accountData.tokenBalanceChanges
-  // when tokenTransfers is incomplete — requires token-accounts=balanceChanged on the API.
+  // accountData fallback — only when tokenTransfers did not already capture this mint for this tx.
   for (const acct of htx.accountData ?? []) {
     for (const ch of acct.tokenBalanceChanges ?? []) {
       const mint: string | undefined = ch.mint ?? ch.tokenMint;
       const userAcct: string | undefined = ch.userAccount ?? ch.owner;
-      if (!mint || processedMints.has(mint)) continue;
+      if (!mint) continue;
       if (userAcct && userAcct !== walletAddress) continue;
+
+      const sourceKey = transactionSourceKey({
+        sourceRef: htx.signature,
+        walletAddress,
+        asset: resolveSymbol(mint)
+      });
+      if (sourceKey && rows.some((r) => transactionSourceKey(r) === sourceKey)) continue;
 
       const raw = ch.rawTokenAmount ?? ch.tokenAmount;
       const decimals = raw?.decimals ?? ch.decimals ?? 0;
@@ -237,7 +255,6 @@ function heliusTransferToRows(
             : 0;
       if (tokenAmount <= 0) continue;
 
-      processedMints.add(mint);
       const asset = resolveSymbol(mint);
       const dbtIncome = isDbtToken(mint)
         ? classifyDbtIncome(mint, acct.account) ?? {

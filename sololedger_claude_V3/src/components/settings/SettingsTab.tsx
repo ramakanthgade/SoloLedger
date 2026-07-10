@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { saveSettings, clearAllData } from '@/lib/storage/db';
 import { exportFullBackup, importFullBackup } from '@/lib/storage/backup';
-import { setNetworkFeaturesEnabled } from '@/components/LocalOnlyBadge';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
 import type { TaxSettings, Jurisdiction } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -20,10 +19,7 @@ export function SettingsTab() {
   const [confirmDelete, setConfirmDelete] = useState(false);
 
   useEffect(() => {
-    getEffectiveSettings().then((s) => {
-      setSettings(s);
-      setNetworkFeaturesEnabled(s.priceApiEnabled || s.rpcLookupEnabled);
-    });
+    getEffectiveSettings().then((s) => setSettings(s));
   }, []);
 
   if (!settings) return null;
@@ -32,8 +28,6 @@ export function SettingsTab() {
     const next = { ...settings, ...patch };
     setSettings(next);
     await saveSettings(next);
-    const effective = await getEffectiveSettings();
-    setNetworkFeaturesEnabled(effective.priceApiEnabled || effective.rpcLookupEnabled);
   };
 
   const isAdmin = saas && user?.role === 'admin';

@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { ensureAdminUser } from './auth.js';
+import { getDataDirectory } from './store.js';
 import { authRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { configRouter } from './routes/config.js';
@@ -45,11 +46,11 @@ app.use('/api/billing', billingRouter);
 
 void ensureAdminUser()
   .then(() => {
-    // Bind all interfaces — required for Railway/public hosting (not localhost-only).
     app.listen(port, '0.0.0.0', () => {
       console.log(`SoloLedger API listening on 0.0.0.0:${port}`);
       console.log(`CORS origins: ${allowedOrigins.join(', ')}`);
       console.log('Health check: /health');
+      console.log(`Data directory: ${getDataDirectory()}`);
     });
   })
   .catch((err) => {

@@ -12,6 +12,7 @@ import { reprocessSwapDetectionInDb, reprocessDbtIncome } from '@/lib/rpc/reproc
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import type { TaxSettings } from '@/types/transaction';
+import { recordNetworkActivity } from '@/lib/networkActivity';
 
 // ---- State shape ----
 
@@ -167,6 +168,7 @@ export async function runWalletImport(
 
   // --- Phase 1: Import from RPC ---
   importJob._setPhase('importing');
+  recordNetworkActivity();
 
   let transactions: Awaited<ReturnType<typeof lookupManyAddresses>>['transactions'] = [];
   let failed: Awaited<ReturnType<typeof lookupManyAddresses>>['failed'] = [];

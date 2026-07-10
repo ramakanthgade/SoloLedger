@@ -8,6 +8,7 @@ import {
 } from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
+import { transactionSourceKey } from '@/lib/storage/db';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
@@ -28,9 +29,16 @@ import autoTable from 'jspdf-autotable';
  */
 function applyTxToHoldings(
   map: Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>,
-  t: Transaction
+  t: Transaction,
+  appliedSourceKeys: Set<string>
 ) {
   if (t.isSpam) return;
+
+  const sourceKey = transactionSourceKey(t);
+  if (sourceKey) {
+    if (appliedSourceKeys.has(sourceKey)) return;
+    appliedSourceKeys.add(sourceKey);
+  }
 
   // Skip OUTGOING internal transfers only (DCA deposits / sends to own wallets)
   if (t.isInternalTransfer && (
@@ -118,7 +126,8 @@ export function PortfolioTab() {
 
   const holdings = useMemo(() => {
     const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>();
-    [...filteredTxs].sort((a, b) => a.timestamp - b.timestamp).forEach((t) => applyTxToHoldings(map, t));
+    const appliedSourceKeys = new Set<string>();
+    [...filteredTxs].sort((a, b) => a.timestamp - b.timestamp).forEach((t) => applyTxToHoldings(map, t, appliedSourceKeys));
     return Array.from(map.values())
       .filter((h) => Math.abs(h.amount) > 1e-9)
       .sort((a, b) => b.costBasis - a.costBasis);

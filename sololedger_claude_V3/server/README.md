@@ -38,6 +38,8 @@ Wire Stripe price IDs in `.env` for live checkout, or use `POST /api/billing/act
 
 Deploy `server/` to Railway, Render, Fly.io, or any Node host. Set all env vars from `.env.example`. Point `VITE_API_URL` at your API URL when building the frontend.
 
+**Railway persistence:** attach a Volume mounted at `/data` and set `DATA_DIR=/data`. Without this, user accounts in `store.json` are lost on every redeploy.
+
 ## Privacy model
 
 - **Local:** CSV, calculations, reports — 100% in browser IndexedDB

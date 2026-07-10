@@ -10,6 +10,7 @@ import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
 import type { Transaction, TaxSettings, FlagReason } from '@/types/transaction';
 import type { PriceRequest } from './coingecko';
+import { recordNetworkActivity } from '@/lib/networkActivity';
 
 interface PriceRequestWithMeta {
   tx: Transaction;
@@ -100,6 +101,8 @@ export async function fetchMissingPricesForAllTransactions(
   if (needsPrice.length === 0 && needsConversion.length === 0) {
     return { updated: 0, failed: 0, total: 0 };
   }
+
+  recordNetworkActivity();
 
   let updated = 0;
   let failed = 0;

@@ -4,7 +4,10 @@ import { fileURLToPath } from 'url';
 import type { PlanId } from './plans.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = path.join(__dirname, '..', 'data');
+/** Override with Railway Volume mount path, e.g. DATA_DIR=/data */
+const DATA_DIR = process.env.DATA_DIR?.trim()
+  ? path.resolve(process.env.DATA_DIR.trim())
+  : path.join(__dirname, '..', 'data');
 const STORE_FILE = path.join(DATA_DIR, 'store.json');
 
 export type UserRole = 'subscriber' | 'admin';
@@ -75,6 +78,11 @@ function persist(): void {
 
 export function getStore(): StoreData {
   return cache;
+}
+
+/** Resolved data directory (for ops / logging). */
+export function getDataDirectory(): string {
+  return DATA_DIR;
 }
 
 export function saveStore(next: StoreData): void {
