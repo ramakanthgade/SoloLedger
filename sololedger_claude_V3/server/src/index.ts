@@ -45,10 +45,11 @@ app.use('/api/billing', billingRouter);
 
 void ensureAdminUser()
   .then(() => {
-    app.listen(port, () => {
-      console.log(`SoloLedger API listening on http://localhost:${port}`);
+    // Bind all interfaces — required for Railway/public hosting (not localhost-only).
+    app.listen(port, '0.0.0.0', () => {
+      console.log(`SoloLedger API listening on 0.0.0.0:${port}`);
       console.log(`CORS origins: ${allowedOrigins.join(', ')}`);
-      console.log('Health check: http://localhost:' + port + '/health');
+      console.log('Health check: /health');
     });
   })
   .catch((err) => {
