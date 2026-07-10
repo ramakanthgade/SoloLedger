@@ -120,14 +120,14 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
               onClick={onGetStarted}
               className="h-14 rounded-full bg-gradient-to-r from-teal-600 to-emerald-600 px-10 text-lg font-semibold shadow-lg shadow-teal-600/25 hover:from-teal-700 hover:to-emerald-700"
             >
-              Start 14-day free trial
+              Start for free (up to 100 transactions)
               <ArrowRight className="ml-2 h-5 w-5" />
             </Button>
             <Button onClick={onSignIn} className="h-14 rounded-full px-8 text-base">
               Sign in
             </Button>
           </div>
-          <p className="mt-4 text-sm text-slate-500">No credit card · Wallet lookup on trial</p>
+          <p className="mt-4 text-sm text-slate-500">No credit card · Wallet lookup included on free tier</p>
 
           {/* Differentiator cards */}
           <div className="mt-16 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -161,9 +161,8 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
               Jupiter DCA trades, automatically computed
             </h2>
             <p className="mt-5 text-lg leading-relaxed text-teal-100">
-              Import Phantom or any Solana wallet with one address. SoloLedger detects Jupiter recurring
-              orders, resolves exact fill amounts on-chain, and classifies every DCA sell/buy — no
-              spreadsheet stitching.
+              Enter a Solana address — SoloLedger imports your on-chain history, detects Jupiter recurring
+              orders, resolves exact fill amounts, and classifies every DCA sell/buy. No spreadsheet stitching.
             </p>
             <Button
               onClick={onGetStarted}
@@ -178,7 +177,7 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
               <Wallet className="h-12 w-12 text-teal-300" />
               <ul className="mt-6 space-y-4">
                 {[
-                  'One-address Phantom / Solana import',
+                  'One-click import of Solana transactions',
                   'Jupiter DCA vault detection & fill parsing',
                   'Swaps, staking & SPL transfers classified',
                   'Secure proxy — keys never in your browser'
@@ -235,7 +234,7 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
             onClick={onGetStarted}
             className="mt-8 h-12 rounded-full bg-white px-10 text-base font-semibold text-navy hover:bg-teal-50"
           >
-            Get started — free trial
+            Get started — free
           </Button>
         </div>
       </section>

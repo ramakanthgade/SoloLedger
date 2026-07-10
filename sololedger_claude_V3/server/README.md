@@ -27,10 +27,11 @@ Subscribers see **Tax defaults** + **Your data** only. Admin sees an extra **Adm
 
 | Plan | Price | Transaction limit |
 |------|-------|-------------------|
-| Trial | Free (14 days) | 25 |
-| Starter | $50/yr | 100 |
-| Standard | $100/yr | 500 |
-| Pro | $500/yr | 1,000 |
+| Starter | Free | 100 |
+| Standard | $100/yr | 1,000 |
+| Pro | $200/yr | 3,000 |
+| Investor | $500/yr | 30,000 |
+| Enterprise | $3,000/yr | Unlimited |
 
 Wire Stripe price IDs in `.env` for live checkout, or use `POST /api/billing/activate-dev` in development.
 

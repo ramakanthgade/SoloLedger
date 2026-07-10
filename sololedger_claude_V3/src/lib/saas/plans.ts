@@ -4,7 +4,7 @@ export type PlanId =
   | 'starter'
   | 'standard'
   | 'pro'
-  | 'small_business'
+  | 'investor'
   | 'enterprise'
   | 'trial';
 

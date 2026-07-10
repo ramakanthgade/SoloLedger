@@ -33,9 +33,9 @@ authRouter.post('/register', async (req, res) => {
     email,
     passwordHash: await hashPassword(password),
     role: 'subscriber',
-    plan: 'trial',
-    subscriptionStatus: 'trialing',
-    subscriptionExpiresAt: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+    plan: 'starter',
+    subscriptionStatus: 'active',
+    subscriptionExpiresAt: null,
     createdAt: new Date().toISOString()
   };
   upsertUser(user);

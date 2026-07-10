@@ -59,7 +59,7 @@ export function LoginPanel() {
             </label>
             {error && <p className="text-sm text-loss">{error}</p>}
             <Button type="submit" disabled={busy} className="w-full">
-              {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Start free trial'}
+              {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create free account'}
             </Button>
           </form>
           <button

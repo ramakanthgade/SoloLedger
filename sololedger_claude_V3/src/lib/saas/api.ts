@@ -32,13 +32,25 @@ export function setAuthToken(token: string | null): void {
 }
 
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const base = getApiBase();
+  if (!base) {
+    throw new Error(
+      'API URL not configured. Set VITE_API_URL (e.g. http://localhost:3001) and ensure the API server is running.'
+    );
+  }
   const headers = new Headers(init.headers);
   if (!headers.has('Content-Type') && init.body && typeof init.body === 'string') {
     headers.set('Content-Type', 'application/json');
   }
   const token = getAuthToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
-  return fetch(`${getApiBase()}${path}`, { ...init, headers });
+  try {
+    return await fetch(`${base}${path}`, { ...init, headers });
+  } catch {
+    throw new Error(
+      `Cannot reach API at ${base}. Start the server (cd server && npm run dev) or check VITE_API_URL.`
+    );
+  }
 }
 
 export async function fetchPublicConfig(): Promise<PublicServerConfig> {

@@ -12,19 +12,36 @@ import { billingRouter, handleStripeWebhook } from './routes/billing.js';
 const app = express();
 const port = Number(process.env.PORT ?? 3001);
 
-const allowedOrigins = (process.env.CORS_ORIGIN ?? 'http://localhost:5173')
-  .split(',')
-  .map((o) => o.trim())
-  .filter(Boolean);
+const LOCAL_DEV_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173'
+];
+
+const allowedOrigins = [
+  ...LOCAL_DEV_ORIGINS,
+  ...(process.env.CORS_ORIGIN ?? 'http://localhost:5173')
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean)
+];
+
+function isAllowedOrigin(origin: string | undefined): boolean {
+  if (!origin) return true;
+  if (allowedOrigins.includes(origin)) return true;
+  if (LOCAL_DEV_ORIGINS.some((o) => origin.startsWith(o.replace(/:\d+$/, '')))) return true;
+  return allowedOrigins.some((o) => origin.endsWith(o.replace(/^https?:\/\//, '')));
+}
 
 app.use(
   cors({
     origin(origin, cb) {
-      if (!origin || allowedOrigins.includes(origin) || allowedOrigins.some((o) => origin.endsWith(o.replace('https://', '')))) {
-        cb(null, true);
+      if (isAllowedOrigin(origin)) {
+        cb(null, origin ?? allowedOrigins[0]);
         return;
       }
-      cb(null, allowedOrigins[0]);
+      cb(new Error(`CORS blocked origin: ${origin ?? 'unknown'}`));
     },
     credentials: true
   })

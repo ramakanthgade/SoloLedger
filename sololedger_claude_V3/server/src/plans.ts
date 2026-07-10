@@ -2,7 +2,7 @@ export type PlanId =
   | 'starter'
   | 'standard'
   | 'pro'
-  | 'small_business'
+  | 'investor'
   | 'enterprise'
   | 'trial';
 
@@ -21,41 +21,42 @@ export const PLANS: Record<Exclude<PlanId, 'trial'>, Plan> = {
   starter: {
     id: 'starter',
     name: 'Starter',
-    priceYearlyUsd: 50,
+    priceYearlyUsd: 0,
     txLimit: 100,
-    description: 'Up to 100 transactions per year'
+    description: 'Free — up to 100 transactions per year'
   },
   standard: {
     id: 'standard',
     name: 'Standard',
     priceYearlyUsd: 100,
-    txLimit: 500,
-    description: 'Up to 500 transactions per year'
+    txLimit: 1000,
+    description: 'Up to 1,000 transactions per year'
   },
   pro: {
     id: 'pro',
     name: 'Pro',
-    priceYearlyUsd: 500,
-    txLimit: 1000,
-    description: 'Up to 1,000 transactions per year'
+    priceYearlyUsd: 200,
+    txLimit: 3000,
+    description: 'Up to 3,000 transactions per year'
   },
-  small_business: {
-    id: 'small_business',
-    name: 'Small business',
-    priceYearlyUsd: 1500,
-    txLimit: 5000,
-    description: 'Up to 5,000 transactions per year'
+  investor: {
+    id: 'investor',
+    name: 'Investor',
+    priceYearlyUsd: 500,
+    txLimit: 30000,
+    description: 'Up to 30,000 transactions per year'
   },
   enterprise: {
     id: 'enterprise',
     name: 'Enterprise',
-    priceYearlyUsd: 0,
+    priceYearlyUsd: 3000,
     txLimit: UNLIMITED_TX,
     description: 'Unlimited transactions'
   }
 };
 
-export const TRIAL_TX_LIMIT = 25;
+/** @deprecated Legacy trial users — treated as Starter limits. */
+export const TRIAL_TX_LIMIT = 100;
 
 export function isUnlimitedTxLimit(limit: number): boolean {
   return limit >= UNLIMITED_TX;
@@ -63,6 +64,6 @@ export function isUnlimitedTxLimit(limit: number): boolean {
 
 export function getPlanTxLimit(plan: PlanId, customTxLimit?: number | null): number {
   if (customTxLimit != null && customTxLimit > 0) return customTxLimit;
-  if (plan === 'trial') return TRIAL_TX_LIMIT;
+  if (plan === 'trial') return PLANS.starter.txLimit;
   return PLANS[plan].txLimit;
 }

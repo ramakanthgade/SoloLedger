@@ -21,7 +21,7 @@ export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) 
             Pick a plan. Start free.
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-lg text-slate-600">
-            14-day trial with wallet lookup included. Upgrade when you are ready.
+            Start free with up to 100 transactions. Upgrade when you need more volume.
           </p>
         </div>
 
@@ -68,7 +68,7 @@ export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) 
                 <span className="mt-2 text-sm font-semibold text-teal-700">{p.limit}</span>
                 <span className="mt-1 text-xs text-slate-500">{p.tagline}</span>
                 <span className="mt-4 text-sm font-semibold text-navy group-hover:text-teal-700">
-                  {p.contactOnly ? 'Contact us →' : 'Get started →'}
+                  {p.contactOnly ? 'Contact us →' : p.id === 'starter' ? 'Start free →' : 'Get started →'}
                 </span>
               </button>
             );

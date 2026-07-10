@@ -70,11 +70,12 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 export function isSubscriptionActive(user: UserRecord): boolean {
   if (user.role === 'admin') return true;
+  if (user.plan === 'starter' || user.plan === 'trial') return true;
   if (user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing') {
     if (!user.subscriptionExpiresAt) return true;
     return new Date(user.subscriptionExpiresAt) > new Date();
   }
-  return user.plan === 'trial';
+  return false;
 }
 
 export function publicUser(user: UserRecord) {

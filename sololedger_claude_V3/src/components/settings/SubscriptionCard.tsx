@@ -15,8 +15,8 @@ export function SubscriptionCard() {
     typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(SELECTED_PLAN_KEY) : null;
 
   const upgrade = async (plan: string) => {
-    if (plan === 'enterprise') {
-      setError('Enterprise plans — contact support for unlimited volume pricing.');
+    if (plan === 'starter') {
+      setError('Starter is free — up to 100 transactions per year.');
       return;
     }
     setBusy(plan);
@@ -48,9 +48,9 @@ export function SubscriptionCard() {
               {!user.subscriptionActive && ' · renewal needed'}
             </p>
           </div>
-          {user.plan === 'trial' && (
+          {user.plan === 'starter' && (
             <span className="rounded-full bg-teal-100 px-3 py-1 text-xs font-semibold text-teal-800">
-              14-day trial
+              Free tier
             </span>
           )}
         </div>

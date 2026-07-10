@@ -230,20 +230,15 @@ function heliusTransferToRows(
     });
   }
 
-  // accountData fallback — only when tokenTransfers did not already capture this mint for this tx.
+  // accountData fallback — only when tokenTransfers did not already capture this mint.
+  const accountDataByMint = new Map<string, number>();
   for (const acct of htx.accountData ?? []) {
     for (const ch of acct.tokenBalanceChanges ?? []) {
       const mint: string | undefined = ch.mint ?? ch.tokenMint;
       const userAcct: string | undefined = ch.userAccount ?? ch.owner;
       if (!mint) continue;
       if (userAcct && userAcct !== walletAddress) continue;
-
-      const sourceKey = transactionSourceKey({
-        sourceRef: htx.signature,
-        walletAddress,
-        asset: resolveSymbol(mint)
-      });
-      if (sourceKey && rows.some((r) => transactionSourceKey(r) === sourceKey)) continue;
+      if (receivedByMint.has(mint) || sentByMint.has(mint)) continue;
 
       const raw = ch.rawTokenAmount ?? ch.tokenAmount;
       const decimals = raw?.decimals ?? ch.decimals ?? 0;
@@ -254,36 +249,45 @@ function heliusTransferToRows(
             ? Number(BigInt(String(raw.tokenAmount))) / 10 ** decimals
             : 0;
       if (tokenAmount <= 0) continue;
-
-      const asset = resolveSymbol(mint);
-      const dbtIncome = isDbtToken(mint)
-        ? classifyDbtIncome(mint, acct.account) ?? {
-            kind: 'genesis_reward' as const,
-            label: 'Dabba Network DBT reward',
-            notes: 'Auto-classified as DBT income (account balance change)'
-          }
-        : null;
-
-      rows.push({
-        id: makeId('rpc'),
-        timestamp: ts,
-        type: dbtIncome ? 'income' : 'transfer_in',
-        asset,
-        amount: tokenAmount,
-        contractAddress: mint,
-        fiatCurrency: 'USD',
-        fiatValue: undefined,
-        source: 'rpc:helius',
-        sourceRef: htx.signature,
-        walletAddress,
-        counterpartyAddress: acct.account !== walletAddress ? acct.account : undefined,
-        chain: 'solana',
-        category: dbtIncome?.kind,
-        notes: dbtIncome?.notes,
-        flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
-        isInternalTransfer: false
-      });
+      accountDataByMint.set(mint, (accountDataByMint.get(mint) ?? 0) + tokenAmount);
     }
+  }
+
+  for (const [mint, tokenAmount] of accountDataByMint) {
+    const asset = resolveSymbol(mint);
+    const sourceKey = transactionSourceKey({
+      sourceRef: htx.signature,
+      walletAddress,
+      asset
+    });
+    if (sourceKey && rows.some((r) => transactionSourceKey(r) === sourceKey)) continue;
+
+    const dbtIncome = isDbtToken(mint)
+      ? classifyDbtIncome(mint, walletAddress) ?? {
+          kind: 'genesis_reward' as const,
+          label: 'Dabba Network DBT reward',
+          notes: 'Auto-classified as DBT income (account balance change)'
+        }
+      : null;
+
+    rows.push({
+      id: makeId('rpc'),
+      timestamp: ts,
+      type: dbtIncome ? 'income' : 'transfer_in',
+      asset,
+      amount: tokenAmount,
+      contractAddress: mint,
+      fiatCurrency: 'USD',
+      fiatValue: undefined,
+      source: 'rpc:helius',
+      sourceRef: htx.signature,
+      walletAddress,
+      chain: 'solana',
+      category: dbtIncome?.kind,
+      notes: dbtIncome?.notes,
+      flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+      isInternalTransfer: false
+    });
   }
 
   const solSent = htx.nativeTransfers.filter((t) => t.fromUserAccount === walletAddress);

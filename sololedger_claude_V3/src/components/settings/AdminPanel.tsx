@@ -15,7 +15,7 @@ interface KeyStatus {
   etherscanApiKey: boolean;
 }
 
-const PLANS = ['trial', 'starter', 'standard', 'pro', 'small_business', 'enterprise'] as const;
+const PLANS = ['starter', 'standard', 'pro', 'investor', 'enterprise', 'trial'] as const;
 
 export function AdminPanel() {
   const [keys, setKeys] = useState<KeyStatus | null>(null);

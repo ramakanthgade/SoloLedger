@@ -89,6 +89,35 @@ function applyTxToHoldings(
 
 const ALL_WALLETS = 'All wallets';
 
+const PORTFOLIO_TYPE_PRIORITY: Partial<Record<Transaction['type'], number>> = {
+  income: 5,
+  trade: 4,
+  buy: 3,
+  sell: 3,
+  transfer_in: 2,
+  transfer_out: 2
+};
+
+/** One row per on-chain tx + asset — prefer income/trade over duplicate transfer rows. */
+function collapseForPortfolio(txs: Transaction[]): Transaction[] {
+  const best = new Map<string, Transaction>();
+  for (const t of txs) {
+    const sk = transactionSourceKey(t);
+    if (!sk) continue;
+    const prev = best.get(sk);
+    if (!prev || portfolioRowScore(t) > portfolioRowScore(prev)) best.set(sk, t);
+  }
+  return txs.filter((t) => {
+    const sk = transactionSourceKey(t);
+    return !sk || best.get(sk) === t;
+  });
+}
+
+function portfolioRowScore(t: Transaction): number {
+  const typeScore = PORTFOLIO_TYPE_PRIORITY[t.type] ?? 0;
+  return typeScore * 1_000_000 + (t.fiatValue != null ? 10_000 : 0) + t.amount;
+}
+
 export function PortfolioTab() {
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const [reportingCurrency, setReportingCurrency] = useState('INR');
@@ -127,7 +156,8 @@ export function PortfolioTab() {
   const holdings = useMemo(() => {
     const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>();
     const appliedSourceKeys = new Set<string>();
-    [...filteredTxs].sort((a, b) => a.timestamp - b.timestamp).forEach((t) => applyTxToHoldings(map, t, appliedSourceKeys));
+    const ledgerTxs = collapseForPortfolio(filteredTxs);
+    [...ledgerTxs].sort((a, b) => a.timestamp - b.timestamp).forEach((t) => applyTxToHoldings(map, t, appliedSourceKeys));
     return Array.from(map.values())
       .filter((h) => Math.abs(h.amount) > 1e-9)
       .sort((a, b) => b.costBasis - a.costBasis);

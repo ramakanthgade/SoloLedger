@@ -55,7 +55,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
           </div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-teal-700">Private crypto tax software</p>
           <h1 className="mt-3 font-display text-4xl font-bold leading-tight text-navy lg:text-5xl">
-            {mode === 'login' ? 'Welcome back' : 'Start your free trial'}
+            {mode === 'login' ? 'Welcome back' : 'Start for free'}
           </h1>
           <p className="mt-4 max-w-md text-lg text-slate-600">
             Your transactions stay in your browser. We authenticate you and proxy wallet lookups — we never store your
@@ -72,7 +72,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
             </li>
             <li className="flex items-center gap-2">
               <Mail className="h-4 w-4 text-teal-600" />
-              14-day trial with Solana wallet lookup included
+              Free Starter tier — up to 100 transactions
             </li>
           </ul>
         </div>
@@ -84,7 +84,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
             </div>
             <h2 className="text-xl font-bold text-navy">{mode === 'login' ? 'Sign in' : 'Create account'}</h2>
             <p className="mt-1 text-sm text-slate-500">
-              {mode === 'login' ? 'Access your private workspace' : 'No credit card required for trial'}
+              {mode === 'login' ? 'Access your private workspace' : 'No credit card required'}
             </p>
 
             <form onSubmit={submit} className="mt-6 space-y-4">
@@ -124,7 +124,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
                   'bg-gradient-to-r from-teal-600 to-emerald-600 hover:from-teal-700 hover:to-emerald-700'
                 )}
               >
-                {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Start free trial'}
+                {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create free account'}
               </Button>
             </form>
 
