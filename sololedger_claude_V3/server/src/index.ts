@@ -19,19 +19,32 @@ const LOCAL_DEV_ORIGINS = [
   'http://127.0.0.1:4173'
 ];
 
+/** Browsers send Origin without a path (e.g. https://user.github.io, not …/SoloLedger). */
+function normalizeOrigin(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  try {
+    if (trimmed.includes('://')) return new URL(trimmed).origin;
+  } catch {
+    // fall through — treat as host[:port] below
+  }
+  return trimmed.replace(/\/.*$/, '');
+}
+
 const allowedOrigins = [
   ...LOCAL_DEV_ORIGINS,
   ...(process.env.CORS_ORIGIN ?? 'http://localhost:5173')
     .split(',')
-    .map((o) => o.trim())
+    .map(normalizeOrigin)
     .filter(Boolean)
 ];
 
 function isAllowedOrigin(origin: string | undefined): boolean {
   if (!origin) return true;
-  if (allowedOrigins.includes(origin)) return true;
-  if (LOCAL_DEV_ORIGINS.some((o) => origin.startsWith(o.replace(/:\d+$/, '')))) return true;
-  return allowedOrigins.some((o) => origin.endsWith(o.replace(/^https?:\/\//, '')));
+  const normalized = normalizeOrigin(origin);
+  if (allowedOrigins.includes(normalized)) return true;
+  if (LOCAL_DEV_ORIGINS.some((o) => normalized.startsWith(o.replace(/:\d+$/, '')))) return true;
+  return false;
 }
 
 app.use(
