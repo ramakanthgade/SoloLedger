@@ -1,121 +1,30 @@
 /**
  * Repair incomplete swaps that never recorded a native SOL leg (common for USDC→SOL).
- * Uses Alchemy (Vite proxy / SaaS proxy) — public Solana RPC is blocked by browser CORS.
+ * Uses Vite `/solana-rpc` on localhost (no API key / no SaaS login required).
  */
-import { db, getSettings } from '@/lib/storage/db';
+import { db } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
-import { isSaasMode, getApiBase } from '@/lib/saas/config';
-import { saasProxyFetch } from '@/lib/saas/api';
-import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { makeId } from '@/lib/parsers/types';
+import {
+  getSolanaTransaction,
+  swapAssociatedSol,
+  tokenMintDelta,
+  walletSolDelta
+} from '@/lib/rpc/solanaRpc';
 
-/** Meaningful SOL — dust "touches" must not block repair. */
 const MIN_SOL_LEG = 0.001;
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 function tradeTouchesSolFully(t: Transaction): boolean {
   if (t.asset === 'SOL' && t.amount >= MIN_SOL_LEG) return true;
   return t.counterAsset?.toUpperCase() === 'SOL' && (t.counterAmount ?? 0) >= MIN_SOL_LEG;
 }
 
-function alchemyRpcUrl(): string {
-  if (isSaasMode()) return `${getApiBase()}/api/proxy/alchemy/solana-mainnet`;
-  if (typeof window !== 'undefined') {
-    const host = window.location.hostname;
-    if (host === 'localhost' || host === '127.0.0.1') return '/alchemy-rpc/solana-mainnet';
-  }
-  return 'https://solana-mainnet.g.alchemy.com/v2';
-}
-
-function alchemyHeaders(apiKey: string): HeadersInit {
-  if (isSaasMode()) return { 'Content-Type': 'application/json' };
-  return {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${apiKey}`
-  };
-}
-
-async function alchemyFetch(url: string, init: RequestInit): Promise<Response> {
-  if (isSaasMode()) {
-    const path = url.replace(getApiBase(), '');
-    return saasProxyFetch(path, init);
-  }
-  return fetch(url, init);
-}
-
-async function getTransaction(
-  sig: string,
-  apiKey: string
-): Promise<{
-  meta?: {
-    fee?: number;
-    preBalances?: number[];
-    postBalances?: number[];
-    preTokenBalances?: any[];
-    postTokenBalances?: any[];
-  };
-  transaction?: { message?: { accountKeys?: Array<string | { pubkey: string }> } };
-} | null> {
-  try {
-    const res = await alchemyFetch(alchemyRpcUrl(), {
-      method: 'POST',
-      headers: alchemyHeaders(apiKey),
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'getTransaction',
-        params: [sig, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }]
-      })
-    });
-    if (!res.ok) return null;
-    const json = await res.json();
-    return json?.result ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function nativeSolFromSwap(
-  tx: NonNullable<Awaited<ReturnType<typeof getTransaction>>>,
-  wallet: string
-): number | null {
-  if (!tx.meta?.preBalances || !tx.meta.postBalances) return null;
-  const keys = (tx.transaction?.message?.accountKeys ?? []).map((k) =>
-    typeof k === 'string' ? k : k.pubkey
-  );
-  const idx = keys.findIndex((k) => k === wallet);
-  if (idx < 0) return null;
-  const solDelta = (tx.meta.postBalances[idx] - tx.meta.preBalances[idx]) / 1e9;
-  const feeSol = (tx.meta.fee ?? 0) / 1e9;
-  return solDelta + feeSol;
-}
-
-function tokenDelta(
-  tx: NonNullable<Awaited<ReturnType<typeof getTransaction>>>,
-  wallet: string,
-  mint: string
-): number {
-  const pre = tx.meta?.preTokenBalances ?? [];
-  const post = tx.meta?.postTokenBalances ?? [];
-  const sum = (arr: any[]) =>
-    arr
-      .filter((b) => b.mint === mint && b.owner === wallet)
-      .reduce((s, b) => s + (b.uiTokenAmount?.uiAmount ?? 0), 0);
-  return sum(post) - sum(pre);
-}
-
 /**
- * Patch missing/dust SOL legs on Solana swap rows. Also promotes lone token
- * transfer_out rows into trades when on-chain shows a large native SOL credit.
- * Fixes dust counterAmount that previously blocked repair.
+ * Patch missing/dust SOL legs on Solana swap rows. Promotes lone token transfer_out
+ * rows into trades when on-chain shows a large native SOL credit.
  */
-export async function repairMissingSolSwapLegs(alchemyApiKey?: string): Promise<number> {
-  const settings = alchemyApiKey ? null : await getSettings();
-  const apiKey =
-    alchemyApiKey ??
-    settings?.alchemyApiKey ??
-    (isSaasMode() ? SAAS_PROXY_KEY : undefined);
-  if (!apiKey) return 0;
-
+export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise<number> {
   const candidates = await db.transactions
     .filter(
       (t) =>
@@ -137,20 +46,12 @@ export async function repairMissingSolSwapLegs(alchemyApiKey?: string): Promise<
       continue;
     }
     if (prev.type !== 'trade' && t.type === 'trade') bySig.set(key, t);
-    // Prefer incomplete SOL trades for repair over "fully" tagged dust legs.
-    else if (
-      prev.type === 'trade' &&
-      t.type === 'trade' &&
-      tradeTouchesSolFully(prev) &&
-      !tradeTouchesSolFully(t)
-    ) {
-      bySig.set(key, t);
-    }
   }
 
   const allSolana = await db.transactions
     .filter((t) => t.chain === 'solana' && !!t.sourceRef && !t.isSpam)
     .toArray();
+
   const solCovered = new Set<string>();
   for (const t of allSolana) {
     if (!t.walletAddress || !t.sourceRef) continue;
@@ -165,10 +66,14 @@ export async function repairMissingSolSwapLegs(alchemyApiKey?: string): Promise<
     }
   }
 
-  // Also repair trades that claim SOL but only have dust counterAmount.
+  // Dust SOL counterAmount incorrectly marks coverage — force re-repair.
   for (const t of allSolana) {
     if (t.type !== 'trade' || !t.walletAddress || !t.sourceRef) continue;
-    if (t.counterAsset?.toUpperCase() === 'SOL' && (t.counterAmount ?? 0) > 0 && (t.counterAmount ?? 0) < MIN_SOL_LEG) {
+    if (
+      t.counterAsset?.toUpperCase() === 'SOL' &&
+      (t.counterAmount ?? 0) > 0 &&
+      (t.counterAmount ?? 0) < MIN_SOL_LEG
+    ) {
       const key = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
       solCovered.delete(key);
       bySig.set(key, t);
@@ -181,9 +86,9 @@ export async function repairMissingSolSwapLegs(alchemyApiKey?: string): Promise<
     const sig = row.sourceRef!;
     const wallet = row.walletAddress!;
     // eslint-disable-next-line no-await-in-loop
-    const tx = await getTransaction(sig, apiKey);
+    const tx = await getSolanaTransaction(sig);
     if (!tx) continue;
-    const solFromSwap = nativeSolFromSwap(tx, wallet);
+    const solFromSwap = swapAssociatedSol(tx, wallet);
     if (solFromSwap == null) continue;
 
     if (solFromSwap >= MIN_SOL_LEG) {
@@ -242,23 +147,68 @@ export async function repairMissingSolSwapLegs(alchemyApiKey?: string): Promise<
     }
   }
 
+  // Second pass: any signature with a large on-chain SOL credit and no ledger SOL credit at all.
+  const sigsByWallet = new Map<string, Set<string>>();
+  for (const t of allSolana) {
+    if (!t.walletAddress || !t.sourceRef) continue;
+    const w = t.walletAddress.toLowerCase();
+    if (!sigsByWallet.has(w)) sigsByWallet.set(w, new Set());
+    sigsByWallet.get(w)!.add(t.sourceRef);
+  }
+
+  for (const [walletLower, sigs] of sigsByWallet) {
+    const wallet = allSolana.find((t) => t.walletAddress?.toLowerCase() === walletLower)?.walletAddress;
+    if (!wallet) continue;
+    for (const sig of sigs) {
+      const key = `${walletLower}|${sig}`;
+      if (solCovered.has(key)) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const tx = await getSolanaTransaction(sig);
+      if (!tx) continue;
+      const delta = walletSolDelta(tx, wallet);
+      if (delta == null || delta < MIN_SOL_LEG) continue;
+
+      // No ledger SOL credit for this sig — insert transfer_in.
+      const hasSolIn = allSolana.some(
+        (t) =>
+          t.sourceRef === sig &&
+          t.walletAddress?.toLowerCase() === walletLower &&
+          t.asset === 'SOL' &&
+          (t.type === 'transfer_in' || t.type === 'income' || (t.type === 'trade' && tradeTouchesSolFully(t)))
+      );
+      if (hasSolIn) continue;
+
+      const base = allSolana.find(
+        (t) => t.sourceRef === sig && t.walletAddress?.toLowerCase() === walletLower
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await db.transactions.add({
+        id: makeId('rpc'),
+        timestamp: base?.timestamp ?? Date.now(),
+        type: 'transfer_in',
+        asset: 'SOL',
+        amount: delta,
+        fiatCurrency: 'USD',
+        source: 'rpc:repair',
+        sourceRef: sig,
+        walletAddress: wallet,
+        chain: 'solana',
+        flags: ['missing_cost_basis'],
+        isInternalTransfer: false,
+        notes: 'SOL credit restored from on-chain balance (missing from import)'
+      });
+      updated++;
+      solCovered.add(key);
+    }
+  }
+
   return updated;
 }
 
-const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-
 /**
- * Reconcile USDC trade/transfer amounts on a signature with on-chain delta.
- * Removes extra inbound USDC rows that overstate the wallet.
+ * Reconcile USDC amounts per signature with on-chain delta; drop duplicate credits.
  */
-export async function repairUsdcOvercount(alchemyApiKey?: string): Promise<number> {
-  const settings = alchemyApiKey ? null : await getSettings();
-  const apiKey =
-    alchemyApiKey ??
-    settings?.alchemyApiKey ??
-    (isSaasMode() ? SAAS_PROXY_KEY : undefined);
-  if (!apiKey) return 0;
-
+export async function repairUsdcOvercount(_alchemyApiKey?: string): Promise<number> {
   const usdcRows = await db.transactions
     .filter(
       (t) =>
@@ -283,28 +233,26 @@ export async function repairUsdcOvercount(alchemyApiKey?: string): Promise<numbe
     const wallet = rows[0].walletAddress!;
     const sig = rows[0].sourceRef!;
     // eslint-disable-next-line no-await-in-loop
-    const tx = await getTransaction(sig, apiKey);
+    const tx = await getSolanaTransaction(sig);
     if (!tx) continue;
-    const chainDelta = tokenDelta(tx, wallet, USDC_MINT);
+    const chainDelta = tokenMintDelta(tx, wallet, USDC_MINT);
     if (Math.abs(chainDelta) < 1e-9) continue;
 
-    // Ledger USDC effect from these rows (simplified).
     let ledger = 0;
     for (const t of rows) {
       if (t.type === 'trade' && t.counterAsset?.toUpperCase() === 'USDC') ledger += t.counterAmount ?? 0;
       if (t.type === 'trade' && t.asset.toUpperCase() === 'USDC') ledger -= t.amount;
-      if (t.type === 'transfer_in' || t.type === 'income' || t.type === 'buy') {
-        if (t.asset.toUpperCase() === 'USDC') ledger += t.amount;
+      if (['transfer_in', 'income', 'buy'].includes(t.type) && t.asset.toUpperCase() === 'USDC') {
+        ledger += t.amount;
       }
-      if (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'fee') {
-        if (t.asset.toUpperCase() === 'USDC') ledger -= t.amount;
+      if (['transfer_out', 'sell', 'fee'].includes(t.type) && t.asset.toUpperCase() === 'USDC') {
+        ledger -= t.amount;
       }
     }
 
     const excess = ledger - chainDelta;
     if (excess <= 0.0001) continue;
 
-    // Prefer deleting duplicate transfer_in legs that match the excess.
     const dupIns = rows
       .filter((t) => t.type === 'transfer_in' && t.asset.toUpperCase() === 'USDC')
       .sort((a, b) => Math.abs(a.amount - excess) - Math.abs(b.amount - excess));
@@ -315,7 +263,6 @@ export async function repairUsdcOvercount(alchemyApiKey?: string): Promise<numbe
       continue;
     }
 
-    // Or shrink an oversized trade counterAmount.
     const tradeIn = rows.find(
       (t) => t.type === 'trade' && t.counterAsset?.toUpperCase() === 'USDC' && (t.counterAmount ?? 0) > 0
     );

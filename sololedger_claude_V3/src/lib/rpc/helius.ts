@@ -450,6 +450,41 @@ function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transact
     if (trade) {
       const rows = [trade];
       pushSolanaNetworkFeeRow(rows, htx, walletAddress);
+
+      // Safety net: if the trade still lacks a meaningful SOL leg but native SOL moved,
+      // attach a SOL transfer row so portfolio math cannot lose the balance change.
+      const touchesSol =
+        (trade.asset === 'SOL' && trade.amount >= 0.001) ||
+        (trade.counterAsset?.toUpperCase() === 'SOL' && (trade.counterAmount ?? 0) >= 0.001);
+      if (!touchesSol) {
+        const { delta: solNet, counterpartyOut, counterpartyIn } = walletNativeSolDelta(
+          htx,
+          walletAddress
+        );
+        if (Math.abs(solNet) >= 0.001) {
+          const inbound = solNet > 0;
+          rows.push({
+            id: makeId('rpc'),
+            timestamp: htx.timestamp * 1000,
+            type: inbound ? 'transfer_in' : 'transfer_out',
+            asset: 'SOL',
+            amount: Math.abs(solNet),
+            fiatCurrency: 'USD',
+            fiatValue: undefined,
+            source: 'rpc:helius',
+            sourceRef: htx.signature,
+            walletAddress,
+            counterpartyAddress: inbound ? counterpartyIn : counterpartyOut,
+            chain: 'solana',
+            flags: ['missing_cost_basis'] as FlagReason[],
+            isInternalTransfer: false,
+            notes: 'Native SOL leg preserved from swap (Helius safety net)'
+          });
+          // Native delta already includes −fee — drop separate fee to avoid double-count.
+          const feeIdx = rows.findIndex((r) => r.type === 'fee' && r.asset === 'SOL');
+          if (feeIdx >= 0) rows.splice(feeIdx, 1);
+        }
+      }
       return rows;
     }
   }

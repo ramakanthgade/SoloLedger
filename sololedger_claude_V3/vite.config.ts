@@ -70,6 +70,13 @@ export default defineConfig({
     // Browser → localhost → Vite → Alchemy. Avoids CORS blocks on direct Alchemy calls.
     proxy: {
       ...alchemyDevProxy,
+      // Public Solana JSON-RPC (no API key) — used by Portfolio ledger repair.
+      '/solana-rpc': {
+        target: 'https://api.mainnet-beta.solana.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/'
+      },
       '/etherscan-api': {
         target: 'https://api.etherscan.io',
         changeOrigin: true,
@@ -85,6 +92,12 @@ export default defineConfig({
   preview: {
     proxy: {
       ...alchemyDevProxy,
+      '/solana-rpc': {
+        target: 'https://api.mainnet-beta.solana.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/'
+      },
       '/etherscan-api': {
         target: 'https://api.etherscan.io',
         changeOrigin: true,

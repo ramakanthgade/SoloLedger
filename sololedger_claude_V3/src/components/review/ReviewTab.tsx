@@ -225,6 +225,18 @@ function truncateAddress(addr?: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
+/** Derive From/To for Review display. Fees are paid FROM the wallet. */
+function txFromToAddresses(t: Transaction): { fromAddr?: string; toAddr?: string } {
+  if (t.type === 'fee') {
+    return { fromAddr: t.walletAddress, toAddr: undefined };
+  }
+  if (t.type === 'transfer_out' || t.type === 'gift_sent' || t.type === 'sell') {
+    return { fromAddr: t.walletAddress, toAddr: t.counterpartyAddress };
+  }
+  // transfer_in, income, trade, buy, …
+  return { fromAddr: t.counterpartyAddress, toAddr: t.walletAddress };
+}
+
 export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
@@ -527,8 +539,7 @@ export function ReviewTab() {
       'notes'
     ];
     const rows = filtered.map((t) => {
-      const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
-      const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
+      const { fromAddr, toAddr } = txFromToAddresses(t);
       return [
         new Date(t.timestamp).toISOString(),
         t.type,
@@ -584,18 +595,21 @@ export function ReviewTab() {
         'Date', 'Type', 'Chain', 'Asset', 'Amount',
         `Fiat (${cur})`, 'From', 'To', 'Flags', 'Source Ref'
       ]],
-      body: filtered.map((t) => [
+      body: filtered.map((t) => {
+        const { fromAddr, toAddr } = txFromToAddresses(t);
+        return [
         new Date(t.timestamp).toISOString().slice(0, 10),
         t.type,
         t.chain ?? '—',
         t.asset,
         formatCompactAmount(t.amount),
         t.fiatValue != null ? formatAmountForExport(t.fiatValue, t.fiatCurrency) : '—',
-        t.type === 'transfer_out' ? (t.walletAddress ?? '—') : (t.counterpartyAddress ?? '—'),
-        t.type === 'transfer_out' ? (t.counterpartyAddress ?? '—') : (t.walletAddress ?? '—'),
+        fromAddr ? truncateAddress(fromAddr) : '—',
+        toAddr ? truncateAddress(toAddr) : '—',
         displayFlags(t).join(', ') || '—',
         t.sourceRef ? truncatePdfRef(t.sourceRef) : '—'
-      ])
+      ];
+      })
     });
     doc.save('sololedger-review-transactions.pdf');
   };
@@ -878,8 +892,7 @@ export function ReviewTab() {
             {filtered.slice(0, 200).map((t) => {
               const isDisposal = DISPOSAL_TYPES.has(t.type);
               const candidates = engineResult?.disposalCandidates[t.id] ?? [];
-              const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
-              const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
+              const { fromAddr, toAddr } = txFromToAddresses(t);
               const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : '—';
               const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
               const isEditing = editingFiat === t.id;

@@ -268,6 +268,8 @@ export function PortfolioTab() {
   const [selectedWallet, setSelectedWallet] = useState<string>(ALL_WALLETS);
   const [liveByMint, setLiveByMint] = useState<Map<string, number>>(new Map());
   const [liveBalanceStatus, setLiveBalanceStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
+  const [repairingBalances, setRepairingBalances] = useState(false);
+  const [repairMsg, setRepairMsg] = useState<string | null>(null);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -278,7 +280,7 @@ export function PortfolioTab() {
 
   // Repair ledger rows once per session; only mark done after success so failures retry.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v9';
+    const key = 'sololedger_portfolio_reprocess_v10';
     if (sessionStorage.getItem(key)) return;
     void (async () => {
       try {
@@ -471,7 +473,7 @@ export function PortfolioTab() {
       balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
     if (!needs) return;
     const fingerprint = balanceVariances.map((v) => `${v.asset}:${v.delta.toFixed(6)}`).join('|');
-    const key = `sololedger_mismatch_repair_v9:${fingerprint}`;
+    const key = `sololedger_mismatch_repair_v10:${fingerprint}`;
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
     void runPortfolioLedgerRepairs();
@@ -601,11 +603,34 @@ export function PortfolioTab() {
       </div>
 
       {balanceMismatch && selectedFy == null && (
-        <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-mist-300">
-          <strong className="text-loss">{balanceMismatch.asset} balance mismatch:</strong> ledger shows{' '}
-          {formatCompactAmount(balanceMismatch.ledger)} but your wallet holds{' '}
-          {formatCompactAmount(balanceMismatch.live)}. Remove the wallet in Import → Wallet lookup,
-          then re-import to rebuild with the latest parser.
+        <div className="flex flex-col gap-3 rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-mist-300 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <strong className="text-loss">{balanceMismatch.asset} balance mismatch:</strong> ledger shows{' '}
+            {formatCompactAmount(balanceMismatch.ledger)} but your wallet holds{' '}
+            {formatCompactAmount(balanceMismatch.live)}.
+            {repairMsg && <p className="mt-1 text-xs text-mist-400">{repairMsg}</p>}
+          </div>
+          <Button
+            variant="secondary"
+            className="shrink-0 text-xs"
+            disabled={repairingBalances}
+            onClick={() => {
+              void (async () => {
+                setRepairingBalances(true);
+                setRepairMsg('Repairing from on-chain data…');
+                try {
+                  await runPortfolioLedgerRepairs();
+                  setRepairMsg('Repair finished — balances should refresh shortly.');
+                } catch (e) {
+                  setRepairMsg(e instanceof Error ? e.message : 'Repair failed');
+                } finally {
+                  setRepairingBalances(false);
+                }
+              })();
+            }}
+          >
+            {repairingBalances ? 'Repairing…' : 'Fix balances now'}
+          </Button>
         </div>
       )}
 
