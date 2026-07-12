@@ -335,18 +335,20 @@ export function PortfolioTab() {
 
   const balanceVariances = useMemo(() => {
     if (liveBalanceStatus !== 'ready') return [];
-    return holdings
+    // Compare what the user actually sees (displayHoldings), not internal ledger overrides.
+    return displayHoldings
       .map((h) => {
         const live = lookupLiveBalance(h);
         if (live == null) return null;
-        const ledgerAmount = h.asset === 'SOL' && h.chain === 'solana' ? solLedgerBalance : h.amount;
-        const delta = ledgerAmount - live;
+        const delta = h.amount - live;
         const pct = live > 0 ? (delta / live) * 100 : 0;
         const significant =
           h.asset === 'SOL' && h.chain === 'solana'
             ? Math.abs(delta) > SOL_MAIN_WALLET_TOLERANCE
             : Math.abs(delta) > Math.max(0.0001, Math.abs(live) * 0.001);
-        return significant ? { asset: h.asset, contractAddress: h.contractAddress, ledger: ledgerAmount, live, delta, pct } : null;
+        return significant
+          ? { asset: h.asset, contractAddress: h.contractAddress, ledger: h.amount, live, delta, pct }
+          : null;
       })
       .filter(Boolean) as Array<{
         asset: string;
@@ -356,7 +358,7 @@ export function PortfolioTab() {
         delta: number;
         pct: number;
       }>;
-  }, [holdings, liveByMint, liveBalanceStatus, solLedgerBalance]);
+  }, [displayHoldings, liveByMint, liveBalanceStatus]);
 
   const balanceMismatch = balanceVariances.length > 0 ? balanceVariances[0] : null;
   const missingPriceCount = filteredTxs.filter(

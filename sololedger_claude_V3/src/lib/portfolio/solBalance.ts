@@ -51,7 +51,17 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
     if (t.isSpam || t.asset !== 'SOL') return true;
     if (t.type === 'fee' || t.type === 'trade') return true;
     const sk = transactionSourceKey(t);
-    if (sk && feeKeys.has(sk)) return false;
+    // Only drop tiny outgoing transfers when a fee row already captures rent on this tx.
+    // Never drop transfer_in — rent refunds and SOL receipts must still add to balance.
+    if (
+      sk &&
+      feeKeys.has(sk) &&
+      t.type === 'transfer_out' &&
+      t.amount < 0.01 &&
+      !(t.notes?.toLowerCase().includes('refund') ?? false)
+    ) {
+      return false;
+    }
     return !sk || best.get(sk) === t;
   });
 }
