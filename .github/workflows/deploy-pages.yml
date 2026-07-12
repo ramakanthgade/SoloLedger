@@ -31,11 +31,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build for GitHub Pages
+      - name: Build for GitHub Pages (SaaS)
         run: npm run build
         env:
           VITE_BASE_PATH: /SoloLedger/
-          VITE_SAAS_MODE: 'false'
+          VITE_SAAS_MODE: 'true'
+          VITE_API_URL: https://sololedger-production.up.railway.app
 
       - name: Deploy to gh-pages branch
         uses: JamesIves/github-pages-deploy-action@v4
