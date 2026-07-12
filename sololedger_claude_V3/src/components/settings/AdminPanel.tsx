@@ -84,7 +84,7 @@ export function AdminPanel() {
 
       <Card>
         <CardHeader><CardTitle>Users ({users.length})</CardTitle></CardHeader>
-        <CardContent className="sl-table-scroll">
+        <CardContent className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead>
               <tr className="border-b border-ink-700 text-xs uppercase tracking-wide text-mist-400">

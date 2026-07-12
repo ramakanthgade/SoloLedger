@@ -296,7 +296,7 @@ export function ReportsTab() {
           <h3 className="text-sm font-semibold text-ink-950">Disposals — {yearLabel}</h3>
           <span className="text-xs text-mist-400">{yearDisposals.length} events</span>
         </div>
-        <div className="sl-table-scroll p-1">
+        <div className="overflow-x-auto p-1">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-ink-700 bg-ink-900/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-mist-400">

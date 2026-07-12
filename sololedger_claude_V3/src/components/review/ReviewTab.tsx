@@ -728,7 +728,7 @@ export function ReviewTab() {
         )}
       </div>
 
-      <div className="sl-table-scroll rounded-lg border border-ink-700">
+      <div className="overflow-x-auto rounded-lg border border-ink-700">
         <table className="w-full min-w-[920px] text-sm">
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
