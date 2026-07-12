@@ -461,7 +461,7 @@ export function PortfolioTab() {
         </CardContent>
       </Card>
 
-      <div className="overflow-x-auto rounded-lg border border-ink-700">
+      <div className="sl-table-scroll rounded-lg border border-ink-700">
         <table className="w-full text-sm">
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>

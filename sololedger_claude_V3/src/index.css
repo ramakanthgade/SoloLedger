@@ -59,4 +59,26 @@
   .empty-state {
     @apply rounded-lg border border-dashed border-ink-600 bg-ink-800 px-6 py-14 text-center text-sm text-mist-400;
   }
+
+  /* Scrollable data tables with frozen column headers */
+  .sl-table-scroll {
+    @apply max-h-[min(70vh,calc(100dvh-14rem))] overflow-auto;
+  }
+
+  .sl-table-scroll thead th {
+    @apply sticky z-10 bg-ink-800;
+    box-shadow: 0 1px 0 rgb(30 41 59);
+  }
+
+  .sl-table-scroll thead tr:first-child th {
+    @apply top-0;
+  }
+
+  .sl-table-scroll thead tr:nth-child(2) th {
+    @apply top-8;
+  }
+
+  .sl-table-scroll thead tr.border-b th {
+    @apply bg-ink-900/95;
+  }
 }

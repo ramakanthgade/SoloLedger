@@ -334,7 +334,7 @@ export function CapitalGainsTab() {
           <CardTitle>Matched disposals — {getFyLabel(fy, jurisdiction)}</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
+          <div className="sl-table-scroll">
             <table className="w-full min-w-[920px] text-xs">
               <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
                 <tr>
@@ -401,7 +401,7 @@ export function CapitalGainsTab() {
           <CardTitle>Income &amp; rewards — {getFyLabel(fy, jurisdiction)}</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
+          <div className="sl-table-scroll">
             <table className="w-full text-xs">
               <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
                 <tr>

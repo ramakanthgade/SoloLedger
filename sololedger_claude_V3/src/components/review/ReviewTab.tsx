@@ -200,17 +200,9 @@ export function ReviewTab() {
     return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
   }, [transactions, settings, hints]);
 
-  /** Non-spam transactions missing a fiat value. */
+  /** Non-spam transactions missing a fiat value (includes internal transfers for display). */
   const missingPriceTxs = useMemo(
-    () =>
-      transactions.filter(
-        (t) =>
-          !t.isSpam &&
-          t.fiatValue == null &&
-          !t.isInternalTransfer &&
-          ((Array.isArray(t.flags) && t.flags.includes('missing_cost_basis')) ||
-            (t.type !== 'transfer_in' && t.type !== 'transfer_out'))
-      ),
+    () => transactions.filter((t) => !t.isSpam && t.fiatValue == null),
     [transactions]
   );
 
@@ -222,8 +214,7 @@ export function ReviewTab() {
         (t) =>
           t.source.startsWith('rpc:') &&
           (t.type === 'transfer_in' || t.type === 'transfer_out') &&
-          t.fiatValue == null &&
-          !t.isInternalTransfer
+          t.fiatValue == null
       ).length,
     [transactions]
   );
@@ -314,7 +305,7 @@ export function ReviewTab() {
     const base = transactions.filter((t) => {
       if (!showSpam && t.isSpam) return false;
       if (showSpam && !t.isSpam) return false;
-      if (showNeedsPrice && !(t.fiatValue == null && !t.isInternalTransfer && !t.isSpam)) return false;
+      if (showNeedsPrice && !(t.fiatValue == null && !t.isSpam)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
       if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
       if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;
@@ -737,7 +728,7 @@ export function ReviewTab() {
         )}
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-ink-700">
+      <div className="sl-table-scroll rounded-lg border border-ink-700">
         <table className="w-full min-w-[920px] text-sm">
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
