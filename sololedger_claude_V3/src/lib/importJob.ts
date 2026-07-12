@@ -9,6 +9,7 @@
 import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions, filterAlreadyImported } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
 import { reprocessSwapDetectionInDb, reprocessDbtIncome } from '@/lib/rpc/reprocessSwaps';
+import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import type { TaxSettings } from '@/types/transaction';
@@ -224,14 +225,26 @@ export async function runWalletImport(
   let txsToStore = transactions;
   let newlyStored = 0;
   if (transactions.length > 0) {
-    const tradedSourceRefs = new Set(
-      (await db.transactions.filter((t) => t.type === 'trade' && !!t.sourceRef).toArray()).map(
-        (t) => t.sourceRef!
-      )
+    const existingTrades = await db.transactions
+      .filter((t) => t.type === 'trade' && !!t.sourceRef)
+      .toArray();
+    const tradeBySourceRef = new Map(
+      existingTrades.map((t) => [t.sourceRef!, t] as const)
     );
-    txsToStore = transactions.filter(
-      (t) => !t.sourceRef || !tradedSourceRefs.has(t.sourceRef)
-    );
+    txsToStore = transactions.filter((t) => {
+      if (!t.sourceRef) return true;
+      const trade = tradeBySourceRef.get(t.sourceRef);
+      if (!trade) return true;
+      if (t.type === 'fee' || t.type === 'income') return true;
+      if (t.type === 'trade') return false;
+      if (
+        (t.type === 'transfer_in' || t.type === 'transfer_out') &&
+        isAbsorbedTradeLeg(t, trade)
+      ) {
+        return false;
+      }
+      return true;
+    });
     txsToStore = await filterAlreadyImported(txsToStore);
     newlyStored = txsToStore.length;
     if (txsToStore.length > 0) {
@@ -251,26 +264,14 @@ export async function runWalletImport(
     // Phase 2a: Reclassify DBT income (always free, no API)
     await reprocessDbtIncome();
 
-    // Phase 2b: Noves swap classification — ONLY for non-Helius/Moralis sources.
-    // Helius and Moralis already return pre-classified transactions; calling Noves
-    // again would be redundant and waste API credits.
-    const hasRichSourceTxs = txsToStore.some(
-      (t) => t.source === 'rpc:helius' || t.source === 'rpc:moralis'
+    // Phase 2b: Local swap merge (always) + optional Noves for legacy sources.
+    const swapResult = await reprocessSwapDetectionInDb(
+      settings.novesApiKey,
+      (done, total) => importJob._setProgress({ done, total })
     );
-    const hasLegacyTxs = txsToStore.some(
-      (t) => t.source.startsWith('rpc:') && t.source !== 'rpc:helius' && t.source !== 'rpc:moralis'
-    );
-
-    if (!hasRichSourceTxs || hasLegacyTxs) {
-      // Only run Noves for Alchemy/Blockscout/Etherscan-sourced transactions
-      const swapResult = await reprocessSwapDetectionInDb(
-        settings.novesApiKey,
-        (done, total) => importJob._setProgress({ done, total })
-      );
-      swapsDetected = swapResult.tradesCreated;
-      if (swapResult.tradesCreated > 0 || swapResult.reclassified > 0) {
-        apiWarnings.unshift(swapResult.message);
-      }
+    swapsDetected = swapResult.tradesCreated;
+    if (swapResult.tradesCreated > 0 || swapResult.reclassified > 0) {
+      apiWarnings.unshift(swapResult.message);
     }
 
     // Phase 2c: DCA auto-classification (always run — works for Helius/Moralis AND legacy sources)

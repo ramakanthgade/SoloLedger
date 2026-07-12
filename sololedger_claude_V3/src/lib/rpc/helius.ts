@@ -357,36 +357,21 @@ function heliusTransferToRows(
     walletAddress
   );
 
-  const walletLower = walletAddress.toLowerCase();
-  const walletHasSplAccountData = (htx.accountData ?? []).some((acct) =>
-    (acct.tokenBalanceChanges ?? []).some((ch) => {
-      const userAcct: string | undefined = ch.userAccount ?? ch.owner;
-      return !!userAcct && userAcct.toLowerCase() === walletLower && !!(ch.mint ?? ch.tokenMint);
-    })
-  );
-
-  if (walletHasSplAccountData) {
-    for (const [mint, net] of accountDataNet) {
-      pushSplBalanceRow(rows, {
-        htx,
-        walletAddress,
-        mint,
-        net,
-        counterparty: transferNet.get(mint)?.counterparty,
-        fromAccountData: true
-      });
-    }
-  } else {
-    for (const [mint, { net, counterparty }] of transferNet) {
-      pushSplBalanceRow(rows, {
-        htx,
-        walletAddress,
-        mint,
-        net,
-        counterparty,
-        fromAccountData: false
-      });
-    }
+  const allMints = new Set([...accountDataNet.keys(), ...transferNet.keys()]);
+  for (const mint of allMints) {
+    const fromAccountData = accountDataNet.has(mint);
+    const net = fromAccountData
+      ? accountDataNet.get(mint)!
+      : transferNet.get(mint)!.net;
+    const counterparty = transferNet.get(mint)?.counterparty;
+    pushSplBalanceRow(rows, {
+      htx,
+      walletAddress,
+      mint,
+      net,
+      counterparty,
+      fromAccountData
+    });
   }
 
   // Net native SOL delta from accountData (includes fees + rent); fallback to nativeTransfers.

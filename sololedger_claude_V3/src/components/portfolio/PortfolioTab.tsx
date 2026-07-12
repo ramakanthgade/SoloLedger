@@ -16,6 +16,8 @@ import {
   normalizeSolLedgerRows,
   SOL_MAIN_WALLET_TOLERANCE
 } from '@/lib/portfolio/solBalance';
+import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
+import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
@@ -40,8 +42,8 @@ function applyTxToHoldings(
   appliedSourceKeys: Set<string>
 ) {
   if (t.isSpam) return;
-  // SOL uses PR #25 main-wallet math in holdings useMemo — not generic upsert logic.
-  if (t.asset === 'SOL') return;
+  // SOL balance from computeMainWalletSolFromTransactions; only apply non-SOL legs of trades here.
+  if (t.asset === 'SOL' && t.type !== 'trade') return;
 
   const sourceKey = transactionSourceKey(t);
   if (sourceKey) {
@@ -74,16 +76,20 @@ function applyTxToHoldings(
   };
 
   if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
-    upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
-    upsert(
-      t.counterAsset,
-      t.counterAmount,
-      1,
-      t.fiatValue ?? 0,
-      t.chain,
-      t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
-    );
-    if (t.feeAmount && t.feeAmount > 0) {
+    if (t.asset !== 'SOL') {
+      upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
+    }
+    if (t.counterAsset !== 'SOL') {
+      upsert(
+        t.counterAsset,
+        t.counterAmount,
+        1,
+        t.fiatValue ?? 0,
+        t.chain,
+        t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
+      );
+    }
+    if (t.feeAmount && t.feeAmount > 0 && (t.feeAsset ?? t.asset) !== 'SOL') {
       upsert(
         t.feeAsset ?? t.asset,
         t.feeAmount,
@@ -162,6 +168,12 @@ const PORTFOLIO_TYPE_PRIORITY: Partial<Record<Transaction['type'], number>> = {
 
 /** One row per on-chain tx + asset — prefer income/trade over duplicate transfer rows. */
 function collapseForPortfolio(txs: Transaction[]): Transaction[] {
+  const tradesByRef = new Map<string, Transaction>();
+  for (const t of txs) {
+    if (t.type !== 'trade' || !t.sourceRef || !t.walletAddress) continue;
+    tradesByRef.set(`${t.walletAddress.toLowerCase()}|${t.sourceRef}`, t);
+  }
+
   const best = new Map<string, Transaction>();
   for (const t of txs) {
     const sk = transactionSourceKey(t);
@@ -171,7 +183,12 @@ function collapseForPortfolio(txs: Transaction[]): Transaction[] {
   }
   return txs.filter((t) => {
     const sk = transactionSourceKey(t);
-    return !sk || best.get(sk) === t;
+    if (sk && best.get(sk) !== t) return false;
+    if (t.sourceRef && t.walletAddress) {
+      const trade = tradesByRef.get(`${t.walletAddress.toLowerCase()}|${t.sourceRef}`);
+      if (trade && isAbsorbedTradeLeg(t, trade)) return false;
+    }
+    return true;
   });
 }
 
@@ -196,12 +213,15 @@ export function PortfolioTab() {
     });
   }, []);
 
-  // Fix legacy SOL rows (internal rent vs fee) once per session so ledger matches Phantom.
+  // Repair legacy rows + merge duplicate swap legs once per session.
   useEffect(() => {
-    const key = 'sololedger_sol_normalize_v4';
+    const key = 'sololedger_portfolio_reprocess_v5';
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
-    void normalizeSolLedgerRows();
+    void (async () => {
+      await reprocessSwapDetectionInDb();
+      await normalizeSolLedgerRows();
+    })();
   }, []);
 
   useEffect(() => {

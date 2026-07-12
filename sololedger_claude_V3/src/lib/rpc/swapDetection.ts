@@ -21,6 +21,20 @@ function isSwapCandidate(tx: Transaction): boolean {
   return tx.type === 'transfer_in' || tx.type === 'transfer_out';
 }
 
+export function tradeLegAssets(trade: Transaction): Set<string> {
+  return new Set(
+    [trade.asset, trade.counterAsset]
+      .filter(Boolean)
+      .map((a) => a!.toUpperCase())
+  );
+}
+
+/** Transfer leg already represented on a trade row for the same on-chain tx. */
+export function isAbsorbedTradeLeg(tx: Transaction, trade: Transaction): boolean {
+  if (tx.type !== 'transfer_in' && tx.type !== 'transfer_out') return false;
+  return tradeLegAssets(trade).has(tx.asset.toUpperCase());
+}
+
 export interface SwapDetectionResult {
   transactions: Transaction[];
   /** transfer_in rows absorbed into a trade (safe to delete from DB). */
@@ -72,7 +86,13 @@ export function detectDexSwaps(transactions: Transaction[]): SwapDetectionResult
     if (existingTrade) {
       standalone.push(existingTrade);
       for (const t of group) {
-        if (t.id !== existingTrade.id) removedIds.push(t.id);
+        if (t.id === existingTrade.id) continue;
+        // Keep fees, income, and legs not already on the trade (e.g. SOL rent on a token swap).
+        if (t.type === 'fee' || t.type === 'income' || !isAbsorbedTradeLeg(t, existingTrade)) {
+          standalone.push(t);
+        } else {
+          removedIds.push(t.id);
+        }
       }
       continue;
     }
