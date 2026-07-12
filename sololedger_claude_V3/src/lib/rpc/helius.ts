@@ -292,14 +292,6 @@ function heliusSwapToTrade(
       outputMint = out.mint;
       outputAmount = Math.abs(rawAmountToDecimal(out.rawTokenAmount.tokenAmount, out.rawTokenAmount.decimals));
     }
-    if (!inputMint && swap.nativeInput) {
-      inputMint = 'So11111111111111111111111111111111111111112';
-      inputAmount = swap.nativeInput.amount / 1e9;
-    }
-    if (!outputMint && swap.nativeOutput) {
-      outputMint = 'So11111111111111111111111111111111111111112';
-      outputAmount = swap.nativeOutput.amount / 1e9;
-    }
   }
 
   if (!inputMint || !outputMint) {
@@ -316,21 +308,48 @@ function heliusSwapToTrade(
   }
 
   // Native SOL legs are often missing from tokenTransfers (USDC→SOL etc.).
-  // accountData.nativeBalanceChange includes −fee; add fee back for the swap-associated SOL.
+  // Prefer accountData.nativeBalanceChange (lamports) as source of truth — Helius
+  // nativeInput/nativeOutput units are sometimes wrong or dust-sized.
   const WSOL = 'So11111111111111111111111111111111111111112';
   const { delta: solDelta } = walletNativeSolDelta(htx, walletAddress);
   const feeSol =
     htx.feePayer?.toLowerCase() === walletAddress.toLowerCase() ? (htx.fee ?? 0) / 1e9 : 0;
   const solFromSwap = solDelta + feeSol;
-  const inputIsSol = inputMint === WSOL;
-  const outputIsSol = outputMint === WSOL;
-  if (!inputIsSol && !outputIsSol) {
-    if (solFromSwap > 0.001) {
+
+  const normalizeNativeSolAmount = (raw: number | undefined): number | undefined => {
+    if (raw == null || !isFinite(raw) || raw === 0) return undefined;
+    // Lamports are large integers; UI-SOL amounts for swaps are typically < 1e5.
+    return Math.abs(raw) >= 1e6 ? raw / 1e9 : raw;
+  };
+
+  if (swap?.nativeInput && !inputMint) {
+    inputMint = WSOL;
+    inputAmount = Math.abs(normalizeNativeSolAmount(swap.nativeInput.amount) ?? 0);
+  }
+  if (swap?.nativeOutput && !outputMint) {
+    outputMint = WSOL;
+    outputAmount = Math.abs(normalizeNativeSolAmount(swap.nativeOutput.amount) ?? 0);
+  }
+
+  // Reconcile with accountData whenever native SOL moved materially.
+  if (solFromSwap > 0.001) {
+    const outIsSol = outputMint === WSOL;
+    const inIsSol = inputMint === WSOL;
+    if (!outIsSol && !inIsSol) {
       outputMint = WSOL;
       outputAmount = solFromSwap;
-    } else if (solFromSwap < -0.001) {
+    } else if (outIsSol && ((outputAmount ?? 0) < 0.001 || Math.abs((outputAmount ?? 0) - solFromSwap) > 0.001)) {
+      outputAmount = solFromSwap;
+    }
+  } else if (solFromSwap < -0.001) {
+    const outIsSol = outputMint === WSOL;
+    const inIsSol = inputMint === WSOL;
+    const need = Math.abs(solFromSwap);
+    if (!outIsSol && !inIsSol) {
       inputMint = WSOL;
-      inputAmount = Math.abs(solFromSwap);
+      inputAmount = need;
+    } else if (inIsSol && ((inputAmount ?? 0) < 0.001 || Math.abs((inputAmount ?? 0) - need) > 0.001)) {
+      inputAmount = need;
     }
   }
 

@@ -27,8 +27,8 @@ function solRowScore(t: Transaction): number {
 
 function tradeTouchesSol(t: Transaction): boolean {
   if (t.type !== 'trade') return false;
-  if (t.asset === 'SOL' && t.amount > 0) return true;
-  return t.counterAsset?.toUpperCase() === 'SOL' && (t.counterAmount ?? 0) > 0;
+  if (t.asset === 'SOL' && t.amount >= 0.001) return true;
+  return t.counterAsset?.toUpperCase() === 'SOL' && (t.counterAmount ?? 0) >= 0.001;
 }
 
 /** Rent returned to main wallet when token accounts close — must ADD to balance. */

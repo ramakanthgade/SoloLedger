@@ -22,7 +22,7 @@ import {
   isDcaEscrowDeposit,
   isDcaFillTrade
 } from '@/lib/portfolio/portfolioHoldings';
-import { repairMissingSolSwapLegs } from '@/lib/portfolio/repairSolSwapLegs';
+import { repairMissingSolSwapLegs, repairUsdcOvercount } from '@/lib/portfolio/repairSolSwapLegs';
 import { collapseDuplicateTradeTransferLegs } from '@/lib/portfolio/collapseDuplicateLegs';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
@@ -31,6 +31,27 @@ import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
+
+async function runPortfolioLedgerRepairs(): Promise<void> {
+  await reprocessSwapDetectionInDb();
+  const settings = await getSettings();
+  const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
+  const alchemyKey = settings.alchemyApiKey ?? proxy;
+  await repairMissingSolSwapLegs(alchemyKey);
+  await repairUsdcOvercount(alchemyKey);
+  await collapseDuplicateTradeTransferLegs();
+  const all = await db.transactions.toArray();
+  const groups = detectDcaGroups(all.filter((t) => !t.isSpam));
+  const needsDca = groups.some(
+    (g) =>
+      !g.depositTx.isInternalTransfer ||
+      !(g.fillTxs[0]?.notes ?? '').includes('DCA fill')
+  );
+  if (needsDca && groups.length > 0) {
+    await applyDcaClassification(groups, alchemyKey);
+  }
+  await normalizeSolLedgerRows();
+}
 
 /**
  * Transaction-based holdings calculator.
@@ -255,29 +276,17 @@ export function PortfolioTab() {
     });
   }, []);
 
-  // Repair legacy rows, merge swap legs, patch missing SOL legs, persist DCA — once per session.
+  // Repair ledger rows once per session; only mark done after success so failures retry.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v8';
+    const key = 'sololedger_portfolio_reprocess_v9';
     if (sessionStorage.getItem(key)) return;
-    sessionStorage.setItem(key, '1');
     void (async () => {
-      await reprocessSwapDetectionInDb();
-      const settings = await getSettings();
-      const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
-      const alchemyKey = settings.alchemyApiKey ?? proxy;
-      await repairMissingSolSwapLegs(alchemyKey);
-      await collapseDuplicateTradeTransferLegs();
-      const all = await db.transactions.toArray();
-      const groups = detectDcaGroups(all.filter((t) => !t.isSpam));
-      const needsDca = groups.some(
-        (g) =>
-          !g.depositTx.isInternalTransfer ||
-          !(g.fillTxs[0]?.notes ?? '').includes('DCA fill')
-      );
-      if (needsDca && groups.length > 0) {
-        await applyDcaClassification(groups, alchemyKey);
+      try {
+        await runPortfolioLedgerRepairs();
+        sessionStorage.setItem(key, '1');
+      } catch {
+        // Leave key unset so the next Portfolio visit retries.
       }
-      await normalizeSolLedgerRows();
     })();
   }, []);
 
@@ -453,6 +462,21 @@ export function PortfolioTab() {
   }, [holdings, liveByMint, liveBalanceStatus, selectedFy]);
 
   const balanceMismatch = balanceVariances.length > 0 ? balanceVariances[0] : null;
+
+  // If live mismatch remains (SOL/USDC), re-run repairs even after session gate —
+  // earlier attempts may have failed (proxy down) or left dust SOL legs unrepaired.
+  useEffect(() => {
+    if (liveBalanceStatus !== 'ready' || selectedFy != null) return;
+    const needs =
+      balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
+    if (!needs) return;
+    const fingerprint = balanceVariances.map((v) => `${v.asset}:${v.delta.toFixed(6)}`).join('|');
+    const key = `sololedger_mismatch_repair_v9:${fingerprint}`;
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+    void runPortfolioLedgerRepairs();
+  }, [balanceVariances, liveBalanceStatus, selectedFy]);
+
   const missingPriceCount = filteredTxs.filter(
     (t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer
   ).length;

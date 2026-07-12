@@ -7,8 +7,11 @@ export function isSaasMode(): boolean {
 export function getApiBase(): string {
   const configured = String(import.meta.env.VITE_API_URL ?? '').replace(/\/$/, '');
   if (configured) return configured;
-  // Local SaaS dev: default to local API when env var omitted
-  if (isSaasMode() && import.meta.env.DEV) return 'http://localhost:3001';
+  if (isSaasMode()) {
+    // Default to the hosted API so local `npm run dev` can import/repair wallets
+    // without also running Express on :3001. Override with VITE_API_URL if needed.
+    return 'https://sololedger-production.up.railway.app';
+  }
   return '';
 }
 
