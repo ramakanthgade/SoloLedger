@@ -434,8 +434,12 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 
     // eslint-disable-next-line no-await-in-loop
     for (const mint of mints) {
-      const preAmt = pre.find((b: any) => b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
-      const postAmt = post.find((b: any) => b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
+      const sumUi = (balances: any[], m: string) =>
+        balances
+          .filter((b: any) => b.mint === m)
+          .reduce((s, b) => s + (b.uiTokenAmount?.uiAmount ?? 0), 0);
+      const preAmt = sumUi(pre, mint);
+      const postAmt = sumUi(post, mint);
       const delta = postAmt - preAmt;
       if (Math.abs(delta) < 1e-9) continue;
 

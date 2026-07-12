@@ -9,6 +9,7 @@ export const SOLANA_KNOWN_MINTS: Record<string, string> = {
   mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So: 'mSOL',
   J1toso1uCk3RLmjorhTtrVwY9HJIVXAxVrXzPzdr1Gbr: 'jitoSOL',
   DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263: 'BONK',
+  DBTNHU51SBFi3dsoGGCRfKbno4teZXqsDSL37s4jgRKv: 'DBT',
   '7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs': 'ETH',
   '7dHbWXmci3dT8UFYWYZweBLXgycu7Y3iL6trKn1Y7ARj': 'stSOL'
 };
