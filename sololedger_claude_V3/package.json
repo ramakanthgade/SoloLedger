@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "build:pages": "cross-env VITE_BASE_PATH=/SoloLedger/ vite build",
+    "build:pages": "cross-env VITE_BASE_PATH=/SoloLedger/ VITE_SAAS_MODE=true VITE_API_URL=https://sololedger-production.up.railway.app vite build",
     "preview": "vite preview",
     "lint": "eslint .",
     "deploy:pages": "npm run build:pages && npx --yes gh-pages -d dist -t"

@@ -81,11 +81,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setAuthToken(null);
     setUser(null);
     setDbReady(false);
-    void bindUserSession(null).then(() => {
-      setDbReady(true);
-      const base = import.meta.env.BASE_URL || '/';
-      window.location.assign(base);
-    });
+    void bindUserSession(null).then(() => setDbReady(true));
   }, []);
 
   const value = useMemo(

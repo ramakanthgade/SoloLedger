@@ -10,7 +10,6 @@ import { ReportsTab } from '@/components/reports/ReportsTab';
 import { SettingsTab } from '@/components/settings/SettingsTab';
 import { AdminPanel } from '@/components/settings/AdminPanel';
 import { AiAdvisor } from '@/components/ai/AiAdvisor';
-import { AuthGate } from '@/components/auth/AuthGate';
 import { AuthPage } from '@/components/auth/AuthPage';
 import { LandingPage } from '@/components/auth/LandingPage';
 import { UserProfileMenu } from '@/components/auth/UserProfileMenu';
@@ -139,27 +138,30 @@ export default function App() {
   const saas = isSaasMode();
   const [publicView, setPublicView] = useState<PublicView>('landing');
 
-  if (saas && !user) {
+  useEffect(() => {
+    if (saas && !user && !loading) setPublicView('landing');
+  }, [saas, user, loading]);
+
+  if (saas) {
     if (loading) return <LoadingScreen message="Loading session…" />;
-    if (publicView === 'landing') {
+    if (!user) {
+      if (publicView === 'landing') {
+        return (
+          <LandingPage
+            onSignIn={() => setPublicView('login')}
+            onGetStarted={() => setPublicView('register')}
+          />
+        );
+      }
       return (
-        <LandingPage
-          onSignIn={() => setPublicView('login')}
-          onGetStarted={() => setPublicView('register')}
+        <AuthPage
+          initialMode={publicView === 'register' ? 'register' : 'login'}
+          onBack={() => setPublicView('landing')}
         />
       );
     }
-    return (
-      <AuthPage
-        initialMode={publicView === 'register' ? 'register' : 'login'}
-        onBack={() => setPublicView('landing')}
-      />
-    );
+    return <MainApp />;
   }
 
-  return (
-    <AuthGate>
-      <MainApp />
-    </AuthGate>
-  );
+  return <MainApp />;
 }
