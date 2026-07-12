@@ -13,6 +13,8 @@ import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { isSaasMode } from '@/lib/saas/config';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
 import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
@@ -530,7 +532,10 @@ export function ReviewTab() {
             disabled={applyingDca}
             onClick={async () => {
               setApplyingDca(true);
-              await applyDcaClassification(dcaGroups, settings?.alchemyApiKey);
+              await applyDcaClassification(
+                dcaGroups,
+                settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
+              );
               setApplyingDca(false);
             }}
             className="shrink-0 border-emerald/40 text-emerald-600"

@@ -12,6 +12,10 @@
 import type { Transaction, FlagReason } from '@/types/transaction';
 import { db } from '@/lib/storage/db';
 import { fetchJupiterRecurringHistory, toHumanAmount } from '@/lib/rpc/jupiterDca';
+import { isSaasMode } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+import { DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 
 export interface DcaGroup {
   vaultAddress: string;
@@ -28,6 +32,71 @@ export interface DcaGroup {
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const NATIVE_CHAIN_ASSETS = new Set(['SOL', 'ETH', 'BTC', 'BNB', 'MATIC', 'AVAX', 'ADA', 'DOT']);
 
+function isDcaFillRow(t: Transaction): boolean {
+  return t.type === 'transfer_in' || (t.type === 'trade' && !!t.counterAsset);
+}
+
+async function alchemyGetTransaction(txSignature: string, alchemyApiKey: string): Promise<any | null> {
+  try {
+    const body = JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'getTransaction',
+      params: [txSignature, { maxSupportedTransactionVersion: 0, encoding: 'json' }]
+    });
+    if (isSaasMode() && alchemyApiKey === SAAS_PROXY_KEY) {
+      const res = await saasProxyFetch('/api/proxy/alchemy/solana-mainnet', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body
+      });
+      if (!res.ok) return null;
+      return (await res.json())?.result ?? null;
+    }
+    const res = await fetch(`https://solana-mainnet.g.alchemy.com/v2/${alchemyApiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body
+    });
+    if (!res.ok) return null;
+    return (await res.json())?.result ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Total DBT (or input mint) consumed in a swap tx — sum of all negative balance deltas for that mint. */
+async function getInputConsumedInFillTx(
+  txSignature: string,
+  inputMint: string,
+  alchemyApiKey: string
+): Promise<number | null> {
+  const tx = await alchemyGetTransaction(txSignature, alchemyApiKey);
+  if (!tx) return null;
+
+  const allPre: any[] = tx.meta?.preTokenBalances ?? [];
+  const allPost: any[] = tx.meta?.postTokenBalances ?? [];
+  const accounts = new Set<string>(
+    [...allPre, ...allPost]
+      .filter((b: any) => b.mint === inputMint)
+      .map((b: any) => `${b.accountIndex}:${b.owner ?? ''}`)
+  );
+
+  let consumed = 0;
+  for (const key of accounts) {
+    const [idxStr] = key.split(':');
+    const idx = Number(idxStr);
+    const preAmt =
+      allPre.find((b: any) => b.accountIndex === idx && b.mint === inputMint)?.uiTokenAmount?.uiAmount ?? 0;
+    const postAmt =
+      allPost.find((b: any) => b.accountIndex === idx && b.mint === inputMint)?.uiTokenAmount?.uiAmount ?? 0;
+    const delta = postAmt - preAmt;
+    if (delta < -1e-9) consumed += -delta;
+  }
+
+  return consumed > 1e-6 ? consumed : null;
+}
+
 export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
   const groups: DcaGroup[] = [];
   const ownWallets = new Set(
@@ -41,13 +110,15 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     if (!vault || !t.source.startsWith('rpc:') || t.isInternalTransfer || t.isSpam) continue;
     if (!byVault.has(vault)) byVault.set(vault, { outs: [], ins: [] });
     if (t.type === 'transfer_out') byVault.get(vault)!.outs.push(t);
-    if (t.type === 'transfer_in') byVault.get(vault)!.ins.push(t);
+    if (isDcaFillRow(t)) byVault.get(vault)!.ins.push(t);
   }
 
   for (const [vaultAddress, { outs, ins }] of byVault) {
     if (outs.length !== 1 || ins.length < 2) continue;
     const inputAsset = outs[0].asset;
-    const outputAssets = new Set(ins.map((t) => t.asset));
+    const outputAssets = new Set(
+      ins.map((t) => (t.type === 'trade' ? t.counterAsset! : t.asset).toUpperCase())
+    );
     if (outputAssets.size !== 1) continue;
     const outputAsset = [...outputAssets][0];
     if (inputAsset === outputAsset) continue;
@@ -60,7 +131,10 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
       inputAsset,
       outputAsset,
       totalInput: outs[0].amount,
-      totalOutput: ins.reduce((s, t) => s + t.amount, 0),
+      totalOutput: ins.reduce(
+        (s, t) => s + (t.type === 'trade' ? (t.counterAmount ?? 0) : t.amount),
+        0
+      ),
       inputContractAddress: outs[0].contractAddress
     });
   }
@@ -133,6 +207,56 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     });
   }
 
+  // Pass 3: Helius SWAP imports — deposit + trade fills (no vault on fill counterparty)
+  for (const deposit of transactions) {
+    if (
+      deposit.type !== 'transfer_out' ||
+      !deposit.counterpartyAddress ||
+      deposit.isInternalTransfer ||
+      deposit.isSpam ||
+      !deposit.source.startsWith('rpc:') ||
+      NATIVE_CHAIN_ASSETS.has(deposit.asset.toUpperCase())
+    ) {
+      continue;
+    }
+    const vaultLower = deposit.counterpartyAddress.toLowerCase();
+    if (groups.some((g) => g.depositTx.id === deposit.id)) continue;
+    if (ownWallets.has(vaultLower)) continue;
+
+    const walletLower = deposit.walletAddress?.toLowerCase() ?? '';
+    const inputAsset = deposit.asset.toUpperCase();
+
+    const tradeFills = transactions.filter(
+      (t) =>
+        t.type === 'trade' &&
+        t.counterAsset &&
+        !NATIVE_CHAIN_ASSETS.has(t.counterAsset.toUpperCase()) &&
+        t.asset.toUpperCase() === inputAsset &&
+        t.walletAddress?.toLowerCase() === walletLower &&
+        t.source.startsWith('rpc:') &&
+        !t.isInternalTransfer &&
+        !t.isSpam &&
+        t.timestamp >= deposit.timestamp &&
+        t.timestamp <= deposit.timestamp + ONE_WEEK_MS
+    );
+
+    if (tradeFills.length < 2) continue;
+
+    const outputAssets = new Set(tradeFills.map((t) => t.counterAsset!.toUpperCase()));
+    if (outputAssets.size !== 1) continue;
+
+    groups.push({
+      vaultAddress: deposit.counterpartyAddress,
+      depositTx: deposit,
+      fillTxs: tradeFills.sort((a, b) => a.timestamp - b.timestamp),
+      inputAsset: deposit.asset,
+      outputAsset: [...outputAssets][0],
+      totalInput: deposit.amount,
+      totalOutput: tradeFills.reduce((s, t) => s + (t.counterAmount ?? 0), 0),
+      inputContractAddress: deposit.contractAddress
+    });
+  }
+
   return groups;
 }
 
@@ -147,43 +271,20 @@ async function getExactDbtPerFillFromChain(
   dbtMint: string,
   alchemyApiKey: string
 ): Promise<number | null> {
-  try {
-    const url = `https://solana-mainnet.g.alchemy.com/v2/${alchemyApiKey}`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'getTransaction',
-        params: [txSignature, { maxSupportedTransactionVersion: 0, encoding: 'json' }]
-      })
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const tx = data?.result;
-    if (!tx) return null;
+  const tx = await alchemyGetTransaction(txSignature, alchemyApiKey);
+  if (!tx) return null;
 
-    const allPre: any[] = tx.meta?.preTokenBalances ?? [];
-    const allPost: any[] = tx.meta?.postTokenBalances ?? [];
+  const allPre: any[] = tx.meta?.preTokenBalances ?? [];
+  const allPost: any[] = tx.meta?.postTokenBalances ?? [];
+  const vaultLower = vaultAddress.toLowerCase();
 
-    const vaultLower = vaultAddress.toLowerCase();
-    const preBal = allPre.find(
-      (b: any) => b.mint === dbtMint && b.owner?.toLowerCase() === vaultLower
-    );
-    const postBal = allPost.find(
-      (b: any) => b.mint === dbtMint && b.owner?.toLowerCase() === vaultLower
-    );
+  const sumUi = (balances: any[]) =>
+    balances
+      .filter((b: any) => b.mint === dbtMint && b.owner?.toLowerCase() === vaultLower)
+      .reduce((s, b) => s + (b.uiTokenAmount?.uiAmount ?? 0), 0);
 
-    const preAmt = preBal?.uiTokenAmount?.uiAmount ?? 0;
-    const postAmt = postBal?.uiTokenAmount?.uiAmount ?? 0;
-    const dbtConsumed = preAmt - postAmt;
-
-    if (dbtConsumed > 0.0001) return dbtConsumed;
-    return null;
-  } catch {
-    return null;
-  }
+  const consumed = sumUi(allPre) - sumUi(allPost);
+  return consumed > 0.0001 ? consumed : null;
 }
 
 /**
@@ -212,7 +313,8 @@ export async function applyDcaClassification(
       ? await fetchJupiterRecurringHistory(walletAddress)
       : { orders: [], fillsByTxId: new Map() };
 
-    const totalOutput = g.fillTxs.reduce((s, t) => s + t.amount, 0);
+    const equalSplit = g.totalInput / g.fillTxs.length;
+    const inputMint = dbtMint ?? g.depositTx.contractAddress ?? DBT_TOKEN_MINT;
 
     // Mark deposit as non-taxable escrow
     await db.transactions.update(g.depositTx.id, {
@@ -288,6 +390,7 @@ export async function applyDcaClassification(
 
     for (const fill of g.fillTxs) {
       const jupFill = fill.sourceRef ? jupiterData.fillsByTxId.get(fill.sourceRef) : null;
+      const outputReceived = fill.type === 'trade' ? (fill.counterAmount ?? fill.amount) : fill.amount;
       let inputAmountPerFill: number;
       let amountSource: string;
 
@@ -297,46 +400,53 @@ export async function applyDcaClassification(
             ? jupFill.fill.inputAmount
             : toHumanAmount(jupFill.fill.rawInputAmount, jupFill.order.inputMint);
         amountSource = 'Jupiter API (exact)';
-      } else if (alchemyApiKey && dbtMint && fill.sourceRef) {
-        // Try Alchemy: get vault's DBT balance change in this specific tx
-        const onChainAmt = await getExactDbtPerFillFromChain(
+      } else if (
+        fill.type === 'trade' &&
+        fill.asset.toUpperCase() === g.inputAsset.toUpperCase() &&
+        fill.amount > 0
+      ) {
+        inputAmountPerFill = fill.amount;
+        amountSource = 'Helius swap (exact)';
+      } else if (alchemyApiKey && inputMint && fill.sourceRef) {
+        const swapConsumed = await getInputConsumedInFillTx(
           fill.sourceRef,
-          g.vaultAddress,
-          dbtMint,
+          inputMint,
           alchemyApiKey
         );
-        if (onChainAmt != null && onChainAmt > 0) {
-          inputAmountPerFill = onChainAmt;
-          amountSource = 'on-chain (exact)';
+        if (swapConsumed != null && swapConsumed > 0) {
+          inputAmountPerFill = swapConsumed;
+          amountSource = 'on-chain swap (exact)';
         } else {
-          inputAmountPerFill =
-            totalOutput > 0
-              ? (fill.amount / totalOutput) * g.totalInput
-              : g.totalInput / g.fillTxs.length;
-          amountSource = 'proportional estimate';
+          const vaultAmt = await getExactDbtPerFillFromChain(
+            fill.sourceRef,
+            g.vaultAddress,
+            inputMint,
+            alchemyApiKey
+          );
+          if (vaultAmt != null && vaultAmt > 0) {
+            inputAmountPerFill = vaultAmt;
+            amountSource = 'vault balance (exact)';
+          } else {
+            inputAmountPerFill = equalSplit;
+            amountSource = `equal split (${g.fillTxs.length} fills)`;
+          }
         }
       } else {
-        inputAmountPerFill =
-          totalOutput > 0
-            ? (fill.amount / totalOutput) * g.totalInput
-            : g.totalInput / g.fillTxs.length;
-        amountSource = 'proportional estimate';
+        inputAmountPerFill = equalSplit;
+        amountSource = `equal split (${g.fillTxs.length} fills)`;
       }
 
       await db.transactions.update(fill.id, {
         type: 'trade',
-        // Asset SOLD (input): DBT — use the deposit tx's asset/contract info
         asset: g.inputAsset,
         amount: parseFloat(inputAmountPerFill.toFixed(6)),
-        contractAddress: dbtMint ?? g.depositTx.contractAddress,
-        // Asset RECEIVED (output): USDC
+        contractAddress: inputMint ?? g.depositTx.contractAddress,
         counterAsset: g.outputAsset,
-        counterAmount: fill.amount,
-        // Keep the fill's walletAddress / chain / timestamps
+        counterAmount: outputReceived,
         flags: [] as FlagReason[],
         notes:
           `DCA fill: sold ${inputAmountPerFill.toFixed(4)} ${g.inputAsset} ` +
-          `for ${fill.amount.toFixed(4)} ${g.outputAsset} (${amountSource})`
+          `for ${outputReceived.toFixed(4)} ${g.outputAsset} (${amountSource})`
       });
     }
     applied++;

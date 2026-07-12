@@ -13,6 +13,8 @@ import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection'
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import type { TaxSettings } from '@/types/transaction';
 import { recordNetworkActivity } from '@/lib/networkActivity';
+import { isSaasMode } from '@/lib/saas/config';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 
 // ---- State shape ----
 
@@ -278,7 +280,10 @@ export async function runWalletImport(
     const dcaGroups = detectDcaGroups(allAfterClassification);
     if (dcaGroups.length > 0) {
       // Pass Alchemy key so exact DBT amounts are fetched on-chain per fill tx
-      const dcaApplied = await applyDcaClassification(dcaGroups, settings.alchemyApiKey);
+      const dcaApplied = await applyDcaClassification(
+        dcaGroups,
+        settings.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
+      );
       swapsDetected += dcaApplied;
       if (dcaApplied > 0) {
         apiWarnings.unshift(

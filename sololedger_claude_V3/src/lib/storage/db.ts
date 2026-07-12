@@ -223,23 +223,30 @@ function normalizeImportAmount(amount: number): string {
   return a.toFixed(9);
 }
 
+/** Stable asset key for dedup — prefer mint/contract over display symbol. */
+function transactionAssetKey(t: Pick<Transaction, 'asset' | 'contractAddress'>): string {
+  return t.contractAddress?.toLowerCase() || t.asset.toUpperCase();
+}
+
 /** Dedup key for on-chain rows — intentionally excludes `type` so re-imported transfer_in rows match reclassified income. */
-export function transactionImportKey(t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount'>): string | null {
+export function transactionImportKey(
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount' | 'contractAddress'>
+): string | null {
   if (!t.sourceRef || !t.walletAddress) return null;
   return [
     t.sourceRef,
     t.walletAddress.toLowerCase(),
-    t.asset.toUpperCase(),
+    transactionAssetKey(t),
     normalizeImportAmount(t.amount)
   ].join('|');
 }
 
-/** wallet + on-chain tx hash + asset — catches sync re-fetches even when float amount differs slightly. */
+/** wallet + on-chain tx hash + asset/mint — catches sync re-fetches even when float amount differs slightly. */
 export function transactionSourceKey(
-  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset'>
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'contractAddress'>
 ): string | null {
   if (!t.sourceRef || !t.walletAddress) return null;
-  return [t.walletAddress.toLowerCase(), t.sourceRef, t.asset.toUpperCase()].join('|');
+  return [t.walletAddress.toLowerCase(), t.sourceRef, transactionAssetKey(t)].join('|');
 }
 
 /** Newest sourceRef stored for a wallet (by transaction timestamp). */
