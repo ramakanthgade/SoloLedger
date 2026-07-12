@@ -23,6 +23,7 @@ import {
   isDcaFillTrade
 } from '@/lib/portfolio/portfolioHoldings';
 import { repairMissingSolSwapLegs, repairUsdcOvercount } from '@/lib/portfolio/repairSolSwapLegs';
+import { reconcileSolanaWalletsFromChain } from '@/lib/portfolio/reconcileWalletChain';
 import { collapseDuplicateTradeTransferLegs } from '@/lib/portfolio/collapseDuplicateLegs';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
@@ -32,13 +33,14 @@ import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
-async function runPortfolioLedgerRepairs(): Promise<void> {
+async function runPortfolioLedgerRepairs(): Promise<string> {
   await reprocessSwapDetectionInDb();
   const settings = await getSettings();
   const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
   const alchemyKey = settings.alchemyApiKey ?? proxy;
   await repairMissingSolSwapLegs(alchemyKey);
   await repairUsdcOvercount(alchemyKey);
+  const reconcile = await reconcileSolanaWalletsFromChain();
   await collapseDuplicateTradeTransferLegs();
   const all = await db.transactions.toArray();
   const groups = detectDcaGroups(all.filter((t) => !t.isSpam));
@@ -51,6 +53,7 @@ async function runPortfolioLedgerRepairs(): Promise<void> {
     await applyDcaClassification(groups, alchemyKey);
   }
   await normalizeSolLedgerRows();
+  return reconcile.message;
 }
 
 /**
@@ -280,7 +283,7 @@ export function PortfolioTab() {
 
   // Repair ledger rows once per session; only mark done after success so failures retry.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v10';
+    const key = 'sololedger_portfolio_reprocess_v11';
     if (sessionStorage.getItem(key)) return;
     void (async () => {
       try {
@@ -473,7 +476,7 @@ export function PortfolioTab() {
       balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
     if (!needs) return;
     const fingerprint = balanceVariances.map((v) => `${v.asset}:${v.delta.toFixed(6)}`).join('|');
-    const key = `sololedger_mismatch_repair_v10:${fingerprint}`;
+    const key = `sololedger_mismatch_repair_v11:${fingerprint}`;
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
     void runPortfolioLedgerRepairs();
@@ -617,10 +620,10 @@ export function PortfolioTab() {
             onClick={() => {
               void (async () => {
                 setRepairingBalances(true);
-                setRepairMsg('Repairing from on-chain data…');
+                setRepairMsg('Scanning on-chain signatures — this can take up to a minute…');
                 try {
-                  await runPortfolioLedgerRepairs();
-                  setRepairMsg('Repair finished — balances should refresh shortly.');
+                  const msg = await runPortfolioLedgerRepairs();
+                  setRepairMsg(msg);
                 } catch (e) {
                   setRepairMsg(e instanceof Error ? e.message : 'Repair failed');
                 } finally {

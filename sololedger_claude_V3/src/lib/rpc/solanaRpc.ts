@@ -1,15 +1,31 @@
 /**
  * Browser-safe Solana JSON-RPC helper.
- * - localhost / preview: Vite proxy `/solana-rpc` → public mainnet (no API key, no SaaS auth)
- * - SaaS production: Alchemy via authenticated proxy when available
- * - Fallback: public endpoint (may fail CORS outside Vite)
+ *
+ * Localhost priority (no SaaS login required):
+ *   1. http://localhost:3001/api/public/solana-rpc  (Express API — most reliable)
+ *   2. /solana-rpc                                  (Vite proxy)
+ * SaaS production: Alchemy via authenticated proxy.
  */
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { getSettings } from '@/lib/storage/db';
 
+function localApiSolanaProxy(): string | null {
+  if (typeof window === 'undefined') return null;
+  const host = window.location.hostname;
+  if (host !== 'localhost' && host !== '127.0.0.1') return null;
+  // Prefer same-host API; fall back to classic local port.
+  const apiBase = getApiBase();
+  if (apiBase.includes('localhost') || apiBase.includes('127.0.0.1')) {
+    return `${apiBase}/api/public/solana-rpc`;
+  }
+  return 'http://localhost:3001/api/public/solana-rpc';
+}
+
 export function solanaJsonRpcUrl(): string {
+  const local = localApiSolanaProxy();
+  if (local) return local;
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
     if (host === 'localhost' || host === '127.0.0.1') return '/solana-rpc';
@@ -39,33 +55,45 @@ export async function solanaRpc<T>(
   params: unknown[],
   alchemyApiKey?: string
 ): Promise<T | null> {
-  try {
-    let key = alchemyApiKey;
-    if (!key && isSaasMode()) key = SAAS_PROXY_KEY;
-    if (!key) {
-      const settings = await getSettings();
-      key = settings.alchemyApiKey;
+  const payload = { jsonrpc: '2.0', id: 1, method, params };
+  const tryUrls: string[] = [];
+  const primary = solanaJsonRpcUrl();
+  tryUrls.push(primary);
+  if (typeof window !== 'undefined' && (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1')) {
+    for (const u of ['http://localhost:3001/api/public/solana-rpc', '/solana-rpc']) {
+      if (!tryUrls.includes(u)) tryUrls.push(u);
     }
-    const res = await rpcFetch({ jsonrpc: '2.0', id: 1, method, params }, key);
-    if (!res.ok) {
-      // Local Vite public proxy should work without a key — retry once on that path.
-      if (typeof window !== 'undefined' && window.location.hostname === 'localhost') {
-        const retry = await fetch('/solana-rpc', {
+  }
+
+  for (const url of tryUrls) {
+    try {
+      let res: Response;
+      if (isSaasMode() && url.includes('/api/proxy/alchemy')) {
+        res = await saasProxyFetch('/api/proxy/alchemy/solana-mainnet', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method, params })
+          body: JSON.stringify(payload)
         });
-        if (!retry.ok) return null;
-        const j = await retry.json();
-        return (j?.result as T) ?? null;
+      } else {
+        let key = alchemyApiKey;
+        if (!key && isSaasMode()) key = SAAS_PROXY_KEY;
+        if (!key) {
+          const settings = await getSettings();
+          key = settings.alchemyApiKey;
+        }
+        const headers: HeadersInit = { 'Content-Type': 'application/json' };
+        if (key && url.includes('alchemy')) headers.Authorization = `Bearer ${key}`;
+        res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
       }
-      return null;
+      if (!res.ok) continue;
+      const json = await res.json();
+      if (json?.error) continue;
+      return (json?.result as T) ?? null;
+    } catch {
+      // try next URL
     }
-    const json = await res.json();
-    return (json?.result as T) ?? null;
-  } catch {
-    return null;
   }
+  return null;
 }
 
 export interface SolanaTxResult {
@@ -92,6 +120,18 @@ export async function getSolanaTransaction(
     [signature, { encoding: 'jsonParsed', maxSupportedTransactionVersion: 0 }],
     alchemyApiKey
   );
+}
+
+export async function getSignaturesForAddress(
+  address: string,
+  alchemyApiKey?: string
+): Promise<Array<{ signature: string; blockTime?: number | null }>> {
+  const result = await solanaRpc<Array<{ signature: string; blockTime?: number | null }>>(
+    'getSignaturesForAddress',
+    [address, { limit: 1000 }],
+    alchemyApiKey
+  );
+  return result ?? [];
 }
 
 /** Native SOL delta for wallet (lamports→SOL), fee-inclusive as on-chain. */

@@ -77,6 +77,45 @@ app.get('/', (_req, res) => {
   });
 });
 
+/**
+ * Public Solana JSON-RPC proxy (no auth).
+ * Used by Portfolio "Fix balances" on localhost so ledger repair works without
+ * SaaS login / Alchemy keys. Only allowlisted read methods.
+ */
+const SOLANA_PUBLIC_RPC = 'https://api.mainnet-beta.solana.com';
+const SOLANA_ALLOWED_METHODS = new Set([
+  'getTransaction',
+  'getSignaturesForAddress',
+  'getBalance',
+  'getTokenAccountsByOwner'
+]);
+
+app.post('/api/public/solana-rpc', async (req, res) => {
+  try {
+    const method = String(req.body?.method ?? '');
+    if (!SOLANA_ALLOWED_METHODS.has(method)) {
+      res.status(400).json({ error: `Method not allowed: ${method || '(missing)'}` });
+      return;
+    }
+    const upstream = await fetch(SOLANA_PUBLIC_RPC, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: req.body?.id ?? 1,
+        method,
+        params: req.body?.params ?? []
+      })
+    });
+    const text = await upstream.text();
+    res.status(upstream.status).type('application/json').send(text);
+  } catch (err) {
+    res.status(502).json({
+      error: err instanceof Error ? err.message : 'Solana RPC proxy failed'
+    });
+  }
+});
+
 app.use('/api/auth', authRouter);
 app.use('/api/config', configRouter);
 app.use('/api/admin', adminRouter);
