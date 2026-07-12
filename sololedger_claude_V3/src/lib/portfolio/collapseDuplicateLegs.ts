@@ -17,7 +17,7 @@ export async function collapseDuplicateTradeTransferLegs(): Promise<number> {
 
   const toDelete: string[] = [];
   for (const t of all) {
-    if (t.type !== 'transfer_in' && t.type !== 'transfer_out') continue;
+    if (t.type !== 'transfer_in' && t.type !== 'transfer_out' && t.type !== 'income') continue;
     if (t.asset.toUpperCase() === 'SOL') continue;
     const trade = tradeByRef.get(`${t.walletAddress!.toLowerCase()}|${t.sourceRef!}`);
     if (!trade) continue;

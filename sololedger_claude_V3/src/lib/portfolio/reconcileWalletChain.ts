@@ -166,23 +166,40 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
       const ledgerUsdc = ledgerUsdcForSig(rows);
       const usdcExcess = ledgerUsdc - chainUsdc;
       if (usdcExcess > 0.0001) {
-        const dupIn = rows
-          .filter((t) => t.type === 'transfer_in' && t.asset.toUpperCase() === 'USDC')
-          .sort((a, b) => Math.abs(a.amount - usdcExcess) - Math.abs(b.amount - usdcExcess))[0];
-        if (dupIn && Math.abs(dupIn.amount - usdcExcess) < 0.01) {
+        const tradeOut = rows.find(
+          (t) => t.type === 'trade' && t.asset.toUpperCase() === 'USDC'
+        );
+        if (
+          tradeOut &&
+          chainUsdc < -0.0001 &&
+          Math.abs(tradeOut.amount - Math.abs(chainUsdc)) > 0.0001
+        ) {
           // eslint-disable-next-line no-await-in-loop
-          await db.transactions.delete(dupIn.id);
+          await db.transactions.update(tradeOut.id, { amount: Math.abs(chainUsdc) });
           usdcRowsFixed++;
         } else {
-          const tradeIn = rows.find(
-            (t) => t.type === 'trade' && t.counterAsset?.toUpperCase() === 'USDC'
-          );
-          if (tradeIn && (tradeIn.counterAmount ?? 0) > usdcExcess) {
+          const dupIn = rows
+            .filter(
+              (t) =>
+                (t.type === 'transfer_in' || t.type === 'income') &&
+                t.asset.toUpperCase() === 'USDC'
+            )
+            .sort((a, b) => Math.abs(a.amount - usdcExcess) - Math.abs(b.amount - usdcExcess))[0];
+          if (dupIn && Math.abs(dupIn.amount - usdcExcess) < 0.01) {
             // eslint-disable-next-line no-await-in-loop
-            await db.transactions.update(tradeIn.id, {
-              counterAmount: (tradeIn.counterAmount ?? 0) - usdcExcess
-            });
+            await db.transactions.delete(dupIn.id);
             usdcRowsFixed++;
+          } else {
+            const tradeIn = rows.find(
+              (t) => t.type === 'trade' && t.counterAsset?.toUpperCase() === 'USDC'
+            );
+            if (tradeIn && (tradeIn.counterAmount ?? 0) > usdcExcess) {
+              // eslint-disable-next-line no-await-in-loop
+              await db.transactions.update(tradeIn.id, {
+                counterAmount: (tradeIn.counterAmount ?? 0) - usdcExcess
+              });
+              usdcRowsFixed++;
+            }
           }
         }
       }

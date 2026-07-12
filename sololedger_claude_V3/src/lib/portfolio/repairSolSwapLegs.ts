@@ -254,8 +254,27 @@ export async function repairUsdcOvercount(_alchemyApiKey?: string): Promise<numb
     const excess = ledger - chainDelta;
     if (excess <= 0.0001) continue;
 
+    const tradeOut = rows.find(
+      (t) => t.type === 'trade' && t.asset.toUpperCase() === 'USDC'
+    );
+    // Under-debited swap out (USDC→SOL: Helius swap amount can omit router/platform fee).
+    if (
+      tradeOut &&
+      chainDelta < -0.0001 &&
+      Math.abs(tradeOut.amount - Math.abs(chainDelta)) > 0.0001
+    ) {
+      // eslint-disable-next-line no-await-in-loop
+      await db.transactions.update(tradeOut.id, { amount: Math.abs(chainDelta) });
+      fixed++;
+      continue;
+    }
+
     const dupIns = rows
-      .filter((t) => t.type === 'transfer_in' && t.asset.toUpperCase() === 'USDC')
+      .filter(
+        (t) =>
+          (t.type === 'transfer_in' || t.type === 'income') &&
+          t.asset.toUpperCase() === 'USDC'
+      )
       .sort((a, b) => Math.abs(a.amount - excess) - Math.abs(b.amount - excess));
     if (dupIns.length > 0 && Math.abs(dupIns[0].amount - excess) < 0.01) {
       // eslint-disable-next-line no-await-in-loop

@@ -29,9 +29,16 @@ export function tradeLegAssets(trade: Transaction): Set<string> {
   );
 }
 
-/** Transfer leg already represented on a trade row for the same on-chain tx. */
+/** Transfer / income leg already represented on a trade row for the same on-chain tx. */
 export function isAbsorbedTradeLeg(tx: Transaction, trade: Transaction): boolean {
-  if (tx.type !== 'transfer_in' && tx.type !== 'transfer_out') return false;
+  if (
+    tx.type !== 'transfer_in' &&
+    tx.type !== 'transfer_out' &&
+    tx.type !== 'income'
+  ) {
+    return false;
+  }
+  if (!trade.counterAsset || (trade.counterAmount ?? 0) <= 0) return false;
   return tradeLegAssets(trade).has(tx.asset.toUpperCase());
 }
 
@@ -88,7 +95,7 @@ export function detectDexSwaps(transactions: Transaction[]): SwapDetectionResult
       for (const t of group) {
         if (t.id === existingTrade.id) continue;
         // Keep fees, income, and legs not already on the trade (e.g. SOL rent on a token swap).
-        if (t.type === 'fee' || t.type === 'income' || !isAbsorbedTradeLeg(t, existingTrade)) {
+        if (t.type === 'fee' || !isAbsorbedTradeLeg(t, existingTrade)) {
           standalone.push(t);
         } else {
           removedIds.push(t.id);

@@ -355,6 +355,21 @@ function heliusSwapToTrade(
 
   if (!inputMint || !outputMint) return null;
 
+  // Helius swap events can under-report input (e.g. USDC→SOL: 49.58 vs 50.007 on-chain).
+  const transferNet = ownerNetByMintFromTokenTransfers(htx.tokenTransfers, walletAddress);
+  const { netByMint: accountDataNet } = ownerNetByMintFromAccountData(
+    htx.accountData,
+    walletAddress
+  );
+  const ownerNet = (mint: string): number => {
+    if (accountDataNet.has(mint)) return accountDataNet.get(mint)!;
+    return transferNet.get(mint)?.net ?? 0;
+  };
+  const inNet = ownerNet(inputMint);
+  if (inNet < -1e-9) inputAmount = Math.abs(inNet);
+  const outNet = ownerNet(outputMint);
+  if (outNet > 1e-9) outputAmount = outNet;
+
   const inputSymbol = resolveSymbol(inputMint);
   const outputSymbol = resolveSymbol(outputMint);
 

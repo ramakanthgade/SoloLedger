@@ -310,7 +310,7 @@ export function PortfolioTab() {
 
   // Repair ledger rows once per session; only mark done after success so failures retry.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v13';
+    const key = 'sololedger_portfolio_reprocess_v14';
     if (sessionStorage.getItem(key) || repairInFlight.current) return;
     void (async () => {
       const msg = await autoRepairLedger(
@@ -508,7 +508,7 @@ export function PortfolioTab() {
     const needs = balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
     if (!needs || repairInFlight.current) return;
     const fingerprint = balanceVariances.map((v) => `${v.asset}:${v.delta.toFixed(6)}`).join('|');
-    const key = `sololedger_mismatch_repair_v13:${fingerprint}`;
+    const key = `sololedger_mismatch_repair_v14:${fingerprint}`;
     if (sessionStorage.getItem(key)) return;
     void (async () => {
       const msg = await autoRepairLedger(
