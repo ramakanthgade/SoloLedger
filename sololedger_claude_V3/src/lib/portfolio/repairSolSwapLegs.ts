@@ -279,7 +279,7 @@ export async function repairUsdcOvercount(alchemyApiKey?: string): Promise<numbe
   }
 
   let fixed = 0;
-  for (const [key, rows] of bySig) {
+  for (const rows of bySig.values()) {
     const wallet = rows[0].walletAddress!;
     const sig = rows[0].sourceRef!;
     // eslint-disable-next-line no-await-in-loop
