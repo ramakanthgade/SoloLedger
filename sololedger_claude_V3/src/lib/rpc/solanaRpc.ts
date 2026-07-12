@@ -34,22 +34,6 @@ export function solanaJsonRpcUrl(): string {
   return 'https://api.mainnet-beta.solana.com';
 }
 
-async function rpcFetch(body: unknown, alchemyApiKey?: string): Promise<Response> {
-  const url = solanaJsonRpcUrl();
-  if (isSaasMode() && url.includes('/api/proxy/alchemy')) {
-    return saasProxyFetch('/api/proxy/alchemy/solana-mainnet', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
-  }
-  const headers: HeadersInit = { 'Content-Type': 'application/json' };
-  if (alchemyApiKey && url.includes('alchemy')) {
-    headers.Authorization = `Bearer ${alchemyApiKey}`;
-  }
-  return fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
-}
-
 export async function solanaRpc<T>(
   method: string,
   params: unknown[],
