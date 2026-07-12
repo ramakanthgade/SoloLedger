@@ -23,6 +23,7 @@ import {
   isDcaFillTrade
 } from '@/lib/portfolio/portfolioHoldings';
 import { repairMissingSolSwapLegs } from '@/lib/portfolio/repairSolSwapLegs';
+import { collapseDuplicateTradeTransferLegs } from '@/lib/portfolio/collapseDuplicateLegs';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { applyDcaClassification, detectDcaGroups } from '@/lib/rpc/dcaDetection';
@@ -256,21 +257,25 @@ export function PortfolioTab() {
 
   // Repair legacy rows, merge swap legs, patch missing SOL legs, persist DCA — once per session.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v7';
+    const key = 'sololedger_portfolio_reprocess_v8';
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
     void (async () => {
       await reprocessSwapDetectionInDb();
-      await repairMissingSolSwapLegs();
+      const settings = await getSettings();
+      const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
+      const alchemyKey = settings.alchemyApiKey ?? proxy;
+      await repairMissingSolSwapLegs(alchemyKey);
+      await collapseDuplicateTradeTransferLegs();
       const all = await db.transactions.toArray();
       const groups = detectDcaGroups(all.filter((t) => !t.isSpam));
-      if (groups.some((g) => !g.depositTx.isInternalTransfer || !(g.fillTxs[0]?.notes ?? '').includes('DCA fill'))) {
-        const settings = await getSettings();
-        const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
-        await applyDcaClassification(
-          groups,
-          settings.alchemyApiKey ?? proxy
-        );
+      const needsDca = groups.some(
+        (g) =>
+          !g.depositTx.isInternalTransfer ||
+          !(g.fillTxs[0]?.notes ?? '').includes('DCA fill')
+      );
+      if (needsDca && groups.length > 0) {
+        await applyDcaClassification(groups, alchemyKey);
       }
       await normalizeSolLedgerRows();
     })();
@@ -368,7 +373,16 @@ export function PortfolioTab() {
     const appliedSourceKeys = new Set<string>();
     const tradeCoveredLegs = new Set<string>();
     const ledgerTxs = collapseForPortfolio(portfolioLedgerTxs);
-    // Apply trades first so transfer legs on the same signature can be skipped as duplicates.
+
+    // Pre-mark assets already represented on trade rows so duplicate transfer legs are skipped
+    // even if a transfer is sorted before its trade for any reason.
+    for (const t of ledgerTxs) {
+      if (t.type !== 'trade' || !t.counterAsset || !t.counterAmount || !t.sourceRef || !t.walletAddress) continue;
+      const ref = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
+      if (t.asset !== 'SOL') tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
+      if (t.counterAsset !== 'SOL') tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
+    }
+
     const ordered = [...ledgerTxs].sort((a, b) => {
       const ta = a.timestamp - b.timestamp;
       if (ta !== 0) return ta;

@@ -263,13 +263,15 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
 
     const outputAssets = new Set(tradeFills.map((t) => t.counterAsset!.toUpperCase()));
     if (outputAssets.size !== 1) continue;
+    const outputAsset = [...outputAssets][0];
+    if (outputAsset === inputAsset) continue;
 
     groups.push({
       vaultAddress: deposit.counterpartyAddress,
       depositTx: deposit,
       fillTxs: tradeFills.sort((a, b) => a.timestamp - b.timestamp),
       inputAsset: deposit.asset,
-      outputAsset: [...outputAssets][0],
+      outputAsset,
       totalInput: deposit.amount,
       totalOutput: tradeFills.reduce((s, t) => s + (t.counterAmount ?? 0), 0),
       inputContractAddress: deposit.contractAddress

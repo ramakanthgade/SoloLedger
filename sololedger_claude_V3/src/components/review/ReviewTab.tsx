@@ -399,11 +399,27 @@ export function ReviewTab() {
 
   const assets = useMemo(() => Array.from(new Set(transactions.map((t) => t.asset))).sort(), [transactions]);
 
-  // Detect DCA groups whenever transactions change (only if counterpartyAddress is populated)
+  // Detect DCA groups whenever transactions change (only unclassified deposits).
+  // Auto-classify real groups so users don't need the manual button.
   useEffect(() => {
     const groups = detectDcaGroups(transactions.filter((t) => !t.isInternalTransfer && !t.isSpam));
     setDcaGroups(groups);
-  }, [transactions]);
+    if (groups.length === 0) return;
+    const key = 'sololedger_review_dca_auto_v1';
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+    void (async () => {
+      setApplyingDca(true);
+      try {
+        await applyDcaClassification(
+          groups,
+          settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
+        );
+      } finally {
+        setApplyingDca(false);
+      }
+    })();
+  }, [transactions, settings?.alchemyApiKey]);
 
   const filtered = useMemo(() => {
     const fyBounds = fyFilter != null ? getFyBoundaries(fyFilter, jurisdiction) : null;
