@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses, transactionSourceKey } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -273,6 +273,7 @@ export function PortfolioTab() {
   const [liveBalanceStatus, setLiveBalanceStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
   const [repairingBalances, setRepairingBalances] = useState(false);
   const [repairMsg, setRepairMsg] = useState<string | null>(null);
+  const repairInFlight = useRef(false);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -281,17 +282,34 @@ export function PortfolioTab() {
     });
   }, []);
 
+  const autoRepairLedger = async (statusMsg: string): Promise<string | null> => {
+    if (repairInFlight.current) return null;
+    repairInFlight.current = true;
+    setRepairingBalances(true);
+    setRepairMsg(statusMsg);
+    try {
+      const msg = await runPortfolioLedgerRepairs();
+      setRepairMsg(msg);
+      return msg;
+    } catch (e) {
+      const err = e instanceof Error ? e.message : 'Automatic ledger repair failed';
+      setRepairMsg(err);
+      return null;
+    } finally {
+      repairInFlight.current = false;
+      setRepairingBalances(false);
+    }
+  };
+
   // Repair ledger rows once per session; only mark done after success so failures retry.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v11';
-    if (sessionStorage.getItem(key)) return;
+    const key = 'sololedger_portfolio_reprocess_v12';
+    if (sessionStorage.getItem(key) || repairInFlight.current) return;
     void (async () => {
-      try {
-        await runPortfolioLedgerRepairs();
-        sessionStorage.setItem(key, '1');
-      } catch {
-        // Leave key unset so the next Portfolio visit retries.
-      }
+      const msg = await autoRepairLedger(
+        'Checking ledger against on-chain history — this can take up to a minute…'
+      );
+      if (msg != null) sessionStorage.setItem(key, '1');
     })();
   }, []);
 
@@ -410,8 +428,13 @@ export function PortfolioTab() {
     if (Math.abs(solLedgerBalance) > 1e-9) {
       const solMint = resolveSolanaMintAddress('SOL');
       const solKey = `solana:mint:${solMint.toLowerCase()}`;
+      // Include USDC→SOL (etc.) trades where SOL arrives as counterAsset.
       const solCost = [...filteredTxs]
-        .filter((t) => !t.isSpam && t.asset === 'SOL' && t.type === 'buy' && (t.fiatValue ?? 0) > 0)
+        .filter((t) => {
+          if (t.isSpam || (t.fiatValue ?? 0) <= 0) return false;
+          if (t.asset === 'SOL' && t.type === 'buy') return true;
+          return t.type === 'trade' && t.counterAsset?.toUpperCase() === 'SOL';
+        })
         .reduce((s, t) => s + (t.fiatValue ?? 0), 0);
       map.set(solKey, {
         amount: solLedgerBalance,
@@ -468,19 +491,22 @@ export function PortfolioTab() {
 
   const balanceMismatch = balanceVariances.length > 0 ? balanceVariances[0] : null;
 
-  // If live mismatch remains (SOL/USDC), re-run repairs even after session gate —
-  // earlier attempts may have failed (proxy down) or left dust SOL legs unrepaired.
+  // If live mismatch remains (SOL/USDC), auto-repair again — no manual click.
+  // Earlier attempts may have failed (RPC down) or run before SOL counterAsset math landed.
   useEffect(() => {
-    if (liveBalanceStatus !== 'ready' || selectedFy != null) return;
-    const needs =
-      balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
-    if (!needs) return;
+    if (liveBalanceStatus !== 'ready' || selectedFy != null || repairingBalances) return;
+    const needs = balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
+    if (!needs || repairInFlight.current) return;
     const fingerprint = balanceVariances.map((v) => `${v.asset}:${v.delta.toFixed(6)}`).join('|');
-    const key = `sololedger_mismatch_repair_v11:${fingerprint}`;
+    const key = `sololedger_mismatch_repair_v12:${fingerprint}`;
     if (sessionStorage.getItem(key)) return;
-    sessionStorage.setItem(key, '1');
-    void runPortfolioLedgerRepairs();
-  }, [balanceVariances, liveBalanceStatus, selectedFy]);
+    void (async () => {
+      const msg = await autoRepairLedger(
+        'Balance mismatch detected — repairing ledger automatically…'
+      );
+      if (msg != null) sessionStorage.setItem(key, '1');
+    })();
+  }, [balanceVariances, liveBalanceStatus, selectedFy, repairingBalances]);
 
   const missingPriceCount = filteredTxs.filter(
     (t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer
@@ -605,35 +631,19 @@ export function PortfolioTab() {
         </div>
       </div>
 
-      {balanceMismatch && selectedFy == null && (
-        <div className="flex flex-col gap-3 rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-mist-300 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <strong className="text-loss">{balanceMismatch.asset} balance mismatch:</strong> ledger shows{' '}
-            {formatCompactAmount(balanceMismatch.ledger)} but your wallet holds{' '}
-            {formatCompactAmount(balanceMismatch.live)}.
-            {repairMsg && <p className="mt-1 text-xs text-mist-400">{repairMsg}</p>}
-          </div>
-          <Button
-            variant="secondary"
-            className="shrink-0 text-xs"
-            disabled={repairingBalances}
-            onClick={() => {
-              void (async () => {
-                setRepairingBalances(true);
-                setRepairMsg('Scanning on-chain signatures — this can take up to a minute…');
-                try {
-                  const msg = await runPortfolioLedgerRepairs();
-                  setRepairMsg(msg);
-                } catch (e) {
-                  setRepairMsg(e instanceof Error ? e.message : 'Repair failed');
-                } finally {
-                  setRepairingBalances(false);
-                }
-              })();
-            }}
-          >
-            {repairingBalances ? 'Repairing…' : 'Fix balances now'}
-          </Button>
+      {(repairingBalances || (balanceMismatch && selectedFy == null)) && (
+        <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-mist-300">
+          {repairingBalances ? (
+            <p>Repairing ledger automatically — scanning on-chain history…</p>
+          ) : balanceMismatch ? (
+            <p>
+              <strong className="text-loss">{balanceMismatch.asset} still differs from wallet:</strong>{' '}
+              ledger {formatCompactAmount(balanceMismatch.ledger)} vs wallet{' '}
+              {formatCompactAmount(balanceMismatch.live)}. Automatic repair already ran for this
+              session; try a hard refresh after import finishes, or re-import the wallet if gaps remain.
+            </p>
+          ) : null}
+          {repairMsg && <p className="mt-1 text-xs text-mist-400">{repairMsg}</p>}
         </div>
       )}
 

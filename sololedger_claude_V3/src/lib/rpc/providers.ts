@@ -863,7 +863,7 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
         throw new Error(
           'Alchemy API returned 401 (unauthorized). Your app is calling an API server that has no valid Alchemy/Helius keys. ' +
             'For local SaaS testing use: set VITE_API_URL=https://sololedger-production.up.railway.app ' +
-            '(keep the local server on :3001 only for Fix balances). Or put HELIUS_API_KEY / ALCHEMY_API_KEY in sololedger_claude_V3/server/.env and restart the API.'
+            '(keep the local server on :3001 for automatic portfolio ledger repair RPC). Or put HELIUS_API_KEY / ALCHEMY_API_KEY in sololedger_claude_V3/server/.env and restart the API.'
         );
       }
       throw heliusError ? new Error(`Helius: ${heliusError}; Alchemy: ${alchemyMsg}`) : err;

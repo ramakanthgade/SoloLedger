@@ -54,11 +54,11 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
   const feeKeys = new Set<string>();
   const tradeKeys = new Set<string>();
   for (const t of txs) {
-    if (t.isSpam || t.asset !== 'SOL') continue;
-    const sk = transactionSourceKey(t);
-    if (!sk) continue;
-    if (t.type === 'fee') feeKeys.add(sk);
-    if (tradeTouchesSol(t)) tradeKeys.add(sk);
+    if (t.isSpam || !t.sourceRef || !t.walletAddress) continue;
+    // Key by wallet|sig only (not asset) so USDC→SOL trades mark the sig as covered.
+    const sigKey = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
+    if (t.type === 'fee' && t.asset === 'SOL') feeKeys.add(sigKey);
+    if (tradeTouchesSol(t)) tradeKeys.add(sigKey);
   }
 
   const best = new Map<string, Transaction>();
@@ -71,15 +71,21 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
     if (!prev || solRowScore(t) > solRowScore(prev)) best.set(sk, t);
   }
   return txs.filter((t) => {
-    if (t.isSpam || t.asset !== 'SOL') return true;
+    if (t.isSpam) return true;
+    // Non-SOL rows (including USDC→SOL trades) always pass through.
+    if (t.asset !== 'SOL') return true;
     if (t.type === 'fee' || t.type === 'trade') return true;
+    const sigKey =
+      t.sourceRef && t.walletAddress
+        ? `${t.walletAddress.toLowerCase()}|${t.sourceRef}`
+        : null;
     const sk = transactionSourceKey(t);
     // Swap txs already encode SOL legs on the trade row — skip redundant transfers.
-    if (sk && tradeKeys.has(sk)) return false;
+    if (sigKey && tradeKeys.has(sigKey)) return false;
     // Drop tiny outgoing transfers when a fee row already captures rent on this tx.
     if (
-      sk &&
-      feeKeys.has(sk) &&
+      sigKey &&
+      feeKeys.has(sigKey) &&
       t.type === 'transfer_out' &&
       t.amount < 0.01 &&
       !isSolRentRefund(t)
@@ -106,7 +112,11 @@ export function computeMainWalletSolFromTransactions(txs: Transaction[]): number
   let sol = 0;
 
   for (const t of [...collapsed].sort((a, b) => a.timestamp - b.timestamp)) {
-    if (t.isSpam || t.asset !== 'SOL') continue;
+    if (t.isSpam) continue;
+
+    // USDC→SOL (etc.) trades have asset !== 'SOL' but still move native SOL via counterAsset.
+    const isSolTrade = tradeTouchesSol(t);
+    if (t.asset !== 'SOL' && !isSolTrade) continue;
 
     const dedup = solDedupKey(t);
     if (dedup) {

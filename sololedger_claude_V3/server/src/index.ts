@@ -79,7 +79,7 @@ app.get('/', (_req, res) => {
 
 /**
  * Public Solana JSON-RPC proxy (no auth).
- * Used by Portfolio "Fix balances" on localhost so ledger repair works without
+ * Used by automatic Portfolio ledger repair on localhost so reconcile works without
  * SaaS login / Alchemy keys. Only allowlisted read methods.
  */
 const SOLANA_PUBLIC_RPC = 'https://api.mainnet-beta.solana.com';
