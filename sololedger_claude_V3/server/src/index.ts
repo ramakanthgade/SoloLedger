@@ -68,6 +68,15 @@ app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'sololedger-api' });
 });
 
+/** Root path — Railway / uptime checks sometimes hit `/` instead of `/health`. */
+app.get('/', (_req, res) => {
+  res.json({
+    ok: true,
+    service: 'sololedger-api',
+    health: '/health'
+  });
+});
+
 app.use('/api/auth', authRouter);
 app.use('/api/config', configRouter);
 app.use('/api/admin', adminRouter);

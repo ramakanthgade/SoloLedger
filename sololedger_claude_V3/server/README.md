@@ -37,9 +37,22 @@ Wire Stripe price IDs in `.env` for live checkout, or use `POST /api/billing/act
 
 ## Deploy API
 
-Deploy `server/` to Railway, Render, Fly.io, or any Node host. Set all env vars from `.env.example`. Point `VITE_API_URL` at your API URL when building the frontend.
+Deploy **`server/`** to Railway (or Render / Fly.io). Set env vars from `.env.example`. Point `VITE_API_URL` at your API URL when building the frontend.
 
-**Railway persistence:** attach a Volume mounted at `/data` and set `DATA_DIR=/data`. Without this, user accounts in `store.json` are lost on every redeploy.
+### Railway (required settings)
+
+| Setting | Value |
+|--------|--------|
+| **Root Directory** | `sololedger_claude_V3/server` (no leading slash) |
+| **Branch** | The branch that contains `server/` (e.g. `cursor/saas-architecture-7be7` until merged to `main`) |
+| **Health check path** | `/health` |
+| **Start** | `npm start` (from `railway.toml`) |
+
+**Why you get crash emails on frontend pushes:** if Railway’s Root Directory is the repo root or `sololedger_claude_V3` (the Vite app), every GitHub Pages / frontend deploy tries to start a Node API from the wrong folder and fails → Railway emails you. Fix the Root Directory to `sololedger_claude_V3/server` only.
+
+**Persistence:** attach a Volume mounted at `/data` and set `DATA_DIR=/data`. Without this, user accounts in `store.json` are lost on every redeploy.
+
+Smoke test after deploy: open `https://YOUR-APP.up.railway.app/health` — should return `{"ok":true,...}`.
 
 ## Privacy model
 

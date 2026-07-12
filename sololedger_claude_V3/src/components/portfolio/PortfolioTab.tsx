@@ -19,8 +19,10 @@ import {
 import {
   applyRuntimeDcaFlags,
   buildPortfolioDcaContext,
+  isDcaEscrowDeposit,
   isDcaFillTrade
 } from '@/lib/portfolio/portfolioHoldings';
+import { repairMissingSolSwapLegs } from '@/lib/portfolio/repairSolSwapLegs';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { applyDcaClassification, detectDcaGroups } from '@/lib/rpc/dcaDetection';
@@ -33,20 +35,16 @@ import autoTable from 'jspdf-autotable';
  * Transaction-based holdings calculator.
  *
  * Internal transfer rules:
- *   - transfer_OUT that is internal → SKIP (prevents DCA vault double-counting:
- *     the trade records already reduce the asset, so skipping the deposit avoids
- *     counting the reduction twice)
- *   - transfer_IN that is internal → INCLUDE (asset arrived in this wallet from
- *     another of your wallets — it's a real balance increase for this wallet)
- *
- * Once both wallets in an internal pair are imported, the out from wallet A is
- * skipped and the in to wallet B is included → net reflects the combined total.
+ *   - transfer_OUT to your own other wallet (internal) → SKIP (combined multi-wallet view)
+ *   - DCA escrow deposit (tax-internal, but tokens left this wallet) → DEBIT portfolio
+ *   - transfer_IN that is internal → INCLUDE
  */
 function applyTxToHoldings(
   map: Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>,
   t: Transaction,
   appliedSourceKeys: Set<string>,
-  dcaFillIds: Set<string>
+  tradeCoveredLegs: Set<string>,
+  dcaCtx: { dcaFillIds: Set<string>; internalDepositIds: Set<string> }
 ) {
   if (t.isSpam) return;
   // SOL balance from computeMainWalletSolFromTransactions; only apply non-SOL legs of trades here.
@@ -58,10 +56,28 @@ function applyTxToHoldings(
     appliedSourceKeys.add(sourceKey);
   }
 
-  // Skip OUTGOING internal transfers only (DCA deposits / sends to own wallets)
-  if (t.isInternalTransfer && (
-    t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent'
-  )) return;
+  const ref = t.sourceRef && t.walletAddress
+    ? `${t.walletAddress.toLowerCase()}|${t.sourceRef}`
+    : null;
+
+  // Skip duplicate transfer legs already represented on a trade for this on-chain tx.
+  if (
+    ref &&
+    (t.type === 'transfer_in' || t.type === 'transfer_out' || t.type === 'income') &&
+    tradeCoveredLegs.has(`${ref}|${t.asset.toUpperCase()}`)
+  ) {
+    return;
+  }
+
+  // Skip OUTGOING internal transfers between own wallets — but NOT DCA escrow deposits
+  // (those left the wallet on-chain and must reduce holdings).
+  if (
+    t.isInternalTransfer &&
+    (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent') &&
+    !isDcaEscrowDeposit(t, dcaCtx.internalDepositIds)
+  ) {
+    return;
+  }
 
   const upsert = (
     asset: string, amount: number, sign: 1 | -1,
@@ -83,8 +99,12 @@ function applyTxToHoldings(
   };
 
   if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
+    if (ref) {
+      if (t.asset !== 'SOL') tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
+      if (t.counterAsset !== 'SOL') tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
+    }
     // DCA fills deliver USDC to wallet; DBT left on deposit (escrow) — do not debit DBT here.
-    if (isDcaFillTrade(t, dcaFillIds)) {
+    if (isDcaFillTrade(t, dcaCtx.dcaFillIds)) {
       if (t.counterAsset !== 'SOL') {
         upsert(
           t.counterAsset,
@@ -234,16 +254,17 @@ export function PortfolioTab() {
     });
   }, []);
 
-  // Repair legacy rows, merge swap legs, and persist DCA classification once per session.
+  // Repair legacy rows, merge swap legs, patch missing SOL legs, persist DCA — once per session.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v6';
+    const key = 'sololedger_portfolio_reprocess_v7';
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
     void (async () => {
       await reprocessSwapDetectionInDb();
+      await repairMissingSolSwapLegs();
       const all = await db.transactions.toArray();
       const groups = detectDcaGroups(all.filter((t) => !t.isSpam));
-      if (groups.some((g) => !g.depositTx.isInternalTransfer)) {
+      if (groups.some((g) => !g.depositTx.isInternalTransfer || !(g.fillTxs[0]?.notes ?? '').includes('DCA fill'))) {
         const settings = await getSettings();
         const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
         await applyDcaClassification(
@@ -345,10 +366,18 @@ export function PortfolioTab() {
   const holdings = useMemo(() => {
     const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>();
     const appliedSourceKeys = new Set<string>();
+    const tradeCoveredLegs = new Set<string>();
     const ledgerTxs = collapseForPortfolio(portfolioLedgerTxs);
-    [...ledgerTxs]
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .forEach((t) => applyTxToHoldings(map, t, appliedSourceKeys, dcaCtx.dcaFillIds));
+    // Apply trades first so transfer legs on the same signature can be skipped as duplicates.
+    const ordered = [...ledgerTxs].sort((a, b) => {
+      const ta = a.timestamp - b.timestamp;
+      if (ta !== 0) return ta;
+      const rank = (t: Transaction) => (t.type === 'trade' ? 0 : t.type === 'fee' ? 2 : 1);
+      return rank(a) - rank(b);
+    });
+    for (const t of ordered) {
+      applyTxToHoldings(map, t, appliedSourceKeys, tradeCoveredLegs, dcaCtx);
+    }
 
     if (Math.abs(solLedgerBalance) > 1e-9) {
       const solMint = resolveSolanaMintAddress('SOL');
@@ -368,7 +397,7 @@ export function PortfolioTab() {
     return Array.from(map.values())
       .filter((h) => Math.abs(h.amount) > 1e-9)
       .sort((a, b) => b.costBasis - a.costBasis);
-  }, [portfolioLedgerTxs, solLedgerBalance, dcaCtx.dcaFillIds]);
+  }, [portfolioLedgerTxs, solLedgerBalance, dcaCtx]);
 
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
 

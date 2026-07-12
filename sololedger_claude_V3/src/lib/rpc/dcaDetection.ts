@@ -105,10 +105,12 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
   );
 
   // Pass 1: counterpartyAddress match — supports multiple deposits to the same vault.
+  // Include already-classified DCA deposits (isInternalTransfer) so fill IDs stay discoverable.
   const byVault = new Map<string, { outs: Transaction[]; ins: Transaction[] }>();
   for (const t of transactions) {
     const vault = t.counterpartyAddress;
-    if (!vault || !t.source.startsWith('rpc:') || t.isInternalTransfer || t.isSpam) continue;
+    if (!vault || !t.source.startsWith('rpc:') || t.isSpam) continue;
+    if (t.isInternalTransfer && !(t.notes?.toLowerCase().includes('dca deposit'))) continue;
     if (!byVault.has(vault)) byVault.set(vault, { outs: [], ins: [] });
     if (t.type === 'transfer_out') byVault.get(vault)!.outs.push(t);
     if (isDcaFillRow(t)) byVault.get(vault)!.ins.push(t);
@@ -227,11 +229,14 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     if (
       deposit.type !== 'transfer_out' ||
       !deposit.counterpartyAddress ||
-      deposit.isInternalTransfer ||
       deposit.isSpam ||
       !deposit.source.startsWith('rpc:') ||
       NATIVE_CHAIN_ASSETS.has(deposit.asset.toUpperCase())
     ) {
+      continue;
+    }
+    // Allow already-classified DCA deposits; skip other internal outs.
+    if (deposit.isInternalTransfer && !(deposit.notes?.toLowerCase().includes('dca deposit'))) {
       continue;
     }
     const vaultLower = deposit.counterpartyAddress.toLowerCase();
@@ -246,10 +251,9 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
         t.type === 'trade' &&
         t.counterAsset &&
         !NATIVE_CHAIN_ASSETS.has(t.counterAsset.toUpperCase()) &&
-        t.asset.toUpperCase() === inputAsset &&
+        (t.asset.toUpperCase() === inputAsset || (t.notes?.includes('DCA fill') ?? false)) &&
         t.walletAddress?.toLowerCase() === walletLower &&
         t.source.startsWith('rpc:') &&
-        !t.isInternalTransfer &&
         !t.isSpam &&
         t.timestamp >= deposit.timestamp &&
         t.timestamp <= deposit.timestamp + ONE_WEEK_MS

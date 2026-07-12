@@ -315,6 +315,25 @@ function heliusSwapToTrade(
     }
   }
 
+  // Native SOL legs are often missing from tokenTransfers (USDC→SOL etc.).
+  // accountData.nativeBalanceChange includes −fee; add fee back for the swap-associated SOL.
+  const WSOL = 'So11111111111111111111111111111111111111112';
+  const { delta: solDelta } = walletNativeSolDelta(htx, walletAddress);
+  const feeSol =
+    htx.feePayer?.toLowerCase() === walletAddress.toLowerCase() ? (htx.fee ?? 0) / 1e9 : 0;
+  const solFromSwap = solDelta + feeSol;
+  const inputIsSol = inputMint === WSOL;
+  const outputIsSol = outputMint === WSOL;
+  if (!inputIsSol && !outputIsSol) {
+    if (solFromSwap > 0.001) {
+      outputMint = WSOL;
+      outputAmount = solFromSwap;
+    } else if (solFromSwap < -0.001) {
+      inputMint = WSOL;
+      inputAmount = Math.abs(solFromSwap);
+    }
+  }
+
   if (!inputMint || !outputMint) return null;
 
   const inputSymbol = resolveSymbol(inputMint);
