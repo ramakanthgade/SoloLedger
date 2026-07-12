@@ -3,11 +3,10 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
-  formatAmountForExport, formatCurrency, formatCompactCurrency,
+  formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount,
   getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel
 } from '@/lib/utils';
-import { resolveAssetLabel } from '@/lib/assets/solanaMints';
-import { DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
+import { resolveAssetLabel, resolveSolanaMintAddress } from '@/lib/assets/solanaMints';
 import { fetchLiveWalletBalances } from '@/lib/rpc/walletBalances';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
@@ -54,10 +53,11 @@ function applyTxToHoldings(
     costAdd: number, chain?: string, ca?: string
   ) => {
     const label = resolveAssetLabel(asset, ca, chain);
-    const key = ca
-      ? `${chain ?? 'x'}:mint:${ca.toLowerCase()}`
+    const mint = ca ?? (chain === 'solana' ? resolveSolanaMintAddress(asset) : undefined);
+    const key = mint
+      ? `${chain ?? 'x'}:mint:${mint.toLowerCase()}`
       : `${chain ?? 'x'}:${label.toUpperCase()}`;
-    if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress: ca, asset: label });
+    if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress: mint, asset: label });
     const h = map.get(key)!;
     if (sign > 0) { h.amount += amount; h.costBasis += costAdd; return; }
     if (h.amount > 1e-9) {
@@ -69,7 +69,14 @@ function applyTxToHoldings(
 
   if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
     upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
-    upsert(t.counterAsset, t.counterAmount, 1, t.fiatValue ?? 0, t.chain, undefined);
+    upsert(
+      t.counterAsset,
+      t.counterAmount,
+      1,
+      t.fiatValue ?? 0,
+      t.chain,
+      t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
+    );
     return;
   }
 
@@ -77,12 +84,26 @@ function applyTxToHoldings(
   // quote-asset leg in notes rather than as a `trade` row type.
   if (t.type === 'buy' && t.counterAsset && t.counterAmount) {
     upsert(t.asset, t.amount, 1, t.fiatValue ?? 0, t.chain, t.contractAddress);
-    upsert(t.counterAsset, t.counterAmount, -1, 0, t.chain, undefined);
+    upsert(
+      t.counterAsset,
+      t.counterAmount,
+      -1,
+      0,
+      t.chain,
+      t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
+    );
     return;
   }
   if (t.type === 'sell' && t.counterAsset && t.counterAmount) {
     upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
-    upsert(t.counterAsset, t.counterAmount, 1, t.fiatValue ?? 0, t.chain, undefined);
+    upsert(
+      t.counterAsset,
+      t.counterAmount,
+      1,
+      t.fiatValue ?? 0,
+      t.chain,
+      t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
+    );
     return;
   }
 
@@ -174,8 +195,10 @@ export function PortfolioTab() {
       for (const w of scoped) {
         const bals = await fetchLiveWalletBalances(w.address, 'solana', config);
         for (const b of bals) {
-          const key = b.contractAddress?.toLowerCase() ?? b.asset.toUpperCase();
-          next.set(key, (next.get(key) ?? 0) + b.amount);
+          const mintKey = b.contractAddress?.toLowerCase();
+          const symKey = b.asset.toUpperCase();
+          if (mintKey) next.set(mintKey, (next.get(mintKey) ?? 0) + b.amount);
+          next.set(symKey, (next.get(symKey) ?? 0) + b.amount);
         }
       }
 
@@ -223,14 +246,22 @@ export function PortfolioTab() {
 
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
 
-  const holdingKey = (h: { contractAddress?: string; asset: string }) =>
-    h.contractAddress?.toLowerCase() ?? h.asset.toUpperCase();
+  const holdingKey = (h: { contractAddress?: string; asset: string; chain?: string }) => {
+    const mint = h.contractAddress ?? (h.chain === 'solana' ? resolveSolanaMintAddress(h.asset) : undefined);
+    return mint?.toLowerCase() ?? h.asset.toUpperCase();
+  };
+
+  const lookupLiveBalance = (h: { contractAddress?: string; asset: string; chain?: string }) => {
+    const mintKey = holdingKey(h);
+    const symKey = h.asset.toUpperCase();
+    return liveByMint.get(mintKey) ?? liveByMint.get(symKey);
+  };
 
   const balanceVariances = useMemo(() => {
     if (liveBalanceStatus !== 'ready') return [];
     return holdings
       .map((h) => {
-        const live = liveByMint.get(holdingKey(h));
+        const live = lookupLiveBalance(h);
         if (live == null) return null;
         const delta = h.amount - live;
         const pct = live > 0 ? (delta / live) * 100 : 0;
@@ -247,9 +278,7 @@ export function PortfolioTab() {
       }>;
   }, [holdings, liveByMint, liveBalanceStatus]);
 
-  const dbtVariance = balanceVariances.find(
-    (v) => v.contractAddress === DBT_TOKEN_MINT || v.asset.toUpperCase() === 'DBT'
-  );
+  const balanceMismatch = balanceVariances.length > 0 ? balanceVariances[0] : null;
   const missingPriceCount = filteredTxs.filter(
     (t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer
   ).length;
@@ -364,7 +393,6 @@ export function PortfolioTab() {
 
         <span className="ml-auto text-xs text-mist-400">
           {holdings.length} asset{holdings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
-          {liveBalanceStatus === 'ready' && selectedFy == null ? ' · wallet cross-check on' : ''}
         </span>
         <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
         <div className="flex gap-2">
@@ -374,12 +402,11 @@ export function PortfolioTab() {
         </div>
       </div>
 
-      {dbtVariance && selectedFy == null && (
+      {balanceMismatch && selectedFy == null && (
         <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-mist-300">
-          <strong className="text-loss">DBT balance mismatch:</strong> ledger shows{' '}
-          {(dbtVariance.ledger / 1e6).toFixed(2)}M but your wallet holds{' '}
-          {(dbtVariance.live / 1e6).toFixed(2)}M ({dbtVariance.delta > 0 ? '+' : ''}
-          {(dbtVariance.delta / 1e6).toFixed(2)}M). Remove the wallet in Import → Wallet lookup,
+          <strong className="text-loss">{balanceMismatch.asset} balance mismatch:</strong> ledger shows{' '}
+          {formatCompactAmount(balanceMismatch.ledger)} but your wallet holds{' '}
+          {formatCompactAmount(balanceMismatch.live)}. Remove the wallet in Import → Wallet lookup,
           then re-import to rebuild with the latest parser.
         </div>
       )}
@@ -411,40 +438,27 @@ export function PortfolioTab() {
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
               <th className="px-3 py-2">Asset</th>
-              <th className="px-3 py-2 text-right">Quantity (ledger)</th>
-              {liveBalanceStatus === 'ready' && selectedFy == null && (
-                <th className="px-3 py-2 text-right">Wallet now</th>
-              )}
+              <th className="px-3 py-2 text-right">Quantity</th>
               <th className="px-3 py-2 text-right">Cost basis</th>
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
-            {holdings.map((h, i) => {
-              const live = liveBalanceStatus === 'ready' && selectedFy == null
-                ? liveByMint.get(holdingKey(h))
-                : undefined;
-              const mismatch = live != null && Math.abs(h.amount - live) > Math.max(0.0001, Math.abs(live) * 0.001);
-              return (
+            {holdings.map((h, i) => (
               <tr key={i} className="border-t border-ink-700/60 hover:bg-ink-700/20">
                 <td className="px-3 py-2 text-mist">
                   {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
                 </td>
-                <td className={`px-3 py-2 text-right ${mismatch ? 'text-loss' : 'text-mist-300'}`}>
+                <td className="px-3 py-2 text-right text-mist-300">
                   {h.amount.toFixed(8)}
                 </td>
-                {liveBalanceStatus === 'ready' && selectedFy == null && (
-                  <td className="px-3 py-2 text-right text-mist-300">
-                    {live != null ? live.toFixed(8) : '—'}
-                  </td>
-                )}
                 <td className="px-3 py-2 text-right text-gold-600">
                   {formatCurrency(h.costBasis, reportingCurrency)}
                 </td>
               </tr>
-            );})}
+            ))}
             {holdings.length === 0 && (
               <tr>
-                <td colSpan={liveBalanceStatus === 'ready' && selectedFy == null ? 4 : 3} className="px-3 py-8 text-center text-mist-400">
+                <td colSpan={3} className="px-3 py-8 text-center text-mist-400">
                   No holdings — import transactions or adjust the filter.
                 </td>
               </tr>

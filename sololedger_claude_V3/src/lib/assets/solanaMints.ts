@@ -18,6 +18,16 @@ export function resolveSolanaMintSymbol(mint: string): string | undefined {
   return SOLANA_KNOWN_MINTS[mint];
 }
 
+/** Reverse lookup: ticker → mint address (e.g. USDC → EPjF…). */
+export function resolveSolanaMintAddress(asset: string): string | undefined {
+  const upper = asset.toUpperCase();
+  for (const [mint, symbol] of Object.entries(SOLANA_KNOWN_MINTS)) {
+    if (symbol.toUpperCase() === upper) return mint;
+  }
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(asset)) return asset;
+  return undefined;
+}
+
 /** Prefer a human ticker over a truncated mint placeholder like `AbCd…wxyz`. */
 export function resolveAssetLabel(asset: string, contractAddress?: string, chain?: string): string {
   // If asset is an explicit human-readable symbol (not a raw/truncated address), ALWAYS trust it.
