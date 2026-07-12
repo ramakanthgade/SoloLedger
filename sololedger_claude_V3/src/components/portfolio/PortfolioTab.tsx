@@ -49,8 +49,11 @@ function applyTxToHoldings(
     asset: string, amount: number, sign: 1 | -1,
     costAdd: number, chain?: string, ca?: string
   ) => {
-    const key = `${chain ?? 'x'}:${asset.toUpperCase()}:${(ca ?? '').toLowerCase()}`;
-    if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress: ca, asset });
+    const label = resolveAssetLabel(asset, ca, chain);
+    const key = ca
+      ? `${chain ?? 'x'}:mint:${ca.toLowerCase()}`
+      : `${chain ?? 'x'}:${label.toUpperCase()}`;
+    if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress: ca, asset: label });
     const h = map.get(key)!;
     if (sign > 0) { h.amount += amount; h.costBasis += costAdd; return; }
     if (h.amount > 1e-9) {

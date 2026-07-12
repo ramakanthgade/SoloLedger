@@ -71,6 +71,133 @@ function resolveSymbol(mint: string): string {
   return `${mint.slice(0, 4)}…${mint.slice(-4)}`;
 }
 
+function parseSignedTokenBalanceChange(ch: Record<string, unknown>): number | null {
+  if (typeof ch.tokenAmount === 'number') return ch.tokenAmount;
+
+  const raw = (ch.rawTokenAmount ?? ch.tokenAmount) as
+    | { tokenAmount?: string | number; decimals?: number }
+    | undefined;
+  if (raw?.tokenAmount == null) return null;
+
+  const decimals = raw.decimals ?? (ch.decimals as number | undefined) ?? 0;
+  let amount = Number(BigInt(String(raw.tokenAmount))) / 10 ** decimals;
+
+  const changeType = String(ch.changeType ?? ch.change ?? '').toLowerCase();
+  if (changeType.includes('decrease') || changeType === 'dec') amount = -Math.abs(amount);
+  else if (changeType.includes('increase') || changeType === 'inc') amount = Math.abs(amount);
+
+  return amount;
+}
+
+/** Owner-level net SPL delta per mint from Helius accountData (sums all ATAs). */
+function ownerNetByMintFromAccountData(
+  accountData: HeliusTransaction['accountData'],
+  walletAddress: string
+): { netByMint: Map<string, number>; mintsWithData: Set<string> } {
+  const netByMint = new Map<string, number>();
+  const mintsWithData = new Set<string>();
+
+  for (const acct of accountData ?? []) {
+    for (const ch of acct.tokenBalanceChanges ?? []) {
+      const mint: string | undefined = ch.mint ?? ch.tokenMint;
+      const userAcct: string | undefined = ch.userAccount ?? ch.owner;
+      if (!mint) continue;
+      if (userAcct && userAcct !== walletAddress) continue;
+
+      const signed = parseSignedTokenBalanceChange(ch);
+      if (signed == null || Math.abs(signed) < 1e-12) continue;
+
+      mintsWithData.add(mint);
+      netByMint.set(mint, (netByMint.get(mint) ?? 0) + signed);
+    }
+  }
+
+  return { netByMint, mintsWithData };
+}
+
+/** Net SPL delta per mint from Helius tokenTransfers (in − out for wallet owner). */
+function ownerNetByMintFromTokenTransfers(
+  transfers: HeliusTokenTransfer[],
+  walletAddress: string
+): Map<string, { net: number; counterparty?: string }> {
+  const netByMint = new Map<string, { net: number; counterparty?: string }>();
+
+  for (const t of transfers) {
+    if (t.fromUserAccount === walletAddress) {
+      const prev = netByMint.get(t.mint) ?? { net: 0 };
+      netByMint.set(t.mint, {
+        net: prev.net - t.tokenAmount,
+        counterparty: t.toUserAccount
+      });
+    }
+    if (t.toUserAccount === walletAddress) {
+      const prev = netByMint.get(t.mint) ?? { net: 0 };
+      netByMint.set(t.mint, {
+        net: prev.net + t.tokenAmount,
+        counterparty: t.fromUserAccount
+      });
+    }
+  }
+
+  return netByMint;
+}
+
+function pushSplBalanceRow(
+  rows: Transaction[],
+  opts: {
+    htx: HeliusTransaction;
+    walletAddress: string;
+    mint: string;
+    net: number;
+    counterparty?: string;
+    fromAccountData: boolean;
+  }
+): void {
+  const { htx, walletAddress, mint, net, counterparty, fromAccountData } = opts;
+  if (Math.abs(net) < 1e-9) return;
+
+  const asset = resolveSymbol(mint);
+  const sourceKey = transactionSourceKey({
+    sourceRef: htx.signature,
+    walletAddress,
+    asset
+  });
+  if (sourceKey && rows.some((r) => transactionSourceKey(r) === sourceKey)) return;
+
+  const inbound = net > 0;
+  const amount = Math.abs(net);
+  const dbtIncome =
+    inbound && isDbtToken(mint) && counterparty !== walletAddress
+      ? classifyDbtIncome(mint, counterparty) ?? {
+          kind: 'genesis_reward' as const,
+          label: 'Dabba Network DBT reward',
+          notes: fromAccountData
+            ? 'Auto-classified as DBT income (account balance change)'
+            : 'Auto-classified as DBT income'
+        }
+      : null;
+
+  rows.push({
+    id: makeId('rpc'),
+    timestamp: htx.timestamp * 1000,
+    type: dbtIncome ? 'income' : inbound ? 'transfer_in' : 'transfer_out',
+    asset,
+    amount,
+    contractAddress: mint,
+    fiatCurrency: 'USD',
+    fiatValue: undefined,
+    source: 'rpc:helius',
+    sourceRef: htx.signature,
+    walletAddress,
+    counterpartyAddress: counterparty,
+    chain: 'solana',
+    category: dbtIncome?.kind,
+    notes: dbtIncome?.notes,
+    flags: dbtIncome ? [] : (['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[]),
+    isInternalTransfer: false
+  });
+}
+
 function rawAmountToDecimal(rawAmount: string, decimals: number): number {
   return Number(BigInt(rawAmount)) / 10 ** decimals;
 }
@@ -159,176 +286,65 @@ function heliusTransferToRows(
   walletAddress: string
 ): Transaction[] {
   const rows: Transaction[] = [];
-  const ts = htx.timestamp * 1000;
 
-  // Aggregate SPL legs by mint so one tx never creates duplicate rows for the same asset.
-  const sentByMint = new Map<string, { amount: number; counterparty?: string }>();
-  const receivedByMint = new Map<string, { amount: number; counterparty?: string }>();
+  const transferNet = ownerNetByMintFromTokenTransfers(htx.tokenTransfers, walletAddress);
+  const { netByMint: accountDataNet, mintsWithData } = ownerNetByMintFromAccountData(
+    htx.accountData,
+    walletAddress
+  );
 
-  for (const t of htx.tokenTransfers.filter((x) => x.fromUserAccount === walletAddress)) {
-    const prev = sentByMint.get(t.mint);
-    sentByMint.set(t.mint, {
-      amount: (prev?.amount ?? 0) + t.tokenAmount,
-      counterparty: t.toUserAccount
-    });
-  }
-  for (const t of htx.tokenTransfers.filter((x) => x.toUserAccount === walletAddress)) {
-    const prev = receivedByMint.get(t.mint);
-    receivedByMint.set(t.mint, {
-      amount: (prev?.amount ?? 0) + t.tokenAmount,
-      counterparty: t.fromUserAccount
-    });
-  }
+  const allMints = new Set<string>([
+    ...transferNet.keys(),
+    ...accountDataNet.keys()
+  ]);
 
-  for (const [mint, { amount, counterparty }] of sentByMint) {
-    rows.push({
-      id: makeId('rpc'),
-      timestamp: ts,
-      type: 'transfer_out',
-      asset: resolveSymbol(mint),
-      amount,
-      contractAddress: mint,
-      fiatCurrency: 'USD',
-      fiatValue: undefined,
-      source: 'rpc:helius',
-      sourceRef: htx.signature,
+  for (const mint of allMints) {
+    const useAccountData = mintsWithData.has(mint);
+    const net = useAccountData
+      ? (accountDataNet.get(mint) ?? 0)
+      : (transferNet.get(mint)?.net ?? 0);
+    const counterparty = transferNet.get(mint)?.counterparty;
+
+    pushSplBalanceRow(rows, {
+      htx,
       walletAddress,
-      counterpartyAddress: counterparty,
-      chain: 'solana',
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
-      isInternalTransfer: false
+      mint,
+      net,
+      counterparty,
+      fromAccountData: useAccountData
     });
   }
 
-  for (const [mint, { amount, counterparty }] of receivedByMint) {
-    const dbtIncome = isDbtToken(mint) && counterparty !== walletAddress
-      ? classifyDbtIncome(mint, counterparty) ?? {
-          kind: 'genesis_reward' as const,
-          label: 'Dabba Network DBT reward',
-          notes: 'Auto-classified as DBT income'
-        }
-      : null;
-
-    rows.push({
-      id: makeId('rpc'),
-      timestamp: ts,
-      type: dbtIncome ? 'income' : 'transfer_in',
-      asset: resolveSymbol(mint),
-      amount,
-      contractAddress: mint,
-      fiatCurrency: 'USD',
-      fiatValue: undefined,
-      source: 'rpc:helius',
-      sourceRef: htx.signature,
-      walletAddress,
-      counterpartyAddress: counterparty,
-      chain: 'solana',
-      category: dbtIncome?.kind,
-      notes: dbtIncome?.notes,
-      flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
-      isInternalTransfer: false
-    });
-  }
-
-  // accountData fallback — only when tokenTransfers did not already capture this mint.
-  const accountDataByMint = new Map<string, number>();
-  for (const acct of htx.accountData ?? []) {
-    for (const ch of acct.tokenBalanceChanges ?? []) {
-      const mint: string | undefined = ch.mint ?? ch.tokenMint;
-      const userAcct: string | undefined = ch.userAccount ?? ch.owner;
-      if (!mint) continue;
-      if (userAcct && userAcct !== walletAddress) continue;
-      if (receivedByMint.has(mint) || sentByMint.has(mint)) continue;
-
-      const raw = ch.rawTokenAmount ?? ch.tokenAmount;
-      const decimals = raw?.decimals ?? ch.decimals ?? 0;
-      const tokenAmount =
-        typeof ch.tokenAmount === 'number'
-          ? ch.tokenAmount
-          : raw?.tokenAmount != null
-            ? Number(BigInt(String(raw.tokenAmount))) / 10 ** decimals
-            : 0;
-      if (tokenAmount <= 0) continue;
-      accountDataByMint.set(mint, (accountDataByMint.get(mint) ?? 0) + tokenAmount);
+  // Net native SOL delta — avoids double-counting fee + transfer legs in one tx.
+  let solNet = 0;
+  let solCounterpartyOut: string | undefined;
+  let solCounterpartyIn: string | undefined;
+  for (const t of htx.nativeTransfers) {
+    const sol = t.amount / 1e9;
+    if (t.fromUserAccount === walletAddress) {
+      solNet -= sol;
+      solCounterpartyOut = t.toUserAccount;
+    }
+    if (t.toUserAccount === walletAddress) {
+      solNet += sol;
+      solCounterpartyIn = t.fromUserAccount;
     }
   }
 
-  for (const [mint, tokenAmount] of accountDataByMint) {
-    const asset = resolveSymbol(mint);
-    const sourceKey = transactionSourceKey({
-      sourceRef: htx.signature,
-      walletAddress,
-      asset
-    });
-    if (sourceKey && rows.some((r) => transactionSourceKey(r) === sourceKey)) continue;
-
-    const dbtIncome = isDbtToken(mint)
-      ? classifyDbtIncome(mint, walletAddress) ?? {
-          kind: 'genesis_reward' as const,
-          label: 'Dabba Network DBT reward',
-          notes: 'Auto-classified as DBT income (account balance change)'
-        }
-      : null;
-
+  if (Math.abs(solNet) >= 0.000001) {
+    const inbound = solNet > 0;
     rows.push({
       id: makeId('rpc'),
-      timestamp: ts,
-      type: dbtIncome ? 'income' : 'transfer_in',
-      asset,
-      amount: tokenAmount,
-      contractAddress: mint,
-      fiatCurrency: 'USD',
-      fiatValue: undefined,
-      source: 'rpc:helius',
-      sourceRef: htx.signature,
-      walletAddress,
-      chain: 'solana',
-      category: dbtIncome?.kind,
-      notes: dbtIncome?.notes,
-      flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
-      isInternalTransfer: false
-    });
-  }
-
-  const solSent = htx.nativeTransfers.filter((t) => t.fromUserAccount === walletAddress);
-  const solReceived = htx.nativeTransfers.filter((t) => t.toUserAccount === walletAddress);
-
-  for (const t of solSent) {
-    const sol = t.amount / 1e9;
-    if (Math.abs(sol) < 0.000001) continue;
-    rows.push({
-      id: makeId('rpc'),
-      timestamp: ts,
-      type: 'transfer_out',
+      timestamp: htx.timestamp * 1000,
+      type: inbound ? 'transfer_in' : 'transfer_out',
       asset: 'SOL',
-      amount: sol,
+      amount: Math.abs(solNet),
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:helius',
       sourceRef: htx.signature,
       walletAddress,
-      counterpartyAddress: t.toUserAccount,
-      chain: 'solana',
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
-      isInternalTransfer: false
-    });
-  }
-
-  for (const t of solReceived) {
-    const sol = t.amount / 1e9;
-    if (Math.abs(sol) < 0.000001) continue;
-    rows.push({
-      id: makeId('rpc'),
-      timestamp: ts,
-      type: 'transfer_in',
-      asset: 'SOL',
-      amount: sol,
-      fiatCurrency: 'USD',
-      fiatValue: undefined,
-      source: 'rpc:helius',
-      sourceRef: htx.signature,
-      walletAddress,
-      counterpartyAddress: t.fromUserAccount,
+      counterpartyAddress: inbound ? solCounterpartyIn : solCounterpartyOut,
       chain: 'solana',
       flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
       isInternalTransfer: false
