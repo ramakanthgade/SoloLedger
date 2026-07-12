@@ -810,6 +810,7 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     // Helius is the primary Solana source when key is provided.
     // It returns pre-parsed type labels (SWAP, STAKE, NFT_SALE, etc.) including
     // Jupiter DCA fills with exact token amounts — eliminates need for Noves on Solana.
+    let heliusError: string | undefined;
     if (hasRpcCredential(config.heliusApiKey)) {
       try {
         const { fetchHeliusSolana } = await import('@/lib/rpc/helius');
@@ -829,13 +830,44 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
             newestSignature: result.newestSignature
           };
         }
-      } catch { /* fall through to Alchemy on full import only */ }
+      } catch (err) {
+        heliusError = err instanceof Error ? err.message : 'Helius lookup failed';
+        // Fall through to Alchemy on full import only.
+      }
     }
     if (config.incrementalOnly) {
-      return { transactions: [], warnings: [{ address, message: 'No new transactions since last sync.' }] };
+      return {
+        transactions: [],
+        warnings: [
+          {
+            address,
+            message: heliusError
+              ? `Sync failed (${heliusError}). Try Remove + re-import, or check API keys.`
+              : 'No new transactions since last sync.'
+          }
+        ]
+      };
     }
-    if (!hasRpcCredential(config.alchemyApiKey)) throw new Error('Add your Helius API key (or Alchemy API key) in Settings first.');
-    return withDexSwapDetection(await fetchAlchemySolana(address, rpcCredential(config.alchemyApiKey)));
+    if (!hasRpcCredential(config.alchemyApiKey)) {
+      throw new Error(
+        heliusError
+          ? `Helius failed (${heliusError}) and no Alchemy key is available. In SaaS mode set VITE_API_URL to https://sololedger-production.up.railway.app (hosted keys), or add keys to server/.env.`
+          : 'Add your Helius API key (or Alchemy API key) in Settings first.'
+      );
+    }
+    try {
+      return withDexSwapDetection(await fetchAlchemySolana(address, rpcCredential(config.alchemyApiKey)));
+    } catch (err) {
+      const alchemyMsg = err instanceof Error ? err.message : 'Alchemy lookup failed';
+      if (/401/.test(alchemyMsg)) {
+        throw new Error(
+          'Alchemy API returned 401 (unauthorized). Your app is calling an API server that has no valid Alchemy/Helius keys. ' +
+            'For local SaaS testing use: set VITE_API_URL=https://sololedger-production.up.railway.app ' +
+            '(keep the local server on :3001 only for Fix balances). Or put HELIUS_API_KEY / ALCHEMY_API_KEY in sololedger_claude_V3/server/.env and restart the API.'
+        );
+      }
+      throw heliusError ? new Error(`Helius: ${heliusError}; Alchemy: ${alchemyMsg}`) : err;
+    }
   }
   if (!config.customBaseUrl) throw new Error('Enter an explorer base URL.');
   return withDexSwapDetection(
