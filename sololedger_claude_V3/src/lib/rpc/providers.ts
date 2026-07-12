@@ -361,7 +361,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
   const sigRes = await alchemyFetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 100 }] })
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 1000 }] })
   });
   const sigData = await sigRes.json();
   if (!sigRes.ok) throw new Error(alchemyErrorMessage(sigRes.status, sigData));

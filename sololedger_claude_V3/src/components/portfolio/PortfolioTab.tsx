@@ -16,8 +16,14 @@ import {
   normalizeSolLedgerRows,
   SOL_MAIN_WALLET_TOLERANCE
 } from '@/lib/portfolio/solBalance';
+import {
+  applyRuntimeDcaFlags,
+  buildPortfolioDcaContext,
+  isDcaFillTrade
+} from '@/lib/portfolio/portfolioHoldings';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
+import { applyDcaClassification, detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
@@ -39,7 +45,8 @@ import autoTable from 'jspdf-autotable';
 function applyTxToHoldings(
   map: Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>,
   t: Transaction,
-  appliedSourceKeys: Set<string>
+  appliedSourceKeys: Set<string>,
+  dcaFillIds: Set<string>
 ) {
   if (t.isSpam) return;
   // SOL balance from computeMainWalletSolFromTransactions; only apply non-SOL legs of trades here.
@@ -76,6 +83,20 @@ function applyTxToHoldings(
   };
 
   if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
+    // DCA fills deliver USDC to wallet; DBT left on deposit (escrow) — do not debit DBT here.
+    if (isDcaFillTrade(t, dcaFillIds)) {
+      if (t.counterAsset !== 'SOL') {
+        upsert(
+          t.counterAsset,
+          t.counterAmount,
+          1,
+          t.fiatValue ?? 0,
+          t.chain,
+          t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
+        );
+      }
+      return;
+    }
     if (t.asset !== 'SOL') {
       upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
     }
@@ -213,13 +234,23 @@ export function PortfolioTab() {
     });
   }, []);
 
-  // Repair legacy rows + merge duplicate swap legs once per session.
+  // Repair legacy rows, merge swap legs, and persist DCA classification once per session.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v5';
+    const key = 'sololedger_portfolio_reprocess_v6';
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
     void (async () => {
       await reprocessSwapDetectionInDb();
+      const all = await db.transactions.toArray();
+      const groups = detectDcaGroups(all.filter((t) => !t.isSpam));
+      if (groups.some((g) => !g.depositTx.isInternalTransfer)) {
+        const settings = await getSettings();
+        const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
+        await applyDcaClassification(
+          groups,
+          settings.alchemyApiKey ?? proxy
+        );
+      }
       await normalizeSolLedgerRows();
     })();
   }, []);
@@ -296,16 +327,28 @@ export function PortfolioTab() {
     return txs;
   }, [transactions, selectedWallet, selectedFy, jurisdiction]);
 
-  const solLedgerBalance = useMemo(
-    () => computeMainWalletSolFromTransactions(filteredTxs),
+  const dcaCtx = useMemo(
+    () => buildPortfolioDcaContext(filteredTxs),
     [filteredTxs]
+  );
+
+  const portfolioLedgerTxs = useMemo(
+    () => applyRuntimeDcaFlags(filteredTxs, dcaCtx),
+    [filteredTxs, dcaCtx]
+  );
+
+  const solLedgerBalance = useMemo(
+    () => computeMainWalletSolFromTransactions(portfolioLedgerTxs),
+    [portfolioLedgerTxs]
   );
 
   const holdings = useMemo(() => {
     const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>();
     const appliedSourceKeys = new Set<string>();
-    const ledgerTxs = collapseForPortfolio(filteredTxs);
-    [...ledgerTxs].sort((a, b) => a.timestamp - b.timestamp).forEach((t) => applyTxToHoldings(map, t, appliedSourceKeys));
+    const ledgerTxs = collapseForPortfolio(portfolioLedgerTxs);
+    [...ledgerTxs]
+      .sort((a, b) => a.timestamp - b.timestamp)
+      .forEach((t) => applyTxToHoldings(map, t, appliedSourceKeys, dcaCtx.dcaFillIds));
 
     if (Math.abs(solLedgerBalance) > 1e-9) {
       const solMint = resolveSolanaMintAddress('SOL');
@@ -325,7 +368,7 @@ export function PortfolioTab() {
     return Array.from(map.values())
       .filter((h) => Math.abs(h.amount) > 1e-9)
       .sort((a, b) => b.costBasis - a.costBasis);
-  }, [filteredTxs, solLedgerBalance]);
+  }, [portfolioLedgerTxs, solLedgerBalance, dcaCtx.dcaFillIds]);
 
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
 

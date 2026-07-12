@@ -104,7 +104,7 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     transactions.map((t) => t.walletAddress?.toLowerCase()).filter(Boolean) as string[]
   );
 
-  // Pass 1: counterpartyAddress-based
+  // Pass 1: counterpartyAddress match — supports multiple deposits to the same vault.
   const byVault = new Map<string, { outs: Transaction[]; ins: Transaction[] }>();
   for (const t of transactions) {
     const vault = t.counterpartyAddress;
@@ -115,29 +115,43 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
   }
 
   for (const [vaultAddress, { outs, ins }] of byVault) {
-    if (outs.length !== 1 || ins.length < 2) continue;
-    const inputAsset = outs[0].asset;
+    if (outs.length === 0 || ins.length < 1) continue;
+
+    const sortedOuts = [...outs].sort((a, b) => a.timestamp - b.timestamp);
+    const sortedIns = [...ins].sort((a, b) => a.timestamp - b.timestamp);
     const outputAssets = new Set(
-      ins.map((t) => (t.type === 'trade' ? t.counterAsset! : t.asset).toUpperCase())
+      sortedIns.map((t) => (t.type === 'trade' ? t.counterAsset! : t.asset).toUpperCase())
     );
     if (outputAssets.size !== 1) continue;
     const outputAsset = [...outputAssets][0];
-    if (inputAsset === outputAsset) continue;
     if (ownWallets.has(vaultAddress.toLowerCase())) continue;
 
-    groups.push({
-      vaultAddress,
-      depositTx: outs[0],
-      fillTxs: ins.sort((a, b) => a.timestamp - b.timestamp),
-      inputAsset,
-      outputAsset,
-      totalInput: outs[0].amount,
-      totalOutput: ins.reduce(
-        (s, t) => s + (t.type === 'trade' ? (t.counterAmount ?? 0) : t.amount),
-        0
-      ),
-      inputContractAddress: outs[0].contractAddress
-    });
+    for (let i = 0; i < sortedOuts.length; i++) {
+      const deposit = sortedOuts[i];
+      const inputAsset = deposit.asset;
+      if (inputAsset.toUpperCase() === outputAsset) continue;
+
+      const windowEnd = sortedOuts[i + 1]?.timestamp ?? Number.POSITIVE_INFINITY;
+      const fillTxs = sortedIns.filter(
+        (f) => f.timestamp >= deposit.timestamp && f.timestamp < windowEnd
+      );
+      if (fillTxs.length < 1) continue;
+      if (groups.some((g) => g.depositTx.id === deposit.id)) continue;
+
+      groups.push({
+        vaultAddress,
+        depositTx: deposit,
+        fillTxs,
+        inputAsset,
+        outputAsset,
+        totalInput: deposit.amount,
+        totalOutput: fillTxs.reduce(
+          (s, t) => s + (t.type === 'trade' ? (t.counterAmount ?? 0) : t.amount),
+          0
+        ),
+        inputContractAddress: deposit.contractAddress
+      });
+    }
   }
 
   // Pass 2: fill-side only (works when deposit has no counterpartyAddress)
@@ -172,7 +186,7 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
   }
 
   for (const [, { vaultAddr, walletAddr, outputAsset, fillTxs }] of fillOnlyGroups) {
-    if (fillTxs.length < 2) continue;
+    if (fillTxs.length < 1) continue;
     if (groups.some((g) => g.vaultAddress.toLowerCase() === vaultAddr.toLowerCase())) continue;
 
     const firstFillTime = Math.min(...fillTxs.map((f) => f.timestamp));
@@ -241,7 +255,7 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
         t.timestamp <= deposit.timestamp + ONE_WEEK_MS
     );
 
-    if (tradeFills.length < 2) continue;
+    if (tradeFills.length < 1) continue;
 
     const outputAssets = new Set(tradeFills.map((t) => t.counterAsset!.toUpperCase()));
     if (outputAssets.size !== 1) continue;

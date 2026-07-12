@@ -26,7 +26,9 @@ function solRowScore(t: Transaction): number {
 }
 
 function tradeTouchesSol(t: Transaction): boolean {
-  return t.type === 'trade' && (t.asset === 'SOL' || t.counterAsset?.toUpperCase() === 'SOL');
+  if (t.type !== 'trade') return false;
+  if (t.asset === 'SOL' && t.amount > 0) return true;
+  return t.counterAsset?.toUpperCase() === 'SOL' && (t.counterAmount ?? 0) > 0;
 }
 
 /** Rent returned to main wallet when token accounts close — must ADD to balance. */
@@ -128,7 +130,8 @@ export function computeMainWalletSolFromTransactions(txs: Transaction[]): number
 
     if (t.type === 'trade') {
       if (t.asset === 'SOL') sol -= t.amount;
-      if (t.counterAsset?.toUpperCase() === 'SOL' && t.counterAmount) sol += t.counterAmount;
+      const solCounter = t.counterAsset?.toUpperCase() === 'SOL' ? t.counterAmount : undefined;
+      if (solCounter && solCounter > 0) sol += solCounter;
       if (t.feeAsset?.toUpperCase() === 'SOL' && t.feeAmount) sol -= t.feeAmount;
       continue;
     }
