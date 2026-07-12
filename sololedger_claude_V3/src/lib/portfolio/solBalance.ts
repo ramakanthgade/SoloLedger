@@ -3,12 +3,12 @@
  *
  * PR #25 rules (stable — do not override in PortfolioTab or elsewhere):
  *  1. Network fees (type=fee, notes "Solana network fee") → subtract
- *  2. Token-account rent (type=fee, rent notes) → subtract (main wallet paid rent)
+ *  2. Token-account rent deposits (type=fee, outgoing rent) → subtract
  *  3. Internal transfer_out (DCA DBT deposit, etc.) → skip
  *  4. transfer_in / income / gift_received → add (includes rent refunds to main wallet)
  *  5. transfer_out / gift_sent (non-internal) → subtract
  *  6. trade with SOL as asset or counterAsset → apply legs
- *  7. One SOL row per (wallet, sourceRef) — prefer fee over transfer when both exist
+ *  7. Trade + fee rows on the same tx are separate legs; transfers drop when trade covers SOL
  */
 import { db, transactionSourceKey } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
@@ -25,17 +25,38 @@ function solRowScore(t: Transaction): number {
   return 100_000 + (t.fiatValue != null ? 10_000 : 0);
 }
 
+function tradeTouchesSol(t: Transaction): boolean {
+  return t.type === 'trade' && (t.asset === 'SOL' || t.counterAsset?.toUpperCase() === 'SOL');
+}
+
+/** Rent returned to main wallet when token accounts close — must ADD to balance. */
+export function isSolRentRefund(t: Transaction): boolean {
+  if (t.asset !== 'SOL') return false;
+  const note = t.notes?.toLowerCase() ?? '';
+  return note.includes('refund') || note.includes('account close') || note.includes('close');
+}
+
+/** Rent paid from main wallet to open token accounts — must SUBTRACT from balance. */
+export function isSolRentDeposit(t: Transaction): boolean {
+  if (t.asset !== 'SOL' || isSolRentRefund(t)) return false;
+  const note = t.notes?.toLowerCase() ?? '';
+  if (note.includes('rent') && !note.includes('refund')) return true;
+  return t.type === 'transfer_out' && t.amount > 0 && t.amount < 0.01;
+}
+
 /**
  * Collapse duplicate SOL transfer rows per on-chain tx.
  * Trade and fee rows always pass through — they are separate legs (swap + network fee).
- * Among plain transfers, prefer fee-shaped rows over transfer rows (rent normalization).
  */
 export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
   const feeKeys = new Set<string>();
+  const tradeKeys = new Set<string>();
   for (const t of txs) {
-    if (t.isSpam || t.asset !== 'SOL' || t.type !== 'fee') continue;
+    if (t.isSpam || t.asset !== 'SOL') continue;
     const sk = transactionSourceKey(t);
-    if (sk) feeKeys.add(sk);
+    if (!sk) continue;
+    if (t.type === 'fee') feeKeys.add(sk);
+    if (tradeTouchesSol(t)) tradeKeys.add(sk);
   }
 
   const best = new Map<string, Transaction>();
@@ -51,14 +72,15 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
     if (t.isSpam || t.asset !== 'SOL') return true;
     if (t.type === 'fee' || t.type === 'trade') return true;
     const sk = transactionSourceKey(t);
-    // Only drop tiny outgoing transfers when a fee row already captures rent on this tx.
-    // Never drop transfer_in — rent refunds and SOL receipts must still add to balance.
+    // Swap txs already encode SOL legs on the trade row — skip redundant transfers.
+    if (sk && tradeKeys.has(sk)) return false;
+    // Drop tiny outgoing transfers when a fee row already captures rent on this tx.
     if (
       sk &&
       feeKeys.has(sk) &&
       t.type === 'transfer_out' &&
       t.amount < 0.01 &&
-      !(t.notes?.toLowerCase().includes('refund') ?? false)
+      !isSolRentRefund(t)
     ) {
       return false;
     }
@@ -74,7 +96,7 @@ function solDedupKey(t: Transaction): string | null {
 
 /**
  * Reconstruct main-wallet SOL from transaction history (PR #25 math).
- * Compare against live getBalance — should match Solscan after normalize + re-import.
+ * Compare against live getBalance on the all-time Portfolio view to validate imports.
  */
 export function computeMainWalletSolFromTransactions(txs: Transaction[]): number {
   const collapsed = collapseSolTxRows(txs);
@@ -98,7 +120,9 @@ export function computeMainWalletSolFromTransactions(txs: Transaction[]): number
     }
 
     if (t.type === 'fee') {
-      sol -= t.amount;
+      // Legacy rows: rent refunds were sometimes misclassified as fee — credit, don't debit.
+      if (isSolRentRefund(t)) sol += t.amount;
+      else sol -= t.amount;
       continue;
     }
 
@@ -121,7 +145,7 @@ export function computeMainWalletSolFromTransactions(txs: Transaction[]): number
 }
 
 export function isSolanaRentRow(t: Transaction): boolean {
-  return t.asset === 'SOL' && (t.notes?.toLowerCase().includes('rent') ?? false);
+  return t.asset === 'SOL' && (isSolRentDeposit(t) || isSolRentRefund(t));
 }
 
 /**
@@ -133,16 +157,32 @@ export async function normalizeSolLedgerRows(): Promise<number> {
   let updated = 0;
 
   for (const t of solTxs) {
-    const noteLower = t.notes?.toLowerCase() ?? '';
     const isNetworkFee = t.notes === 'Solana network fee';
-    const isRent =
-      noteLower.includes('rent') ||
-      (t.amount > 0 &&
-        t.amount < 0.01 &&
-        !isNetworkFee &&
-        (t.type === 'transfer_out' || t.isInternalTransfer));
 
-    if (isRent && !isNetworkFee) {
+    // Repair rent refunds wrongly stored as fee (understates balance by 2× refund amount).
+    if (t.type === 'fee' && isSolRentRefund(t)) {
+      // eslint-disable-next-line no-await-in-loop
+      await db.transactions.update(t.id, {
+        type: 'transfer_in',
+        isInternalTransfer: false,
+        flags: [],
+        notes: t.notes?.includes('refund')
+          ? t.notes
+          : 'Token account rent refund (DCA account close)'
+      });
+      updated++;
+      continue;
+    }
+
+    if (isNetworkFee && t.type !== 'fee') {
+      // eslint-disable-next-line no-await-in-loop
+      await db.transactions.update(t.id, { type: 'fee', isInternalTransfer: false });
+      updated++;
+      continue;
+    }
+
+    // Outgoing rent only — never convert transfer_in / refunds to fee.
+    if (isSolRentDeposit(t) && !isNetworkFee) {
       if (t.type !== 'fee' || t.isInternalTransfer) {
         // eslint-disable-next-line no-await-in-loop
         await db.transactions.update(t.id, {
@@ -156,9 +196,16 @@ export async function normalizeSolLedgerRows(): Promise<number> {
       continue;
     }
 
-    if (isNetworkFee && t.type !== 'fee') {
+    if (isSolRentRefund(t) && t.type !== 'transfer_in') {
       // eslint-disable-next-line no-await-in-loop
-      await db.transactions.update(t.id, { type: 'fee', isInternalTransfer: false });
+      await db.transactions.update(t.id, {
+        type: 'transfer_in',
+        isInternalTransfer: false,
+        flags: [],
+        notes: t.notes?.includes('refund')
+          ? t.notes
+          : 'Token account rent refund (DCA account close)'
+      });
       updated++;
     }
   }

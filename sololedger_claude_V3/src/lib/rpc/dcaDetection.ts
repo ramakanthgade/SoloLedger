@@ -368,7 +368,7 @@ export async function applyDcaClassification(
 
     for (const sol of tinySOLTxs) {
       // Rent leaves main wallet (Phantom balance) — record as fee, not internal skip.
-      if (sol.sourceRef && depositSourceRefs.includes(sol.sourceRef)) {
+      if (sol.sourceRef && depositSourceRefs.includes(sol.sourceRef) && sol.type === 'transfer_out') {
         // eslint-disable-next-line no-await-in-loop
         await db.transactions.update(sol.id, {
           type: 'fee',

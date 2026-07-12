@@ -198,7 +198,7 @@ export function PortfolioTab() {
 
   // Fix legacy SOL rows (internal rent vs fee) once per session so ledger matches Phantom.
   useEffect(() => {
-    const key = 'sololedger_sol_normalize_v3';
+    const key = 'sololedger_sol_normalize_v4';
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
     void normalizeSolLedgerRows();
@@ -307,19 +307,6 @@ export function PortfolioTab() {
       .sort((a, b) => b.costBasis - a.costBasis);
   }, [filteredTxs, solLedgerBalance]);
 
-  /** All-time view: anchor displayed SOL to live getBalance (matches Solscan / Phantom). */
-  const displayHoldings = useMemo(() => {
-    if (selectedFy != null || liveBalanceStatus !== 'ready') return holdings;
-    const solMint = resolveSolanaMintAddress('SOL');
-    const liveSol =
-      liveByMint.get('SOL') ??
-      (solMint ? liveByMint.get(solMint.toLowerCase()) : undefined);
-    if (liveSol == null) return holdings;
-    return holdings.map((h) =>
-      h.asset === 'SOL' && h.chain === 'solana' ? { ...h, amount: liveSol } : h
-    );
-  }, [holdings, liveByMint, liveBalanceStatus, selectedFy]);
-
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
 
   const holdingKey = (h: { contractAddress?: string; asset: string; chain?: string }) => {
@@ -334,9 +321,8 @@ export function PortfolioTab() {
   };
 
   const balanceVariances = useMemo(() => {
-    if (liveBalanceStatus !== 'ready') return [];
-    // Compare what the user actually sees (displayHoldings), not internal ledger overrides.
-    return displayHoldings
+    if (liveBalanceStatus !== 'ready' || selectedFy != null) return [];
+    return holdings
       .map((h) => {
         const live = lookupLiveBalance(h);
         if (live == null) return null;
@@ -358,7 +344,7 @@ export function PortfolioTab() {
         delta: number;
         pct: number;
       }>;
-  }, [displayHoldings, liveByMint, liveBalanceStatus]);
+  }, [holdings, liveByMint, liveBalanceStatus, selectedFy]);
 
   const balanceMismatch = balanceVariances.length > 0 ? balanceVariances[0] : null;
   const missingPriceCount = filteredTxs.filter(
@@ -474,7 +460,7 @@ export function PortfolioTab() {
         )}
 
         <span className="ml-auto text-xs text-mist-400">
-          {displayHoldings.length} asset{displayHoldings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
+          {holdings.length} asset{holdings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
         </span>
         <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
         <div className="flex gap-2">
@@ -525,7 +511,7 @@ export function PortfolioTab() {
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
-            {displayHoldings.map((h, i) => (
+            {holdings.map((h, i) => (
               <tr key={i} className="border-t border-ink-700/60 hover:bg-ink-700/20">
                 <td className="px-3 py-2 text-mist">
                   {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
@@ -538,7 +524,7 @@ export function PortfolioTab() {
                 </td>
               </tr>
             ))}
-            {displayHoldings.length === 0 && (
+            {holdings.length === 0 && (
               <tr>
                 <td colSpan={3} className="px-3 py-8 text-center text-mist-400">
                   No holdings — import transactions or adjust the filter.
