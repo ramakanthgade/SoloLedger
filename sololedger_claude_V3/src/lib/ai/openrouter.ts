@@ -5,7 +5,25 @@
  * Docs: https://openrouter.ai/docs
  */
 
+import { isSaasMode } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
+
+function openrouterHeaders(apiKey: string): HeadersInit {
+  const base: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'https://sololedger.app',
+    'X-Title': 'SoloLedger'
+  };
+  if (!isSaasMode()) base.Authorization = `Bearer ${apiKey}`;
+  return base;
+}
+
+async function openrouterFetch(path: string, init: RequestInit): Promise<Response> {
+  if (isSaasMode()) return saasProxyFetch(`/api/proxy/openrouter/${path}`, init);
+  return fetch(`${OPENROUTER_BASE}/${path}`, init);
+}
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -23,6 +41,39 @@ export const AI_MODELS: { id: string; label: string; note: string }[] = [
 
 export const DEFAULT_AI_MODEL = AI_MODELS[0].id;
 
+/** Single non-streaming completion — used for structured tasks like CSV column mapping. */
+export async function completeChat(
+  apiKey: string,
+  model: string,
+  messages: ChatMessage[]
+): Promise<string> {
+  const res = await openrouterFetch('chat/completions', {
+    method: 'POST',
+    headers: openrouterHeaders(apiKey),
+    body: JSON.stringify({ model, messages, stream: false, temperature: 0.1 })
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => `HTTP ${res.status}`);
+    let friendly = `OpenRouter error ${res.status}`;
+    if (res.status === 401) friendly = 'Invalid API key — check Settings → AI Advisor.';
+    else if (res.status === 402) friendly = 'Insufficient credits on OpenRouter.';
+    else if (res.status === 429) friendly = 'Rate limited — try again in a moment.';
+  else {
+      try {
+        const parsed = JSON.parse(errText);
+        if (parsed?.error?.message) friendly = parsed.error.message;
+      } catch { /* ignore */ }
+    }
+    throw new Error(friendly);
+  }
+
+  const data = await res.json();
+  const content: string = data?.choices?.[0]?.message?.content ?? '';
+  if (!content) throw new Error('Empty response from AI.');
+  return content;
+}
+
 /**
  * Streams a chat completion from OpenRouter.
  * Yields text chunks as they arrive (SSE / streaming).
@@ -32,14 +83,9 @@ export async function* streamChatCompletion(
   model: string,
   messages: ChatMessage[]
 ): AsyncGenerator<string, void, unknown> {
-  const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+  const res = await openrouterFetch('chat/completions', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'https://sololedger.app',
-      'X-Title': 'SoloLedger AI Tax Advisor'
-    },
+    headers: { ...openrouterHeaders(apiKey), 'X-Title': 'SoloLedger AI Tax Advisor' },
     body: JSON.stringify({ model, messages, stream: true })
   });
 

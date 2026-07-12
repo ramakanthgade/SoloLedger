@@ -52,6 +52,7 @@ export interface Transaction {
   isInternalTransfer: boolean;  // user-confirmed non-taxable transfer between own wallets
   isSpam?: boolean;             // user-confirmed spam/phishing — excluded from all calculations
   category?: string;            // user-editable free-form tag
+  importBatchId?: string;       // links row to a CSV import batch (file hash)
   raw?: Record<string, unknown>; // original parsed row, kept for traceability/debugging only
 }
 

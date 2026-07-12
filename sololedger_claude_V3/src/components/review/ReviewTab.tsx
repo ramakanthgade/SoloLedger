@@ -1,10 +1,10 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSpecIdHints, getLookupAddresses } from '@/lib/storage/db';
+import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/transaction';
-import { formatCurrency, formatCompactAmount, getFyBoundaries, getFyLabel, getAvailableFys } from '@/lib/utils';
+import { formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
@@ -13,8 +13,12 @@ import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { isSaasMode } from '@/lib/saas/config';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown } from 'lucide-react';
+import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
+import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
+import autoTable from 'jspdf-autotable';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
@@ -24,6 +28,121 @@ const ALL_TYPES: TxType[] = [
   'nft_mint', 'nft_buy', 'nft_sell',
   'defi_deposit', 'defi_withdraw', 'other'
 ];
+
+const ALL_FLAGS: FlagReason[] = [
+  'possible_internal_transfer',
+  'missing_cost_basis',
+  'duplicate_suspected',
+  'unrecognized_asset',
+  'needs_review'
+];
+
+const FLAG_LABELS: Record<FlagReason, string> = {
+  possible_internal_transfer: 'Possible internal transfer',
+  missing_cost_basis: 'Missing cost basis',
+  duplicate_suspected: 'Duplicate suspected',
+  unrecognized_asset: 'Unrecognized asset',
+  needs_review: 'Needs review'
+};
+
+function displayFlags(t: Transaction): string[] {
+  const flags = new Set(t.flags ?? []);
+  if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
+  return [...flags];
+}
+
+function FlagSelector({ tx }: { tx: Transaction }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const storedFlags = new Set(tx.flags ?? []);
+  const shownFlags = displayFlags(tx);
+
+  const patch = async (update: Partial<Transaction>) => {
+    setSaving(true);
+    await db.transactions.update(tx.id, update);
+    setSaving(false);
+  };
+
+  const toggleFlag = async (flag: FlagReason) => {
+    const next = new Set(tx.flags ?? []);
+    if (next.has(flag)) next.delete(flag);
+    else next.add(flag);
+    await patch({ flags: [...next] as FlagReason[] });
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Click to flag this transaction"
+        className="flex max-w-[14rem] flex-wrap items-center gap-1 text-left"
+      >
+        {tx.isInternalTransfer && <Badge tone="neutral" className="text-[10px]">internal</Badge>}
+        {tx.isSpam && <Badge tone="loss" className="text-[10px]">spam</Badge>}
+        {tx.category === 'nft' && <Badge tone="pink" className="text-[10px]">nft</Badge>}
+        {shownFlags.map((f) => (
+          <Badge key={f} tone="gold" className="text-[10px]">
+            {f.replace(/_/g, ' ')}
+          </Badge>
+        ))}
+        {shownFlags.length === 0 && !tx.isInternalTransfer && !tx.isSpam && tx.category !== 'nft' && (
+          <span className="text-[10px] text-mist-400">—</span>
+        )}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-emerald" />}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-7 z-30 min-w-[14rem] rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700">
+          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-mist-400">Flag transaction</p>
+          {ALL_FLAGS.map((flag) => {
+            const on = storedFlags.has(flag);
+            return (
+              <button
+                key={flag}
+                type="button"
+                onClick={() => void toggleFlag(flag)}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-900 ${on ? 'text-emerald-600' : 'text-mist-300'}`}
+              >
+                <span className={`h-3 w-3 rounded border ${on ? 'border-emerald bg-emerald' : 'border-ink-600'}`} />
+                {FLAG_LABELS[flag]}
+              </button>
+            );
+          })}
+          <div className="my-1 border-t border-ink-700" />
+          <button
+            type="button"
+            onClick={() =>
+              void patch({
+                isInternalTransfer: !tx.isInternalTransfer,
+                flags: tx.isInternalTransfer
+                  ? (['possible_internal_transfer'] as FlagReason[])
+                  : ([] as FlagReason[])
+              })
+            }
+            className="flex w-full px-3 py-1.5 text-left text-xs text-mist-300 hover:bg-ink-900"
+          >
+            {tx.isInternalTransfer ? '↩ Unmark internal transfer' : '✓ Mark as internal transfer'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void patch({ isSpam: !tx.isSpam })}
+            className="flex w-full px-3 py-1.5 text-left text-xs text-mist-300 hover:bg-ink-900"
+          >
+            {tx.isSpam ? '↩ Unmark spam' : '🚫 Mark as spam'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-1 border-t border-ink-700 px-3 py-1.5 text-[10px] text-mist-400 hover:text-mist"
+          >
+            <X className="h-3 w-3" /> Close
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TypeSelector({
   txId,
@@ -56,16 +175,16 @@ function TypeSelector({
         className="inline-flex items-center gap-1"
       >
         <Badge tone={TYPE_TONE[current]}>{current}</Badge>
-        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-emerald" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl">
+        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700">
           <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-mist-400">Reclassify as</p>
           {ALL_TYPES.map((t) => (
             <button
               key={t}
               onClick={() => void reclassify(t)}
-              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-700 ${t === current ? 'text-violet' : 'text-mist-300'}`}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-900 ${t === current ? 'text-emerald-600' : 'text-mist-300'}`}
             >
               <Badge tone={TYPE_TONE[t]} className="pointer-events-none text-[10px]">{t}</Badge>
             </button>
@@ -106,10 +225,16 @@ function truncateAddress(addr?: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-function displayFlags(t: Transaction): string[] {
-  const flags = new Set(t.flags ?? []);
-  if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
-  return [...flags];
+/** Derive From/To for Review display. Fees are paid FROM the wallet. */
+function txFromToAddresses(t: Transaction): { fromAddr?: string; toAddr?: string } {
+  if (t.type === 'fee') {
+    return { fromAddr: t.walletAddress, toAddr: undefined };
+  }
+  if (t.type === 'transfer_out' || t.type === 'gift_sent' || t.type === 'sell') {
+    return { fromAddr: t.walletAddress, toAddr: t.counterpartyAddress };
+  }
+  // transfer_in, income, trade, buy, …
+  return { fromAddr: t.counterpartyAddress, toAddr: t.walletAddress };
 }
 
 export function ReviewTab() {
@@ -196,17 +321,9 @@ export function ReviewTab() {
     return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
   }, [transactions, settings, hints]);
 
-  /** Non-spam transactions missing a fiat value. */
+  /** Non-spam transactions missing a fiat value (includes internal transfers for display). */
   const missingPriceTxs = useMemo(
-    () =>
-      transactions.filter(
-        (t) =>
-          !t.isSpam &&
-          t.fiatValue == null &&
-          !t.isInternalTransfer &&
-          ((Array.isArray(t.flags) && t.flags.includes('missing_cost_basis')) ||
-            (t.type !== 'transfer_in' && t.type !== 'transfer_out'))
-      ),
+    () => transactions.filter((t) => !t.isSpam && t.fiatValue == null),
     [transactions]
   );
 
@@ -218,8 +335,7 @@ export function ReviewTab() {
         (t) =>
           t.source.startsWith('rpc:') &&
           (t.type === 'transfer_in' || t.type === 'transfer_out') &&
-          t.fiatValue == null &&
-          !t.isInternalTransfer
+          t.fiatValue == null
       ).length,
     [transactions]
   );
@@ -255,10 +371,6 @@ export function ReviewTab() {
       setFetchingPrices(false);
       setPriceProgress(null);
     }
-  };
-
-  const markSpam = async (txId: string, spam: boolean) => {
-    await db.transactions.update(txId, { isSpam: spam });
   };
 
   const bulkMarkSpam = async () => {
@@ -299,18 +411,34 @@ export function ReviewTab() {
 
   const assets = useMemo(() => Array.from(new Set(transactions.map((t) => t.asset))).sort(), [transactions]);
 
-  // Detect DCA groups whenever transactions change (only if counterpartyAddress is populated)
+  // Detect DCA groups whenever transactions change (only unclassified deposits).
+  // Auto-classify real groups so users don't need the manual button.
   useEffect(() => {
     const groups = detectDcaGroups(transactions.filter((t) => !t.isInternalTransfer && !t.isSpam));
     setDcaGroups(groups);
-  }, [transactions]);
+    if (groups.length === 0) return;
+    const key = 'sololedger_review_dca_auto_v1';
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+    void (async () => {
+      setApplyingDca(true);
+      try {
+        await applyDcaClassification(
+          groups,
+          settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
+        );
+      } finally {
+        setApplyingDca(false);
+      }
+    })();
+  }, [transactions, settings?.alchemyApiKey]);
 
   const filtered = useMemo(() => {
     const fyBounds = fyFilter != null ? getFyBoundaries(fyFilter, jurisdiction) : null;
     const base = transactions.filter((t) => {
       if (!showSpam && t.isSpam) return false;
       if (showSpam && !t.isSpam) return false;
-      if (showNeedsPrice && !(t.fiatValue == null && !t.isInternalTransfer && !t.isSpam)) return false;
+      if (showNeedsPrice && !(t.fiatValue == null && !t.isSpam)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
       if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
       if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;
@@ -343,6 +471,22 @@ export function ReviewTab() {
     });
   };
 
+  const visibleIds = useMemo(() => filtered.slice(0, 200).map((t) => t.id), [filtered]);
+  const allVisibleSelected =
+    visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
+
+  const toggleSelectAll = () => {
+    if (allVisibleSelected) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        for (const id of visibleIds) next.delete(id);
+        return next;
+      });
+    } else {
+      setSelected((prev) => new Set([...prev, ...visibleIds]));
+    }
+  };
+
   const bulkMarkInternal = async () => {
     await Promise.all(
       Array.from(selected).map((id) => db.transactions.update(id, { isInternalTransfer: true, flags: [] }))
@@ -350,11 +494,131 @@ export function ReviewTab() {
     setSelected(new Set());
   };
 
+  const bulkDelete = async () => {
+    const n = selected.size;
+    if (n === 0) return;
+    const ok = window.confirm(
+      `Permanently delete ${n} transaction${n === 1 ? '' : 's'}?\n\nThis cannot be undone. Use this to remove duplicate rows.`
+    );
+    if (!ok) return;
+    await deleteTransactionsByIds(Array.from(selected));
+    setSelected(new Set());
+  };
+
+  const downloadBlob = (content: string, mime: string, filename: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const confirmPdfExport = () =>
+    window.confirm(
+      'PDF is best for sharing summaries. For detailed CA review, CSV/JSON is recommended.\n\nContinue with PDF export?'
+    );
+
+  const exportFilteredCsv = () => {
+    const exportCurrency = (settings?.reportingCurrency ?? 'INR').toUpperCase();
+    const header = [
+      'date',
+      'type',
+      'chain',
+      'asset',
+      'amount',
+      monetaryColumnLabel('fiat_value', exportCurrency),
+      'fiat_currency',
+      'from',
+      'to',
+      'source_ref',
+      'flags',
+      'is_internal_transfer',
+      'is_spam',
+      'notes'
+    ];
+    const rows = filtered.map((t) => {
+      const { fromAddr, toAddr } = txFromToAddresses(t);
+      return [
+        new Date(t.timestamp).toISOString(),
+        t.type,
+        t.chain ?? '',
+        t.asset,
+        t.amount,
+        t.fiatValue ?? '',
+        t.fiatCurrency,
+        fromAddr ?? '',
+        toAddr ?? '',
+        t.sourceRef ?? '',
+        displayFlags(t).join('|'),
+        t.isInternalTransfer ? 'yes' : 'no',
+        t.isSpam ? 'yes' : 'no',
+        (t.notes ?? '').replace(/"/g, '""')
+      ].map((v) => `"${String(v)}"`).join(',');
+    });
+    downloadBlob([header.join(','), ...rows].join('\n'), 'text/csv', 'sololedger-review-transactions.csv');
+  };
+
+  const exportFilteredJson = () => {
+    downloadBlob(
+      JSON.stringify(
+        {
+          count: filtered.length,
+          exportMeta: {
+            reportingCurrency: (settings?.reportingCurrency ?? 'INR').toUpperCase(),
+            monetaryFields: ['fiatValue']
+          },
+          transactions: filtered
+        },
+        null,
+        2
+      ),
+      'application/json',
+      'sololedger-review-transactions.json'
+    );
+  };
+
+  const exportFilteredPdf = async () => {
+    if (!confirmPdfExport()) return;
+    const cur = (settings?.reportingCurrency ?? 'INR').toUpperCase();
+    const { doc, startY } = await createBrandedPdf({
+      reportTitle: 'Review Transactions',
+      metaLines: [`Rows: ${filtered.length} · Currency: ${cur}`],
+      landscape: true
+    });
+    const tbl = pdfTableStyles(7);
+    autoTable(doc, {
+      startY,
+      ...tbl,
+      head: [[
+        'Date', 'Type', 'Chain', 'Asset', 'Amount',
+        `Fiat (${cur})`, 'From', 'To', 'Flags', 'Source Ref'
+      ]],
+      body: filtered.map((t) => {
+        const { fromAddr, toAddr } = txFromToAddresses(t);
+        return [
+        new Date(t.timestamp).toISOString().slice(0, 10),
+        t.type,
+        t.chain ?? '—',
+        t.asset,
+        formatCompactAmount(t.amount),
+        t.fiatValue != null ? formatAmountForExport(t.fiatValue, t.fiatCurrency) : '—',
+        fromAddr ? truncateAddress(fromAddr) : '—',
+        toAddr ? truncateAddress(toAddr) : '—',
+        displayFlags(t).join(', ') || '—',
+        t.sourceRef ? truncatePdfRef(t.sourceRef) : '—'
+      ];
+      })
+    });
+    doc.save('sololedger-review-transactions.pdf');
+  };
+
   if (transactions.length === 0) {
     return (
       <div className="space-y-6">
         <div>
-          <h2 className="font-display text-xl font-semibold text-mist">Review</h2>
+          <h2 className="page-title">Review</h2>
           <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
         </div>
         <div className="rounded-lg border-2 border-dashed border-ink-600 bg-ink-800 px-6 py-14 text-center text-sm text-mist-400">
@@ -367,7 +631,7 @@ export function ReviewTab() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="font-display text-xl font-semibold text-mist">Review</h2>
+        <h2 className="page-title">Review</h2>
         <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
       </div>
       {/* DCA / Recurring order banner */}
@@ -394,7 +658,10 @@ export function ReviewTab() {
             disabled={applyingDca}
             onClick={async () => {
               setApplyingDca(true);
-              await applyDcaClassification(dcaGroups, settings?.alchemyApiKey);
+              await applyDcaClassification(
+                dcaGroups,
+                settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
+              );
               setApplyingDca(false);
             }}
             className="shrink-0 border-emerald/40 text-emerald-600"
@@ -405,7 +672,7 @@ export function ReviewTab() {
       )}
 
       {potentialSwapPairs > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-emerald/40 bg-emerald/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold text-mist">
               {potentialSwapPairs} possible DEX swap{potentialSwapPairs === 1 ? '' : 's'} waiting to be merged
@@ -475,13 +742,13 @@ export function ReviewTab() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search transactions…"
-          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist placeholder:text-mist-400 focus:border-violet focus:outline-none"
+          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft placeholder:text-mist-400 focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
         />
         {/* Asset filter */}
         <select
           value={assetFilter}
           onChange={(e) => setAssetFilter(e.target.value)}
-          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
         >
           <option value="all">All assets</option>
           {assets.map((a) => (<option key={a} value={a}>{a}</option>))}
@@ -492,7 +759,7 @@ export function ReviewTab() {
           <select
             value={walletFilter}
             onChange={(e) => setWalletFilter(e.target.value)}
-            className="max-w-[180px] truncate rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+            className="max-w-[180px] truncate rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
           >
             <option value="all">All wallets</option>
             {availableWallets.map((w) => (
@@ -505,7 +772,7 @@ export function ReviewTab() {
         <select
           value={fyFilter ?? ''}
           onChange={(e) => setFyFilter(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist focus:border-violet focus:outline-none"
+          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
         >
           <option value="">All periods</option>
           {availableFys.map((fy) => (
@@ -546,6 +813,13 @@ export function ReviewTab() {
         )}
 
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
+        <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
+
+        <div className="flex gap-2">
+          <Button variant="secondary" onClick={exportFilteredCsv} className="text-xs">CSV</Button>
+          <Button variant="secondary" onClick={exportFilteredJson} className="text-xs">JSON</Button>
+          <Button variant="secondary" onClick={exportFilteredPdf} className="text-xs">PDF</Button>
+        </div>
 
         {/* Noves: only show for non-Helius users or as an explicit re-run option */}
         {!settings?.heliusApiKey && (
@@ -577,6 +851,14 @@ export function ReviewTab() {
               <Ban className="mr-1 h-3 w-3" />
               Mark {selected.size} as spam
             </Button>
+            <Button
+              variant="secondary"
+              onClick={() => void bulkDelete()}
+              className="border-loss/40 text-loss hover:bg-loss/10"
+            >
+              <Trash2 className="mr-1 h-3 w-3" />
+              Delete {selected.size}
+            </Button>
           </div>
         )}
       </div>
@@ -585,7 +867,15 @@ export function ReviewTab() {
         <table className="w-full min-w-[920px] text-sm">
           <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
             <tr>
-              <th className="w-8 px-2 py-2"></th>
+              <th className="w-8 px-2 py-2">
+                <input
+                  type="checkbox"
+                  checked={allVisibleSelected}
+                  onChange={toggleSelectAll}
+                  title="Select all shown rows"
+                  aria-label="Select all shown rows"
+                />
+              </th>
               <th className="px-2 py-2">Date</th>
               <th className="px-2 py-2">Type</th>
               <th className="px-2 py-2">Chain</th>
@@ -602,14 +892,13 @@ export function ReviewTab() {
             {filtered.slice(0, 200).map((t) => {
               const isDisposal = DISPOSAL_TYPES.has(t.type);
               const candidates = engineResult?.disposalCandidates[t.id] ?? [];
-              const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
-              const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
+              const { fromAddr, toAddr } = txFromToAddresses(t);
               const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : '—';
               const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
               const isEditing = editingFiat === t.id;
               return (
                 <Fragment key={t.id}>
-                  <tr className={`border-t border-ink-700/60 hover:bg-ink-700/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
+                  <tr className={`border-t border-ink-700/60 hover:bg-ink-900/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
                     <td className="px-3 py-2">
                       <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggle(t.id)} />
                     </td>
@@ -626,8 +915,14 @@ export function ReviewTab() {
                         </span>
                       )}
                     </td>
-                    <td className="px-1 py-2 text-right text-mist" title={String(t.amount)}>
-                      {formatCompactAmount(t.amount)}
+                    <td className="px-1 py-2 text-right text-mist" title={
+                      t.type === 'trade' && t.counterAmount != null
+                        ? `${t.amount} → ${t.counterAmount}`
+                        : String(t.amount)
+                    }>
+                      {t.type === 'trade' && t.counterAmount != null
+                        ? `${formatCompactAmount(t.amount)} → ${formatCompactAmount(t.counterAmount)}`
+                        : formatCompactAmount(t.amount)}
                     </td>
                     <td className="px-3 py-2 text-right text-mist-300">
                       {isEditing ? (
@@ -636,7 +931,7 @@ export function ReviewTab() {
                             autoFocus
                             value={editValue}
                             onChange={(e) => setEditValue(e.target.value)}
-                            className="w-24 rounded border border-violet bg-white px-2 py-0.5 text-right text-xs text-mist focus:outline-none"
+                            className="w-24 rounded border border-emerald bg-white px-2 py-0.5 text-right text-xs text-mist focus:outline-none"
                             placeholder="0.00"
                           />
                           <button onClick={() => saveFiat(t)} className="text-emerald-600" aria-label="Save">
@@ -649,7 +944,7 @@ export function ReviewTab() {
                       ) : (
                         <button
                           onClick={() => startEditFiat(t.id, t.fiatValue)}
-                          className="group inline-flex items-center gap-1 hover:text-violet"
+                          className="group inline-flex items-center gap-1 hover:text-emerald-600"
                           title="Click to enter a fiat value manually"
                         >
                           {t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : '—'}
@@ -661,7 +956,7 @@ export function ReviewTab() {
                       {fromAddr ? (
                         <span title={fromAddr}>
                           {walletLabels.get(fromAddr.toLowerCase())
-                            ? <span className="text-violet-400">{walletLabels.get(fromAddr.toLowerCase())}</span>
+                            ? <span className="text-emerald-500">{walletLabels.get(fromAddr.toLowerCase())}</span>
                             : truncateAddress(fromAddr)}
                         </span>
                       ) : '—'}
@@ -670,7 +965,7 @@ export function ReviewTab() {
                       {toAddr ? (
                         <span title={toAddr}>
                           {walletLabels.get(toAddr.toLowerCase())
-                            ? <span className="text-violet-400">{walletLabels.get(toAddr.toLowerCase())}</span>
+                            ? <span className="text-emerald-500">{walletLabels.get(toAddr.toLowerCase())}</span>
                             : truncateAddress(toAddr)}
                         </span>
                       ) : '—'}
@@ -686,87 +981,20 @@ export function ReviewTab() {
                           target="_blank"
                           rel="noreferrer"
                           title={t.sourceRef}
-                          className="hover:text-violet"
+                          className="hover:text-emerald-600"
                         >
                           {t.sourceRef.slice(0, 8)}…
                         </a>
                       ) : '—'}
                     </td>
                     <td className="px-2 py-2 align-top">
-                      <div className="flex max-w-[14rem] flex-wrap gap-1 whitespace-normal">
-                      {t.isInternalTransfer && (
-                        <div className="relative group/internal">
-                          <Badge tone="neutral" className="cursor-pointer hover:opacity-80">internal</Badge>
-                          <div className="absolute left-0 top-5 z-20 hidden group-hover/internal:flex flex-col rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl text-xs min-w-[15rem]">
-                            <button
-                              className="px-3 py-1.5 text-left text-mist-300 hover:bg-ink-700"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                await db.transactions.update(t.id, {
-                                  isInternalTransfer: false,
-                                  flags: ['possible_internal_transfer'] as FlagReason[]
-                                });
-                              }}
-                            >
-                              ↩ Undo — mark as NOT internal transfer
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                      {t.category === 'nft' && <Badge tone="pink">nft</Badge>}
-                      {displayFlags(t).map((f) => (
-                        f === 'possible_internal_transfer' ? (
-                          // Clickable: let user confirm as internal or dismiss
-                          <div key={f} className="relative group/flag">
-                            <Badge tone="gold" className="cursor-pointer text-[10px] hover:bg-gold/40">
-                              {f.replace(/_/g, ' ')}
-                            </Badge>
-                            <div className="absolute left-0 top-5 z-20 hidden group-hover/flag:flex flex-col rounded-lg border border-ink-600 bg-ink-900 py-1 shadow-xl text-xs min-w-[14rem]">
-                              <button
-                                className="px-3 py-1.5 text-left text-emerald-600 hover:bg-ink-700"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  await db.transactions.update(t.id, { isInternalTransfer: true, flags: [] });
-                                }}
-                              >
-                                ✓ Confirm as internal transfer
-                              </button>
-                              <button
-                                className="px-3 py-1.5 text-left text-mist-400 hover:bg-ink-700"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  await db.transactions.update(t.id, {
-                                    flags: (t.flags ?? []).filter((x) => x !== 'possible_internal_transfer') as import('@/types/transaction').FlagReason[]
-                                  });
-                                }}
-                              >
-                                ✕ Remove flag (not internal)
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <Badge key={f} tone="gold" className="text-[10px]">
-                            {f.replace(/_/g, ' ')}
-                          </Badge>
-                        )
-                      ))}
-                      </div>
+                      <FlagSelector tx={t} />
                       {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
                         <button
-                          className="ml-2 text-emerald-600 underline decoration-dotted"
+                          className="mt-1 text-emerald-600 underline decoration-dotted"
                           onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
                         >
                           match lots
-                        </button>
-                      )}
-                      {/* Show spam button only for unclassified transfers, or when already spammed */}
-                      {(t.isSpam || (['transfer_in', 'transfer_out', 'other'].includes(t.type) && !t.isInternalTransfer)) && (
-                        <button
-                          onClick={() => void markSpam(t.id, !t.isSpam)}
-                          title={t.isSpam ? 'Remove spam flag' : 'Mark as spam (excluded from taxes)'}
-                          className={`ml-1 rounded px-1.5 py-0.5 text-[10px] transition ${t.isSpam ? 'bg-loss/20 text-loss hover:bg-loss/30' : 'text-mist-400 hover:bg-ink-700 hover:text-loss'}`}
-                        >
-                          {t.isSpam ? '🚫 spam' : '🚫'}
                         </button>
                       )}
                     </td>

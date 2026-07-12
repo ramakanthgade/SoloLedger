@@ -5,13 +5,11 @@
  * transactions including Jupiter DCA fills, staking, NFT activity, etc.
  *
  * Endpoint: GET https://mainnet.helius-rpc.com/v0/addresses/{address}/transactions
- * Docs: https://docs.helius.dev/enhanced-transactions/overview
+ * Docs: https://docs.helius.dev/enhanced-transactions/transaction-history
  *
- * The Enhanced Transactions API is in maintenance mode (no new parsers) but
- * all existing parsers continue to work — this covers Jupiter, Raydium, Orca,
- * Marinade, Magic Eden, and hundreds more Solana protocols.
- *
- * Pricing: 100 CU per enhanced tx call (Developer plan: 25M CU/mo).
+ * Important: `token-accounts=balanceChanged` is required to include SPL token
+ * receipts (e.g. DBT rewards) that land in associated token accounts, not only
+ * txs that reference the wallet pubkey directly.
  */
 
 import { makeId } from '@/lib/parsers/types';
@@ -19,6 +17,9 @@ import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
 import { classifyFromHelius } from '@/lib/rpc/classificationEngine';
 import type { Transaction, FlagReason, TxType } from '@/types/transaction';
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+import { transactionSourceKey } from '@/lib/storage/db';
 
 const HELIUS_BASE = 'https://mainnet.helius-rpc.com';
 
@@ -70,8 +71,199 @@ function resolveSymbol(mint: string): string {
   return `${mint.slice(0, 4)}…${mint.slice(-4)}`;
 }
 
+function parseSignedTokenBalanceChange(ch: Record<string, unknown>): number | null {
+  const raw = ch.rawTokenAmount as { tokenAmount?: string | number; decimals?: number } | undefined;
+  if (raw?.tokenAmount != null) {
+    const decimals = raw.decimals ?? (ch.decimals as number | undefined) ?? 0;
+    return Number(BigInt(String(raw.tokenAmount))) / 10 ** decimals;
+  }
+  if (typeof ch.tokenAmount === 'number') return ch.tokenAmount;
+  return null;
+}
+
+/** Owner-level net SPL delta per mint from Helius accountData (sums all ATAs). */
+function ownerNetByMintFromAccountData(
+  accountData: HeliusTransaction['accountData'],
+  walletAddress: string
+): { netByMint: Map<string, number>; mintsWithData: Set<string> } {
+  const netByMint = new Map<string, number>();
+  const mintsWithData = new Set<string>();
+
+  const walletLower = walletAddress.toLowerCase();
+
+  for (const acct of accountData ?? []) {
+    for (const ch of acct.tokenBalanceChanges ?? []) {
+      const mint: string | undefined = ch.mint ?? ch.tokenMint;
+      const userAcct: string | undefined = ch.userAccount ?? ch.owner;
+      if (!mint) continue;
+      // Only count balance changes explicitly owned by this wallet (ignore orphan ATA rows).
+      if (!userAcct || userAcct.toLowerCase() !== walletLower) continue;
+
+      const signed = parseSignedTokenBalanceChange(ch);
+      if (signed == null || Math.abs(signed) < 1e-12) continue;
+
+      mintsWithData.add(mint);
+      netByMint.set(mint, (netByMint.get(mint) ?? 0) + signed);
+    }
+  }
+
+  return { netByMint, mintsWithData };
+}
+
+/** Net SPL delta per mint from Helius tokenTransfers (in − out for wallet owner). */
+function ownerNetByMintFromTokenTransfers(
+  transfers: HeliusTokenTransfer[],
+  walletAddress: string
+): Map<string, { net: number; counterparty?: string }> {
+  const netByMint = new Map<string, { net: number; counterparty?: string }>();
+  const seenLegs = new Set<string>();
+
+  for (const t of transfers) {
+    const legKey = [
+      t.mint,
+      t.fromTokenAccount ?? t.fromUserAccount,
+      t.toTokenAccount ?? t.toUserAccount,
+      t.tokenAmount
+    ].join('|');
+    if (seenLegs.has(legKey)) continue;
+    seenLegs.add(legKey);
+
+    if (t.fromUserAccount === walletAddress) {
+      const prev = netByMint.get(t.mint) ?? { net: 0 };
+      netByMint.set(t.mint, {
+        net: prev.net - t.tokenAmount,
+        counterparty: t.toUserAccount
+      });
+    }
+    if (t.toUserAccount === walletAddress) {
+      const prev = netByMint.get(t.mint) ?? { net: 0 };
+      netByMint.set(t.mint, {
+        net: prev.net + t.tokenAmount,
+        counterparty: t.fromUserAccount
+      });
+    }
+  }
+
+  return netByMint;
+}
+
+function pushSplBalanceRow(
+  rows: Transaction[],
+  opts: {
+    htx: HeliusTransaction;
+    walletAddress: string;
+    mint: string;
+    net: number;
+    counterparty?: string;
+    fromAccountData: boolean;
+  }
+): void {
+  const { htx, walletAddress, mint, net, counterparty, fromAccountData } = opts;
+  if (Math.abs(net) < 1e-9) return;
+
+  const asset = resolveSymbol(mint);
+  const sourceKey = transactionSourceKey({
+    sourceRef: htx.signature,
+    walletAddress,
+    asset,
+    contractAddress: mint
+  });
+  if (sourceKey && rows.some((r) => transactionSourceKey(r) === sourceKey)) return;
+
+  const inbound = net > 0;
+  const amount = Math.abs(net);
+  const dbtIncome =
+    inbound && isDbtToken(mint) && counterparty !== walletAddress
+      ? classifyDbtIncome(mint, counterparty) ?? {
+          kind: 'genesis_reward' as const,
+          label: 'Dabba Network DBT reward',
+          notes: fromAccountData
+            ? 'Auto-classified as DBT income (account balance change)'
+            : 'Auto-classified as DBT income'
+        }
+      : null;
+
+  rows.push({
+    id: makeId('rpc'),
+    timestamp: htx.timestamp * 1000,
+    type: dbtIncome ? 'income' : inbound ? 'transfer_in' : 'transfer_out',
+    asset,
+    amount,
+    contractAddress: mint,
+    fiatCurrency: 'USD',
+    fiatValue: undefined,
+    source: 'rpc:helius',
+    sourceRef: htx.signature,
+    walletAddress,
+    counterpartyAddress: counterparty,
+    chain: 'solana',
+    category: dbtIncome?.kind,
+    notes: dbtIncome?.notes,
+    flags: dbtIncome ? [] : (['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[]),
+    isInternalTransfer: false
+  });
+}
+
 function rawAmountToDecimal(rawAmount: string, decimals: number): number {
   return Number(BigInt(rawAmount)) / 10 ** decimals;
+}
+
+/** Net native SOL change for the wallet owner (lamports → SOL). Prefers accountData. */
+function walletNativeSolDelta(
+  htx: HeliusTransaction,
+  walletAddress: string
+): { delta: number; counterpartyOut?: string; counterpartyIn?: string } {
+  const walletLower = walletAddress.toLowerCase();
+  for (const acct of htx.accountData ?? []) {
+    if (acct.account?.toLowerCase() === walletLower && acct.nativeBalanceChange != null) {
+      return { delta: acct.nativeBalanceChange / 1e9 };
+    }
+  }
+
+  let solNet = 0;
+  let solCounterpartyOut: string | undefined;
+  let solCounterpartyIn: string | undefined;
+  for (const t of htx.nativeTransfers) {
+    const sol = t.amount / 1e9;
+    if (t.fromUserAccount === walletAddress) {
+      solNet -= sol;
+      solCounterpartyOut = t.toUserAccount;
+    }
+    if (t.toUserAccount === walletAddress) {
+      solNet += sol;
+      solCounterpartyIn = t.fromUserAccount;
+    }
+  }
+  return { delta: solNet, counterpartyOut: solCounterpartyOut, counterpartyIn: solCounterpartyIn };
+}
+
+/** Network fee paid by wallet — emitted on SWAP-only rows where SOL delta is not parsed separately. */
+function pushSolanaNetworkFeeRow(
+  rows: Transaction[],
+  htx: HeliusTransaction,
+  walletAddress: string
+): void {
+  if (htx.feePayer?.toLowerCase() !== walletAddress.toLowerCase()) return;
+  const feeSol = (htx.fee ?? 0) / 1e9;
+  if (feeSol < 1e-9) return;
+  if (rows.some((r) => r.type === 'fee' && r.asset === 'SOL' && r.sourceRef === htx.signature)) return;
+
+  rows.push({
+    id: makeId('rpc'),
+    timestamp: htx.timestamp * 1000,
+    type: 'fee',
+    asset: 'SOL',
+    amount: feeSol,
+    fiatCurrency: 'USD',
+    fiatValue: undefined,
+    source: 'rpc:helius',
+    sourceRef: htx.signature,
+    walletAddress,
+    chain: 'solana',
+    flags: ['missing_cost_basis'] as FlagReason[],
+    isInternalTransfer: false,
+    notes: 'Solana network fee'
+  });
 }
 
 /**
@@ -90,29 +282,18 @@ function heliusSwapToTrade(
   let outputAmount: number | undefined;
 
   if (swap) {
-    // Prefer structured swap event
     const inp = swap.tokenInputs?.[0];
     const out = swap.tokenOutputs?.[0];
     if (inp) {
       inputMint = inp.mint;
-      inputAmount = rawAmountToDecimal(inp.rawTokenAmount.tokenAmount, inp.rawTokenAmount.decimals);
+      inputAmount = Math.abs(rawAmountToDecimal(inp.rawTokenAmount.tokenAmount, inp.rawTokenAmount.decimals));
     }
     if (out) {
       outputMint = out.mint;
-      outputAmount = rawAmountToDecimal(out.rawTokenAmount.tokenAmount, out.rawTokenAmount.decimals);
-    }
-    // Handle native SOL as input/output
-    if (!inputMint && swap.nativeInput) {
-      inputMint = 'So11111111111111111111111111111111111111112';
-      inputAmount = swap.nativeInput.amount / 1e9;
-    }
-    if (!outputMint && swap.nativeOutput) {
-      outputMint = 'So11111111111111111111111111111111111111112';
-      outputAmount = swap.nativeOutput.amount / 1e9;
+      outputAmount = Math.abs(rawAmountToDecimal(out.rawTokenAmount.tokenAmount, out.rawTokenAmount.decimals));
     }
   }
 
-  // Fallback: derive from tokenTransfers
   if (!inputMint || !outputMint) {
     const sent = htx.tokenTransfers.filter((t) => t.fromUserAccount === walletAddress);
     const received = htx.tokenTransfers.filter((t) => t.toUserAccount === walletAddress);
@@ -126,15 +307,71 @@ function heliusSwapToTrade(
     }
   }
 
+  // Native SOL legs are often missing from tokenTransfers (USDC→SOL etc.).
+  // Prefer accountData.nativeBalanceChange (lamports) as source of truth — Helius
+  // nativeInput/nativeOutput units are sometimes wrong or dust-sized.
+  const WSOL = 'So11111111111111111111111111111111111111112';
+  const { delta: solDelta } = walletNativeSolDelta(htx, walletAddress);
+  const feeSol =
+    htx.feePayer?.toLowerCase() === walletAddress.toLowerCase() ? (htx.fee ?? 0) / 1e9 : 0;
+  const solFromSwap = solDelta + feeSol;
+
+  const normalizeNativeSolAmount = (raw: number | undefined): number | undefined => {
+    if (raw == null || !isFinite(raw) || raw === 0) return undefined;
+    // Lamports are large integers; UI-SOL amounts for swaps are typically < 1e5.
+    return Math.abs(raw) >= 1e6 ? raw / 1e9 : raw;
+  };
+
+  if (swap?.nativeInput && !inputMint) {
+    inputMint = WSOL;
+    inputAmount = Math.abs(normalizeNativeSolAmount(swap.nativeInput.amount) ?? 0);
+  }
+  if (swap?.nativeOutput && !outputMint) {
+    outputMint = WSOL;
+    outputAmount = Math.abs(normalizeNativeSolAmount(swap.nativeOutput.amount) ?? 0);
+  }
+
+  // Reconcile with accountData whenever native SOL moved materially.
+  if (solFromSwap > 0.001) {
+    const outIsSol = outputMint === WSOL;
+    const inIsSol = inputMint === WSOL;
+    if (!outIsSol && !inIsSol) {
+      outputMint = WSOL;
+      outputAmount = solFromSwap;
+    } else if (outIsSol && ((outputAmount ?? 0) < 0.001 || Math.abs((outputAmount ?? 0) - solFromSwap) > 0.001)) {
+      outputAmount = solFromSwap;
+    }
+  } else if (solFromSwap < -0.001) {
+    const outIsSol = outputMint === WSOL;
+    const inIsSol = inputMint === WSOL;
+    const need = Math.abs(solFromSwap);
+    if (!outIsSol && !inIsSol) {
+      inputMint = WSOL;
+      inputAmount = need;
+    } else if (inIsSol && ((inputAmount ?? 0) < 0.001 || Math.abs((inputAmount ?? 0) - need) > 0.001)) {
+      inputAmount = need;
+    }
+  }
+
   if (!inputMint || !outputMint) return null;
+
+  // Helius swap events can under-report input (e.g. USDC→SOL: 49.58 vs 50.007 on-chain).
+  const transferNet = ownerNetByMintFromTokenTransfers(htx.tokenTransfers, walletAddress);
+  const { netByMint: accountDataNet } = ownerNetByMintFromAccountData(
+    htx.accountData,
+    walletAddress
+  );
+  const ownerNet = (mint: string): number => {
+    if (accountDataNet.has(mint)) return accountDataNet.get(mint)!;
+    return transferNet.get(mint)?.net ?? 0;
+  };
+  const inNet = ownerNet(inputMint);
+  if (inNet < -1e-9) inputAmount = Math.abs(inNet);
+  const outNet = ownerNet(outputMint);
+  if (outNet > 1e-9) outputAmount = outNet;
 
   const inputSymbol = resolveSymbol(inputMint);
   const outputSymbol = resolveSymbol(outputMint);
-
-  // If input is DBT, check if it's a Dabba income classification
-  // (shouldn't happen for swaps, but guard against it)
-  const isBtdIncome = isDbtToken(inputMint) && false; // swaps are never income
-  void isBtdIncome;
 
   return {
     id: makeId('rpc'),
@@ -166,106 +403,48 @@ function heliusTransferToRows(
   walletAddress: string
 ): Transaction[] {
   const rows: Transaction[] = [];
-  const ts = htx.timestamp * 1000;
 
-  // SPL token transfers
-  const tokensSent = htx.tokenTransfers.filter((t) => t.fromUserAccount === walletAddress);
-  const tokensReceived = htx.tokenTransfers.filter((t) => t.toUserAccount === walletAddress);
+  const transferNet = ownerNetByMintFromTokenTransfers(htx.tokenTransfers, walletAddress);
+  const { netByMint: accountDataNet } = ownerNetByMintFromAccountData(
+    htx.accountData,
+    walletAddress
+  );
 
-  for (const t of tokensSent) {
-    const asset = resolveSymbol(t.mint);
-    // Check DBT income (shouldn't be outbound income, but handles edge cases)
-    rows.push({
-      id: makeId('rpc'),
-      timestamp: ts,
-      type: 'transfer_out',
-      asset,
-      amount: t.tokenAmount,
-      contractAddress: t.mint,
-      fiatCurrency: 'USD',
-      fiatValue: undefined,
-      source: 'rpc:helius',
-      sourceRef: htx.signature,
+  const allMints = new Set([...accountDataNet.keys(), ...transferNet.keys()]);
+  for (const mint of allMints) {
+    const fromAccountData = accountDataNet.has(mint);
+    const net = fromAccountData
+      ? accountDataNet.get(mint)!
+      : transferNet.get(mint)!.net;
+    const counterparty = transferNet.get(mint)?.counterparty;
+    pushSplBalanceRow(rows, {
+      htx,
       walletAddress,
-      counterpartyAddress: t.toUserAccount,
-      chain: 'solana',
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
-      isInternalTransfer: false
+      mint,
+      net,
+      counterparty,
+      fromAccountData
     });
   }
 
-  for (const t of tokensReceived) {
-    const asset = resolveSymbol(t.mint);
-    // Auto-classify DBT income from known Dabba programs
-    const dbtIncome = isDbtToken(t.mint) && t.fromUserAccount !== walletAddress
-      ? classifyDbtIncome(t.mint, t.fromUserAccount) ?? {
-          kind: 'genesis_reward' as const,
-          label: 'Dabba Network DBT reward',
-          notes: 'Auto-classified as DBT income'
-        }
-      : null;
+  // Net native SOL delta from accountData (includes fees + rent); fallback to nativeTransfers.
+  const { delta: solNet, counterpartyOut: solCounterpartyOut, counterpartyIn: solCounterpartyIn } =
+    walletNativeSolDelta(htx, walletAddress);
 
+  if (Math.abs(solNet) >= 0.000001) {
+    const inbound = solNet > 0;
     rows.push({
       id: makeId('rpc'),
-      timestamp: ts,
-      type: dbtIncome ? 'income' : 'transfer_in',
-      asset,
-      amount: t.tokenAmount,
-      contractAddress: t.mint,
-      fiatCurrency: 'USD',
-      fiatValue: undefined,
-      source: 'rpc:helius',
-      sourceRef: htx.signature,
-      walletAddress,
-      counterpartyAddress: t.fromUserAccount,
-      chain: 'solana',
-      category: dbtIncome?.kind,
-      notes: dbtIncome?.notes,
-      flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
-      isInternalTransfer: false
-    });
-  }
-
-  // Native SOL transfers
-  const solSent = htx.nativeTransfers.filter((t) => t.fromUserAccount === walletAddress);
-  const solReceived = htx.nativeTransfers.filter((t) => t.toUserAccount === walletAddress);
-
-  for (const t of solSent) {
-    const sol = t.amount / 1e9;
-    if (Math.abs(sol) < 0.000001) continue; // skip dust/rent
-    rows.push({
-      id: makeId('rpc'),
-      timestamp: ts,
-      type: 'transfer_out',
+      timestamp: htx.timestamp * 1000,
+      type: inbound ? 'transfer_in' : 'transfer_out',
       asset: 'SOL',
-      amount: sol,
+      amount: Math.abs(solNet),
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:helius',
       sourceRef: htx.signature,
       walletAddress,
-      counterpartyAddress: t.toUserAccount,
-      chain: 'solana',
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
-      isInternalTransfer: false
-    });
-  }
-
-  for (const t of solReceived) {
-    const sol = t.amount / 1e9;
-    if (Math.abs(sol) < 0.000001) continue;
-    rows.push({
-      id: makeId('rpc'),
-      timestamp: ts,
-      type: 'transfer_in',
-      asset: 'SOL',
-      amount: sol,
-      fiatCurrency: 'USD',
-      fiatValue: undefined,
-      source: 'rpc:helius',
-      sourceRef: htx.signature,
-      walletAddress,
-      counterpartyAddress: t.fromUserAccount,
+      counterpartyAddress: inbound ? solCounterpartyIn : solCounterpartyOut,
       chain: 'solana',
       flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
       isInternalTransfer: false
@@ -277,19 +456,54 @@ function heliusTransferToRows(
 
 /**
  * Convert one Helius transaction into SoloLedger transaction rows.
- * A single Helius tx may produce 0-N rows (e.g. multi-leg swaps).
  */
 function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transaction[] {
   const classified = classifyFromHelius(htx.type, htx.source, htx.description);
 
-  // SWAP → single trade row
   if (htx.type === 'SWAP' || classified?.type === 'trade') {
     const trade = heliusSwapToTrade(htx, walletAddress);
-    if (trade) return [trade];
-    // If swap extraction fails, fall through to transfer parsing
+    if (trade) {
+      const rows = [trade];
+      pushSolanaNetworkFeeRow(rows, htx, walletAddress);
+
+      // Safety net: if the trade still lacks a meaningful SOL leg but native SOL moved,
+      // attach a SOL transfer row so portfolio math cannot lose the balance change.
+      const touchesSol =
+        (trade.asset === 'SOL' && trade.amount >= 0.001) ||
+        (trade.counterAsset?.toUpperCase() === 'SOL' && (trade.counterAmount ?? 0) >= 0.001);
+      if (!touchesSol) {
+        const { delta: solNet, counterpartyOut, counterpartyIn } = walletNativeSolDelta(
+          htx,
+          walletAddress
+        );
+        if (Math.abs(solNet) >= 0.001) {
+          const inbound = solNet > 0;
+          rows.push({
+            id: makeId('rpc'),
+            timestamp: htx.timestamp * 1000,
+            type: inbound ? 'transfer_in' : 'transfer_out',
+            asset: 'SOL',
+            amount: Math.abs(solNet),
+            fiatCurrency: 'USD',
+            fiatValue: undefined,
+            source: 'rpc:helius',
+            sourceRef: htx.signature,
+            walletAddress,
+            counterpartyAddress: inbound ? counterpartyIn : counterpartyOut,
+            chain: 'solana',
+            flags: ['missing_cost_basis'] as FlagReason[],
+            isInternalTransfer: false,
+            notes: 'Native SOL leg preserved from swap (Helius safety net)'
+          });
+          // Native delta already includes −fee — drop separate fee to avoid double-count.
+          const feeIdx = rows.findIndex((r) => r.type === 'fee' && r.asset === 'SOL');
+          if (feeIdx >= 0) rows.splice(feeIdx, 1);
+        }
+      }
+      return rows;
+    }
   }
 
-  // DeFi (stake, unstake, liquidity) → one row from the primary token flow
   const defiType = classified?.type;
   if (defiType && ['defi_deposit', 'defi_withdraw', 'nft_mint', 'nft_sell', 'nft_buy'].includes(defiType)) {
     const rows = heliusTransferToRows(htx, walletAddress);
@@ -301,52 +515,58 @@ function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transact
     }));
   }
 
-  // TRANSFER / UNKNOWN → parse all token/SOL balance changes
   return heliusTransferToRows(htx, walletAddress);
 }
 
 export interface HeliusLookupResult {
   transactions: Transaction[];
   warnings: string[];
+  /** Newest on-chain signature returned in this fetch (for incremental sync cursor). */
+  newestSignature?: string;
 }
 
 /**
  * Fetch and parse Solana transaction history for one address via Helius.
  *
- * @param afterSignature  When set (incremental sync), only returns transactions
- *   NEWER than this signature. Helius uses `after-signature` + ascending sort,
- *   so we get exactly the delta since the last sync — no duplicates possible.
- *   When not set (first import), fetches the latest 500 transactions.
+ * @param afterSignature  Incremental sync: only txs strictly after this signature
+ *   (uses sort-order=asc + after-signature per Helius docs).
  */
 export async function fetchHeliusSolana(
   address: string,
   apiKey: string,
-  maxPages = 5,
-  afterSignature?: string
+  maxPages = 20,
+  afterSignature?: string,
+  /** On sync: skip any signatures already stored for this wallet. */
+  skipSignatures?: Set<string>
 ): Promise<HeliusLookupResult> {
   const transactions: Transaction[] = [];
   const warnings: string[] = [];
 
   const isIncremental = !!afterSignature;
-  let cursorSignature: string | undefined;
+  let cursorSignature: string | undefined = afterSignature;
   let page = 0;
+  let newestTimestamp = 0;
+  let newestSignature: string | undefined;
 
   while (page < maxPages) {
     let url =
-      `${HELIUS_BASE}/v0/addresses/${address}/transactions` +
-      `?api-key=${apiKey}&limit=100`;
+      isSaasMode()
+        ? `${getApiBase()}/api/proxy/helius/v0/addresses/${address}/transactions?limit=100&token-accounts=balanceChanged&commitment=confirmed`
+        : `${HELIUS_BASE}/v0/addresses/${address}/transactions?api-key=${apiKey}&limit=100&token-accounts=balanceChanged&commitment=confirmed`;
 
     if (isIncremental) {
-      // Incremental sync: get only NEW transactions after the last known one
-      url += `&after-signature=${afterSignature}&sort-order=asc`;
-      if (cursorSignature) url += `&before=${cursorSignature}`;
+      // Ascending: fetch txs strictly after the cursor signature
+      url += `&sort-order=asc&after-signature=${cursorSignature}`;
     } else {
-      // Full import: newest first
-      if (cursorSignature) url += `&before=${cursorSignature}`;
+      // Full import: newest first, paginate backwards
+      url += `&sort-order=desc`;
+      if (cursorSignature) url += `&before-signature=${cursorSignature}`;
     }
 
     // eslint-disable-next-line no-await-in-loop
-    const res = await fetch(url);
+    const res = isSaasMode()
+      ? await saasProxyFetch(url.replace(getApiBase(), ''))
+      : await fetch(url);
 
     if (res.status === 401) {
       warnings.push('Helius: invalid API key — check Settings.');
@@ -366,18 +586,27 @@ export async function fetchHeliusSolana(
     if (!Array.isArray(data) || data.length === 0) break;
 
     for (const htx of data) {
+      // Helius after-signature is inclusive — the cursor tx may be returned again
+      if (skipSignatures?.has(htx.signature)) continue;
+      if (isIncremental && afterSignature && htx.signature === afterSignature) continue;
+
       const rows = heliusTxToRows(htx, address);
       transactions.push(...rows);
+      if (htx.timestamp >= newestTimestamp) {
+        newestTimestamp = htx.timestamp;
+        newestSignature = htx.signature;
+      }
     }
 
-    if (data.length < 100) break; // last page
-    cursorSignature = data[data.length - 1].signature;
+    if (data.length < 100) break;
+
+    const lastSig = data[data.length - 1].signature;
+    cursorSignature = lastSig;
     page++;
 
-    // Small delay between pages to respect rate limits
     // eslint-disable-next-line no-await-in-loop
     await new Promise((r) => setTimeout(r, 300));
   }
 
-  return { transactions, warnings };
+  return { transactions, warnings, newestSignature };
 }

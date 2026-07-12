@@ -26,6 +26,35 @@ export function safeNumber(v: string | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Fiat value magnitude — exchanges often export outflows as negative subtotals. */
+export function normalizeFiatMagnitude(value: number | undefined | null): number | undefined {
+  if (value == null || !Number.isFinite(value)) return undefined;
+  const abs = Math.abs(value);
+  return abs < 1e-12 ? undefined : abs;
+}
+
+/** Parse values like "0.34SOL", "49.2286USDT", or plain "144.79". */
+export function safeQuantity(v: string | undefined): number {
+  if (!v) return 0;
+  const s = String(v).replace(/[,$\s]/g, '').trim();
+  const m = s.match(/^(-?[\d.]+)/);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  return Number.isFinite(n) ? Math.abs(n) : 0;
+}
+
+/** Stable ref for deduping exchange CSV rows across import sources. */
+export function exchangeSourceRef(
+  source: string,
+  timestamp: number,
+  type: string,
+  asset: string,
+  amount: number
+): string {
+  const a = amount >= 1 ? amount.toFixed(4) : amount >= 0.0001 ? amount.toFixed(6) : amount.toFixed(9);
+  return `${source}:${timestamp}:${type}:${asset.toUpperCase()}:${a}`;
+}
+
 export function safeTimestamp(v: string | undefined): number {
   if (!v) return NaN;
   const t = Date.parse(v);

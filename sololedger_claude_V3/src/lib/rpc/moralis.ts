@@ -18,6 +18,8 @@
 import { makeId } from '@/lib/parsers/types';
 import type { Transaction, TxType, FlagReason } from '@/types/transaction';
 import { classifyFromMoralis } from '@/lib/rpc/classificationEngine';
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
 import type { ChainId } from '@/lib/rpc/providers';
 
 const MORALIS_BASE = 'https://deep-index.moralis.io/api/v2.2';
@@ -239,12 +241,14 @@ export async function fetchMoralisEvm(
 
   while (page < maxPages) {
     let url =
-      `${MORALIS_BASE}/wallets/${address}/history` +
-      `?chain=${moralisChain}&order=DESC&limit=100`;
+      isSaasMode()
+        ? `${getApiBase()}/api/proxy/moralis/api/v2.2/wallets/${address}/history?chain=${moralisChain}&order=DESC&limit=100`
+        : `${MORALIS_BASE}/wallets/${address}/history?chain=${moralisChain}&order=DESC&limit=100`;
     if (cursor) url += `&cursor=${cursor}`;
 
-    // eslint-disable-next-line no-await-in-loop
-    const res = await fetch(url, { headers: { 'X-API-Key': apiKey, accept: 'application/json' } });
+    const res = isSaasMode()
+      ? await saasProxyFetch(url.replace(getApiBase(), ''))
+      : await fetch(url, { headers: { 'X-API-Key': apiKey, accept: 'application/json' } });
 
     if (res.status === 401) { warnings.push('Moralis: invalid API key — check Settings.'); break; }
     if (res.status === 429) { warnings.push('Moralis: rate limited — try again later.'); break; }

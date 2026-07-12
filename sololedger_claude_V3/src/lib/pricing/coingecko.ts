@@ -6,20 +6,37 @@ import { fetchAlchemyHistoricalPriceUsd } from './alchemyPrices';
 import { fetchBirdeyeHistoricalPrice } from './birdeye';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { getCachedPrice, setCachedPrice, buildPriceCacheKey } from '@/lib/storage/db';
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
 
 const COINGECKO_PUBLIC = 'https://api.coingecko.com/api/v3';
 const COINGECKO_PRO = 'https://pro-api.coingecko.com/api/v3';
 
 function coingeckoBase(apiKey?: string): string {
+  if (isSaasMode()) return `${getApiBase()}/api/proxy/coingecko`;
   return apiKey?.trim() ? COINGECKO_PRO : COINGECKO_PUBLIC;
 }
 
 function coingeckoHeaders(apiKey?: string): HeadersInit | undefined {
+  if (isSaasMode()) return undefined;
   const key = apiKey?.trim();
   return key ? { 'x-cg-pro-api-key': key } : undefined;
 }
 
-// CoinGecko internal coin ids (not tickers).
+async function coingeckoFetch(url: string, headers?: HeadersInit, retries = 2): Promise<Response> {
+  let last: Response | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = isSaasMode()
+      ? await saasProxyFetch(url.replace(getApiBase(), ''), headers ? { headers } : {})
+      : await fetch(url, headers ? { headers } : undefined);
+    last = res;
+    if (res.status !== 429 || attempt === retries) return res;
+    await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+  }
+  return last!;
+}
+
+// CoinGecko internal coin ids (not tickers). Extended set + dynamic search fallback.
 const SYMBOL_TO_ID: Record<string, string> = {
   BTC: 'bitcoin',
   ETH: 'ethereum',
@@ -36,10 +53,114 @@ const SYMBOL_TO_ID: Record<string, string> = {
   LTC: 'litecoin',
   AVAX: 'avalanche-2',
   BUSD: 'binance-usd',
+  FIL: 'filecoin',
+  LPT: 'livepeer',
+  GRT: 'the-graph',
+  FTT: 'ftx-token',
+  DASH: 'dash',
+  HNT: 'helium',
+  ZEC: 'zcash',
+  LINK: 'chainlink',
+  UNI: 'uniswap',
+  ATOM: 'cosmos',
+  NEAR: 'near',
+  APT: 'aptos',
+  ARB: 'arbitrum',
+  OP: 'optimism',
+  INJ: 'injective-protocol',
+  SUI: 'sui',
+  SEI: 'sei-network',
+  TIA: 'celestia',
+  RENDER: 'render-token',
+  FET: 'fetch-ai',
+  SAND: 'the-sandbox',
+  MANA: 'decentraland',
+  AAVE: 'aave',
+  MKR: 'maker',
+  CRV: 'curve-dao-token',
+  SNX: 'havven',
+  COMP: 'compound-governance-token',
+  SUSHI: 'sushi',
+  YFI: 'yearn-finance',
+  BCH: 'bitcoin-cash',
+  ETC: 'ethereum-classic',
+  XLM: 'stellar',
+  TRX: 'tron',
+  XMR: 'monero',
+  ALGO: 'algorand',
+  VET: 'vechain',
+  ICP: 'internet-computer',
+  HBAR: 'hedera-hashgraph',
+  EOS: 'eos',
+  XTZ: 'tezos',
+  THETA: 'theta-token',
+  EGLD: 'elrond-erd-2',
+  FLOW: 'flow',
+  KAVA: 'kava',
+  RUNE: 'thorchain',
+  KSM: 'kusama',
+  ZIL: 'zilliqa',
+  ENJ: 'enjincoin',
+  CHZ: 'chiliz',
+  BAT: 'basic-attention-token',
+  ZRX: '0x',
   PUNDIX: 'pundi-x-2',
   KNC: 'kyber-network-crystal',
   NPXS: 'pundi-x'
 };
+
+const COIN_ID_CACHE_KEY = 'sololedger_gecko_coin_ids';
+const runtimeCoinIdCache = new Map<string, string>();
+
+function loadStoredCoinIds(): Record<string, string> {
+  try {
+    return JSON.parse(localStorage.getItem(COIN_ID_CACHE_KEY) ?? '{}') as Record<string, string>;
+  } catch {
+    return {};
+  }
+}
+
+function saveStoredCoinId(symbol: string, coinId: string): void {
+  const stored = loadStoredCoinIds();
+  stored[symbol.toUpperCase()] = coinId;
+  localStorage.setItem(COIN_ID_CACHE_KEY, JSON.stringify(stored));
+}
+
+/** Resolve ticker → CoinGecko coin id via built-in map, then /search fallback. */
+async function resolveCoinGeckoId(symbol: string, coingeckoApiKey?: string): Promise<string | null> {
+  const upper = symbol.toUpperCase();
+  if (SYMBOL_TO_ID[upper]) return SYMBOL_TO_ID[upper];
+  if (runtimeCoinIdCache.has(upper)) return runtimeCoinIdCache.get(upper)!;
+
+  const stored = loadStoredCoinIds();
+  if (stored[upper]) {
+    runtimeCoinIdCache.set(upper, stored[upper]);
+    SYMBOL_TO_ID[upper] = stored[upper];
+    return stored[upper];
+  }
+
+  try {
+    const base = coingeckoBase(coingeckoApiKey);
+    const res = await fetchWithRetry(
+      `${base}/search?query=${encodeURIComponent(symbol)}`,
+      coingeckoHeaders(coingeckoApiKey)
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as {
+      coins?: { id: string; symbol: string; market_cap_rank?: number }[];
+    };
+    const exact = (data.coins ?? []).filter((c) => c.symbol.toUpperCase() === upper);
+    if (exact.length === 0) return null;
+    exact.sort((a, b) => (a.market_cap_rank ?? 1e9) - (b.market_cap_rank ?? 1e9));
+    const id = exact[0].id;
+    SYMBOL_TO_ID[upper] = id;
+    runtimeCoinIdCache.set(upper, id);
+    saveStoredCoinId(upper, id);
+    return id;
+  } catch {
+    return null;
+  }
+}
 
 export interface PriceLookupResult {
   asset: string;
@@ -58,16 +179,7 @@ function toCoinGeckoDate(timestampMs: number): string {
 }
 
 async function fetchWithRetry(url: string, headers?: HeadersInit, retries = 2): Promise<Response> {
-  let last: Response | null = null;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    // eslint-disable-next-line no-await-in-loop
-    const res = await fetch(url, headers ? { headers } : undefined);
-    last = res;
-    if (res.status !== 429 || attempt === retries) return res;
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-  }
-  return last!;
+  return coingeckoFetch(url, headers, retries);
 }
 
 /**
@@ -81,7 +193,7 @@ export async function fetchHistoricalPrice(
   coingeckoApiKey?: string
 ): Promise<PriceLookupResult> {
   const date = toCoinGeckoDate(timestampMs);
-  const coinId = SYMBOL_TO_ID[assetSymbol.toUpperCase()];
+  const coinId = await resolveCoinGeckoId(assetSymbol, coingeckoApiKey);
 
   if (!coinId) {
     return {
@@ -89,7 +201,7 @@ export async function fetchHistoricalPrice(
       date,
       price: null,
       currency: fiatCurrency,
-      error: `"${assetSymbol}" isn't in the built-in symbol map.`
+      error: `Could not resolve CoinGecko id for "${assetSymbol}".`
     };
   }
 
@@ -185,7 +297,7 @@ export interface PriceRequest {
 const usdRateCache = new Map<string, number>();
 
 /** Historical USD → reporting currency on a specific date (via USDT price in that currency). */
-async function usdToCurrencyRate(
+export async function usdToCurrencyRate(
   timestampMs: number,
   currency: string,
   coingeckoApiKey?: string

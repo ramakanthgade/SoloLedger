@@ -1,4 +1,5 @@
 import type { Disposal, Jurisdiction, TaxYearSummary } from '@/types/transaction';
+import { isInFy } from '@/lib/utils';
 
 /**
  * Jurisdiction modules take the same Disposal[]/income figures produced by
@@ -70,12 +71,12 @@ export const JURISDICTIONS: Record<Jurisdiction, JurisdictionRules> = {
 
 export function summarizeYear(
   disposals: Disposal[],
-  incomeEvents: { fiatValue: number }[],
+  incomeEvents: { fiatValue: number; timestamp?: number }[],
   year: number,
   jurisdiction: Jurisdiction
 ): TaxYearSummary {
   const rules = JURISDICTIONS[jurisdiction];
-  const yearDisposals = disposals.filter((d) => new Date(d.disposedAt).getUTCFullYear() === year);
+  const yearDisposals = disposals.filter((d) => isInFy(d.disposedAt, year, jurisdiction));
 
   const byAsset: TaxYearSummary['byAsset'] = {};
   let totalProceeds = 0;
@@ -100,7 +101,9 @@ export function summarizeYear(
     }
   }
 
-  const totalIncome = incomeEvents.reduce((s, e) => s + (e.fiatValue || 0), 0);
+  const totalIncome = incomeEvents
+    .filter((e) => e.timestamp != null && isInFy(e.timestamp, year, jurisdiction))
+    .reduce((s, e) => s + (e.fiatValue || 0), 0);
 
   return {
     year,

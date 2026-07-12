@@ -10,7 +10,7 @@ import { db, getSettings } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { buildMatchedGainRows, buildIncomeRows } from '@/lib/costBasis/matchedGains';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
-import { formatCurrency } from '@/lib/utils';
+import { formatCurrency, getCurrentFy, getFyLabel, isInFy } from '@/lib/utils';
 
 export async function buildTaxContext(year?: number): Promise<string> {
   const [settings, allTxs, hints] = await Promise.all([
@@ -23,8 +23,9 @@ export async function buildTaxContext(year?: number): Promise<string> {
     })
   ]);
 
-  const targetYear = year ?? new Date().getFullYear();
+  const targetYear = year ?? getCurrentFy(settings.jurisdiction);
   const fy = targetYear;
+  const fyLabel = getFyLabel(fy, settings.jurisdiction);
 
   const { disposals, lots, shortfalls } = calculateCostBasis(allTxs, {
     method: settings.defaultCostBasisMethod,
@@ -35,8 +36,8 @@ export async function buildTaxContext(year?: number): Promise<string> {
   const incomeRows = buildIncomeRows(allTxs);
   const jurisdiction = JURISDICTIONS[settings.jurisdiction];
 
-  const yearMatches = matchedRows.filter((r) => new Date(r.sellDate).getUTCFullYear() === fy);
-  const yearIncome = incomeRows.filter((r) => new Date(r.date).getUTCFullYear() === fy);
+  const yearMatches = matchedRows.filter((r) => isInFy(r.sellDate, fy, settings.jurisdiction));
+  const yearIncome = incomeRows.filter((r) => isInFy(r.date, fy, settings.jurisdiction));
 
   const totalGain = yearMatches.reduce((s, r) => s + r.gain, 0);
   const totalIncome = yearIncome.reduce((s, r) => s + r.fiatValue, 0);
@@ -81,7 +82,7 @@ export async function buildTaxContext(year?: number): Promise<string> {
     `You are SoloLedger's AI Tax Advisor — a friendly, expert crypto tax assistant.`,
     `All data is 100% local on the user's device. You can only access the summary data shown below.`,
     ``,
-    `## User's Tax Data Summary (${fy})`,
+    `## User's Tax Data Summary (${fyLabel})`,
     `- Jurisdiction: ${jurisdiction.label} — ${jurisdiction.notes.slice(0, 120)}`,
     `- Reporting currency: ${cur}`,
     `- Cost basis method: ${settings.defaultCostBasisMethod}`,
@@ -91,7 +92,7 @@ export async function buildTaxContext(year?: number): Promise<string> {
     `- Duplicate transaction hashes (same sourceRef, multiple DB rows): ${duplicateSourceRefs.length}`,
     `- Possible exact duplicates (same asset+amount+time): ${possibleDuplicateTxs}`,
     ``,
-    `## ${fy} Tax Year`,
+    `## ${fyLabel} Tax Year`,
     `- Realized gain/loss: ${fmt(totalGain)} across ${yearMatches.length} disposal(s)`,
     `- Income (staking, airdrops, rewards): ${fmt(totalIncome)}`,
     shortfalls.length > 0

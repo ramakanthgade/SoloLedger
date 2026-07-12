@@ -24,6 +24,34 @@ export function formatCurrency(amount: number, currency: string): string {
   }
 }
 
+/** Locale-aware number grouping without a currency symbol (for exports). */
+export function formatNumberLocale(amount: number, currency: string): string {
+  const locale = currency.toUpperCase() === 'INR' ? 'en-IN' : 'en-US';
+  return new Intl.NumberFormat(locale, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2
+  }).format(Math.abs(amount));
+}
+
+/**
+ * Export-safe amount string (PDF/CSV). Currency is shown in column headers —
+ * values are plain locale-formatted numbers without a repeated symbol prefix.
+ */
+export function formatAmountForExport(amount: number, currency: string): string {
+  const sign = amount < 0 ? '-' : '';
+  return `${sign}${formatNumberLocale(amount, currency)}`;
+}
+
+/** @deprecated Use formatAmountForExport — kept for any external references. */
+export function formatCurrencyForPdf(amount: number, currency: string): string {
+  return formatAmountForExport(amount, currency);
+}
+
+/** CSV column suffix for monetary fields, e.g. "proceeds (INR)". */
+export function monetaryColumnLabel(base: string, currency: string): string {
+  return `${base} (${currency.toUpperCase()})`;
+}
+
 /** Compact number for table columns. */
 export function formatCompactAmount(amount: number): string {
   const abs = Math.abs(amount);
@@ -97,8 +125,12 @@ export function getCurrentFy(jurisdiction: Jurisdiction): number {
   return getFyForTimestamp(Date.now(), jurisdiction);
 }
 
+export function isInFy(timestampMs: number, fy: number, jurisdiction: Jurisdiction): boolean {
+  const { start, end } = getFyBoundaries(fy, jurisdiction);
+  return timestampMs >= start && timestampMs <= end;
+}
+
 /**
- * Human-readable label for a financial year.
  * India:  2025 → "FY 2025-26"
  * Others: 2025 → "2025"
  */
@@ -106,7 +138,7 @@ export function getFyLabel(fy: number, jurisdiction: Jurisdiction): string {
   if (jurisdiction === 'IN') {
     const next = (fy + 1).toString().slice(-2);
     return `FY ${fy}-${next}`;
-}
+  }
   return String(fy);
 }
 

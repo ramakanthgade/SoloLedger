@@ -22,9 +22,18 @@ export interface LookupAddressRow {
   label?: string;       // user-assigned friendly name, e.g. "My Phantom wallet"
   lastSyncedAt: number;
   txCount: number;
+  /** Newest on-chain signature seen for this wallet (Helius incremental sync cursor). */
+  lastSyncedSignature?: string;
 }
 
-/** Persistent historical price cache — avoids re-fetching the same asset+date+currency. */
+export interface CsvImportRow {
+  id: string;           // SHA-256 hash prefix of file content
+  fileName: string;
+  importedAt: number;
+  txCount: number;
+  parserId: string | null;
+}
+
 export interface PriceCacheRow {
   /** `sym:${ASSET}:${dd-mm-yyyy}:${CURRENCY}` or `ctr:${platform}:${address}:${dd-mm-yyyy}:${CURRENCY}` */
   key: string;
@@ -40,9 +49,10 @@ class SoloLedgerDB extends Dexie {
   specIdHints!: Table<SpecIdHintRow, string>;
   lookupAddresses!: Table<LookupAddressRow, string>;
   priceCache!: Table<PriceCacheRow, string>;
+  csvImports!: Table<CsvImportRow, string>;
 
-  constructor() {
-    super('sololedger_crypto_tax_db');
+  constructor(name: string) {
+    super(name);
     this.version(1).stores({
       transactions: 'id, timestamp, asset, type, source, *flags',
       lots: 'id, asset, acquiredAt, sourceTxId',
@@ -71,10 +81,57 @@ class SoloLedgerDB extends Dexie {
       lookupAddresses: 'id, chain, address, lastSyncedAt',
       priceCache: 'key, fetchedAt'
     });
+    // v5: lastSyncedSignature on lookupAddresses (field only — no index change needed)
+    this.version(5).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt'
+    });
+    this.version(6).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName'
+    });
   }
 }
 
-export const db = new SoloLedgerDB();
+const LOCAL_DB_NAME = 'sololedger_local';
+
+function createDb(name: string): SoloLedgerDB {
+  return new SoloLedgerDB(name);
+}
+
+/** Active IndexedDB — swapped per user in SaaS mode. */
+export let db = createDb(LOCAL_DB_NAME);
+
+let activeUserId: string | null = null;
+
+export function getActiveDatabaseUserId(): string | null {
+  return activeUserId;
+}
+
+/** In SaaS mode each account gets an isolated database. Standalone uses one shared local DB. */
+export async function switchUserDatabase(userId: string | null): Promise<void> {
+  const nextName = userId ? `sololedger_${userId}` : LOCAL_DB_NAME;
+  if (activeUserId === userId && db.name === nextName) return;
+  try {
+    await db.close();
+  } catch {
+    /* first open */
+  }
+  activeUserId = userId;
+  db = createDb(nextName);
+  await db.open();
+}
 
 export const DEFAULT_SETTINGS: TaxSettings = {
   jurisdiction: 'IN',
@@ -98,7 +155,7 @@ export async function saveSettings(settings: TaxSettings): Promise<void> {
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -106,6 +163,7 @@ export async function clearAllData(): Promise<void> {
       await db.specIdHints.clear();
       await db.lookupAddresses.clear();
       await db.priceCache.clear();
+      await db.csvImports.clear();
     }
   );
 }
@@ -147,16 +205,96 @@ export async function setCachedPrice(key: string, price: number): Promise<void> 
 
 // ---- Wallet addresses ----
 
-export async function upsertLookupAddress(chain: string, address: string, txCount: number): Promise<void> {
+/** Dedup key for exchange CSV rows (Binance, Coinbase) — uses sourceRef when set. */
+export function transactionExchangeKey(
+  t: Pick<Transaction, 'source' | 'sourceRef'>
+): string | null {
+  if (!t.sourceRef) return null;
+  if (t.source.startsWith('binance') || t.source === 'coinbase') {
+    return `ex:${t.sourceRef}`;
+  }
+  return null;
+}
+/** Stable amount for dedup keys — large SPL amounts lose precision with toFixed(6). */
+function normalizeImportAmount(amount: number): string {
+  const a = Math.abs(amount);
+  if (a >= 1) return a.toFixed(2);
+  if (a >= 0.0001) return a.toFixed(6);
+  return a.toFixed(9);
+}
+
+/** Stable asset key for dedup — prefer mint/contract over display symbol. */
+function transactionAssetKey(t: Pick<Transaction, 'asset' | 'contractAddress'>): string {
+  return t.contractAddress?.toLowerCase() || t.asset.toUpperCase();
+}
+
+/** Dedup key for on-chain rows — intentionally excludes `type` so re-imported transfer_in rows match reclassified income. */
+export function transactionImportKey(
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount' | 'contractAddress'>
+): string | null {
+  if (!t.sourceRef || !t.walletAddress) return null;
+  return [
+    t.sourceRef,
+    t.walletAddress.toLowerCase(),
+    transactionAssetKey(t),
+    normalizeImportAmount(t.amount)
+  ].join('|');
+}
+
+/** wallet + on-chain tx hash + asset/mint — catches sync re-fetches even when float amount differs slightly. */
+export function transactionSourceKey(
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'contractAddress'>
+): string | null {
+  if (!t.sourceRef || !t.walletAddress) return null;
+  return [t.walletAddress.toLowerCase(), t.sourceRef, transactionAssetKey(t)].join('|');
+}
+
+/** Newest sourceRef stored for a wallet (by transaction timestamp). */
+export async function newestStoredSignature(chain: string, address: string): Promise<string | undefined> {
+  const addrLower = address.toLowerCase();
+  const txs = await db.transactions
+    .filter(
+      (t) =>
+        t.chain === chain &&
+        t.walletAddress?.toLowerCase() === addrLower &&
+        !!t.sourceRef
+    )
+    .toArray();
+  if (txs.length === 0) return undefined;
+  return txs.reduce((best, t) => (t.timestamp > best.timestamp ? t : best)).sourceRef;
+}
+
+/** Count transactions stored for a wallet on a chain. */
+export async function countWalletTransactions(chain: string, address: string): Promise<number> {
+  const addrLower = address.toLowerCase();
+  return db.transactions
+    .filter(
+      (t) =>
+        t.chain === chain &&
+        t.walletAddress != null &&
+        t.walletAddress.toLowerCase() === addrLower
+    )
+    .count();
+}
+
+export async function upsertLookupAddress(
+  chain: string,
+  address: string,
+  _importedCount: number,
+  lastSyncedSignature?: string
+): Promise<void> {
   const id = `${chain}:${address}`;
   const existing = await db.lookupAddresses.get(id);
+  const txCount = await countWalletTransactions(chain, address);
+  const newestInDb = await newestStoredSignature(chain, address);
   await db.lookupAddresses.put({
     ...(existing ?? {}),
     id,
     chain,
     address,
     lastSyncedAt: Date.now(),
-    txCount: (existing?.txCount ?? 0) + txCount
+    txCount,
+    lastSyncedSignature: lastSyncedSignature ?? newestInDb ?? existing?.lastSyncedSignature
   });
 }
 
@@ -208,34 +346,104 @@ export async function getWalletLabel(address: string): Promise<string | undefine
   return rows[0]?.label;
 }
 
+export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
+  if (ids.length === 0) return 0;
+
+  const rows = (await db.transactions.bulkGet(ids)).filter((t): t is Transaction => !!t);
+  const wallets = new Map<string, { chain: string; address: string }>();
+  for (const t of rows) {
+    if (t.walletAddress && t.chain) {
+      wallets.set(`${t.chain}:${t.walletAddress.toLowerCase()}`, { chain: t.chain, address: t.walletAddress });
+    }
+  }
+
+  await db.transaction('rw', db.transactions, db.specIdHints, async () => {
+    await db.transactions.bulkDelete(ids);
+    for (const id of ids) {
+      await db.specIdHints.delete(id);
+    }
+  });
+
+  for (const { chain, address } of wallets.values()) {
+    await upsertLookupAddress(chain, address, 0);
+  }
+
+  return rows.length;
+}
+
+// ---- CSV imports ----
+
+export async function hashFileContent(text: string): Promise<string> {
+  const sample = text.length > 100_000 ? text.slice(0, 100_000) : text;
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sample));
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
+}
+
+export async function getCsvImports(): Promise<CsvImportRow[]> {
+  const rows = await db.csvImports.toArray();
+  return rows.sort((a, b) => b.importedAt - a.importedAt);
+}
+
+export async function upsertCsvImport(
+  id: string,
+  fileName: string,
+  parserId: string | null,
+  txCount: number
+): Promise<void> {
+  await db.csvImports.put({
+    id,
+    fileName,
+    parserId,
+    importedAt: Date.now(),
+    txCount
+  });
+}
+
+export async function countCsvImportTransactions(importId: string): Promise<number> {
+  return db.transactions.filter((t) => t.importBatchId === importId).count();
+}
+
+export async function deleteCsvImportAndTransactions(importId: string): Promise<number> {
+  const toDelete = await db.transactions.filter((t) => t.importBatchId === importId).toArray();
+  await db.transaction('rw', db.transactions, db.csvImports, db.specIdHints, async () => {
+    if (toDelete.length > 0) {
+      await db.transactions.bulkDelete(toDelete.map((t) => t.id));
+      for (const t of toDelete) await db.specIdHints.delete(t.id);
+    }
+    await db.csvImports.delete(importId);
+  });
+  return toDelete.length;
+}
+
 /**
  * Remove duplicate transactions from the database.
- * Duplicates occur when a wallet is synced multiple times.
- * Dedup key: sourceRef + walletAddress + asset + type (same on-chain event in same direction).
- * Returns the number of duplicates removed.
+ * Dedup key: sourceRef + wallet + asset + amount (type excluded — reclassified rows
+ * like transfer_in → income must still match a raw re-import).
  */
 export async function deduplicateTransactions(): Promise<number> {
   const all = await db.transactions.toArray();
-  const seen = new Map<string, string>(); // dedup key → first id seen
+  const seen = new Map<string, string>();
   const toDelete: string[] = [];
 
+  const score = (row: Transaction) =>
+    (row.fiatValue != null ? 4 : 0) +
+    (row.type === 'income' || row.type === 'trade' ? 2 : 0) +
+    (row.flags.length === 0 ? 1 : 0);
+
   for (const t of all) {
-    if (!t.sourceRef || !t.walletAddress) continue;
-    // Include amount rounded to 6 dp to avoid floating-point mismatches
-    const key = [
-      t.sourceRef,
-      t.walletAddress.toLowerCase(),
-      t.asset.toUpperCase(),
-      t.type,
-      t.amount.toFixed(6)
-    ].join('|');
+    const exchangeKey = transactionExchangeKey(t);
+    const sourceKey = transactionSourceKey(t);
+    const key = exchangeKey
+      ? exchangeKey
+      : sourceKey
+        ? `src:${sourceKey}`
+        : transactionImportKey(t);
+    if (!key) continue;
 
     if (seen.has(key)) {
-      // Keep whichever already has a fiatValue; otherwise keep the first
       const firstId = seen.get(key)!;
       const first = all.find((x) => x.id === firstId)!;
-      if (first.fiatValue == null && t.fiatValue != null) {
-        // The new one has a price — delete the old one, keep this
+      if (score(t) > score(first)) {
         toDelete.push(firstId);
         seen.set(key, t.id);
       } else {
@@ -246,8 +454,35 @@ export async function deduplicateTransactions(): Promise<number> {
     }
   }
 
-  if (toDelete.length > 0) {
-    await db.transactions.bulkDelete(toDelete);
+  const uniqueDeletes = [...new Set(toDelete)];
+  if (uniqueDeletes.length > 0) {
+    await db.transactions.bulkDelete(uniqueDeletes);
   }
-  return toDelete.length;
+  return uniqueDeletes.length;
+}
+
+/**
+ * Drop incoming rows that already exist in the DB (by on-chain import key).
+ * Call before bulkPut on sync to prevent duplicates.
+ */
+export async function filterAlreadyImported(transactions: Transaction[]): Promise<Transaction[]> {
+  if (transactions.length === 0) return transactions;
+  const existing = await db.transactions.toArray();
+  const existingKeys = new Set(
+    existing.map((t) => transactionImportKey(t)).filter(Boolean) as string[]
+  );
+  const existingSourceKeys = new Set(
+    existing.map((t) => transactionSourceKey(t)).filter(Boolean) as string[]
+  );
+  const existingExchangeKeys = new Set(
+    existing.map((t) => transactionExchangeKey(t)).filter(Boolean) as string[]
+  );
+  return transactions.filter((t) => {
+    const exKey = transactionExchangeKey(t);
+    if (exKey && existingExchangeKeys.has(exKey)) return false;
+    const sourceKey = transactionSourceKey(t);
+    if (sourceKey && existingSourceKeys.has(sourceKey)) return false;
+    const key = transactionImportKey(t);
+    return !key || !existingKeys.has(key);
+  });
 }

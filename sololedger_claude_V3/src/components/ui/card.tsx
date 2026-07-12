@@ -2,30 +2,37 @@ import * as React from 'react';
 import { cn } from '@/lib/utils';
 
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('rounded-lg border border-ink-700 bg-ink-800 shadow-soft', className)} {...props} />;
+  return (
+    <div
+      className={cn('rounded-lg border border-ink-700 bg-ink-800 shadow-card', className)}
+      {...props}
+    />
+  );
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('px-5 pt-5', className)} {...props} />;
+  return <div className={cn('border-b border-ink-700 bg-ink-900/50 px-5 py-4', className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn('font-display text-base font-medium text-mist', className)} {...props} />;
+  return (
+    <h3 className={cn('text-sm font-semibold tracking-tight text-ink-950', className)} {...props} />
+  );
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('px-5 pb-5 pt-3', className)} {...props} />;
+  return <div className={cn('px-5 py-4', className)} {...props} />;
 }
 
 type BadgeTone = 'neutral' | 'emerald' | 'gold' | 'loss' | 'violet' | 'pink';
 
 const badgeTones: Record<BadgeTone, string> = {
-  neutral: 'bg-ink-700 text-mist-400',
-  emerald: 'bg-emerald/15 text-emerald-600 border border-emerald/30',
-  gold: 'bg-gold/15 text-gold-600 border border-gold/30',
-  loss: 'bg-loss/15 text-loss border border-loss/30',
-  violet: 'bg-violet-100 text-violet-600 border border-violet/25',
-  pink: 'bg-pink-100 text-pink border border-pink/25'
+  neutral: 'bg-mist-100 text-mist-400 border border-ink-700',
+  emerald: 'bg-teal-50 text-emerald-600 border border-emerald/25',
+  gold: 'bg-amber-50 text-gold-600 border border-amber-200',
+  loss: 'bg-red-50 text-loss border border-red-200',
+  violet: 'bg-ink-900 text-ink-950 border border-ink-700',
+  pink: 'bg-teal-50 text-emerald-600 border border-emerald/25'
 };
 
 export function Badge({
@@ -35,7 +42,11 @@ export function Badge({
 }: React.HTMLAttributes<HTMLSpanElement> & { tone?: BadgeTone }) {
   return (
     <span
-      className={cn('inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-mono', badgeTones[tone], className)}
+      className={cn(
+        'inline-flex items-center rounded-md px-2 py-0.5 text-[0.6875rem] font-semibold',
+        badgeTones[tone],
+        className
+      )}
       {...props}
     />
   );

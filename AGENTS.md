@@ -23,3 +23,12 @@ Wallet lookup on `npm run dev` routes Alchemy calls through a same-origin Vite p
 - `npm run lint` fails because `eslint` is not in `devDependencies` and there is no eslint config committed.
 - Wallet lookup requires enabling **Settings → Wallet address lookup** and an Alchemy API key for EVM/Solana chains. Bitcoin uses Blockstream (no key).
 - Browser IndexedDB data (settings, transactions) is per-browser and per-origin — it does not sync between Cloud preview and your local Chrome.
+
+### Binance Transaction History — classification rules
+- **Spot trades** (`Transaction Buy` + `Spend` + `Fee`, `Transaction Sold` + `Revenue` + `Fee`) are stitched into single buy/sell rows with USDT cost basis.
+- **P2P trading** (`P2P Trading` operation, or `Withdraw` with P2P in the remark):
+  - **Incoming crypto** (positive `Change`) → `buy` — opens a cost-basis lot (your funding/buy side).
+  - **Outgoing crypto** (negative `Change`) → `sell` — taxable disposal in capital gains / Reports.
+  - Not treated as `transfer_in` / `transfer_out` because the counterparty is another person, not your own wallet.
+  - User can override any row in Review → mark as **internal transfer** if it was actually between their own accounts.
+- **Deposits / withdrawals** (on-chain, non-P2P) stay as `transfer_in` / `transfer_out` — mark internal transfer in Review when moving between your own wallets.

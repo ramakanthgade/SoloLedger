@@ -7,9 +7,13 @@ import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyLabel, getCurrentFy, getAvailableFys } from '@/lib/utils';
+import { formatAmountForExport, formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
+import { PageHeader } from '@/components/PageHeader';
+import { Button } from '@/components/ui/button';
+import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
+import autoTable from 'jspdf-autotable';
 
 const INCOME_KIND_LABEL: Record<string, string> = {
   income: 'Income',
@@ -29,6 +33,7 @@ export function CapitalGainsTab() {
   const [fy, setFy] = useState(getCurrentFy('IN'));
   const [currency, setCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
+  const [fyInitialized, setFyInitialized] = useState(false);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -65,6 +70,20 @@ export function CapitalGainsTab() {
     [matchedRows, incomeRows, jurisdiction]
   );
 
+  const activeFys = useMemo(() => {
+    const fys = new Set<number>();
+    for (const r of matchedRows) fys.add(getFyForTimestamp(r.sellDate, jurisdiction));
+    for (const r of incomeRows) fys.add(getFyForTimestamp(r.date, jurisdiction));
+    return Array.from(fys).sort((a, b) => b - a);
+  }, [matchedRows, incomeRows, jurisdiction]);
+
+  useEffect(() => {
+    if (fyInitialized) return;
+    if (activeFys.length === 0) return;
+    setFy(activeFys[0]);
+    setFyInitialized(true);
+  }, [activeFys, fyInitialized]);
+
   const fyBounds = useMemo(() => getFyBoundaries(fy, jurisdiction), [fy, jurisdiction]);
 
   const yearMatches = useMemo(
@@ -84,29 +103,165 @@ export function CapitalGainsTab() {
     (t) => !t.isInternalTransfer && !['transfer_in', 'transfer_out', 'fee'].includes(t.type)
   ).length;
 
+  const downloadBlob = (content: string, mime: string, filename: string) => {
+    const blob = new Blob([content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const confirmPdfExport = () =>
+    window.confirm(
+      'PDF is best for quick summaries. For detailed CA review, CSV/JSON is recommended.\n\nContinue with PDF export?'
+    );
+
+  const exportCapitalGainsCsv = () => {
+    const cur = currency.toUpperCase();
+    const header = [
+      'sell_date',
+      'buy_date',
+      'asset',
+      'quantity',
+      monetaryColumnLabel('proceeds', cur),
+      monetaryColumnLabel('cost_basis', cur),
+      monetaryColumnLabel('gain_loss', cur),
+      'holding_days',
+      'method'
+    ];
+    const gainRows = yearMatches.map((r) =>
+      [
+        new Date(r.sellDate).toISOString(),
+        new Date(r.buyDate).toISOString(),
+        r.asset,
+        r.sellAmount,
+        r.proceeds,
+        r.costBasis,
+        r.gain,
+        r.holdingDays,
+        r.method
+      ]
+        .map((v) => `"${String(v)}"`).join(',')
+    );
+    const incomeHeader = [
+      'income_date',
+      'income_kind',
+      'asset',
+      'amount',
+      monetaryColumnLabel('income_value', cur)
+    ];
+    const incomeCsvRows = yearIncome.map((r) =>
+      [
+        new Date(r.date).toISOString(),
+        r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind,
+        r.asset,
+        r.amount,
+        r.fiatValue
+      ]
+        .map((v) => `"${String(v)}"`).join(',')
+    );
+    downloadBlob(
+      [
+        header.join(','),
+        ...gainRows,
+        '',
+        '"income_rewards_section"',
+        incomeHeader.join(','),
+        ...incomeCsvRows
+      ].join('\n'),
+      'text/csv',
+      `sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.csv`
+    );
+  };
+
+  const exportCapitalGainsJson = () => {
+    downloadBlob(
+      JSON.stringify(
+        {
+          jurisdiction,
+          fy,
+          fyLabel: getFyLabel(fy, jurisdiction),
+          method,
+          exportMeta: {
+            reportingCurrency: currency.toUpperCase(),
+            monetaryFields: ['totals.totalGain', 'totals.totalIncome', 'matchedDisposals[].proceeds', 'matchedDisposals[].costBasis', 'matchedDisposals[].gain', 'incomeRows[].fiatValue']
+          },
+          currency: currency.toUpperCase(),
+          totals: { totalGain, totalIncome },
+          matchedDisposals: yearMatches,
+          incomeRows: yearIncome
+        },
+        null,
+        2
+      ),
+      'application/json',
+      `sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.json`
+    );
+  };
+
+  const exportCapitalGainsPdf = async () => {
+    if (!confirmPdfExport()) return;
+    const { doc, startY } = await createBrandedPdf({
+      reportTitle: 'Capital Gains Detail',
+      metaLines: [
+        `FY: ${getFyLabel(fy, jurisdiction)} · Method: ${method} · Jurisdiction: ${JURISDICTIONS[jurisdiction].label}`,
+        `Realized gain/loss (${currency.toUpperCase()}): ${formatAmountForExport(totalGain, currency)} · Income: ${formatAmountForExport(totalIncome, currency)}`
+      ],
+      landscape: true
+    });
+    const tbl = pdfTableStyles(7);
+    autoTable(doc, {
+      startY,
+      ...tbl,
+      head: [['Sell date', 'Asset', 'Qty', `Proceeds (${currency.toUpperCase()})`, 'Buy date', `Cost basis (${currency.toUpperCase()})`, `P&L (${currency.toUpperCase()})`]],
+      body: yearMatches.map((r) => [
+        formatDateTime(r.sellDate),
+        r.asset,
+        formatCompactAmount(r.sellAmount),
+        formatAmountForExport(r.proceeds, currency),
+        formatDateTime(r.buyDate),
+        formatAmountForExport(r.costBasis, currency),
+        formatAmountForExport(r.gain, currency)
+      ])
+    });
+    autoTable(doc, {
+      ...tbl,
+      head: [['Income date', 'Kind', 'Asset', 'Amount', `Value (${currency.toUpperCase()})`]],
+      body: yearIncome.map((r) => [
+        formatDateTime(r.date),
+        r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind,
+        r.asset,
+        formatCompactAmount(r.amount),
+        formatAmountForExport(r.fiatValue, currency)
+      ])
+    });
+    doc.save(`sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.pdf`);
+  };
+
   if (transactions.length === 0) {
     return (
       <div className="space-y-4">
-        <h2 className="font-display text-xl font-semibold text-mist">Capital Gains</h2>
-        <p className="text-sm text-mist-400">Import transactions first to see matched buy/sell pairs and P&amp;L.</p>
+        <PageHeader title="Capital Gains" subtitle="Import transactions first to see matched buy/sell pairs and P&amp;L." />
       </div>
     );
   }
 
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="font-display text-xl font-semibold text-mist">Capital Gains</h2>
-        <p className="mt-1 text-sm text-mist-400">
-          Realized gains with matched acquisitions — same concept as Koinly&apos;s{' '}
-          <em>Capital gains</em> report or CoinTracker&apos;s <em>Tax Center</em> disposal view.
-        </p>
-      </div>
+      <PageHeader
+        title="Capital Gains"
+        subtitle="Realized gains with matched acquisitions — disposal-level detail for tax filing."
+      />
 
       <div className="flex flex-wrap items-center gap-3">
         <select
           value={fy}
-          onChange={(e) => setFy(Number(e.target.value))}
+          onChange={(e) => {
+            setFy(Number(e.target.value));
+            setFyInitialized(true);
+          }}
           className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist"
         >
           {availableFys.map((y) => (
@@ -124,6 +279,12 @@ export function CapitalGainsTab() {
           <option value="SpecID">Specific ID</option>
         </select>
         <span className="text-xs text-mist-400">{JURISDICTIONS[jurisdiction].label}</span>
+        <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
+        <div className="ml-auto flex gap-2">
+          <Button variant="secondary" onClick={exportCapitalGainsCsv}>CSV</Button>
+          <Button variant="secondary" onClick={exportCapitalGainsJson}>JSON</Button>
+          <Button variant="secondary" onClick={exportCapitalGainsPdf}>PDF</Button>
+        </div>
       </div>
 
       {taxableTxCount === 0 && (
