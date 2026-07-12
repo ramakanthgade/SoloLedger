@@ -80,15 +80,29 @@ async function fetchSolanaBalances(
   try {
     const lamports = (await solanaRpc(rpcUrl, 'getBalance', [address])) as { value?: number } | number;
     const lamportVal = typeof lamports === 'number' ? lamports : lamports?.value ?? 0;
-    if (lamportVal > 0) {
-      balances.push({ asset: 'SOL', amount: lamportVal / 1e9, chain: 'solana', walletAddress: address });
-    }
 
     const tokenAccounts = (await solanaRpc(rpcUrl, 'getTokenAccountsByOwner', [
       address,
       { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
       { encoding: 'jsonParsed' }
-    ])) as { value?: Array<{ account?: { data?: { parsed?: { info?: Record<string, unknown> } } } }> };
+    ])) as {
+      value?: Array<{
+        account?: {
+          lamports?: number;
+          data?: { parsed?: { info?: Record<string, unknown> } };
+        };
+      }>;
+    };
+
+    // Main wallet + rent reserves locked in SPL token accounts = total SOL you own.
+    let ataRentLamports = 0;
+    for (const acct of tokenAccounts?.value ?? []) {
+      ataRentLamports += acct?.account?.lamports ?? 0;
+    }
+    const totalSol = (lamportVal + ataRentLamports) / 1e9;
+    if (totalSol > 0) {
+      balances.push({ asset: 'SOL', amount: totalSol, chain: 'solana', walletAddress: address });
+    }
 
     for (const acct of tokenAccounts?.value ?? []) {
       const info = acct?.account?.data?.parsed?.info as

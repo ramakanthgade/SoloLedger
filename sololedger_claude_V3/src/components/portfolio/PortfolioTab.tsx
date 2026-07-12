@@ -37,6 +37,15 @@ function applyTxToHoldings(
 ) {
   if (t.isSpam) return;
 
+  // Token-account rent is SOL moved main → ATA (still yours). Skip for holdings math.
+  if (
+    t.asset === 'SOL' &&
+    t.notes?.toLowerCase().includes('rent') &&
+    (t.type === 'transfer_out' || t.type === 'fee')
+  ) {
+    return;
+  }
+
   const sourceKey = transactionSourceKey(t);
   if (sourceKey) {
     if (appliedSourceKeys.has(sourceKey)) return;

@@ -29,6 +29,121 @@ const ALL_TYPES: TxType[] = [
   'defi_deposit', 'defi_withdraw', 'other'
 ];
 
+const ALL_FLAGS: FlagReason[] = [
+  'possible_internal_transfer',
+  'missing_cost_basis',
+  'duplicate_suspected',
+  'unrecognized_asset',
+  'needs_review'
+];
+
+const FLAG_LABELS: Record<FlagReason, string> = {
+  possible_internal_transfer: 'Possible internal transfer',
+  missing_cost_basis: 'Missing cost basis',
+  duplicate_suspected: 'Duplicate suspected',
+  unrecognized_asset: 'Unrecognized asset',
+  needs_review: 'Needs review'
+};
+
+function displayFlags(t: Transaction): string[] {
+  const flags = new Set(t.flags ?? []);
+  if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
+  return [...flags];
+}
+
+function FlagSelector({ tx }: { tx: Transaction }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const storedFlags = new Set(tx.flags ?? []);
+  const shownFlags = displayFlags(tx);
+
+  const patch = async (update: Partial<Transaction>) => {
+    setSaving(true);
+    await db.transactions.update(tx.id, update);
+    setSaving(false);
+  };
+
+  const toggleFlag = async (flag: FlagReason) => {
+    const next = new Set(tx.flags ?? []);
+    if (next.has(flag)) next.delete(flag);
+    else next.add(flag);
+    await patch({ flags: [...next] as FlagReason[] });
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Click to flag this transaction"
+        className="flex max-w-[14rem] flex-wrap items-center gap-1 text-left"
+      >
+        {tx.isInternalTransfer && <Badge tone="neutral" className="text-[10px]">internal</Badge>}
+        {tx.isSpam && <Badge tone="loss" className="text-[10px]">spam</Badge>}
+        {tx.category === 'nft' && <Badge tone="pink" className="text-[10px]">nft</Badge>}
+        {shownFlags.map((f) => (
+          <Badge key={f} tone="gold" className="text-[10px]">
+            {f.replace(/_/g, ' ')}
+          </Badge>
+        ))}
+        {shownFlags.length === 0 && !tx.isInternalTransfer && !tx.isSpam && tx.category !== 'nft' && (
+          <span className="text-[10px] text-mist-400">—</span>
+        )}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-emerald" />}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-7 z-30 min-w-[14rem] rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700">
+          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-mist-400">Flag transaction</p>
+          {ALL_FLAGS.map((flag) => {
+            const on = storedFlags.has(flag);
+            return (
+              <button
+                key={flag}
+                type="button"
+                onClick={() => void toggleFlag(flag)}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-900 ${on ? 'text-emerald-600' : 'text-mist-300'}`}
+              >
+                <span className={`h-3 w-3 rounded border ${on ? 'border-emerald bg-emerald' : 'border-ink-600'}`} />
+                {FLAG_LABELS[flag]}
+              </button>
+            );
+          })}
+          <div className="my-1 border-t border-ink-700" />
+          <button
+            type="button"
+            onClick={() =>
+              void patch({
+                isInternalTransfer: !tx.isInternalTransfer,
+                flags: tx.isInternalTransfer
+                  ? (['possible_internal_transfer'] as FlagReason[])
+                  : ([] as FlagReason[])
+              })
+            }
+            className="flex w-full px-3 py-1.5 text-left text-xs text-mist-300 hover:bg-ink-900"
+          >
+            {tx.isInternalTransfer ? '↩ Unmark internal transfer' : '✓ Mark as internal transfer'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void patch({ isSpam: !tx.isSpam })}
+            className="flex w-full px-3 py-1.5 text-left text-xs text-mist-300 hover:bg-ink-900"
+          >
+            {tx.isSpam ? '↩ Unmark spam' : '🚫 Mark as spam'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-1 border-t border-ink-700 px-3 py-1.5 text-[10px] text-mist-400 hover:text-mist"
+          >
+            <X className="h-3 w-3" /> Close
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TypeSelector({
   txId,
   current,
@@ -108,12 +223,6 @@ function truncateAddress(addr?: string): string {
   if (!addr) return '—';
   if (addr.length <= 14) return addr;
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
-
-function displayFlags(t: Transaction): string[] {
-  const flags = new Set(t.flags ?? []);
-  if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
-  return [...flags];
 }
 
 export function ReviewTab() {
@@ -250,10 +359,6 @@ export function ReviewTab() {
       setFetchingPrices(false);
       setPriceProgress(null);
     }
-  };
-
-  const markSpam = async (txId: string, spam: boolean) => {
-    await db.transactions.update(txId, { isSpam: spam });
   };
 
   const bulkMarkSpam = async () => {
@@ -848,80 +953,13 @@ export function ReviewTab() {
                       ) : '—'}
                     </td>
                     <td className="px-2 py-2 align-top">
-                      <div className="flex max-w-[14rem] flex-wrap gap-1 whitespace-normal">
-                      {t.isInternalTransfer && (
-                        <div className="relative group/internal">
-                          <Badge tone="neutral" className="cursor-pointer hover:opacity-80">internal</Badge>
-                          <div className="absolute left-0 top-5 z-20 hidden group-hover/internal:flex flex-col rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700 text-xs min-w-[15rem]">
-                            <button
-                              className="px-3 py-1.5 text-left text-mist-300 hover:bg-ink-900"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                await db.transactions.update(t.id, {
-                                  isInternalTransfer: false,
-                                  flags: ['possible_internal_transfer'] as FlagReason[]
-                                });
-                              }}
-                            >
-                              ↩ Undo — mark as NOT internal transfer
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                      {t.category === 'nft' && <Badge tone="pink">nft</Badge>}
-                      {displayFlags(t).map((f) => (
-                        f === 'possible_internal_transfer' ? (
-                          // Clickable: let user confirm as internal or dismiss
-                          <div key={f} className="relative group/flag">
-                            <Badge tone="gold" className="cursor-pointer text-[10px] hover:bg-gold/40">
-                              {f.replace(/_/g, ' ')}
-                            </Badge>
-                            <div className="absolute left-0 top-5 z-20 hidden group-hover/flag:flex flex-col rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700 text-xs min-w-[14rem]">
-                              <button
-                                className="px-3 py-1.5 text-left text-emerald-600 hover:bg-ink-900"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  await db.transactions.update(t.id, { isInternalTransfer: true, flags: [] });
-                                }}
-                              >
-                                ✓ Confirm as internal transfer
-                              </button>
-                              <button
-                                className="px-3 py-1.5 text-left text-mist-400 hover:bg-ink-900"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  await db.transactions.update(t.id, {
-                                    flags: (t.flags ?? []).filter((x) => x !== 'possible_internal_transfer') as import('@/types/transaction').FlagReason[]
-                                  });
-                                }}
-                              >
-                                ✕ Remove flag (not internal)
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <Badge key={f} tone="gold" className="text-[10px]">
-                            {f.replace(/_/g, ' ')}
-                          </Badge>
-                        )
-                      ))}
-                      </div>
+                      <FlagSelector tx={t} />
                       {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
                         <button
-                          className="ml-2 text-emerald-600 underline decoration-dotted"
+                          className="mt-1 text-emerald-600 underline decoration-dotted"
                           onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
                         >
                           match lots
-                        </button>
-                      )}
-                      {/* Show spam button only for unclassified transfers, or when already spammed */}
-                      {(t.isSpam || (['transfer_in', 'transfer_out', 'other'].includes(t.type) && !t.isInternalTransfer)) && (
-                        <button
-                          onClick={() => void markSpam(t.id, !t.isSpam)}
-                          title={t.isSpam ? 'Remove spam flag' : 'Mark as spam (excluded from taxes)'}
-                          className={`ml-1 rounded px-1.5 py-0.5 text-[10px] transition ${t.isSpam ? 'bg-loss/20 text-loss hover:bg-loss/30' : 'text-mist-400 hover:bg-ink-900 hover:text-loss'}`}
-                        >
-                          {t.isSpam ? '🚫 spam' : '🚫'}
                         </button>
                       )}
                     </td>
