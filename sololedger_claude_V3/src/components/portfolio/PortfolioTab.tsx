@@ -11,7 +11,11 @@ import { fetchLiveWalletBalances } from '@/lib/rpc/walletBalances';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
-import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
+import {
+  computeMainWalletSolFromTransactions,
+  normalizeSolLedgerRows,
+  SOL_MAIN_WALLET_TOLERANCE
+} from '@/lib/portfolio/solBalance';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
@@ -36,6 +40,8 @@ function applyTxToHoldings(
   appliedSourceKeys: Set<string>
 ) {
   if (t.isSpam) return;
+  // SOL uses PR #25 main-wallet math in holdings useMemo — not generic upsert logic.
+  if (t.asset === 'SOL') return;
 
   const sourceKey = transactionSourceKey(t);
   if (sourceKey) {
@@ -192,7 +198,7 @@ export function PortfolioTab() {
 
   // Fix legacy SOL rows (internal rent vs fee) once per session so ledger matches Phantom.
   useEffect(() => {
-    const key = 'sololedger_sol_normalize_v2';
+    const key = 'sololedger_sol_normalize_v3';
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
     void normalizeSolLedgerRows();
@@ -270,15 +276,49 @@ export function PortfolioTab() {
     return txs;
   }, [transactions, selectedWallet, selectedFy, jurisdiction]);
 
+  const solLedgerBalance = useMemo(
+    () => computeMainWalletSolFromTransactions(filteredTxs),
+    [filteredTxs]
+  );
+
   const holdings = useMemo(() => {
     const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>();
     const appliedSourceKeys = new Set<string>();
     const ledgerTxs = collapseForPortfolio(filteredTxs);
     [...ledgerTxs].sort((a, b) => a.timestamp - b.timestamp).forEach((t) => applyTxToHoldings(map, t, appliedSourceKeys));
+
+    if (Math.abs(solLedgerBalance) > 1e-9) {
+      const solMint = resolveSolanaMintAddress('SOL');
+      const solKey = `solana:mint:${solMint.toLowerCase()}`;
+      const solCost = [...filteredTxs]
+        .filter((t) => !t.isSpam && t.asset === 'SOL' && t.type === 'buy' && (t.fiatValue ?? 0) > 0)
+        .reduce((s, t) => s + (t.fiatValue ?? 0), 0);
+      map.set(solKey, {
+        amount: solLedgerBalance,
+        costBasis: solCost,
+        chain: 'solana',
+        contractAddress: solMint,
+        asset: 'SOL'
+      });
+    }
+
     return Array.from(map.values())
       .filter((h) => Math.abs(h.amount) > 1e-9)
       .sort((a, b) => b.costBasis - a.costBasis);
-  }, [filteredTxs]);
+  }, [filteredTxs, solLedgerBalance]);
+
+  /** All-time view: anchor displayed SOL to live getBalance (matches Solscan / Phantom). */
+  const displayHoldings = useMemo(() => {
+    if (selectedFy != null || liveBalanceStatus !== 'ready') return holdings;
+    const solMint = resolveSolanaMintAddress('SOL');
+    const liveSol =
+      liveByMint.get('SOL') ??
+      (solMint ? liveByMint.get(solMint.toLowerCase()) : undefined);
+    if (liveSol == null) return holdings;
+    return holdings.map((h) =>
+      h.asset === 'SOL' && h.chain === 'solana' ? { ...h, amount: liveSol } : h
+    );
+  }, [holdings, liveByMint, liveBalanceStatus, selectedFy]);
 
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
 
@@ -299,10 +339,14 @@ export function PortfolioTab() {
       .map((h) => {
         const live = lookupLiveBalance(h);
         if (live == null) return null;
-        const delta = h.amount - live;
+        const ledgerAmount = h.asset === 'SOL' && h.chain === 'solana' ? solLedgerBalance : h.amount;
+        const delta = ledgerAmount - live;
         const pct = live > 0 ? (delta / live) * 100 : 0;
-        const significant = Math.abs(delta) > Math.max(0.0001, Math.abs(live) * 0.001);
-        return significant ? { asset: h.asset, contractAddress: h.contractAddress, ledger: h.amount, live, delta, pct } : null;
+        const significant =
+          h.asset === 'SOL' && h.chain === 'solana'
+            ? Math.abs(delta) > SOL_MAIN_WALLET_TOLERANCE
+            : Math.abs(delta) > Math.max(0.0001, Math.abs(live) * 0.001);
+        return significant ? { asset: h.asset, contractAddress: h.contractAddress, ledger: ledgerAmount, live, delta, pct } : null;
       })
       .filter(Boolean) as Array<{
         asset: string;
@@ -312,7 +356,7 @@ export function PortfolioTab() {
         delta: number;
         pct: number;
       }>;
-  }, [holdings, liveByMint, liveBalanceStatus]);
+  }, [holdings, liveByMint, liveBalanceStatus, solLedgerBalance]);
 
   const balanceMismatch = balanceVariances.length > 0 ? balanceVariances[0] : null;
   const missingPriceCount = filteredTxs.filter(
@@ -428,7 +472,7 @@ export function PortfolioTab() {
         )}
 
         <span className="ml-auto text-xs text-mist-400">
-          {holdings.length} asset{holdings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
+          {displayHoldings.length} asset{displayHoldings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
         </span>
         <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
         <div className="flex gap-2">
@@ -479,7 +523,7 @@ export function PortfolioTab() {
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
-            {holdings.map((h, i) => (
+            {displayHoldings.map((h, i) => (
               <tr key={i} className="border-t border-ink-700/60 hover:bg-ink-700/20">
                 <td className="px-3 py-2 text-mist">
                   {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
@@ -492,7 +536,7 @@ export function PortfolioTab() {
                 </td>
               </tr>
             ))}
-            {holdings.length === 0 && (
+            {displayHoldings.length === 0 && (
               <tr>
                 <td colSpan={3} className="px-3 py-8 text-center text-mist-400">
                   No holdings — import transactions or adjust the filter.
