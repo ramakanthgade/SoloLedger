@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
+import { db, getSettings, getLookupAddresses, transactionSourceKey } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount,
@@ -11,7 +11,7 @@ import { fetchLiveWalletBalances } from '@/lib/rpc/walletBalances';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
-import { transactionSourceKey } from '@/lib/storage/db';
+import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
@@ -36,15 +36,6 @@ function applyTxToHoldings(
   appliedSourceKeys: Set<string>
 ) {
   if (t.isSpam) return;
-
-  // Token-account rent is SOL moved main → ATA (still yours). Skip for holdings math.
-  if (
-    t.asset === 'SOL' &&
-    t.notes?.toLowerCase().includes('rent') &&
-    (t.type === 'transfer_out' || t.type === 'fee')
-  ) {
-    return;
-  }
 
   const sourceKey = transactionSourceKey(t);
   if (sourceKey) {
@@ -197,6 +188,14 @@ export function PortfolioTab() {
       setReportingCurrency(s.reportingCurrency);
       setJurisdiction(s.jurisdiction ?? 'IN');
     });
+  }, []);
+
+  // Fix legacy SOL rows (internal rent vs fee) once per session so ledger matches Phantom.
+  useEffect(() => {
+    const key = 'sololedger_sol_normalize_v2';
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+    void normalizeSolLedgerRows();
   }, []);
 
   useEffect(() => {

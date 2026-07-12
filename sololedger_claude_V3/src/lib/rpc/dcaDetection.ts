@@ -16,6 +16,7 @@ import { isSaasMode } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
+import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
 
 export interface DcaGroup {
   vaultAddress: string;
@@ -366,14 +367,14 @@ export async function applyDcaClassification(
       .toArray();
 
     for (const sol of tinySOLTxs) {
-      // Rent moves SOL from main wallet into a token account — still yours, non-taxable.
+      // Rent leaves main wallet (Phantom balance) — record as fee, not internal skip.
       if (sol.sourceRef && depositSourceRefs.includes(sol.sourceRef)) {
         // eslint-disable-next-line no-await-in-loop
         await db.transactions.update(sol.id, {
-          type: 'transfer_out',
-          isInternalTransfer: true,
+          type: 'fee',
+          isInternalTransfer: false,
           flags: [] as FlagReason[],
-          notes: 'Token account rent deposit (Jupiter DCA setup) — non-taxable'
+          notes: 'Token account rent (Jupiter DCA setup) — reduces wallet SOL balance'
         });
         continue;
       }
@@ -452,5 +453,6 @@ export async function applyDcaClassification(
     applied++;
   }
 
+  await normalizeSolLedgerRows();
   return applied;
 }
