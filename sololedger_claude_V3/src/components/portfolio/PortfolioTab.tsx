@@ -13,6 +13,7 @@ import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import type { Transaction, Jurisdiction } from '@/types/transaction';
 import {
   computeMainWalletSolFromTransactions,
+  isNativeSolAsset,
   normalizeSolLedgerRows,
   SOL_MAIN_WALLET_TOLERANCE
 } from '@/lib/portfolio/solBalance';
@@ -63,6 +64,9 @@ async function runPortfolioLedgerRepairs(): Promise<string> {
  *   - transfer_OUT to your own other wallet (internal) → SKIP (combined multi-wallet view)
  *   - DCA escrow deposit (tax-internal, but tokens left this wallet) → DEBIT portfolio
  *   - transfer_IN that is internal → INCLUDE
+ *
+ * Trades (including USDC→SOL): debit `asset`, credit `counterAsset` — same as DBT→USDC.
+ * Native SOL quantity is finalized from computeMainWalletSolFromTransactions (fees/rent).
  */
 function applyTxToHoldings(
   map: Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>,
@@ -72,8 +76,9 @@ function applyTxToHoldings(
   dcaCtx: { dcaFillIds: Set<string>; internalDepositIds: Set<string> }
 ) {
   if (t.isSpam) return;
-  // SOL balance from computeMainWalletSolFromTransactions; only apply non-SOL legs of trades here.
-  if (t.asset === 'SOL' && t.type !== 'trade') return;
+  // SOL fees/transfers/rent applied via computeMainWalletSolFromTransactions.
+  // Trade legs for non-SOL assets still apply here; SOL quantity is overwritten below.
+  if (isNativeSolAsset(t.asset) && t.type !== 'trade') return;
 
   const sourceKey = transactionSourceKey(t);
   if (sourceKey) {
@@ -125,12 +130,15 @@ function applyTxToHoldings(
 
   if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
     if (ref) {
-      if (t.asset !== 'SOL') tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
-      if (t.counterAsset !== 'SOL') tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
+      // Cover both legs (including SOL) so duplicate transfer_in/out rows are skipped.
+      tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
+      tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
+      if (isNativeSolAsset(t.asset)) tradeCoveredLegs.add(`${ref}|SOL`);
+      if (isNativeSolAsset(t.counterAsset)) tradeCoveredLegs.add(`${ref}|SOL`);
     }
     // DCA fills deliver USDC to wallet; DBT left on deposit (escrow) — do not debit DBT here.
     if (isDcaFillTrade(t, dcaCtx.dcaFillIds)) {
-      if (t.counterAsset !== 'SOL') {
+      if (!isNativeSolAsset(t.counterAsset)) {
         upsert(
           t.counterAsset,
           t.counterAmount,
@@ -142,10 +150,11 @@ function applyTxToHoldings(
       }
       return;
     }
-    if (t.asset !== 'SOL') {
+    // Same as DBT→USDC: debit what left, credit what arrived (SOL quantity finalized later).
+    if (!isNativeSolAsset(t.asset)) {
       upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
     }
-    if (t.counterAsset !== 'SOL') {
+    if (!isNativeSolAsset(t.counterAsset)) {
       upsert(
         t.counterAsset,
         t.counterAmount,
@@ -155,7 +164,7 @@ function applyTxToHoldings(
         t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
       );
     }
-    if (t.feeAmount && t.feeAmount > 0 && (t.feeAsset ?? t.asset) !== 'SOL') {
+    if (t.feeAmount && t.feeAmount > 0 && !isNativeSolAsset(t.feeAsset ?? t.asset)) {
       upsert(
         t.feeAsset ?? t.asset,
         t.feeAmount,
@@ -164,9 +173,7 @@ function applyTxToHoldings(
         t.chain,
         t.chain === 'solana' && t.feeAsset
           ? resolveSolanaMintAddress(t.feeAsset)
-          : t.chain === 'solana' && (t.feeAsset ?? t.asset) === 'SOL'
-            ? resolveSolanaMintAddress('SOL')
-            : undefined
+          : undefined
       );
     }
     return;
@@ -303,7 +310,7 @@ export function PortfolioTab() {
 
   // Repair ledger rows once per session; only mark done after success so failures retry.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v12';
+    const key = 'sololedger_portfolio_reprocess_v13';
     if (sessionStorage.getItem(key) || repairInFlight.current) return;
     void (async () => {
       const msg = await autoRepairLedger(
@@ -411,8 +418,11 @@ export function PortfolioTab() {
     for (const t of ledgerTxs) {
       if (t.type !== 'trade' || !t.counterAsset || !t.counterAmount || !t.sourceRef || !t.walletAddress) continue;
       const ref = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
-      if (t.asset !== 'SOL') tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
-      if (t.counterAsset !== 'SOL') tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
+      tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
+      tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
+      if (isNativeSolAsset(t.asset) || isNativeSolAsset(t.counterAsset)) {
+        tradeCoveredLegs.add(`${ref}|SOL`);
+      }
     }
 
     const ordered = [...ledgerTxs].sort((a, b) => {
@@ -432,8 +442,8 @@ export function PortfolioTab() {
       const solCost = [...filteredTxs]
         .filter((t) => {
           if (t.isSpam || (t.fiatValue ?? 0) <= 0) return false;
-          if (t.asset === 'SOL' && t.type === 'buy') return true;
-          return t.type === 'trade' && t.counterAsset?.toUpperCase() === 'SOL';
+          if (isNativeSolAsset(t.asset) && t.type === 'buy') return true;
+          return t.type === 'trade' && isNativeSolAsset(t.counterAsset);
         })
         .reduce((s, t) => s + (t.fiatValue ?? 0), 0);
       map.set(solKey, {
@@ -498,7 +508,7 @@ export function PortfolioTab() {
     const needs = balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
     if (!needs || repairInFlight.current) return;
     const fingerprint = balanceVariances.map((v) => `${v.asset}:${v.delta.toFixed(6)}`).join('|');
-    const key = `sololedger_mismatch_repair_v12:${fingerprint}`;
+    const key = `sololedger_mismatch_repair_v13:${fingerprint}`;
     if (sessionStorage.getItem(key)) return;
     void (async () => {
       const msg = await autoRepairLedger(

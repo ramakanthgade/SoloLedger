@@ -915,8 +915,14 @@ export function ReviewTab() {
                         </span>
                       )}
                     </td>
-                    <td className="px-1 py-2 text-right text-mist" title={String(t.amount)}>
-                      {formatCompactAmount(t.amount)}
+                    <td className="px-1 py-2 text-right text-mist" title={
+                      t.type === 'trade' && t.counterAmount != null
+                        ? `${t.amount} → ${t.counterAmount}`
+                        : String(t.amount)
+                    }>
+                      {t.type === 'trade' && t.counterAmount != null
+                        ? `${formatCompactAmount(t.amount)} → ${formatCompactAmount(t.counterAmount)}`
+                        : formatCompactAmount(t.amount)}
                     </td>
                     <td className="px-3 py-2 text-right text-mist-300">
                       {isEditing ? (

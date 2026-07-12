@@ -5,6 +5,7 @@
 import { db } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
 import { makeId } from '@/lib/parsers/types';
+import { isNativeSolAsset } from '@/lib/portfolio/solBalance';
 import {
   getSolanaTransaction,
   swapAssociatedSol,
@@ -16,8 +17,8 @@ const MIN_SOL_LEG = 0.001;
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 function tradeTouchesSolFully(t: Transaction): boolean {
-  if (t.asset === 'SOL' && t.amount >= MIN_SOL_LEG) return true;
-  return t.counterAsset?.toUpperCase() === 'SOL' && (t.counterAmount ?? 0) >= MIN_SOL_LEG;
+  if (isNativeSolAsset(t.asset) && t.amount >= MIN_SOL_LEG) return true;
+  return isNativeSolAsset(t.counterAsset) && (t.counterAmount ?? 0) >= MIN_SOL_LEG;
 }
 
 /**
@@ -32,7 +33,7 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
         !!t.sourceRef &&
         !!t.walletAddress &&
         !t.isSpam &&
-        t.asset.toUpperCase() !== 'SOL' &&
+        !isNativeSolAsset(t.asset) &&
         (t.type === 'trade' || t.type === 'transfer_out')
     )
     .toArray();
@@ -58,7 +59,7 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
     const key = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
     if (tradeTouchesSolFully(t)) solCovered.add(key);
     if (
-      t.asset === 'SOL' &&
+      isNativeSolAsset(t.asset) &&
       (t.type === 'transfer_in' || t.type === 'income') &&
       t.amount >= MIN_SOL_LEG
     ) {
@@ -70,7 +71,7 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
   for (const t of allSolana) {
     if (t.type !== 'trade' || !t.walletAddress || !t.sourceRef) continue;
     if (
-      t.counterAsset?.toUpperCase() === 'SOL' &&
+      isNativeSolAsset(t.counterAsset) &&
       (t.counterAmount ?? 0) > 0 &&
       (t.counterAmount ?? 0) < MIN_SOL_LEG
     ) {
