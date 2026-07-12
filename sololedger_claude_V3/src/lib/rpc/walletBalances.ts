@@ -10,6 +10,9 @@
  */
 
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 
 export interface TokenBalance {
   asset: string;
@@ -37,39 +40,64 @@ const MORALIS_CHAIN_NATIVE: Record<string, string> = {
 
 // ─── Helius / Alchemy Solana ────────────────────────────────────────────────
 
+async function solanaRpc(rpcUrl: string, method: string, params: unknown[]): Promise<unknown> {
+  const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method, params });
+  const init: RequestInit = {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body
+  };
+  const apiBase = isSaasMode() ? getApiBase() : '';
+  const res =
+    apiBase && rpcUrl.startsWith(apiBase)
+      ? await saasProxyFetch(rpcUrl.slice(apiBase.length), init)
+      : await fetch(rpcUrl, init);
+  const data = await res.json();
+  return data?.result;
+}
+
+function resolveSolanaRpcUrl(config: WalletBalancesConfig): string | null {
+  if (config.heliusApiKey) {
+    if (isSaasMode() && config.heliusApiKey === SAAS_PROXY_KEY) {
+      return `${getApiBase()}/api/proxy/helius/`;
+    }
+    return `https://mainnet.helius-rpc.com/?api-key=${config.heliusApiKey}`;
+  }
+  if (config.alchemyApiKey) {
+    if (isSaasMode() && config.alchemyApiKey === SAAS_PROXY_KEY) {
+      return `${getApiBase()}/api/proxy/alchemy/solana-mainnet`;
+    }
+    return `https://solana-mainnet.g.alchemy.com/v2/${config.alchemyApiKey}`;
+  }
+  return null;
+}
+
 async function fetchSolanaBalances(
   address: string,
   rpcUrl: string
 ): Promise<TokenBalance[]> {
   const balances: TokenBalance[] = [];
   try {
-    // Native SOL
-    const solRes = await fetch(rpcUrl, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getBalance', params: [address] })
-    });
-    const solData = await solRes.json();
-    const lamports: number = solData?.result?.value ?? 0;
-    if (lamports > 0) {
-      balances.push({ asset: 'SOL', amount: lamports / 1e9, chain: 'solana', walletAddress: address });
+    const lamports = (await solanaRpc(rpcUrl, 'getBalance', [address])) as { value?: number } | number;
+    const lamportVal = typeof lamports === 'number' ? lamports : lamports?.value ?? 0;
+    if (lamportVal > 0) {
+      balances.push({ asset: 'SOL', amount: lamportVal / 1e9, chain: 'solana', walletAddress: address });
     }
 
-    // SPL tokens
-    const tokRes = await fetch(rpcUrl, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0', id: 2,
-        method: 'getTokenAccountsByOwner',
-        params: [address, { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' }, { encoding: 'jsonParsed' }]
-      })
-    });
-    const tokData = await tokRes.json();
-    for (const acct of tokData?.result?.value ?? []) {
-      const info = acct?.account?.data?.parsed?.info;
+    const tokenAccounts = (await solanaRpc(rpcUrl, 'getTokenAccountsByOwner', [
+      address,
+      { programId: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA' },
+      { encoding: 'jsonParsed' }
+    ])) as { value?: Array<{ account?: { data?: { parsed?: { info?: Record<string, unknown> } } } }> };
+
+    for (const acct of tokenAccounts?.value ?? []) {
+      const info = acct?.account?.data?.parsed?.info as
+        | { tokenAmount?: { uiAmount?: number }; mint?: string }
+        | undefined;
       if (!info) continue;
-      const uiAmount: number = info.tokenAmount?.uiAmount ?? 0;
+      const uiAmount = info.tokenAmount?.uiAmount ?? 0;
       if (uiAmount <= 0) continue;
-      const mint: string = info.mint;
+      const mint = info.mint ?? '';
       const symbol = resolveSolanaMintSymbol(mint) ?? `${mint.slice(0, 4)}…${mint.slice(-4)}`;
       balances.push({ asset: symbol, amount: uiAmount, contractAddress: mint, chain: 'solana', walletAddress: address });
     }
@@ -130,13 +158,9 @@ export async function fetchLiveWalletBalances(
   config: WalletBalancesConfig
 ): Promise<TokenBalance[]> {
   if (chainId === 'solana') {
-    if (config.heliusApiKey) {
-      return fetchSolanaBalances(address, `https://mainnet.helius-rpc.com/?api-key=${config.heliusApiKey}`);
-    }
-    if (config.alchemyApiKey) {
-      return fetchSolanaBalances(address, `https://solana-mainnet.g.alchemy.com/v2/${config.alchemyApiKey}`);
-    }
-    return [];
+    const rpcUrl = resolveSolanaRpcUrl(config);
+    if (!rpcUrl) return [];
+    return fetchSolanaBalances(address, rpcUrl);
   }
   const slug = MORALIS_CHAIN_SLUG[chainId];
   if (slug && config.moralisApiKey) {

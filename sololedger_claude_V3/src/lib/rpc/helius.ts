@@ -72,21 +72,13 @@ function resolveSymbol(mint: string): string {
 }
 
 function parseSignedTokenBalanceChange(ch: Record<string, unknown>): number | null {
+  const raw = ch.rawTokenAmount as { tokenAmount?: string | number; decimals?: number } | undefined;
+  if (raw?.tokenAmount != null) {
+    const decimals = raw.decimals ?? (ch.decimals as number | undefined) ?? 0;
+    return Number(BigInt(String(raw.tokenAmount))) / 10 ** decimals;
+  }
   if (typeof ch.tokenAmount === 'number') return ch.tokenAmount;
-
-  const raw = (ch.rawTokenAmount ?? ch.tokenAmount) as
-    | { tokenAmount?: string | number; decimals?: number }
-    | undefined;
-  if (raw?.tokenAmount == null) return null;
-
-  const decimals = raw.decimals ?? (ch.decimals as number | undefined) ?? 0;
-  let amount = Number(BigInt(String(raw.tokenAmount))) / 10 ** decimals;
-
-  const changeType = String(ch.changeType ?? ch.change ?? '').toLowerCase();
-  if (changeType.includes('decrease') || changeType === 'dec') amount = -Math.abs(amount);
-  else if (changeType.includes('increase') || changeType === 'inc') amount = Math.abs(amount);
-
-  return amount;
+  return null;
 }
 
 /** Owner-level net SPL delta per mint from Helius accountData (sums all ATAs). */
@@ -97,12 +89,15 @@ function ownerNetByMintFromAccountData(
   const netByMint = new Map<string, number>();
   const mintsWithData = new Set<string>();
 
+  const walletLower = walletAddress.toLowerCase();
+
   for (const acct of accountData ?? []) {
     for (const ch of acct.tokenBalanceChanges ?? []) {
       const mint: string | undefined = ch.mint ?? ch.tokenMint;
       const userAcct: string | undefined = ch.userAccount ?? ch.owner;
       if (!mint) continue;
-      if (userAcct && userAcct !== walletAddress) continue;
+      // Only count balance changes explicitly owned by this wallet (ignore orphan ATA rows).
+      if (!userAcct || userAcct.toLowerCase() !== walletLower) continue;
 
       const signed = parseSignedTokenBalanceChange(ch);
       if (signed == null || Math.abs(signed) < 1e-12) continue;
@@ -121,8 +116,18 @@ function ownerNetByMintFromTokenTransfers(
   walletAddress: string
 ): Map<string, { net: number; counterparty?: string }> {
   const netByMint = new Map<string, { net: number; counterparty?: string }>();
+  const seenLegs = new Set<string>();
 
   for (const t of transfers) {
+    const legKey = [
+      t.mint,
+      t.fromTokenAccount ?? t.fromUserAccount,
+      t.toTokenAccount ?? t.toUserAccount,
+      t.tokenAmount
+    ].join('|');
+    if (seenLegs.has(legKey)) continue;
+    seenLegs.add(legKey);
+
     if (t.fromUserAccount === walletAddress) {
       const prev = netByMint.get(t.mint) ?? { net: 0 };
       netByMint.set(t.mint, {
@@ -160,7 +165,8 @@ function pushSplBalanceRow(
   const sourceKey = transactionSourceKey({
     sourceRef: htx.signature,
     walletAddress,
-    asset
+    asset,
+    contractAddress: mint
   });
   if (sourceKey && rows.some((r) => transactionSourceKey(r) === sourceKey)) return;
 
@@ -222,11 +228,11 @@ function heliusSwapToTrade(
     const out = swap.tokenOutputs?.[0];
     if (inp) {
       inputMint = inp.mint;
-      inputAmount = rawAmountToDecimal(inp.rawTokenAmount.tokenAmount, inp.rawTokenAmount.decimals);
+      inputAmount = Math.abs(rawAmountToDecimal(inp.rawTokenAmount.tokenAmount, inp.rawTokenAmount.decimals));
     }
     if (out) {
       outputMint = out.mint;
-      outputAmount = rawAmountToDecimal(out.rawTokenAmount.tokenAmount, out.rawTokenAmount.decimals);
+      outputAmount = Math.abs(rawAmountToDecimal(out.rawTokenAmount.tokenAmount, out.rawTokenAmount.decimals));
     }
     if (!inputMint && swap.nativeInput) {
       inputMint = 'So11111111111111111111111111111111111111112';
@@ -288,31 +294,41 @@ function heliusTransferToRows(
   const rows: Transaction[] = [];
 
   const transferNet = ownerNetByMintFromTokenTransfers(htx.tokenTransfers, walletAddress);
-  const { netByMint: accountDataNet, mintsWithData } = ownerNetByMintFromAccountData(
+  const { netByMint: accountDataNet } = ownerNetByMintFromAccountData(
     htx.accountData,
     walletAddress
   );
 
-  const allMints = new Set<string>([
-    ...transferNet.keys(),
-    ...accountDataNet.keys()
-  ]);
+  const walletLower = walletAddress.toLowerCase();
+  const walletHasSplAccountData = (htx.accountData ?? []).some((acct) =>
+    (acct.tokenBalanceChanges ?? []).some((ch) => {
+      const userAcct: string | undefined = ch.userAccount ?? ch.owner;
+      return !!userAcct && userAcct.toLowerCase() === walletLower && !!(ch.mint ?? ch.tokenMint);
+    })
+  );
 
-  for (const mint of allMints) {
-    const useAccountData = mintsWithData.has(mint);
-    const net = useAccountData
-      ? (accountDataNet.get(mint) ?? 0)
-      : (transferNet.get(mint)?.net ?? 0);
-    const counterparty = transferNet.get(mint)?.counterparty;
-
-    pushSplBalanceRow(rows, {
-      htx,
-      walletAddress,
-      mint,
-      net,
-      counterparty,
-      fromAccountData: useAccountData
-    });
+  if (walletHasSplAccountData) {
+    for (const [mint, net] of accountDataNet) {
+      pushSplBalanceRow(rows, {
+        htx,
+        walletAddress,
+        mint,
+        net,
+        counterparty: transferNet.get(mint)?.counterparty,
+        fromAccountData: true
+      });
+    }
+  } else {
+    for (const [mint, { net, counterparty }] of transferNet) {
+      pushSplBalanceRow(rows, {
+        htx,
+        walletAddress,
+        mint,
+        net,
+        counterparty,
+        fromAccountData: false
+      });
+    }
   }
 
   // Net native SOL delta — avoids double-counting fee + transfer legs in one tx.
