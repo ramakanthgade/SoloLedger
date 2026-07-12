@@ -1,32 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSettings, getLookupAddresses, transactionSourceKey } from '@/lib/storage/db';
+import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount,
   getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel
 } from '@/lib/utils';
-import { resolveAssetLabel, resolveSolanaMintAddress } from '@/lib/assets/solanaMints';
+import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { fetchLiveWalletBalances } from '@/lib/rpc/walletBalances';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
-import type { Transaction, Jurisdiction } from '@/types/transaction';
+import type { Jurisdiction } from '@/types/transaction';
+import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
+import { buildPortfolioHoldings, portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
 import {
-  computeMainWalletSolFromTransactions,
-  isNativeSolAsset,
-  normalizeSolLedgerRows,
-  SOL_MAIN_WALLET_TOLERANCE
-} from '@/lib/portfolio/solBalance';
-import {
-  applyRuntimeDcaFlags,
-  buildPortfolioDcaContext,
-  isDcaEscrowDeposit,
-  isDcaFillTrade
-} from '@/lib/portfolio/portfolioHoldings';
+  ALL_WALLETS,
+  checkLedgerIntegrity,
+  compareHoldingsToLive,
+  crossCheckModeUsesLiveRpc,
+  formatWalletShort,
+  resolveCrossCheckMode,
+  summarizePortfolioSources
+} from '@/lib/portfolio/portfolioValidation';
 import { repairMissingSolSwapLegs, repairUsdcOvercount } from '@/lib/portfolio/repairSolSwapLegs';
 import { reconcileSolanaWalletsFromChain } from '@/lib/portfolio/reconcileWalletChain';
 import { collapseDuplicateTradeTransferLegs } from '@/lib/portfolio/collapseDuplicateLegs';
-import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { applyDcaClassification, detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { PageHeader } from '@/components/PageHeader';
@@ -57,226 +55,14 @@ async function runPortfolioLedgerRepairs(): Promise<string> {
   return reconcile.message;
 }
 
-/**
- * Transaction-based holdings calculator.
- *
- * Internal transfer rules:
- *   - transfer_OUT to your own other wallet (internal) → SKIP (combined multi-wallet view)
- *   - DCA escrow deposit (tax-internal, but tokens left this wallet) → DEBIT portfolio
- *   - transfer_IN that is internal → INCLUDE
- *
- * Trades (including USDC→SOL): debit `asset`, credit `counterAsset` — same as DBT→USDC.
- * Native SOL quantity is finalized from computeMainWalletSolFromTransactions (fees/rent).
- */
-function applyTxToHoldings(
-  map: Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>,
-  t: Transaction,
-  appliedSourceKeys: Set<string>,
-  tradeCoveredLegs: Set<string>,
-  dcaCtx: { dcaFillIds: Set<string>; internalDepositIds: Set<string> }
-) {
-  if (t.isSpam) return;
-  // SOL fees/transfers/rent applied via computeMainWalletSolFromTransactions.
-  // Trade legs for non-SOL assets still apply here; SOL quantity is overwritten below.
-  if (isNativeSolAsset(t.asset) && t.type !== 'trade') return;
-
-  const sourceKey = transactionSourceKey(t);
-  if (sourceKey) {
-    if (appliedSourceKeys.has(sourceKey)) return;
-    appliedSourceKeys.add(sourceKey);
-  }
-
-  const ref = t.sourceRef && t.walletAddress
-    ? `${t.walletAddress.toLowerCase()}|${t.sourceRef}`
-    : null;
-
-  // Skip duplicate transfer legs already represented on a trade for this on-chain tx.
-  if (
-    ref &&
-    (t.type === 'transfer_in' || t.type === 'transfer_out' || t.type === 'income') &&
-    tradeCoveredLegs.has(`${ref}|${t.asset.toUpperCase()}`)
-  ) {
-    return;
-  }
-
-  // Skip OUTGOING internal transfers between own wallets — but NOT DCA escrow deposits
-  // (those left the wallet on-chain and must reduce holdings).
-  if (
-    t.isInternalTransfer &&
-    (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent') &&
-    !isDcaEscrowDeposit(t, dcaCtx.internalDepositIds)
-  ) {
-    return;
-  }
-
-  const upsert = (
-    asset: string, amount: number, sign: 1 | -1,
-    costAdd: number, chain?: string, ca?: string
-  ) => {
-    const label = resolveAssetLabel(asset, ca, chain);
-    const mint = ca ?? (chain === 'solana' ? resolveSolanaMintAddress(asset) : undefined);
-    const key = mint
-      ? `${chain ?? 'x'}:mint:${mint.toLowerCase()}`
-      : `${chain ?? 'x'}:${label.toUpperCase()}`;
-    if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress: mint, asset: label });
-    const h = map.get(key)!;
-    if (sign > 0) { h.amount += amount; h.costBasis += costAdd; return; }
-    if (h.amount > 1e-9) {
-      const q = Math.min(amount, h.amount);
-      h.costBasis -= h.costBasis * (q / h.amount);
-      h.amount -= q;
-    }
-  };
-
-  if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
-    if (ref) {
-      // Cover both legs (including SOL) so duplicate transfer_in/out rows are skipped.
-      tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
-      tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
-      if (isNativeSolAsset(t.asset)) tradeCoveredLegs.add(`${ref}|SOL`);
-      if (isNativeSolAsset(t.counterAsset)) tradeCoveredLegs.add(`${ref}|SOL`);
-    }
-    // DCA fills deliver USDC to wallet; DBT left on deposit (escrow) — do not debit DBT here.
-    if (isDcaFillTrade(t, dcaCtx.dcaFillIds)) {
-      if (!isNativeSolAsset(t.counterAsset)) {
-        upsert(
-          t.counterAsset,
-          t.counterAmount,
-          1,
-          t.fiatValue ?? 0,
-          t.chain,
-          t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
-        );
-      }
-      return;
-    }
-    // Same as DBT→USDC: debit what left, credit what arrived (SOL quantity finalized later).
-    if (!isNativeSolAsset(t.asset)) {
-      upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
-    }
-    if (!isNativeSolAsset(t.counterAsset)) {
-      upsert(
-        t.counterAsset,
-        t.counterAmount,
-        1,
-        t.fiatValue ?? 0,
-        t.chain,
-        t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
-      );
-    }
-    if (t.feeAmount && t.feeAmount > 0 && !isNativeSolAsset(t.feeAsset ?? t.asset)) {
-      upsert(
-        t.feeAsset ?? t.asset,
-        t.feeAmount,
-        -1,
-        0,
-        t.chain,
-        t.chain === 'solana' && t.feeAsset
-          ? resolveSolanaMintAddress(t.feeAsset)
-          : undefined
-      );
-    }
-    return;
-  }
-
-  // Some CSV formats (e.g. Coinbase Advanced Trade Buy/Sell) carry the
-  // quote-asset leg in notes rather than as a `trade` row type.
-  if (t.type === 'buy' && t.counterAsset && t.counterAmount) {
-    upsert(t.asset, t.amount, 1, t.fiatValue ?? 0, t.chain, t.contractAddress);
-    upsert(
-      t.counterAsset,
-      t.counterAmount,
-      -1,
-      0,
-      t.chain,
-      t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
-    );
-    return;
-  }
-  if (t.type === 'sell' && t.counterAsset && t.counterAmount) {
-    upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
-    upsert(
-      t.counterAsset,
-      t.counterAmount,
-      1,
-      t.fiatValue ?? 0,
-      t.chain,
-      t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
-    );
-    return;
-  }
-
-  const sign =
-    ['buy', 'transfer_in', 'income', 'gift_received'].includes(t.type) ? 1
-    : ['sell', 'transfer_out', 'gift_sent', 'fee'].includes(t.type) ? -1
-    : 0;
-  if (sign === 0) return;
-  upsert(t.asset, t.amount, sign as 1 | -1, sign > 0 ? (t.fiatValue ?? 0) : 0, t.chain, t.contractAddress);
-
-  if (t.feeAmount && t.feeAmount > 0 && t.type !== 'trade') {
-    upsert(
-      t.feeAsset ?? t.asset,
-      t.feeAmount,
-      -1,
-      0,
-      t.chain,
-      t.chain === 'solana' && (t.feeAsset ?? t.asset).toUpperCase() === 'SOL'
-        ? resolveSolanaMintAddress('SOL')
-        : undefined
-    );
-  }
-}
-
-const ALL_WALLETS = 'All wallets';
-
-const PORTFOLIO_TYPE_PRIORITY: Partial<Record<Transaction['type'], number>> = {
-  income: 5,
-  trade: 4,
-  buy: 3,
-  sell: 3,
-  transfer_in: 2,
-  transfer_out: 2,
-  fee: 2
-};
-
-/** One row per on-chain tx + asset — prefer income/trade over duplicate transfer rows. */
-function collapseForPortfolio(txs: Transaction[]): Transaction[] {
-  const tradesByRef = new Map<string, Transaction>();
-  for (const t of txs) {
-    if (t.type !== 'trade' || !t.sourceRef || !t.walletAddress) continue;
-    tradesByRef.set(`${t.walletAddress.toLowerCase()}|${t.sourceRef}`, t);
-  }
-
-  const best = new Map<string, Transaction>();
-  for (const t of txs) {
-    const sk = transactionSourceKey(t);
-    if (!sk) continue;
-    const prev = best.get(sk);
-    if (!prev || portfolioRowScore(t) > portfolioRowScore(prev)) best.set(sk, t);
-  }
-  return txs.filter((t) => {
-    const sk = transactionSourceKey(t);
-    if (sk && best.get(sk) !== t) return false;
-    if (t.sourceRef && t.walletAddress) {
-      const trade = tradesByRef.get(`${t.walletAddress.toLowerCase()}|${t.sourceRef}`);
-      if (trade && isAbsorbedTradeLeg(t, trade)) return false;
-    }
-    return true;
-  });
-}
-
-function portfolioRowScore(t: Transaction): number {
-  const typeScore = PORTFOLIO_TYPE_PRIORITY[t.type] ?? 0;
-  return typeScore * 1_000_000 + (t.fiatValue != null ? 10_000 : 0) + t.amount;
-}
-
 export function PortfolioTab() {
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const [reportingCurrency, setReportingCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [selectedWallet, setSelectedWallet] = useState<string>(ALL_WALLETS);
-  const [liveByMint, setLiveByMint] = useState<Map<string, number>>(new Map());
+  const lookupAddresses = useLiveQuery(() => getLookupAddresses(), []) ?? [];
+  const [liveByWallet, setLiveByWallet] = useState<Map<string, Map<string, number>>>(new Map());
   const [liveBalanceStatus, setLiveBalanceStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
   const [repairingBalances, setRepairingBalances] = useState(false);
   const [repairMsg, setRepairMsg] = useState<string | null>(null);
@@ -308,21 +94,37 @@ export function PortfolioTab() {
     }
   };
 
-  // Repair ledger rows once per session; only mark done after success so failures retry.
+  // Repair ledger rows once per session when Solana wallets are imported.
   useEffect(() => {
-    const key = 'sololedger_portfolio_reprocess_v14';
+    const key = 'sololedger_portfolio_reprocess_v15';
     if (sessionStorage.getItem(key) || repairInFlight.current) return;
+    if (lookupAddresses.filter((w) => w.chain === 'solana').length === 0) return;
     void (async () => {
       const msg = await autoRepairLedger(
         'Checking ledger against on-chain history — this can take up to a minute…'
       );
       if (msg != null) sessionStorage.setItem(key, '1');
     })();
-  }, []);
+  }, [lookupAddresses.length]);
+
+  const nonSpamTxs = useMemo(
+    () => transactions.filter((t) => !t.isSpam),
+    [transactions]
+  );
+
+  const sourceSummary = useMemo(
+    () => summarizePortfolioSources(nonSpamTxs, lookupAddresses),
+    [nonSpamTxs, lookupAddresses]
+  );
+
+  const crossCheckMode = useMemo(
+    () => resolveCrossCheckMode(nonSpamTxs, lookupAddresses, selectedWallet),
+    [nonSpamTxs, lookupAddresses, selectedWallet]
+  );
 
   useEffect(() => {
-    if (selectedFy != null) {
-      setLiveByMint(new Map());
+    if (selectedFy != null || !crossCheckModeUsesLiveRpc(crossCheckMode)) {
+      setLiveByWallet(new Map());
       setLiveBalanceStatus('idle');
       return;
     }
@@ -342,26 +144,31 @@ export function PortfolioTab() {
         return;
       }
 
-      const wallets = await getLookupAddresses();
-      const solWallets = wallets.filter((w) => w.chain === 'solana');
-      const scoped =
-        selectedWallet === ALL_WALLETS
-          ? solWallets
-          : solWallets.filter((w) => w.address.toLowerCase() === selectedWallet.toLowerCase());
+      const solWallets = lookupAddresses.filter((w) => w.chain === 'solana');
+      let scoped = solWallets;
+      if (crossCheckMode === 'scoped_wallet_live') {
+        scoped = solWallets.filter(
+          (w) => w.address.toLowerCase() === selectedWallet.toLowerCase()
+        );
+      } else if (crossCheckMode === 'single_wallet_live') {
+        scoped = solWallets.slice(0, 1);
+      }
 
-      const next = new Map<string, number>();
+      const next = new Map<string, Map<string, number>>();
       for (const w of scoped) {
+        const wm = new Map<string, number>();
         const bals = await fetchLiveWalletBalances(w.address, 'solana', config);
         for (const b of bals) {
           const mintKey = b.contractAddress?.toLowerCase();
           const symKey = b.asset.toUpperCase();
-          if (mintKey) next.set(mintKey, (next.get(mintKey) ?? 0) + b.amount);
-          next.set(symKey, (next.get(symKey) ?? 0) + b.amount);
+          if (mintKey) wm.set(mintKey, (wm.get(mintKey) ?? 0) + b.amount);
+          wm.set(symKey, (wm.get(symKey) ?? 0) + b.amount);
         }
+        next.set(w.address.toLowerCase(), wm);
       }
 
       if (!cancelled) {
-        setLiveByMint(next);
+        setLiveByWallet(next);
         setLiveBalanceStatus(scoped.length > 0 ? 'ready' : 'unavailable');
       }
     })();
@@ -369,7 +176,7 @@ export function PortfolioTab() {
     return () => {
       cancelled = true;
     };
-  }, [selectedWallet, selectedFy, transactions.length]);
+  }, [selectedWallet, selectedFy, transactions.length, crossCheckMode, lookupAddresses]);
 
   const availableFys = useMemo(
     () => getAvailableFys(transactions.map((t) => t.timestamp), jurisdiction),
@@ -392,123 +199,67 @@ export function PortfolioTab() {
     return txs;
   }, [transactions, selectedWallet, selectedFy, jurisdiction]);
 
-  const dcaCtx = useMemo(
-    () => buildPortfolioDcaContext(filteredTxs),
+  const holdings = useMemo(
+    () => buildPortfolioHoldings(filteredTxs),
     [filteredTxs]
   );
 
-  const portfolioLedgerTxs = useMemo(
-    () => applyRuntimeDcaFlags(filteredTxs, dcaCtx),
-    [filteredTxs, dcaCtx]
+  const integrityIssues = useMemo(
+    () => checkLedgerIntegrity(holdings, sourceSummary),
+    [holdings, sourceSummary]
   );
-
-  const solLedgerBalance = useMemo(
-    () => computeMainWalletSolFromTransactions(portfolioLedgerTxs),
-    [portfolioLedgerTxs]
-  );
-
-  const holdings = useMemo(() => {
-    const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>();
-    const appliedSourceKeys = new Set<string>();
-    const tradeCoveredLegs = new Set<string>();
-    const ledgerTxs = collapseForPortfolio(portfolioLedgerTxs);
-
-    // Pre-mark assets already represented on trade rows so duplicate transfer legs are skipped
-    // even if a transfer is sorted before its trade for any reason.
-    for (const t of ledgerTxs) {
-      if (t.type !== 'trade' || !t.counterAsset || !t.counterAmount || !t.sourceRef || !t.walletAddress) continue;
-      const ref = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
-      tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
-      tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
-      if (isNativeSolAsset(t.asset) || isNativeSolAsset(t.counterAsset)) {
-        tradeCoveredLegs.add(`${ref}|SOL`);
-      }
-    }
-
-    const ordered = [...ledgerTxs].sort((a, b) => {
-      const ta = a.timestamp - b.timestamp;
-      if (ta !== 0) return ta;
-      const rank = (t: Transaction) => (t.type === 'trade' ? 0 : t.type === 'fee' ? 2 : 1);
-      return rank(a) - rank(b);
-    });
-    for (const t of ordered) {
-      applyTxToHoldings(map, t, appliedSourceKeys, tradeCoveredLegs, dcaCtx);
-    }
-
-    if (Math.abs(solLedgerBalance) > 1e-9) {
-      const solMint = resolveSolanaMintAddress('SOL');
-      const solKey = `solana:mint:${solMint.toLowerCase()}`;
-      // Include USDC→SOL (etc.) trades where SOL arrives as counterAsset.
-      const solCost = [...filteredTxs]
-        .filter((t) => {
-          if (t.isSpam || (t.fiatValue ?? 0) <= 0) return false;
-          if (isNativeSolAsset(t.asset) && t.type === 'buy') return true;
-          return t.type === 'trade' && isNativeSolAsset(t.counterAsset);
-        })
-        .reduce((s, t) => s + (t.fiatValue ?? 0), 0);
-      map.set(solKey, {
-        amount: solLedgerBalance,
-        costBasis: solCost,
-        chain: 'solana',
-        contractAddress: solMint,
-        asset: 'SOL'
-      });
-    }
-
-    return Array.from(map.values())
-      .filter((h) => Math.abs(h.amount) > 1e-9)
-      .sort((a, b) => b.costBasis - a.costBasis);
-  }, [portfolioLedgerTxs, solLedgerBalance, dcaCtx]);
 
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
 
-  const holdingKey = (h: { contractAddress?: string; asset: string; chain?: string }) => {
-    const mint = h.contractAddress ?? (h.chain === 'solana' ? resolveSolanaMintAddress(h.asset) : undefined);
-    return mint?.toLowerCase() ?? h.asset.toUpperCase();
-  };
-
-  const lookupLiveBalance = (h: { contractAddress?: string; asset: string; chain?: string }) => {
-    const mintKey = holdingKey(h);
-    const symKey = h.asset.toUpperCase();
-    return liveByMint.get(mintKey) ?? liveByMint.get(symKey);
-  };
-
   const balanceVariances = useMemo(() => {
     if (liveBalanceStatus !== 'ready' || selectedFy != null) return [];
-    return holdings
-      .map((h) => {
-        const live = lookupLiveBalance(h);
-        if (live == null) return null;
-        const delta = h.amount - live;
-        const pct = live > 0 ? (delta / live) * 100 : 0;
-        const significant =
-          h.asset === 'SOL' && h.chain === 'solana'
-            ? Math.abs(delta) > SOL_MAIN_WALLET_TOLERANCE
-            : Math.abs(delta) > Math.max(0.0001, Math.abs(live) * 0.001);
-        return significant
-          ? { asset: h.asset, contractAddress: h.contractAddress, ledger: h.amount, live, delta, pct }
-          : null;
-      })
-      .filter(Boolean) as Array<{
-        asset: string;
-        contractAddress?: string;
-        ledger: number;
-        live: number;
-        delta: number;
-        pct: number;
-      }>;
-  }, [holdings, liveByMint, liveBalanceStatus, selectedFy]);
+    if (!crossCheckModeUsesLiveRpc(crossCheckMode)) return [];
 
-  const balanceMismatch = balanceVariances.length > 0 ? balanceVariances[0] : null;
+    if (crossCheckMode === 'per_wallet_live') {
+      const all: ReturnType<typeof compareHoldingsToLive> = [];
+      for (const w of lookupAddresses.filter((l) => l.chain === 'solana')) {
+        const wLower = w.address.toLowerCase();
+        const wTxs = nonSpamTxs.filter((t) => t.walletAddress?.toLowerCase() === wLower);
+        const wHoldings = buildPortfolioHoldings(wTxs);
+        const liveMap = liveByWallet.get(wLower);
+        if (!liveMap) continue;
+        all.push(...compareHoldingsToLive(wHoldings, liveMap, portfolioHoldingKey, w.address));
+      }
+      return all;
+    }
 
-  // If live mismatch remains (SOL/USDC), auto-repair again — no manual click.
-  // Earlier attempts may have failed (RPC down) or run before SOL counterAsset math landed.
+    const walletKey =
+      crossCheckMode === 'scoped_wallet_live'
+        ? selectedWallet.toLowerCase()
+        : lookupAddresses.find((w) => w.chain === 'solana')?.address.toLowerCase();
+    const liveMap = walletKey ? liveByWallet.get(walletKey) : undefined;
+    if (!liveMap) return [];
+    return compareHoldingsToLive(holdings, liveMap, portfolioHoldingKey);
+  }, [
+    holdings,
+    liveByWallet,
+    liveBalanceStatus,
+    selectedFy,
+    crossCheckMode,
+    lookupAddresses,
+    nonSpamTxs,
+    selectedWallet
+  ]);
+
+  // Auto-repair on mismatch only when live on-chain cross-check is meaningful.
   useEffect(() => {
-    if (liveBalanceStatus !== 'ready' || selectedFy != null || repairingBalances) return;
+    if (
+      liveBalanceStatus !== 'ready' ||
+      selectedFy != null ||
+      repairingBalances ||
+      !crossCheckModeUsesLiveRpc(crossCheckMode)
+    ) {
+      return;
+    }
     const needs = balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
     if (!needs || repairInFlight.current) return;
-    const fingerprint = balanceVariances.map((v) => `${v.asset}:${v.delta.toFixed(6)}`).join('|');
-    const key = `sololedger_mismatch_repair_v14:${fingerprint}`;
+    const fingerprint = balanceVariances.map((v) => `${v.wallet ?? 'all'}:${v.asset}:${v.delta.toFixed(6)}`).join('|');
+    const key = `sololedger_mismatch_repair_v15:${fingerprint}`;
     if (sessionStorage.getItem(key)) return;
     void (async () => {
       const msg = await autoRepairLedger(
@@ -516,7 +267,7 @@ export function PortfolioTab() {
       );
       if (msg != null) sessionStorage.setItem(key, '1');
     })();
-  }, [balanceVariances, liveBalanceStatus, selectedFy, repairingBalances]);
+  }, [balanceVariances, liveBalanceStatus, selectedFy, repairingBalances, crossCheckMode]);
 
   const missingPriceCount = filteredTxs.filter(
     (t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer
@@ -641,21 +392,42 @@ export function PortfolioTab() {
         </div>
       </div>
 
-      {(repairingBalances || (balanceMismatch && selectedFy == null)) && (
+      {(repairingBalances ||
+        (balanceVariances.length > 0 && selectedFy == null && crossCheckModeUsesLiveRpc(crossCheckMode))) && (
         <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-mist-300">
           {repairingBalances ? (
             <p>Repairing ledger automatically — scanning on-chain history…</p>
-          ) : balanceMismatch ? (
-            <p>
-              <strong className="text-loss">{balanceMismatch.asset} still differs from wallet:</strong>{' '}
-              ledger {formatCompactAmount(balanceMismatch.ledger)} vs wallet{' '}
-              {formatCompactAmount(balanceMismatch.live)}. Automatic repair already ran for this
-              session; try a hard refresh after import finishes, or re-import the wallet if gaps remain.
-            </p>
+          ) : balanceVariances.length > 0 ? (
+            <div className="space-y-1">
+              {balanceVariances.map((v) => (
+                <p key={`${v.wallet ?? 'all'}-${v.asset}`}>
+                  <strong className="text-loss">{v.asset} differs from chain</strong>
+                  {v.wallet ? ` (${formatWalletShort(v.wallet)})` : ''}: ledger{' '}
+                  {formatCompactAmount(v.ledger)} vs wallet {formatCompactAmount(v.live)}.
+                </p>
+              ))}
+              <p className="text-xs text-mist-400">
+                Automatic repair already ran this session. Hard-refresh or re-import if gaps remain.
+              </p>
+            </div>
           ) : null}
           {repairMsg && <p className="mt-1 text-xs text-mist-400">{repairMsg}</p>}
         </div>
       )}
+
+      {selectedFy == null &&
+        integrityIssues.map((issue, i) => (
+          <div
+            key={`${issue.kind}-${i}`}
+            className={`rounded-lg border px-4 py-3 text-sm ${
+              issue.kind === 'negative_holding'
+                ? 'border-loss/40 bg-loss/10 text-mist-300'
+                : 'border-gold/40 bg-gold/10 text-mist-300'
+            }`}
+          >
+            {issue.message}
+          </div>
+        ))}
 
       {missingPriceCount > 0 && (
         <div className="rounded-lg border border-gold/40 bg-gold/10 px-4 py-3 text-sm text-mist-300">

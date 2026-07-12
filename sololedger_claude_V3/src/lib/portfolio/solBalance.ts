@@ -163,7 +163,7 @@ export function computeMainWalletSolFromTransactions(txs: Transaction[]): number
     if (SOL_IN_TYPES.has(t.type)) sol += t.amount;
     else if (SOL_OUT_TYPES.has(t.type)) sol -= t.amount;
 
-    if (isNativeSolAsset(t.feeAsset) && t.feeAmount && t.type !== 'trade') {
+    if (isNativeSolAsset(t.feeAsset) && t.feeAmount) {
       sol -= t.feeAmount;
     }
   }
