@@ -208,6 +208,64 @@ function rawAmountToDecimal(rawAmount: string, decimals: number): number {
   return Number(BigInt(rawAmount)) / 10 ** decimals;
 }
 
+/** Net native SOL change for the wallet owner (lamports → SOL). Prefers accountData. */
+function walletNativeSolDelta(
+  htx: HeliusTransaction,
+  walletAddress: string
+): { delta: number; counterpartyOut?: string; counterpartyIn?: string } {
+  const walletLower = walletAddress.toLowerCase();
+  for (const acct of htx.accountData ?? []) {
+    if (acct.account?.toLowerCase() === walletLower && acct.nativeBalanceChange != null) {
+      return { delta: acct.nativeBalanceChange / 1e9 };
+    }
+  }
+
+  let solNet = 0;
+  let solCounterpartyOut: string | undefined;
+  let solCounterpartyIn: string | undefined;
+  for (const t of htx.nativeTransfers) {
+    const sol = t.amount / 1e9;
+    if (t.fromUserAccount === walletAddress) {
+      solNet -= sol;
+      solCounterpartyOut = t.toUserAccount;
+    }
+    if (t.toUserAccount === walletAddress) {
+      solNet += sol;
+      solCounterpartyIn = t.fromUserAccount;
+    }
+  }
+  return { delta: solNet, counterpartyOut: solCounterpartyOut, counterpartyIn: solCounterpartyIn };
+}
+
+/** Network fee paid by wallet — emitted on SWAP-only rows where SOL delta is not parsed separately. */
+function pushSolanaNetworkFeeRow(
+  rows: Transaction[],
+  htx: HeliusTransaction,
+  walletAddress: string
+): void {
+  if (htx.feePayer?.toLowerCase() !== walletAddress.toLowerCase()) return;
+  const feeSol = (htx.fee ?? 0) / 1e9;
+  if (feeSol < 1e-9) return;
+  if (rows.some((r) => r.type === 'fee' && r.asset === 'SOL' && r.sourceRef === htx.signature)) return;
+
+  rows.push({
+    id: makeId('rpc'),
+    timestamp: htx.timestamp * 1000,
+    type: 'fee',
+    asset: 'SOL',
+    amount: feeSol,
+    fiatCurrency: 'USD',
+    fiatValue: undefined,
+    source: 'rpc:helius',
+    sourceRef: htx.signature,
+    walletAddress,
+    chain: 'solana',
+    flags: ['missing_cost_basis'] as FlagReason[],
+    isInternalTransfer: false,
+    notes: 'Solana network fee'
+  });
+}
+
 /**
  * Convert a Helius SWAP transaction into a SoloLedger `trade` row.
  * Uses events.swap for exact amounts; falls back to tokenTransfers.
@@ -331,21 +389,9 @@ function heliusTransferToRows(
     }
   }
 
-  // Net native SOL delta — avoids double-counting fee + transfer legs in one tx.
-  let solNet = 0;
-  let solCounterpartyOut: string | undefined;
-  let solCounterpartyIn: string | undefined;
-  for (const t of htx.nativeTransfers) {
-    const sol = t.amount / 1e9;
-    if (t.fromUserAccount === walletAddress) {
-      solNet -= sol;
-      solCounterpartyOut = t.toUserAccount;
-    }
-    if (t.toUserAccount === walletAddress) {
-      solNet += sol;
-      solCounterpartyIn = t.fromUserAccount;
-    }
-  }
+  // Net native SOL delta from accountData (includes fees + rent); fallback to nativeTransfers.
+  const { delta: solNet, counterpartyOut: solCounterpartyOut, counterpartyIn: solCounterpartyIn } =
+    walletNativeSolDelta(htx, walletAddress);
 
   if (Math.abs(solNet) >= 0.000001) {
     const inbound = solNet > 0;
@@ -378,7 +424,11 @@ function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transact
 
   if (htx.type === 'SWAP' || classified?.type === 'trade') {
     const trade = heliusSwapToTrade(htx, walletAddress);
-    if (trade) return [trade];
+    if (trade) {
+      const rows = [trade];
+      pushSolanaNetworkFeeRow(rows, htx, walletAddress);
+      return rows;
+    }
   }
 
   const defiType = classified?.type;

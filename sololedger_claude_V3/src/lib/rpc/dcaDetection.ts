@@ -366,24 +366,24 @@ export async function applyDcaClassification(
       .toArray();
 
     for (const sol of tinySOLTxs) {
-      // If same tx as a DCA deposit → rent deposit for token account creation
+      // Rent deposit leaves the main wallet — must reduce portfolio SOL (not internal skip).
       if (sol.sourceRef && depositSourceRefs.includes(sol.sourceRef)) {
         // eslint-disable-next-line no-await-in-loop
         await db.transactions.update(sol.id, {
-          isInternalTransfer: true,
+          type: 'fee',
+          isInternalTransfer: false,
           flags: [] as FlagReason[],
-          notes: 'Token account rent deposit (Jupiter DCA setup) — non-taxable'
+          notes: 'Token account rent (Jupiter DCA setup) — reduces wallet SOL balance'
         });
         continue;
       }
-      // Also handle standalone tiny SOL receipts from known system patterns (account close refunds)
-      // These come from CloseAccount instructions when DCA order finishes
+      // Rent refund when DCA vault/token accounts close — real SOL returned to wallet.
       if (sol.type === 'transfer_in' && sol.sourceRef) {
         // eslint-disable-next-line no-await-in-loop
         await db.transactions.update(sol.id, {
-          isInternalTransfer: true,
+          isInternalTransfer: false,
           flags: [] as FlagReason[],
-          notes: 'Token account rent refund (DCA account close) — non-taxable'
+          notes: 'Token account rent refund (DCA account close)'
         });
       }
     }

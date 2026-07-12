@@ -77,6 +77,20 @@ function applyTxToHoldings(
       t.chain,
       t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
     );
+    if (t.feeAmount && t.feeAmount > 0) {
+      upsert(
+        t.feeAsset ?? t.asset,
+        t.feeAmount,
+        -1,
+        0,
+        t.chain,
+        t.chain === 'solana' && t.feeAsset
+          ? resolveSolanaMintAddress(t.feeAsset)
+          : t.chain === 'solana' && (t.feeAsset ?? t.asset) === 'SOL'
+            ? resolveSolanaMintAddress('SOL')
+            : undefined
+      );
+    }
     return;
   }
 
@@ -109,10 +123,23 @@ function applyTxToHoldings(
 
   const sign =
     ['buy', 'transfer_in', 'income', 'gift_received'].includes(t.type) ? 1
-    : ['sell', 'transfer_out', 'gift_sent'].includes(t.type) ? -1
+    : ['sell', 'transfer_out', 'gift_sent', 'fee'].includes(t.type) ? -1
     : 0;
   if (sign === 0) return;
   upsert(t.asset, t.amount, sign as 1 | -1, sign > 0 ? (t.fiatValue ?? 0) : 0, t.chain, t.contractAddress);
+
+  if (t.feeAmount && t.feeAmount > 0 && t.type !== 'trade') {
+    upsert(
+      t.feeAsset ?? t.asset,
+      t.feeAmount,
+      -1,
+      0,
+      t.chain,
+      t.chain === 'solana' && (t.feeAsset ?? t.asset).toUpperCase() === 'SOL'
+        ? resolveSolanaMintAddress('SOL')
+        : undefined
+    );
+  }
 }
 
 const ALL_WALLETS = 'All wallets';
@@ -123,7 +150,8 @@ const PORTFOLIO_TYPE_PRIORITY: Partial<Record<Transaction['type'], number>> = {
   buy: 3,
   sell: 3,
   transfer_in: 2,
-  transfer_out: 2
+  transfer_out: 2,
+  fee: 2
 };
 
 /** One row per on-chain tx + asset — prefer income/trade over duplicate transfer rows. */
