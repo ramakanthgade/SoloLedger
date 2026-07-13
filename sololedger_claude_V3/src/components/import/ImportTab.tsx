@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { parseCsvFile, type FileParseOutcome } from '@/lib/parsers';
+import { parseImportFile, isSpreadsheetFile, type FileParseOutcome } from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
 import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
 import {
@@ -29,7 +29,8 @@ type Mode = 'csv' | 'manual' | 'wallet';
 
 const SUPPORTED = [
   { id: 'coinbase', label: 'Coinbase', guide: 'Settings → Reports → Generate custom report → Transaction history CSV' },
-  { id: 'binance', label: 'Binance', guide: 'Recommended: Wallet → Transaction History → Export (full ledger). Also: Orders → Spot → Trade History for spot trades only.' }
+  { id: 'binance', label: 'Binance', guide: 'Recommended: Wallet → Transaction History → Export (full ledger). Also: Orders → Spot → Trade History for spot trades only.' },
+  { id: 'wazirx', label: 'WazirX (Excel)', guide: 'Download Trade Report / Spot Trade Report (.xlsx). All sheets are scanned — trades, deposits & withdrawals import automatically; profile sheets are skipped.' }
 ];
 
 export function ImportTab() {
@@ -62,7 +63,8 @@ export function ImportTab() {
     const stamped = txs.map((t) => ({
       ...t,
       importBatchId: hash,
-      source: parserId ?? t.source,
+      // Preserve per-sheet parser source when a workbook yields mixed formats
+      source: t.source || parserId || 'import',
       fiatValue: normalizeFiatMagnitude(t.fiatValue),
       feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
     }));
@@ -114,8 +116,8 @@ export function ImportTab() {
     setOutcome(null);
     setFileName(file.name);
 
-    const text = await file.text();
-    const hash = await hashFileContent(text);
+    const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
+    const hash = await hashFileContent(hashInput);
     setFileHash(hash);
 
     const existing = await db.csvImports.get(hash);
@@ -124,11 +126,30 @@ export function ImportTab() {
       return;
     }
 
-    const result = await parseCsvFile(file);
-    const preambleWarning = result.warnings.find((w) =>
-      w.toLowerCase().startsWith('ignored ') && w.toLowerCase().includes('before the detected header row')
+    const result = await parseImportFile(file);
+    const sheetSummary = result.sheets
+      .filter((s) => !s.skipped && s.detectedParser && s.transactions.length > 0)
+      .map((s) => `“${s.sheetName}”: ${s.transactions.length} via ${s.detectedParser}`)
+      .join(' · ');
+    const skippedSummary = result.sheets
+      .filter((s) => s.skipped)
+      .map((s) => s.sheetName)
+      .join(', ');
+    if (sheetSummary || skippedSummary) {
+      setExtractionNote(
+        [
+          sheetSummary ? `Imported from sheets: ${sheetSummary}.` : null,
+          skippedSummary ? `Skipped non-data sheets: ${skippedSummary}.` : null
+        ]
+          .filter(Boolean)
+          .join(' ')
+      );
+    }
+
+    const preambleWarning = result.warnings.find(
+      (w) =>
+        w.toLowerCase().includes('ignored ') && w.toLowerCase().includes('before the header')
     );
-    if (preambleWarning) setExtractionNote(preambleWarning);
 
     // Auto-save when format is recognized and rows were parsed
     if (result.detectedParser && result.transactions.length > 0) {
@@ -234,7 +255,7 @@ export function ImportTab() {
   };
 
   const modes: { id: Mode; label: string }[] = [
-    { id: 'csv', label: 'CSV upload' },
+    { id: 'csv', label: 'File upload' },
     { id: 'manual', label: 'Manual entry' },
     { id: 'wallet', label: 'Wallet lookup' }
   ];
@@ -289,11 +310,13 @@ export function ImportTab() {
             ) : (
               <>
                 <Upload className="mb-3 h-6 w-6 text-emerald-600" />
-                <p className="text-sm text-mist-300">Drop your CSV here — we'll import it automatically, or</p>
+                <p className="text-sm text-mist-300">
+                  Drop a CSV or Excel (.xlsx) file — multi-sheet workbooks are scanned automatically, or
+                </p>
                 <label className="mt-3">
                   <input
                     type="file"
-                    accept=".csv,.txt"
+                    accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                     className="hidden"
                     disabled={saving}
                     onChange={(e) => {
@@ -316,7 +339,7 @@ export function ImportTab() {
           {duplicateBlocked && (
             <div className="rounded-lg border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-gold-600">
               <strong>{fileName}</strong> was already imported. Remove it from{' '}
-              <strong>CSV files already imported</strong> below to upload it again with different mapping.
+              <strong>Files already imported</strong> below to upload it again with different mapping.
             </div>
           )}
 
@@ -326,7 +349,7 @@ export function ImportTab() {
             </div>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
             {SUPPORTED.map((s) => (
               <Card key={s.id}>
                 <CardContent className="flex items-start gap-3 py-4">
@@ -380,7 +403,7 @@ export function ImportTab() {
 
           {csvImports.length > 0 && (
             <div className="rounded-lg border border-ink-700 bg-ink-800 p-4">
-              <h3 className="mb-3 text-sm font-medium text-mist">CSV files already imported</h3>
+              <h3 className="mb-3 text-sm font-medium text-mist">Files already imported</h3>
               <div className="space-y-2">
                 {csvImports.map((row) => (
                   <div
@@ -442,7 +465,7 @@ export function ImportTab() {
       {removeConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/60 p-4">
           <div className="max-w-md rounded-lg border border-ink-700 bg-ink-800 p-5 shadow-xl">
-            <h3 className="text-sm font-semibold text-mist">Remove CSV import and its transactions?</h3>
+            <h3 className="text-sm font-semibold text-mist">Remove import and its transactions?</h3>
             <p className="mt-2 text-xs text-mist-400">
               Deletes <strong className="text-mist">{removeConfirm.txCount}</strong> transaction
               {removeConfirm.txCount === 1 ? '' : 's'} from{' '}
