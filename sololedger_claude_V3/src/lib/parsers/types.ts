@@ -60,3 +60,19 @@ export function safeTimestamp(v: string | undefined): number {
   const t = Date.parse(v);
   return t;
 }
+
+/**
+ * Parse exchange timestamps that are documented as IST (India Standard Time, UTC+5:30)
+ * when no timezone offset is present in the string.
+ */
+export function safeTimestampIst(v: string | undefined): number {
+  if (!v) return NaN;
+  const s = String(v).trim();
+  if (!s) return NaN;
+  // Already has timezone
+  if (/[zZ]$/.test(s) || /[+-]\d{2}:?\d{2}$/.test(s)) return Date.parse(s);
+  // "YYYY-MM-DD HH:mm:ss" or "YYYY-MM-DDTHH:mm:ss"
+  const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)/);
+  if (m) return Date.parse(`${m[1]}T${m[2]}+05:30`);
+  return Date.parse(s);
+}

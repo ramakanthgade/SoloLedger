@@ -210,7 +210,11 @@ export function transactionExchangeKey(
   t: Pick<Transaction, 'source' | 'sourceRef'>
 ): string | null {
   if (!t.sourceRef) return null;
-  if (t.source.startsWith('binance') || t.source === 'coinbase') {
+  if (
+    t.source.startsWith('binance') ||
+    t.source === 'coinbase' ||
+    t.source.startsWith('wazirx')
+  ) {
     return `ex:${t.sourceRef}`;
   }
   return null;
@@ -373,9 +377,16 @@ export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
 
 // ---- CSV imports ----
 
-export async function hashFileContent(text: string): Promise<string> {
-  const sample = text.length > 100_000 ? text.slice(0, 100_000) : text;
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sample));
+/** Hash text (CSV) or binary (Excel) content for import-batch dedup. */
+export async function hashFileContent(input: string | ArrayBuffer): Promise<string> {
+  let bytes: BufferSource;
+  if (typeof input === 'string') {
+    const sample = input.length > 100_000 ? input.slice(0, 100_000) : input;
+    bytes = new TextEncoder().encode(sample);
+  } else {
+    bytes = input.byteLength > 100_000 ? input.slice(0, 100_000) : input;
+  }
+  const buf = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
 }
 
