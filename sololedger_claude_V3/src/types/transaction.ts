@@ -52,6 +52,11 @@ export interface Transaction {
   isInternalTransfer: boolean;  // user-confirmed non-taxable transfer between own wallets
   isSpam?: boolean;             // user-confirmed spam/phishing — excluded from all calculations
   category?: string;            // user-editable free-form tag
+  /**
+   * Spot vs derivatives (perps/futures). Set by exchange parsers (e.g. Hyperliquid).
+   * Undefined → treated as spot unless source/category heuristics say otherwise.
+   */
+  instrumentClass?: 'spot' | 'derivative';
   importBatchId?: string;       // links row to a CSV import batch (file hash)
   raw?: Record<string, unknown>; // original parsed row, kept for traceability/debugging only
 }
@@ -84,10 +89,18 @@ export interface Disposal {
 
 export type Jurisdiction = 'IN' | 'US' | 'CA' | 'AE';
 
+/** How derivative (perp/futures) PnL is presented in Capital Gains / Reports. */
+export type DerivativesTreatment = 'business_income' | 'capital_gains';
+
 export interface TaxSettings {
   jurisdiction: Jurisdiction;
   reportingCurrency: string;   // "INR", "USD", "CAD", "AED"
   defaultCostBasisMethod: 'FIFO' | 'SpecID';
+  /**
+   * Tax presentation for derivatives. When unset, defaults from jurisdiction
+   * (IN/CA → business_income, US/AE → capital_gains). Applied at report time.
+   */
+  derivativesTreatment?: DerivativesTreatment;
   priceApiEnabled: boolean;
   rpcLookupEnabled: boolean;
   /** One Alchemy key covers Ethereum + every EVM chain it supports + Solana. */
@@ -129,6 +142,10 @@ export interface TaxYearSummary {
   shortTermGain?: number;   // where jurisdiction distinguishes holding periods
   longTermGain?: number;
   totalIncome: number;      // staking/airdrop/mining etc. valued at FMV
+  /** Derivatives business income (profits) when treatment = business_income. */
+  derivativesIncome?: number;
+  /** Derivatives business expenses (fees + losses) when treatment = business_income. */
+  derivativesExpenses?: number;
   disposalsCount: number;
   byAsset: Record<string, { proceeds: number; costBasis: number; gain: number }>;
 }

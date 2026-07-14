@@ -163,6 +163,7 @@ export const hyperliquidTradesParser: ExchangeParser = {
           flags: [],
           isInternalTransfer: false,
           category: 'perp',
+          instrumentClass: 'derivative',
           raw: { ...row, _hlKind: 'fee' }
         });
       }
@@ -192,6 +193,7 @@ export const hyperliquidTradesParser: ExchangeParser = {
             flags: [],
             isInternalTransfer: false,
             category: 'perp',
+            instrumentClass: 'derivative',
             raw: { ...row, _hlKind: 'perp_profit' }
           });
         } else {
@@ -213,6 +215,7 @@ export const hyperliquidTradesParser: ExchangeParser = {
             flags: [],
             isInternalTransfer: false,
             category: 'perp_loss',
+            instrumentClass: 'derivative',
             raw: { ...row, _hlKind: 'perp_loss' }
           });
         }

@@ -19,6 +19,7 @@ import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
 import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
+import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
@@ -245,6 +246,9 @@ export function ReviewTab() {
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
   const [showSpam, setShowSpam] = useState(false);
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'wallet' | 'asset' | 'type' | 'fy'>('date_desc');
+  const [instrumentFilter, setInstrumentFilter] = useState<'all' | 'spot' | 'derivative'>('all');
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 200;
   const [walletLabels, setWalletLabels] = useState<Map<string, string>>(new Map());
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -442,6 +446,8 @@ export function ReviewTab() {
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
       if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
       if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;
+      if (instrumentFilter === 'derivative' && !isDerivativeTransaction(t)) return false;
+      if (instrumentFilter === 'spot' && isDerivativeTransaction(t)) return false;
       if (query && !`${t.asset} ${t.type} ${t.source} ${t.walletAddress ?? ''} ${t.notes ?? ''}`.toLowerCase().includes(query.toLowerCase()))
         return false;
       return true;
@@ -461,7 +467,19 @@ export function ReviewTab() {
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, query, showNeedsPrice, showSpam, sortBy]);
+  }, [transactions, assetFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = useMemo(() => {
+    const start = (safePage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, safePage, PAGE_SIZE]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [assetFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -471,7 +489,7 @@ export function ReviewTab() {
     });
   };
 
-  const visibleIds = useMemo(() => filtered.slice(0, 200).map((t) => t.id), [filtered]);
+  const visibleIds = useMemo(() => pageRows.map((t) => t.id), [pageRows]);
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
 
@@ -813,6 +831,26 @@ export function ReviewTab() {
         )}
 
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
+        <div className="flex rounded-full border border-ink-600 p-0.5 text-xs">
+          {(
+            [
+              ['all', 'All'],
+              ['spot', 'Spot'],
+              ['derivative', 'Derivatives']
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setInstrumentFilter(id)}
+              className={`rounded-full px-3 py-1 font-medium transition ${
+                instrumentFilter === id ? 'bg-emerald text-white' : 'text-mist-400 hover:text-mist'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
 
         <div className="flex gap-2">
@@ -889,7 +927,7 @@ export function ReviewTab() {
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
-            {filtered.slice(0, 200).map((t) => {
+            {pageRows.map((t) => {
               const isDisposal = DISPOSAL_TYPES.has(t.type);
               const candidates = engineResult?.disposalCandidates[t.id] ?? [];
               const { fromAddr, toAddr } = txFromToAddresses(t);
@@ -1018,8 +1056,34 @@ export function ReviewTab() {
           </tbody>
         </table>
       </div>
-      {filtered.length > 200 && (
-        <p className="text-xs text-mist-400">Showing first 200 of {filtered.length} — refine filters to narrow down.</p>
+      {filtered.length > PAGE_SIZE && (
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+          <p className="text-xs text-mist-400">
+            Showing {(safePage - 1) * PAGE_SIZE + 1}–
+            {Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              className="text-xs"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              Previous
+            </Button>
+            <span className="text-xs text-mist-300">
+              Page {safePage} of {totalPages}
+            </span>
+            <Button
+              variant="secondary"
+              className="text-xs"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );

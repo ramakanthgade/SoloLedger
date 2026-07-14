@@ -3,6 +3,7 @@ import type { CostBasisStrategy } from './strategy';
 import { fifoStrategy } from './fifo';
 import { specIdStrategy } from './specId';
 import { makeId } from '@/lib/parsers/types';
+import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 
 export const STRATEGIES: Record<'FIFO' | 'SpecID', CostBasisStrategy> = {
   FIFO: fifoStrategy,
@@ -115,6 +116,11 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
 
     for (const tx of sorted) {
       if (ACQUISITION_TYPES.includes(tx.type)) {
+        // Derivative PnL credited as `income` is cash-settled business/CG income —
+        // not a spot USDC lot acquisition (would pollute FIFO for real USDC buys).
+        if (tx.type === 'income' && isDerivativeTransaction(tx)) {
+          continue;
+        }
         const costBasisTotal = Math.abs(tx.fiatValue ?? 0);
         const lot: Lot = {
           id: makeId('lot'),

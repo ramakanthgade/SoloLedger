@@ -49,8 +49,15 @@ Hyperliquid Trade History CSV uses abbreviated headers. Map UI → CSV as:
 Deposits/withdrawals CSV: `time`, `action`, `source`, `destination`, `accountValueChange`, `fee`.
 
 **Import rules (cash-settled perps — never create spot lots for the `coin`):**
-- Every fill fee → `fee` USDC (`category: perp`)
+- Every fill fee → `fee` USDC (`category: perp`, `instrumentClass: derivative`)
 - Open/Add fills: ignore `closedPnl` (it equals `−fee` in HL exports)
 - Close/Liquidate with `closedPnl > 0` → `income` USDC (`category: perp`)
 - Close/Liquidate with `closedPnl < 0` → `fee` USDC (`category: perp_loss`) so portfolio decreases without a fake taxable USDC disposal
 - Deposit → `transfer_in` USDC; Withdraw → `transfer_out` USDC (`category: perp_collateral`)
+
+**Tax presentation (Settings → Derivatives tax treatment):**
+- Defaults: IN/CA → `business_income`; US/AE → `capital_gains` (user can override)
+- Applied at **report time** (Capital Gains / Reports) — does not rewrite stored txs
+- Business income: profits in Derivatives income; fees + losses in Derivatives expenses; net = income − expenses
+- Capital gains: closed PnL / fees as synthetic `HL-PNL` gain/loss rows (spot FIFO untouched)
+- Review: All | Spot | Derivatives filter + pagination (200/page)

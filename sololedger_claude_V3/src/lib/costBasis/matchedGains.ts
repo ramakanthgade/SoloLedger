@@ -1,5 +1,11 @@
 import type { Disposal, Lot, Transaction } from '@/types/transaction';
 import { identifyDabbaProgram, DABBA_KIND_LABEL, type DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
+import {
+  derivativeExpenseKind,
+  isDerivativeExpense,
+  isDerivativeProfit,
+  isDerivativeTransaction
+} from '@/lib/tax/derivatives';
 
 export interface MatchedGainRow {
   id: string;
@@ -78,10 +84,33 @@ export interface IncomeRow {
   txId: string;
 }
 
+export interface DerivativeBusinessIncomeRow {
+  id: string;
+  date: number;
+  asset: string;
+  amount: number;
+  fiatValue: number;
+  source: string;
+  notes?: string;
+  txId: string;
+}
+
+export interface DerivativeBusinessExpenseRow {
+  id: string;
+  date: number;
+  asset: string;
+  amount: number;
+  fiatValue: number;
+  source: string;
+  kind: 'trading_fee' | 'realized_loss';
+  notes?: string;
+  txId: string;
+}
+
 /**
- * Income-like rows for the Capital Gains tab.
- * Includes explicit `income` type rows AND suspected airdrops/staking from heuristics.
- * DCA vault transfers are excluded via dcaVaultAddresses set.
+ * Income-like rows for the Capital Gains tab (spot / non-derivative).
+ * Derivative income is handled separately via buildDerivativeBusinessIncomeRows /
+ * buildDerivativeCapitalGainRows depending on Settings treatment.
  */
 export function buildIncomeRows(
   transactions: Transaction[],
@@ -92,6 +121,8 @@ export function buildIncomeRows(
 
   for (const t of transactions) {
     if (t.isInternalTransfer || t.isSpam) continue;
+    // Derivatives have their own report sections
+    if (isDerivativeTransaction(t)) continue;
 
     // Explicitly classified income (auto-classified or user-set)
     if (t.type === 'income' || t.type === 'gift_received') {
@@ -165,4 +196,94 @@ export function buildIncomeRows(
   }
 
   return rows.sort((a, b) => b.date - a.date);
+}
+
+/** Perp profits for business-income treatment. */
+export function buildDerivativeBusinessIncomeRows(transactions: Transaction[]): DerivativeBusinessIncomeRow[] {
+  return transactions
+    .filter(isDerivativeProfit)
+    .map((t) => ({
+      id: t.id,
+      date: t.timestamp,
+      asset: t.asset,
+      amount: t.amount,
+      fiatValue: Math.abs(t.fiatValue ?? t.amount),
+      source: t.source,
+      notes: t.notes,
+      txId: t.id
+    }))
+    .sort((a, b) => b.date - a.date);
+}
+
+/** Perp trading fees + realized losses for business-income treatment. */
+export function buildDerivativeBusinessExpenseRows(transactions: Transaction[]): DerivativeBusinessExpenseRow[] {
+  return transactions
+    .filter(isDerivativeExpense)
+    .map((t) => ({
+      id: t.id,
+      date: t.timestamp,
+      asset: t.asset,
+      amount: t.amount,
+      fiatValue: Math.abs(t.fiatValue ?? t.amount),
+      source: t.source,
+      kind: derivativeExpenseKind(t),
+      notes: t.notes,
+      txId: t.id
+    }))
+    .sort((a, b) => b.date - a.date);
+}
+
+/**
+ * Present derivative closed PnL as capital-gain style rows (no spot lot matching).
+ * Profits → positive gain; losses → negative gain; trading fees as negative gain rows.
+ */
+export function buildDerivativeCapitalGainRows(transactions: Transaction[]): MatchedGainRow[] {
+  const rows: MatchedGainRow[] = [];
+
+  for (const t of transactions) {
+    if (t.isSpam || t.isInternalTransfer || !isDerivativeTransaction(t)) continue;
+
+    if (isDerivativeProfit(t)) {
+      const v = Math.abs(t.fiatValue ?? t.amount);
+      rows.push({
+        id: `deriv-gain:${t.id}`,
+        asset: 'HL-PNL',
+        chain: t.chain,
+        sellDate: t.timestamp,
+        sellAmount: v,
+        proceeds: v,
+        sellTxId: t.id,
+        buyDate: t.timestamp,
+        buyAmount: v,
+        costBasis: 0,
+        buyTxId: t.id,
+        gain: v,
+        holdingDays: 0,
+        method: 'FIFO'
+      });
+      continue;
+    }
+
+    if (isDerivativeExpense(t)) {
+      const v = Math.abs(t.fiatValue ?? t.amount);
+      rows.push({
+        id: `deriv-loss:${t.id}`,
+        asset: 'HL-PNL',
+        chain: t.chain,
+        sellDate: t.timestamp,
+        sellAmount: v,
+        proceeds: 0,
+        sellTxId: t.id,
+        buyDate: t.timestamp,
+        buyAmount: v,
+        costBasis: v,
+        buyTxId: t.id,
+        gain: -v,
+        holdingDays: 0,
+        method: 'FIFO'
+      });
+    }
+  }
+
+  return rows.sort((a, b) => b.sellDate - a.sellDate);
 }

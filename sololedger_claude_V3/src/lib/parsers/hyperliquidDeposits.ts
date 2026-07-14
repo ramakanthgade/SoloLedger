@@ -114,6 +114,7 @@ export const hyperliquidDepositsParser: ExchangeParser = {
         flags: ['possible_internal_transfer'],
         isInternalTransfer: false,
         category: 'perp_collateral',
+        instrumentClass: 'derivative',
         raw: row
       });
     }

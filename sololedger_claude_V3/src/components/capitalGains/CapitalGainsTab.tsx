@@ -2,14 +2,15 @@ import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getSpecIdHints } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
-import { buildIncomeRows, buildMatchedGainRows } from '@/lib/costBasis/matchedGains';
+import { buildIncomeRows, buildMatchedGainRows, buildDerivativeBusinessIncomeRows, buildDerivativeBusinessExpenseRows, buildDerivativeCapitalGainRows } from '@/lib/costBasis/matchedGains';
 import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatAmountForExport, formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
-import type { Jurisdiction } from '@/types/transaction';
+import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
+import { resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
@@ -33,6 +34,7 @@ export function CapitalGainsTab() {
   const [fy, setFy] = useState(getCurrentFy('IN'));
   const [currency, setCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
+  const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
   const [fyInitialized, setFyInitialized] = useState(false);
 
   useEffect(() => {
@@ -41,6 +43,7 @@ export function CapitalGainsTab() {
       setCurrency(s.reportingCurrency);
       const jur = s.jurisdiction ?? 'IN';
       setJurisdiction(jur);
+      setDerivativesTreatment(resolveDerivativesTreatment(s));
       setFy(getCurrentFy(jur));
     });
   }, []);
@@ -65,17 +68,43 @@ export function CapitalGainsTab() {
     [transactions, dcaVaultAddresses]
   );
 
+  const derivIncomeRows = useMemo(
+    () => buildDerivativeBusinessIncomeRows(transactions),
+    [transactions]
+  );
+  const derivExpenseRows = useMemo(
+    () => buildDerivativeBusinessExpenseRows(transactions),
+    [transactions]
+  );
+  const derivCgRows = useMemo(
+    () => buildDerivativeCapitalGainRows(transactions),
+    [transactions]
+  );
+
   const availableFys = useMemo(
-    () => getAvailableFys([...matchedRows.map((r) => r.sellDate), ...incomeRows.map((r) => r.date)], jurisdiction),
-    [matchedRows, incomeRows, jurisdiction]
+    () =>
+      getAvailableFys(
+        [
+          ...matchedRows.map((r) => r.sellDate),
+          ...incomeRows.map((r) => r.date),
+          ...derivIncomeRows.map((r) => r.date),
+          ...derivExpenseRows.map((r) => r.date),
+          ...derivCgRows.map((r) => r.sellDate)
+        ],
+        jurisdiction
+      ),
+    [matchedRows, incomeRows, derivIncomeRows, derivExpenseRows, derivCgRows, jurisdiction]
   );
 
   const activeFys = useMemo(() => {
     const fys = new Set<number>();
     for (const r of matchedRows) fys.add(getFyForTimestamp(r.sellDate, jurisdiction));
     for (const r of incomeRows) fys.add(getFyForTimestamp(r.date, jurisdiction));
+    for (const r of derivIncomeRows) fys.add(getFyForTimestamp(r.date, jurisdiction));
+    for (const r of derivExpenseRows) fys.add(getFyForTimestamp(r.date, jurisdiction));
+    for (const r of derivCgRows) fys.add(getFyForTimestamp(r.sellDate, jurisdiction));
     return Array.from(fys).sort((a, b) => b - a);
-  }, [matchedRows, incomeRows, jurisdiction]);
+  }, [matchedRows, incomeRows, derivIncomeRows, derivExpenseRows, derivCgRows, jurisdiction]);
 
   useEffect(() => {
     if (fyInitialized) return;
@@ -96,8 +125,27 @@ export function CapitalGainsTab() {
     [incomeRows, fyBounds]
   );
 
+  const yearDerivIncome = useMemo(
+    () => derivIncomeRows.filter((r) => r.date >= fyBounds.start && r.date <= fyBounds.end),
+    [derivIncomeRows, fyBounds]
+  );
+  const yearDerivExpense = useMemo(
+    () => derivExpenseRows.filter((r) => r.date >= fyBounds.start && r.date <= fyBounds.end),
+    [derivExpenseRows, fyBounds]
+  );
+  const yearDerivCg = useMemo(
+    () => derivCgRows.filter((r) => r.sellDate >= fyBounds.start && r.sellDate <= fyBounds.end),
+    [derivCgRows, fyBounds]
+  );
+
   const totalGain = yearMatches.reduce((s, r) => s + r.gain, 0);
   const totalIncome = yearIncome.reduce((s, r) => s + r.fiatValue, 0);
+  const totalDerivIncome = yearDerivIncome.reduce((s, r) => s + r.fiatValue, 0);
+  const totalDerivExpense = yearDerivExpense.reduce((s, r) => s + r.fiatValue, 0);
+  const totalDerivNetBusiness = totalDerivIncome - totalDerivExpense;
+  const totalDerivCg = yearDerivCg.reduce((s, r) => s + r.gain, 0);
+  const businessMode = derivativesTreatment === 'business_income';
+  const hasDerivatives = derivIncomeRows.length + derivExpenseRows.length > 0;
 
   const taxableTxCount = transactions.filter(
     (t) => !t.isInternalTransfer && !['transfer_in', 'transfer_out', 'fee'].includes(t.type)
@@ -303,7 +351,7 @@ export function CapitalGainsTab() {
         </div>
       )}
 
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
         <Card>
           <CardHeader>
             <CardTitle>Realized gain / loss — {getFyLabel(fy, jurisdiction)}</CardTitle>
@@ -313,20 +361,44 @@ export function CapitalGainsTab() {
               {totalGain >= 0 ? '+' : ''}
               {formatCurrency(totalGain, currency)}
             </p>
-            <p className="mt-1 text-xs text-mist-400">{yearMatches.length} matched lot row(s)</p>
+            <p className="mt-1 text-xs text-mist-400">{yearMatches.length} matched lot row(s) · spot</p>
           </CardContent>
         </Card>
         <Card>
           <CardHeader>
-            <CardTitle>Income — {getFyLabel(fy, jurisdiction)}</CardTitle>
+            <CardTitle>Spot income — {getFyLabel(fy, jurisdiction)}</CardTitle>
           </CardHeader>
           <CardContent>
             <p className="font-mono text-3xl text-gold-600">{formatCurrency(totalIncome, currency)}</p>
             <p className="mt-1 text-xs text-mist-400">
-              Staking, airdrops, mining (includes suspected inbound transfers)
+              Staking, airdrops, mining (excludes derivatives)
             </p>
           </CardContent>
         </Card>
+        {hasDerivatives && (
+          <Card>
+            <CardHeader>
+              <CardTitle>
+                {businessMode ? 'Derivatives net (business)' : 'Derivatives P&L (CG)'} — {getFyLabel(fy, jurisdiction)}
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p
+                className={`font-mono text-3xl ${
+                  (businessMode ? totalDerivNetBusiness : totalDerivCg) >= 0 ? 'text-emerald-600' : 'text-loss'
+                }`}
+              >
+                {(businessMode ? totalDerivNetBusiness : totalDerivCg) >= 0 ? '+' : ''}
+                {formatCurrency(businessMode ? totalDerivNetBusiness : totalDerivCg, currency)}
+              </p>
+              <p className="mt-1 text-xs text-mist-400">
+                {businessMode
+                  ? `Income ${formatCurrency(totalDerivIncome, currency)} − expenses ${formatCurrency(totalDerivExpense, currency)}`
+                  : `${yearDerivCg.length} closed PnL / fee row(s) · Settings → Capital gains`}
+              </p>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       <Card>
@@ -444,10 +516,164 @@ export function CapitalGainsTab() {
           </div>
           <p className="mt-3 text-xs text-mist-400">
             Suspected airdrops/staking are inferred from inbound transfers with a contract/program sender — verify in
-            Review and reclassify if needed.
+            Review and reclassify if needed. Derivatives are listed separately below (see Settings → Derivatives tax treatment).
           </p>
         </CardContent>
       </Card>
+
+      {hasDerivatives && businessMode && (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle>Derivatives — business income — {getFyLabel(fy, jurisdiction)}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="mb-3 text-sm text-mist-300">
+                Total income:{' '}
+                <span className="font-mono text-gold-600">{formatCurrency(totalDerivIncome, currency)}</span>
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
+                    <tr>
+                      <th className="px-2 py-2">Date</th>
+                      <th className="px-2 py-2">Asset</th>
+                      <th className="px-2 py-2 text-right">Amount</th>
+                      <th className="px-2 py-2 text-right">Value</th>
+                      <th className="px-2 py-2">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono tabular-figures">
+                    {yearDerivIncome.map((r) => (
+                      <tr key={r.id} className="border-t border-ink-700/60">
+                        <td className="px-2 py-2 text-mist-300">{formatDateTime(r.date)}</td>
+                        <td className="px-2 py-2 text-mist">{r.asset}</td>
+                        <td className="px-2 py-2 text-right">{formatCompactAmount(r.amount)}</td>
+                        <td className="px-2 py-2 text-right text-gold-600">{formatCurrency(r.fiatValue, currency)}</td>
+                        <td className="px-2 py-2 text-mist-400 truncate max-w-[16rem]" title={r.notes}>
+                          {r.notes ?? '—'}
+                        </td>
+                      </tr>
+                    ))}
+                    {yearDerivIncome.length === 0 && (
+                      <tr>
+                        <td colSpan={5} className="px-2 py-8 text-center text-mist-400">
+                          No derivative profits in {getFyLabel(fy, jurisdiction)}.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Derivatives — business expenses — {getFyLabel(fy, jurisdiction)}</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <p className="mb-3 text-sm text-mist-300">
+                Total expenses:{' '}
+                <span className="font-mono text-loss">{formatCurrency(totalDerivExpense, currency)}</span>
+                <span className="ml-2 text-mist-400">
+                  (fees + realized losses) · Net = {formatCurrency(totalDerivNetBusiness, currency)}
+                </span>
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
+                    <tr>
+                      <th className="px-2 py-2">Date</th>
+                      <th className="px-2 py-2">Kind</th>
+                      <th className="px-2 py-2">Asset</th>
+                      <th className="px-2 py-2 text-right">Amount</th>
+                      <th className="px-2 py-2 text-right">Value</th>
+                      <th className="px-2 py-2">Notes</th>
+                    </tr>
+                  </thead>
+                  <tbody className="font-mono tabular-figures">
+                    {yearDerivExpense.map((r) => (
+                      <tr key={r.id} className="border-t border-ink-700/60">
+                        <td className="px-2 py-2 text-mist-300">{formatDateTime(r.date)}</td>
+                        <td className="px-2 py-2">
+                          <Badge tone={r.kind === 'realized_loss' ? 'loss' : 'gold'}>
+                            {r.kind === 'realized_loss' ? 'Realized loss' : 'Trading fee'}
+                          </Badge>
+                        </td>
+                        <td className="px-2 py-2 text-mist">{r.asset}</td>
+                        <td className="px-2 py-2 text-right">{formatCompactAmount(r.amount)}</td>
+                        <td className="px-2 py-2 text-right text-loss">{formatCurrency(r.fiatValue, currency)}</td>
+                        <td className="px-2 py-2 text-mist-400 truncate max-w-[16rem]" title={r.notes}>
+                          {r.notes ?? '—'}
+                        </td>
+                      </tr>
+                    ))}
+                    {yearDerivExpense.length === 0 && (
+                      <tr>
+                        <td colSpan={6} className="px-2 py-8 text-center text-mist-400">
+                          No derivative fees/losses in {getFyLabel(fy, jurisdiction)}.
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </CardContent>
+          </Card>
+        </>
+      )}
+
+      {hasDerivatives && !businessMode && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Derivatives — capital gains / losses — {getFyLabel(fy, jurisdiction)}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="mb-3 text-sm text-mist-300">
+              Closed PnL presented as capital gains (synthetic HL-PNL). Total:{' '}
+              <span className={`font-mono ${totalDerivCg >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
+                {totalDerivCg >= 0 ? '+' : ''}
+                {formatCurrency(totalDerivCg, currency)}
+              </span>
+            </p>
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[720px] text-xs">
+                <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
+                  <tr>
+                    <th className="px-2 py-2">Date</th>
+                    <th className="px-2 py-2">Asset</th>
+                    <th className="px-2 py-2 text-right">Proceeds</th>
+                    <th className="px-2 py-2 text-right">Cost</th>
+                    <th className="px-2 py-2 text-right">Gain / loss</th>
+                  </tr>
+                </thead>
+                <tbody className="font-mono tabular-figures">
+                  {yearDerivCg.map((r) => (
+                    <tr key={r.id} className="border-t border-ink-700/60">
+                      <td className="px-2 py-2 text-mist-300">{formatDateTime(r.sellDate)}</td>
+                      <td className="px-2 py-2 text-mist">{r.asset}</td>
+                      <td className="px-2 py-2 text-right">{formatCurrency(r.proceeds, currency)}</td>
+                      <td className="px-2 py-2 text-right">{formatCurrency(r.costBasis, currency)}</td>
+                      <td className={`px-2 py-2 text-right font-semibold ${r.gain >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
+                        {r.gain >= 0 ? '+' : ''}
+                        {formatCurrency(r.gain, currency)}
+                      </td>
+                    </tr>
+                  ))}
+                  {yearDerivCg.length === 0 && (
+                    <tr>
+                      <td colSpan={5} className="px-2 py-8 text-center text-mist-400">
+                        No derivative PnL in {getFyLabel(fy, jurisdiction)}.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+      )}
     </div>
   );
 }

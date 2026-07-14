@@ -4,7 +4,7 @@ import { db, getSettings, getSpecIdHints } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { JURISDICTIONS, summarizeYear } from '@/lib/tax/jurisdictions';
 import { deidentifyTransactions } from '@/lib/reports/deidentify';
-import type { Jurisdiction } from '@/types/transaction';
+import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { PageHeader } from '@/components/PageHeader';
@@ -12,12 +12,19 @@ import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, g
 import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { AlertTriangle } from 'lucide-react';
+import {
+  buildDerivativeBusinessExpenseRows,
+  buildDerivativeBusinessIncomeRows,
+  buildDerivativeCapitalGainRows
+} from '@/lib/costBasis/matchedGains';
+import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 
 export function ReportsTab() {
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [method, setMethod] = useState<'FIFO' | 'SpecID'>('FIFO');
   const [year, setYear] = useState<number>(getCurrentFy('IN'));
   const [deidentify, setDeidentify] = useState(false);
+  const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
 
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
@@ -27,6 +34,7 @@ export function ReportsTab() {
       const jur = s.jurisdiction;
       setJurisdiction(jur);
       setMethod(s.defaultCostBasisMethod);
+      setDerivativesTreatment(resolveDerivativesTreatment(s));
       setYear(getCurrentFy(jur));
     });
   }, []);
@@ -39,14 +47,38 @@ export function ReportsTab() {
   const incomeEvents = useMemo(
     () =>
       transactions
-        .filter((t) => t.type === 'income')
+        .filter((t) => t.type === 'income' && !isDerivativeTransaction(t))
         .map((t) => ({ fiatValue: t.fiatValue ?? 0, timestamp: t.timestamp })),
     [transactions]
   );
 
+  const yearDerivIncome = useMemo(() => {
+    return buildDerivativeBusinessIncomeRows(transactions)
+      .filter((r) => isInFy(r.date, year, jurisdiction))
+      .reduce((s, r) => s + r.fiatValue, 0);
+  }, [transactions, year, jurisdiction]);
+
+  const yearDerivExpense = useMemo(() => {
+    return buildDerivativeBusinessExpenseRows(transactions)
+      .filter((r) => isInFy(r.date, year, jurisdiction))
+      .reduce((s, r) => s + r.fiatValue, 0);
+  }, [transactions, year, jurisdiction]);
+
+  const yearDerivCg = useMemo(() => {
+    return buildDerivativeCapitalGainRows(transactions)
+      .filter((r) => isInFy(r.sellDate, year, jurisdiction))
+      .reduce((s, r) => s + r.gain, 0);
+  }, [transactions, year, jurisdiction]);
+
+  const businessMode = derivativesTreatment === 'business_income';
+
   const summary = useMemo(
-    () => summarizeYear(disposals, incomeEvents, year, jurisdiction),
-    [disposals, incomeEvents, year, jurisdiction]
+    () =>
+      summarizeYear(disposals, incomeEvents, year, jurisdiction, {
+        derivativesIncome: businessMode ? yearDerivIncome : undefined,
+        derivativesExpenses: businessMode ? yearDerivExpense : undefined
+      }),
+    [disposals, incomeEvents, year, jurisdiction, businessMode, yearDerivIncome, yearDerivExpense]
   );
 
   const yearDisposals = useMemo(
@@ -99,6 +131,13 @@ export function ReportsTab() {
         ...(summary.shortTermGain != null ? [['Short-term gain', fmt(summary.shortTermGain)]] : []),
         ...(summary.longTermGain != null ? [['Long-term gain', fmt(summary.longTermGain)]] : []),
         ['Income (staking/airdrops/etc.)', fmt(summary.totalIncome)],
+        ...(businessMode
+          ? [
+              ['Derivatives business income', fmt(yearDerivIncome)],
+              ['Derivatives business expenses', fmt(yearDerivExpense)],
+              ['Derivatives net (business)', fmt(yearDerivIncome - yearDerivExpense)]
+            ]
+          : [['Derivatives capital P&L', fmt(yearDerivCg)]]),
         ['Disposal events', String(summary.disposalsCount)]
       ]
     });
@@ -270,7 +309,7 @@ export function ReportsTab() {
         </div>
       )}
 
-      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <div className="stat-card stat-card-featured">
           <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Total gain / loss</p>
           <p className={'mt-2 font-mono text-2xl font-semibold tabular-figures ' + (summary.totalGain >= 0 ? 'text-emerald-600' : 'text-loss')}>
@@ -286,8 +325,23 @@ export function ReportsTab() {
           <p className="mt-2 font-mono text-2xl font-semibold tabular-figures text-ink-950">{formatCurrency(summary.totalCostBasis, rules.currency)}</p>
         </div>
         <div className="stat-card">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Income events</p>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Spot income</p>
           <p className="mt-2 font-mono text-2xl font-semibold tabular-figures text-gold-600">{formatCurrency(summary.totalIncome, rules.currency)}</p>
+        </div>
+        <div className="stat-card">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">
+            {businessMode ? 'Derivatives net' : 'Derivatives P&L'}
+          </p>
+          <p
+            className={
+              'mt-2 font-mono text-2xl font-semibold tabular-figures ' +
+              ((businessMode ? yearDerivIncome - yearDerivExpense : yearDerivCg) >= 0
+                ? 'text-emerald-600'
+                : 'text-loss')
+            }
+          >
+            {formatCurrency(businessMode ? yearDerivIncome - yearDerivExpense : yearDerivCg, rules.currency)}
+          </p>
         </div>
       </div>
 
