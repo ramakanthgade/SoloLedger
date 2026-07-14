@@ -384,7 +384,7 @@ export function CapitalGainsTab() {
             </CardHeader>
             <CardContent>
               <p
-                className={`font-mono text-3xl ${
+                className={`font-mono text-xl font-semibold tabular-figures whitespace-nowrap sm:text-2xl ${
                   (businessMode ? totalDerivNetBusiness : totalDerivCg) >= 0 ? 'text-emerald-600' : 'text-loss'
                 }`}
               >
@@ -394,7 +394,7 @@ export function CapitalGainsTab() {
               <p className="mt-1 text-xs text-mist-400">
                 {businessMode
                   ? `Income ${formatCurrency(totalDerivIncome, currency)} − expenses ${formatCurrency(totalDerivExpense, currency)}`
-                  : `${yearDerivCg.length} closed PnL / fee row(s) · Settings → Capital gains`}
+                  : `${yearDerivCg.length} close(s) · open notional as cost, close notional as proceeds`}
               </p>
             </CardContent>
           </Card>
@@ -631,11 +631,15 @@ export function CapitalGainsTab() {
           </CardHeader>
           <CardContent>
             <p className="mb-3 text-sm text-mist-300">
-              Closed PnL presented as capital gains (synthetic HL-PNL). Total:{' '}
-              <span className={`font-mono ${totalDerivCg >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
+              Close notional = proceeds; implied open notional (close − closed PnL) = cost. Gain = closed PnL. Total:{' '}
+              <span className={`font-mono whitespace-nowrap ${totalDerivCg >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
                 {totalDerivCg >= 0 ? '+' : ''}
                 {formatCurrency(totalDerivCg, currency)}
               </span>
+            </p>
+            <p className="mb-3 text-xs text-mist-400">
+              Trading fees are not included in these rows (same as spot capital gains). Switch Settings to Business
+              income to see fees + losses as expenses, or filter Derivatives in Review.
             </p>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[720px] text-xs">

@@ -310,31 +310,31 @@ export function ReportsTab() {
       )}
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        <div className="stat-card stat-card-featured">
+        <div className="stat-card stat-card-featured min-w-0">
           <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Total gain / loss</p>
-          <p className={'mt-2 font-mono text-2xl font-semibold tabular-figures ' + (summary.totalGain >= 0 ? 'text-emerald-600' : 'text-loss')}>
+          <p className={'mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap sm:text-xl ' + (summary.totalGain >= 0 ? 'text-emerald-600' : 'text-loss')}>
             {formatCurrency(summary.totalGain, rules.currency)}
           </p>
         </div>
-        <div className="stat-card">
+        <div className="stat-card min-w-0">
           <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Proceeds</p>
-          <p className="mt-2 font-mono text-2xl font-semibold tabular-figures text-ink-950">{formatCurrency(summary.totalProceeds, rules.currency)}</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-ink-950 sm:text-xl">{formatCurrency(summary.totalProceeds, rules.currency)}</p>
         </div>
-        <div className="stat-card">
+        <div className="stat-card min-w-0">
           <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Cost basis</p>
-          <p className="mt-2 font-mono text-2xl font-semibold tabular-figures text-ink-950">{formatCurrency(summary.totalCostBasis, rules.currency)}</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-ink-950 sm:text-xl">{formatCurrency(summary.totalCostBasis, rules.currency)}</p>
         </div>
-        <div className="stat-card">
+        <div className="stat-card min-w-0">
           <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Spot income</p>
-          <p className="mt-2 font-mono text-2xl font-semibold tabular-figures text-gold-600">{formatCurrency(summary.totalIncome, rules.currency)}</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-gold-600 sm:text-xl">{formatCurrency(summary.totalIncome, rules.currency)}</p>
         </div>
-        <div className="stat-card">
+        <div className="stat-card min-w-0">
           <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">
             {businessMode ? 'Derivatives net' : 'Derivatives P&L'}
           </p>
           <p
             className={
-              'mt-2 font-mono text-2xl font-semibold tabular-figures ' +
+              'mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap sm:text-xl ' +
               ((businessMode ? yearDerivIncome - yearDerivExpense : yearDerivCg) >= 0
                 ? 'text-emerald-600'
                 : 'text-loss')

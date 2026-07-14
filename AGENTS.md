@@ -59,5 +59,6 @@ Deposits/withdrawals CSV: `time`, `action`, `source`, `destination`, `accountVal
 - Defaults: IN/CA → `business_income`; US/AE → `capital_gains` (user can override)
 - Applied at **report time** (Capital Gains / Reports) — does not rewrite stored txs
 - Business income: profits in Derivatives income; fees + losses in Derivatives expenses; net = income − expenses
-- Capital gains: closed PnL / fees as synthetic `HL-PNL` gain/loss rows (spot FIFO untouched)
+- Capital gains: each Close uses exit notional as proceeds and (exit notional − closedPnl) as cost
+  (= implied open notional). Gain = closedPnl. Trading fees excluded from CG rows (same as spot).
 - Review: All | Spot | Derivatives filter + pagination (200/page)
