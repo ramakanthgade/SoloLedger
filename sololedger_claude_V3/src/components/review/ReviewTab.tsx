@@ -13,10 +13,13 @@ import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { isSaasMode } from '@/lib/saas/config';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
-import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
+import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
+import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 
 const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
@@ -26,6 +29,121 @@ const ALL_TYPES: TxType[] = [
   'nft_mint', 'nft_buy', 'nft_sell',
   'defi_deposit', 'defi_withdraw', 'other'
 ];
+
+const ALL_FLAGS: FlagReason[] = [
+  'possible_internal_transfer',
+  'missing_cost_basis',
+  'duplicate_suspected',
+  'unrecognized_asset',
+  'needs_review'
+];
+
+const FLAG_LABELS: Record<FlagReason, string> = {
+  possible_internal_transfer: 'Possible internal transfer',
+  missing_cost_basis: 'Missing cost basis',
+  duplicate_suspected: 'Duplicate suspected',
+  unrecognized_asset: 'Unrecognized asset',
+  needs_review: 'Needs review'
+};
+
+function displayFlags(t: Transaction): string[] {
+  const flags = new Set(t.flags ?? []);
+  if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
+  return [...flags];
+}
+
+function FlagSelector({ tx }: { tx: Transaction }) {
+  const [open, setOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  const storedFlags = new Set(tx.flags ?? []);
+  const shownFlags = displayFlags(tx);
+
+  const patch = async (update: Partial<Transaction>) => {
+    setSaving(true);
+    await db.transactions.update(tx.id, update);
+    setSaving(false);
+  };
+
+  const toggleFlag = async (flag: FlagReason) => {
+    const next = new Set(tx.flags ?? []);
+    if (next.has(flag)) next.delete(flag);
+    else next.add(flag);
+    await patch({ flags: [...next] as FlagReason[] });
+  };
+
+  return (
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        title="Click to flag this transaction"
+        className="flex max-w-[14rem] flex-wrap items-center gap-1 text-left"
+      >
+        {tx.isInternalTransfer && <Badge tone="neutral" className="text-[10px]">internal</Badge>}
+        {tx.isSpam && <Badge tone="loss" className="text-[10px]">spam</Badge>}
+        {tx.category === 'nft' && <Badge tone="pink" className="text-[10px]">nft</Badge>}
+        {shownFlags.map((f) => (
+          <Badge key={f} tone="gold" className="text-[10px]">
+            {f.replace(/_/g, ' ')}
+          </Badge>
+        ))}
+        {shownFlags.length === 0 && !tx.isInternalTransfer && !tx.isSpam && tx.category !== 'nft' && (
+          <span className="text-[10px] text-mist-400">—</span>
+        )}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-emerald" />}
+      </button>
+      {open && (
+        <div className="absolute left-0 top-7 z-30 min-w-[14rem] rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700">
+          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-mist-400">Flag transaction</p>
+          {ALL_FLAGS.map((flag) => {
+            const on = storedFlags.has(flag);
+            return (
+              <button
+                key={flag}
+                type="button"
+                onClick={() => void toggleFlag(flag)}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-900 ${on ? 'text-emerald-600' : 'text-mist-300'}`}
+              >
+                <span className={`h-3 w-3 rounded border ${on ? 'border-emerald bg-emerald' : 'border-ink-600'}`} />
+                {FLAG_LABELS[flag]}
+              </button>
+            );
+          })}
+          <div className="my-1 border-t border-ink-700" />
+          <button
+            type="button"
+            onClick={() =>
+              void patch({
+                isInternalTransfer: !tx.isInternalTransfer,
+                flags: tx.isInternalTransfer
+                  ? (['possible_internal_transfer'] as FlagReason[])
+                  : ([] as FlagReason[])
+              })
+            }
+            className="flex w-full px-3 py-1.5 text-left text-xs text-mist-300 hover:bg-ink-900"
+          >
+            {tx.isInternalTransfer ? '↩ Unmark internal transfer' : '✓ Mark as internal transfer'}
+          </button>
+          <button
+            type="button"
+            onClick={() => void patch({ isSpam: !tx.isSpam })}
+            className="flex w-full px-3 py-1.5 text-left text-xs text-mist-300 hover:bg-ink-900"
+          >
+            {tx.isSpam ? '↩ Unmark spam' : '🚫 Mark as spam'}
+          </button>
+          <button
+            type="button"
+            onClick={() => setOpen(false)}
+            className="flex w-full items-center gap-1 border-t border-ink-700 px-3 py-1.5 text-[10px] text-mist-400 hover:text-mist"
+          >
+            <X className="h-3 w-3" /> Close
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 
 function TypeSelector({
   txId,
@@ -108,10 +226,16 @@ function truncateAddress(addr?: string): string {
   return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
 }
 
-function displayFlags(t: Transaction): string[] {
-  const flags = new Set(t.flags ?? []);
-  if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
-  return [...flags];
+/** Derive From/To for Review display. Fees are paid FROM the wallet. */
+function txFromToAddresses(t: Transaction): { fromAddr?: string; toAddr?: string } {
+  if (t.type === 'fee') {
+    return { fromAddr: t.walletAddress, toAddr: undefined };
+  }
+  if (t.type === 'transfer_out' || t.type === 'gift_sent' || t.type === 'sell') {
+    return { fromAddr: t.walletAddress, toAddr: t.counterpartyAddress };
+  }
+  // transfer_in, income, trade, buy, …
+  return { fromAddr: t.counterpartyAddress, toAddr: t.walletAddress };
 }
 
 export function ReviewTab() {
@@ -122,6 +246,9 @@ export function ReviewTab() {
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
   const [showSpam, setShowSpam] = useState(false);
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'wallet' | 'asset' | 'type' | 'fy'>('date_desc');
+  const [instrumentFilter, setInstrumentFilter] = useState<'all' | 'spot' | 'derivative'>('all');
+  const [page, setPage] = useState(1);
+  const PAGE_SIZE = 200;
   const [walletLabels, setWalletLabels] = useState<Map<string, string>>(new Map());
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -198,17 +325,9 @@ export function ReviewTab() {
     return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
   }, [transactions, settings, hints]);
 
-  /** Non-spam transactions missing a fiat value. */
+  /** Non-spam transactions missing a fiat value (includes internal transfers for display). */
   const missingPriceTxs = useMemo(
-    () =>
-      transactions.filter(
-        (t) =>
-          !t.isSpam &&
-          t.fiatValue == null &&
-          !t.isInternalTransfer &&
-          ((Array.isArray(t.flags) && t.flags.includes('missing_cost_basis')) ||
-            (t.type !== 'transfer_in' && t.type !== 'transfer_out'))
-      ),
+    () => transactions.filter((t) => !t.isSpam && t.fiatValue == null),
     [transactions]
   );
 
@@ -220,8 +339,7 @@ export function ReviewTab() {
         (t) =>
           t.source.startsWith('rpc:') &&
           (t.type === 'transfer_in' || t.type === 'transfer_out') &&
-          t.fiatValue == null &&
-          !t.isInternalTransfer
+          t.fiatValue == null
       ).length,
     [transactions]
   );
@@ -257,10 +375,6 @@ export function ReviewTab() {
       setFetchingPrices(false);
       setPriceProgress(null);
     }
-  };
-
-  const markSpam = async (txId: string, spam: boolean) => {
-    await db.transactions.update(txId, { isSpam: spam });
   };
 
   const bulkMarkSpam = async () => {
@@ -301,21 +415,39 @@ export function ReviewTab() {
 
   const assets = useMemo(() => Array.from(new Set(transactions.map((t) => t.asset))).sort(), [transactions]);
 
-  // Detect DCA groups whenever transactions change (only if counterpartyAddress is populated)
+  // Detect DCA groups whenever transactions change (only unclassified deposits).
+  // Auto-classify real groups so users don't need the manual button.
   useEffect(() => {
     const groups = detectDcaGroups(transactions.filter((t) => !t.isInternalTransfer && !t.isSpam));
     setDcaGroups(groups);
-  }, [transactions]);
+    if (groups.length === 0) return;
+    const key = 'sololedger_review_dca_auto_v1';
+    if (sessionStorage.getItem(key)) return;
+    sessionStorage.setItem(key, '1');
+    void (async () => {
+      setApplyingDca(true);
+      try {
+        await applyDcaClassification(
+          groups,
+          settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
+        );
+      } finally {
+        setApplyingDca(false);
+      }
+    })();
+  }, [transactions, settings?.alchemyApiKey]);
 
   const filtered = useMemo(() => {
     const fyBounds = fyFilter != null ? getFyBoundaries(fyFilter, jurisdiction) : null;
     const base = transactions.filter((t) => {
       if (!showSpam && t.isSpam) return false;
       if (showSpam && !t.isSpam) return false;
-      if (showNeedsPrice && !(t.fiatValue == null && !t.isInternalTransfer && !t.isSpam)) return false;
+      if (showNeedsPrice && !(t.fiatValue == null && !t.isSpam)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
       if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
       if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;
+      if (instrumentFilter === 'derivative' && !isDerivativeTransaction(t)) return false;
+      if (instrumentFilter === 'spot' && isDerivativeTransaction(t)) return false;
       if (query && !`${t.asset} ${t.type} ${t.source} ${t.walletAddress ?? ''} ${t.notes ?? ''}`.toLowerCase().includes(query.toLowerCase()))
         return false;
       return true;
@@ -335,7 +467,19 @@ export function ReviewTab() {
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, query, showNeedsPrice, showSpam, sortBy]);
+  }, [transactions, assetFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pageRows = useMemo(() => {
+    const start = (safePage - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, safePage, PAGE_SIZE]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setPage(1);
+  }, [assetFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -345,7 +489,7 @@ export function ReviewTab() {
     });
   };
 
-  const visibleIds = useMemo(() => filtered.slice(0, 200).map((t) => t.id), [filtered]);
+  const visibleIds = useMemo(() => pageRows.map((t) => t.id), [pageRows]);
   const allVisibleSelected =
     visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
 
@@ -413,8 +557,7 @@ export function ReviewTab() {
       'notes'
     ];
     const rows = filtered.map((t) => {
-      const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
-      const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
+      const { fromAddr, toAddr } = txFromToAddresses(t);
       return [
         new Date(t.timestamp).toISOString(),
         t.type,
@@ -454,10 +597,10 @@ export function ReviewTab() {
     );
   };
 
-  const exportFilteredPdf = () => {
+  const exportFilteredPdf = async () => {
     if (!confirmPdfExport()) return;
     const cur = (settings?.reportingCurrency ?? 'INR').toUpperCase();
-    const { doc, startY } = createBrandedPdf({
+    const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Review Transactions',
       metaLines: [`Rows: ${filtered.length} · Currency: ${cur}`],
       landscape: true
@@ -470,18 +613,21 @@ export function ReviewTab() {
         'Date', 'Type', 'Chain', 'Asset', 'Amount',
         `Fiat (${cur})`, 'From', 'To', 'Flags', 'Source Ref'
       ]],
-      body: filtered.map((t) => [
+      body: filtered.map((t) => {
+        const { fromAddr, toAddr } = txFromToAddresses(t);
+        return [
         new Date(t.timestamp).toISOString().slice(0, 10),
         t.type,
         t.chain ?? '—',
         t.asset,
         formatCompactAmount(t.amount),
         t.fiatValue != null ? formatAmountForExport(t.fiatValue, t.fiatCurrency) : '—',
-        t.type === 'transfer_out' ? (t.walletAddress ?? '—') : (t.counterpartyAddress ?? '—'),
-        t.type === 'transfer_out' ? (t.counterpartyAddress ?? '—') : (t.walletAddress ?? '—'),
+        fromAddr ? truncateAddress(fromAddr) : '—',
+        toAddr ? truncateAddress(toAddr) : '—',
         displayFlags(t).join(', ') || '—',
-        t.sourceRef ?? '—'
-      ])
+        t.sourceRef ? truncatePdfRef(t.sourceRef) : '—'
+      ];
+      })
     });
     doc.save('sololedger-review-transactions.pdf');
   };
@@ -530,7 +676,10 @@ export function ReviewTab() {
             disabled={applyingDca}
             onClick={async () => {
               setApplyingDca(true);
-              await applyDcaClassification(dcaGroups, settings?.alchemyApiKey);
+              await applyDcaClassification(
+                dcaGroups,
+                settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
+              );
               setApplyingDca(false);
             }}
             className="shrink-0 border-emerald/40 text-emerald-600"
@@ -682,6 +831,26 @@ export function ReviewTab() {
         )}
 
         <span className="text-xs text-mist-400">{filtered.length} shown</span>
+        <div className="flex rounded-full border border-ink-600 p-0.5 text-xs">
+          {(
+            [
+              ['all', 'All'],
+              ['spot', 'Spot'],
+              ['derivative', 'Derivatives']
+            ] as const
+          ).map(([id, label]) => (
+            <button
+              key={id}
+              type="button"
+              onClick={() => setInstrumentFilter(id)}
+              className={`rounded-full px-3 py-1 font-medium transition ${
+                instrumentFilter === id ? 'bg-emerald text-white' : 'text-mist-400 hover:text-mist'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
         <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
 
         <div className="flex gap-2">
@@ -758,11 +927,10 @@ export function ReviewTab() {
             </tr>
           </thead>
           <tbody className="font-mono tabular-figures">
-            {filtered.slice(0, 200).map((t) => {
+            {pageRows.map((t) => {
               const isDisposal = DISPOSAL_TYPES.has(t.type);
               const candidates = engineResult?.disposalCandidates[t.id] ?? [];
-              const fromAddr = t.type === 'transfer_out' ? t.walletAddress : t.counterpartyAddress;
-              const toAddr = t.type === 'transfer_out' ? t.counterpartyAddress : t.walletAddress;
+              const { fromAddr, toAddr } = txFromToAddresses(t);
               const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : '—';
               const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
               const isEditing = editingFiat === t.id;
@@ -785,8 +953,14 @@ export function ReviewTab() {
                         </span>
                       )}
                     </td>
-                    <td className="px-1 py-2 text-right text-mist" title={String(t.amount)}>
-                      {formatCompactAmount(t.amount)}
+                    <td className="px-1 py-2 text-right text-mist" title={
+                      t.type === 'trade' && t.counterAmount != null
+                        ? `${t.amount} → ${t.counterAmount}`
+                        : String(t.amount)
+                    }>
+                      {t.type === 'trade' && t.counterAmount != null
+                        ? `${formatCompactAmount(t.amount)} → ${formatCompactAmount(t.counterAmount)}`
+                        : formatCompactAmount(t.amount)}
                     </td>
                     <td className="px-3 py-2 text-right text-mist-300">
                       {isEditing ? (
@@ -852,80 +1026,13 @@ export function ReviewTab() {
                       ) : '—'}
                     </td>
                     <td className="px-2 py-2 align-top">
-                      <div className="flex max-w-[14rem] flex-wrap gap-1 whitespace-normal">
-                      {t.isInternalTransfer && (
-                        <div className="relative group/internal">
-                          <Badge tone="neutral" className="cursor-pointer hover:opacity-80">internal</Badge>
-                          <div className="absolute left-0 top-5 z-20 hidden group-hover/internal:flex flex-col rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700 text-xs min-w-[15rem]">
-                            <button
-                              className="px-3 py-1.5 text-left text-mist-300 hover:bg-ink-900"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                await db.transactions.update(t.id, {
-                                  isInternalTransfer: false,
-                                  flags: ['possible_internal_transfer'] as FlagReason[]
-                                });
-                              }}
-                            >
-                              ↩ Undo — mark as NOT internal transfer
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                      {t.category === 'nft' && <Badge tone="pink">nft</Badge>}
-                      {displayFlags(t).map((f) => (
-                        f === 'possible_internal_transfer' ? (
-                          // Clickable: let user confirm as internal or dismiss
-                          <div key={f} className="relative group/flag">
-                            <Badge tone="gold" className="cursor-pointer text-[10px] hover:bg-gold/40">
-                              {f.replace(/_/g, ' ')}
-                            </Badge>
-                            <div className="absolute left-0 top-5 z-20 hidden group-hover/flag:flex flex-col rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700 text-xs min-w-[14rem]">
-                              <button
-                                className="px-3 py-1.5 text-left text-emerald-600 hover:bg-ink-900"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  await db.transactions.update(t.id, { isInternalTransfer: true, flags: [] });
-                                }}
-                              >
-                                ✓ Confirm as internal transfer
-                              </button>
-                              <button
-                                className="px-3 py-1.5 text-left text-mist-400 hover:bg-ink-900"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  await db.transactions.update(t.id, {
-                                    flags: (t.flags ?? []).filter((x) => x !== 'possible_internal_transfer') as import('@/types/transaction').FlagReason[]
-                                  });
-                                }}
-                              >
-                                ✕ Remove flag (not internal)
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <Badge key={f} tone="gold" className="text-[10px]">
-                            {f.replace(/_/g, ' ')}
-                          </Badge>
-                        )
-                      ))}
-                      </div>
+                      <FlagSelector tx={t} />
                       {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
                         <button
-                          className="ml-2 text-emerald-600 underline decoration-dotted"
+                          className="mt-1 text-emerald-600 underline decoration-dotted"
                           onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
                         >
                           match lots
-                        </button>
-                      )}
-                      {/* Show spam button only for unclassified transfers, or when already spammed */}
-                      {(t.isSpam || (['transfer_in', 'transfer_out', 'other'].includes(t.type) && !t.isInternalTransfer)) && (
-                        <button
-                          onClick={() => void markSpam(t.id, !t.isSpam)}
-                          title={t.isSpam ? 'Remove spam flag' : 'Mark as spam (excluded from taxes)'}
-                          className={`ml-1 rounded px-1.5 py-0.5 text-[10px] transition ${t.isSpam ? 'bg-loss/20 text-loss hover:bg-loss/30' : 'text-mist-400 hover:bg-ink-900 hover:text-loss'}`}
-                        >
-                          {t.isSpam ? '🚫 spam' : '🚫'}
                         </button>
                       )}
                     </td>
@@ -949,8 +1056,34 @@ export function ReviewTab() {
           </tbody>
         </table>
       </div>
-      {filtered.length > 200 && (
-        <p className="text-xs text-mist-400">Showing first 200 of {filtered.length} — refine filters to narrow down.</p>
+      {filtered.length > PAGE_SIZE && (
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
+          <p className="text-xs text-mist-400">
+            Showing {(safePage - 1) * PAGE_SIZE + 1}–
+            {Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
+          </p>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="secondary"
+              className="text-xs"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+            >
+              Previous
+            </Button>
+            <span className="text-xs text-mist-300">
+              Page {safePage} of {totalPages}
+            </span>
+            <Button
+              variant="secondary"
+              className="text-xs"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+            >
+              Next
+            </Button>
+          </div>
+        </div>
       )}
     </div>
   );

@@ -33,6 +33,8 @@ const alchemyDevProxy = Object.fromEntries(
 // (b) a public blockchain RPC/explorer for read-only address lookups —
 // both off by default and gated behind explicit settings toggles.
 export default defineConfig({
+  // Local dev: /. GitHub Pages build sets VITE_BASE_PATH=/SoloLedger/ (must match repo name case).
+  base: process.env.VITE_BASE_PATH ?? '/',
   plugins: [
     react(),
     VitePWA({
@@ -68,6 +70,13 @@ export default defineConfig({
     // Browser → localhost → Vite → Alchemy. Avoids CORS blocks on direct Alchemy calls.
     proxy: {
       ...alchemyDevProxy,
+      // Public Solana JSON-RPC (no API key) — used by Portfolio ledger repair.
+      '/solana-rpc': {
+        target: 'https://api.mainnet-beta.solana.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/'
+      },
       '/etherscan-api': {
         target: 'https://api.etherscan.io',
         changeOrigin: true,
@@ -83,6 +92,12 @@ export default defineConfig({
   preview: {
     proxy: {
       ...alchemyDevProxy,
+      '/solana-rpc': {
+        target: 'https://api.mainnet-beta.solana.com',
+        changeOrigin: true,
+        secure: true,
+        rewrite: () => '/'
+      },
       '/etherscan-api': {
         target: 'https://api.etherscan.io',
         changeOrigin: true,

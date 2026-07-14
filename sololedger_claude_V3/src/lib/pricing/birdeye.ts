@@ -8,6 +8,9 @@
  * Cost: 6 CU per call. Standard (free) plan = 30k CU/mo ≈ 5,000 lookups/mo.
  */
 
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+
 const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 
 export interface BirdeyePriceResult {
@@ -27,16 +30,19 @@ export async function fetchBirdeyeHistoricalPrice(
   timestampMs: number
 ): Promise<BirdeyePriceResult> {
   const unixTime = Math.floor(timestampMs / 1000);
-  const url = `${BIRDEYE_BASE}/defi/historical_price_unix?address=${mintAddress}&unixtime=${unixTime}`;
+  const path = `defi/historical_price_unix?address=${mintAddress}&unixtime=${unixTime}`;
+  const url = isSaasMode() ? `${getApiBase()}/api/proxy/birdeye/${path}` : `${BIRDEYE_BASE}/${path}`;
 
   try {
-    const res = await fetch(url, {
-      headers: {
-        'X-API-KEY': apiKey,
-        'x-chain': 'solana',
-        accept: 'application/json'
-      }
-    });
+    const res = isSaasMode()
+      ? await saasProxyFetch(`/api/proxy/birdeye/${path}`)
+      : await fetch(url, {
+          headers: {
+            'X-API-KEY': apiKey,
+            'x-chain': 'solana',
+            accept: 'application/json'
+          }
+        });
 
     if (res.status === 401) return { priceUsd: null, error: 'Birdeye: invalid API key' };
     if (res.status === 429) return { priceUsd: null, error: 'Birdeye: rate limited' };

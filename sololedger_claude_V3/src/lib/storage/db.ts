@@ -51,8 +51,8 @@ class SoloLedgerDB extends Dexie {
   priceCache!: Table<PriceCacheRow, string>;
   csvImports!: Table<CsvImportRow, string>;
 
-  constructor() {
-    super('sololedger_crypto_tax_db');
+  constructor(name: string) {
+    super(name);
     this.version(1).stores({
       transactions: 'id, timestamp, asset, type, source, *flags',
       lots: 'id, asset, acquiredAt, sourceTxId',
@@ -104,7 +104,34 @@ class SoloLedgerDB extends Dexie {
   }
 }
 
-export const db = new SoloLedgerDB();
+const LOCAL_DB_NAME = 'sololedger_local';
+
+function createDb(name: string): SoloLedgerDB {
+  return new SoloLedgerDB(name);
+}
+
+/** Active IndexedDB — swapped per user in SaaS mode. */
+export let db = createDb(LOCAL_DB_NAME);
+
+let activeUserId: string | null = null;
+
+export function getActiveDatabaseUserId(): string | null {
+  return activeUserId;
+}
+
+/** In SaaS mode each account gets an isolated database. Standalone uses one shared local DB. */
+export async function switchUserDatabase(userId: string | null): Promise<void> {
+  const nextName = userId ? `sololedger_${userId}` : LOCAL_DB_NAME;
+  if (activeUserId === userId && db.name === nextName) return;
+  try {
+    await db.close();
+  } catch {
+    /* first open */
+  }
+  activeUserId = userId;
+  db = createDb(nextName);
+  await db.open();
+}
 
 export const DEFAULT_SETTINGS: TaxSettings = {
   jurisdiction: 'IN',
@@ -183,7 +210,12 @@ export function transactionExchangeKey(
   t: Pick<Transaction, 'source' | 'sourceRef'>
 ): string | null {
   if (!t.sourceRef) return null;
-  if (t.source.startsWith('binance') || t.source === 'coinbase') {
+  if (
+    t.source.startsWith('binance') ||
+    t.source === 'coinbase' ||
+    t.source.startsWith('wazirx') ||
+    t.source.startsWith('hyperliquid')
+  ) {
     return `ex:${t.sourceRef}`;
   }
   return null;
@@ -196,23 +228,30 @@ function normalizeImportAmount(amount: number): string {
   return a.toFixed(9);
 }
 
+/** Stable asset key for dedup — prefer mint/contract over display symbol. */
+function transactionAssetKey(t: Pick<Transaction, 'asset' | 'contractAddress'>): string {
+  return t.contractAddress?.toLowerCase() || t.asset.toUpperCase();
+}
+
 /** Dedup key for on-chain rows — intentionally excludes `type` so re-imported transfer_in rows match reclassified income. */
-export function transactionImportKey(t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount'>): string | null {
+export function transactionImportKey(
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount' | 'contractAddress'>
+): string | null {
   if (!t.sourceRef || !t.walletAddress) return null;
   return [
     t.sourceRef,
     t.walletAddress.toLowerCase(),
-    t.asset.toUpperCase(),
+    transactionAssetKey(t),
     normalizeImportAmount(t.amount)
   ].join('|');
 }
 
-/** wallet + on-chain tx hash + asset — catches sync re-fetches even when float amount differs slightly. */
+/** wallet + on-chain tx hash + asset/mint — catches sync re-fetches even when float amount differs slightly. */
 export function transactionSourceKey(
-  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset'>
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'contractAddress'>
 ): string | null {
   if (!t.sourceRef || !t.walletAddress) return null;
-  return [t.walletAddress.toLowerCase(), t.sourceRef, t.asset.toUpperCase()].join('|');
+  return [t.walletAddress.toLowerCase(), t.sourceRef, transactionAssetKey(t)].join('|');
 }
 
 /** Newest sourceRef stored for a wallet (by transaction timestamp). */
@@ -339,9 +378,16 @@ export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
 
 // ---- CSV imports ----
 
-export async function hashFileContent(text: string): Promise<string> {
-  const sample = text.length > 100_000 ? text.slice(0, 100_000) : text;
-  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sample));
+/** Hash text (CSV) or binary (Excel) content for import-batch dedup. */
+export async function hashFileContent(input: string | ArrayBuffer): Promise<string> {
+  let bytes: BufferSource;
+  if (typeof input === 'string') {
+    const sample = input.length > 100_000 ? input.slice(0, 100_000) : input;
+    bytes = new TextEncoder().encode(sample);
+  } else {
+    bytes = input.byteLength > 100_000 ? input.slice(0, 100_000) : input;
+  }
+  const buf = await crypto.subtle.digest('SHA-256', bytes);
   return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 24);
 }
 

@@ -1,5 +1,11 @@
 import type { Disposal, Lot, Transaction } from '@/types/transaction';
 import { identifyDabbaProgram, DABBA_KIND_LABEL, type DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
+import {
+  derivativeExpenseKind,
+  isDerivativeExpense,
+  isDerivativeProfit,
+  isDerivativeTransaction
+} from '@/lib/tax/derivatives';
 
 export interface MatchedGainRow {
   id: string;
@@ -78,10 +84,33 @@ export interface IncomeRow {
   txId: string;
 }
 
+export interface DerivativeBusinessIncomeRow {
+  id: string;
+  date: number;
+  asset: string;
+  amount: number;
+  fiatValue: number;
+  source: string;
+  notes?: string;
+  txId: string;
+}
+
+export interface DerivativeBusinessExpenseRow {
+  id: string;
+  date: number;
+  asset: string;
+  amount: number;
+  fiatValue: number;
+  source: string;
+  kind: 'trading_fee' | 'realized_loss';
+  notes?: string;
+  txId: string;
+}
+
 /**
- * Income-like rows for the Capital Gains tab.
- * Includes explicit `income` type rows AND suspected airdrops/staking from heuristics.
- * DCA vault transfers are excluded via dcaVaultAddresses set.
+ * Income-like rows for the Capital Gains tab (spot / non-derivative).
+ * Derivative income is handled separately via buildDerivativeBusinessIncomeRows /
+ * buildDerivativeCapitalGainRows depending on Settings treatment.
  */
 export function buildIncomeRows(
   transactions: Transaction[],
@@ -92,6 +121,8 @@ export function buildIncomeRows(
 
   for (const t of transactions) {
     if (t.isInternalTransfer || t.isSpam) continue;
+    // Derivatives have their own report sections
+    if (isDerivativeTransaction(t)) continue;
 
     // Explicitly classified income (auto-classified or user-set)
     if (t.type === 'income' || t.type === 'gift_received') {
@@ -165,4 +196,112 @@ export function buildIncomeRows(
   }
 
   return rows.sort((a, b) => b.date - a.date);
+}
+
+/** Perp profits for business-income treatment. */
+export function buildDerivativeBusinessIncomeRows(transactions: Transaction[]): DerivativeBusinessIncomeRow[] {
+  return transactions
+    .filter(isDerivativeProfit)
+    .map((t) => ({
+      id: t.id,
+      date: t.timestamp,
+      asset: t.asset,
+      amount: t.amount,
+      fiatValue: Math.abs(t.fiatValue ?? t.amount),
+      source: t.source,
+      notes: t.notes,
+      txId: t.id
+    }))
+    .sort((a, b) => b.date - a.date);
+}
+
+/** Perp trading fees + realized losses for business-income treatment. */
+export function buildDerivativeBusinessExpenseRows(transactions: Transaction[]): DerivativeBusinessExpenseRow[] {
+  return transactions
+    .filter(isDerivativeExpense)
+    .map((t) => ({
+      id: t.id,
+      date: t.timestamp,
+      asset: t.asset,
+      amount: t.amount,
+      fiatValue: Math.abs(t.fiatValue ?? t.amount),
+      source: t.source,
+      kind: derivativeExpenseKind(t),
+      notes: t.notes,
+      txId: t.id
+    }))
+    .sort((a, b) => b.date - a.date);
+}
+
+/**
+ * Present derivative closed PnL as capital-gain style rows.
+ *
+ * For each Close fill:
+ *   proceeds  = exit notional (ntl), scaled to reporting fiat
+ *   costBasis = exit notional − closedPnl  (= implied open/entry notional for that size)
+ *   gain      = closedPnl
+ *
+ * This fills both Proceeds and Cost (unlike the old PnL-only rows) and matches
+ * “open = cost, close = proceeds” for longs; for shorts the same identities hold
+ * because Hyperliquid’s closedPnl already has the correct sign.
+ *
+ * Trading fees are excluded here — same as spot CG (standalone `fee` rows are
+ * ignored by the cost engine). Fees remain visible under Business expenses /
+ * Review.
+ */
+export function buildDerivativeCapitalGainRows(transactions: Transaction[]): MatchedGainRow[] {
+  const rows: MatchedGainRow[] = [];
+
+  for (const t of transactions) {
+    if (t.isSpam || t.isInternalTransfer || !isDerivativeTransaction(t)) continue;
+
+    // Only realized close PnL — not per-fill trading fees
+    const isProfit = isDerivativeProfit(t);
+    const isLoss = t.category === 'perp_loss' && t.type === 'fee';
+    if (!isProfit && !isLoss) continue;
+
+    const signedPnlFiat = isProfit
+      ? Math.abs(t.fiatValue ?? t.amount)
+      : -Math.abs(t.fiatValue ?? t.amount);
+
+    const raw = (t.raw ?? {}) as Record<string, unknown>;
+    const ntlUsdc = Math.abs(Number(String(raw.ntl ?? '').replace(/,/g, '')) || 0);
+    const pnlUsdc = Number(String(raw.closedPnl ?? '').replace(/,/g, '')) || 0;
+    const pnlUsdcAbs = Math.abs(pnlUsdc);
+
+    // Scale USDC notional into reporting fiat using this row's PnL FX rate
+    let notionalFiat: number;
+    if (ntlUsdc > 0 && pnlUsdcAbs > 1e-12 && Math.abs(signedPnlFiat) > 1e-12) {
+      notionalFiat = ntlUsdc * (Math.abs(signedPnlFiat) / pnlUsdcAbs);
+    } else if (ntlUsdc > 0 && Math.abs(signedPnlFiat) < 1e-12) {
+      // Flat close — no PnL to infer FX; skip notional scaling, use ntl≈0 gain row
+      notionalFiat = 0;
+    } else {
+      // Fallback when ntl missing: show PnL with cost/proceeds split still non-degenerate
+      notionalFiat = Math.abs(signedPnlFiat);
+    }
+
+    const proceeds = notionalFiat > 0 ? notionalFiat : Math.max(0, signedPnlFiat);
+    const costBasis = notionalFiat > 0 ? notionalFiat - signedPnlFiat : Math.max(0, -signedPnlFiat);
+    const coin = String(raw.coin ?? '').toUpperCase() || 'PERP';
+
+    rows.push({
+      id: `deriv-cg:${t.id}`,
+      asset: `HL-PERP:${coin}`,
+      chain: t.chain,
+      sellDate: t.timestamp,
+      sellAmount: Math.abs(Number(String(raw.sz ?? '')) || Math.abs(signedPnlFiat)),
+      proceeds,
+      sellTxId: t.id,
+      buyDate: t.timestamp,
+      buyAmount: Math.abs(Number(String(raw.sz ?? '')) || Math.abs(signedPnlFiat)),
+      costBasis,
+      buyTxId: t.id,
+      gain: signedPnlFiat,
+      holdingDays: 0,
+      method: 'FIFO'
+    });
+  }
+
+  return rows.sort((a, b) => b.sellDate - a.sellDate);
 }

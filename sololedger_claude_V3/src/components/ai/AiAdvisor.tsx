@@ -5,7 +5,9 @@ import { streamChatCompletion, AI_MODELS, DEFAULT_AI_MODEL, type ChatMessage } f
 import { buildTaxContext } from '@/lib/ai/taxContext';
 import { getAvailableFys, getCurrentFy, getFyLabel } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
-import { Bot, Mic, MicOff, Send, X, ChevronDown } from 'lucide-react';
+import { Bot, Mic, MicOff, Send, X, ChevronDown, Sparkles } from 'lucide-react';
+import { isSaasMode } from '@/lib/saas/config';
+import { fetchPublicConfig } from '@/lib/saas/api';
 
 const SUGGESTED_QUESTIONS = [
   'What is my total taxable gain this year?',
@@ -47,11 +49,23 @@ declare global {
 }
 
 export function AiAdvisor() {
+  const saas = isSaasMode();
   const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
-  const aiApiKey = settingsRow?.aiApiKey;
+  const localAiApiKey = settingsRow?.aiApiKey;
   const aiModel = settingsRow?.aiModel ?? DEFAULT_AI_MODEL;
   const jurisdiction = (settingsRow?.jurisdiction ?? 'IN') as Jurisdiction;
+
+  const [serverAiEnabled, setServerAiEnabled] = useState(!saas);
+  const aiAvailable = saas ? serverAiEnabled : Boolean(localAiApiKey);
+  const aiApiKey = saas ? 'saas-proxy' : (localAiApiKey ?? '');
+
+  useEffect(() => {
+    if (!saas) return;
+    fetchPublicConfig()
+      .then((c) => setServerAiEnabled(c.aiAdvisorEnabled))
+      .catch(() => setServerAiEnabled(false));
+  }, [saas]);
 
   const [open, setOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
@@ -115,7 +129,7 @@ export function AiAdvisor() {
 
   const sendMessage = async (text: string) => {
     const q = text.trim();
-    if (!q || loading || !aiApiKey) return;
+    if (!q || loading || !aiAvailable) return;
     setInput('');
     setError(null);
 
@@ -167,33 +181,36 @@ export function AiAdvisor() {
 
   const years = availableYears.length > 0 ? availableYears : [getCurrentFy(jurisdiction)];
 
-  if (!aiApiKey) {
+  const fabClass =
+    'flex items-center justify-center rounded-full shadow-xl transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-400 focus-visible:ring-offset-2';
+
+  if (!aiAvailable) {
     return (
-      <div className="fixed bottom-6 right-6 z-50">
+      <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
+        <span className="hidden rounded-full border border-ink-600 bg-ink-800/95 px-3 py-1.5 text-xs font-medium text-mist-300 shadow-lg sm:inline">
+          AI advisor unavailable
+        </span>
         <button
           onClick={() => setOpen((o) => !o)}
-          title="AI Tax Advisor — add OpenRouter API key in Settings to enable"
-          className="flex h-14 w-14 items-center justify-center rounded-full bg-ink-700 shadow-lg ring-1 ring-ink-600 transition hover:bg-ink-600"
+          title="AI Tax Advisor — not configured on server"
+          className={`${fabClass} h-14 w-14 bg-ink-700 ring-2 ring-ink-600 hover:bg-ink-600`}
         >
-          <Bot className="h-6 w-6 text-mist-400" />
+          <Bot className="h-7 w-7 text-mist-400" />
         </button>
         {open && (
           <div className="absolute bottom-16 right-0 w-72 rounded-xl border border-ink-600 bg-ink-900 p-4 shadow-xl">
             <p className="text-sm text-mist-300">
-              AI Tax Advisor needs an{' '}
-              <strong className="text-mist">OpenRouter API key</strong>.
-            </p>
-            <p className="mt-2 text-xs text-mist-400">
-              Go to <strong>Settings → AI Advisor</strong> and paste your key from{' '}
-              <a
-                href="https://openrouter.ai/keys"
-                target="_blank"
-                rel="noreferrer"
-                className="text-emerald-600 underline"
-              >
-                openrouter.ai/keys
-              </a>
-              . Your existing credits there work immediately.
+              {saas ? (
+                <>
+                  AI Tax Advisor is disabled or the server OpenRouter key is not set. Ask your admin to enable{' '}
+                  <strong className="text-mist">AI Tax Advisor</strong> and add an OpenRouter key in Settings.
+                </>
+              ) : (
+                <>
+                  AI Tax Advisor needs an <strong className="text-mist">OpenRouter API key</strong> in Settings → AI
+                  Advisor.
+                </>
+              )}
             </p>
           </div>
         )}
@@ -311,16 +328,26 @@ export function AiAdvisor() {
         </div>
       )}
 
-      {/* FAB */}
-      <button
-        onClick={() => setOpen((o) => !o)}
-        title="AI Tax Advisor"
-        className={`flex h-14 w-14 items-center justify-center rounded-full shadow-lg ring-1 transition ${
-          open ? 'bg-emerald ring-emerald/40 text-white' : 'bg-ink-700 ring-ink-600 text-emerald-600 hover:bg-ink-600'
-        }`}
-      >
-        {open ? <X className="h-5 w-5" /> : <Bot className="h-6 w-6" />}
-      </button>
+      {/* FAB — prominent */}
+      <div className="flex items-center gap-3">
+        {!open && (
+          <span className="hidden animate-pulse rounded-full border border-emerald-500/40 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-300 shadow-lg sm:inline">
+            <Sparkles className="mr-1 inline h-3.5 w-3.5" />
+            Ask AI
+          </span>
+        )}
+        <button
+          onClick={() => setOpen((o) => !o)}
+          title="AI Tax Advisor — ask about your taxes"
+          className={`${fabClass} h-16 w-16 ${
+            open
+              ? 'bg-emerald ring-4 ring-emerald/30 text-white'
+              : 'bg-gradient-to-br from-teal-500 to-emerald-600 ring-4 ring-emerald-400/40 text-white hover:scale-105 hover:shadow-2xl hover:shadow-emerald-500/30'
+          }`}
+        >
+          {open ? <X className="h-6 w-6" /> : <Bot className="h-7 w-7" />}
+        </button>
+      </div>
     </div>
   );
 }

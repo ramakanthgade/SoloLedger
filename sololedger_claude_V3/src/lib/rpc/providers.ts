@@ -15,6 +15,18 @@ import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
 import { makeId } from '@/lib/parsers/types';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+
+function hasRpcCredential(key?: string): boolean {
+  if (isSaasMode()) return true;
+  return Boolean(key?.trim());
+}
+
+function rpcCredential(key?: string): string {
+  return key?.trim() || (isSaasMode() ? SAAS_PROXY_KEY : '');
+}
 
 export type ChainId = 'bitcoin' | 'ethereum' | 'polygon' | 'arbitrum' | 'base' | 'bsc' | 'optimism' | 'avalanche' | 'solana' | 'custom_evm';
 
@@ -104,6 +116,9 @@ async function fetchBitcoin(address: string, baseUrl: string, asset: string): Pr
 }
 
 function alchemyRpcUrl(network: string): string {
+  if (isSaasMode()) {
+    return `${getApiBase()}/api/proxy/alchemy/${network}`;
+  }
   // When running via `npm run dev` / `npm run preview` on localhost, route through
   // Vite's same-origin proxy (see vite.config.ts). Direct browser → Alchemy calls
   // are blocked by CORS for some methods (e.g. alchemy_getAssetTransfers).
@@ -114,6 +129,14 @@ function alchemyRpcUrl(network: string): string {
     }
   }
   return `https://${network}.g.alchemy.com/v2`;
+}
+
+function alchemyFetch(url: string, init: RequestInit): Promise<Response> {
+  if (isSaasMode()) {
+    const path = url.replace(getApiBase(), '');
+    return saasProxyFetch(path, init);
+  }
+  return fetch(url, init);
 }
 
 function alchemyErrorMessage(status: number, body?: { error?: { code?: number; message?: string } }): string {
@@ -150,6 +173,9 @@ function isAlchemyRateLimitError(err: unknown): boolean {
 }
 
 function alchemyHeaders(apiKey: string): HeadersInit {
+  if (isSaasMode()) {
+    return { 'Content-Type': 'application/json' };
+  }
   return {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${apiKey}`
@@ -182,8 +208,8 @@ async function fetchAlchemyEvmInner(
 
   const headers = alchemyHeaders(apiKey);
   const [outgoingRes, incomingRes] = await Promise.all([
-    fetch(url, { method: 'POST', headers, body: JSON.stringify(body('from')) }),
-    fetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
+    alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('from')) }),
+    alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
   ]);
 
   const [outgoing, incoming] = await Promise.all([outgoingRes.json(), incomingRes.json()]);
@@ -305,7 +331,7 @@ async function getSolanaAssetMeta(apiKey: string, mint: string): Promise<{ symbo
     return meta;
   }
   try {
-    const res = await fetch(alchemyRpcUrl('solana-mainnet'), {
+    const res = await alchemyFetch(alchemyRpcUrl('solana-mainnet'), {
       method: 'POST',
       headers: alchemyHeaders(apiKey),
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getAsset', params: { id: mint } })
@@ -332,10 +358,10 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
   const url = alchemyRpcUrl('solana-mainnet');
   const headers = alchemyHeaders(apiKey);
 
-  const sigRes = await fetch(url, {
+  const sigRes = await alchemyFetch(url, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 100 }] })
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 1000 }] })
   });
   const sigData = await sigRes.json();
   if (!sigRes.ok) throw new Error(alchemyErrorMessage(sigRes.status, sigData));
@@ -348,7 +374,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 
   for (const sig of signatures) {
     // eslint-disable-next-line no-await-in-loop
-    const txRes = await fetch(url, {
+    const txRes = await alchemyFetch(url, {
       method: 'POST',
       headers,
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTransaction', params: [sig.signature, { maxSupportedTransactionVersion: 0 }] })
@@ -408,8 +434,12 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 
     // eslint-disable-next-line no-await-in-loop
     for (const mint of mints) {
-      const preAmt = pre.find((b: any) => b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
-      const postAmt = post.find((b: any) => b.mint === mint)?.uiTokenAmount?.uiAmount ?? 0;
+      const sumUi = (balances: any[], m: string) =>
+        balances
+          .filter((b: any) => b.mint === m)
+          .reduce((s, b) => s + (b.uiTokenAmount?.uiAmount ?? 0), 0);
+      const preAmt = sumUi(pre, mint);
+      const postAmt = sumUi(post, mint);
       const delta = postAmt - preAmt;
       if (Math.abs(delta) < 1e-9) continue;
 
@@ -746,13 +776,13 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
   }
   if (chain.provider === 'alchemy_evm') {
     // Moralis is the primary EVM source when key is provided — returns decoded + spam-flagged data
-    if (config.moralisApiKey) {
+    if (hasRpcCredential(config.moralisApiKey)) {
       const { getMoralisChain, fetchMoralisEvm } = await import('@/lib/rpc/moralis');
       const moralisChain = getMoralisChain(chain.id);
       if (moralisChain) {
         try {
-          const result = await fetchMoralisEvm(address, chain.id, chain.asset, config.moralisApiKey);
-          if (result.transactions.length > 0 || !config.alchemyApiKey) {
+          const result = await fetchMoralisEvm(address, chain.id, chain.asset, rpcCredential(config.moralisApiKey));
+          if (result.transactions.length > 0 || !hasRpcCredential(config.alchemyApiKey)) {
             return withDexSwapDetection({
               transactions: result.transactions,
               warnings: result.warnings.map((msg) => ({ address, message: msg }))
@@ -764,12 +794,12 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     if (chain.id === 'ethereum') {
       return withDexSwapDetection(await fetchEthereumAddress(address, config));
     }
-    if (!config.alchemyApiKey) throw new Error('Add your Alchemy API key (or Moralis API key) in Settings first.');
+    if (!hasRpcCredential(config.alchemyApiKey)) throw new Error('Add your Alchemy API key (or Moralis API key) in Settings first.');
     return withDexSwapDetection(
       await fetchAlchemyEvm(
         address,
         chain.alchemyNetwork!,
-        config.alchemyApiKey,
+        rpcCredential(config.alchemyApiKey),
         chain.asset,
         chain.id,
         config.customApiKey
@@ -780,12 +810,13 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
     // Helius is the primary Solana source when key is provided.
     // It returns pre-parsed type labels (SWAP, STAKE, NFT_SALE, etc.) including
     // Jupiter DCA fills with exact token amounts — eliminates need for Noves on Solana.
-    if (config.heliusApiKey) {
+    let heliusError: string | undefined;
+    if (hasRpcCredential(config.heliusApiKey)) {
       try {
         const { fetchHeliusSolana } = await import('@/lib/rpc/helius');
         const result = await fetchHeliusSolana(
           address,
-          config.heliusApiKey,
+          rpcCredential(config.heliusApiKey),
           config.afterSignature ? 10 : 20,
           config.afterSignature,
           config.skipSignatures
@@ -799,13 +830,44 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
             newestSignature: result.newestSignature
           };
         }
-      } catch { /* fall through to Alchemy on full import only */ }
+      } catch (err) {
+        heliusError = err instanceof Error ? err.message : 'Helius lookup failed';
+        // Fall through to Alchemy on full import only.
+      }
     }
     if (config.incrementalOnly) {
-      return { transactions: [], warnings: [{ address, message: 'No new transactions since last sync.' }] };
+      return {
+        transactions: [],
+        warnings: [
+          {
+            address,
+            message: heliusError
+              ? `Sync failed (${heliusError}). Try Remove + re-import, or check API keys.`
+              : 'No new transactions since last sync.'
+          }
+        ]
+      };
     }
-    if (!config.alchemyApiKey) throw new Error('Add your Helius API key (or Alchemy API key) in Settings first.');
-    return withDexSwapDetection(await fetchAlchemySolana(address, config.alchemyApiKey));
+    if (!hasRpcCredential(config.alchemyApiKey)) {
+      throw new Error(
+        heliusError
+          ? `Helius failed (${heliusError}) and no Alchemy key is available. In SaaS mode set VITE_API_URL to https://sololedger-production.up.railway.app (hosted keys), or add keys to server/.env.`
+          : 'Add your Helius API key (or Alchemy API key) in Settings first.'
+      );
+    }
+    try {
+      return withDexSwapDetection(await fetchAlchemySolana(address, rpcCredential(config.alchemyApiKey)));
+    } catch (err) {
+      const alchemyMsg = err instanceof Error ? err.message : 'Alchemy lookup failed';
+      if (/401/.test(alchemyMsg)) {
+        throw new Error(
+          'Alchemy API returned 401 (unauthorized). Your app is calling an API server that has no valid Alchemy/Helius keys. ' +
+            'For local SaaS testing use: set VITE_API_URL=https://sololedger-production.up.railway.app ' +
+            '(keep the local server on :3001 for automatic portfolio ledger repair RPC). Or put HELIUS_API_KEY / ALCHEMY_API_KEY in sololedger_claude_V3/server/.env and restart the API.'
+        );
+      }
+      throw heliusError ? new Error(`Helius: ${heliusError}; Alchemy: ${alchemyMsg}`) : err;
+    }
   }
   if (!config.customBaseUrl) throw new Error('Enter an explorer base URL.');
   return withDexSwapDetection(

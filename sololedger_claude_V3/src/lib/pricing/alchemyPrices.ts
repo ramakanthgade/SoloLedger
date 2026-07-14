@@ -12,6 +12,9 @@
  * currency out of Alchemy directly.
  */
 
+import { isSaasMode } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+
 const PRICES_BASE = 'https://api.g.alchemy.com/prices/v1';
 
 export interface AlchemyPriceResult {
@@ -43,11 +46,17 @@ export async function fetchAlchemyHistoricalPriceUsd(
   }
 
   try {
-    const res = await fetch(`${PRICES_BASE}/${apiKey}/tokens/historical`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body)
-    });
+    const res = isSaasMode()
+      ? await saasProxyFetch('/api/proxy/alchemy-prices/tokens/historical', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        })
+      : await fetch(`${PRICES_BASE}/${apiKey}/tokens/historical`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body)
+        });
     if (!res.ok) {
       return { priceUsd: null, error: `Alchemy Prices API returned ${res.status}` };
     }

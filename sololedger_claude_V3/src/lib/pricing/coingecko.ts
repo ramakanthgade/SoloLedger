@@ -6,17 +6,34 @@ import { fetchAlchemyHistoricalPriceUsd } from './alchemyPrices';
 import { fetchBirdeyeHistoricalPrice } from './birdeye';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { getCachedPrice, setCachedPrice, buildPriceCacheKey } from '@/lib/storage/db';
+import { isSaasMode, getApiBase } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
 
 const COINGECKO_PUBLIC = 'https://api.coingecko.com/api/v3';
 const COINGECKO_PRO = 'https://pro-api.coingecko.com/api/v3';
 
 function coingeckoBase(apiKey?: string): string {
+  if (isSaasMode()) return `${getApiBase()}/api/proxy/coingecko`;
   return apiKey?.trim() ? COINGECKO_PRO : COINGECKO_PUBLIC;
 }
 
 function coingeckoHeaders(apiKey?: string): HeadersInit | undefined {
+  if (isSaasMode()) return undefined;
   const key = apiKey?.trim();
   return key ? { 'x-cg-pro-api-key': key } : undefined;
+}
+
+async function coingeckoFetch(url: string, headers?: HeadersInit, retries = 2): Promise<Response> {
+  let last: Response | null = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const res = isSaasMode()
+      ? await saasProxyFetch(url.replace(getApiBase(), ''), headers ? { headers } : {})
+      : await fetch(url, headers ? { headers } : undefined);
+    last = res;
+    if (res.status !== 429 || attempt === retries) return res;
+    await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+  }
+  return last!;
 }
 
 // CoinGecko internal coin ids (not tickers). Extended set + dynamic search fallback.
@@ -162,16 +179,7 @@ function toCoinGeckoDate(timestampMs: number): string {
 }
 
 async function fetchWithRetry(url: string, headers?: HeadersInit, retries = 2): Promise<Response> {
-  let last: Response | null = null;
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    // eslint-disable-next-line no-await-in-loop
-    const res = await fetch(url, headers ? { headers } : undefined);
-    last = res;
-    if (res.status !== 429 || attempt === retries) return res;
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
-  }
-  return last!;
+  return coingeckoFetch(url, headers, retries);
 }
 
 /**

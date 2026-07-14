@@ -5,7 +5,25 @@
  * Docs: https://openrouter.ai/docs
  */
 
+import { isSaasMode } from '@/lib/saas/config';
+import { saasProxyFetch } from '@/lib/saas/api';
+
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
+
+function openrouterHeaders(apiKey: string): HeadersInit {
+  const base: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'https://sololedger.app',
+    'X-Title': 'SoloLedger'
+  };
+  if (!isSaasMode()) base.Authorization = `Bearer ${apiKey}`;
+  return base;
+}
+
+async function openrouterFetch(path: string, init: RequestInit): Promise<Response> {
+  if (isSaasMode()) return saasProxyFetch(`/api/proxy/openrouter/${path}`, init);
+  return fetch(`${OPENROUTER_BASE}/${path}`, init);
+}
 
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant';
@@ -29,14 +47,9 @@ export async function completeChat(
   model: string,
   messages: ChatMessage[]
 ): Promise<string> {
-  const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+  const res = await openrouterFetch('chat/completions', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'https://sololedger.app',
-      'X-Title': 'SoloLedger CSV Import'
-    },
+    headers: openrouterHeaders(apiKey),
     body: JSON.stringify({ model, messages, stream: false, temperature: 0.1 })
   });
 
@@ -70,14 +83,9 @@ export async function* streamChatCompletion(
   model: string,
   messages: ChatMessage[]
 ): AsyncGenerator<string, void, unknown> {
-  const res = await fetch(`${OPENROUTER_BASE}/chat/completions`, {
+  const res = await openrouterFetch('chat/completions', {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': typeof window !== 'undefined' ? window.location.origin : 'https://sololedger.app',
-      'X-Title': 'SoloLedger AI Tax Advisor'
-    },
+    headers: { ...openrouterHeaders(apiKey), 'X-Title': 'SoloLedger AI Tax Advisor' },
     body: JSON.stringify({ model, messages, stream: true })
   });
 

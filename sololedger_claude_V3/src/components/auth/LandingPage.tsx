@@ -1,0 +1,247 @@
+import {
+  ArrowRight,
+  Bot,
+  FileSpreadsheet,
+  Globe2,
+  Lock,
+  Repeat,
+  Server,
+  Shield,
+  Sparkles,
+  TrendingUp,
+  Wallet,
+  Zap
+} from 'lucide-react';
+import { BrandLogo } from '@/components/BrandLogo';
+import { Button } from '@/components/ui/button';
+import { LandingPlansSection } from '@/components/auth/LandingPlansSection';
+import type { PaidPlanId } from '@/lib/saas/planCatalog';
+
+type LandingPageProps = {
+  onSignIn: () => void;
+  onGetStarted: () => void;
+};
+
+const HERO_PILLS = [
+  { icon: Lock, label: 'Local-first', color: 'bg-teal-100 text-teal-800' },
+  { icon: Wallet, label: 'Solana-ready', color: 'bg-purple-100 text-purple-800' },
+  { icon: Shield, label: 'No tx storage', color: 'bg-emerald-100 text-emerald-800' }
+];
+
+const DIFFERENTIATORS = [
+  {
+    icon: TrendingUp,
+    title: 'Precision cost basis',
+    line: 'FIFO & specific ID — multi-currency reports.',
+    gradient: 'from-teal-500 to-emerald-600'
+  },
+  {
+    icon: Repeat,
+    title: 'Jupiter DCA, decoded',
+    line: 'Auto-compute every DCA fill — exact amounts, not guesses.',
+    gradient: 'from-violet-500 to-purple-600'
+  },
+  {
+    icon: FileSpreadsheet,
+    title: 'CSV or wallet sync',
+    line: 'Exchange exports or one-address Solana import.',
+    gradient: 'from-amber-500 to-orange-500'
+  },
+  {
+    icon: Bot,
+    title: 'AI tax advisor',
+    line: 'Optional — your data never leaves the browser.',
+    gradient: 'from-navy to-teal-700'
+  }
+];
+
+const PRIVACY_TILES = [
+  { icon: Lock, title: 'Local by default', line: 'Calculations stay on your device.' },
+  { icon: Server, title: 'Proxy, not storage', line: 'Wallet queries forwarded — never kept.' },
+  { icon: Shield, title: 'Zero address logging', line: 'We do not log wallet addresses.' },
+  { icon: Globe2, title: 'Works worldwide', line: 'Any jurisdiction. Your currency.' }
+];
+
+export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
+  const handlePlan = (_planId: PaidPlanId) => onGetStarted();
+
+  return (
+    <div className="min-h-screen bg-[#faf9f6] text-navy">
+      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-[#faf9f6]/90 backdrop-blur-md">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
+          <BrandLogo variant="dark" />
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onSignIn}
+              className="hidden text-sm font-medium text-navy/80 hover:text-navy sm:inline"
+            >
+              Sign in
+            </button>
+            <Button onClick={onGetStarted} className="rounded-full bg-navy px-5 hover:bg-navy-800">
+              Get started free
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* Hero */}
+      <section className="relative overflow-hidden">
+        <div className="pointer-events-none absolute inset-0">
+          <div className="absolute -left-20 top-10 h-72 w-72 rounded-full bg-teal-300/30 blur-3xl" />
+          <div className="absolute right-0 top-32 h-96 w-96 rounded-full bg-amber-200/40 blur-3xl" />
+          <div className="absolute bottom-0 left-1/3 h-64 w-64 rounded-full bg-emerald-200/30 blur-3xl" />
+        </div>
+        <div className="relative mx-auto max-w-6xl px-6 pb-16 pt-14 lg:px-8 lg:pb-24 lg:pt-20">
+          <div className="flex flex-wrap gap-2">
+            {HERO_PILLS.map(({ icon: Icon, label, color }) => (
+              <span
+                key={label}
+                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide ${color}`}
+              >
+                <Icon className="h-3.5 w-3.5" />
+                {label}
+              </span>
+            ))}
+          </div>
+
+          <h1 className="mt-8 max-w-4xl font-display text-5xl font-bold leading-[1.05] text-navy sm:text-6xl lg:text-7xl">
+            Crypto taxes that{' '}
+            <span className="bg-gradient-to-r from-teal-600 via-emerald-600 to-teal-500 bg-clip-text text-transparent">
+              never leave your device
+            </span>
+          </h1>
+          <p className="mt-6 max-w-2xl text-xl text-slate-600 sm:text-2xl">
+            Private. Precise. Built for Solana — and every major chain.
+          </p>
+
+          <div className="mt-10 flex flex-wrap gap-4">
+            <Button
+              onClick={onGetStarted}
+              className="h-14 rounded-full bg-gradient-to-r from-teal-600 to-emerald-600 px-10 text-lg font-semibold shadow-lg shadow-teal-600/25 hover:from-teal-700 hover:to-emerald-700"
+            >
+              Start for free (up to 100 transactions)
+              <ArrowRight className="ml-2 h-5 w-5" />
+            </Button>
+            <Button onClick={onSignIn} className="h-14 rounded-full px-8 text-base">
+              Sign in
+            </Button>
+          </div>
+          <p className="mt-4 text-sm text-slate-500">No credit card · Wallet lookup included on free tier</p>
+
+          {/* Differentiator cards */}
+          <div className="mt-16 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {DIFFERENTIATORS.map(({ icon: Icon, title, line, gradient }) => (
+              <div
+                key={title}
+                className="group rounded-2xl border border-white/80 bg-white/80 p-5 shadow-lg backdrop-blur-sm transition hover:-translate-y-1 hover:shadow-xl"
+              >
+                <div
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md ${gradient}`}
+                >
+                  <Icon className="h-5 w-5" />
+                </div>
+                <h3 className="mt-4 text-lg font-bold text-navy">{title}</h3>
+                <p className="mt-1 text-sm leading-relaxed text-slate-600">{line}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      {/* Solana / Jupiter DCA */}
+      <section className="border-y border-slate-200/80 bg-gradient-to-br from-navy via-navy-800 to-teal-900 py-20 text-white">
+        <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 lg:grid-cols-2 lg:px-8">
+          <div>
+            <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-4 py-1.5 text-sm font-semibold text-teal-200">
+              <Sparkles className="h-4 w-4" />
+              Built for Solana power users
+            </div>
+            <h2 className="mt-6 font-display text-4xl font-bold leading-tight sm:text-5xl">
+              Jupiter DCA trades, automatically computed
+            </h2>
+            <p className="mt-5 text-lg leading-relaxed text-teal-100">
+              Enter a Solana address — SoloLedger imports your on-chain history, detects Jupiter recurring
+              orders, resolves exact fill amounts, and classifies every DCA sell/buy. No spreadsheet stitching.
+            </p>
+            <Button
+              onClick={onGetStarted}
+              className="mt-8 h-12 rounded-full bg-white px-8 font-semibold text-navy hover:bg-teal-50"
+            >
+              Try wallet import
+              <ArrowRight className="ml-2 h-4 w-4" />
+            </Button>
+          </div>
+          <div className="relative">
+            <div className="rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur-sm">
+              <Wallet className="h-12 w-12 text-teal-300" />
+              <ul className="mt-6 space-y-4">
+                {[
+                  'One-click import of Solana transactions',
+                  'Jupiter DCA vault detection & fill parsing',
+                  'Swaps, staking & SPL transfers classified',
+                  'Secure proxy — keys never in your browser'
+                ].map((item) => (
+                  <li key={item} className="flex items-start gap-3 text-teal-50">
+                    <Zap className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
+                    <span className="text-base">{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {/* Privacy strip */}
+      <section className="py-16">
+        <div className="mx-auto max-w-6xl px-6 lg:px-8">
+          <h2 className="text-center font-display text-3xl font-bold text-navy sm:text-4xl">
+            Privacy you can verify
+          </h2>
+          <div className="mt-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            {PRIVACY_TILES.map(({ icon: Icon, title, line }) => (
+              <div
+                key={title}
+                className="rounded-2xl border border-slate-100 bg-white p-6 text-center shadow-sm transition hover:shadow-md"
+              >
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-teal-100 to-emerald-100 text-teal-700">
+                  <Icon className="h-7 w-7" />
+                </div>
+                <h3 className="mt-4 text-lg font-bold text-navy">{title}</h3>
+                <p className="mt-1 text-sm text-slate-600">{line}</p>
+              </div>
+            ))}
+          </div>
+          <div className="mx-auto mt-10 max-w-3xl rounded-2xl bg-gradient-to-r from-slate-800 to-teal-900 p-6 text-center text-white shadow-xl">
+            <p className="text-xs font-bold uppercase tracking-widest text-teal-300">Automatic wallet import</p>
+            <p className="mt-2 text-base text-teal-50">
+              Requests are forwarded to blockchain providers and discarded immediately.{' '}
+              <strong className="text-white">We never store wallet addresses or transaction data.</strong>
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <LandingPlansSection onSelectPlan={handlePlan} />
+
+      {/* CTA */}
+      <section className="bg-gradient-to-r from-teal-600 to-emerald-600 py-16">
+        <div className="mx-auto max-w-3xl px-6 text-center text-white lg:px-8">
+          <h2 className="font-display text-4xl font-bold">Ready when you are</h2>
+          <p className="mt-3 text-lg text-teal-100">Local by default. Powerful when you need it.</p>
+          <Button
+            onClick={onGetStarted}
+            className="mt-8 h-12 rounded-full bg-white px-10 text-base font-semibold text-navy hover:bg-teal-50"
+          >
+            Get started — free
+          </Button>
+        </div>
+      </section>
+
+      <footer className="border-t border-slate-200 py-8 text-center text-xs text-slate-500">
+        <p>SoloLedger · Private. Precise. Yours.</p>
+      </footer>
+    </div>
+  );
+}

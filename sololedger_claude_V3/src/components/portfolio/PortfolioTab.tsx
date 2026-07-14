@@ -1,85 +1,59 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSettings } from '@/lib/storage/db';
+import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
-  formatAmountForExport, formatCurrency, formatCompactCurrency,
+  formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount,
   getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel
 } from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
-import type { Transaction, Jurisdiction } from '@/types/transaction';
+import { fetchLiveWalletBalances } from '@/lib/rpc/walletBalances';
+import { isSaasMode } from '@/lib/saas/config';
+import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+import type { Jurisdiction } from '@/types/transaction';
+import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
+import { buildPortfolioHoldings, portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import {
+  ALL_WALLETS,
+  checkLedgerIntegrity,
+  compareHoldingsToLive,
+  crossCheckModeUsesLiveRpc,
+  formatWalletShort,
+  resolveCrossCheckMode,
+  summarizePortfolioSources
+} from '@/lib/portfolio/portfolioValidation';
+import { repairMissingSolSwapLegs, repairUsdcOvercount } from '@/lib/portfolio/repairSolSwapLegs';
+import { reconcileSolanaWalletsFromChain } from '@/lib/portfolio/reconcileWalletChain';
+import { collapseDuplicateTradeTransferLegs } from '@/lib/portfolio/collapseDuplicateLegs';
+import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
+import { applyDcaClassification, detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
-/**
- * Transaction-based holdings calculator.
- *
- * Internal transfer rules:
- *   - transfer_OUT that is internal → SKIP (prevents DCA vault double-counting:
- *     the trade records already reduce the asset, so skipping the deposit avoids
- *     counting the reduction twice)
- *   - transfer_IN that is internal → INCLUDE (asset arrived in this wallet from
- *     another of your wallets — it's a real balance increase for this wallet)
- *
- * Once both wallets in an internal pair are imported, the out from wallet A is
- * skipped and the in to wallet B is included → net reflects the combined total.
- */
-function applyTxToHoldings(
-  map: Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>,
-  t: Transaction
-) {
-  if (t.isSpam) return;
-
-  // Skip OUTGOING internal transfers only (DCA deposits / sends to own wallets)
-  if (t.isInternalTransfer && (
-    t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent'
-  )) return;
-
-  const upsert = (
-    asset: string, amount: number, sign: 1 | -1,
-    costAdd: number, chain?: string, ca?: string
-  ) => {
-    const key = `${chain ?? 'x'}:${asset.toUpperCase()}:${(ca ?? '').toLowerCase()}`;
-    if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress: ca, asset });
-    const h = map.get(key)!;
-    if (sign > 0) { h.amount += amount; h.costBasis += costAdd; return; }
-    if (h.amount > 1e-9) {
-      const q = Math.min(amount, h.amount);
-      h.costBasis -= h.costBasis * (q / h.amount);
-      h.amount -= q;
-    }
-  };
-
-  if (t.type === 'trade' && t.counterAsset && t.counterAmount) {
-    upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
-    upsert(t.counterAsset, t.counterAmount, 1, t.fiatValue ?? 0, t.chain, undefined);
-    return;
+async function runPortfolioLedgerRepairs(): Promise<string> {
+  await reprocessSwapDetectionInDb();
+  const settings = await getSettings();
+  const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
+  const alchemyKey = settings.alchemyApiKey ?? proxy;
+  await repairMissingSolSwapLegs(alchemyKey);
+  await repairUsdcOvercount(alchemyKey);
+  const reconcile = await reconcileSolanaWalletsFromChain();
+  await collapseDuplicateTradeTransferLegs();
+  const all = await db.transactions.toArray();
+  const groups = detectDcaGroups(all.filter((t) => !t.isSpam));
+  const needsDca = groups.some(
+    (g) =>
+      !g.depositTx.isInternalTransfer ||
+      !(g.fillTxs[0]?.notes ?? '').includes('DCA fill')
+  );
+  if (needsDca && groups.length > 0) {
+    await applyDcaClassification(groups, alchemyKey);
   }
-
-  // Some CSV formats (e.g. Coinbase Advanced Trade Buy/Sell) carry the
-  // quote-asset leg in notes rather than as a `trade` row type.
-  if (t.type === 'buy' && t.counterAsset && t.counterAmount) {
-    upsert(t.asset, t.amount, 1, t.fiatValue ?? 0, t.chain, t.contractAddress);
-    upsert(t.counterAsset, t.counterAmount, -1, 0, t.chain, undefined);
-    return;
-  }
-  if (t.type === 'sell' && t.counterAsset && t.counterAmount) {
-    upsert(t.asset, t.amount, -1, 0, t.chain, t.contractAddress);
-    upsert(t.counterAsset, t.counterAmount, 1, t.fiatValue ?? 0, t.chain, undefined);
-    return;
-  }
-
-  const sign =
-    ['buy', 'transfer_in', 'income', 'gift_received'].includes(t.type) ? 1
-    : ['sell', 'transfer_out', 'gift_sent'].includes(t.type) ? -1
-    : 0;
-  if (sign === 0) return;
-  upsert(t.asset, t.amount, sign as 1 | -1, sign > 0 ? (t.fiatValue ?? 0) : 0, t.chain, t.contractAddress);
+  await normalizeSolLedgerRows();
+  return reconcile.message;
 }
-
-const ALL_WALLETS = 'All wallets';
 
 export function PortfolioTab() {
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
@@ -87,6 +61,12 @@ export function PortfolioTab() {
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [selectedWallet, setSelectedWallet] = useState<string>(ALL_WALLETS);
+  const lookupAddresses = useLiveQuery(() => getLookupAddresses(), []) ?? [];
+  const [liveByWallet, setLiveByWallet] = useState<Map<string, Map<string, number>>>(new Map());
+  const [liveBalanceStatus, setLiveBalanceStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
+  const [repairingBalances, setRepairingBalances] = useState(false);
+  const [repairMsg, setRepairMsg] = useState<string | null>(null);
+  const repairInFlight = useRef(false);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -94,6 +74,109 @@ export function PortfolioTab() {
       setJurisdiction(s.jurisdiction ?? 'IN');
     });
   }, []);
+
+  const autoRepairLedger = async (statusMsg: string): Promise<string | null> => {
+    if (repairInFlight.current) return null;
+    repairInFlight.current = true;
+    setRepairingBalances(true);
+    setRepairMsg(statusMsg);
+    try {
+      const msg = await runPortfolioLedgerRepairs();
+      setRepairMsg(msg);
+      return msg;
+    } catch (e) {
+      const err = e instanceof Error ? e.message : 'Automatic ledger repair failed';
+      setRepairMsg(err);
+      return null;
+    } finally {
+      repairInFlight.current = false;
+      setRepairingBalances(false);
+    }
+  };
+
+  // Repair ledger rows once per session when Solana wallets are imported.
+  useEffect(() => {
+    const key = 'sololedger_portfolio_reprocess_v15';
+    if (sessionStorage.getItem(key) || repairInFlight.current) return;
+    if (lookupAddresses.filter((w) => w.chain === 'solana').length === 0) return;
+    void (async () => {
+      const msg = await autoRepairLedger(
+        'Checking ledger against on-chain history — this can take up to a minute…'
+      );
+      if (msg != null) sessionStorage.setItem(key, '1');
+    })();
+  }, [lookupAddresses.length]);
+
+  const nonSpamTxs = useMemo(
+    () => transactions.filter((t) => !t.isSpam),
+    [transactions]
+  );
+
+  const sourceSummary = useMemo(
+    () => summarizePortfolioSources(nonSpamTxs, lookupAddresses),
+    [nonSpamTxs, lookupAddresses]
+  );
+
+  const crossCheckMode = useMemo(
+    () => resolveCrossCheckMode(nonSpamTxs, lookupAddresses, selectedWallet),
+    [nonSpamTxs, lookupAddresses, selectedWallet]
+  );
+
+  useEffect(() => {
+    if (selectedFy != null || !crossCheckModeUsesLiveRpc(crossCheckMode)) {
+      setLiveByWallet(new Map());
+      setLiveBalanceStatus('idle');
+      return;
+    }
+
+    let cancelled = false;
+    setLiveBalanceStatus('loading');
+
+    void (async () => {
+      const settings = await getSettings();
+      const proxy = isSaasMode() ? SAAS_PROXY_KEY : undefined;
+      const config = {
+        heliusApiKey: settings.heliusApiKey ?? proxy,
+        alchemyApiKey: settings.alchemyApiKey ?? proxy
+      };
+      if (!config.heliusApiKey && !config.alchemyApiKey) {
+        if (!cancelled) setLiveBalanceStatus('unavailable');
+        return;
+      }
+
+      const solWallets = lookupAddresses.filter((w) => w.chain === 'solana');
+      let scoped = solWallets;
+      if (crossCheckMode === 'scoped_wallet_live') {
+        scoped = solWallets.filter(
+          (w) => w.address.toLowerCase() === selectedWallet.toLowerCase()
+        );
+      } else if (crossCheckMode === 'single_wallet_live') {
+        scoped = solWallets.slice(0, 1);
+      }
+
+      const next = new Map<string, Map<string, number>>();
+      for (const w of scoped) {
+        const wm = new Map<string, number>();
+        const bals = await fetchLiveWalletBalances(w.address, 'solana', config);
+        for (const b of bals) {
+          const mintKey = b.contractAddress?.toLowerCase();
+          const symKey = b.asset.toUpperCase();
+          if (mintKey) wm.set(mintKey, (wm.get(mintKey) ?? 0) + b.amount);
+          wm.set(symKey, (wm.get(symKey) ?? 0) + b.amount);
+        }
+        next.set(w.address.toLowerCase(), wm);
+      }
+
+      if (!cancelled) {
+        setLiveByWallet(next);
+        setLiveBalanceStatus(scoped.length > 0 ? 'ready' : 'unavailable');
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedWallet, selectedFy, transactions.length, crossCheckMode, lookupAddresses]);
 
   const availableFys = useMemo(
     () => getAvailableFys(transactions.map((t) => t.timestamp), jurisdiction),
@@ -116,15 +199,76 @@ export function PortfolioTab() {
     return txs;
   }, [transactions, selectedWallet, selectedFy, jurisdiction]);
 
-  const holdings = useMemo(() => {
-    const map = new Map<string, { amount: number; costBasis: number; chain?: string; contractAddress?: string; asset: string }>();
-    [...filteredTxs].sort((a, b) => a.timestamp - b.timestamp).forEach((t) => applyTxToHoldings(map, t));
-    return Array.from(map.values())
-      .filter((h) => Math.abs(h.amount) > 1e-9)
-      .sort((a, b) => b.costBasis - a.costBasis);
-  }, [filteredTxs]);
+  const holdings = useMemo(
+    () => buildPortfolioHoldings(filteredTxs),
+    [filteredTxs]
+  );
+
+  const integrityIssues = useMemo(
+    () => checkLedgerIntegrity(holdings, sourceSummary),
+    [holdings, sourceSummary]
+  );
 
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
+
+  const balanceVariances = useMemo(() => {
+    if (liveBalanceStatus !== 'ready' || selectedFy != null) return [];
+    if (!crossCheckModeUsesLiveRpc(crossCheckMode)) return [];
+
+    if (crossCheckMode === 'per_wallet_live') {
+      const all: ReturnType<typeof compareHoldingsToLive> = [];
+      for (const w of lookupAddresses.filter((l) => l.chain === 'solana')) {
+        const wLower = w.address.toLowerCase();
+        const wTxs = nonSpamTxs.filter((t) => t.walletAddress?.toLowerCase() === wLower);
+        const wHoldings = buildPortfolioHoldings(wTxs);
+        const liveMap = liveByWallet.get(wLower);
+        if (!liveMap) continue;
+        all.push(...compareHoldingsToLive(wHoldings, liveMap, portfolioHoldingKey, w.address));
+      }
+      return all;
+    }
+
+    const walletKey =
+      crossCheckMode === 'scoped_wallet_live'
+        ? selectedWallet.toLowerCase()
+        : lookupAddresses.find((w) => w.chain === 'solana')?.address.toLowerCase();
+    const liveMap = walletKey ? liveByWallet.get(walletKey) : undefined;
+    if (!liveMap) return [];
+    return compareHoldingsToLive(holdings, liveMap, portfolioHoldingKey);
+  }, [
+    holdings,
+    liveByWallet,
+    liveBalanceStatus,
+    selectedFy,
+    crossCheckMode,
+    lookupAddresses,
+    nonSpamTxs,
+    selectedWallet
+  ]);
+
+  // Auto-repair on mismatch only when live on-chain cross-check is meaningful.
+  useEffect(() => {
+    if (
+      liveBalanceStatus !== 'ready' ||
+      selectedFy != null ||
+      repairingBalances ||
+      !crossCheckModeUsesLiveRpc(crossCheckMode)
+    ) {
+      return;
+    }
+    const needs = balanceVariances.some((v) => v.asset === 'SOL' || v.asset === 'USDC');
+    if (!needs || repairInFlight.current) return;
+    const fingerprint = balanceVariances.map((v) => `${v.wallet ?? 'all'}:${v.asset}:${v.delta.toFixed(6)}`).join('|');
+    const key = `sololedger_mismatch_repair_v15:${fingerprint}`;
+    if (sessionStorage.getItem(key)) return;
+    void (async () => {
+      const msg = await autoRepairLedger(
+        'Balance mismatch detected — repairing ledger automatically…'
+      );
+      if (msg != null) sessionStorage.setItem(key, '1');
+    })();
+  }, [balanceVariances, liveBalanceStatus, selectedFy, repairingBalances, crossCheckMode]);
+
   const missingPriceCount = filteredTxs.filter(
     (t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer
   ).length;
@@ -176,9 +320,9 @@ export function PortfolioTab() {
     );
   };
 
-  const exportHoldingsPdf = () => {
+  const exportHoldingsPdf = async () => {
     if (!confirmPdfExport()) return;
-    const { doc, startY } = createBrandedPdf({
+    const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Portfolio Holdings',
       metaLines: [
         `Period: ${selectedFy == null ? 'All time' : getFyLabel(selectedFy, jurisdiction)} · Wallet: ${selectedWallet}`,
@@ -247,6 +391,43 @@ export function PortfolioTab() {
           <Button variant="secondary" onClick={exportHoldingsPdf} className="text-xs">PDF</Button>
         </div>
       </div>
+
+      {(repairingBalances ||
+        (balanceVariances.length > 0 && selectedFy == null && crossCheckModeUsesLiveRpc(crossCheckMode))) && (
+        <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-mist-300">
+          {repairingBalances ? (
+            <p>Repairing ledger automatically — scanning on-chain history…</p>
+          ) : balanceVariances.length > 0 ? (
+            <div className="space-y-1">
+              {balanceVariances.map((v) => (
+                <p key={`${v.wallet ?? 'all'}-${v.asset}`}>
+                  <strong className="text-loss">{v.asset} differs from chain</strong>
+                  {v.wallet ? ` (${formatWalletShort(v.wallet)})` : ''}: ledger{' '}
+                  {formatCompactAmount(v.ledger)} vs wallet {formatCompactAmount(v.live)}.
+                </p>
+              ))}
+              <p className="text-xs text-mist-400">
+                Automatic repair already ran this session. Hard-refresh or re-import if gaps remain.
+              </p>
+            </div>
+          ) : null}
+          {repairMsg && <p className="mt-1 text-xs text-mist-400">{repairMsg}</p>}
+        </div>
+      )}
+
+      {selectedFy == null &&
+        integrityIssues.map((issue, i) => (
+          <div
+            key={`${issue.kind}-${i}`}
+            className={`rounded-lg border px-4 py-3 text-sm ${
+              issue.kind === 'negative_holding'
+                ? 'border-loss/40 bg-loss/10 text-mist-300'
+                : 'border-gold/40 bg-gold/10 text-mist-300'
+            }`}
+          >
+            {issue.message}
+          </div>
+        ))}
 
       {missingPriceCount > 0 && (
         <div className="rounded-lg border border-gold/40 bg-gold/10 px-4 py-3 text-sm text-mist-300">

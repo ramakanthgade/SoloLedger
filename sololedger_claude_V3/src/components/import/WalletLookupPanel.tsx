@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
-  getSettings,
   getLookupAddresses,
   deleteLookupAddressAndTransactions,
   updateWalletLabel
 } from '@/lib/storage/db';
+import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveSettings';
+import { buildLookupConfig } from '@/lib/saas/lookupConfig';
+import { isSaasMode } from '@/lib/saas/config';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { runWalletImport, useImportJob, importJob } from '@/lib/importJob';
 import { Button } from '@/components/ui/button';
@@ -31,7 +33,7 @@ function detectChainFromAddress(address: string): ChainId | null {
 const EVM_CHAIN_IDS: ChainId[] = ['ethereum', 'polygon', 'arbitrum', 'base', 'bsc', 'optimism', 'avalanche'];
 
 export function WalletLookupPanel() {
-  const [settings, setSettings] = useState<Awaited<ReturnType<typeof getSettings>> | null>(null);
+  const [settings, setSettings] = useState<Awaited<ReturnType<typeof getEffectiveSettings>> | null>(null);
   const [chainId, setChainId] = useState<ChainId>('solana');
   const [addressText, setAddressText] = useState('');
   const [customBaseUrl, setCustomBaseUrl] = useState('');
@@ -47,7 +49,7 @@ export function WalletLookupPanel() {
 
   const lookedUp = useLiveQuery(() => getLookupAddresses(), []) ?? [];
 
-  useEffect(() => { getSettings().then(setSettings); }, []);
+  useEffect(() => { getEffectiveSettings().then(setSettings); }, []);
   useEffect(() => { if (editingLabel) setTimeout(() => labelInputRef.current?.focus(), 30); }, [editingLabel]);
 
   // Auto-detect chain when addresses are typed
@@ -74,7 +76,7 @@ export function WalletLookupPanel() {
   const isSolana = chainId === 'solana';
   const needsAlchemyKey =
     (chain.provider === 'alchemy_evm' && chain.id !== 'ethereum') || chain.provider === 'alchemy_solana';
-  const missingAlchemyKey = needsAlchemyKey && !settings.alchemyApiKey;
+  const missingAlchemyKey = needsAlchemyKey && !hasWalletLookupKeys(settings);
 
   const parsedAddresses = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean);
   const alreadyImported = parsedAddresses.filter((a) =>
@@ -88,15 +90,11 @@ export function WalletLookupPanel() {
     const addrs = addressesOverride ?? freshAddresses;
     if (addrs.length === 0 || job.active) return;
     importJob.reset();
-    void runWalletImport(addrs, chain, settings, {
-      chain,
-      alchemyApiKey: settings.alchemyApiKey,
-      heliusApiKey: settings.heliusApiKey,
-      moralisApiKey: settings.moralisApiKey,
+    void runWalletImport(addrs, chain, settings, buildLookupConfig(chain, settings, {
       customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
       customApiKey: customApiKey || settings.customExplorerApiKey,
       customAsset
-    });
+    }));
   };
 
   const saveLabel = async (id: string) => {
@@ -110,8 +108,9 @@ export function WalletLookupPanel() {
         <div className="flex items-start gap-2 rounded-lg bg-gold/10 px-3 py-2 text-xs text-gold-600">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
-            Whichever explorer answers will see every address you query. Bitcoin uses Blockstream (no key); other
-            chains use your own Alchemy key.
+            {isSaasMode()
+              ? 'Whichever explorer answers will see every address you query. Lookups run through SoloLedger\'s secure proxy — no API keys needed.'
+              : 'Whichever explorer answers will see every address you query. Bitcoin uses Blockstream (no key); other chains use your own Alchemy key.'}
           </span>
         </div>
 
@@ -299,16 +298,12 @@ export function WalletLookupPanel() {
                           [row.address],
                           c,
                           settings,
-                          {
-                            chain: c,
-                            alchemyApiKey: settings.alchemyApiKey,
-                            heliusApiKey: settings.heliusApiKey,
-                            moralisApiKey: settings.moralisApiKey,
+                          buildLookupConfig(c, settings, {
                             customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
                             customApiKey: customApiKey || settings.customExplorerApiKey,
                             customAsset
-                          },
-                          true  // isSync: bypass already-imported guard, always fetch latest
+                          }),
+                          true
                         );
                       }}
                     >
