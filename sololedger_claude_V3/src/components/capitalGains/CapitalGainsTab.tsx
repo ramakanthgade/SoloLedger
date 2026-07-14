@@ -142,6 +142,9 @@ export function CapitalGainsTab() {
   const totalIncome = yearIncome.reduce((s, r) => s + r.fiatValue, 0);
   const totalDerivIncome = yearDerivIncome.reduce((s, r) => s + r.fiatValue, 0);
   const totalDerivExpense = yearDerivExpense.reduce((s, r) => s + r.fiatValue, 0);
+  const totalDerivFees = yearDerivExpense
+    .filter((r) => r.kind === 'trading_fee')
+    .reduce((s, r) => s + r.fiatValue, 0);
   const totalDerivNetBusiness = totalDerivIncome - totalDerivExpense;
   const totalDerivCg = yearDerivCg.reduce((s, r) => s + r.gain, 0);
   const businessMode = derivativesTreatment === 'business_income';
@@ -357,7 +360,11 @@ export function CapitalGainsTab() {
             <CardTitle>Realized gain / loss — {getFyLabel(fy, jurisdiction)}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className={`font-mono text-3xl ${totalGain >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
+            <p
+              className={`font-mono text-xl font-semibold tabular-figures whitespace-nowrap sm:text-2xl ${
+                totalGain >= 0 ? 'text-emerald-600' : 'text-loss'
+              }`}
+            >
               {totalGain >= 0 ? '+' : ''}
               {formatCurrency(totalGain, currency)}
             </p>
@@ -369,7 +376,9 @@ export function CapitalGainsTab() {
             <CardTitle>Spot income — {getFyLabel(fy, jurisdiction)}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="font-mono text-3xl text-gold-600">{formatCurrency(totalIncome, currency)}</p>
+            <p className="font-mono text-xl font-semibold tabular-figures whitespace-nowrap text-gold-600 sm:text-2xl">
+              {formatCurrency(totalIncome, currency)}
+            </p>
             <p className="mt-1 text-xs text-mist-400">
               Staking, airdrops, mining (excludes derivatives)
             </p>
@@ -394,7 +403,7 @@ export function CapitalGainsTab() {
               <p className="mt-1 text-xs text-mist-400">
                 {businessMode
                   ? `Income ${formatCurrency(totalDerivIncome, currency)} − expenses ${formatCurrency(totalDerivExpense, currency)}`
-                  : `${yearDerivCg.length} close(s) · open notional as cost, close notional as proceeds`}
+                  : `Trading fees ${formatCurrency(totalDerivFees, currency)} (excluded from CG — see note below)`}
               </p>
             </CardContent>
           </Card>
@@ -631,15 +640,17 @@ export function CapitalGainsTab() {
           </CardHeader>
           <CardContent>
             <p className="mb-3 text-sm text-mist-300">
-              Close notional = proceeds; implied open notional (close − closed PnL) = cost. Gain = closed PnL. Total:{' '}
+              {yearDerivCg.length} close(s) · close notional = proceeds; implied open notional (close − closed PnL) =
+              cost. Gain = closed PnL. Total:{' '}
               <span className={`font-mono whitespace-nowrap ${totalDerivCg >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
                 {totalDerivCg >= 0 ? '+' : ''}
                 {formatCurrency(totalDerivCg, currency)}
               </span>
             </p>
             <p className="mb-3 text-xs text-mist-400">
-              Trading fees are not included in these rows (same as spot capital gains). Switch Settings to Business
-              income to see fees + losses as expenses, or filter Derivatives in Review.
+              Trading fees {formatCurrency(totalDerivFees, currency)} are not included in these rows (same as spot
+              capital gains). That is why Business income net differs from this CG total — switch Settings to Business
+              income to include fees + losses as expenses, or filter Derivatives in Review.
             </p>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[720px] text-xs">
