@@ -73,7 +73,11 @@ export function summarizeYear(
   disposals: Disposal[],
   incomeEvents: { fiatValue: number; timestamp?: number }[],
   year: number,
-  jurisdiction: Jurisdiction
+  jurisdiction: Jurisdiction,
+  extras?: {
+    derivativesIncome?: number;
+    derivativesExpenses?: number;
+  }
 ): TaxYearSummary {
   const rules = JURISDICTIONS[jurisdiction];
   const yearDisposals = disposals.filter((d) => isInFy(d.disposedAt, year, jurisdiction));
@@ -114,6 +118,8 @@ export function summarizeYear(
     shortTermGain: rules.hasHoldingPeriodDistinction ? shortTermGain : undefined,
     longTermGain: rules.hasHoldingPeriodDistinction ? longTermGain : undefined,
     totalIncome,
+    derivativesIncome: extras?.derivativesIncome,
+    derivativesExpenses: extras?.derivativesExpenses,
     disposalsCount: yearDisposals.length,
     byAsset
   };

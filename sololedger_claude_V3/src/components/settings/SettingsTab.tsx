@@ -81,6 +81,25 @@ export function SettingsTab() {
               <option value="SpecID">Specific Identification</option>
             </select>
           </label>
+          <label className="block text-sm text-mist-300">
+            Derivatives tax treatment
+            <select
+              value={settings.derivativesTreatment ?? (settings.jurisdiction === 'IN' || settings.jurisdiction === 'CA' ? 'business_income' : 'capital_gains')}
+              onChange={(e) =>
+                update({
+                  derivativesTreatment: e.target.value as TaxSettings['derivativesTreatment']
+                })
+              }
+              className="sl-select mt-1 block w-full"
+            >
+              <option value="business_income">Business income &amp; expenses (profits − fees/losses)</option>
+              <option value="capital_gains">Capital gains / losses</option>
+            </select>
+            <span className="mt-1 block text-xs text-mist-400">
+              Applies to Hyperliquid perps and other derivative imports. Defaults by jurisdiction (India/Canada →
+              business income). Change anytime — reports update without re-importing.
+            </span>
+          </label>
         </CardContent>
       </Card>
 

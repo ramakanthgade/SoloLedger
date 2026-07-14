@@ -5,6 +5,8 @@ import { binanceSpotParser } from './binanceSpot';
 import { wazirxTradesParser } from './wazirxTrades';
 import { wazirxDepositsParser } from './wazirxDeposits';
 import { wazirxLedgerParser } from './wazirxLedger';
+import { hyperliquidTradesParser } from './hyperliquidTrades';
+import { hyperliquidDepositsParser } from './hyperliquidDeposits';
 import type { ExchangeParser, ParseResult } from './types';
 import { extractTableFromMatrix, isUsefulTransactionTable, cleanCell } from './tableExtract';
 import { isSpreadsheetFile, readWorkbookSheets } from './workbook';
@@ -12,9 +14,11 @@ import type { Transaction } from '@/types/transaction';
 
 /**
  * Parser registry — order matters for detect().
- * WazirX / generic sheet formats first so they win over looser Binance spot heuristics.
+ * Exchange-specific formats first so they win over looser heuristics.
  */
 export const PARSERS: ExchangeParser[] = [
+  hyperliquidTradesParser,
+  hyperliquidDepositsParser,
   wazirxTradesParser,
   wazirxDepositsParser,
   wazirxLedgerParser,
@@ -288,6 +292,7 @@ export async function parseImportFile(file: File): Promise<FileParseOutcome> {
 
 export { coinbaseParser, binanceParser, binanceSpotParser };
 export { wazirxTradesParser, wazirxDepositsParser, wazirxLedgerParser };
+export { hyperliquidTradesParser, hyperliquidDepositsParser };
 export { isSpreadsheetFile, isCsvLikeFile } from './workbook';
 export * from './types';
 export * from './generic';
