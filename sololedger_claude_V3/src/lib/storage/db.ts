@@ -213,7 +213,8 @@ export function transactionExchangeKey(
   if (
     t.source.startsWith('binance') ||
     t.source === 'coinbase' ||
-    t.source.startsWith('wazirx')
+    t.source.startsWith('wazirx') ||
+    t.source.startsWith('hyperliquid')
   ) {
     return `ex:${t.sourceRef}`;
   }

@@ -78,7 +78,18 @@ const KNOWN_HEADER_HINTS = [
   'walletaddress',
   'blockchainhash',
   'id',
-  'tds'
+  'tds',
+  // Hyperliquid abbreviated export headers
+  'coin',
+  'dir',
+  'px',
+  'sz',
+  'ntl',
+  'closedpnl',
+  'action',
+  'accountvaluechange',
+  'source',
+  'destination'
 ];
 
 export function scoreHeaderCandidate(cells: string[]): number {
@@ -159,7 +170,7 @@ export function isUsefulTransactionTable(table: ExtractedTable, sheetName?: stri
   const norms = table.headers.map(normalizeHeader);
   const hasDate = norms.some((h) => h.includes('date') || h.includes('time') || h.includes('timestamp'));
   const hasAmountish = norms.some((h) =>
-    ['amount', 'quantity', 'qty', 'volume', 'income', 'expense', 'change', 'total', 'price'].some(
+    ['amount', 'quantity', 'qty', 'volume', 'income', 'expense', 'change', 'total', 'price', 'sz', 'ntl', 'px', 'fee', 'closedpnl'].some(
       (k) => h.includes(k)
     )
   );
@@ -167,7 +178,9 @@ export function isUsefulTransactionTable(table: ExtractedTable, sheetName?: stri
     ['asset', 'coin', 'symbol', 'pair', 'market', 'currency', 'token'].some((k) => h.includes(k))
   );
   const hasTypeish = norms.some((h) =>
-    ['type', 'operation', 'transaction', 'side', 'reason', 'status'].some((k) => h.includes(k))
+    ['type', 'operation', 'transaction', 'side', 'reason', 'status', 'dir', 'direction', 'action'].some((k) =>
+      h.includes(k)
+    )
   );
 
   // Need a date + (amount or asset) + preferably a type column

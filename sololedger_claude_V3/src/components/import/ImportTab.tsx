@@ -30,7 +30,13 @@ type Mode = 'csv' | 'manual' | 'wallet';
 const SUPPORTED = [
   { id: 'coinbase', label: 'Coinbase', guide: 'Settings → Reports → Generate custom report → Transaction history CSV' },
   { id: 'binance', label: 'Binance', guide: 'Recommended: Wallet → Transaction History → Export (full ledger). Also: Orders → Spot → Trade History for spot trades only.' },
-  { id: 'wazirx', label: 'WazirX (Excel)', guide: 'Download Trade Report / Spot Trade Report (.xlsx). All sheets are scanned — trades, deposits & withdrawals import automatically; profile sheets are skipped.' }
+  { id: 'wazirx', label: 'WazirX (Excel)', guide: 'Download Trade Report / Spot Trade Report (.xlsx). All sheets are scanned — trades, deposits & withdrawals import automatically; profile sheets are skipped.' },
+  {
+    id: 'hyperliquid',
+    label: 'Hyperliquid (Perps)',
+    guide:
+      'Portfolio → Trade History → Export as CSV. Also export Deposits & Withdrawals. Perp profits import as income (USDC); losses & fees debit USDC — not as spot BTC/ETH buys.'
+  }
 ];
 
 export function ImportTab() {
@@ -349,7 +355,7 @@ export function ImportTab() {
             </div>
           )}
 
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {SUPPORTED.map((s) => (
               <Card key={s.id}>
                 <CardContent className="flex items-start gap-3 py-4">

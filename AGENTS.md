@@ -32,3 +32,25 @@ Wallet lookup on `npm run dev` routes Alchemy calls through a same-origin Vite p
   - Not treated as `transfer_in` / `transfer_out` because the counterparty is another person, not your own wallet.
   - User can override any row in Review → mark as **internal transfer** if it was actually between their own accounts.
 - **Deposits / withdrawals** (on-chain, non-P2P) stay as `transfer_in` / `transfer_out` — mark internal transfer in Review when moving between your own wallets.
+
+### Hyperliquid perpetual trades — CSV column map & classification
+Hyperliquid Trade History CSV uses abbreviated headers. Map UI → CSV as:
+| UI label | CSV column |
+|----------|------------|
+| Time | `time` (`DD/MM/YYYY - HH:mm:ss`) |
+| Market | `coin` |
+| Direction | `dir` (`Open Long` / `Open Short` / `Close Long` / `Close Short`) |
+| Price | `px` |
+| Size | `sz` |
+| Trade Value | `ntl` (USDC notional) |
+| Fee | `fee` (USDC) |
+| Closed PNL | `closedPnl` (USDC) |
+
+Deposits/withdrawals CSV: `time`, `action`, `source`, `destination`, `accountValueChange`, `fee`.
+
+**Import rules (cash-settled perps — never create spot lots for the `coin`):**
+- Every fill fee → `fee` USDC (`category: perp`)
+- Open/Add fills: ignore `closedPnl` (it equals `−fee` in HL exports)
+- Close/Liquidate with `closedPnl > 0` → `income` USDC (`category: perp`)
+- Close/Liquidate with `closedPnl < 0` → `fee` USDC (`category: perp_loss`) so portfolio decreases without a fake taxable USDC disposal
+- Deposit → `transfer_in` USDC; Withdraw → `transfer_out` USDC (`category: perp_collateral`)
