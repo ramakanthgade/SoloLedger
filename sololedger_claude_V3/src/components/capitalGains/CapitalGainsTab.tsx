@@ -30,7 +30,7 @@ const INCOME_KIND_LABEL: Record<string, string> = {
 export function CapitalGainsTab() {
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
-  const [method, setMethod] = useState<'FIFO' | 'SpecID'>('FIFO');
+  const [method, setMethod] = useState<'FIFO' | 'LIFO' | 'HIFO' | 'SpecID'>('FIFO');
   const [fy, setFy] = useState(getCurrentFy('IN'));
   const [currency, setCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
@@ -323,10 +323,12 @@ export function CapitalGainsTab() {
         </select>
         <select
           value={method}
-          onChange={(e) => setMethod(e.target.value as 'FIFO' | 'SpecID')}
+          onChange={(e) => setMethod(e.target.value as 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID')}
           className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist"
         >
           <option value="FIFO">FIFO matching</option>
+          <option value="LIFO">LIFO matching</option>
+          <option value="HIFO">HIFO matching</option>
           <option value="SpecID">Specific ID</option>
         </select>
         <span className="text-xs text-mist-400">{JURISDICTIONS[jurisdiction].label}</span>
@@ -692,3 +694,4 @@ export function CapitalGainsTab() {
     </div>
   );
 }
+

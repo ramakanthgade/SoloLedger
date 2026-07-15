@@ -99,6 +99,8 @@ export function SettingsTab() {
               className="sl-select mt-1 block w-full"
             >
               <option value="FIFO">FIFO — First In, First Out</option>
+              <option value="LIFO">LIFO — Last In, First Out</option>
+              <option value="HIFO">HIFO — Highest In, First Out</option>
               <option value="SpecID">Specific Identification</option>
             </select>
           </label>

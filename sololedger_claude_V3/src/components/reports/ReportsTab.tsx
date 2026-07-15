@@ -21,7 +21,7 @@ import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/
 
 export function ReportsTab() {
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
-  const [method, setMethod] = useState<'FIFO' | 'SpecID'>('FIFO');
+  const [method, setMethod] = useState<'FIFO' | 'LIFO' | 'HIFO' | 'SpecID'>('FIFO');
   const [year, setYear] = useState<number>(getCurrentFy('IN'));
   const [deidentify, setDeidentify] = useState(false);
   const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
@@ -273,8 +273,10 @@ export function ReportsTab() {
             <option key={y} value={y}>{getFyLabel(y, jurisdiction)}</option>
           ))}
         </select>
-        <select value={method} onChange={(e) => setMethod(e.target.value as 'FIFO' | 'SpecID')} className="sl-select">
+        <select value={method} onChange={(e) => setMethod(e.target.value as 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID')} className="sl-select">
           <option value="FIFO">FIFO</option>
+          <option value="LIFO">LIFO</option>
+          <option value="HIFO">HIFO</option>
           <option value="SpecID">Specific Identification</option>
         </select>
         <label className="flex items-center gap-2 text-sm text-mist-400">

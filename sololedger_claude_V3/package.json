@@ -16,6 +16,7 @@
   "dependencies": {
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
+    "decimal.js": "^10.6.0",
     "dexie": "^4.0.8",
     "dexie-react-hooks": "^1.1.7",
     "jspdf": "^2.5.2",

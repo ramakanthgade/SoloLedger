@@ -1,15 +1,15 @@
 import type { CostBasisStrategy, LotSelection } from './strategy';
 import { isPositive } from './decimal';
 
-/** First-In-First-Out: consumes the oldest open lots first. */
-export const fifoStrategy: CostBasisStrategy = {
-  method: 'FIFO',
+/** Last-In-First-Out: consumes the newest open lots first. */
+export const lifoStrategy: CostBasisStrategy = {
+  method: 'LIFO',
 
   selectLots(openLots, amountToDispose) {
     const sorted = [...openLots]
       .filter((l) => isPositive(l.amountRemaining))
-      // oldest first; tie-break on id so ordering is deterministic
-      .sort((a, b) => a.acquiredAt - b.acquiredAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      // newest first; tie-break on id so ordering is deterministic
+      .sort((a, b) => b.acquiredAt - a.acquiredAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 
     const selections: LotSelection[] = [];
     let remaining = amountToDispose;

@@ -23,7 +23,7 @@ export interface MatchedGainRow {
   buyTxId: string;
   gain: number;
   holdingDays: number;
-  method: 'FIFO' | 'SpecID';
+  method: 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
 }
 
 export function buildMatchedGainRows(

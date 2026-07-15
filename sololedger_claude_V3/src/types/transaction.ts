@@ -70,7 +70,7 @@ export interface Lot {
   costBasisPerUnit: number;    // in reporting fiat currency
   costBasisTotal: number;
   sourceTxId: string;
-  acquisitionType: Extract<TxType, 'buy' | 'trade' | 'income' | 'gift_received' | 'nft_mint'>;
+  acquisitionType: Extract<TxType, 'buy' | 'trade' | 'income' | 'gift_received' | 'nft_mint' | 'nft_buy'>;
 }
 
 export interface Disposal {
@@ -84,7 +84,7 @@ export interface Disposal {
   holdingPeriodDays: number;
   lotConsumption: { lotId: string; amount: number; costBasis: number }[];
   sourceTxId: string;
-  method: 'FIFO' | 'SpecID';
+  method: 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
 }
 
 export type Jurisdiction = 'IN' | 'US' | 'CA' | 'AE';
@@ -95,7 +95,7 @@ export type DerivativesTreatment = 'business_income' | 'capital_gains';
 export interface TaxSettings {
   jurisdiction: Jurisdiction;
   reportingCurrency: string;   // "INR", "USD", "CAD", "AED"
-  defaultCostBasisMethod: 'FIFO' | 'SpecID';
+  defaultCostBasisMethod: 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
   /**
    * Tax presentation for derivatives. When unset, defaults from jurisdiction
    * (IN/CA → business_income, US/AE → capital_gains). Applied at report time.

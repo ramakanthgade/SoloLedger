@@ -1,15 +1,24 @@
 import type { CostBasisStrategy, LotSelection } from './strategy';
 import { isPositive } from './decimal';
 
-/** First-In-First-Out: consumes the oldest open lots first. */
-export const fifoStrategy: CostBasisStrategy = {
-  method: 'FIFO',
+/**
+ * Highest-In-First-Out: consumes the lots with the highest cost-per-unit
+ * first, minimizing realized gains (or maximizing realized losses) on each
+ * disposal. Ties on cost-per-unit break to the oldest lot first, then by id,
+ * so the ordering is fully deterministic.
+ */
+export const hifoStrategy: CostBasisStrategy = {
+  method: 'HIFO',
 
   selectLots(openLots, amountToDispose) {
     const sorted = [...openLots]
       .filter((l) => isPositive(l.amountRemaining))
-      // oldest first; tie-break on id so ordering is deterministic
-      .sort((a, b) => a.acquiredAt - b.acquiredAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+      .sort(
+        (a, b) =>
+          b.costBasisPerUnit - a.costBasisPerUnit ||
+          a.acquiredAt - b.acquiredAt ||
+          (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+      );
 
     const selections: LotSelection[] = [];
     let remaining = amountToDispose;
