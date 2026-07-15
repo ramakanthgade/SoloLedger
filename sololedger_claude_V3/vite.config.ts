@@ -67,7 +67,7 @@ export default defineConfig({
     // Cursor Cloud (and similar remote dev proxies) forward the app through
     // a changing *.cursorvm.com / *.agent.cvm.dev hostname. Vite blocks unknown
     // hosts by default to prevent DNS rebinding; allow those proxy domains in dev.
-    allowedHosts: ['.cursorvm.com', '.agent.cvm.dev', 'localhost'],
+    allowedHosts: true,
     // Browser → localhost → Vite → Alchemy. Avoids CORS blocks on direct Alchemy calls.
     proxy: {
       ...alchemyDevProxy,

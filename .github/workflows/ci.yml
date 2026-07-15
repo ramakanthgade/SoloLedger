@@ -45,7 +45,7 @@ jobs:
         run: npm run build
 
   server:
-    name: Server (build)
+    name: Server (build, test)
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -64,3 +64,6 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Test
+        run: npm run test
