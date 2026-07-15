@@ -1,3 +1,4 @@
+/// <reference types="vitest/config" />
 import path from 'path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -112,6 +113,25 @@ export default defineConfig({
   },
   build: {
     target: 'es2020',
-    sourcemap: false
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        // Split heavy vendor libraries into dedicated chunks so the main
+        // entry chunk stays well under Vite's 500 KB warning threshold.
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-xlsx': ['xlsx'],
+          'vendor-pdf': ['jspdf', 'jspdf-autotable'],
+          'vendor-papaparse': ['papaparse'],
+          'vendor-dexie': ['dexie', 'dexie-react-hooks']
+        }
+      }
+    }
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    css: false
   }
 });

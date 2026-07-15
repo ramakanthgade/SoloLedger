@@ -2,7 +2,6 @@
  * Multi-sheet Excel (.xlsx / .xls) reader → per-sheet string matrices.
  * Uses SheetJS (xlsx). CSV files are handled separately as a single "sheet".
  */
-import * as XLSX from 'xlsx';
 import { cleanCell } from './tableExtract';
 
 export interface WorkbookSheet {
@@ -30,6 +29,8 @@ export function isCsvLikeFile(file: File): boolean {
 
 /** Read all sheets from an Excel workbook into string matrices. */
 export async function readWorkbookSheets(file: File): Promise<WorkbookSheet[]> {
+  // Lazy-load the heavy SheetJS bundle only when a spreadsheet is imported.
+  const XLSX = await import('xlsx');
   const buf = await file.arrayBuffer();
   const workbook = XLSX.read(buf, {
     type: 'array',
