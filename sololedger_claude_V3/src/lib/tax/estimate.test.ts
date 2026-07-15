@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { estimateIndiaVDA, applyInclusion } from './estimate';
+import { estimateIndiaVDA, applyInclusion, sumReceiptIncome } from './estimate';
 
 describe('estimateIndiaVDA — 30% flat + 4% cess', () => {
   it('splits tax and cess and totals to gains × 0.312', () => {
@@ -12,6 +12,32 @@ describe('estimateIndiaVDA — 30% flat + 4% cess', () => {
   it('returns zero for zero/negative taxable gains (no netting or refund)', () => {
     expect(estimateIndiaVDA(0)).toEqual({ tax: 0, cess: 0, total: 0 });
     expect(estimateIndiaVDA(-500)).toEqual({ tax: 0, cess: 0, total: 0 });
+  });
+});
+
+describe('sumReceiptIncome — Sec 56(2)(x) FMV-at-receipt total', () => {
+  it('sums the FMV-at-receipt of the supplied income events', () => {
+    expect(
+      sumReceiptIncome([
+        { fiatValue: 500, timestamp: 1 },
+        { fiatValue: 250, timestamp: 2 }
+      ])
+    ).toBe(750);
+  });
+
+  it('ignores non-finite and non-positive values', () => {
+    expect(
+      sumReceiptIncome([
+        { fiatValue: 500 },
+        { fiatValue: 0 },
+        { fiatValue: -100 },
+        { fiatValue: Number.NaN }
+      ])
+    ).toBe(500);
+  });
+
+  it('returns 0 for an empty list', () => {
+    expect(sumReceiptIncome([])).toBe(0);
   });
 });
 

@@ -163,11 +163,21 @@ export interface TaxYearSummary {
   /** Non-advice estimated tax (e.g. India VDA 30% + 4% cess). */
   estimatedTax?: number;
   /**
-   * True when India income/gift/airdrop VDA lots are present and their
-   * receipt-side treatment is not yet fully modelled here. Cleared by a
-   * follow-up task once the validated 56(2)(x) / 115BBH treatment lands.
+   * DEPRECATED / never raised as of B9a. Previously flagged India income/gift/
+   * airdrop VDA lots as having receipt-side treatment that was not yet modelled.
+   * The treatment is now VALIDATED from primary sources (Section 115BBH(2)(a)
+   * cost-of-acquisition-only + Section 56(2)(x) FMV-at-receipt-as-income), so it
+   * is always false for IN. Field kept (additive) for back-compat consumers.
    */
   incomeGiftTreatmentLimited?: boolean;
+  /**
+   * India Section 56(2)(x): total FMV-at-receipt (in reporting fiat) of
+   * income/gift/airdrop/staking VDA events in the financial year. This is income
+   * from other sources taxed at the recipient's SLAB rate — separate from the
+   * 30% + 4% cess on VDA transfers (Section 115BBH). Reports surface it as its
+   * own line; slab-rate tax is out of scope (depends on total income).
+   */
+  vdaReceiptIncome?: number;
   totalIncome: number;      // staking/airdrop/mining etc. valued at FMV
   /** Derivatives business income (profits) when treatment = business_income. */
   derivativesIncome?: number;

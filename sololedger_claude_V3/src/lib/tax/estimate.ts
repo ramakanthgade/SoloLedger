@@ -43,6 +43,39 @@ export function estimateIndiaVDA(taxableGains: number): IndiaVDAEstimate {
 }
 
 /**
+ * A receipt-side income event: an airdrop / staking reward / gift received,
+ * valued at its Fair Market Value (in reporting fiat) at the time of receipt.
+ */
+export interface ReceiptIncomeEvent {
+  /** FMV in reporting fiat at the time of receipt. */
+  fiatValue: number;
+  /** Epoch ms of receipt; used by callers to filter by financial year. */
+  timestamp?: number;
+}
+
+/**
+ * Sum the India receipt-side income: the total FMV-at-receipt of income / gift /
+ * airdrop / staking events supplied for the financial year. Under Section
+ * 56(2)(x) this amount is income from other sources taxed at the recipient's
+ * SLAB rate — a receipt-side tax that is SEPARATE from the 30% + 4% cess
+ * charged on the later VDA transfer under Section 115BBH.
+ *
+ * This helper deliberately returns only the taxable receipt AMOUNT: the slab
+ * rate depends on the taxpayer's total income and is out of scope here. The
+ * report layer is responsible for labelling it (e.g. "Income from VDA receipts
+ * (taxed at slab rate) — ₹X"). Non-finite/negative values are ignored.
+ *
+ * Callers should pre-filter `events` to the relevant financial year (the same
+ * FMV-at-receipt figures the cost-basis engine uses as cost of acquisition).
+ */
+export function sumReceiptIncome(events: ReceiptIncomeEvent[]): number {
+  return events.reduce((sum, e) => {
+    const v = e.fiatValue;
+    return Number.isFinite(v) && v > 0 ? sum + v : sum;
+  }, 0);
+}
+
+/**
  * Apply a capital-gains inclusion rate to a gain (e.g. Canada's 50% inclusion).
  * The taxable portion is `gain × rate`; losses pass through with the same rate
  * so callers can compute an inclusion-adjusted net where their rules allow it.

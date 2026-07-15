@@ -236,6 +236,40 @@ describe('cost-basis engine', () => {
     expect(lifo).not.toBe(fifo);
   });
 
+  describe('India Sec 56(2)(x) → 115BBH cost-of-acquisition linkage', () => {
+    it('income lot opens at FMV-at-receipt; later sale gain = P − F (not P − 0)', () => {
+      const { lots, disposals } = run([
+        tx({ id: 'inc', type: 'income', amount: 1, fiatValue: 400, timestamp: 1 * DAY }),
+        tx({ id: 'sell', type: 'sell', amount: 1, fiatValue: 1000, timestamp: 2 * DAY })
+      ]);
+      // Lot cost of acquisition = FMV-at-receipt (400), NOT zero.
+      expect(lots[0].costBasisTotal).toBe(400);
+      // 115BBH sale gain = 1000 − 400 = 600.
+      expect(disposals[0].costBasis).toBe(400);
+      expect(disposals[0].gain).toBe(600);
+    });
+
+    it('gift_received and airdrop-style income both open at FMV-at-receipt', () => {
+      const gift = run([
+        tx({ id: 'g', type: 'gift_received', amount: 2, fiatValue: 500, timestamp: 1 * DAY }),
+        tx({ id: 's', type: 'sell', amount: 2, fiatValue: 1500, timestamp: 2 * DAY })
+      ]);
+      expect(gift.disposals[0].costBasis).toBe(500);
+      expect(gift.disposals[0].gain).toBe(1000);
+    });
+
+    it('mining reward is the DISTINCT case: cost basis 0, later gain = full sale price', () => {
+      const { lots, disposals } = run([
+        tx({ id: 'mine', type: 'income', category: 'mining', amount: 1, fiatValue: 400, timestamp: 1 * DAY }),
+        tx({ id: 'sell', type: 'sell', amount: 1, fiatValue: 1000, timestamp: 2 * DAY })
+      ]);
+      // Mining cost of acquisition is treated as ZERO regardless of FMV.
+      expect(lots[0].costBasisTotal).toBe(0);
+      expect(disposals[0].costBasis).toBe(0);
+      expect(disposals[0].gain).toBe(1000); // full consideration
+    });
+  });
+
   it('decimal-vs-float regression on a long synthetic history', () => {
     const txs: Transaction[] = [];
     let t = 1;

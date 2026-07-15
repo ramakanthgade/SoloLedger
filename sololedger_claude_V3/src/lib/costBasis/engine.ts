@@ -21,6 +21,27 @@ const ACQUISITION_TYPES: TxType[] = ['buy', 'income', 'gift_received', 'nft_mint
 const DISPOSAL_TYPES: TxType[] = ['sell', 'gift_sent', 'nft_sell'];
 
 /**
+ * India VDA cost-of-acquisition linkage (validated from primary sources):
+ *
+ *  - Airdrops / staking rewards / gifts are income from other sources under
+ *    Section 56(2)(x) AT RECEIPT, valued at Fair Market Value (FMV) in INR at
+ *    the time of receipt (taxed at the recipient's slab rate). That
+ *    FMV-at-receipt then BECOMES the cost of acquisition for the later sale
+ *    under Section 115BBH — so a later disposal gains = sale price − FMV, not
+ *    sale price − 0. The engine therefore opens these lots at FMV-at-receipt
+ *    (the transaction's `fiatValue`), which is CORRECT.
+ *
+ *  - Mining rewards are the DISTINCT case: cost of acquisition is treated as
+ *    ZERO (no receipt-side income under this analogy), so a later sale is taxed
+ *    on the full consideration. Mining is flagged via `category === 'mining'`
+ *    on an `income` transaction and is the only income path that opens a
+ *    zero-cost lot.
+ */
+function isMiningIncome(tx: Transaction): boolean {
+  return tx.type === 'income' && (tx.category ?? '').toLowerCase() === 'mining';
+}
+
+/**
  * How trading/network fees affect cost basis. Jurisdiction-aware: the engine
  * only ever applies the policy it is handed — it does not decide the policy.
  * - `add_to_basis`: a fee denominated in the reporting fiat currency is added
@@ -216,7 +237,14 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
           continue;
         }
 
-        const costBasisTotal = add(Math.abs(rawFiat), feeForBasis(tx, feePolicy));
+        // Section 56(2)(x) → 115BBH: income/gift/airdrop lots open at
+        // FMV-at-receipt (`fiatValue`) as their cost of acquisition, so a later
+        // 115BBH sale is taxed on (sale price − FMV). Mining is the distinct
+        // case — cost of acquisition is ZERO, so a later sale is taxed on the
+        // full consideration.
+        const costBasisTotal = isMiningIncome(tx)
+          ? D(0)
+          : add(Math.abs(rawFiat), feeForBasis(tx, feePolicy));
         const amount = D(tx.amount);
         const lot: Lot = {
           id: makeId('lot'),

@@ -62,13 +62,38 @@ describe('summarizeYear — India no-offset (Section 115BBH)', () => {
     expect(s.totalGain).toBe(200);
   });
 
-  it('sets incomeGiftTreatmentLimited when IN income lots present', () => {
+  it('does NOT raise incomeGiftTreatmentLimited for IN income lots (B9a — treatment validated)', () => {
     const ts = Date.UTC(2024, 5, 1);
+    // Before B9a this was `true`; the 56(2)(x)/115BBH treatment is now validated
+    // from primary sources, so the flag is cleared (never raised).
     const withIncome = summarizeYear([], [], [{ fiatValue: 500, timestamp: ts }], 2024, 'IN');
-    expect(withIncome.incomeGiftTreatmentLimited).toBe(true);
+    expect(withIncome.incomeGiftTreatmentLimited).toBe(false);
 
     const noIncome = summarizeYear([], [], [], 2024, 'IN');
-    expect(noIncome.incomeGiftTreatmentLimited).toBeUndefined();
+    expect(noIncome.incomeGiftTreatmentLimited).toBe(false);
+  });
+
+  it('surfaces vdaReceiptIncome (Sec 56(2)(x) slab-rate income) summed over in-FY events for IN', () => {
+    const inFy = Date.UTC(2024, 5, 1);   // within FY 2024-25 (IN)
+    const outOfFy = Date.UTC(2023, 5, 1); // prior FY — excluded
+    const s = summarizeYear(
+      [],
+      [],
+      [
+        { fiatValue: 500, timestamp: inFy },
+        { fiatValue: 250, timestamp: inFy },
+        { fiatValue: 999, timestamp: outOfFy }
+      ],
+      2024,
+      'IN'
+    );
+    expect(s.vdaReceiptIncome).toBe(750); // 500 + 250; out-of-FY excluded
+  });
+
+  it('leaves vdaReceiptIncome undefined for non-IN jurisdictions', () => {
+    const ts = Date.UTC(2024, 5, 1);
+    const s = summarizeYear([], [], [{ fiatValue: 500, timestamp: ts }], 2024, 'US');
+    expect(s.vdaReceiptIncome).toBeUndefined();
   });
 });
 

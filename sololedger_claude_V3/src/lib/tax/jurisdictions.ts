@@ -2,7 +2,7 @@ import { addYears } from 'date-fns';
 import type { Disposal, Jurisdiction, TaxYearSummary } from '@/types/transaction';
 import type { MatchedGainRow } from '@/lib/costBasis/matchedGains';
 import { add, sub, toNumber } from '@/lib/costBasis/decimal';
-import { estimateIndiaVDA } from '@/lib/tax/estimate';
+import { estimateIndiaVDA, sumReceiptIncome } from '@/lib/tax/estimate';
 import { isInFy } from '@/lib/utils';
 
 /**
@@ -140,15 +140,30 @@ export function summarizeYear(
     : totalGains;
   const disallowedLosses = rules.lossesOffsetGains ? undefined : totalLosses;
 
-  const totalIncome = incomeEvents
-    .filter((e) => e.timestamp != null && isInFy(e.timestamp, year, jurisdiction))
-    .reduce((s, e) => s + (e.fiatValue || 0), 0);
+  const yearIncomeEvents = incomeEvents.filter(
+    (e) => e.timestamp != null && isInFy(e.timestamp, year, jurisdiction)
+  );
+  const totalIncome = yearIncomeEvents.reduce((s, e) => s + (e.fiatValue || 0), 0);
 
-  // India-only flag: income/gift/airdrop VDA lots carry receipt-side treatment
-  // not yet modelled here (B9a clears this). Keyed off income presence so the
-  // condition stays a single, cleanly separable expression.
-  const incomeGiftTreatmentLimited =
-    jurisdiction === 'IN' && totalIncome > 0 ? true : undefined;
+  // India Section 56(2)(x): the FMV-at-receipt of income/gift/airdrop/staking
+  // VDA events is income from other sources taxed at the recipient's SLAB rate
+  // — a receipt-side charge separate from the 30% + 4% cess on the later VDA
+  // transfer under Section 115BBH. Surfaced so reports can show it as its own
+  // line. Slab-rate tax is out of scope (depends on total income).
+  const vdaReceiptIncome =
+    jurisdiction === 'IN' ? sumReceiptIncome(yearIncomeEvents) : undefined;
+
+  // Legal basis, VALIDATED FROM PRIMARY SOURCES (was a CA-validation gate):
+  //  - Section 115BBH(2)(a): the ONLY deduction on a VDA transfer is the cost
+  //    of acquisition (no other expenditure; losses cannot be set off/carried).
+  //  - Section 56(2)(x): airdrops/staking/gifts are taxed at receipt at FMV
+  //    (slab rate), and that FMV-at-receipt BECOMES the cost of acquisition for
+  //    the later 115BBH sale.
+  // Opening income/gift/airdrop lots at FULL FMV-at-receipt (the engine's
+  // existing behaviour) is therefore CORRECT, so the earlier
+  // `incomeGiftTreatmentLimited` doubt is resolved in its favour: the flag is
+  // no longer raised. The field is kept on the type (additive) but stays false.
+  const incomeGiftTreatmentLimited = false;
 
   const inclusionRate = jurisdiction === 'CA' ? CA_INCLUSION_RATE : undefined;
   const estimatedTax =
@@ -168,6 +183,7 @@ export function summarizeYear(
     inclusionRate,
     estimatedTax,
     incomeGiftTreatmentLimited,
+    vdaReceiptIncome,
     totalIncome,
     derivativesIncome: extras?.derivativesIncome,
     derivativesExpenses: extras?.derivativesExpenses,
