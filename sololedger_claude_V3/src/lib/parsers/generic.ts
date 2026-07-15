@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { makeId, normalizeFiatMagnitude, safeNumber, safeTimestamp } from './types';
+import { makeId, normalizeFiatMagnitude, safeNumber, safeTimestamp, contentHashRef } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 
 /** User-defined mapping from their CSV's headers to our fields, used when
@@ -119,7 +119,17 @@ export function parseWithMapping(
       feeAmount: feeAmount && feeAmount > 0 ? feeAmount : undefined,
       feeAsset: feeAsset || undefined,
       source: 'manual_mapping',
-      sourceRef: `row:${i}`,
+      // Content-addressed ref (stable across re-imports) instead of a positional
+      // `row:<i>` that shifts when rows are reordered/filtered. Lets the dedup
+      // layer recognise a re-imported manual/AI row as the same transaction.
+      sourceRef: contentHashRef({
+        timestamp,
+        type: mapped,
+        asset: base,
+        amount,
+        counterAsset: quote,
+        counterAmount: normalizeFiatMagnitude(fiatValue)
+      }),
       notes: mapping.notes ? row[mapping.notes] : assetRaw !== base ? `Pair ${assetRaw}` : undefined,
       flags: fiatValue != null && Math.abs(fiatValue) > 0 ? [] : ['missing_cost_basis'],
       isInternalTransfer: false,

@@ -1,0 +1,36 @@
+[
+  {
+    "timestamp": 1780792016000,
+    "type": "transfer_in",
+    "asset": "USDC",
+    "amount": 1989.8,
+    "fiatCurrency": "USD",
+    "fiatValue": 1989.8,
+    "source": "hyperliquid_deposits",
+    "sourceRef": "hyperliquid:1780792016000:transfer_in:USDC:1989.8000",
+    "notes": "HL deposit · arbitrum → trading · fee 0.2 USDC",
+    "flags": [
+      "possible_internal_transfer"
+    ],
+    "isInternalTransfer": false,
+    "category": "perp_collateral",
+    "instrumentClass": "derivative"
+  },
+  {
+    "timestamp": 1783386000000,
+    "type": "transfer_in",
+    "asset": "ETH",
+    "amount": 5,
+    "fiatCurrency": "USD",
+    "source": "hyperliquid_deposits",
+    "sourceRef": "hyperliquid:1783386000000:transfer_in:ETH:5.0000",
+    "notes": "HL deposit · arbitrum → trading · fee 0.01 ETH · ETH value not in USD — fetch price",
+    "flags": [
+      "missing_cost_basis",
+      "possible_internal_transfer"
+    ],
+    "isInternalTransfer": false,
+    "category": "perp_collateral",
+    "instrumentClass": "derivative"
+  }
+]

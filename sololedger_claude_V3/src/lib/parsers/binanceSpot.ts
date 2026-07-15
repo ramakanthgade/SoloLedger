@@ -1,5 +1,12 @@
 import type { Transaction } from '@/types/transaction';
-import { makeId, safeQuantity, safeTimestamp, exchangeSourceRef, type ExchangeParser } from './types';
+import {
+  makeId,
+  safeQuantity,
+  safeTimestamp,
+  safeTimestampUtc,
+  exchangeSourceRef,
+  type ExchangeParser
+} from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 
 /**
@@ -46,6 +53,10 @@ export const binanceSpotParser: ExchangeParser = {
 
     const map = headerMap(Object.keys(rows[0]));
     const timeCol = col(map, 'dateutc', 'time', 'datetime', 'timestamp', 'date');
+    // Binance Spot exports label the trade time as "Date(UTC)". When the column
+    // is UTC-documented (or has no explicit zone), parse it as UTC so timestamps
+    // don't drift on a non-UTC machine.
+    const timeIsUtc = !!timeCol && /utc/.test(timeCol.toLowerCase().replace(/[^a-z0-9]/g, ''));
     const pairCol = col(map, 'pair', 'symbol', 'market');
     const sideCol = col(map, 'side', 'type', 'direction');
     const priceCol = col(map, 'price', 'avgprice', 'averageprice');
@@ -76,7 +87,7 @@ export const binanceSpotParser: ExchangeParser = {
         continue;
       }
 
-      const timestamp = safeTimestamp(row[timeCol]);
+      const timestamp = timeIsUtc ? safeTimestampUtc(row[timeCol]) : safeTimestamp(row[timeCol]);
       const pairRaw = (row[pairCol] || '').trim();
       const { base, quote } = parseTradingPair(pairRaw);
       const qty = safeQuantity(row[qtyCol]);

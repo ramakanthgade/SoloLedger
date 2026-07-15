@@ -88,6 +88,10 @@ const NOVES_TYPE_EXACT: Record<string, TxType | null> = {
   withdrawLiquidity: 'defi_withdraw',
   lendingDeposit: 'defi_deposit',
   lendingWithdrawal: 'defi_withdraw',
+  // Bridges move a user's own funds between chains. Default to transfer_out,
+  // but `classifyNovesTx` reclassifies it to an internal transfer (non-taxable)
+  // when both an out and an in leg exist, or a matching inbound is found on the
+  // destination chain — see `isBridgeType` / `bridgeIsInternalTransfer`.
   bridge: 'transfer_out',
   // keep as-is
   transferERC20: null,
@@ -165,6 +169,33 @@ async function fetchNovesTx(
   }
 }
 
+/** True when a Noves type string represents a cross-chain bridge. */
+export function isBridgeType(novesType: string): boolean {
+  return /bridge/i.test(novesType);
+}
+
+const BRIDGE_NON_FLOW_ACTIONS = new Set(['paidGas', 'paidFee', 'burned', 'approved']);
+
+/**
+ * A bridge is an internal transfer (moving a user's own funds between chains),
+ * not a taxable disposal, when we can see both an outbound and an inbound leg.
+ *
+ * This covers two cases:
+ *  1. Both legs are present in the same Noves classification (sent + received).
+ *  2. A matching inbound was found separately on the destination chain — the
+ *     caller passes `matchingInboundFound` (asset+amount+time-window match).
+ */
+export function bridgeIsInternalTransfer(
+  sent: NovesTransfer[],
+  received: NovesTransfer[],
+  matchingInboundFound = false
+): boolean {
+  const realSent = sent.filter((s) => !BRIDGE_NON_FLOW_ACTIONS.has(s.action));
+  const realReceived = received.filter((r) => !BRIDGE_NON_FLOW_ACTIONS.has(r.action));
+  if (realSent.length > 0 && realReceived.length > 0) return true;
+  return matchingInboundFound;
+}
+
 export interface NovesClassifyResult {
   /** Noves classified type string (e.g. "swap", "claimRewards") */
   novesType: string;
@@ -173,28 +204,55 @@ export interface NovesClassifyResult {
   description: string;
   sent: NovesTransfer[];
   received: NovesTransfer[];
+  /** True for a bridge classified as a non-taxable internal transfer. */
+  isInternalTransfer: boolean;
+  /** Extra flag to attach (e.g. 'possible_internal_transfer' for bridges). */
+  extraFlag?: 'possible_internal_transfer';
 }
 
-/** Classify a single transaction hash via Noves. Returns null if chain unsupported or tx not found. */
+/**
+ * Classify a single transaction hash via Noves. Returns null if chain unsupported or tx not found.
+ *
+ * `matchingInboundFound` lets the caller signal that a matching inbound leg was
+ * located on the destination chain (asset + amount + time window), so a bridge
+ * with only an out leg visible in this tx is still treated as an internal
+ * transfer rather than a `transfer_out` disposal.
+ */
 export async function classifyNovesTx(
   apiKey: string,
   chain: string,
   txHash: string,
-  walletAddress?: string
+  walletAddress?: string,
+  matchingInboundFound = false
 ): Promise<NovesClassifyResult | null> {
   const result = await fetchNovesTx(apiKey, chain, txHash, walletAddress);
   if (!result) return null;
 
   const { classificationData } = result;
   const novesType = classificationData.type ?? 'unknownTransaction';
-  const soloLedgerType = novesTxTypeToSoloLedger(novesType);
+  let soloLedgerType = novesTxTypeToSoloLedger(novesType);
+  const sent = classificationData.sent ?? [];
+  const received = classificationData.received ?? [];
+
+  let isInternalTransfer = false;
+  let extraFlag: 'possible_internal_transfer' | undefined;
+  if (isBridgeType(novesType)) {
+    if (bridgeIsInternalTransfer(sent, received, matchingInboundFound)) {
+      // Bidirectional (or matched) bridge → non-taxable internal transfer.
+      isInternalTransfer = true;
+      soloLedgerType = received.length > 0 && sent.length === 0 ? 'transfer_in' : 'transfer_out';
+      extraFlag = 'possible_internal_transfer';
+    }
+  }
 
   return {
     novesType,
     soloLedgerType,
     description: classificationData.description ?? '',
-    sent: classificationData.sent ?? [],
-    received: classificationData.received ?? []
+    sent,
+    received,
+    isInternalTransfer,
+    extraFlag
   };
 }
 

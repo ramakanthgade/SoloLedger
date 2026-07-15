@@ -7,10 +7,18 @@ import type { ColumnMapping } from '@/lib/parsers/generic';
 import { guessTypeValueMap } from '@/lib/parsers/generic';
 import type { TxType } from '@/types/transaction';
 
+/** Required mapping fields that must resolve to a real header before import. */
+export const REQUIRED_MAPPING_FIELDS = ['timestamp', 'type', 'asset', 'amount'] as const;
+export type RequiredMappingField = (typeof REQUIRED_MAPPING_FIELDS)[number];
+
 export interface AiMappingSuggestion {
   mapping: Partial<ColumnMapping>;
   explanation: string;
   confidence: 'high' | 'medium' | 'low';
+  /** True only when every required field resolved to a real header. */
+  valid: boolean;
+  /** Required fields the AI could not confidently map — the UI must gate on this. */
+  missingFields: RequiredMappingField[];
 }
 
 const VALID_TYPES = new Set<TxType>([
@@ -106,12 +114,31 @@ Return ONLY JSON:
     return headers.includes(s) ? s : headers.find((h) => h.toLowerCase() === s.toLowerCase());
   };
 
+  // Resolve required fields to real headers only — NO `headers[0]` fallback.
+  // A blind fallback silently mapped every unresolved required field onto the
+  // first column, producing a plausible-looking but wrong import. Instead we
+  // leave the field undefined and report it in `missingFields` so the UI can
+  // force a preview/confirm (or manual correction) before persisting.
+  const timestamp = pick('timestamp');
+  const type = pick('type');
+  const asset = pick('asset');
+  const amount = pick('amount');
+
+  const resolved: Record<RequiredMappingField, string | undefined> = {
+    timestamp,
+    type,
+    asset,
+    amount
+  };
+  const missingFields = REQUIRED_MAPPING_FIELDS.filter((f) => !resolved[f]);
+  const valid = missingFields.length === 0;
+
   return {
     mapping: {
-      timestamp: pick('timestamp') ?? headers[0] ?? '',
-      type: pick('type') ?? headers[0] ?? '',
-      asset: pick('asset') ?? headers[0] ?? '',
-      amount: pick('amount') ?? headers[0] ?? '',
+      timestamp: timestamp ?? '',
+      type: type ?? '',
+      asset: asset ?? '',
+      amount: amount ?? '',
       totalValue: pick('totalValue'),
       pricePerUnit: pick('pricePerUnit'),
       fiatValue: pick('fiatValue'),
@@ -124,6 +151,8 @@ Return ONLY JSON:
     explanation: String(parsed.explanation ?? 'AI suggested column mapping applied.'),
     confidence: (['high', 'medium', 'low'].includes(String(parsed.confidence))
       ? String(parsed.confidence)
-      : 'medium') as AiMappingSuggestion['confidence']
+      : 'medium') as AiMappingSuggestion['confidence'],
+    valid,
+    missingFields
   };
 }

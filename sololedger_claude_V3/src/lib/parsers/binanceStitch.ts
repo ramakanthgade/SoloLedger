@@ -24,6 +24,11 @@ function col(row: Record<string, string>, ...keys: string[]): string {
   return '';
 }
 
+/** Order / trade id from the raw row, if the export includes one. */
+function orderId(r: BinanceLedgerRow): string {
+  return col(r.raw, 'orderid', 'orderno', 'ordernumber', 'tradeid', 'txid', 'transactionid').trim();
+}
+
 export function normalizeBinanceLedgerRows(rows: Record<string, string>[]): BinanceLedgerRow[] {
   const out: BinanceLedgerRow[] = [];
   for (let i = 0; i < rows.length; i++) {
@@ -59,8 +64,24 @@ function safeNumberSigned(v: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Group key for Binance Transaction-History rows.
+ *
+ * When the export carries an order/trade id we append it as a per-fill
+ * discriminator so distinct orders that happen to share the same
+ * second-granular timestamp are NOT collapsed into one group (previously
+ * `timestamp|account` alone merged high-frequency same-second fills, which
+ * `pairByAmount` then mispaired). Without an order id we fall back to
+ * `timestamp|account` and rely on id/composite-keyed pairing inside the group.
+ */
 function groupKey(r: BinanceLedgerRow): string {
-  return `${r.timestamp}|${r.account}`;
+  const oid = orderId(r);
+  return oid ? `${r.timestamp}|${r.account}|oid:${oid}` : `${r.timestamp}|${r.account}`;
+}
+
+/** Composite fill key used to pair legs when no explicit order id is present. */
+function compositeFillKey(r: BinanceLedgerRow): string {
+  return `${r.timestamp}|${r.account}|${(r.remark ?? '').trim().toLowerCase()}`;
 }
 
 function isStable(coin: string): boolean {
@@ -90,13 +111,67 @@ function makeTx(
   };
 }
 
-function pairByAmount<T extends { amount: number }>(
+interface Leg {
+  row: BinanceLedgerRow;
+  amount: number;
+}
+
+/**
+ * Pair trade legs by order/trade id (preferred), falling back to a composite
+ * `timestamp|account|remark` key, then to stable input order. Replaces the old
+ * `pairByAmount`, which sorted both sides by magnitude and zipped them — that
+ * mispaired whenever multiple fills shared a timestamp or when fee/rounding
+ * made magnitudes cross. Each right leg is consumed at most once.
+ */
+function pairLegs<T extends Leg>(
   left: T[],
-  right: { amount: number }[]
-): (T & { pairedAmount?: number })[] {
-  const l = [...left].sort((a, b) => a.amount - b.amount);
-  const r = [...right].sort((a, b) => a.amount - b.amount);
-  return l.map((item, i) => ({ ...item, pairedAmount: r[i]?.amount }));
+  right: Leg[]
+): (T & { pairedAmount?: number; pairedRow?: BinanceLedgerRow })[] {
+  const usedRight = new Set<number>(); // index into `right`
+  const byOrder = new Map<string, number[]>();
+  const byComposite = new Map<string, number[]>();
+
+  right.forEach((leg, i) => {
+    const oid = orderId(leg.row);
+    if (oid) {
+      const list = byOrder.get(oid) ?? [];
+      list.push(i);
+      byOrder.set(oid, list);
+    }
+    const ck = compositeFillKey(leg.row);
+    const clist = byComposite.get(ck) ?? [];
+    clist.push(i);
+    byComposite.set(ck, clist);
+  });
+
+  const takeFrom = (list: number[] | undefined): number | undefined => {
+    if (!list) return undefined;
+    for (const idx of list) {
+      if (!usedRight.has(idx)) return idx;
+    }
+    return undefined;
+  };
+
+  return left.map((item) => {
+    const oid = orderId(item.row);
+    let matchIdx =
+      (oid ? takeFrom(byOrder.get(oid)) : undefined) ??
+      takeFrom(byComposite.get(compositeFillKey(item.row)));
+
+    // Final fallback: next unused right leg in stable input order.
+    if (matchIdx == null) {
+      for (let i = 0; i < right.length; i++) {
+        if (!usedRight.has(i)) {
+          matchIdx = i;
+          break;
+        }
+      }
+    }
+
+    if (matchIdx == null) return { ...item, pairedAmount: undefined, pairedRow: undefined };
+    usedRight.add(matchIdx);
+    return { ...item, pairedAmount: right[matchIdx].amount, pairedRow: right[matchIdx].row };
+  });
 }
 
 /** Stitch spot buys: Transaction Buy + Spend + Fee → one buy row with fiat cost. */
@@ -115,7 +190,7 @@ function stitchBuys(rows: BinanceLedgerRow[]): Transaction[] {
   const stableSpends = spends.filter((s) => isStable(s.coin));
   const buyLegs = buys.map((b) => ({ row: b, amount: Math.abs(b.change) }));
   const spendLegs = stableSpends.map((s) => ({ row: s, amount: Math.abs(s.change) }));
-  const paired = pairByAmount(buyLegs, spendLegs);
+  const paired = pairLegs(buyLegs, spendLegs);
 
   const feeByAsset = new Map<string, BinanceLedgerRow[]>();
   for (const f of fees) {
@@ -127,8 +202,8 @@ function stitchBuys(rows: BinanceLedgerRow[]): Transaction[] {
 
   const usedFees = new Set<number>();
 
-  return paired.map(({ row: buy, amount, pairedAmount }) => {
-    const spendRow = spendLegs.find((s) => Math.abs(s.amount - (pairedAmount ?? 0)) < 0.0001)?.row;
+  return paired.map(({ row: buy, amount, pairedAmount, pairedRow }) => {
+    const spendRow = pairedRow;
     const feeCandidates = (feeByAsset.get(buy.coin) ?? []).filter((f) => !usedFees.has(f.index));
     const feeRow = feeCandidates[0];
     if (feeRow) usedFees.add(feeRow.index);
@@ -162,11 +237,23 @@ function stitchCryptoTrades(
 ): Transaction[] {
   const buyLegs = buys.map((b) => ({ row: b, amount: Math.abs(b.change) }));
   const spendLegs = spends.map((s) => ({ row: s, amount: Math.abs(s.change) }));
-  const paired = pairByAmount(buyLegs, spendLegs);
+  const paired = pairLegs(buyLegs, spendLegs);
 
-  return paired.map(({ row: buy, amount, pairedAmount }) => {
-    const spendRow = spendLegs.find((s) => Math.abs(s.amount - (pairedAmount ?? 0)) < 0.0001)?.row;
-    const feeRow = fees.find((f) => f.coin === buy.coin || f.coin === spendRow?.coin);
+  // Consume each fee row at most once (previously `fees.find(...)` could reuse
+  // the same fee row for multiple trades in the group).
+  const usedFees = new Set<number>();
+
+  return paired.map(({ row: buy, amount, pairedRow }) => {
+    const spendRow = pairedRow;
+    // Prefer a fee whose coin matches one of the trade legs; otherwise consume
+    // any remaining group fee (Binance commonly charges crypto-for-crypto fees
+    // in a third asset, e.g. BNB, that matches neither leg). `usedFees` still
+    // guarantees each fee row is attached to at most one trade.
+    const feeRow =
+      fees.find(
+        (f) => !usedFees.has(f.index) && (f.coin === buy.coin || f.coin === spendRow?.coin)
+      ) ?? fees.find((f) => !usedFees.has(f.index));
+    if (feeRow) usedFees.add(feeRow.index);
 
     return makeTx({
       timestamp: buy.timestamp,
@@ -194,14 +281,14 @@ function stitchSells(rows: BinanceLedgerRow[]): Transaction[] {
 
   const soldLegs = solds.map((s) => ({ row: s, amount: Math.abs(s.change) }));
   const revLegs = revenues.map((r) => ({ row: r, amount: Math.abs(r.change) }));
-  const paired = pairByAmount(soldLegs, revLegs);
+  const paired = pairLegs(soldLegs, revLegs);
 
   const stableFees = fees.filter((f) => isStable(f.coin));
   stableFees.sort((a, b) => Math.abs(a.change) - Math.abs(b.change));
   const usedFees = new Set<number>();
 
-  return paired.map(({ row: sold, amount, pairedAmount }) => {
-    const revRow = revLegs.find((r) => Math.abs(r.amount - (pairedAmount ?? 0)) < 0.0001)?.row;
+  return paired.map(({ row: sold, amount, pairedAmount, pairedRow }) => {
+    const revRow = pairedRow;
     const feeRow = stableFees.find((f) => !usedFees.has(f.index));
     if (feeRow) usedFees.add(feeRow.index);
 
@@ -234,10 +321,10 @@ function stitchConverts(rows: BinanceLedgerRow[]): Transaction[] {
   const ins = converts.filter((r) => r.change > 0);
   const outLegs = outs.map((o) => ({ row: o, amount: Math.abs(o.change) }));
   const inLegs = ins.map((i) => ({ row: i, amount: Math.abs(i.change) }));
-  const paired = pairByAmount(outLegs, inLegs);
+  const paired = pairLegs(outLegs, inLegs);
 
-  return paired.map(({ row: out, amount, pairedAmount }) => {
-    const inRow = inLegs.find((i) => Math.abs(i.amount - (pairedAmount ?? 0)) < 0.0001)?.row;
+  return paired.map(({ row: out, amount, pairedAmount, pairedRow }) => {
+    const inRow = pairedRow;
     return makeTx({
       timestamp: out.timestamp,
       type: 'trade',

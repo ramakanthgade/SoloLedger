@@ -118,8 +118,7 @@ export function stitchIncomeExpenseLedger(rows: Record<string, string>[]): Parse
   }
 
   for (const [timestamp, legs] of groups) {
-    const reasonLower = (legs[0]?.reason || '').toLowerCase();
-    const allTrade = legs.every((l) => l.reason.toLowerCase() === 'trade');
+    const anyTrade = legs.some((l) => l.reason.toLowerCase() === 'trade');
     const allRebalance = legs.every((l) =>
       l.reason.toLowerCase().includes('rebalance')
     );
@@ -129,7 +128,11 @@ export function stitchIncomeExpenseLedger(rows: Record<string, string>[]): Parse
         l.remarks.toUpperCase().includes('FEE')
     );
 
-    if (allTrade || (reasonLower === 'trade' && legs.some((l) => l.reason.toLowerCase() === 'trade'))) {
+    // Mixed-group: if ANY leg in the timestamp group is a trade, stitch the
+    // trade legs into a single buy/sell/trade and emit the remaining
+    // (fee/deposit/withdraw/reward) legs individually — instead of the old
+    // "first leg must be trade" gate that mis-classified mixed groups.
+    if (anyTrade) {
       const tradeLegs = legs.filter((l) => l.reason.toLowerCase() === 'trade');
       const otherLegs = legs.filter((l) => l.reason.toLowerCase() !== 'trade');
       stitchTradeGroup(timestamp, tradeLegs, transactions);
