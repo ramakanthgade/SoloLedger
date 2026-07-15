@@ -17,6 +17,24 @@ export function SettingsTab() {
   const { user } = useAuth();
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [pendingRestore, setPendingRestore] = useState<File | null>(null);
+  const [restoreStatus, setRestoreStatus] = useState<
+    { kind: 'success' | 'error'; message: string } | null
+  >(null);
+
+  const runRestore = async (file: File) => {
+    try {
+      const { imported } = await importFullBackup(file);
+      setRestoreStatus({ kind: 'success', message: `Restored ${imported} transactions.` });
+    } catch (err) {
+      setRestoreStatus({
+        kind: 'error',
+        message: err instanceof Error ? err.message : 'Failed to restore backup.'
+      });
+    } finally {
+      setPendingRestore(null);
+    }
+  };
 
   useEffect(() => {
     getEffectiveSettings().then((s) => setSettings(s));
@@ -227,8 +245,11 @@ export function SettingsTab() {
                 accept="application/json"
                 className="hidden"
                 onChange={(e) => {
-                  const file = e.target.files?.[0];
-                  if (file) importFullBackup(file);
+                  const file = e.target.files?.[0] ?? null;
+                  // Reset so re-selecting the same file fires onChange again.
+                  e.target.value = '';
+                  setRestoreStatus(null);
+                  if (file) setPendingRestore(file);
                 }}
               />
               <span className="cursor-pointer rounded border border-ink-600 bg-ink-700 px-4 py-2 text-sm text-mist hover:bg-ink-600">
@@ -236,6 +257,28 @@ export function SettingsTab() {
               </span>
             </label>
           </div>
+          {pendingRestore && (
+            <div className="flex items-center gap-3">
+              <span className="text-sm text-loss">
+                Restoring replaces all local data with the backup. Continue?
+              </span>
+              <Button variant="danger" onClick={() => runRestore(pendingRestore)}>
+                Yes, restore backup
+              </Button>
+              <Button variant="ghost" onClick={() => setPendingRestore(null)}>
+                Cancel
+              </Button>
+            </div>
+          )}
+          {restoreStatus && (
+            <p
+              className={`text-sm ${
+                restoreStatus.kind === 'success' ? 'text-emerald-600' : 'text-loss'
+              }`}
+            >
+              {restoreStatus.message}
+            </p>
+          )}
           <div className="border-t border-ink-700 pt-3">
             {!confirmDelete ? (
               <Button variant="danger" onClick={() => setConfirmDelete(true)}>
