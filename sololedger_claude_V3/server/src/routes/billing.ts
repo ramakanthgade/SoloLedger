@@ -62,7 +62,7 @@ billingRouter.post('/checkout', authMiddleware, async (req: AuthedRequest, res) 
 
 /** Dev / manual activation when Stripe is not wired up */
 billingRouter.post('/activate-dev', authMiddleware, (req: AuthedRequest, res) => {
-  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEV_ACTIVATE !== 'true') {
+  if (process.env.NODE_ENV === 'production') {
     res.status(403).json({ error: 'Not available in production' });
     return;
   }
