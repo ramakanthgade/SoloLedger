@@ -79,42 +79,67 @@ export function formatDateTime(timestampMs: number): string {
 // ─────────────────────────────────────────────────────────────────────────────
 // Financial Year utilities
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// Timezone model (documented assumption):
+//   Financial-year boundaries are civil-calendar dates, so they must be resolved
+//   in the jurisdiction's civil timezone rather than in raw UTC. Bucketing a
+//   timestamp by its UTC calendar date would misfile transactions that occur near
+//   a boundary — e.g. a 2025-04-01 02:00 IST trade is 2025-03-31 20:30 UTC, which
+//   would wrongly land in the previous FY if bucketed by UTC date.
+//
+//   - India (IN): a FIXED IST offset of UTC+5:30 (India observes no DST), so the
+//     FY runs Apr 1 00:00 IST → Mar 31 23:59:59.999 IST. Using a fixed offset is
+//     exact for India and avoids any host-timezone dependency.
+//   - US/CA/AE: the runtime LOCAL calendar year (getFullYear), i.e. the tax year
+//     is bucketed against the host machine's civil timezone.
+//
+//   ASSUMPTION: there is no per-user timezone setting; US/CA/AE bucketing uses the
+//   host machine's local zone. If per-user timezones are needed later (e.g. a US
+//   filer running on a non-US machine), thread an explicit IANA zone through these
+//   helpers instead of relying on the host's local zone.
+
+/** Fixed India Standard Time offset (UTC+5:30). India observes no DST. */
+const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
 
 /**
- * Returns the start and end timestamps (ms) of a financial year.
+ * Returns the start and end timestamps (ms, UTC epoch) of a financial year.
  *
- * India:      FY N    = Apr 1, N  →  Mar 31, N+1  (23:59:59.999 UTC)
- * US/CA/AE:  Year N  = Jan 1, N  →  Dec 31, N
+ * India:      FY N   = Apr 1 00:00 IST  →  Mar 31 23:59:59.999 IST (fixed +5:30)
+ * US/CA/AE:  Year N = Jan 1 00:00 local →  Dec 31 23:59:59.999 local
  */
 export function getFyBoundaries(
   fy: number,
   jurisdiction: Jurisdiction
 ): { start: number; end: number } {
   if (jurisdiction === 'IN') {
-    const start = Date.UTC(fy, 3, 1);        // Apr 1 00:00 UTC
-    const end   = Date.UTC(fy + 1, 3, 1) - 1; // Mar 31 23:59:59.999
+    // Apr 1 00:00 IST / Apr 1 00:00 IST (next FY) expressed as UTC instants.
+    const start = Date.UTC(fy, 3, 1) - IST_OFFSET_MS;
+    const end   = Date.UTC(fy + 1, 3, 1) - IST_OFFSET_MS - 1;
     return { start, end };
   }
-  const start = Date.UTC(fy, 0, 1);
-  const end   = Date.UTC(fy + 1, 0, 1) - 1;
+  // Local civil calendar year (host machine timezone).
+  const start = new Date(fy, 0, 1).getTime();
+  const end   = new Date(fy + 1, 0, 1).getTime() - 1;
   return { start, end };
 }
 
 /**
- * Returns the "FY number" for a given UTC timestamp.
- * India:  timestamp in Apr 2025 – Mar 2026  → 2025
- * Others: timestamp in 2025                  → 2025
+ * Returns the "FY number" for a given timestamp, bucketed in the jurisdiction's
+ * civil timezone.
+ * India:  a timestamp in Apr 2025 – Mar 2026 (IST) → 2025
+ * Others: a timestamp in local-calendar 2025       → 2025
  */
 export function getFyForTimestamp(
   timestampMs: number,
   jurisdiction: Jurisdiction
 ): number {
-  const d = new Date(timestampMs);
   if (jurisdiction === 'IN') {
-    // FY starts April (month 3 in 0-indexed)
-    return d.getUTCMonth() >= 3 ? d.getUTCFullYear() : d.getUTCFullYear() - 1;
+    // Shift into IST civil time, then read the IST calendar month/year.
+    // FY starts in April (month 3, 0-indexed).
+    const ist = new Date(timestampMs + IST_OFFSET_MS);
+    return ist.getUTCMonth() >= 3 ? ist.getUTCFullYear() : ist.getUTCFullYear() - 1;
   }
-  return d.getUTCFullYear();
+  return new Date(timestampMs).getFullYear();
 }
 
 /**
