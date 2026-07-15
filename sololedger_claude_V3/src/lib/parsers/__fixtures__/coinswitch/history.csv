@@ -1,0 +1,4 @@
+Date,Type,Trading Pair,Side,Price,Quantity,Total INR,Currency,Amount,Fee,Fee Currency,TDS Amount,TDS Currency,Reference ID,Remarks
+2025-06-01 10:00:00,TRADE,MATICINR,BUY,80,100,8000,,,20,INR,,,,Spot buy
+2025-06-02 12:00:00,TRADE,BTCINR,SELL,5200000,0.005,26000,,,13,INR,260,INR,,Spot sell
+2025-06-03 08:00:00,DEPOSIT,,,,,,INR,5000,0,INR,,,,UPI deposit

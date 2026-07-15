@@ -7,6 +7,10 @@ import { wazirxDepositsParser } from './wazirxDeposits';
 import { wazirxLedgerParser } from './wazirxLedger';
 import { hyperliquidTradesParser } from './hyperliquidTrades';
 import { hyperliquidDepositsParser } from './hyperliquidDeposits';
+import { coindcxParser } from './coindcx';
+import { coinswitchParser } from './coinswitch';
+import { zebpayParser } from './zebpay';
+import { mudrexParser } from './mudrex';
 import type { ExchangeParser, ParseResult } from './types';
 import { extractTableFromMatrix, isUsefulTransactionTable, cleanCell } from './tableExtract';
 import { isSpreadsheetFile, readWorkbookSheets } from './workbook';
@@ -22,6 +26,11 @@ export const PARSERS: ExchangeParser[] = [
   wazirxTradesParser,
   wazirxDepositsParser,
   wazirxLedgerParser,
+  // India CEX parsers — specific enough to win over the generic spot heuristic.
+  coindcxParser,
+  coinswitchParser,
+  zebpayParser,
+  mudrexParser,
   binanceSpotParser,
   coinbaseParser,
   binanceParser
@@ -293,6 +302,7 @@ export async function parseImportFile(file: File): Promise<FileParseOutcome> {
 export { coinbaseParser, binanceParser, binanceSpotParser };
 export { wazirxTradesParser, wazirxDepositsParser, wazirxLedgerParser };
 export { hyperliquidTradesParser, hyperliquidDepositsParser };
+export { coindcxParser, coinswitchParser, zebpayParser, mudrexParser };
 export { isSpreadsheetFile, isCsvLikeFile } from './workbook';
 export * from './types';
 export * from './generic';

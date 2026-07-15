@@ -1,0 +1,4 @@
+Date,Transaction Type,Symbol,Side,Price,Quantity,Value,Currency,Amount,Fee,Fee Currency,TDS,TDS Currency,Txn Hash,Remarks
+2025-06-01 15:00:00,TRADE,BTCINR,SELL,4900000,0.02,98000,,,49,INR,980,INR,,Spot sell
+2025-06-02 16:30:00,TRADE,XRPUSDT,BUY,0.5,1000,500,,,0.5,USDT,,,,Spot buy
+2025-06-05 10:10:00,WITHDRAWAL,,,,,,INR,20000,10,INR,,,,Bank withdrawal
