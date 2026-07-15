@@ -15,7 +15,8 @@ import { AlertTriangle } from 'lucide-react';
 import {
   buildDerivativeBusinessExpenseRows,
   buildDerivativeBusinessIncomeRows,
-  buildDerivativeCapitalGainRows
+  buildDerivativeCapitalGainRows,
+  buildMatchedGainRows
 } from '@/lib/costBasis/matchedGains';
 import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 
@@ -39,9 +40,14 @@ export function ReportsTab() {
     });
   }, []);
 
-  const { disposals, shortfalls } = useMemo(
+  const { disposals, lots, shortfalls } = useMemo(
     () => calculateCostBasis(transactions, { method, specIdHints: hints }),
     [transactions, method, hints]
+  );
+
+  const matchedRows = useMemo(
+    () => buildMatchedGainRows(disposals, lots, transactions),
+    [disposals, lots, transactions]
   );
 
   const incomeEvents = useMemo(
@@ -74,11 +80,11 @@ export function ReportsTab() {
 
   const summary = useMemo(
     () =>
-      summarizeYear(disposals, incomeEvents, year, jurisdiction, {
+      summarizeYear(disposals, matchedRows, incomeEvents, year, jurisdiction, {
         derivativesIncome: businessMode ? yearDerivIncome : undefined,
         derivativesExpenses: businessMode ? yearDerivExpense : undefined
       }),
-    [disposals, incomeEvents, year, jurisdiction, businessMode, yearDerivIncome, yearDerivExpense]
+    [disposals, matchedRows, incomeEvents, year, jurisdiction, businessMode, yearDerivIncome, yearDerivExpense]
   );
 
   const yearDisposals = useMemo(

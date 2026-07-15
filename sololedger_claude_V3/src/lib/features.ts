@@ -6,11 +6,23 @@
  * license-check implementation in `isFeatureUnlocked`.
  */
 
+import type { Jurisdiction } from '@/types/transaction';
+
 export type FeatureId =
   | 'multi_year_carryforward'
   | 'advanced_loss_harvesting'
   | 'custom_jurisdiction_rules'
   | 'unlimited_transactions';
+
+/**
+ * Features that are inherently unavailable in a jurisdiction regardless of
+ * license tier. Under Indian rules (Section 115BBH) VDA losses cannot be set
+ * off against gains or carried forward, so loss-harvesting and multi-year
+ * carryforward have no legal basis for IN and are hard-gated off.
+ */
+const JURISDICTION_DISABLED_FEATURES: Partial<Record<Jurisdiction, FeatureId[]>> = {
+  IN: ['advanced_loss_harvesting', 'multi_year_carryforward']
+};
 
 const FEATURE_TIERS: Record<FeatureId, 'free' | 'pro'> = {
   multi_year_carryforward: 'free',
@@ -31,7 +43,10 @@ export function getLicenseState(): LicenseState {
   return { tier: 'free' };
 }
 
-export function isFeatureUnlocked(feature: FeatureId): boolean {
+export function isFeatureUnlocked(feature: FeatureId, jurisdiction?: Jurisdiction): boolean {
+  if (jurisdiction && JURISDICTION_DISABLED_FEATURES[jurisdiction]?.includes(feature)) {
+    return false;
+  }
   const required = FEATURE_TIERS[feature];
   if (required === 'free') return true;
   return getLicenseState().tier === 'pro';

@@ -9,7 +9,7 @@ import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { formatAmountForExport, formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
 import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
-import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
+import { JURISDICTIONS, summarizeYear } from '@/lib/tax/jurisdictions';
 import { resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
@@ -138,7 +138,19 @@ export function CapitalGainsTab() {
     [derivCgRows, fyBounds]
   );
 
-  const totalGain = yearMatches.reduce((s, r) => s + r.gain, 0);
+  const incomeEvents = useMemo(
+    () => incomeRows.map((r) => ({ fiatValue: r.fiatValue, timestamp: r.date })),
+    [incomeRows]
+  );
+
+  const summary = useMemo(
+    () => summarizeYear(disposals, matchedRows, incomeEvents, fy, jurisdiction),
+    [disposals, matchedRows, incomeEvents, fy, jurisdiction]
+  );
+
+  // Realized gain/loss respects the jurisdiction's offset rule (IN: no offset —
+  // positive-gain lots only, losses disallowed; others: net).
+  const totalGain = summary.totalGain;
   const totalIncome = yearIncome.reduce((s, r) => s + r.fiatValue, 0);
   const totalDerivIncome = yearDerivIncome.reduce((s, r) => s + r.fiatValue, 0);
   const totalDerivExpense = yearDerivExpense.reduce((s, r) => s + r.fiatValue, 0);

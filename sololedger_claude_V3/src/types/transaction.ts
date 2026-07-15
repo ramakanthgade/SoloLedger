@@ -141,6 +141,25 @@ export interface TaxYearSummary {
   totalGain: number;
   shortTermGain?: number;   // where jurisdiction distinguishes holding periods
   longTermGain?: number;
+  /** Sum of positive-gain consumed lots (gross gains, before any offset). */
+  totalGains?: number;
+  /** Sum of the magnitudes of negative-gain consumed lots (gross losses). */
+  totalLosses?: number;
+  /**
+   * Losses that cannot offset gains under the jurisdiction's rules (India,
+   * Section 115BBH). 0/undefined where losses may offset gains.
+   */
+  disallowedLosses?: number;
+  /** Capital-gains inclusion rate (e.g. CA 0.5). Undefined where not applicable. */
+  inclusionRate?: number;
+  /** Non-advice estimated tax (e.g. India VDA 30% + 4% cess). */
+  estimatedTax?: number;
+  /**
+   * True when India income/gift/airdrop VDA lots are present and their
+   * receipt-side treatment is not yet fully modelled here. Cleared by a
+   * follow-up task once the validated 56(2)(x) / 115BBH treatment lands.
+   */
+  incomeGiftTreatmentLimited?: boolean;
   totalIncome: number;      // staking/airdrop/mining etc. valued at FMV
   /** Derivatives business income (profits) when treatment = business_income. */
   derivativesIncome?: number;
