@@ -101,6 +101,20 @@ class SoloLedgerDB extends Dexie {
       priceCache: 'key, fetchedAt',
       csvImports: 'id, importedAt, fileName'
     });
+    // v7: structured India TDS fields on transactions (tdsAmount/tdsAsset/tdsInr).
+    // Field-only migration — the new columns are optional and default to
+    // undefined, so existing rows are left completely intact (no reindex needed).
+    // This is the SINGLE schema bump for Phase 1 (India MVP).
+    this.version(7).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName'
+    });
   }
 }
 

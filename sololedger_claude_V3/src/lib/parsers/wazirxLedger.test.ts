@@ -35,3 +35,68 @@ describe('WazirX ledger — mixed-group classification (C1)', () => {
     expect(transactions.length).toBe(3);
   });
 });
+
+describe('WazirX ledger — structured TDS on stitched trades (B3)', () => {
+  const rows = [
+    // Sell BTC → INR, with a 1% TDS leg withheld in INR, same timestamp.
+    {
+      Date: '2025-06-01 10:00:00',
+      Asset: 'BTC',
+      Income: '0',
+      Expense: '0.01',
+      'Fee Amount': '0',
+      Reason: 'Trade',
+      Remarks: 'TRADE SUB'
+    },
+    {
+      Date: '2025-06-01 10:00:00',
+      Asset: 'INR',
+      Income: '50000',
+      Expense: '0',
+      'Fee Amount': '0',
+      Reason: 'Trade',
+      Remarks: 'TRADE PLUS'
+    },
+    {
+      Date: '2025-06-01 10:00:00',
+      Asset: 'INR',
+      Income: '0',
+      Expense: '500',
+      'Fee Amount': '0',
+      Reason: 'Trade',
+      Remarks: 'TRADE TDS'
+    }
+  ];
+
+  it('sums leg TDS into structured fields on the stitched trade', () => {
+    const { transactions } = stitchIncomeExpenseLedger(rows);
+    const sell = transactions.find((t) => t.type === 'sell');
+    expect(sell).toBeDefined();
+    expect(sell!.asset).toBe('BTC');
+    expect(sell!.tdsAmount).toBe(500);
+    expect(sell!.tdsAsset).toBe('INR');
+    expect(sell!.tdsInr).toBe(500); // INR-denominated leg → INR total derivable
+    // Note still carries the human-readable TDS summary.
+    expect(sell!.notes).toContain('TDS');
+  });
+
+  it('sums multiple TDS legs of the same asset', () => {
+    const multi = [
+      ...rows,
+      {
+        Date: '2025-06-01 10:00:00',
+        Asset: 'INR',
+        Income: '0',
+        Expense: '250',
+        'Fee Amount': '0',
+        Reason: 'Trade',
+        Remarks: 'TRADE TDS'
+      }
+    ];
+    const { transactions } = stitchIncomeExpenseLedger(multi);
+    const sell = transactions.find((t) => t.type === 'sell');
+    expect(sell).toBeDefined();
+    expect(sell!.tdsInr).toBe(750);
+    expect(sell!.tdsAmount).toBe(750);
+  });
+});

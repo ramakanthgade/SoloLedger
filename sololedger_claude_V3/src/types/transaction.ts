@@ -58,6 +58,14 @@ export interface Transaction {
    */
   instrumentClass?: 'spot' | 'derivative';
   importBatchId?: string;       // links row to a CSV import batch (file hash)
+  /**
+   * India TDS (Section 194S — 1% on VDA transfers) withheld on this transaction.
+   * Captured structurally so it can be reconciled FY-by-FY. All optional/additive:
+   * rows imported before this existed simply leave them undefined.
+   */
+  tdsAmount?: number;           // quantity of `tdsAsset` withheld (e.g. 0.0001 BTC or 5 INR)
+  tdsAsset?: string;            // asset the TDS was taken in, e.g. "INR", "USDT", "BTC"
+  tdsInr?: number;              // TDS value in INR when derivable (from the export or a fiat leg)
   raw?: Record<string, unknown>; // original parsed row, kept for traceability/debugging only
 }
 
