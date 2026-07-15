@@ -1,5 +1,6 @@
 import { AUTH_TOKEN_KEY, getApiBase, isSaasMode } from './config';
 import type { PlanId } from './plans';
+import { recordNetworkActivity } from '@/lib/networkActivity';
 
 export type { PlanId };
 
@@ -45,6 +46,8 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   const token = getAuthToken();
   if (token) headers.set('Authorization', `Bearer ${token}`);
   try {
+    // Every apiFetch/saasProxyFetch call goes through the SoloLedger backend — always relay.
+    recordNetworkActivity('relay');
     return await fetch(`${base}${path}`, { ...init, headers });
   } catch {
     throw new Error(

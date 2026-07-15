@@ -268,6 +268,7 @@ export function ReviewTab() {
   const [editValue, setEditValue] = useState('');
   const [detectingSwaps, setDetectingSwaps] = useState(false);
   const [swapDetectMsg, setSwapDetectMsg] = useState<string | null>(null);
+  const [resolvingSymbols, setResolvingSymbols] = useState(false);
   const [novesProgress, setNovesProgress] = useState<{ done: number; total: number } | null>(null);
 
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
@@ -296,29 +297,36 @@ export function ReviewTab() {
   }, [transactions]);
 
 
-  // Resolve truncated contract addresses → tickers via CoinGecko (cached + saved to IndexedDB).
-  useEffect(() => {
-    let cancelled = false;
-    const unresolved = transactions.filter(
-      (t) => t.contractAddress && t.chain && (looksLikeTruncatedMint(t.asset) || t.asset.startsWith('0x'))
-    );
-    if (unresolved.length === 0) return;
+  // Transactions with truncated/contract-address assets that could be resolved to a
+  // real ticker via CoinGecko. Kept as a memo (no network) — the lookup only runs
+  // when the user explicitly clicks "Resolve token names" (AC-A1: no background
+  // network calls in default local mode without a user trigger).
+  const unresolvedSymbolTxs = useMemo(
+    () =>
+      transactions.filter(
+        (t) => t.contractAddress && t.chain && (looksLikeTruncatedMint(t.asset) || t.asset.startsWith('0x'))
+      ),
+    [transactions]
+  );
 
-    (async () => {
-      for (const t of unresolved) {
-        if (cancelled) break;
+  const resolveTokenSymbols = async () => {
+    if (resolvingSymbols || unresolvedSymbolTxs.length === 0) return;
+    setResolvingSymbols(true);
+    try {
+      for (const t of unresolvedSymbolTxs) {
+        // eslint-disable-next-line no-await-in-loop
         const symbol = await resolveTokenSymbolFromContract(t.asset, t.contractAddress, t.chain);
         if (symbol && symbol !== t.asset) {
+          // eslint-disable-next-line no-await-in-loop
           await db.transactions.update(t.id, { asset: symbol });
         }
+        // eslint-disable-next-line no-await-in-loop
         await new Promise((r) => setTimeout(r, 350));
       }
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [transactions]);
+    } finally {
+      setResolvingSymbols(false);
+    }
+  };
 
   const engineResult = useMemo(() => {
     if (!settings) return null;
@@ -652,6 +660,28 @@ export function ReviewTab() {
         <h2 className="page-title">Review</h2>
         <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
       </div>
+      {/* Token-name resolution — user-gated so no background CoinGecko calls fire on mount. */}
+      {unresolvedSymbolTxs.length > 0 && (
+        <div className="flex flex-col gap-3 rounded-lg border border-mist-600/40 bg-ink-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-mist">
+              {unresolvedSymbolTxs.length} token{unresolvedSymbolTxs.length === 1 ? '' : 's'} shown by contract address
+            </p>
+            <p className="mt-1 text-xs text-mist-400">
+              Look up the real ticker symbols from CoinGecko (a network call by contract address — never wallet addresses).
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            disabled={resolvingSymbols}
+            onClick={() => void resolveTokenSymbols()}
+            className="shrink-0"
+          >
+            {resolvingSymbols ? 'Resolving…' : 'Resolve token names'}
+          </Button>
+        </div>
+      )}
+
       {/* DCA / Recurring order banner */}
       {dcaGroups.length > 0 && (
         <div className="flex flex-col gap-3 rounded-lg border border-emerald/40 bg-emerald/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">

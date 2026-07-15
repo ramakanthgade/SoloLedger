@@ -13,7 +13,6 @@ import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import type { TaxSettings } from '@/types/transaction';
-import { recordNetworkActivity } from '@/lib/networkActivity';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 
@@ -170,8 +169,9 @@ export async function runWalletImport(
   }
 
   // --- Phase 1: Import from RPC ---
+  // Network activity is now recorded at each transport chokepoint (see
+  // src/lib/networkActivity.ts + rpc/* transports), so no ad-hoc call here.
   importJob._setPhase('importing');
-  recordNetworkActivity();
 
   let transactions: Awaited<ReturnType<typeof lookupManyAddresses>>['transactions'] = [];
   let failed: Awaited<ReturnType<typeof lookupManyAddresses>>['failed'] = [];

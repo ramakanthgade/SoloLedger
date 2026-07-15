@@ -14,6 +14,7 @@
 
 import { isSaasMode } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const PRICES_BASE = 'https://api.g.alchemy.com/prices/v1';
 
@@ -46,6 +47,7 @@ export async function fetchAlchemyHistoricalPriceUsd(
   }
 
   try {
+    recordNetworkActivity(resolveMode(isSaasMode()));
     const res = isSaasMode()
       ? await saasProxyFetch('/api/proxy/alchemy-prices/tokens/historical', {
           method: 'POST',

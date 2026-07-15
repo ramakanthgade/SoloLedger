@@ -94,18 +94,28 @@ export function PortfolioTab() {
     }
   };
 
-  // Repair ledger rows once per session when Solana wallets are imported.
+  // Ledger repair scans on-chain history via Solana RPC. It is user-gated (AC-A1:
+  // no background network calls in default local mode without a user trigger) —
+  // we surface a banner when Solana wallets are imported and repair hasn't run,
+  // but only fire the RPC when the user clicks "Check ledger against chain".
+  const [ledgerRepairOffered, setLedgerRepairOffered] = useState(false);
   useEffect(() => {
     const key = 'sololedger_portfolio_reprocess_v15';
-    if (sessionStorage.getItem(key) || repairInFlight.current) return;
-    if (lookupAddresses.filter((w) => w.chain === 'solana').length === 0) return;
-    void (async () => {
-      const msg = await autoRepairLedger(
-        'Checking ledger against on-chain history — this can take up to a minute…'
-      );
-      if (msg != null) sessionStorage.setItem(key, '1');
-    })();
+    if (sessionStorage.getItem(key) || repairInFlight.current) {
+      setLedgerRepairOffered(false);
+      return;
+    }
+    setLedgerRepairOffered(lookupAddresses.filter((w) => w.chain === 'solana').length > 0);
   }, [lookupAddresses.length]);
+
+  const runLedgerRepairNow = async () => {
+    const key = 'sololedger_portfolio_reprocess_v15';
+    const msg = await autoRepairLedger(
+      'Checking ledger against on-chain history — this can take up to a minute…'
+    );
+    if (msg != null) sessionStorage.setItem(key, '1');
+    setLedgerRepairOffered(false);
+  };
 
   const nonSpamTxs = useMemo(
     () => transactions.filter((t) => !t.isSpam),
@@ -391,6 +401,22 @@ export function PortfolioTab() {
           <Button variant="secondary" onClick={exportHoldingsPdf} className="text-xs">PDF</Button>
         </div>
       </div>
+
+      {ledgerRepairOffered && !repairingBalances && (
+        <div className="flex flex-col gap-3 rounded-lg border border-mist-600/40 bg-ink-800 px-4 py-3 text-sm text-mist-300 sm:flex-row sm:items-center sm:justify-between">
+          <p>
+            Solana wallets imported. Check your ledger against on-chain history to catch missing
+            swap legs and balance gaps (uses Solana RPC).
+          </p>
+          <Button
+            variant="secondary"
+            onClick={() => void runLedgerRepairNow()}
+            className="shrink-0 text-xs"
+          >
+            Check ledger against chain
+          </Button>
+        </div>
+      )}
 
       {(repairingBalances ||
         (balanceVariances.length > 0 && selectedFy == null && crossCheckModeUsesLiveRpc(crossCheckMode))) && (

@@ -1,4 +1,5 @@
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const COINGECKO_BASE = 'https://api.coingecko.com/api/v3';
 
@@ -19,6 +20,8 @@ export async function fetchCoinGeckoTokenSymbol(
 
   try {
     const addr = platform === 'solana' ? contractAddress : contractAddress.toLowerCase();
+    // Direct CoinGecko public API call (only reached after the cache miss above).
+    recordNetworkActivity(resolveMode(false));
     const res = await fetch(`${COINGECKO_BASE}/coins/${platform}/contract/${addr}`);
     if (!res.ok) return null;
     const data = await res.json();

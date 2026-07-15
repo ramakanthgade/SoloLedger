@@ -10,6 +10,7 @@
 
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const BIRDEYE_BASE = 'https://public-api.birdeye.so';
 
@@ -34,6 +35,7 @@ export async function fetchBirdeyeHistoricalPrice(
   const url = isSaasMode() ? `${getApiBase()}/api/proxy/birdeye/${path}` : `${BIRDEYE_BASE}/${path}`;
 
   try {
+    recordNetworkActivity(resolveMode(isSaasMode()));
     const res = isSaasMode()
       ? await saasProxyFetch(`/api/proxy/birdeye/${path}`)
       : await fetch(url, {

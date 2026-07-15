@@ -13,6 +13,8 @@
  * It is completely free — no Jupiter subscription needed.
  */
 
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
+
 const JUPITER_RECURRING = 'https://api.jup.ag/recurring/v1';
 
 /** One executed fill in a DCA order. */
@@ -63,6 +65,8 @@ export async function fetchJupiterRecurringHistory(
     const url =
       `${JUPITER_RECURRING}/getRecurringOrders` +
       `?user=${walletAddress}&orderStatus=history&recurringType=time&page=1`;
+    // Jupiter's free API is called directly — no key, no SaaS proxy.
+    recordNetworkActivity(resolveMode(false));
     const res = await fetch(url, { headers: { accept: 'application/json' } });
     if (!res.ok) return empty;
     const data = await res.json();

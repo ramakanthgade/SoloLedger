@@ -16,6 +16,7 @@
 import type { TxType } from '@/types/transaction';
 import { isSaasMode } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const NOVES_BASE = 'https://translate.noves.fi';
 
@@ -154,6 +155,7 @@ async function fetchNovesTx(
     const proxyPath = isSaasMode()
       ? `/api/proxy/noves/${isSolana ? `solana/tx/${txHash}` : `evm/${novesChain}/tx/${txHash}`}${walletAddress ? `?viewAsAccountAddress=${walletAddress}` : ''}`
       : null;
+    recordNetworkActivity(resolveMode(Boolean(proxyPath)));
     const res = proxyPath
       ? await saasProxyFetch(proxyPath)
       : await fetch(url, { headers: { apiKey } });
