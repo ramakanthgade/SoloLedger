@@ -11,9 +11,9 @@ import {
 } from './store.js';
 import { getPlanTxLimit, UNLIMITED_TX, type PlanId } from './plans.js';
 
-const DEV_JWT_SECRET = 'dev-only-change-me';
+export const DEV_JWT_SECRET = 'dev-only-change-me';
 
-function resolveJwtSecret(): string {
+export function resolveJwtSecret(): string {
   const configured = process.env.JWT_SECRET?.trim();
   const isProduction = process.env.NODE_ENV === 'production';
   const isInsecure = !configured || configured === DEV_JWT_SECRET;

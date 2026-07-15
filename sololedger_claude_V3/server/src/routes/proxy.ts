@@ -25,7 +25,7 @@ function requireActiveSubscription(req: AuthedRequest, res: Response): boolean {
   return true;
 }
 
-async function forward(
+export async function forward(
   targetUrl: string,
   req: Request,
   res: Response,

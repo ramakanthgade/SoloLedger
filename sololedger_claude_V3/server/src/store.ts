@@ -72,23 +72,23 @@ const ENC_PREFIX = 'SLENC1:';
 const IV_BYTES = 12;
 const TAG_BYTES = 16;
 
-function decodeKey(raw: string): Buffer {
+/** Decode a 32-byte key from a hex (64 chars) or base64 string. */
+export function decodeKey(raw: string): Buffer {
   const trimmed = raw.trim();
   // Try hex first (64 chars), then base64.
   if (/^[0-9a-fA-F]{64}$/.test(trimmed)) {
     return Buffer.from(trimmed, 'hex');
   }
-  const buf = Buffer.from(trimmed, 'base64');
-  return buf;
+  return Buffer.from(trimmed, 'base64');
 }
 
 /**
  * Resolve the AES-256 key from DATA_ENCRYPTION_KEY.
  * Returns null when no key is configured in a non-production environment
  * (plaintext fallback). Throws on missing key in production or on any
- * present-but-invalid key.
+ * present-but-invalid key. Reads process.env live so it is testable in isolation.
  */
-function resolveEncryptionKey(): Buffer | null {
+export function resolveEncryptionKey(): Buffer | null {
   const raw = process.env.DATA_ENCRYPTION_KEY?.trim();
   const isProduction = process.env.NODE_ENV === 'production';
 
@@ -99,13 +99,10 @@ function resolveEncryptionKey(): Buffer | null {
           '(base64 or hex) to encrypt the data store at rest.'
       );
     }
-    if (!plaintextWarningShown) {
-      console.warn(
-        '[store] DATA_ENCRYPTION_KEY is not set — data store will be written in ' +
-          'PLAINTEXT. Set a 32-byte key (base64 or hex) before deploying to production.'
-      );
-      plaintextWarningShown = true;
-    }
+    console.warn(
+      '[store] DATA_ENCRYPTION_KEY is not set — data store will be written in ' +
+        'PLAINTEXT. Set a 32-byte key (base64 or hex) before deploying to production.'
+    );
     return null;
   }
 
@@ -119,20 +116,19 @@ function resolveEncryptionKey(): Buffer | null {
   return key;
 }
 
-let plaintextWarningShown = false;
 const ENCRYPTION_KEY = resolveEncryptionKey();
 
-function encryptData(plaintext: string): string {
-  if (!ENCRYPTION_KEY) return plaintext;
+export function encryptData(plaintext: string, key: Buffer | null = ENCRYPTION_KEY): string {
+  if (!key) return plaintext;
   const iv = crypto.randomBytes(IV_BYTES);
-  const cipher = crypto.createCipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
   const encrypted = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
   const tag = cipher.getAuthTag();
   return ENC_PREFIX + Buffer.concat([iv, tag, encrypted]).toString('base64');
 }
 
-function decryptData(contents: string): string {
-  if (!ENCRYPTION_KEY) {
+export function decryptData(contents: string, key: Buffer | null = ENCRYPTION_KEY): string {
+  if (!key) {
     throw new Error(
       'Data store is encrypted but DATA_ENCRYPTION_KEY is not set (or invalid). ' +
         'Provide the key that was used to encrypt it.'
@@ -142,10 +138,17 @@ function decryptData(contents: string): string {
   const iv = payload.subarray(0, IV_BYTES);
   const tag = payload.subarray(IV_BYTES, IV_BYTES + TAG_BYTES);
   const encrypted = payload.subarray(IV_BYTES + TAG_BYTES);
-  const decipher = crypto.createDecipheriv('aes-256-gcm', ENCRYPTION_KEY, iv);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', key, iv);
   decipher.setAuthTag(tag);
   const decrypted = Buffer.concat([decipher.update(encrypted), decipher.final()]);
   return decrypted.toString('utf8');
+}
+
+/** Atomically write the store file (encrypted if a key is configured) via temp-file + rename. */
+function writeStoreFile(plaintextJson: string): void {
+  const tmp = `${STORE_FILE}.${process.pid}.${Date.now()}.tmp`;
+  fs.writeFileSync(tmp, encryptData(plaintextJson));
+  fs.renameSync(tmp, STORE_FILE);
 }
 
 function readStoreFile(): StoreData {
@@ -153,15 +156,21 @@ function readStoreFile(): StoreData {
   if (contents.startsWith(ENC_PREFIX)) {
     return JSON.parse(decryptData(contents)) as StoreData;
   }
-  // Plaintext (legacy / dev). Loaded as-is; re-written encrypted on next save.
-  return JSON.parse(contents) as StoreData;
+  // Legacy plaintext store. Load it, and if a key is configured, immediately
+  // re-write it encrypted so secrets (API keys, password hashes, Stripe IDs)
+  // do not linger in plaintext until the next incidental save.
+  const data = JSON.parse(contents) as StoreData;
+  if (ENCRYPTION_KEY) {
+    writeStoreFile(JSON.stringify(data, null, 2));
+  }
+  return data;
 }
 
 function ensureStore(): StoreData {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(STORE_FILE)) {
     const initial: StoreData = { users: [], serverConfig: { ...DEFAULT_CONFIG }, apiKeys: {} };
-    fs.writeFileSync(STORE_FILE, encryptData(JSON.stringify(initial, null, 2)));
+    writeStoreFile(JSON.stringify(initial, null, 2));
     return initial;
   }
   return readStoreFile();
@@ -175,7 +184,7 @@ function migrateStore(data: StoreData): StoreData {
 let cache: StoreData = migrateStore(ensureStore());
 
 function persist(): void {
-  fs.writeFileSync(STORE_FILE, encryptData(JSON.stringify(cache, null, 2)));
+  writeStoreFile(JSON.stringify(cache, null, 2));
 }
 
 export function getStore(): StoreData {
