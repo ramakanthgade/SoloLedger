@@ -6,7 +6,7 @@ import {
   type PriceCacheRow,
   type CsvImportRow
 } from './db';
-import type { Transaction, Lot, Disposal } from '@/types/transaction';
+import type { Transaction, Lot, Disposal, TaxSettings } from '@/types/transaction';
 
 /**
  * Backup file format.
@@ -142,7 +142,8 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
         db.specIdHints.clear(),
         db.lookupAddresses.clear(),
         db.priceCache.clear(),
-        db.csvImports.clear()
+        db.csvImports.clear(),
+        db.settings.clear()
       ]);
 
       await db.transactions.bulkPut(parsed.transactions);
@@ -153,7 +154,12 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
       await db.priceCache.bulkPut(priceCache);
       await db.csvImports.bulkPut(csvImports);
 
-      await db.settings.put({ id: 'singleton', ...parsed.settings });
+      // Ignore any `id` carried in the imported settings so it can't override the
+      // singleton key and leave the restored settings orphaned under a stray row.
+      const { id: _ignoredId, ...settingsWithoutId } = parsed.settings as TaxSettings & {
+        id?: string;
+      };
+      await db.settings.put({ ...settingsWithoutId, id: 'singleton' });
     }
   );
 

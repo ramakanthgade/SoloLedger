@@ -25,6 +25,9 @@ export function SettingsTab() {
   const runRestore = async (file: File) => {
     try {
       const { imported } = await importFullBackup(file);
+      // Restore replaced the settings row in IndexedDB — refresh the mounted UI
+      // state so a later toggle doesn't overwrite the just-restored settings.
+      setSettings(await getEffectiveSettings());
       setRestoreStatus({ kind: 'success', message: `Restored ${imported} transactions.` });
     } catch (err) {
       setRestoreStatus({
@@ -291,6 +294,9 @@ export function SettingsTab() {
                   variant="danger"
                   onClick={async () => {
                     await clearAllData();
+                    // clearAllData resets settings to defaults in IndexedDB —
+                    // refresh the mounted UI state to match.
+                    setSettings(await getEffectiveSettings());
                     setConfirmDelete(false);
                   }}
                 >
