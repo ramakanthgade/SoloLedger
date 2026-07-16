@@ -32,6 +32,7 @@ import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { SkeletonTable } from '@/components/ui/Skeleton';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
+import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
@@ -469,16 +470,24 @@ export function PortfolioTab() {
           </p>
           <p className="mt-1 text-[0.6875rem] text-low">FIFO · current FY</p>
         </div>
-        {/* T4 stub: replace with <TaxEstimateCard/> when Task T4 lands. */}
-        <div className="stat-card min-w-0" data-t4-stub="tax-estimate">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
-            Est. tax — {getFyLabel(currentFy, jurisdiction)}
-          </p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures text-warn sm:text-xl">
-            {formatCurrency(estimatedFyTax, reportingCurrency)}
-          </p>
-          <p className="mt-1 text-[0.6875rem] text-low">30% + 4% cess estimate (stub)</p>
-        </div>
+        {jurisdiction === 'IN' ? (
+          <TaxEstimateCard
+            variant="kpi"
+            taxableGains={realizedFyGain}
+            fy={currentFy}
+            currency={reportingCurrency}
+          />
+        ) : (
+          <div className="stat-card min-w-0">
+            <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
+              Est. tax — {getFyLabel(currentFy, jurisdiction)}
+            </p>
+            <p className="mt-2 font-mono text-lg font-semibold tabular-figures text-warn sm:text-xl">
+              {formatCurrency(estimatedFyTax, reportingCurrency)}
+            </p>
+            <p className="mt-1 text-[0.6875rem] text-low">30% + 4% cess estimate</p>
+          </div>
+        )}
       </div>
 
       <div className="flex flex-wrap items-center gap-2">

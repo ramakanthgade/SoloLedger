@@ -22,6 +22,9 @@ import {
 import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 import { aggregateTds } from '@/lib/tax/tds';
 import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/scheduleVDA';
+import { ScheduleVdaView } from '@/components/reports/ScheduleVdaView';
+import { TdsReconciliationView } from '@/components/reports/TdsReconciliationView';
+import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
 
 export function ReportsTab() {
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
@@ -104,19 +107,25 @@ export function ReportsTab() {
   const yearLabel = getFyLabel(year, jurisdiction);
   const isIndia = jurisdiction === 'IN';
 
+  // India TDS reconciliation (Task B3): FY-scoped Section 194S aggregation used
+  // by both the Schedule VDA estimate (offset) and the TDS reconciliation view.
+  const tdsReconciliation = useMemo(
+    () => (isIndia ? aggregateTds(transactions, year, jurisdiction) : null),
+    [isIndia, transactions, year, jurisdiction]
+  );
+
   // India Schedule VDA (Task B4): per-transfer row model + 30%+cess estimate
   // with the Section 194S TDS total shown as an offset. IN-only.
   const scheduleVda = useMemo(() => {
-    if (!isIndia) return null;
-    const tds = aggregateTds(transactions, year, jurisdiction);
+    if (!isIndia || !tdsReconciliation) return null;
     return buildScheduleVdaReport(
       matchedRows,
-      tds.totalTdsInr,
+      tdsReconciliation.totalTdsInr,
       year,
       jurisdiction,
       summary.vdaReceiptIncome
     );
-  }, [isIndia, transactions, matchedRows, year, jurisdiction, summary.vdaReceiptIncome]);
+  }, [isIndia, tdsReconciliation, matchedRows, year, jurisdiction, summary.vdaReceiptIncome]);
 
   const years = useMemo(
     () =>
@@ -306,11 +315,25 @@ export function ReportsTab() {
             <option key={j.code} value={j.code}>{j.label}</option>
           ))}
         </select>
-        <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="sl-select">
-          {years.map((y) => (
-            <option key={y} value={y}>{getFyLabel(y, jurisdiction)}</option>
-          ))}
-        </select>
+        <label className="flex flex-col gap-1">
+          <span className="flex items-center gap-1 text-[0.625rem] font-semibold uppercase tracking-wider text-low">
+            {isIndia ? 'Financial Year (Apr–Mar)' : 'Tax year'}
+            {isIndia && (
+              <span
+                className="cursor-help text-low"
+                title="India's financial year runs 1 Apr – 31 Mar. Transactions are bucketed by their date in Indian Standard Time (IST, UTC+5:30) — a trade near midnight IST on 31 Mar / 1 Apr falls in the FY of its IST calendar date, not its UTC date."
+                aria-label="Financial year boundary information"
+              >
+                ⓘ
+              </span>
+            )}
+          </span>
+          <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="sl-select">
+            {years.map((y) => (
+              <option key={y} value={y}>{getFyLabel(y, jurisdiction)}</option>
+            ))}
+          </select>
+        </label>
         <select value={method} onChange={(e) => setMethod(e.target.value as 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID')} className="sl-select">
           <option value="FIFO">FIFO</option>
           <option value="LIFO">LIFO</option>
@@ -474,28 +497,34 @@ export function ReportsTab() {
       )}
 
       {isIndia && scheduleVda && (
-        <Card>
-          <CardHeader>
-            <CardTitle>Schedule VDA — {yearLabel}</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p className="text-sm leading-relaxed text-low">
-              {scheduleVda.rows.length} VDA transfer(s) reported per Section 115BBH. Estimated
-              liability (30% + 4% cess) on {formatCurrency(scheduleVda.estimate.taxableGains, rules.currency)} taxable gains
-              is {formatCurrency(scheduleVda.estimate.estimatedLiability, rules.currency)}; less TDS withheld (Section 194S) {formatCurrency(scheduleVda.estimate.tdsOffset, rules.currency)},
-              net {formatCurrency(scheduleVda.estimate.netAfterTdsOffset, rules.currency)}.
-            </p>
-            {scheduleVda.vdaReceiptIncome != null && scheduleVda.vdaReceiptIncome > 0 && (
-              <p className="mt-2 text-sm leading-relaxed text-low">
-                VDA receipt income (Section 56(2)(x), taxed at slab rate — separate): {formatCurrency(scheduleVda.vdaReceiptIncome, rules.currency)}.
-              </p>
-            )}
-            <div className="mt-4 flex flex-wrap items-center gap-3">
-              <Button variant="secondary" size="sm" onClick={exportScheduleVdaCsv}>Download Schedule VDA CSV</Button>
-              <Badge tone="neutral">Non-advice estimate — verify with your CA</Badge>
-            </div>
-          </CardContent>
-        </Card>
+        <TaxEstimateCard
+          variant="panel"
+          taxableGains={scheduleVda.estimate.taxableGains}
+          tdsWithheld={scheduleVda.estimate.tdsOffset}
+          receiptIncome={scheduleVda.vdaReceiptIncome}
+          fy={year}
+          currency={rules.currency}
+        />
+      )}
+
+      {isIndia && scheduleVda && (
+        <ScheduleVdaView
+          report={scheduleVda}
+          matchedRows={matchedRows}
+          transactions={transactions}
+          fy={year}
+          jurisdiction={jurisdiction}
+          currency={rules.currency}
+        />
+      )}
+
+      {isIndia && tdsReconciliation && (
+        <TdsReconciliationView
+          reconciliation={tdsReconciliation}
+          fy={year}
+          jurisdiction={jurisdiction}
+          currency={rules.currency}
+        />
       )}
 
       <Card>
