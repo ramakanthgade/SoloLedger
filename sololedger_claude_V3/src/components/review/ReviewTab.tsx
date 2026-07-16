@@ -17,7 +17,9 @@ import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2 } from 'lucide-react';
+import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2, ListChecks } from 'lucide-react';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { useTabNav } from '@/lib/tabNav';
 import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
@@ -274,6 +276,7 @@ export function ReviewTab() {
   const [resolvingSymbols, setResolvingSymbols] = useState(false);
   const [novesProgress, setNovesProgress] = useState<{ done: number; total: number } | null>(null);
 
+  const { goToImport } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
 
@@ -638,9 +641,13 @@ export function ReviewTab() {
           <h2 className="page-title">Review</h2>
           <p className="mt-1 text-sm text-low">Give each transaction a quick once-over before you file.</p>
         </div>
-        <div className="rounded-lg border-2 border-dashed border-white/10 bg-elev-2 px-6 py-14 text-center text-sm text-low">
-          No transactions yet — import a CSV or add one manually to get started.
-        </div>
+        <EmptyState
+          icon={<ListChecks className="h-11 w-11" />}
+          title="No transactions to review"
+          description="This is where you'll check what we read — matched transfers, filled-in prices, and anything that needs a second look before it counts."
+          actionLabel="Import your trades"
+          onAction={goToImport}
+        />
       </div>
     );
   }

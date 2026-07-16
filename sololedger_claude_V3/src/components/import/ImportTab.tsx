@@ -23,9 +23,11 @@ import { Upload, FileCheck2, AlertTriangle, CheckCircle2, Trash2, Loader2 } from
 import { ColumnMappingForm } from './ColumnMappingForm';
 import { ManualEntryForm } from './ManualEntryForm';
 import { WalletLookupPanel } from './WalletLookupPanel';
+import { ConnectionWizard } from './ConnectionWizard';
+import { EmptyState } from '@/components/ui/EmptyState';
 import { cn } from '@/lib/utils';
 
-type Mode = 'csv' | 'manual' | 'wallet';
+type Mode = 'guided' | 'csv' | 'manual' | 'wallet';
 
 const SUPPORTED = [
   { id: 'coinbase', label: 'Coinbase', guide: 'Settings → Reports → Generate custom report → Transaction history CSV' },
@@ -40,6 +42,7 @@ const SUPPORTED = [
 ];
 
 export function ImportTab() {
+  const transactionCount = useLiveQuery(() => db.transactions.count(), []) ?? 0;
   const [mode, setMode] = useState<Mode>('csv');
   const [outcome, setOutcome] = useState<FileParseOutcome | null>(null);
   const [fileName, setFileName] = useState<string>('');
@@ -261,6 +264,7 @@ export function ImportTab() {
   };
 
   const modes: { id: Mode; label: string }[] = [
+    { id: 'guided', label: 'Guided import' },
     { id: 'csv', label: 'File upload' },
     { id: 'manual', label: 'Manual entry' },
     { id: 'wallet', label: 'Wallet lookup' }
@@ -289,6 +293,19 @@ export function ImportTab() {
           </button>
         ))}
       </div>
+
+      {transactionCount === 0 && mode !== 'guided' && (
+        <EmptyState
+          icon={<Upload className="h-11 w-11" />}
+          title="No transactions yet"
+          description="Bring your trades in once and Portfolio, Capital Gains and Reports all fill themselves in. The guided import walks you through exporting from your exchange."
+          actionLabel="Import your first file"
+          onAction={() => setMode('guided')}
+          hint="Nothing has left your device."
+        />
+      )}
+
+      {mode === 'guided' && <ConnectionWizard />}
 
       {mode === 'csv' && (
         <>

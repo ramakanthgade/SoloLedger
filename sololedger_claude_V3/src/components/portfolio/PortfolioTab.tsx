@@ -31,6 +31,9 @@ import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { SkeletonTable } from '@/components/ui/Skeleton';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { useTabNav } from '@/lib/tabNav';
+import { PieChart } from 'lucide-react';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
@@ -61,6 +64,7 @@ async function runPortfolioLedgerRepairs(): Promise<string> {
 }
 
 export function PortfolioTab() {
+  const { goToImport } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const [reportingCurrency, setReportingCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
@@ -375,6 +379,25 @@ export function PortfolioTab() {
     });
     doc.save('sololedger-portfolio-holdings.pdf');
   };
+
+  if (transactions.length === 0) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Portfolio"
+          subtitle="Holdings and cost basis from your transaction history. Import all wallets for a complete picture."
+        />
+        <EmptyState
+          icon={<PieChart className="h-11 w-11" />}
+          title="Your portfolio is empty"
+          description="Once your trades are in, you'll see every holding, its value in ₹, and your unrealized gains — all in one place."
+          actionLabel="Import your trades"
+          onAction={goToImport}
+          hint="Nothing has left your device."
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

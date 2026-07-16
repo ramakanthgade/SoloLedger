@@ -1,7 +1,11 @@
 import { useEffect, useRef, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { LocalOnlyBadge } from '@/components/LocalOnlyBadge';
 import { BrandLogo } from '@/components/BrandLogo';
-import { deduplicateTransactions } from '@/lib/storage/db';
+import { db, deduplicateTransactions } from '@/lib/storage/db';
+import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow';
+import { shouldShowOnboarding } from '@/components/onboarding/onboardingPredicate';
+import { TabNavProvider } from '@/lib/tabNav';
 import { ImportTab } from '@/components/import/ImportTab';
 import { ReviewTab } from '@/components/review/ReviewTab';
 import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
@@ -58,6 +62,13 @@ function MainApp() {
   const [deduping, setDeduping] = useState(false);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
+  // First-run onboarding gate (Task T3): show onboarding whenever the local
+  // ledger is empty (0 transactions), not behind a one-time flag — so a
+  // returning-but-empty user still gets help. `onboardingDismissed` lets a user
+  // who exits the flow without importing reach the main app for this session.
+  const txCount = useLiveQuery(() => db.transactions.count(), []);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+
   useEffect(() => {
     const key = `sololedger_dedup_session_${user?.id ?? 'local'}`;
     if (sessionStorage.getItem(key)) return;
@@ -85,7 +96,12 @@ function MainApp() {
     return <LoadingScreen message="Loading your workspace…" />;
   }
 
+  if (!onboardingDismissed && shouldShowOnboarding(txCount)) {
+    return <OnboardingFlow onDone={() => setOnboardingDismissed(true)} />;
+  }
+
   return (
+    <TabNavProvider value={{ goToImport: () => setActive('import') }}>
     <div className="min-h-screen bg-base" key={user?.id ?? 'guest'}>
       <header className="border-b border-white/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
@@ -178,6 +194,7 @@ function MainApp() {
 
       <AiAdvisor />
     </div>
+    </TabNavProvider>
   );
 }
 

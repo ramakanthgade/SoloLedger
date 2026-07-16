@@ -1,0 +1,662 @@
+import { useCallback, useMemo, useReducer, useState } from 'react';
+import {
+  Upload,
+  FileText,
+  Check,
+  ChevronRight,
+  AlertTriangle,
+  ShieldCheck,
+  Loader2,
+  ArrowLeft
+} from 'lucide-react';
+import {
+  parseImportFile,
+  isSpreadsheetFile,
+  type FileParseOutcome
+} from '@/lib/parsers';
+import { parseWithMapping } from '@/lib/parsers/generic';
+import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
+import {
+  db,
+  getSettings,
+  hashFileContent,
+  upsertCsvImport,
+  countCsvImportTransactions,
+  deduplicateTransactions
+} from '@/lib/storage/db';
+import { convertTransactionsToReportingCurrency } from '@/lib/pricing/fiatConvert';
+import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { normalizeFiatMagnitude } from '@/lib/parsers/types';
+import { formatCurrency, formatDateTime } from '@/lib/utils';
+import type { Transaction } from '@/types/transaction';
+import { cn } from '@/lib/utils';
+import { Button } from '@/components/ui/button';
+import {
+  IMPORT_SOURCES,
+  getImportSource,
+  type ImportSource
+} from './importSources';
+import {
+  wizardReducer,
+  initialWizardState,
+  WIZARD_STEP_ORDER,
+  type WizardStep
+} from './wizardReducer';
+
+interface ConnectionWizardProps {
+  /** Called after transactions are confirmed and persisted. */
+  onComplete?: (savedCount: number) => void;
+  /** Called if the user backs out of the wizard entirely (from step 1). */
+  onExit?: () => void;
+}
+
+/** A parsed, not-yet-persisted preview of a dropped file. */
+interface PreviewData {
+  transactions: Transaction[];
+  parserId: string | null;
+  hash: string;
+  fileName: string;
+  fileSize: number;
+  warnings: string[];
+  /** Rows missing a fiat value — surfaced so the user knows before confirming. */
+  missingPriceCount: number;
+  distinctAssets: number;
+  tdsTotalInr: number;
+  /** True when AI mapping was applied but not every required field resolved. */
+  aiIncomplete: boolean;
+}
+
+const STEP_LABELS: Record<WizardStep, string> = {
+  pick: 'Pick exchange',
+  instructions: 'Export steps',
+  upload: 'Upload file',
+  preview: 'Preview & confirm'
+};
+
+function Stepper({ current }: { current: WizardStep }) {
+  const currentIndex = WIZARD_STEP_ORDER.indexOf(current);
+  return (
+    <div className="flex items-center" data-testid="wizard-stepper">
+      {WIZARD_STEP_ORDER.map((step, i) => {
+        const state = i < currentIndex ? 'done' : i === currentIndex ? 'active' : 'todo';
+        return (
+          <div key={step} className="flex flex-1 items-center last:flex-none">
+            <div className="flex items-center gap-2.5">
+              <div
+                className={cn(
+                  'grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-bold',
+                  state === 'done' && 'border border-gain/40 bg-gain/15 text-gain',
+                  state === 'active' && 'bg-aurora text-[#0A0B1A] shadow-glow',
+                  state === 'todo' && 'border border-white/10 bg-elev-2 text-low'
+                )}
+              >
+                {state === 'done' ? <Check className="h-4 w-4" /> : i + 1}
+              </div>
+              <div className="hidden sm:block">
+                <div className="font-mono text-[10px] font-semibold uppercase tracking-wider text-low">
+                  Step {i + 1}
+                </div>
+                <div
+                  className={cn(
+                    'text-[13px] font-bold',
+                    state === 'active' ? 'text-hi' : 'text-mid'
+                  )}
+                >
+                  {STEP_LABELS[step]}
+                </div>
+              </div>
+            </div>
+            {i < WIZARD_STEP_ORDER.length - 1 && (
+              <div
+                className={cn(
+                  'mx-3 h-0.5 flex-1',
+                  i < currentIndex ? 'bg-gradient-to-r from-gain to-violet' : 'bg-white/10'
+                )}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function SourceTile({
+  source,
+  chosen,
+  onChoose
+}: {
+  source: ImportSource;
+  chosen: boolean;
+  onChoose: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onChoose}
+      className={cn(
+        'flex w-full items-center gap-3 rounded-[10px] border px-3 py-2.5 text-left transition-colors',
+        chosen
+          ? 'border-gain/50 bg-gain/[0.06]'
+          : 'border-white/10 bg-elev-3/50 hover:border-white/20'
+      )}
+    >
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-[11px] font-extrabold text-[#0A0B1A]">
+        {source.monogram}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-sm font-bold text-hi">{source.label}</span>
+        <span className="block text-[10.5px] text-low">{source.formatHint}</span>
+      </span>
+      {chosen && <Check className="ml-auto h-4 w-4 shrink-0 text-gain" />}
+    </button>
+  );
+}
+
+export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) {
+  const [state, dispatch] = useReducer(wizardReducer, initialWizardState);
+  const [reading, setReading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savePhase, setSavePhase] = useState<'saving' | 'pricing' | null>(null);
+  const [preview, setPreview] = useState<PreviewData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [savedCount, setSavedCount] = useState<number | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  const source = useMemo(() => getImportSource(state.source), [state.source]);
+  const india = IMPORT_SOURCES.filter((s) => s.region === 'india');
+  const global = IMPORT_SOURCES.filter((s) => s.region === 'global');
+
+  // Build a preview WITHOUT persisting — this is C1's missing gate. Auto-detect
+  // parsers run first; if the format isn't recognized we fall back to AI mapping
+  // (when a key is set) but still show a preview instead of auto-saving.
+  const readFile = useCallback(async (file: File) => {
+    setError(null);
+    setSavedCount(null);
+    setReading(true);
+    try {
+      const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
+      const hash = await hashFileContent(hashInput);
+
+      const existing = await db.csvImports.get(hash);
+      if (existing) {
+        setError(`"${file.name}" was already imported. Remove it from the Import tab to re-import.`);
+        return;
+      }
+
+      const result: FileParseOutcome = await parseImportFile(file);
+      const settings = await getSettings();
+
+      let transactions = result.transactions;
+      let parserId = result.detectedParser;
+      const warnings = [...result.warnings];
+      let aiIncomplete = false;
+
+      // Format not directly recognized — try AI mapping for a preview only.
+      if (!result.detectedParser && result.rows.length > 0) {
+        if (settings.aiApiKey) {
+          try {
+            const suggestion = await suggestCsvMappingWithAi(
+              settings.aiApiKey,
+              result.headers,
+              result.rows,
+              settings.aiModel
+            );
+            if (!suggestion.valid) {
+              aiIncomplete = true;
+              warnings.push(
+                `AI could not confidently map: ${suggestion.missingFields.join(', ')}. Review the mapping on the Import tab before saving.`
+              );
+            }
+            const mapped = parseWithMapping(
+              result.rows,
+              {
+                timestamp: suggestion.mapping.timestamp ?? '',
+                type: suggestion.mapping.type ?? '',
+                asset: suggestion.mapping.asset ?? '',
+                amount: suggestion.mapping.amount ?? '',
+                totalValue: suggestion.mapping.totalValue,
+                pricePerUnit: suggestion.mapping.pricePerUnit,
+                fiatValue: suggestion.mapping.fiatValue,
+                fiatCurrency: suggestion.mapping.fiatCurrency,
+                feeAmount: suggestion.mapping.feeAmount,
+                feeAsset: suggestion.mapping.feeAsset,
+                assetIsTradingPair: suggestion.mapping.assetIsTradingPair,
+                typeValueMap: suggestion.mapping.typeValueMap ?? {}
+              },
+              settings.reportingCurrency
+            );
+            transactions = mapped.transactions;
+            parserId = 'ai_mapping';
+            warnings.push(
+              `AI mapped the columns (${suggestion.confidence} confidence): ${suggestion.explanation}`,
+              ...mapped.warnings
+            );
+          } catch {
+            warnings.push(
+              'This format was not recognized and AI mapping failed. Use the Import tab to map columns manually.'
+            );
+          }
+        } else {
+          warnings.push(
+            'This format was not recognized. Use the Import tab to map the columns manually.'
+          );
+        }
+      }
+
+      if (transactions.length === 0) {
+        setError(
+          'No transactions could be read from this file. Check you exported the right report, or map columns on the Import tab.'
+        );
+        return;
+      }
+
+      const distinctAssets = new Set(transactions.map((t) => t.asset)).size;
+      const missingPriceCount = transactions.filter(
+        (t) => t.fiatValue == null && !t.isInternalTransfer
+      ).length;
+      const tdsTotalInr = transactions.reduce((sum, t) => sum + (t.tdsInr ?? 0), 0);
+
+      setPreview({
+        transactions,
+        parserId,
+        hash,
+        fileName: file.name,
+        fileSize: file.size,
+        warnings,
+        missingPriceCount,
+        distinctAssets,
+        tdsTotalInr,
+        aiIncomplete
+      });
+      dispatch({ type: 'fileReady' });
+      dispatch({ type: 'preview' });
+    } finally {
+      setReading(false);
+    }
+  }, []);
+
+  const handleFiles = useCallback(
+    (fileList: FileList | null) => {
+      const file = fileList?.[0];
+      if (file) void readFile(file);
+    },
+    [readFile]
+  );
+
+  // Persist ONLY on explicit confirm — mirrors ImportTab's persist pipeline.
+  const confirmSave = useCallback(async () => {
+    if (!preview) return;
+    dispatch({ type: 'confirm' });
+    setSaving(true);
+    setSavePhase('saving');
+    try {
+      const settings = await getSettings();
+      const stamped = preview.transactions.map((t) => ({
+        ...t,
+        importBatchId: preview.hash,
+        source: t.source || preview.parserId || 'import',
+        fiatValue: normalizeFiatMagnitude(t.fiatValue),
+        feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
+      }));
+      const { transactions: converted } = await convertTransactionsToReportingCurrency(
+        stamped,
+        settings
+      );
+      await db.transactions.bulkPut(converted);
+      await deduplicateTransactions();
+      const count = await countCsvImportTransactions(preview.hash);
+      await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, count);
+
+      setSavePhase('pricing');
+      await fetchMissingPricesForAllTransactions(settings);
+
+      setSavedCount(preview.transactions.length);
+      onComplete?.(preview.transactions.length);
+    } finally {
+      setSaving(false);
+      setSavePhase(null);
+    }
+  }, [preview, onComplete]);
+
+  const previewRows = preview?.transactions.slice(0, 5) ?? [];
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="page-title">Let's bring your trades in — one step at a time</h2>
+        <p className="mt-1 max-w-2xl text-sm text-mid">
+          Pick your exchange, follow the export steps, drop in the file, and check the preview.
+          Everything is read right here in your browser — nothing is uploaded.
+        </p>
+      </div>
+
+      <Stepper current={state.step} />
+
+      {savedCount !== null ? (
+        <div className="flex items-center gap-2 rounded-xl border border-gain/30 bg-gain/10 px-4 py-3 text-sm text-gain">
+          <Check className="h-4 w-4 shrink-0" />
+          Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local ledger. Head to
+          Review to categorize them.
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-violet/30 bg-elev-2 p-5 shadow-card">
+          {/* ── STEP 1 · pick exchange ── */}
+          {state.step === 'pick' && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-extrabold text-hi">Which exchange?</h3>
+                <p className="mt-1 text-xs text-low">
+                  India's exchanges first. Pick one to start — you can add more later.
+                </p>
+              </div>
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-teal">
+                  India
+                  <span className="h-px flex-1 bg-gradient-to-r from-teal/40 to-transparent" />
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {india.map((s) => (
+                    <SourceTile
+                      key={s.id}
+                      source={s}
+                      chosen={state.source === s.id}
+                      onChoose={() => dispatch({ type: 'selectSource', source: s.id })}
+                    />
+                  ))}
+                </div>
+              </div>
+              <div>
+                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-low">
+                  Global
+                  <span className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {global.map((s) => (
+                    <SourceTile
+                      key={s.id}
+                      source={s}
+                      chosen={state.source === s.id}
+                      onChoose={() => dispatch({ type: 'selectSource', source: s.id })}
+                    />
+                  ))}
+                </div>
+              </div>
+              {onExit && (
+                <div className="pt-1">
+                  <Button variant="ghost" onClick={onExit}>
+                    <ArrowLeft className="h-4 w-4" /> Back
+                  </Button>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* ── STEP 2 · export instructions ── */}
+          {state.step === 'instructions' && source && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-xs font-extrabold text-[#0A0B1A]">
+                  {source.monogram}
+                </span>
+                <div>
+                  <h3 className="text-base font-extrabold text-hi">Export from {source.label}</h3>
+                  <p className="mt-0.5 text-xs text-low">
+                    Follow these steps, then come back and drop the file in.
+                  </p>
+                </div>
+              </div>
+              <ol className="space-y-2.5">
+                {source.steps.map((step, i) => (
+                  <li key={i} className="flex gap-3 text-sm text-mid">
+                    <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-violet/15 font-mono text-[11px] font-bold text-violet">
+                      {i + 1}
+                    </span>
+                    <span>{step}</span>
+                  </li>
+                ))}
+              </ol>
+              <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10.5px]">
+                {source.path.map((crumb, i) => (
+                  <span key={i} className="flex items-center gap-1.5">
+                    <span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-mid">
+                      {crumb}
+                    </span>
+                    {i < source.path.length - 1 && <span className="text-faint">›</span>}
+                  </span>
+                ))}
+              </div>
+              {source.note && (
+                <p className="rounded-lg border border-teal/20 bg-teal/[0.06] px-3 py-2 text-xs text-mid">
+                  {source.note}
+                </p>
+              )}
+              <div className="flex gap-3 pt-1">
+                <Button variant="ghost" onClick={() => dispatch({ type: 'back' })}>
+                  <ArrowLeft className="h-4 w-4" /> Change exchange
+                </Button>
+                <Button className="flex-1" onClick={() => dispatch({ type: 'advance' })}>
+                  I've got my file <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {/* ── STEP 3 · upload ── */}
+          {state.step === 'upload' && source && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-extrabold text-hi">Drop in your {source.label} file</h3>
+                <p className="mt-1 text-xs text-low">
+                  CSV or Excel. It's read right here — nothing is uploaded to us.
+                </p>
+              </div>
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setDragOver(true);
+                }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setDragOver(false);
+                  handleFiles(e.dataTransfer.files);
+                }}
+                className={cn(
+                  'flex flex-col items-center justify-center rounded-xl border-[1.5px] border-dashed px-6 py-12 text-center transition-colors',
+                  dragOver ? 'border-violet bg-violet/10' : 'border-violet/50 bg-violet/5'
+                )}
+              >
+                {reading ? (
+                  <>
+                    <Loader2 className="mb-3 h-6 w-6 animate-spin text-violet" />
+                    <p className="text-sm text-mid">Reading and previewing your file…</p>
+                  </>
+                ) : (
+                  <>
+                    <div className="mb-3 grid h-12 w-12 place-items-center rounded-xl bg-violet/15 text-violet">
+                      <Upload className="h-6 w-6" />
+                    </div>
+                    <h4 className="text-sm font-bold text-hi">
+                      Drag &amp; drop your {source.label} file
+                    </h4>
+                    <p className="mt-1 text-xs text-low">CSV or XLSX</p>
+                    <label className="mt-4">
+                      <input
+                        type="file"
+                        accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                        className="hidden"
+                        onChange={(e) => {
+                          handleFiles(e.target.files);
+                          e.target.value = '';
+                        }}
+                      />
+                      <span className="cursor-pointer rounded-[10px] bg-aurora px-4 py-2 text-sm font-bold text-[#0A0B1A] shadow-glow">
+                        Browse files
+                      </span>
+                    </label>
+                  </>
+                )}
+              </div>
+
+              {error && (
+                <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2.5 text-xs text-warn">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
+
+              <div className="flex items-start gap-3 rounded-lg border border-gain/20 bg-gain/[0.06] px-3 py-3">
+                <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-gain/15 text-gain">
+                  <ShieldCheck className="h-4 w-4" />
+                </span>
+                <div>
+                  <h5 className="text-xs font-bold text-hi">This stays 100% local</h5>
+                  <p className="mt-0.5 text-xs text-mid">
+                    Your file is parsed in this browser and never sent to SoloLedger — the badge up
+                    top stays green.
+                  </p>
+                </div>
+              </div>
+
+              <Button variant="ghost" onClick={() => dispatch({ type: 'back' })}>
+                <ArrowLeft className="h-4 w-4" /> Back
+              </Button>
+            </div>
+          )}
+
+          {/* ── STEP 4 · preview & confirm ── */}
+          {state.step === 'preview' && preview && (
+            <div className="space-y-4">
+              <div>
+                <h3 className="text-base font-extrabold text-hi">Check it, then confirm</h3>
+                <p className="mt-1 text-xs text-low">
+                  We mapped the columns for you. Nothing saves to your ledger until you confirm.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-2">
+                <div className="min-w-[80px] flex-1 rounded-lg border border-white/10 bg-elev-1 px-3 py-2">
+                  <div className="font-mono text-lg font-bold text-hi">
+                    {preview.transactions.length}
+                  </div>
+                  <div className="text-[10px] text-low">transactions</div>
+                </div>
+                <div className="min-w-[80px] flex-1 rounded-lg border border-white/10 bg-elev-1 px-3 py-2">
+                  <div className="font-mono text-lg font-bold text-hi">{preview.distinctAssets}</div>
+                  <div className="text-[10px] text-low">assets</div>
+                </div>
+                {preview.tdsTotalInr > 0 && (
+                  <div className="min-w-[80px] flex-1 rounded-lg border border-white/10 bg-elev-1 px-3 py-2">
+                    <div className="font-mono text-lg font-bold text-hi">
+                      {formatCurrency(preview.tdsTotalInr, 'INR')}
+                    </div>
+                    <div className="text-[10px] text-low">TDS found</div>
+                  </div>
+                )}
+              </div>
+
+              <div>
+                <span className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-low">
+                  First few rows
+                </span>
+                <div className="overflow-x-auto rounded-lg border border-white/10">
+                  <table className="w-full border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-white/10">
+                        <th className="px-3 py-2 font-mono text-[9px] font-semibold uppercase tracking-wide text-low">
+                          Date
+                        </th>
+                        <th className="px-3 py-2 font-mono text-[9px] font-semibold uppercase tracking-wide text-low">
+                          Type
+                        </th>
+                        <th className="px-3 py-2 font-mono text-[9px] font-semibold uppercase tracking-wide text-low">
+                          Asset
+                        </th>
+                        <th className="px-3 py-2 text-right font-mono text-[9px] font-semibold uppercase tracking-wide text-low">
+                          Value
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {previewRows.map((t) => (
+                        <tr key={t.id} className="border-b border-white/[0.04]">
+                          <td className="px-3 py-2 font-mono text-[11px] text-mid">
+                            {formatDateTime(t.timestamp).slice(0, 10)}
+                          </td>
+                          <td className="px-3 py-2 text-[11px]">
+                            <span className="rounded-full bg-elev-3 px-2 py-0.5 text-[9px] font-bold text-mid">
+                              {t.type}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2 text-[11px] text-mid">{t.asset}</td>
+                          <td className="px-3 py-2 text-right font-mono text-[11px] text-hi">
+                            {t.fiatValue != null
+                              ? formatCurrency(t.fiatValue, t.fiatCurrency)
+                              : '—'}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {preview.missingPriceCount > 0 && (
+                <div className="flex items-start gap-2 rounded-lg border border-warn/25 bg-warn/[0.08] px-3 py-2.5 text-xs text-mid">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+                  <span>
+                    {preview.missingPriceCount} row
+                    {preview.missingPriceCount === 1 ? ' is' : 's are'} missing a price. We'll flag
+                    them in Review so you can fill them in — they won't be lost.
+                  </span>
+                </div>
+              )}
+
+              {preview.warnings.slice(0, 4).map((w, i) => (
+                <div
+                  key={i}
+                  className="flex items-start gap-2 rounded-sm bg-warn/5 px-3 py-2 text-xs text-warn"
+                >
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{w}</span>
+                </div>
+              ))}
+
+              <div className="flex gap-3 pt-1">
+                <Button
+                  variant="ghost"
+                  disabled={saving}
+                  onClick={() => {
+                    setPreview(null);
+                    dispatch({ type: 'clearFile' });
+                  }}
+                >
+                  <ArrowLeft className="h-4 w-4" /> Back
+                </Button>
+                <Button className="flex-1" disabled={saving} onClick={() => void confirmSave()}>
+                  {saving ? (
+                    <>
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      {savePhase === 'pricing' ? 'Fetching prices…' : 'Saving…'}
+                    </>
+                  ) : (
+                    <>
+                      <FileText className="h-4 w-4" /> Confirm &amp; save{' '}
+                      {preview.transactions.length} transaction
+                      {preview.transactions.length === 1 ? '' : 's'}
+                    </>
+                  )}
+                </Button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      <p className="text-center font-mono text-[10.5px] text-faint">
+        Every tax figure is an estimate to help you file — not tax advice.
+      </p>
+    </div>
+  );
+}

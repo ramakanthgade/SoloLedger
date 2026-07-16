@@ -14,6 +14,9 @@ import { resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { useTabNav } from '@/lib/tabNav';
+import { TrendingUp } from 'lucide-react';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
@@ -29,6 +32,7 @@ const INCOME_KIND_LABEL: Record<string, string> = {
 };
 
 export function CapitalGainsTab() {
+  const { goToImport } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
   const [method, setMethod] = useState<'FIFO' | 'LIFO' | 'HIFO' | 'SpecID'>('FIFO');
@@ -301,8 +305,16 @@ export function CapitalGainsTab() {
 
   if (transactions.length === 0) {
     return (
-      <div className="space-y-4">
+      <div className="space-y-6">
         <PageHeader title="Capital Gains" subtitle="Import transactions first to see matched buy/sell pairs and P&amp;L." />
+        <EmptyState
+          icon={<TrendingUp className="h-11 w-11" />}
+          title="No gains to calculate yet"
+          description="After you import, we apply India's flat 30% + 4% cess per disposal and total the 1% TDS you've already paid — so your number is right the first time."
+          actionLabel="Import your trades"
+          onAction={goToImport}
+          hint="Figures are estimates to help you file — not tax advice."
+        />
       </div>
     );
   }

@@ -12,7 +12,9 @@ import { PageHeader } from '@/components/PageHeader';
 import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel } from '@/lib/utils';
 import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, FileText } from 'lucide-react';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { useTabNav } from '@/lib/tabNav';
 import {
   buildDerivativeBusinessExpenseRows,
   buildDerivativeBusinessIncomeRows,
@@ -27,6 +29,7 @@ import { TdsReconciliationView } from '@/components/reports/TdsReconciliationVie
 import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
 
 export function ReportsTab() {
+  const { goToImport } = useTabNav();
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [method, setMethod] = useState<'FIFO' | 'LIFO' | 'HIFO' | 'SpecID'>('FIFO');
   const [year, setYear] = useState<number>(getCurrentFy('IN'));
@@ -301,6 +304,24 @@ export function ReportsTab() {
       `sololedger-IN-${yearLabel.replace(/\s/g, '')}-schedule-vda.csv`
     );
   };
+
+  if (!computing && transactions.length === 0) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Reports"
+          subtitle="Generated locally — files are written directly on your device."
+        />
+        <EmptyState
+          icon={<FileText className="h-11 w-11" />}
+          title="No reports to export"
+          description="When your numbers are ready, generate a transaction-wise Schedule VDA statement, a TDS reconciliation, and a tax estimate — ready to hand your CA."
+          actionLabel="Import your trades"
+          onAction={goToImport}
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-8">
