@@ -136,6 +136,14 @@ export interface TaxSettings {
   aiApiKey?: string;
   /** OpenRouter model id, e.g. anthropic/claude-opus-4-5 */
   aiModel?: string;
+  /**
+   * First-use consent for the AI Tax Advisor (A2). Off by default — the AI
+   * Advisor is the one feature that sends data off-device (an aggregated
+   * summary + the typed question), so no AI request runs until the user
+   * explicitly opts in. Stored via the existing settings persistence — no
+   * Dexie schema bump. Revocable any time from Settings → AI Advisor.
+   */
+  aiConsentGranted?: boolean;
   /** For the "other EVM chain" manual fallback in wallet lookup. */
   customExplorerBaseUrl?: string;
   customExplorerApiKey?: string;

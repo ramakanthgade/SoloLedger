@@ -230,9 +230,45 @@ export function SettingsTab() {
                 onDelete={() => update({ aiApiKey: undefined })}
                 placeholder="sk-or-v1-…"
               />
+              <div className="rounded-lg border border-white/10 bg-elev-2 p-3 text-xs leading-relaxed text-low">
+                <p className="font-semibold text-mid">How your AI data travels</p>
+                <p className="mt-1">
+                  <strong className="text-blue">With your own OpenRouter key (this build):</strong> the aggregated
+                  summary goes <strong className="text-mid">directly</strong> to OpenRouter — SoloLedger never sees it.
+                </p>
+                <p className="mt-1">
+                  <strong className="text-violet">On the hosted SoloLedger app with no key:</strong> the same summary
+                  is <strong className="text-mid">relayed</strong> through SoloLedger's server to OpenRouter.
+                </p>
+                <p className="mt-1">
+                  Either way, only an aggregated summary (holdings, cost basis, realized gains, jurisdiction) and your
+                  typed question leave the device — never raw wallet addresses or transaction hashes. The advisor is
+                  off until you opt in, and you can revoke consent any time from its panel.
+                </p>
+              </div>
             </CardContent>
           </Card>
         </>
+      )}
+
+      {saas && user?.role !== 'admin' && (
+        <Card>
+          <CardHeader>
+            <CardTitle>AI Tax Advisor</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="rounded-lg border border-white/10 bg-elev-2 p-3 text-xs leading-relaxed text-low">
+              <p className="font-semibold text-mid">How your AI data travels</p>
+              <p className="mt-1">
+                On the hosted app you don't add an OpenRouter key. When you ask the AI Advisor a question, an
+                aggregated summary (holdings, cost basis, realized gains, jurisdiction) plus your typed question is{' '}
+                <strong className="text-violet">relayed</strong> through SoloLedger's server to OpenRouter — never raw
+                wallet addresses or transaction hashes. The advisor is off until you opt in, and you can revoke consent
+                any time from its panel.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       <Card>

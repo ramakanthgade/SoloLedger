@@ -50,7 +50,7 @@ const DIFFERENTIATORS = [
   {
     icon: Bot,
     title: 'AI tax advisor',
-    line: 'Optional — your data never leaves the browser.',
+    line: 'Opt-in — sends an aggregated summary, never raw wallets or hashes.',
     gradient: 'from-elev-1 to-blue'
   }
 ];
@@ -108,11 +108,12 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
           <h1 className="mt-8 max-w-4xl font-display text-5xl font-bold leading-[1.05] text-hi sm:text-6xl lg:text-7xl">
             Crypto taxes that{' '}
             <span className="bg-gradient-to-r from-violet via-blue to-blue bg-clip-text text-transparent">
-              never leave your device
+              stay on your device by default
             </span>
           </h1>
           <p className="mt-6 max-w-2xl text-xl text-slate-600 sm:text-2xl">
-            Private. Precise. Built for Solana — and every major chain.
+            Private. Precise. Built for Solana — and every major chain. Network features (wallet lookup, AI advisor)
+            are opt-in.
           </p>
 
           <div className="mt-10 flex flex-wrap gap-4">

@@ -1,11 +1,12 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useSyncExternalStore } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db } from '@/lib/storage/db';
+import { getNetworkMode, subscribeNetworkActivity } from '@/lib/networkActivity';
+import { db, getSettings, saveSettings } from '@/lib/storage/db';
 import { streamChatCompletion, AI_MODELS, DEFAULT_AI_MODEL, type ChatMessage } from '@/lib/ai/openrouter';
-import { buildTaxContext } from '@/lib/ai/taxContext';
+import { buildTaxContextFromDb } from '@/lib/ai/taxContext';
 import { getAvailableFys, getCurrentFy, getFyLabel } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
-import { Bot, Mic, MicOff, Send, X, ChevronDown, Sparkles } from 'lucide-react';
+import { Bot, Check, Mic, MicOff, Send, ShieldCheck, Upload, X, ChevronDown, Sparkles, AlertTriangle } from 'lucide-react';
 import { isSaasMode } from '@/lib/saas/config';
 import { fetchPublicConfig } from '@/lib/saas/api';
 import { Dialog } from '@/components/ui/Dialog';
@@ -60,6 +61,16 @@ export function AiAdvisor() {
   const [serverAiEnabled, setServerAiEnabled] = useState(!saas);
   const aiAvailable = saas ? serverAiEnabled : Boolean(localAiApiKey);
   const aiApiKey = saas ? 'saas-proxy' : (localAiApiKey ?? '');
+
+  // First-use consent (A2). No AI request runs until the user explicitly opts in.
+  const consentGranted = Boolean(settingsRow?.aiConsentGranted);
+
+  // Transport disclosure (A1): BYO key talks directly to OpenRouter; a hosted
+  // SaaS build with no user key is relayed through SoloLedger. `networkMode`
+  // reflects the actual highest state reached this session and flips once a
+  // real AI request goes out.
+  const expectedMode: 'direct' | 'relay' = saas ? 'relay' : 'direct';
+  const networkMode = useSyncExternalStore(subscribeNetworkActivity, getNetworkMode);
 
   useEffect(() => {
     if (!saas) return;
@@ -128,9 +139,23 @@ export function AiAdvisor() {
     setListening(true);
   };
 
+  const grantConsent = async () => {
+    const current = await getSettings();
+    await saveSettings({ ...current, aiConsentGranted: true });
+  };
+
+  const revokeConsent = async () => {
+    const current = await getSettings();
+    await saveSettings({ ...current, aiConsentGranted: false });
+    setMessages([]);
+    setInput('');
+    setError(null);
+  };
+
   const sendMessage = async (text: string) => {
     const q = text.trim();
-    if (!q || loading || !aiAvailable) return;
+    // Consent gate: no data leaves the device until the user has opted in.
+    if (!q || loading || !aiAvailable || !consentGranted) return;
     setInput('');
     setError(null);
 
@@ -143,7 +168,7 @@ export function AiAdvisor() {
     setMessages((prev) => [...prev, { role: 'assistant', content: '', streaming: true }]);
 
     try {
-      const systemPrompt = await buildTaxContext(year);
+      const systemPrompt = await buildTaxContextFromDb(year);
       const chatHistory: ChatMessage[] = [
         { role: 'system', content: systemPrompt },
         ...updatedMessages.map((m) => ({ role: m.role, content: m.content }))
@@ -256,13 +281,19 @@ export function AiAdvisor() {
             </div>
           </div>
 
+          {!consentGranted ? (
+            <ConsentGate mode={expectedMode} onEnable={grantConsent} onDecline={() => setOpen(false)} />
+          ) : (
+          <>
           {/* Messages */}
           <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-3">
             {messages.length === 0 && (
               <div className="space-y-3">
                 <p className="text-xs text-low">
-                  Ask anything about your crypto taxes. All data stays on your device.
+                  Ask anything about your crypto taxes. An aggregated summary of your position — not your raw
+                  transactions, wallet addresses or hashes — is sent to OpenRouter to answer.
                 </p>
+                <ModeBadge mode={networkMode === 'local' ? expectedMode : networkMode} />
                 <div className="space-y-1.5">
                   {SUGGESTED_QUESTIONS.map((q) => (
                     <button
@@ -274,6 +305,12 @@ export function AiAdvisor() {
                     </button>
                   ))}
                 </div>
+                <button
+                  onClick={() => void revokeConsent()}
+                  className="text-[10px] text-low underline decoration-dotted underline-offset-2 hover:text-mid"
+                >
+                  Turn off the AI Advisor &amp; clear this chat
+                </button>
               </div>
             )}
 
@@ -332,6 +369,8 @@ export function AiAdvisor() {
               {AI_MODELS.find((m) => m.id === aiModel)?.label ?? aiModel} · OpenRouter
             </p>
           </div>
+          </>
+          )}
         </Dialog>
       )}
 
@@ -378,5 +417,156 @@ function MessageContent({ content, streaming }: { content: string; streaming?: b
       )}
       {streaming && <span className="ml-1 inline-block h-2 w-1 animate-pulse bg-low" />}
     </span>
+  );
+}
+
+/**
+ * Transport disclosure badge (A2 + A1). Shows whether the aggregated summary
+ * goes DIRECT to OpenRouter (BYO key) or is RELAYED through SoloLedger (hosted
+ * SaaS, no user key). Colours follow the Aurora tokens.
+ */
+function ModeBadge({ mode }: { mode: 'direct' | 'relay' }) {
+  const cfg =
+    mode === 'relay'
+      ? {
+          label: 'Relayed via SoloLedger',
+          detail: 'No API key on this SaaS build — the summary is routed through SoloLedger to OpenRouter.',
+          cls: 'bg-violet/10 border-violet/30 text-violet',
+          dot: 'bg-violet'
+        }
+      : {
+          label: 'Direct to OpenRouter',
+          detail: 'Your own OpenRouter key — the summary goes straight to OpenRouter; SoloLedger never sees it.',
+          cls: 'bg-blue/10 border-blue/30 text-blue',
+          dot: 'bg-blue'
+        };
+  return (
+    <div
+      data-testid="ai-mode-badge"
+      data-mode={mode}
+      className={`rounded-lg border px-3 py-2 text-[11px] leading-relaxed ${cfg.cls}`}
+    >
+      <span className="flex items-center gap-2 font-semibold">
+        <span className={`h-2 w-2 shrink-0 rounded-full ${cfg.dot}`} />
+        {cfg.label}
+      </span>
+      <p className="mt-1 opacity-90">{cfg.detail}</p>
+    </div>
+  );
+}
+
+const CONSENT_SENT = [
+  'Your holdings by asset (e.g. 0.5 BTC, 12 ETH)',
+  'Aggregate cost basis and realized gains',
+  'Totals like taxable gain, TDS paid, income',
+  'Your jurisdiction and financial year',
+  'The question you type into the advisor'
+];
+
+const CONSENT_KEPT = [
+  'Raw wallet addresses',
+  'Individual transaction hashes',
+  'Your exchange API keys or credentials',
+  'Line-by-line trade history',
+  'Your name, PAN, or contact details'
+];
+
+/**
+ * First-use consent gate (A2). Names exactly what leaves the device before any
+ * AI request runs. Mirrors the approved aurora-ai-consent.html mockup. Enabling
+ * requires ticking the explicit consent checkbox.
+ */
+function ConsentGate({
+  mode,
+  onEnable,
+  onDecline
+}: {
+  mode: 'direct' | 'relay';
+  onEnable: () => void | Promise<void>;
+  onDecline: () => void;
+}) {
+  const [checked, setChecked] = useState(false);
+  return (
+    <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
+      <div className="text-center">
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-violet to-blue shadow-glow">
+          <Bot className="h-6 w-6 text-white" />
+        </div>
+        <h3 className="mt-3 text-sm font-bold text-hi">Turn on the AI Advisor?</h3>
+        <p className="mt-1 text-xs leading-relaxed text-low">
+          The AI Advisor answers questions about your tax position. Because it uses a large language model, some of
+          your data has to leave this device. Here's exactly what — and what doesn't.
+        </p>
+      </div>
+
+      <ModeBadge mode={mode} />
+
+      <div className="rounded-lg border border-violet/30 bg-violet/5 p-3">
+        <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-violet">
+          <Upload className="h-3.5 w-3.5" /> Sent to the AI — an aggregated summary
+        </p>
+        <ul className="mt-2 space-y-1.5">
+          {CONSENT_SENT.map((item) => (
+            <li key={item} className="flex items-start gap-2 text-xs text-mid">
+              <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet" />
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="rounded-lg border border-gain/30 bg-gain/5 p-3">
+        <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-gain">
+          <ShieldCheck className="h-3.5 w-3.5" /> Never leaves this device
+        </p>
+        <ul className="mt-2 space-y-1.5">
+          {CONSENT_KEPT.map((item) => (
+            <li key={item} className="flex items-start gap-2 text-xs text-mid">
+              <X className="mt-0.5 h-3.5 w-3.5 shrink-0 text-gain" />
+              <span>{item}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      <div className="flex gap-2.5 rounded-lg border border-warn/25 bg-warn/5 p-3">
+        <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warn" />
+        <p className="text-[11px] leading-relaxed text-mid">
+          <strong className="text-warn">We won't pretend this is 100% local.</strong> The rest of SoloLedger runs
+          entirely on your device — the AI Advisor is the one feature that talks to an outside service, which is why
+          it's off until you switch it on.
+        </p>
+      </div>
+
+      <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-violet/30 bg-elev-3 p-3">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(e) => setChecked(e.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-violet"
+        />
+        <span className="text-xs leading-relaxed text-mid">
+          I understand that enabling the AI Advisor sends an <strong className="text-hi">aggregated financial
+          summary</strong> plus my typed question to <strong className="text-hi">OpenRouter</strong>, and I
+          explicitly consent. I can turn this off at any time.
+        </span>
+      </label>
+
+      <div className="flex gap-2">
+        <button
+          onClick={onDecline}
+          className="flex-1 rounded-lg border border-white/10 bg-elev-3 px-3 py-2 text-xs font-semibold text-mid hover:bg-elev-2"
+        >
+          Not now — keep it local
+        </button>
+        <button
+          onClick={() => void onEnable()}
+          disabled={!checked}
+          className="flex-1 rounded-lg bg-gradient-to-br from-violet to-blue px-3 py-2 text-xs font-semibold text-white shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
+        >
+          Enable AI Advisor
+        </button>
+      </div>
+    </div>
   );
 }
