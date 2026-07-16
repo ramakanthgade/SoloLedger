@@ -31,6 +31,9 @@ export function ReportsTab() {
   const [method, setMethod] = useState<'FIFO' | 'LIFO' | 'HIFO' | 'SpecID'>('FIFO');
   const [year, setYear] = useState<number>(getCurrentFy('IN'));
   const [deidentify, setDeidentify] = useState(false);
+  // Report header treatment for the branded PDF: 'aurora' (dark band, default)
+  // or 'light' (white header) so black-and-white printouts keep branding.
+  const [lightHeader, setLightHeader] = useState(false);
   const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
 
   const transactionsRaw = useLiveQuery(() => db.transactions.toArray(), []);
@@ -151,6 +154,7 @@ export function ReportsTab() {
     const fmt = (n: number) => formatAmountForExport(n, rules.currency);
     const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Capital Gains Report',
+      brandHeader: lightHeader ? 'light' : 'aurora',
       metaLines: [
         `Jurisdiction: ${rules.label} · Tax year: ${yearLabel} · Method: ${method}`,
         `Currency: ${rules.currency} · ${deidentify ? 'De-identified (pseudonymized refs)' : 'Full detail'}`
@@ -343,6 +347,18 @@ export function ReportsTab() {
         <label className="flex items-center gap-2 text-sm text-low">
           <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-violet" />
           De-identify for sharing
+        </label>
+        <label
+          className="flex items-center gap-2 text-sm text-low"
+          title="Use a white PDF header with a dark logo so branding stays legible on black-and-white printers. Off = dark Aurora header band."
+        >
+          <input
+            type="checkbox"
+            checked={lightHeader}
+            onChange={(e) => setLightHeader(e.target.checked)}
+            className="accent-violet"
+          />
+          Light header for print
         </label>
         <div className="ml-auto flex gap-2">
           <Button variant="secondary" size="sm" onClick={exportCsv}>CSV</Button>
