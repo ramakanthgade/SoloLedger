@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { LocalOnlyBadge } from '@/components/LocalOnlyBadge';
 import { BrandLogo } from '@/components/BrandLogo';
 import { deduplicateTransactions } from '@/lib/storage/db';
@@ -55,13 +55,31 @@ function MainApp() {
   const [active, setActive] = useState<TabId>('import');
   const ActiveComponent = tabs.find((t) => t.id === active)!.component;
   const importState = useImportJob();
+  const [deduping, setDeduping] = useState(false);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     const key = `sololedger_dedup_session_${user?.id ?? 'local'}`;
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
-    void deduplicateTransactions();
+    setDeduping(true);
+    void deduplicateTransactions().finally(() => setDeduping(false));
   }, [user?.id]);
+
+  // Roving-tabindex arrow-key navigation across the tablist.
+  const handleTabKeyDown = (e: React.KeyboardEvent, index: number) => {
+    const count = tabs.length;
+    let next = index;
+    if (e.key === 'ArrowRight') next = (index + 1) % count;
+    else if (e.key === 'ArrowLeft') next = (index - 1 + count) % count;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = count - 1;
+    else return;
+    e.preventDefault();
+    const nextTab = tabs[next];
+    setActive(nextTab.id);
+    tabRefs.current[next]?.focus();
+  };
 
   if (!dbReady) {
     return <LoadingScreen message="Loading your workspace…" />;
@@ -80,16 +98,30 @@ function MainApp() {
       </header>
 
       <div className="border-b border-white/10 bg-elev-1/40 backdrop-blur-md">
-        <nav className="mx-auto flex max-w-5xl gap-0 overflow-x-auto px-4 lg:px-6">
-          {tabs.map((tab) => {
+        <nav
+          role="tablist"
+          aria-label="Sections"
+          className="mx-auto flex max-w-5xl gap-0 overflow-x-auto px-4 lg:px-6"
+        >
+          {tabs.map((tab, i) => {
             const Icon = tab.icon;
             const isActive = tab.id === active;
             return (
               <button
                 key={tab.id}
+                ref={(el) => {
+                  tabRefs.current[i] = el;
+                }}
+                role="tab"
+                id={`tab-${tab.id}`}
+                aria-selected={isActive}
+                aria-controls={`tabpanel-${tab.id}`}
+                tabIndex={isActive ? 0 : -1}
                 onClick={() => setActive(tab.id)}
+                onKeyDown={(e) => handleTabKeyDown(e, i)}
                 className={cn(
-                  'relative flex shrink-0 items-center gap-2 px-4 py-3.5 text-sm font-medium transition-colors',
+                  'relative flex min-h-[44px] shrink-0 items-center gap-2 px-4 py-3.5 text-sm font-medium transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet/40',
                   isActive
                     ? 'text-hi'
                     : 'text-low hover:text-mid'
@@ -127,8 +159,21 @@ function MainApp() {
         </div>
       )}
 
-      <main className="mx-auto max-w-5xl px-6 py-10 lg:px-8">
-        <ActiveComponent />
+      <main
+        role="tabpanel"
+        id={`tabpanel-${active}`}
+        aria-labelledby={`tab-${active}`}
+        tabIndex={0}
+        className="mx-auto max-w-5xl px-6 py-10 focus:outline-none lg:px-8"
+      >
+        {deduping ? (
+          <div aria-busy="true" className="flex items-center gap-3 text-sm text-low">
+            <Loader2 className="h-4 w-4 animate-spin text-teal" />
+            Tidying up your transactions (removing duplicates)…
+          </div>
+        ) : (
+          <ActiveComponent />
+        )}
       </main>
 
       <AiAdvisor />

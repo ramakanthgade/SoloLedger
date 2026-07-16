@@ -4,7 +4,7 @@ import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount,
-  getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel
+  getFyBoundaries, getFyLabel, getAvailableFys, getCurrentFy, isInFy, monetaryColumnLabel
 } from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { fetchLiveWalletBalances } from '@/lib/rpc/walletBalances';
@@ -29,6 +29,10 @@ import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { applyDcaClassification, detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
+import { SkeletonTable } from '@/components/ui/Skeleton';
+import { estimateIndiaVDA } from '@/lib/tax/estimate';
+import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
@@ -66,6 +70,7 @@ export function PortfolioTab() {
   const [liveBalanceStatus, setLiveBalanceStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
   const [repairingBalances, setRepairingBalances] = useState(false);
   const [repairMsg, setRepairMsg] = useState<string | null>(null);
+  const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
   const repairInFlight = useRef(false);
 
   useEffect(() => {
@@ -221,6 +226,30 @@ export function PortfolioTab() {
 
   const totalCostBasis = holdings.reduce((s, h) => s + h.costBasis, 0);
 
+  // Cost-basis compute runs on mount (and whenever transactions change); while
+  // the initial live query is resolving we show a skeleton instead of an empty
+  // table so the tab doesn't flash blank.
+  const holdingsComputing = transactions.length > 0 && holdings.length === 0 && filteredTxs.length > 0;
+
+  // Current-FY realized gains, computed from the same cost-basis engine used by
+  // the Capital Gains tab. Realized loss lots are excluded from the taxable base
+  // (India no-offset rule) via estimateIndiaVDA, which floors negatives at zero.
+  const currentFy = getCurrentFy(jurisdiction);
+  const realizedFyGain = useMemo(() => {
+    const { disposals } = calculateCostBasis(transactions, { method: 'FIFO' });
+    return disposals
+      .filter((d) => isInFy(d.disposedAt, currentFy, jurisdiction))
+      .reduce((s, d) => s + d.gain, 0);
+  }, [transactions, currentFy, jurisdiction]);
+
+  // Estimated current-FY VDA tax. NOTE: this is a temporary inline stub — Task
+  // T4 introduces a dedicated <TaxEstimateCard/> that should replace this block.
+  // For India it applies the flat 30% + 4% cess on positive realized gains.
+  const estimatedFyTax = useMemo(
+    () => estimateIndiaVDA(realizedFyGain).total,
+    [realizedFyGain]
+  );
+
   const balanceVariances = useMemo(() => {
     if (liveBalanceStatus !== 'ready' || selectedFy != null) return [];
     if (!crossCheckModeUsesLiveRpc(crossCheckMode)) return [];
@@ -293,11 +322,6 @@ export function PortfolioTab() {
     URL.revokeObjectURL(url);
   };
 
-  const confirmPdfExport = () =>
-    window.confirm(
-      'PDF is best for quick summaries. For detailed CA review, CSV/JSON is recommended.\n\nContinue with PDF export?'
-    );
-
   const exportHoldingsCsv = () => {
     const cur = reportingCurrency.toUpperCase();
     const header = ['asset', 'chain', 'contract_address', 'quantity', monetaryColumnLabel('cost_basis', cur), 'reporting_currency'];
@@ -331,7 +355,6 @@ export function PortfolioTab() {
   };
 
   const exportHoldingsPdf = async () => {
-    if (!confirmPdfExport()) return;
     const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Portfolio Holdings',
       metaLines: [
@@ -398,8 +421,78 @@ export function PortfolioTab() {
         <div className="flex gap-2">
           <Button variant="secondary" onClick={exportHoldingsCsv} className="text-xs">CSV</Button>
           <Button variant="secondary" onClick={exportHoldingsJson} className="text-xs">JSON</Button>
-          <Button variant="secondary" onClick={exportHoldingsPdf} className="text-xs">PDF</Button>
+          <Button variant="secondary" onClick={() => setPdfConfirmOpen(true)} className="text-xs">PDF</Button>
         </div>
+      </div>
+
+      <ConfirmDialog
+        open={pdfConfirmOpen}
+        title="Export as PDF?"
+        body="PDF is best for quick summaries. For detailed CA review, CSV/JSON is recommended."
+        confirmLabel="Continue with PDF"
+        onConfirm={() => {
+          setPdfConfirmOpen(false);
+          void exportHoldingsPdf();
+        }}
+        onCancel={() => setPdfConfirmOpen(false)}
+      />
+
+      {/* KPI dashboard cards */}
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div className="stat-card stat-card-featured min-w-0">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
+            Total holdings value
+          </p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures text-hi sm:text-xl">
+            {formatCurrency(totalCostBasis, reportingCurrency)}
+          </p>
+          <p className="mt-1 text-[0.6875rem] text-low">Cost basis · {holdings.length} asset{holdings.length === 1 ? '' : 's'}</p>
+        </div>
+        <div className="stat-card min-w-0">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
+            Unrealized gain
+          </p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures text-mid sm:text-xl">—</p>
+          <p className="mt-1 text-[0.6875rem] text-low">Enable live prices in Settings</p>
+        </div>
+        <div className="stat-card min-w-0">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
+            Realized gain — {getFyLabel(currentFy, jurisdiction)}
+          </p>
+          <p
+            className={`mt-2 font-mono text-lg font-semibold tabular-figures sm:text-xl ${
+              realizedFyGain >= 0 ? 'text-gain' : 'text-loss'
+            }`}
+          >
+            {realizedFyGain >= 0 ? '+' : ''}
+            {formatCurrency(realizedFyGain, reportingCurrency)}
+          </p>
+          <p className="mt-1 text-[0.6875rem] text-low">FIFO · current FY</p>
+        </div>
+        {/* T4 stub: replace with <TaxEstimateCard/> when Task T4 lands. */}
+        <div className="stat-card min-w-0" data-t4-stub="tax-estimate">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
+            Est. tax — {getFyLabel(currentFy, jurisdiction)}
+          </p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures text-warn sm:text-xl">
+            {formatCurrency(estimatedFyTax, reportingCurrency)}
+          </p>
+          <p className="mt-1 text-[0.6875rem] text-low">30% + 4% cess estimate (stub)</p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          variant="secondary"
+          onClick={() => void runLedgerRepairNow()}
+          disabled={repairingBalances}
+          className="min-h-[44px] text-xs"
+        >
+          {repairingBalances ? 'Repairing…' : 'Re-run ledger repair'}
+        </Button>
+        <span className="text-xs text-low">
+          Re-scans on-chain history to catch missing swap legs and balance gaps (uses Solana RPC).
+        </span>
       </div>
 
       {ledgerRepairOffered && !repairingBalances && (
@@ -477,39 +570,66 @@ export function PortfolioTab() {
         </CardContent>
       </Card>
 
-      <div className="overflow-x-auto rounded-lg border border-white/10">
-        <table className="w-full text-sm">
-          <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
-            <tr>
-              <th className="px-3 py-2">Asset</th>
-              <th className="px-3 py-2 text-right">Quantity</th>
-              <th className="px-3 py-2 text-right">Cost basis</th>
-            </tr>
-          </thead>
-          <tbody className="font-mono tabular-figures">
+      {holdingsComputing ? (
+        <SkeletonTable rows={5} columns={3} data-testid="portfolio-skeleton" />
+      ) : (
+        <>
+          {/* Desktop / tablet: table (sm and up) */}
+          <div className="hidden overflow-x-auto rounded-lg border border-white/10 sm:block">
+            <table className="w-full text-sm">
+              <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
+                <tr>
+                  <th className="px-3 py-2">Asset</th>
+                  <th className="px-3 py-2 text-right">Quantity</th>
+                  <th className="px-3 py-2 text-right">Cost basis</th>
+                </tr>
+              </thead>
+              <tbody className="font-mono tabular-figures">
+                {holdings.map((h, i) => (
+                  <tr key={i} className="border-t border-white/10 hover:bg-elev-3/20">
+                    <td className="px-3 py-2 text-mid">
+                      {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
+                    </td>
+                    <td className="px-3 py-2 text-right text-low">
+                      {h.amount.toFixed(8)}
+                    </td>
+                    <td className="px-3 py-2 text-right text-warn">
+                      {formatCurrency(h.costBasis, reportingCurrency)}
+                    </td>
+                  </tr>
+                ))}
+                {holdings.length === 0 && (
+                  <tr>
+                    <td colSpan={3} className="px-3 py-8 text-center text-low">
+                      No holdings — import transactions or adjust the filter.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile: stacked cards (below sm) */}
+          <div className="space-y-3 sm:hidden">
             {holdings.map((h, i) => (
-              <tr key={i} className="border-t border-white/10 hover:bg-elev-3/20">
-                <td className="px-3 py-2 text-mid">
+              <div key={i} className="rounded-xl border border-white/10 bg-elev-2 p-4 shadow-card">
+                <p className="text-sm font-semibold text-mid">
                   {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
-                </td>
-                <td className="px-3 py-2 text-right text-low">
-                  {h.amount.toFixed(8)}
-                </td>
-                <td className="px-3 py-2 text-right text-warn">
-                  {formatCurrency(h.costBasis, reportingCurrency)}
-                </td>
-              </tr>
+                </p>
+                <div className="mt-2 flex items-center justify-between font-mono text-xs tabular-figures">
+                  <span className="text-low">Qty {h.amount.toFixed(8)}</span>
+                  <span className="text-warn">{formatCurrency(h.costBasis, reportingCurrency)}</span>
+                </div>
+              </div>
             ))}
             {holdings.length === 0 && (
-              <tr>
-                <td colSpan={3} className="px-3 py-8 text-center text-low">
-                  No holdings — import transactions or adjust the filter.
-                </td>
-              </tr>
+              <div className="rounded-xl border border-white/10 bg-elev-2 px-3 py-8 text-center text-sm text-low">
+                No holdings — import transactions or adjust the filter.
+              </div>
             )}
-          </tbody>
-        </table>
-      </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

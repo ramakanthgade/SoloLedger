@@ -135,4 +135,34 @@
   .empty-state {
     @apply rounded-2xl border border-dashed border-white/10 bg-elev-1 px-6 py-14 text-center text-sm text-mid;
   }
+
+  /* Aurora shimmer skeleton (Task T2). A muted elevated surface with a
+   * sweeping highlight to signal a pending load / computation. */
+  .sl-skeleton {
+    @apply relative overflow-hidden rounded-lg bg-elev-3/60;
+  }
+  .sl-skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(124, 92, 255, 0.14),
+      rgba(34, 225, 195, 0.1),
+      transparent
+    );
+    animation: sl-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes sl-shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sl-skeleton::after {
+      animation: none;
+    }
+  }
 }

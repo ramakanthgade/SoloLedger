@@ -7,6 +7,7 @@ import { deidentifyTransactions } from '@/lib/reports/deidentify';
 import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { SkeletonCards, SkeletonTable } from '@/components/ui/Skeleton';
 import { PageHeader } from '@/components/PageHeader';
 import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel } from '@/lib/utils';
 import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, truncatePdfRef } from '@/lib/export/pdfTheme';
@@ -27,8 +28,13 @@ export function ReportsTab() {
   const [deidentify, setDeidentify] = useState(false);
   const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
 
-  const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
+  const transactionsRaw = useLiveQuery(() => db.transactions.toArray(), []);
+  const transactions = transactionsRaw ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
+  // Cost basis is (re)computed synchronously in useMemo once transactions
+  // resolve; until the initial live query settles we show a skeleton so the
+  // tab doesn't flash empty numbers.
+  const computing = transactionsRaw === undefined;
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -317,6 +323,13 @@ export function ReportsTab() {
         </div>
       )}
 
+      {computing ? (
+        <>
+          <SkeletonCards count={5} data-testid="reports-skeleton" />
+          <SkeletonTable rows={6} columns={5} />
+        </>
+      ) : (
+        <>
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <div className="stat-card stat-card-featured min-w-0">
           <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Total gain / loss</p>
@@ -358,7 +371,8 @@ export function ReportsTab() {
           <h3 className="text-sm font-semibold text-hi">Disposals — {yearLabel}</h3>
           <span className="text-xs text-low">{yearDisposals.length} events</span>
         </div>
-        <div className="overflow-x-auto p-1">
+        {/* Desktop / tablet: table (sm and up) */}
+        <div className="hidden overflow-x-auto p-1 sm:block">
           <table className="w-full text-sm">
             <thead>
               <tr className="border-b border-white/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
@@ -394,7 +408,41 @@ export function ReportsTab() {
             <p className="px-5 py-3 text-xs text-low">Showing first 100 of {yearDisposals.length} — full list in CSV/JSON/PDF export.</p>
           )}
         </div>
+
+        {/* Mobile: stacked cards (below sm) */}
+        <div className="space-y-3 p-4 sm:hidden">
+          {yearDisposals.slice(0, 100).map((d) => (
+            <div key={d.id} className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+              <div className="flex items-center justify-between">
+                <span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span>
+                <span className="font-mono text-xs text-low">{new Date(d.disposedAt).toISOString().slice(0, 10)}</span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-xs tabular-figures">
+                <span className="text-low">Amount</span>
+                <span className="text-right text-mid">{d.amount.toFixed(6)}</span>
+                <span className="text-low">Proceeds</span>
+                <span className="text-right text-mid">{formatAmountForExport(d.proceeds, rules.currency)}</span>
+                <span className="text-low">Cost basis</span>
+                <span className="text-right text-mid">{formatAmountForExport(d.costBasis, rules.currency)}</span>
+                <span className="text-low">Gain / loss</span>
+                <span className={'text-right font-semibold ' + (d.gain >= 0 ? 'text-gain' : 'text-loss')}>
+                  {formatAmountForExport(d.gain, rules.currency)}
+                </span>
+                <span className="text-low">Held (days)</span>
+                <span className="text-right text-mid">{d.holdingPeriodDays}</span>
+              </div>
+            </div>
+          ))}
+          {yearDisposals.length === 0 && (
+            <div className="px-5 py-10 text-center text-low">No disposals in {yearLabel}.</div>
+          )}
+          {yearDisposals.length > 100 && (
+            <p className="text-xs text-low">Showing first 100 of {yearDisposals.length} — full list in CSV/JSON/PDF export.</p>
+          )}
+        </div>
       </div>
+        </>
+      )}
 
       <Card>
         <CardHeader><CardTitle>{rules.label} rules note</CardTitle></CardHeader>

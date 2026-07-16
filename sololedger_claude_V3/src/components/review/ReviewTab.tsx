@@ -3,6 +3,7 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/transaction';
 import { formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
@@ -252,6 +253,8 @@ export function ReviewTab() {
   const [walletLabels, setWalletLabels] = useState<Map<string, string>>(new Map());
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
+  const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
   const [dcaGroups, setDcaGroups] = useState<Awaited<ReturnType<typeof detectDcaGroups>>>([]);
   const [applyingDca, setApplyingDca] = useState(false);
   const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
@@ -521,12 +524,6 @@ export function ReviewTab() {
   };
 
   const bulkDelete = async () => {
-    const n = selected.size;
-    if (n === 0) return;
-    const ok = window.confirm(
-      `Permanently delete ${n} transaction${n === 1 ? '' : 's'}?\n\nThis cannot be undone. Use this to remove duplicate rows.`
-    );
-    if (!ok) return;
     await deleteTransactionsByIds(Array.from(selected));
     setSelected(new Set());
   };
@@ -540,11 +537,6 @@ export function ReviewTab() {
     a.click();
     URL.revokeObjectURL(url);
   };
-
-  const confirmPdfExport = () =>
-    window.confirm(
-      'PDF is best for sharing summaries. For detailed CA review, CSV/JSON is recommended.\n\nContinue with PDF export?'
-    );
 
   const exportFilteredCsv = () => {
     const exportCurrency = (settings?.reportingCurrency ?? 'INR').toUpperCase();
@@ -606,7 +598,6 @@ export function ReviewTab() {
   };
 
   const exportFilteredPdf = async () => {
-    if (!confirmPdfExport()) return;
     const cur = (settings?.reportingCurrency ?? 'INR').toUpperCase();
     const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Review Transactions',
@@ -886,7 +877,7 @@ export function ReviewTab() {
         <div className="flex gap-2">
           <Button variant="secondary" onClick={exportFilteredCsv} className="text-xs">CSV</Button>
           <Button variant="secondary" onClick={exportFilteredJson} className="text-xs">JSON</Button>
-          <Button variant="secondary" onClick={exportFilteredPdf} className="text-xs">PDF</Button>
+          <Button variant="secondary" onClick={() => setPdfConfirmOpen(true)} className="text-xs">PDF</Button>
         </div>
 
         {/* Noves: only show for non-Helius users or as an explicit re-run option */}
@@ -921,7 +912,7 @@ export function ReviewTab() {
             </Button>
             <Button
               variant="secondary"
-              onClick={() => void bulkDelete()}
+              onClick={() => setDeleteConfirmOpen(true)}
               className="border-loss/40 text-loss hover:bg-loss/10"
             >
               <Trash2 className="mr-1 h-3 w-3" />
@@ -930,6 +921,31 @@ export function ReviewTab() {
           </div>
         )}
       </div>
+
+      <ConfirmDialog
+        open={deleteConfirmOpen}
+        destructive
+        title={`Permanently delete ${selected.size} transaction${selected.size === 1 ? '' : 's'}?`}
+        body="This cannot be undone. Use this to remove duplicate rows."
+        confirmLabel="Delete"
+        onConfirm={() => {
+          setDeleteConfirmOpen(false);
+          void bulkDelete();
+        }}
+        onCancel={() => setDeleteConfirmOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={pdfConfirmOpen}
+        title="Export as PDF?"
+        body="PDF is best for sharing summaries. For detailed CA review, CSV/JSON is recommended."
+        confirmLabel="Continue with PDF"
+        onConfirm={() => {
+          setPdfConfirmOpen(false);
+          void exportFilteredPdf();
+        }}
+        onCancel={() => setPdfConfirmOpen(false)}
+      />
 
       <div className="overflow-x-auto rounded-lg border border-white/10">
         <table className="w-full min-w-[920px] text-sm">

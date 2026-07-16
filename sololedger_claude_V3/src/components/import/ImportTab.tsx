@@ -17,7 +17,7 @@ import { convertTransactionsToReportingCurrency } from '@/lib/pricing/fiatConver
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import type { Transaction } from '@/types/transaction';
-import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { Upload, FileCheck2, AlertTriangle, CheckCircle2, Trash2, Loader2 } from 'lucide-react';
 import { ColumnMappingForm } from './ColumnMappingForm';
@@ -468,31 +468,26 @@ export function ImportTab() {
         </div>
       )}
 
-      {removeConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-base/60 p-4">
-          <div className="max-w-md rounded-lg border border-white/10 bg-elev-2 p-5 shadow-xl">
-            <h3 className="text-sm font-semibold text-mid">Remove import and its transactions?</h3>
-            <p className="mt-2 text-xs text-low">
+      <ConfirmDialog
+        open={removeConfirm !== null}
+        destructive
+        title="Remove import and its transactions?"
+        body={
+          removeConfirm ? (
+            <>
               Deletes <strong className="text-mid">{removeConfirm.txCount}</strong> transaction
               {removeConfirm.txCount === 1 ? '' : 's'} from{' '}
               <span className="text-low">{removeConfirm.fileName}</span>. You can re-import the file after.
-            </p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button variant="secondary" onClick={() => setRemoveConfirm(null)}>Cancel</Button>
-              <Button
-                variant="secondary"
-                className="border-loss/40 text-loss hover:bg-loss/10"
-                onClick={async () => {
-                  await deleteCsvImportAndTransactions(removeConfirm.id);
-                  setRemoveConfirm(null);
-                }}
-              >
-                Remove file
-              </Button>
-            </div>
-          </div>
-        </div>
-      )}
+            </>
+          ) : undefined
+        }
+        confirmLabel="Remove file"
+        onConfirm={async () => {
+          if (removeConfirm) await deleteCsvImportAndTransactions(removeConfirm.id);
+          setRemoveConfirm(null);
+        }}
+        onCancel={() => setRemoveConfirm(null)}
+      />
     </div>
   );
 }

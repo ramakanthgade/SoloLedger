@@ -8,6 +8,7 @@ import type { Jurisdiction } from '@/types/transaction';
 import { Bot, Mic, MicOff, Send, X, ChevronDown, Sparkles } from 'lucide-react';
 import { isSaasMode } from '@/lib/saas/config';
 import { fetchPublicConfig } from '@/lib/saas/api';
+import { Dialog } from '@/components/ui/Dialog';
 
 const SUGGESTED_QUESTIONS = [
   'What is my total taxable gain this year?',
@@ -221,7 +222,13 @@ export function AiAdvisor() {
   return (
     <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-2">
       {open && (
-        <div className="flex h-[560px] w-[380px] flex-col overflow-hidden rounded-2xl border border-white/10 bg-elev-1 shadow-2xl">
+        <Dialog
+          open={open}
+          onClose={() => setOpen(false)}
+          overlay={false}
+          label="AI Tax Advisor"
+          className="flex h-[560px] w-[380px] flex-col overflow-hidden border-white/10 bg-elev-1 shadow-2xl"
+        >
           {/* Header */}
           <div className="flex shrink-0 items-center justify-between border-b border-white/10 bg-elev-2 px-4 py-3">
             <div className="flex items-center gap-2">
@@ -325,7 +332,7 @@ export function AiAdvisor() {
               {AI_MODELS.find((m) => m.id === aiModel)?.label ?? aiModel} · OpenRouter
             </p>
           </div>
-        </div>
+        </Dialog>
       )}
 
       {/* FAB — prominent */}

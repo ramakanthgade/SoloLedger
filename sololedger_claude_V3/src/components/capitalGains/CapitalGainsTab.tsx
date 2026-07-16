@@ -13,6 +13,7 @@ import { JURISDICTIONS, summarizeYear } from '@/lib/tax/jurisdictions';
 import { resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 
@@ -36,6 +37,7 @@ export function CapitalGainsTab() {
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
   const [fyInitialized, setFyInitialized] = useState(false);
+  const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -176,11 +178,6 @@ export function CapitalGainsTab() {
     URL.revokeObjectURL(url);
   };
 
-  const confirmPdfExport = () =>
-    window.confirm(
-      'PDF is best for quick summaries. For detailed CA review, CSV/JSON is recommended.\n\nContinue with PDF export?'
-    );
-
   const exportCapitalGainsCsv = () => {
     const cur = currency.toUpperCase();
     const header = [
@@ -265,7 +262,6 @@ export function CapitalGainsTab() {
   };
 
   const exportCapitalGainsPdf = async () => {
-    if (!confirmPdfExport()) return;
     const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Capital Gains Detail',
       metaLines: [
@@ -348,9 +344,21 @@ export function CapitalGainsTab() {
         <div className="ml-auto flex gap-2">
           <Button variant="secondary" onClick={exportCapitalGainsCsv}>CSV</Button>
           <Button variant="secondary" onClick={exportCapitalGainsJson}>JSON</Button>
-          <Button variant="secondary" onClick={exportCapitalGainsPdf}>PDF</Button>
+          <Button variant="secondary" onClick={() => setPdfConfirmOpen(true)}>PDF</Button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={pdfConfirmOpen}
+        title="Export as PDF?"
+        body="PDF is best for quick summaries. For detailed CA review, CSV/JSON is recommended."
+        confirmLabel="Continue with PDF"
+        onConfirm={() => {
+          setPdfConfirmOpen(false);
+          void exportCapitalGainsPdf();
+        }}
+        onCancel={() => setPdfConfirmOpen(false)}
+      />
 
       {taxableTxCount === 0 && (
         <div className="rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-low">
@@ -429,7 +437,8 @@ export function CapitalGainsTab() {
           <CardTitle>Matched disposals — {getFyLabel(fy, jurisdiction)}</CardTitle>
         </CardHeader>
         <CardContent>
-          <div className="overflow-x-auto">
+          {/* Desktop / tablet: table (sm and up) */}
+          <div className="hidden overflow-x-auto sm:block">
             <table className="w-full min-w-[920px] text-xs">
               <thead className="bg-elev-2 text-left uppercase tracking-wide text-low">
                 <tr>
@@ -487,6 +496,42 @@ export function CapitalGainsTab() {
                 )}
               </tbody>
             </table>
+          </div>
+
+          {/* Mobile: stacked cards (below sm) */}
+          <div className="space-y-3 sm:hidden">
+            {yearMatches.map((r) => {
+              const chainLabel = r.chain ? CHAINS.find((c) => c.id === r.chain)?.label : undefined;
+              return (
+                <div key={r.id} className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-mid">
+                      {resolveAssetLabel(r.asset, undefined, r.chain)}
+                      {chainLabel && <span className="ml-1 text-xs text-low">({chainLabel})</span>}
+                    </span>
+                    <span className={`font-mono text-sm font-semibold ${r.gain >= 0 ? 'text-gain' : 'text-loss'}`}>
+                      {r.gain >= 0 ? '+' : ''}
+                      {formatCurrency(r.gain, currency)}
+                    </span>
+                  </div>
+                  <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-xs tabular-figures">
+                    <span className="text-low">Sold</span>
+                    <span className="text-right text-mid">{formatDateTime(r.sellDate)}</span>
+                    <span className="text-low">Qty · proceeds</span>
+                    <span className="text-right text-mid">{formatCompactAmount(r.sellAmount)} · {formatCurrency(r.proceeds, currency)}</span>
+                    <span className="text-low">Bought</span>
+                    <span className="text-right text-mid">{formatDateTime(r.buyDate)}</span>
+                    <span className="text-low">Qty · cost</span>
+                    <span className="text-right text-mid">{formatCompactAmount(r.buyAmount)} · {formatCurrency(r.costBasis, currency)}</span>
+                  </div>
+                </div>
+              );
+            })}
+            {yearMatches.length === 0 && (
+              <div className="px-2 py-8 text-center text-low">
+                No matched disposals in {getFyLabel(fy, jurisdiction)}. Classify sells/trades in Review or import exchange CSVs.
+              </div>
+            )}
           </div>
         </CardContent>
       </Card>
