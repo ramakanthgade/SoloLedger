@@ -15,7 +15,7 @@ interface KeyStatus {
   etherscanApiKey: boolean;
 }
 
-const PLANS = ['starter', 'standard', 'pro', 'investor', 'enterprise', 'trial'] as const;
+const PLANS = ['local', 'starter', 'standard', 'pro', 'investor', 'enterprise'] as const;
 
 export function AdminPanel() {
   const [keys, setKeys] = useState<KeyStatus | null>(null);
@@ -92,7 +92,7 @@ export function AdminPanel() {
                 <th className="py-2 pr-3">Role</th>
                 <th className="py-2 pr-3">Plan</th>
                 <th className="py-2 pr-3">Status</th>
-                <th className="py-2 pr-3">Tx limit</th>
+                <th className="py-2 pr-3">Included events</th>
                 <th className="py-2">Save</th>
               </tr>
             </thead>
@@ -119,9 +119,7 @@ function UserRow({
   const isAdmin = user.role === 'admin';
   const [plan, setPlan] = useState(user.plan);
   const [status, setStatus] = useState(user.subscriptionStatus);
-  const [txLimit, setTxLimit] = useState(
-    user.txLimitUnlimited ? 'Unlimited' : String(user.txLimit)
-  );
+  const [includedUnits, setIncludedUnits] = useState(String(user.includedUnits));
 
   if (isAdmin) {
     return (
@@ -136,7 +134,7 @@ function UserRow({
         <td className="py-3 pr-3">
           <span className="text-xs font-medium text-gain">active</span>
         </td>
-        <td className="py-3 pr-3 text-xs font-semibold text-gain">Unlimited</td>
+        <td className="py-3 pr-3 text-xs font-semibold text-gain">Full access</td>
         <td className="py-3 text-xs text-low">—</td>
       </tr>
     );
@@ -152,7 +150,7 @@ function UserRow({
           onChange={(e) => setPlan(e.target.value as PublicUser['plan'])}
           className="sl-select text-xs"
         >
-          {PLANS.filter((p) => p !== 'trial').map((p) => (
+          {PLANS.map((p) => (
             <option key={p} value={p}>{formatPlanLabel(p)}</option>
           ))}
         </select>
@@ -171,8 +169,8 @@ function UserRow({
       <td className="py-3 pr-3">
         <input
           type="text"
-          value={txLimit}
-          onChange={(e) => setTxLimit(e.target.value)}
+          value={includedUnits}
+          onChange={(e) => setIncludedUnits(e.target.value)}
           className="w-28 rounded border border-white/10 bg-elev-2 px-2 py-1 text-xs"
         />
       </td>
@@ -184,8 +182,7 @@ function UserRow({
             onSave({
               plan,
               subscriptionStatus: status,
-              customTxLimit:
-                txLimit.toLowerCase() === 'unlimited' ? 9999999 : Number(txLimit)
+              customIncludedUnits: includedUnits.trim() === '' ? null : Number(includedUnits)
             })
           }
         >

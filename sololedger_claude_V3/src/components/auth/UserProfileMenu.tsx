@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { User, LogOut, Settings, CreditCard, Shield } from 'lucide-react';
 import { useAuth } from '@/lib/saas/authContext';
-import { formatPlanLabel, formatTxLimit } from '@/lib/saas/plans';
+import { formatPlanLabel, formatUnitLimit } from '@/lib/saas/plans';
 import { cn } from '@/lib/utils';
 
 type ProfileModalProps = {
@@ -28,7 +28,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
           <div>
             <p className="font-semibold text-mid">{user.email}</p>
             <p className="text-xs capitalize text-low">
-              {user.role === 'admin' ? 'Administrator · Unlimited' : `${formatPlanLabel(user.plan)} plan`}
+              {user.role === 'admin' ? 'Administrator · full access' : `${formatPlanLabel(user.plan)} plan`}
             </p>
           </div>
         </div>
@@ -45,8 +45,8 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
                 <dd className="font-medium capitalize text-mid">{user.subscriptionStatus}</dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="text-low">Transaction limit</dt>
-                <dd className="font-medium text-mid">{formatTxLimit(user.txLimit)} / year</dd>
+                <dt className="text-low">Included events</dt>
+                <dd className="font-medium text-mid">{formatUnitLimit(user.includedUnits)} / year</dd>
               </div>
               {user.subscriptionExpiresAt && (
                 <div className="flex justify-between gap-4">

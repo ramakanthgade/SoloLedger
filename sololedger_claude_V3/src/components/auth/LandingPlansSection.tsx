@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { PLAN_CATALOG, SELECTED_PLAN_KEY, type PaidPlanId } from '@/lib/saas/planCatalog';
+import { PLAN_CATALOG, SELECTED_PLAN_KEY, type PlanId } from '@/lib/saas/planCatalog';
 
 type LandingPlansSectionProps = {
-  onSelectPlan: (planId: PaidPlanId) => void;
+  onSelectPlan: (planId: PlanId) => void;
 };
 
 export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) {
-  const [hovered, setHovered] = useState<PaidPlanId | null>(null);
+  const [hovered, setHovered] = useState<PlanId | null>(null);
 
   return (
     <section className="relative py-20">
@@ -21,11 +21,11 @@ export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) 
             Pick a plan. Start free.
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-lg text-slate-600">
-            Start free with up to 100 transactions. Upgrade when you need more volume.
+            Start free with up to 100 taxable disposals + income events. Upgrade when you need more volume.
           </p>
         </div>
 
-        <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-5">
+        <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {PLAN_CATALOG.map((p) => {
             const Icon = p.icon;
             const active = hovered === p.id || p.featured;
@@ -68,7 +68,7 @@ export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) 
                 <span className="mt-2 text-sm font-semibold text-blue">{p.limit}</span>
                 <span className="mt-1 text-xs text-slate-500">{p.tagline}</span>
                 <span className="mt-4 text-sm font-semibold text-hi group-hover:text-blue">
-                  {p.contactOnly ? 'Contact us →' : p.id === 'starter' ? 'Start free →' : 'Get started →'}
+                  {p.contactOnly ? 'Contact us →' : p.id === 'local' ? 'Start free →' : 'Get started →'}
                 </span>
               </button>
             );

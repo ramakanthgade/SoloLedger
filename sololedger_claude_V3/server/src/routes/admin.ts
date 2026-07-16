@@ -96,12 +96,18 @@ adminRouter.patch('/users/:id', (req, res) => {
     ...user,
     plan: body.plan ?? user.plan,
     subscriptionStatus: body.subscriptionStatus ?? user.subscriptionStatus,
-    customTxLimit:
-      body.customTxLimit === null || body.customTxLimit === ''
+    customIncludedUnits:
+      body.customIncludedUnits === null || body.customIncludedUnits === ''
         ? undefined
-        : body.customTxLimit != null
-          ? Number(body.customTxLimit)
-          : user.customTxLimit
+        : body.customIncludedUnits != null
+          ? Number(body.customIncludedUnits)
+          : user.customIncludedUnits,
+    overageBlocks:
+      body.overageBlocks === null || body.overageBlocks === ''
+        ? undefined
+        : body.overageBlocks != null
+          ? Number(body.overageBlocks)
+          : user.overageBlocks
   };
   upsertUser(updated);
   res.json({ user: publicUser(updated) });
@@ -115,7 +121,6 @@ adminRouter.post('/check-subscription', authMiddleware, (req: AuthedRequest, res
   }
   res.json({
     active: isSubscriptionActive(user),
-    plan: user.plan,
-    txLimit: user.plan === 'trial' ? 25 : undefined
+    plan: user.plan
   });
 });

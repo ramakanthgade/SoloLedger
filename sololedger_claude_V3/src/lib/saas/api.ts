@@ -11,8 +11,11 @@ export interface PublicUser {
   plan: PlanId;
   subscriptionStatus: string;
   subscriptionExpiresAt: string | null;
-  txLimit: number;
-  txLimitUnlimited?: boolean;
+  /** Included taxable disposals + income events per tax year (unit-based billing). */
+  includedUnits: number;
+  customIncludedUnits?: number | null;
+  /** Enterprise only — prepaid 1,000-event packs above the base allowance. */
+  overageBlocks?: number | null;
   subscriptionActive: boolean;
 }
 

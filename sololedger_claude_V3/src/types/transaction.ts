@@ -139,6 +139,12 @@ export interface TaxSettings {
   /** For the "other EVM chain" manual fallback in wallet lookup. */
   customExplorerBaseUrl?: string;
   customExplorerApiKey?: string;
+  /**
+   * On-device Ed25519-signed license key (D6). Bearer credential stored as-is
+   * via the existing settings persistence (no Dexie schema bump). Re-verified
+   * on load by `src/lib/billing/license.ts`.
+   */
+  licenseKey?: string;
 }
 
 export interface TaxYearSummary {

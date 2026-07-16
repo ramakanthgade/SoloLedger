@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import type { PlanId } from './plans.js';
+import { migrateLegacyPlan, type PlanId } from './plans.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 /** Override with Railway Volume mount path, e.g. DATA_DIR=/data */
@@ -22,8 +22,10 @@ export interface UserRecord {
   subscriptionStatus: 'active' | 'trialing' | 'past_due' | 'canceled' | 'none';
   subscriptionExpiresAt: string | null;
   stripeCustomerId?: string;
-  /** Admin override — if set, replaces plan default tx limit */
-  customTxLimit?: number | null;
+  /** Admin override — if set, replaces the plan's default included-unit allowance. */
+  customIncludedUnits?: number | null;
+  /** Enterprise only — prepaid 1,000-event packs bought above the 10,000 base. */
+  overageBlocks?: number | null;
   createdAt: string;
 }
 
@@ -48,7 +50,12 @@ interface StoreData {
   users: UserRecord[];
   serverConfig: ServerConfig;
   apiKeys: ServerApiKeys;
+  /** Bumped when the stored user/plan shape changes; drives one-time migrations. */
+  schemaVersion?: number;
 }
+
+/** Current store schema version — see migrateStore(). */
+export const STORE_SCHEMA_VERSION = 1;
 
 const DEFAULT_CONFIG: ServerConfig = {
   priceApiEnabled: process.env.PRICE_API_ENABLED !== 'false',
@@ -169,7 +176,12 @@ function readStoreFile(): StoreData {
 function ensureStore(): StoreData {
   if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
   if (!fs.existsSync(STORE_FILE)) {
-    const initial: StoreData = { users: [], serverConfig: { ...DEFAULT_CONFIG }, apiKeys: {} };
+    const initial: StoreData = {
+      users: [],
+      serverConfig: { ...DEFAULT_CONFIG },
+      apiKeys: {},
+      schemaVersion: STORE_SCHEMA_VERSION
+    };
     writeStoreFile(JSON.stringify(initial, null, 2));
     return initial;
   }
@@ -178,10 +190,41 @@ function ensureStore(): StoreData {
 
 function migrateStore(data: StoreData): StoreData {
   if (!data.apiKeys) data.apiKeys = {};
+  return normalizeLegacyPlans(data);
+}
+
+/**
+ * One-time legacy normalization (D6). The old model had a FREE "Starter"
+ * (100-tx) tier and a "trial" tier; both now map to the new free `local`
+ * tier. The old `customTxLimit` field is renamed to `customIncludedUnits`.
+ * Idempotent and guarded by STORE_SCHEMA_VERSION so it only rewrites once.
+ */
+export function normalizeLegacyPlans(data: StoreData): StoreData {
+  if (data.schemaVersion === STORE_SCHEMA_VERSION) return data;
+
+  for (const user of data.users) {
+    // Migrate old plan ids (`starter`/`trial` FREE tier → new free `local`).
+    user.plan = migrateLegacyPlan(user.plan as string);
+
+    // Rename the legacy admin override field.
+    const legacy = user as UserRecord & { customTxLimit?: number | null };
+    if (legacy.customTxLimit != null && user.customIncludedUnits == null) {
+      user.customIncludedUnits = legacy.customTxLimit;
+    }
+    delete legacy.customTxLimit;
+  }
+
+  data.schemaVersion = STORE_SCHEMA_VERSION;
   return data;
 }
 
-let cache: StoreData = migrateStore(ensureStore());
+const rawStore = ensureStore();
+const needsMigration = rawStore.schemaVersion !== STORE_SCHEMA_VERSION;
+let cache: StoreData = migrateStore(rawStore);
+// Persist the one-time legacy normalization so it does not re-run each load.
+if (needsMigration) {
+  writeStoreFile(JSON.stringify(cache, null, 2));
+}
 
 function persist(): void {
   writeStoreFile(JSON.stringify(cache, null, 2));

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useAuth } from '@/lib/saas/authContext';
 import { startCheckout } from '@/lib/saas/api';
-import { formatPlanLabel, formatTxLimit } from '@/lib/saas/plans';
+import { formatPlanLabel, formatUnitLimit } from '@/lib/saas/plans';
 import { PLAN_CATALOG, SELECTED_PLAN_KEY } from '@/lib/saas/planCatalog';
 
 export function SubscriptionCard() {
@@ -15,8 +15,8 @@ export function SubscriptionCard() {
     typeof sessionStorage !== 'undefined' ? sessionStorage.getItem(SELECTED_PLAN_KEY) : null;
 
   const upgrade = async (plan: string) => {
-    if (plan === 'starter') {
-      setError('Starter is free — up to 100 transactions per year.');
+    if (plan === 'local') {
+      setError('Local is free forever — up to 100 taxable disposals + income events per tax year.');
       return;
     }
     setBusy(plan);
@@ -44,11 +44,11 @@ export function SubscriptionCard() {
               {formatPlanLabel(user.plan)}
             </h3>
             <p className="mt-1 text-sm text-low">
-              {formatTxLimit(user.txLimit)} transactions per year
+              {formatUnitLimit(user.includedUnits)} taxable disposals + income events per tax year
               {!user.subscriptionActive && ' · renewal needed'}
             </p>
           </div>
-          {user.plan === 'starter' && (
+          {user.plan === 'local' && (
             <span className="rounded-full bg-violet/15 px-3 py-1 text-xs font-semibold text-blue">
               Free tier
             </span>
