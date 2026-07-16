@@ -8,6 +8,11 @@ import { defineConfig } from 'vitest/config';
  * directory. Individual tests override DATA_DIR + reset modules as needed.
  */
 export default defineConfig({
+  // The server is a pure Node/Express workspace with no CSS. Disable PostCSS so
+  // Vitest does not walk up and load the client's root `postcss.config.js`,
+  // which requires `tailwindcss` — a client-only dependency not installed in
+  // `server/node_modules` (that lookup is what broke the server CI job).
+  css: { postcss: { plugins: [] } },
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts'],

@@ -4,7 +4,7 @@ import type { Config } from 'tailwindcss';
  * Aurora (v4) — dark-only, luminous fintech theme.
  * Semantic color tokens map to the CSS custom properties declared in
  * `src/index.css` `:root`, so the palette lives in one place and utilities
- * such as `bg-base`, `text-hi`, `text-mid`, `text-gain` resolve to the
+ * such as `bg-canvas`, `text-hi`, `text-mid`, `text-gain` resolve to the
  * locked Aurora hex values.
  */
 export default {

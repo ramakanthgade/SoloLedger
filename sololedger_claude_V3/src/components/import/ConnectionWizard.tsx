@@ -24,10 +24,7 @@ import {
   countCsvImportTransactions,
   deduplicateTransactions
 } from '@/lib/storage/db';
-import {
-  convertTransactionsToReportingCurrency,
-  normalizeFiatToReportingCurrencyLocal
-} from '@/lib/pricing/fiatConvert';
+import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
@@ -306,11 +303,11 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         fiatValue: normalizeFiatMagnitude(t.fiatValue),
         feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
       }));
-      // Live price lookup OFF — no network FX. INR-priced rows normalize in place;
-      // foreign-fiat rows stay unpriced and surface as "price unavailable" in Review.
-      const converted = priceApiEnabled
-        ? (await convertTransactionsToReportingCurrency(stamped, settings)).transactions
-        : normalizeFiatToReportingCurrencyLocal(stamped, settings.reportingCurrency);
+      const { transactions: converted } = await convertOrNormalizeForImport(
+        stamped,
+        settings,
+        priceApiEnabled
+      );
       await db.transactions.bulkPut(converted);
       await deduplicateTransactions();
       const count = await countCsvImportTransactions(preview.hash);

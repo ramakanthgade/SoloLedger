@@ -100,7 +100,10 @@ function MainApp() {
     return (
       <OnboardingFlow
         onDone={() => setOnboardingDismissed(true)}
-        onSkip={() => setOnboardingDismissed(true)}
+        onSkip={() => {
+          setActive('import');
+          setOnboardingDismissed(true);
+        }}
       />
     );
   }

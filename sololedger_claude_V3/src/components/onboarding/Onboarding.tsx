@@ -50,6 +50,16 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
     })();
   }, []);
 
+  const skipLink = onSkip && (
+    <button
+      type="button"
+      onClick={onSkip}
+      className="text-center text-xs font-medium text-low transition-colors hover:text-mid focus:outline-none focus-visible:underline"
+    >
+      Skip setup — go straight to Import
+    </button>
+  );
+
   return (
     <div className="min-h-screen bg-canvas px-6 py-12 lg:px-8">
       <div className="mx-auto max-w-2xl">
@@ -129,15 +139,7 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
               <Button className="w-full" onClick={() => setStep(1)}>
                 Continue <ChevronRight className="h-4 w-4" />
               </Button>
-              {onSkip && (
-                <button
-                  type="button"
-                  onClick={onSkip}
-                  className="text-center text-xs font-medium text-low transition-colors hover:text-mid focus:outline-none focus-visible:underline"
-                >
-                  Skip setup — go straight to Import
-                </button>
-              )}
+              {skipLink}
             </div>
           </section>
         ) : (
@@ -181,15 +183,7 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
                   Import my first trades <ChevronRight className="h-4 w-4" />
                 </Button>
               </div>
-              {onSkip && (
-                <button
-                  type="button"
-                  onClick={onSkip}
-                  className="text-center text-xs font-medium text-low transition-colors hover:text-mid focus:outline-none focus-visible:underline"
-                >
-                  Skip setup — go straight to Import
-                </button>
-              )}
+              {skipLink}
             </div>
           </section>
         )}
