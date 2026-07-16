@@ -23,7 +23,7 @@
  * figure as a non-advice estimate.
  */
 import type { Jurisdiction } from '@/types/transaction';
-import type { MatchedGainRow } from '@/lib/costBasis/matchedGains';
+import type { MatchedGainRow, MatchedGainStatus } from '@/lib/costBasis/matchedGains';
 import { add, toNumber } from '@/lib/costBasis/decimal';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { isInFy } from '@/lib/utils';
@@ -44,6 +44,12 @@ export interface ScheduleVdaRow {
   considerationReceived: number;
   /** Income / gain on the transfer (consideration − cost of acquisition). */
   incomeGain: number;
+  /**
+   * Row provenance. `missing_cost_basis` means the transfer had no matched
+   * acquisition — cost of acquisition is 0 (full consideration taxed) and the
+   * filer must reconcile. Defaults to `matched`.
+   */
+  status: MatchedGainStatus;
 }
 
 /** Non-advice estimated-liability statement for the FY. */
@@ -55,6 +61,12 @@ export interface ScheduleVdaEstimate {
   taxableGains: number;
   /** Magnitude of disallowed losses (negative-gain transfers), for disclosure. */
   disallowedLosses: number;
+  /**
+   * Number of transfers included at ZERO cost of acquisition because no
+   * acquisition was matched (`status === 'missing_cost_basis'`). These are in
+   * the taxable base above but must be reconciled by the filer.
+   */
+  reviewRequiredCount: number;
   /** Flat 30% tax on the taxable base. */
   tax: number;
   /** 4% health & education cess on the tax. */
@@ -136,7 +148,8 @@ export function buildScheduleVdaRows(
       transferDate: r.sellDate,
       costOfAcquisition: r.costBasis,
       considerationReceived: r.proceeds,
-      incomeGain: r.gain
+      incomeGain: r.gain,
+      status: r.status ?? 'matched'
     }));
 }
 
@@ -151,7 +164,9 @@ export function buildScheduleVdaEstimate(
 ): ScheduleVdaEstimate {
   let taxableGains = 0;
   let disallowedLosses = 0;
+  let reviewRequiredCount = 0;
   for (const r of rows) {
+    if (r.status === 'missing_cost_basis') reviewRequiredCount += 1;
     if (r.incomeGain > 0) taxableGains = toNumber(add(taxableGains, r.incomeGain));
     else if (r.incomeGain < 0) disallowedLosses = toNumber(add(disallowedLosses, -r.incomeGain));
   }
@@ -162,6 +177,7 @@ export function buildScheduleVdaEstimate(
   return {
     taxableGains,
     disallowedLosses,
+    reviewRequiredCount,
     tax,
     cess,
     estimatedLiability: total,
@@ -239,6 +255,11 @@ export function serializeScheduleVdaCsv(report: ScheduleVdaReport): string {
   lines.push('# Estimated liability (non-advice)');
   lines.push(`# Taxable gains (positive transfers only): ${e.taxableGains}`);
   lines.push(`# Disallowed losses (excluded, Section 115BBH): ${e.disallowedLosses}`);
+  if (e.reviewRequiredCount > 0) {
+    lines.push(
+      `# REVIEW REQUIRED — transfers with no matched acquisition (taxed at zero cost of acquisition): ${e.reviewRequiredCount}`
+    );
+  }
   lines.push(`# Tax @ 30% (Section 115BBH): ${e.tax}`);
   lines.push(`# Health & education cess @ 4%: ${e.cess}`);
   lines.push(`# Estimated liability (30% + cess): ${e.estimatedLiability}`);

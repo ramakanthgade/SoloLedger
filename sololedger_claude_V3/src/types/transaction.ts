@@ -161,6 +161,12 @@ export interface TaxYearSummary {
   totalProceeds: number;
   totalCostBasis: number;
   totalGain: number;
+  /**
+   * The taxable base actually charged, after any jurisdiction inclusion rate is
+   * applied (Canada: 50% of the net gain). Equals `totalGain` where no
+   * inclusion rate applies (IN/US/AE). Never negative.
+   */
+  taxableGain?: number;
   shortTermGain?: number;   // where jurisdiction distinguishes holding periods
   longTermGain?: number;
   /** Sum of positive-gain consumed lots (gross gains, before any offset). */
@@ -176,6 +182,12 @@ export interface TaxYearSummary {
   inclusionRate?: number;
   /** Non-advice estimated tax (e.g. India VDA 30% + 4% cess). */
   estimatedTax?: number;
+  /**
+   * Count of matched-gain rows in the year with `status === 'missing_cost_basis'`
+   * — disposal proceeds included at zero cost basis because no acquisition was
+   * matched. Flagged so the filer can reconcile before relying on the figures.
+   */
+  reviewRequiredCount?: number;
   /**
    * DEPRECATED / never raised as of B9a. Previously flagged India income/gift/
    * airdrop VDA lots as having receipt-side treatment that was not yet modelled.

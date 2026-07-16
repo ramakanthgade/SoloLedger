@@ -33,6 +33,7 @@ describe('T7 caveat — "estimate" / "not tax advice" is visible on tax figures'
       estimate: {
         taxableGains: 100_000,
         disallowedLosses: 0,
+        reviewRequiredCount: 0,
         tax: 30_000,
         cess: 1_200,
         estimatedLiability: 31_200,

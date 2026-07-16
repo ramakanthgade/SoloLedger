@@ -2,7 +2,7 @@ import { addYears } from 'date-fns';
 import type { Disposal, Jurisdiction, TaxYearSummary } from '@/types/transaction';
 import type { MatchedGainRow } from '@/lib/costBasis/matchedGains';
 import { add, sub, toNumber } from '@/lib/costBasis/decimal';
-import { estimateIndiaVDA, sumReceiptIncome } from '@/lib/tax/estimate';
+import { applyInclusion, estimateIndiaVDA, sumReceiptIncome } from '@/lib/tax/estimate';
 import { isInFy } from '@/lib/utils';
 
 /**
@@ -100,6 +100,13 @@ export function summarizeYear(
   extras?: {
     derivativesIncome?: number;
     derivativesExpenses?: number;
+    /**
+     * India Section 56(2)(x) receipt-side income events (FMV-at-receipt of
+     * income/gift/airdrop/staking VDA lots, MINING EXCLUDED). Build with
+     * `buildReceiptIncomeRows`. When supplied, `vdaReceiptIncome` derives from
+     * these typed rows; when omitted it falls back to `incomeEvents`.
+     */
+    receiptIncomeEvents?: { fiatValue: number; timestamp?: number }[];
   }
 ): TaxYearSummary {
   const rules = JURISDICTIONS[jurisdiction];
@@ -150,8 +157,15 @@ export function summarizeYear(
   // — a receipt-side charge separate from the 30% + 4% cess on the later VDA
   // transfer under Section 115BBH. Surfaced so reports can show it as its own
   // line. Slab-rate tax is out of scope (depends on total income).
+  //
+  // Prefer the typed receipt-income events (mining excluded, gifts/airdrops
+  // included via `buildReceiptIncomeRows`); fall back to `incomeEvents` for
+  // callers that have not been migrated yet.
+  const receiptEventsForYear = (extras?.receiptIncomeEvents ?? incomeEvents).filter(
+    (e) => e.timestamp != null && isInFy(e.timestamp, year, jurisdiction)
+  );
   const vdaReceiptIncome =
-    jurisdiction === 'IN' ? sumReceiptIncome(yearIncomeEvents) : undefined;
+    jurisdiction === 'IN' ? sumReceiptIncome(receiptEventsForYear) : undefined;
 
   // Legal basis, VALIDATED FROM PRIMARY SOURCES (was a CA-validation gate):
   //  - Section 115BBH(2)(a): the ONLY deduction on a VDA transfer is the cost
@@ -166,8 +180,23 @@ export function summarizeYear(
   const incomeGiftTreatmentLimited = false;
 
   const inclusionRate = jurisdiction === 'CA' ? CA_INCLUSION_RATE : undefined;
+
+  // Taxable base actually used for tax, per jurisdiction:
+  //  - CA: the inclusion-adjusted amount (50% of the net gain) is applied here,
+  //    not left as mere metadata. Losses reduce the net first (offset allowed),
+  //    then the inclusion rate scales the positive remainder; a net loss yields
+  //    a zero taxable base (no negative inclusion).
+  //  - IN: `totalGain` is already the 115BBH positive-gains-only base.
+  //  - US/AE: `totalGain` is the net gain/loss.
+  const taxableGain =
+    inclusionRate != null ? applyInclusion(Math.max(0, totalGain), inclusionRate) : totalGain;
+
   const estimatedTax =
     jurisdiction === 'IN' ? estimateIndiaVDA(totalGain).total : undefined;
+
+  // Rows whose proceeds have no proven acquisition cost (included at zero cost
+  // basis, flagged for the filer to reconcile).
+  const reviewRequiredCount = yearRows.filter((r) => r.status === 'missing_cost_basis').length;
 
   return {
     year,
@@ -175,6 +204,7 @@ export function summarizeYear(
     totalProceeds,
     totalCostBasis,
     totalGain,
+    taxableGain,
     shortTermGain: rules.hasHoldingPeriodDistinction ? shortTermGain : undefined,
     longTermGain: rules.hasHoldingPeriodDistinction ? longTermGain : undefined,
     totalGains,
@@ -182,6 +212,7 @@ export function summarizeYear(
     disallowedLosses,
     inclusionRate,
     estimatedTax,
+    reviewRequiredCount,
     incomeGiftTreatmentLimited,
     vdaReceiptIncome,
     totalIncome,

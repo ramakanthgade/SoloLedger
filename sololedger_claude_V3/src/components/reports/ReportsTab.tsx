@@ -19,7 +19,8 @@ import {
   buildDerivativeBusinessExpenseRows,
   buildDerivativeBusinessIncomeRows,
   buildDerivativeCapitalGainRows,
-  buildMatchedGainRows
+  buildMatchedGainRows,
+  buildReceiptIncomeRows
 } from '@/lib/costBasis/matchedGains';
 import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 import { aggregateTds } from '@/lib/tax/tds';
@@ -75,6 +76,18 @@ export function ReportsTab() {
     [transactions]
   );
 
+  // India Section 56(2)(x) receipt-side income: income/gift/airdrop/staking
+  // receipts at FMV, MINING EXCLUDED (zero-cost case). Single lib source of
+  // truth so `summary.vdaReceiptIncome` is correct.
+  const receiptIncomeEvents = useMemo(
+    () =>
+      buildReceiptIncomeRows(transactions).map((r) => ({
+        fiatValue: r.fiatValue,
+        timestamp: r.timestamp
+      })),
+    [transactions]
+  );
+
   const yearDerivIncome = useMemo(() => {
     return buildDerivativeBusinessIncomeRows(transactions)
       .filter((r) => isInFy(r.date, year, jurisdiction))
@@ -99,9 +112,10 @@ export function ReportsTab() {
     () =>
       summarizeYear(disposals, matchedRows, incomeEvents, year, jurisdiction, {
         derivativesIncome: businessMode ? yearDerivIncome : undefined,
-        derivativesExpenses: businessMode ? yearDerivExpense : undefined
+        derivativesExpenses: businessMode ? yearDerivExpense : undefined,
+        receiptIncomeEvents
       }),
-    [disposals, matchedRows, incomeEvents, year, jurisdiction, businessMode, yearDerivIncome, yearDerivExpense]
+    [disposals, matchedRows, incomeEvents, receiptIncomeEvents, year, jurisdiction, businessMode, yearDerivIncome, yearDerivExpense]
   );
 
   const yearDisposals = useMemo(

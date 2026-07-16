@@ -26,7 +26,8 @@ function row(over: Partial<MatchedGainRow>): MatchedGainRow {
     buyTxId: over.buyTxId ?? 'buy-tx',
     gain: over.gain ?? proceeds - costBasis,
     holdingDays: over.holdingDays ?? 365,
-    method: over.method ?? 'FIFO'
+    method: over.method ?? 'FIFO',
+    status: over.status ?? 'matched'
   };
 }
 
@@ -47,7 +48,8 @@ describe('buildScheduleVdaRows — 1:1 map to matched lots', () => {
       transferDate: Date.UTC(2025, 8, 5),
       costOfAcquisition: 20_000,
       considerationReceived: 35_000,
-      incomeGain: 15_000
+      incomeGain: 15_000,
+      status: 'matched'
     });
   });
 
@@ -159,6 +161,28 @@ describe('buildScheduleVdaReport + CSV', () => {
     // non-advice + no limited banner
     expect(csv).toMatch(/non-advice estimate/i);
     expect(csv).not.toMatch(/limited/i);
+  });
+
+  it('threads missing_cost_basis status into rows and counts them in the estimate + CSV', () => {
+    const matched = row({ id: 'd:lotA', proceeds: 100_000, costBasis: 60_000, gain: 40_000, status: 'matched' });
+    const unmatched = row({
+      id: 'd:unmatched',
+      proceeds: 50_000,
+      costBasis: 0,
+      gain: 50_000,
+      status: 'missing_cost_basis'
+    });
+    const rows = buildScheduleVdaRows([matched, unmatched], 2025, 'IN');
+    expect(rows.find((r) => r.id === 'd:unmatched')?.status).toBe('missing_cost_basis');
+
+    const estimate = buildScheduleVdaEstimate(rows, 0);
+    // Unmatched proceeds are taxed in full: taxable base = 40k + 50k.
+    expect(estimate.taxableGains).toBe(90_000);
+    expect(estimate.reviewRequiredCount).toBe(1);
+
+    const report = buildScheduleVdaReport([matched, unmatched], 0, 2025, 'IN');
+    const csv = serializeScheduleVdaCsv(report);
+    expect(csv).toMatch(/# REVIEW REQUIRED/);
   });
 
   it('IST date keys reflect the +05:30 civil calendar', () => {

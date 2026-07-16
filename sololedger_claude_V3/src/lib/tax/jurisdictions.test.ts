@@ -23,7 +23,8 @@ function row(overrides: Partial<MatchedGainRow>): MatchedGainRow {
     buyTxId: overrides.buyTxId ?? `buy${seq}`,
     gain: overrides.gain ?? proceeds - costBasis,
     holdingDays: overrides.holdingDays ?? 0,
-    method: overrides.method ?? 'FIFO'
+    method: overrides.method ?? 'FIFO',
+    status: overrides.status ?? 'matched'
   };
 }
 
@@ -153,6 +154,82 @@ describe('summarizeYear — per-lot ST/LT split (US, exact calendar)', () => {
     const s = summarizeYear([disposal({ disposedAt: sellDate })], rows, [], 2021, 'US');
     expect(s.longTermGain).toBe(100);
     expect(s.shortTermGain).toBe(0);
+  });
+});
+
+describe('summarizeYear — unmatched (missing cost basis) rows in totals', () => {
+  it('IN: a fully-unmatched zero-cost row puts full proceeds in the taxable base and flags review', () => {
+    const sellDate = Date.UTC(2024, 5, 1);
+    const rows = [
+      row({ proceeds: 500, costBasis: 0, gain: 500, sellDate, status: 'missing_cost_basis' })
+    ];
+    const s = summarizeYear([disposal({ disposedAt: sellDate })], rows, [], 2024, 'IN');
+    expect(s.totalGain).toBe(500);       // taxed in full
+    expect(s.totalGains).toBe(500);
+    expect(s.reviewRequiredCount).toBe(1);
+  });
+
+  it('IN: a partially-matched disposal includes both the matched gain and the unmatched proceeds', () => {
+    const sellDate = Date.UTC(2024, 5, 1);
+    const rows = [
+      row({ proceeds: 300, costBasis: 100, gain: 200, sellDate, status: 'matched' }),
+      row({ proceeds: 300, costBasis: 0, gain: 300, sellDate, status: 'missing_cost_basis' })
+    ];
+    const s = summarizeYear([disposal({ disposedAt: sellDate })], rows, [], 2024, 'IN');
+    expect(s.totalGain).toBe(500);       // 200 matched + 300 unmatched, taxed
+    expect(s.reviewRequiredCount).toBe(1);
+  });
+});
+
+describe('summarizeYear — Canada 50% inclusion applied to the taxable base', () => {
+  it('applies inclusion to the net gain', () => {
+    const sellDate = Date.UTC(2024, 5, 1);
+    const rows = [
+      row({ proceeds: 1000, costBasis: 200, sellDate }), // +800
+      row({ proceeds: 100, costBasis: 300, sellDate })   // -200
+    ];
+    const s = summarizeYear([disposal({ disposedAt: sellDate })], rows, [], 2024, 'CA');
+    expect(s.inclusionRate).toBe(0.5);
+    expect(s.totalGain).toBe(600);           // net (offset allowed): 800 − 200
+    expect(s.taxableGain).toBe(300);         // 50% inclusion of the net gain
+    // Raw gains/losses preserved for display.
+    expect(s.totalGains).toBe(800);
+    expect(s.totalLosses).toBe(200);
+  });
+
+  it('a net loss yields a zero taxable base (no negative inclusion)', () => {
+    const sellDate = Date.UTC(2024, 5, 1);
+    const rows = [row({ proceeds: 100, costBasis: 500, sellDate })]; // -400
+    const s = summarizeYear([disposal({ disposedAt: sellDate })], rows, [], 2024, 'CA');
+    expect(s.totalGain).toBe(-400);
+    expect(s.taxableGain).toBe(0);
+  });
+});
+
+describe('summarizeYear — receipt-side income (Sec 56(2)(x))', () => {
+  it('derives vdaReceiptIncome from typed receipt events (mining excluded upstream)', () => {
+    const ts = Date.UTC(2024, 5, 1);
+    // Caller supplies receipt events with mining already excluded.
+    const s = summarizeYear([], [], [], 2024, 'IN', {
+      receiptIncomeEvents: [
+        { fiatValue: 1000, timestamp: ts }, // gift/airdrop/staking
+        { fiatValue: 500, timestamp: ts }
+      ]
+    });
+    expect(s.vdaReceiptIncome).toBe(1500);
+  });
+
+  it('prefers receiptIncomeEvents over the legacy incomeEvents for vdaReceiptIncome', () => {
+    const ts = Date.UTC(2024, 5, 1);
+    const s = summarizeYear(
+      [],
+      [],
+      [{ fiatValue: 9999, timestamp: ts }], // legacy income (would include mining)
+      2024,
+      'IN',
+      { receiptIncomeEvents: [{ fiatValue: 700, timestamp: ts }] }
+    );
+    expect(s.vdaReceiptIncome).toBe(700);
   });
 });
 
