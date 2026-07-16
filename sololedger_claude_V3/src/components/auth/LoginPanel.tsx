@@ -30,23 +30,23 @@ export function LoginPanel() {
       <Card className="w-full max-w-md">
         <CardHeader>
           <CardTitle>{mode === 'login' ? 'Sign in to SoloLedger' : 'Create your account'}</CardTitle>
-          <p className="text-sm text-mist-400">
+          <p className="text-sm text-low">
             Your transaction data stays in your browser. We only authenticate you and proxy pricing/wallet APIs.
           </p>
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="space-y-4">
-            <label className="block text-sm text-mist-300">
+            <label className="block text-sm text-low">
               Email
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-ink-600 bg-ink-800 px-3 py-2 text-mist"
+                className="mt-1 block w-full rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-mid"
               />
             </label>
-            <label className="block text-sm text-mist-300">
+            <label className="block text-sm text-low">
               Password
               <input
                 type="password"
@@ -54,7 +54,7 @@ export function LoginPanel() {
                 minLength={8}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-ink-600 bg-ink-800 px-3 py-2 text-mist"
+                className="mt-1 block w-full rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-mid"
               />
             </label>
             {error && <p className="text-sm text-loss">{error}</p>}
@@ -64,7 +64,7 @@ export function LoginPanel() {
           </form>
           <button
             type="button"
-            className="mt-4 text-sm text-emerald-600 underline"
+            className="mt-4 text-sm text-gain underline"
             onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
           >
             {mode === 'login' ? 'Need an account? Register' : 'Already have an account? Sign in'}

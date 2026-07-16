@@ -4,19 +4,19 @@ import { cn } from '@/lib/utils';
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn('rounded-lg border border-ink-700 bg-ink-800 shadow-card', className)}
+      className={cn('rounded-lg border border-white/10 bg-elev-2 shadow-card', className)}
       {...props}
     />
   );
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn('border-b border-ink-700 bg-ink-900/50 px-5 py-4', className)} {...props} />;
+  return <div className={cn('border-b border-white/10 bg-elev-1/50 px-5 py-4', className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
   return (
-    <h3 className={cn('text-sm font-semibold tracking-tight text-ink-950', className)} {...props} />
+    <h3 className={cn('text-sm font-semibold tracking-tight text-hi', className)} {...props} />
   );
 }
 
@@ -27,12 +27,12 @@ export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDi
 type BadgeTone = 'neutral' | 'emerald' | 'gold' | 'loss' | 'violet' | 'pink';
 
 const badgeTones: Record<BadgeTone, string> = {
-  neutral: 'bg-mist-100 text-mist-400 border border-ink-700',
-  emerald: 'bg-teal-50 text-emerald-600 border border-emerald/25',
-  gold: 'bg-amber-50 text-gold-600 border border-amber-200',
-  loss: 'bg-red-50 text-loss border border-red-200',
-  violet: 'bg-ink-900 text-ink-950 border border-ink-700',
-  pink: 'bg-teal-50 text-emerald-600 border border-emerald/25'
+  neutral: 'bg-elev-3 text-mid border border-white/10',
+  emerald: 'bg-gain/12 text-gain border border-gain/30',
+  gold: 'bg-warn/12 text-warn border border-warn/30',
+  loss: 'bg-loss/12 text-loss border border-loss/30',
+  violet: 'bg-violet/12 text-violet border border-violet/30',
+  pink: 'bg-teal/12 text-teal border border-teal/30'
 };
 
 export function Badge({

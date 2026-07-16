@@ -43,7 +43,7 @@ const PHASE_LABEL: Record<string, string> = {
 
 function LoadingScreen({ message }: { message: string }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-ink text-sm text-mist-400">
+    <div className="flex min-h-screen items-center justify-center bg-base text-sm text-low">
       {message}
     </div>
   );
@@ -68,10 +68,10 @@ function MainApp() {
   }
 
   return (
-    <div className="min-h-screen bg-ink" key={user?.id ?? 'guest'}>
-      <header className="bg-gradient-to-br from-navy via-navy-800 to-navy-700">
+    <div className="min-h-screen bg-base" key={user?.id ?? 'guest'}>
+      <header className="border-b border-white/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
-          <BrandLogo variant="light" />
+          <BrandLogo variant="on-glass" />
           <div className="flex items-center gap-3">
             <LocalOnlyBadge />
             <UserProfileMenu onOpenSettings={() => setActive('settings')} />
@@ -79,7 +79,7 @@ function MainApp() {
         </div>
       </header>
 
-      <div className="border-b border-ink-700 bg-ink-800/95 shadow-sm backdrop-blur-sm">
+      <div className="border-b border-white/10 bg-elev-1/40 backdrop-blur-md">
         <nav className="mx-auto flex max-w-5xl gap-0 overflow-x-auto px-4 lg:px-6">
           {tabs.map((tab) => {
             const Icon = tab.icon;
@@ -89,14 +89,17 @@ function MainApp() {
                 key={tab.id}
                 onClick={() => setActive(tab.id)}
                 className={cn(
-                  'flex shrink-0 items-center gap-2 border-b-2 px-4 py-3.5 text-sm font-medium transition-colors',
+                  'relative flex shrink-0 items-center gap-2 px-4 py-3.5 text-sm font-medium transition-colors',
                   isActive
-                    ? 'border-emerald text-ink-950'
-                    : 'border-transparent text-mist-400 hover:text-mist'
+                    ? 'text-hi'
+                    : 'text-low hover:text-mid'
                 )}
               >
-                <Icon className={cn('h-4 w-4', isActive && 'text-emerald-600')} />
+                <Icon className={cn('h-4 w-4 transition-colors', isActive ? 'text-teal' : 'text-low')} />
                 {tab.label}
+                {isActive && (
+                  <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-aurora shadow-glow" />
+                )}
               </button>
             );
           })}
@@ -104,20 +107,20 @@ function MainApp() {
       </div>
 
       {importState.active && (
-        <div className="sticky top-0 z-40 border-b border-emerald/20 bg-teal-50 px-6 py-2.5">
+        <div className="sticky top-0 z-40 border-b border-violet/20 bg-violet/10 backdrop-blur-md px-6 py-2.5">
           <div className="mx-auto flex max-w-5xl items-center gap-3">
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-emerald-600" />
-            <span className="text-sm text-mist">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal" />
+            <span className="text-sm text-mid">
               {PHASE_LABEL[importState.phase] ?? 'Working'}
               {importState.progress
                 ? ` — ${importState.progress.done}/${importState.progress.total}`
                 : '…'}
             </span>
-            <span className="text-xs text-mist-400">
+            <span className="text-xs text-low">
               {importState.chainLabel}{' '}
               {importState.addresses.slice(0, 2).map((a) => `${a.slice(0, 6)}…`).join(', ')}
             </span>
-            <span className="ml-auto hidden text-xs text-mist-400 sm:inline">
+            <span className="ml-auto hidden text-xs text-low sm:inline">
               You can keep browsing — this runs in the background
             </span>
           </div>

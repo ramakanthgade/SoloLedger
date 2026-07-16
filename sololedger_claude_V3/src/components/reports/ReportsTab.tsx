@@ -285,8 +285,8 @@ export function ReportsTab() {
           <option value="HIFO">HIFO</option>
           <option value="SpecID">Specific Identification</option>
         </select>
-        <label className="flex items-center gap-2 text-sm text-mist-400">
-          <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-emerald-600" />
+        <label className="flex items-center gap-2 text-sm text-low">
+          <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-violet" />
           De-identify for sharing
         </label>
         <div className="ml-auto flex gap-2">
@@ -297,14 +297,14 @@ export function ReportsTab() {
       </div>
 
       {method === 'SpecID' && (
-        <p className="text-xs text-mist-400">
+        <p className="text-xs text-low">
           Specific ID uses lot choices saved in Review. Unmatched remainder falls back to oldest-lots-first.
         </p>
       )}
 
       {shortfalls.length > 0 && (
         <div className="alert-warning">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-amber-100 text-gold-600">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-amber-100 text-warn">
             <AlertTriangle className="h-4 w-4" />
           </div>
           <div>
@@ -319,32 +319,32 @@ export function ReportsTab() {
 
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <div className="stat-card stat-card-featured min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Total gain / loss</p>
-          <p className={'mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap sm:text-xl ' + (summary.totalGain >= 0 ? 'text-emerald-600' : 'text-loss')}>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Total gain / loss</p>
+          <p className={'mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap sm:text-xl ' + (summary.totalGain >= 0 ? 'text-gain' : 'text-loss')}>
             {formatCurrency(summary.totalGain, rules.currency)}
           </p>
         </div>
         <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Proceeds</p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-ink-950 sm:text-xl">{formatCurrency(summary.totalProceeds, rules.currency)}</p>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Proceeds</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-hi sm:text-xl">{formatCurrency(summary.totalProceeds, rules.currency)}</p>
         </div>
         <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Cost basis</p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-ink-950 sm:text-xl">{formatCurrency(summary.totalCostBasis, rules.currency)}</p>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Cost basis</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-hi sm:text-xl">{formatCurrency(summary.totalCostBasis, rules.currency)}</p>
         </div>
         <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Spot income</p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-gold-600 sm:text-xl">{formatCurrency(summary.totalIncome, rules.currency)}</p>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Spot income</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-warn sm:text-xl">{formatCurrency(summary.totalIncome, rules.currency)}</p>
         </div>
         <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
             {businessMode ? 'Derivatives net' : 'Derivatives P&L'}
           </p>
           <p
             className={
               'mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap sm:text-xl ' +
               ((businessMode ? yearDerivIncome - yearDerivExpense : yearDerivCg) >= 0
-                ? 'text-emerald-600'
+                ? 'text-gain'
                 : 'text-loss')
             }
           >
@@ -355,13 +355,13 @@ export function ReportsTab() {
 
       <div className="data-panel">
         <div className="data-panel-head">
-          <h3 className="text-sm font-semibold text-ink-950">Disposals — {yearLabel}</h3>
-          <span className="text-xs text-mist-400">{yearDisposals.length} events</span>
+          <h3 className="text-sm font-semibold text-hi">Disposals — {yearLabel}</h3>
+          <span className="text-xs text-low">{yearDisposals.length} events</span>
         </div>
         <div className="overflow-x-auto p-1">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-ink-700 bg-ink-900/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-mist-400">
+              <tr className="border-b border-white/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
                 <th className="px-5 py-3">Date</th>
                 <th className="px-5 py-3">Asset</th>
                 <th className="px-5 py-3 text-right">Amount</th>
@@ -373,25 +373,25 @@ export function ReportsTab() {
             </thead>
             <tbody className="font-mono text-xs tabular-figures">
               {yearDisposals.slice(0, 100).map((d) => (
-                <tr key={d.id} className="border-b border-ink-700/60 transition-colors hover:bg-ink-900/50">
-                  <td className="px-5 py-3.5 text-mist-400">{new Date(d.disposedAt).toISOString().slice(0, 10)}</td>
-                  <td className="px-5 py-3.5"><span className="rounded-md border border-ink-700 bg-mist-100 px-2 py-0.5 text-xs font-semibold text-mist">{d.asset}</span></td>
-                  <td className="px-5 py-3.5 text-right text-mist-400">{d.amount.toFixed(6)}</td>
-                  <td className="px-5 py-3.5 text-right text-mist-400">{formatAmountForExport(d.proceeds, rules.currency)}</td>
-                  <td className="px-5 py-3.5 text-right text-mist-400">{formatAmountForExport(d.costBasis, rules.currency)}</td>
-                  <td className={'px-5 py-3.5 text-right font-semibold ' + (d.gain >= 0 ? 'text-emerald-600' : 'text-loss')}>
+                <tr key={d.id} className="border-b border-white/10 transition-colors hover:bg-elev-1/50">
+                  <td className="px-5 py-3.5 text-low">{new Date(d.disposedAt).toISOString().slice(0, 10)}</td>
+                  <td className="px-5 py-3.5"><span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span></td>
+                  <td className="px-5 py-3.5 text-right text-low">{d.amount.toFixed(6)}</td>
+                  <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(d.proceeds, rules.currency)}</td>
+                  <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(d.costBasis, rules.currency)}</td>
+                  <td className={'px-5 py-3.5 text-right font-semibold ' + (d.gain >= 0 ? 'text-gain' : 'text-loss')}>
                     {formatAmountForExport(d.gain, rules.currency)}
                   </td>
-                  <td className="px-5 py-3.5 text-right text-mist-400">{d.holdingPeriodDays}</td>
+                  <td className="px-5 py-3.5 text-right text-low">{d.holdingPeriodDays}</td>
                 </tr>
               ))}
               {yearDisposals.length === 0 && (
-                <tr><td colSpan={7} className="px-5 py-10 text-center text-mist-400">No disposals in {yearLabel}.</td></tr>
+                <tr><td colSpan={7} className="px-5 py-10 text-center text-low">No disposals in {yearLabel}.</td></tr>
               )}
             </tbody>
           </table>
           {yearDisposals.length > 100 && (
-            <p className="px-5 py-3 text-xs text-mist-400">Showing first 100 of {yearDisposals.length} — full list in CSV/JSON/PDF export.</p>
+            <p className="px-5 py-3 text-xs text-low">Showing first 100 of {yearDisposals.length} — full list in CSV/JSON/PDF export.</p>
           )}
         </div>
       </div>
@@ -399,7 +399,7 @@ export function ReportsTab() {
       <Card>
         <CardHeader><CardTitle>{rules.label} rules note</CardTitle></CardHeader>
         <CardContent>
-          <p className="text-sm leading-relaxed text-mist-400">{rules.notes}</p>
+          <p className="text-sm leading-relaxed text-low">{rules.notes}</p>
           <Badge tone="neutral" className="mt-4">Not tax advice — verify with a professional</Badge>
         </CardContent>
       </Card>

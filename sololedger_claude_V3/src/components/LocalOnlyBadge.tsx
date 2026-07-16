@@ -22,7 +22,7 @@ export function LocalOnlyBadge() {
       <span
         className={cn(
           'h-1.5 w-1.5 rounded-full',
-          networkUsed ? 'bg-gold' : 'animate-pulse bg-emerald-400 shadow-[0_0_0_3px_rgba(45,212,191,0.2)]'
+          networkUsed ? 'bg-warn' : 'animate-pulse bg-gain shadow-[0_0_0_3px_rgba(45,212,191,0.2)]'
         )}
       />
       {networkUsed ? 'Local + network on' : '100% Local'}

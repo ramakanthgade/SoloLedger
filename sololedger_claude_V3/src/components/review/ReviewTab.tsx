@@ -89,13 +89,13 @@ function FlagSelector({ tx }: { tx: Transaction }) {
           </Badge>
         ))}
         {shownFlags.length === 0 && !tx.isInternalTransfer && !tx.isSpam && tx.category !== 'nft' && (
-          <span className="text-[10px] text-mist-400">—</span>
+          <span className="text-[10px] text-low">—</span>
         )}
-        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-emerald" />}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-7 z-30 min-w-[14rem] rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700">
-          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-mist-400">Flag transaction</p>
+        <div className="absolute left-0 top-7 z-30 min-w-[14rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card border-white/10">
+          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">Flag transaction</p>
           {ALL_FLAGS.map((flag) => {
             const on = storedFlags.has(flag);
             return (
@@ -103,14 +103,14 @@ function FlagSelector({ tx }: { tx: Transaction }) {
                 key={flag}
                 type="button"
                 onClick={() => void toggleFlag(flag)}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-900 ${on ? 'text-emerald-600' : 'text-mist-300'}`}
+                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-1 ${on ? 'text-gain' : 'text-low'}`}
               >
-                <span className={`h-3 w-3 rounded border ${on ? 'border-emerald bg-emerald' : 'border-ink-600'}`} />
+                <span className={`h-3 w-3 rounded border ${on ? 'border-violet bg-violet' : 'border-white/10'}`} />
                 {FLAG_LABELS[flag]}
               </button>
             );
           })}
-          <div className="my-1 border-t border-ink-700" />
+          <div className="my-1 border-t border-white/10" />
           <button
             type="button"
             onClick={() =>
@@ -121,21 +121,21 @@ function FlagSelector({ tx }: { tx: Transaction }) {
                   : ([] as FlagReason[])
               })
             }
-            className="flex w-full px-3 py-1.5 text-left text-xs text-mist-300 hover:bg-ink-900"
+            className="flex w-full px-3 py-1.5 text-left text-xs text-low hover:bg-elev-1"
           >
             {tx.isInternalTransfer ? '↩ Unmark internal transfer' : '✓ Mark as internal transfer'}
           </button>
           <button
             type="button"
             onClick={() => void patch({ isSpam: !tx.isSpam })}
-            className="flex w-full px-3 py-1.5 text-left text-xs text-mist-300 hover:bg-ink-900"
+            className="flex w-full px-3 py-1.5 text-left text-xs text-low hover:bg-elev-1"
           >
             {tx.isSpam ? '↩ Unmark spam' : '🚫 Mark as spam'}
           </button>
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-1 border-t border-ink-700 px-3 py-1.5 text-[10px] text-mist-400 hover:text-mist"
+            className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
           >
             <X className="h-3 w-3" /> Close
           </button>
@@ -176,23 +176,23 @@ function TypeSelector({
         className="inline-flex items-center gap-1"
       >
         <Badge tone={TYPE_TONE[current]}>{current}</Badge>
-        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-emerald" />}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-ink-600 bg-ink-800 py-1 shadow-card border-ink-700">
-          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-mist-400">Reclassify as</p>
+        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card border-white/10">
+          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">Reclassify as</p>
           {ALL_TYPES.map((t) => (
             <button
               key={t}
               onClick={() => void reclassify(t)}
-              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-ink-900 ${t === current ? 'text-emerald-600' : 'text-mist-300'}`}
+              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-1 ${t === current ? 'text-gain' : 'text-low'}`}
             >
               <Badge tone={TYPE_TONE[t]} className="pointer-events-none text-[10px]">{t}</Badge>
             </button>
           ))}
           <button
             onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-1 border-t border-ink-700 px-3 py-1.5 text-[10px] text-mist-400 hover:text-mist"
+            className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
           >
             <X className="h-3 w-3" /> Cancel
           </button>
@@ -645,9 +645,9 @@ export function ReviewTab() {
       <div className="space-y-6">
         <div>
           <h2 className="page-title">Review</h2>
-          <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
+          <p className="mt-1 text-sm text-low">Give each transaction a quick once-over before you file.</p>
         </div>
-        <div className="rounded-lg border-2 border-dashed border-ink-600 bg-ink-800 px-6 py-14 text-center text-sm text-mist-400">
+        <div className="rounded-lg border-2 border-dashed border-white/10 bg-elev-2 px-6 py-14 text-center text-sm text-low">
           No transactions yet — import a CSV or add one manually to get started.
         </div>
       </div>
@@ -658,16 +658,16 @@ export function ReviewTab() {
     <div className="space-y-4">
       <div>
         <h2 className="page-title">Review</h2>
-        <p className="mt-1 text-sm text-mist-400">Give each transaction a quick once-over before you file.</p>
+        <p className="mt-1 text-sm text-low">Give each transaction a quick once-over before you file.</p>
       </div>
       {/* Token-name resolution — user-gated so no background CoinGecko calls fire on mount. */}
       {unresolvedSymbolTxs.length > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border border-mist-600/40 bg-ink-800 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-mist">
+            <p className="text-sm font-semibold text-mid">
               {unresolvedSymbolTxs.length} token{unresolvedSymbolTxs.length === 1 ? '' : 's'} shown by contract address
             </p>
-            <p className="mt-1 text-xs text-mist-400">
+            <p className="mt-1 text-xs text-low">
               Look up the real ticker symbols from CoinGecko (a network call by contract address — never wallet addresses).
             </p>
           </div>
@@ -684,19 +684,19 @@ export function ReviewTab() {
 
       {/* DCA / Recurring order banner */}
       {dcaGroups.length > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border border-emerald/40 bg-emerald/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-mist">
+            <p className="text-sm font-semibold text-mid">
               {dcaGroups.length} DCA / Recurring order{dcaGroups.length === 1 ? '' : 's'} detected
             </p>
-            <div className="mt-1 space-y-0.5 text-xs text-mist-400">
+            <div className="mt-1 space-y-0.5 text-xs text-low">
               {dcaGroups.map((g) => (
                 <p key={g.vaultAddress}>
                   {g.totalInput.toFixed(0)} {g.inputAsset} → {g.fillTxs.length} fills of {g.outputAsset} (vault {g.vaultAddress.slice(0, 8)}…{g.vaultAddress.slice(-4)})
                 </p>
               ))}
             </div>
-            <p className="mt-1 text-xs text-mist-400">
+            <p className="mt-1 text-xs text-low">
               Koinly approach: mark the deposit as internal (non-taxable escrow), classify each fill as a buy.
               Fetch prices after classifying.
             </p>
@@ -712,7 +712,7 @@ export function ReviewTab() {
               );
               setApplyingDca(false);
             }}
-            className="shrink-0 border-emerald/40 text-emerald-600"
+            className="shrink-0 border-violet/40 text-gain"
           >
             {applyingDca ? 'Classifying…' : 'Classify DCA fills'}
           </Button>
@@ -720,12 +720,12 @@ export function ReviewTab() {
       )}
 
       {potentialSwapPairs > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border border-emerald/40 bg-emerald/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-mist">
+            <p className="text-sm font-semibold text-mid">
               {potentialSwapPairs} possible DEX swap{potentialSwapPairs === 1 ? '' : 's'} waiting to be merged
             </p>
-            <p className="text-xs text-mist-400">
+            <p className="text-xs text-low">
               Wallet imports show as transfer_in/out until merged into trades. Click Detect DEX swaps, then fetch
               prices — Capital Gains will show matched buy/sell rows.
             </p>
@@ -741,16 +741,16 @@ export function ReviewTab() {
       )}
 
       {missingPriceTxs.length > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border-2 border-gold bg-gold/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border-2 border-warn/30 bg-warn/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-gold text-ink-950">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-warn text-hi">
               <AlertTriangle className="h-5 w-5" />
             </span>
             <div>
-              <p className="text-sm font-semibold text-mist">
+              <p className="text-sm font-semibold text-mid">
                 {missingPriceTxs.length} transaction{missingPriceTxs.length === 1 ? '' : 's'} still need a price
               </p>
-              <p className="text-xs text-mist-400">
+              <p className="text-xs text-low">
                 {settings?.priceApiEnabled
                   ? rpcTransferCount > 0
                     ? 'Wallet imports are included — click the button to fetch historical prices. Swaps auto-detected as trades will feed cost basis after prices are filled.'
@@ -773,14 +773,14 @@ export function ReviewTab() {
         </div>
       )}
       {priceErrors.length > 0 && (
-        <div className={`rounded-sm border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Finished') ? 'border-emerald/30 bg-emerald/10 text-emerald-700' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+        <div className={`rounded-sm border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Finished') ? 'border-violet/30 bg-violet/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
           {priceErrors.slice(0, 5).join(' · ')}
           {priceErrors.length > 5 ? ` · +${priceErrors.length - 5} more` : ''}
         </div>
       )}
 
       {swapDetectMsg && (
-        <div className="rounded-sm border border-emerald/30 bg-emerald/10 px-3 py-2 text-xs text-emerald-700">
+        <div className="rounded-sm border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-gain">
           {swapDetectMsg}
         </div>
       )}
@@ -790,13 +790,13 @@ export function ReviewTab() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search transactions…"
-          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft placeholder:text-mist-400 focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
+          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft placeholder:text-low focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
         />
         {/* Asset filter */}
         <select
           value={assetFilter}
           onChange={(e) => setAssetFilter(e.target.value)}
-          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
+          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
         >
           <option value="all">All assets</option>
           {assets.map((a) => (<option key={a} value={a}>{a}</option>))}
@@ -807,7 +807,7 @@ export function ReviewTab() {
           <select
             value={walletFilter}
             onChange={(e) => setWalletFilter(e.target.value)}
-            className="max-w-[180px] truncate rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
+            className="max-w-[180px] truncate rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
           >
             <option value="all">All wallets</option>
             {availableWallets.map((w) => (
@@ -820,7 +820,7 @@ export function ReviewTab() {
         <select
           value={fyFilter ?? ''}
           onChange={(e) => setFyFilter(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-md border border-ink-700 bg-ink-800 px-3 py-2 text-sm text-mist shadow-soft focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20"
+          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
         >
           <option value="">All periods</option>
           {availableFys.map((fy) => (
@@ -829,12 +829,12 @@ export function ReviewTab() {
         </select>
 
         {/* Sort selector */}
-        <div className="flex items-center gap-1.5 rounded-full border border-ink-600 bg-ink-800 px-3 py-1.5">
-          <ArrowUpDown className="h-3.5 w-3.5 text-mist-400" />
+        <div className="flex items-center gap-1.5 rounded-full border border-white/10 bg-elev-2 px-3 py-1.5">
+          <ArrowUpDown className="h-3.5 w-3.5 text-low" />
           <select
             value={sortBy}
             onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-            className="bg-transparent text-sm text-mist focus:outline-none"
+            className="bg-transparent text-sm text-mid focus:outline-none"
           >
             <option value="date_desc">Date ↓ (newest)</option>
             <option value="date_asc">Date ↑ (oldest)</option>
@@ -847,21 +847,21 @@ export function ReviewTab() {
         {/* Quick-filter toggles */}
         <button
           onClick={() => { setShowNeedsPrice((v) => !v); setShowSpam(false); }}
-          className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsPrice ? 'border-gold bg-gold/20 text-gold-600' : 'border-ink-600 text-mist-400 hover:text-mist'}`}
+          className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsPrice ? 'border-warn/30 bg-warn/20 text-warn' : 'border-white/10 text-low hover:text-mid'}`}
         >
           {showNeedsPrice ? `Needs price (${missingPriceTxs.length})` : `Needs price: ${missingPriceTxs.length}`}
         </button>
         {spamTxCount > 0 && (
           <button
             onClick={() => { setShowSpam((v) => !v); setShowNeedsPrice(false); }}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showSpam ? 'border-loss bg-loss/20 text-loss' : 'border-ink-600 text-mist-400 hover:text-mist'}`}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showSpam ? 'border-loss bg-loss/20 text-loss' : 'border-white/10 text-low hover:text-mid'}`}
           >
             {showSpam ? `Spam (${spamTxCount}) ← back` : `Spam: ${spamTxCount}`}
           </button>
         )}
 
-        <span className="text-xs text-mist-400">{filtered.length} shown</span>
-        <div className="flex rounded-full border border-ink-600 p-0.5 text-xs">
+        <span className="text-xs text-low">{filtered.length} shown</span>
+        <div className="flex rounded-full border border-white/10 p-0.5 text-xs">
           {(
             [
               ['all', 'All'],
@@ -874,14 +874,14 @@ export function ReviewTab() {
               type="button"
               onClick={() => setInstrumentFilter(id)}
               className={`rounded-full px-3 py-1 font-medium transition ${
-                instrumentFilter === id ? 'bg-emerald text-white' : 'text-mist-400 hover:text-mist'
+                instrumentFilter === id ? 'bg-violet text-white' : 'text-low hover:text-mid'
               }`}
             >
               {label}
             </button>
           ))}
         </div>
-        <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
+        <span className="text-xs text-low">Export: CSV/JSON recommended for detailed CA review</span>
 
         <div className="flex gap-2">
           <Button variant="secondary" onClick={exportFilteredCsv} className="text-xs">CSV</Button>
@@ -931,9 +931,9 @@ export function ReviewTab() {
         )}
       </div>
 
-      <div className="overflow-x-auto rounded-lg border border-ink-700">
+      <div className="overflow-x-auto rounded-lg border border-white/10">
         <table className="w-full min-w-[920px] text-sm">
-          <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
+          <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
             <tr>
               <th className="w-8 px-2 py-2">
                 <input
@@ -966,24 +966,24 @@ export function ReviewTab() {
               const isEditing = editingFiat === t.id;
               return (
                 <Fragment key={t.id}>
-                  <tr className={`border-t border-ink-700/60 hover:bg-ink-900/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
+                  <tr className={`border-t border-white/10 hover:bg-elev-1/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
                     <td className="px-3 py-2">
                       <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggle(t.id)} />
                     </td>
-                    <td className="px-3 py-2 text-mist-300">{new Date(t.timestamp).toISOString().slice(0, 10)}</td>
+                    <td className="px-3 py-2 text-low">{new Date(t.timestamp).toISOString().slice(0, 10)}</td>
                     <td className="px-3 py-2">
                       <TypeSelector txId={t.id} current={t.type} flags={t.flags} />
                     </td>
-                    <td className="px-3 py-2 text-mist-400">{chainLabel}</td>
-                    <td className="px-3 py-2 text-mist" title={t.contractAddress}>
+                    <td className="px-3 py-2 text-low">{chainLabel}</td>
+                    <td className="px-3 py-2 text-mid" title={t.contractAddress}>
                       {assetLabel}
                       {t.type === 'trade' && t.counterAsset && (
-                        <span className="ml-1 text-mist-400">
+                        <span className="ml-1 text-low">
                           → {resolveAssetLabel(t.counterAsset, undefined, t.chain)}
                         </span>
                       )}
                     </td>
-                    <td className="px-1 py-2 text-right text-mist" title={
+                    <td className="px-1 py-2 text-right text-mid" title={
                       t.type === 'trade' && t.counterAmount != null
                         ? `${t.amount} → ${t.counterAmount}`
                         : String(t.amount)
@@ -992,27 +992,27 @@ export function ReviewTab() {
                         ? `${formatCompactAmount(t.amount)} → ${formatCompactAmount(t.counterAmount)}`
                         : formatCompactAmount(t.amount)}
                     </td>
-                    <td className="px-3 py-2 text-right text-mist-300">
+                    <td className="px-3 py-2 text-right text-low">
                       {isEditing ? (
                         <span className="flex items-center justify-end gap-1">
                           <input
                             autoFocus
                             value={editValue}
                             onChange={(e) => setEditValue(e.target.value)}
-                            className="w-24 rounded border border-emerald bg-white px-2 py-0.5 text-right text-xs text-mist focus:outline-none"
+                            className="w-24 rounded border border-violet bg-white px-2 py-0.5 text-right text-xs text-mid focus:outline-none"
                             placeholder="0.00"
                           />
-                          <button onClick={() => saveFiat(t)} className="text-emerald-600" aria-label="Save">
+                          <button onClick={() => saveFiat(t)} className="text-gain" aria-label="Save">
                             <Check className="h-3.5 w-3.5" />
                           </button>
-                          <button onClick={() => setEditingFiat(null)} className="text-mist-400" aria-label="Cancel">
+                          <button onClick={() => setEditingFiat(null)} className="text-low" aria-label="Cancel">
                             <X className="h-3.5 w-3.5" />
                           </button>
                         </span>
                       ) : (
                         <button
                           onClick={() => startEditFiat(t.id, t.fiatValue)}
-                          className="group inline-flex items-center gap-1 hover:text-emerald-600"
+                          className="group inline-flex items-center gap-1 hover:text-gain"
                           title="Click to enter a fiat value manually"
                         >
                           {t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : '—'}
@@ -1020,25 +1020,25 @@ export function ReviewTab() {
                         </button>
                       )}
                     </td>
-                    <td className="px-2 py-2 text-mist-400" title={fromAddr}>
+                    <td className="px-2 py-2 text-low" title={fromAddr}>
                       {fromAddr ? (
                         <span title={fromAddr}>
                           {walletLabels.get(fromAddr.toLowerCase())
-                            ? <span className="text-emerald-500">{walletLabels.get(fromAddr.toLowerCase())}</span>
+                            ? <span className="text-gain">{walletLabels.get(fromAddr.toLowerCase())}</span>
                             : truncateAddress(fromAddr)}
                         </span>
                       ) : '—'}
                     </td>
-                    <td className="px-2 py-2 text-mist-400" title={toAddr}>
+                    <td className="px-2 py-2 text-low" title={toAddr}>
                       {toAddr ? (
                         <span title={toAddr}>
                           {walletLabels.get(toAddr.toLowerCase())
-                            ? <span className="text-emerald-500">{walletLabels.get(toAddr.toLowerCase())}</span>
+                            ? <span className="text-gain">{walletLabels.get(toAddr.toLowerCase())}</span>
                             : truncateAddress(toAddr)}
                         </span>
                       ) : '—'}
                     </td>
-                    <td className="px-2 py-2 font-mono text-xs text-mist-400">
+                    <td className="px-2 py-2 font-mono text-xs text-low">
                       {t.sourceRef ? (
                         <a
                           href={
@@ -1049,7 +1049,7 @@ export function ReviewTab() {
                           target="_blank"
                           rel="noreferrer"
                           title={t.sourceRef}
-                          className="hover:text-emerald-600"
+                          className="hover:text-gain"
                         >
                           {t.sourceRef.slice(0, 8)}…
                         </a>
@@ -1059,7 +1059,7 @@ export function ReviewTab() {
                       <FlagSelector tx={t} />
                       {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
                         <button
-                          className="mt-1 text-emerald-600 underline decoration-dotted"
+                          className="mt-1 text-gain underline decoration-dotted"
                           onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
                         >
                           match lots
@@ -1069,7 +1069,7 @@ export function ReviewTab() {
                   </tr>
                   {openLotPicker === t.id && (
                     <tr>
-                      <td colSpan={11} className="bg-ink-900/60 px-3 py-3">
+                      <td colSpan={11} className="bg-elev-1/60 px-3 py-3">
                         <LotPicker
                           txId={t.id}
                           candidates={candidates}
@@ -1088,7 +1088,7 @@ export function ReviewTab() {
       </div>
       {filtered.length > PAGE_SIZE && (
         <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-          <p className="text-xs text-mist-400">
+          <p className="text-xs text-low">
             Showing {(safePage - 1) * PAGE_SIZE + 1}–
             {Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
           </p>
@@ -1101,7 +1101,7 @@ export function ReviewTab() {
             >
               Previous
             </Button>
-            <span className="text-xs text-mist-300">
+            <span className="text-xs text-low">
               Page {safePage} of {totalPages}
             </span>
             <Button

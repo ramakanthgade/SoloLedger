@@ -362,7 +362,7 @@ export function PortfolioTab() {
       {/* Filters */}
       <div className="flex flex-wrap items-center gap-3">
         <div className="flex items-center gap-2">
-          <span className="text-xs text-mist-400">Period:</span>
+          <span className="text-xs text-low">Period:</span>
           <select
             value={selectedFy ?? ''}
             onChange={(e) => setSelectedFy(e.target.value ? Number(e.target.value) : null)}
@@ -377,11 +377,11 @@ export function PortfolioTab() {
 
         {availableWallets.length > 1 && (
           <div className="flex items-center gap-2">
-            <span className="text-xs text-mist-400">Wallet:</span>
+            <span className="text-xs text-low">Wallet:</span>
             <select
               value={selectedWallet}
               onChange={(e) => setSelectedWallet(e.target.value)}
-              className="max-w-[200px] truncate rounded-full border border-ink-600 bg-ink-800 px-3 py-1 text-sm text-mist"
+              className="max-w-[200px] truncate rounded-full border border-white/10 bg-elev-2 px-3 py-1 text-sm text-mid"
             >
               <option value={ALL_WALLETS}>{ALL_WALLETS}</option>
               {availableWallets.map((w) => (
@@ -391,10 +391,10 @@ export function PortfolioTab() {
           </div>
         )}
 
-        <span className="ml-auto text-xs text-mist-400">
+        <span className="ml-auto text-xs text-low">
           {holdings.length} asset{holdings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
         </span>
-        <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
+        <span className="text-xs text-low">Export: CSV/JSON recommended for detailed CA review</span>
         <div className="flex gap-2">
           <Button variant="secondary" onClick={exportHoldingsCsv} className="text-xs">CSV</Button>
           <Button variant="secondary" onClick={exportHoldingsJson} className="text-xs">JSON</Button>
@@ -403,7 +403,7 @@ export function PortfolioTab() {
       </div>
 
       {ledgerRepairOffered && !repairingBalances && (
-        <div className="flex flex-col gap-3 rounded-lg border border-mist-600/40 bg-ink-800 px-4 py-3 text-sm text-mist-300 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-4 py-3 text-sm text-low sm:flex-row sm:items-center sm:justify-between">
           <p>
             Solana wallets imported. Check your ledger against on-chain history to catch missing
             swap legs and balance gaps (uses Solana RPC).
@@ -420,7 +420,7 @@ export function PortfolioTab() {
 
       {(repairingBalances ||
         (balanceVariances.length > 0 && selectedFy == null && crossCheckModeUsesLiveRpc(crossCheckMode))) && (
-        <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-mist-300">
+        <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-low">
           {repairingBalances ? (
             <p>Repairing ledger automatically — scanning on-chain history…</p>
           ) : balanceVariances.length > 0 ? (
@@ -432,12 +432,12 @@ export function PortfolioTab() {
                   {formatCompactAmount(v.ledger)} vs wallet {formatCompactAmount(v.live)}.
                 </p>
               ))}
-              <p className="text-xs text-mist-400">
+              <p className="text-xs text-low">
                 Automatic repair already ran this session. Hard-refresh or re-import if gaps remain.
               </p>
             </div>
           ) : null}
-          {repairMsg && <p className="mt-1 text-xs text-mist-400">{repairMsg}</p>}
+          {repairMsg && <p className="mt-1 text-xs text-low">{repairMsg}</p>}
         </div>
       )}
 
@@ -447,8 +447,8 @@ export function PortfolioTab() {
             key={`${issue.kind}-${i}`}
             className={`rounded-lg border px-4 py-3 text-sm ${
               issue.kind === 'negative_holding'
-                ? 'border-loss/40 bg-loss/10 text-mist-300'
-                : 'border-gold/40 bg-gold/10 text-mist-300'
+                ? 'border-loss/40 bg-loss/10 text-low'
+                : 'border-warn/40 bg-warn/10 text-low'
             }`}
           >
             {issue.message}
@@ -456,9 +456,9 @@ export function PortfolioTab() {
         ))}
 
       {missingPriceCount > 0 && (
-        <div className="rounded-lg border border-gold/40 bg-gold/10 px-4 py-3 text-sm text-mist-300">
+        <div className="rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-low">
           {missingPriceCount} transaction{missingPriceCount === 1 ? '' : 's'} still lack a fiat value — cost basis may be understated.
-          Go to Review → <strong className="text-mist">Fetch missing prices</strong>.
+          Go to Review → <strong className="text-mid">Fetch missing prices</strong>.
         </div>
       )}
 
@@ -469,17 +469,17 @@ export function PortfolioTab() {
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="font-mono text-3xl text-gold-600">{formatCurrency(totalCostBasis, reportingCurrency)}</p>
-          <p className="mt-1 text-xs text-mist-400">
+          <p className="font-mono text-3xl text-warn">{formatCurrency(totalCostBasis, reportingCurrency)}</p>
+          <p className="mt-1 text-xs text-low">
             {formatCompactCurrency(totalCostBasis, reportingCurrency)}
             {selectedFy == null ? ' · all time' : ` · ${getFyLabel(selectedFy, jurisdiction)}`}
           </p>
         </CardContent>
       </Card>
 
-      <div className="overflow-x-auto rounded-lg border border-ink-700">
+      <div className="overflow-x-auto rounded-lg border border-white/10">
         <table className="w-full text-sm">
-          <thead className="bg-ink-800 text-left text-xs uppercase tracking-wide text-mist-400">
+          <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
             <tr>
               <th className="px-3 py-2">Asset</th>
               <th className="px-3 py-2 text-right">Quantity</th>
@@ -488,21 +488,21 @@ export function PortfolioTab() {
           </thead>
           <tbody className="font-mono tabular-figures">
             {holdings.map((h, i) => (
-              <tr key={i} className="border-t border-ink-700/60 hover:bg-ink-700/20">
-                <td className="px-3 py-2 text-mist">
+              <tr key={i} className="border-t border-white/10 hover:bg-elev-3/20">
+                <td className="px-3 py-2 text-mid">
                   {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
                 </td>
-                <td className="px-3 py-2 text-right text-mist-300">
+                <td className="px-3 py-2 text-right text-low">
                   {h.amount.toFixed(8)}
                 </td>
-                <td className="px-3 py-2 text-right text-gold-600">
+                <td className="px-3 py-2 text-right text-warn">
                   {formatCurrency(h.costBasis, reportingCurrency)}
                 </td>
               </tr>
             ))}
             {holdings.length === 0 && (
               <tr>
-                <td colSpan={3} className="px-3 py-8 text-center text-mist-400">
+                <td colSpan={3} className="px-3 py-8 text-center text-low">
                   No holdings — import transactions or adjust the filter.
                 </td>
               </tr>

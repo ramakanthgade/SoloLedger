@@ -58,7 +58,7 @@ export function SettingsTab() {
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="page-title">Settings</h2>
-          <p className="mt-1 text-sm text-mist-400">
+          <p className="mt-1 text-sm text-low">
             {isAdmin
               ? 'Admin: manage server API keys below. Tax preferences are still local to this browser.'
               : saas
@@ -77,7 +77,7 @@ export function SettingsTab() {
           <CardTitle>Tax defaults</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
-          <label className="block text-sm text-mist-300">
+          <label className="block text-sm text-low">
             Jurisdiction
             <select
               value={settings.jurisdiction}
@@ -91,7 +91,7 @@ export function SettingsTab() {
               ))}
             </select>
           </label>
-          <label className="block text-sm text-mist-300">
+          <label className="block text-sm text-low">
             Default cost basis method
             <select
               value={settings.defaultCostBasisMethod}
@@ -104,7 +104,7 @@ export function SettingsTab() {
               <option value="SpecID">Specific Identification</option>
             </select>
           </label>
-          <label className="block text-sm text-mist-300">
+          <label className="block text-sm text-low">
             Derivatives tax treatment
             <select
               value={settings.derivativesTreatment ?? (settings.jurisdiction === 'IN' || settings.jurisdiction === 'CA' ? 'business_income' : 'capital_gains')}
@@ -118,7 +118,7 @@ export function SettingsTab() {
               <option value="business_income">Business income &amp; expenses (profits − fees/losses)</option>
               <option value="capital_gains">Capital gains / losses</option>
             </select>
-            <span className="mt-1 block text-xs text-mist-400">
+            <span className="mt-1 block text-xs text-low">
               Applies to Hyperliquid perps and other derivative imports. Defaults by jurisdiction (India/Canada →
               business income). Change anytime — reports update without re-importing.
             </span>
@@ -133,7 +133,7 @@ export function SettingsTab() {
               <CardTitle>Network features (off by default)</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              <label className="flex items-start gap-3 text-sm text-mist-300">
+              <label className="flex items-start gap-3 text-sm text-low">
                 <input
                   type="checkbox"
                   className="mt-0.5"
@@ -141,11 +141,11 @@ export function SettingsTab() {
                   onChange={(e) => update({ priceApiEnabled: e.target.checked })}
                 />
                 <span>
-                  <strong className="text-mist">Live price lookup.</strong> Sends asset/date pairs (never wallet
+                  <strong className="text-mid">Live price lookup.</strong> Sends asset/date pairs (never wallet
                   addresses or amounts) to price APIs to fill in market values.
                 </span>
               </label>
-              <label className="flex items-start gap-3 text-sm text-mist-300">
+              <label className="flex items-start gap-3 text-sm text-low">
                 <input
                   type="checkbox"
                   className="mt-0.5"
@@ -153,12 +153,12 @@ export function SettingsTab() {
                   onChange={(e) => update({ rpcLookupEnabled: e.target.checked })}
                 />
                 <span>
-                  <strong className="text-mist">Wallet address lookup via public RPC/explorer.</strong>
+                  <strong className="text-mid">Wallet address lookup via public RPC/explorer.</strong>
                 </span>
               </label>
 
               {settings.rpcLookupEnabled && (
-                <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
+                <div className="ml-7 space-y-4 border-l border-white/10 pl-4">
                   <ApiKeyField
                     label="Helius API key — PRIMARY for Solana"
                     value={settings.heliusApiKey}
@@ -191,7 +191,7 @@ export function SettingsTab() {
               )}
 
               {settings.priceApiEnabled && (
-                <div className="ml-7 space-y-4 border-l border-ink-700 pl-4">
+                <div className="ml-7 space-y-4 border-l border-white/10 pl-4">
                   <ApiKeyField
                     label="CoinGecko Pro API key"
                     value={settings.coingeckoApiKey}
@@ -257,7 +257,7 @@ export function SettingsTab() {
                   if (file) setPendingRestore(file);
                 }}
               />
-              <span className="cursor-pointer rounded border border-ink-600 bg-ink-700 px-4 py-2 text-sm text-mist hover:bg-ink-600">
+              <span className="cursor-pointer rounded border border-white/10 bg-elev-3 px-4 py-2 text-sm text-mid hover:bg-elev-3">
                 Import backup
               </span>
             </label>
@@ -278,13 +278,13 @@ export function SettingsTab() {
           {restoreStatus && (
             <p
               className={`text-sm ${
-                restoreStatus.kind === 'success' ? 'text-emerald-600' : 'text-loss'
+                restoreStatus.kind === 'success' ? 'text-gain' : 'text-loss'
               }`}
             >
               {restoreStatus.message}
             </p>
           )}
-          <div className="border-t border-ink-700 pt-3">
+          <div className="border-t border-white/10 pt-3">
             {!confirmDelete ? (
               <Button variant="danger" onClick={() => setConfirmDelete(true)}>
                 Delete all local data

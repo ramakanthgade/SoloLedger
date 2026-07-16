@@ -22,13 +22,13 @@ interface Props {
 }
 
 const selectCls =
-  'mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm text-mist focus:border-emerald focus:outline-none';
+  'mt-1 block w-full rounded border border-white/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-violet focus:outline-none';
 
 function FieldHint({ text }: { text: string }) {
   return (
     <span className="group relative ml-1 inline-flex align-middle">
-      <HelpCircle className="h-3.5 w-3.5 cursor-help text-mist-400" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1 hidden w-56 -translate-x-1/2 rounded-lg border border-ink-600 bg-ink-900 px-2 py-1.5 text-[11px] font-normal normal-case leading-snug text-mist-300 shadow-xl group-hover:block">
+      <HelpCircle className="h-3.5 w-3.5 cursor-help text-low" />
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1 hidden w-56 -translate-x-1/2 rounded-lg border border-white/10 bg-elev-1 px-2 py-1.5 text-[11px] font-normal normal-case leading-snug text-low shadow-xl group-hover:block">
         {text}
       </span>
     </span>
@@ -37,7 +37,7 @@ function FieldHint({ text }: { text: string }) {
 
 function noneOption(headers: string[], value: string, onChange: (v: string) => void, label: string, hint: string) {
   return (
-    <label className="text-xs text-mist-400">
+    <label className="text-xs text-low">
       {label}
       <FieldHint text={hint} />
       <select className={selectCls} value={value} onChange={(e) => onChange(e.target.value)}>
@@ -116,16 +116,16 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
   const ready = !!(timestamp && typeCol && asset && amount && mappedTypeCount > 0);
 
   return (
-    <div className="space-y-4 rounded-lg border border-ink-700 bg-ink-800/40 p-4">
+    <div className="space-y-4 rounded-lg border border-white/10 bg-elev-2/40 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
-        <p className="max-w-xl text-sm text-mist-300">
+        <p className="max-w-xl text-sm text-low">
           Map your file's columns to the fields SoloLedger needs. Only <strong>date, type, asset, and quantity</strong>{' '}
           are required — fiat and fee columns are optional. Trading pairs like SOLUSDT are split automatically.
         </p>
       </div>
 
       <div className="grid gap-3 sm:grid-cols-2">
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Date / time column
           <FieldHint text="When the trade happened — e.g. Date(UTC), Time, Timestamp. Not a duration field." />
           <select className={selectCls} value={timestamp} onChange={(e) => setTimestamp(e.target.value)}>
@@ -135,7 +135,7 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
             ))}
           </select>
         </label>
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Transaction type column
           <FieldHint text="Column with BUY, SELL, deposit, etc. Map each value to a SoloLedger type below." />
           <select className={selectCls} value={typeCol} onChange={(e) => setTypeCol(e.target.value)}>
@@ -145,7 +145,7 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
             ))}
           </select>
         </label>
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Asset / pair column
           <FieldHint text="Ticker (BTC) or trading pair (SOLUSDT). Pairs are split into base asset + quote for calculations." />
           <select className={selectCls} value={asset} onChange={(e) => setAsset(e.target.value)}>
@@ -154,7 +154,7 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
               <option key={h} value={h}>{h}</option>
             ))}
           </select>
-          <label className="mt-1 flex items-center gap-1.5 text-[11px] text-mist-400">
+          <label className="mt-1 flex items-center gap-1.5 text-[11px] text-low">
             <input
               type="checkbox"
               checked={assetIsTradingPair}
@@ -163,7 +163,7 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
             Values are trading pairs (e.g. SOLUSDT → SOL)
           </label>
         </label>
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Quantity column
           <FieldHint text="Number of coins bought or sold — NOT price per coin. Binance: use 'Amount' or 'Executed', not 'Price'." />
           <select className={selectCls} value={amount} onChange={(e) => setAmount(e.target.value)}>
@@ -181,21 +181,21 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
         {noneOption(headers, feeAsset, setFeeAsset, 'Fee asset (optional)', 'Asset the fee was paid in — e.g. BNB, USDT.')}
       </div>
 
-      <div className="rounded-lg bg-ink-900/50 px-3 py-2 text-xs text-mist-400">
-        <strong className="text-mist-300">No fiat column?</strong> After import, go to Review →{' '}
+      <div className="rounded-lg bg-elev-1/50 px-3 py-2 text-xs text-low">
+        <strong className="text-low">No fiat column?</strong> After import, go to Review →{' '}
         <em>Fetch missing prices</em> (Settings → Live price lookup + CoinGecko key). Prices are fetched by{' '}
         <strong>asset + date</strong> and converted to your reporting currency (Settings → jurisdiction).
       </div>
 
       {typeCol && distinctTypeValues.length > 0 && (
         <div>
-          <p className="mb-2 text-xs text-mist-400">
+          <p className="mb-2 text-xs text-low">
             Map each value in "{typeCol}" to a SoloLedger type ({mappedTypeCount}/{distinctTypeValues.length} mapped):
           </p>
           <div className="grid gap-2 sm:grid-cols-2">
             {distinctTypeValues.map((val) => (
               <div key={val} className="flex items-center gap-2">
-                <span className="w-32 truncate font-mono text-xs text-mist-300" title={val}>{val}</span>
+                <span className="w-32 truncate font-mono text-xs text-low" title={val}>{val}</span>
                 <select
                   className={`${selectCls} mt-0`}
                   value={typeValueMap[val.toLowerCase()] ?? ''}
@@ -218,7 +218,7 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
         Parse with this mapping
       </Button>
       {!ready && (
-        <p className="text-xs text-mist-400">
+        <p className="text-xs text-low">
           Select date, type, asset, quantity columns and map at least one type value (e.g. BUY → buy).
         </p>
       )}

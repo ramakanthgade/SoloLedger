@@ -25,7 +25,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: '100 tx',
     tagline: 'Start for free',
     icon: Zap,
-    accent: 'from-teal-500 to-emerald-600'
+    accent: 'from-violet to-blue'
   },
   {
     id: 'standard',
@@ -35,7 +35,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: '1,000 tx',
     tagline: 'Active portfolios',
     icon: Sparkles,
-    accent: 'from-emerald-500 to-teal-600',
+    accent: 'from-violet to-blue',
     featured: true
   },
   {
@@ -46,7 +46,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: '3,000 tx',
     tagline: 'Power users',
     icon: Crown,
-    accent: 'from-navy to-teal-700'
+    accent: 'from-elev-1 to-blue'
   },
   {
     id: 'investor',
@@ -56,7 +56,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: '30,000 tx',
     tagline: 'High-volume wallets',
     icon: Building2,
-    accent: 'from-violet-600 to-teal-600'
+    accent: 'from-violet-600 to-blue'
   },
   {
     id: 'enterprise',

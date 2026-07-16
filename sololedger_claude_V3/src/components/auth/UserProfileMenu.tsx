@@ -18,16 +18,16 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-end bg-black/30 p-4 pt-16" onClick={onClose}>
       <div
-        className="w-full max-w-sm rounded-xl border border-ink-700 bg-ink-800 p-5 shadow-xl"
+        className="w-full max-w-sm rounded-xl border border-white/10 bg-elev-2 p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-3 border-b border-ink-700 pb-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-emerald/15 text-emerald-600">
+        <div className="flex items-center gap-3 border-b border-white/10 pb-4">
+          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-violet/15 text-gain">
             <User className="h-5 w-5" />
           </div>
           <div>
-            <p className="font-semibold text-mist">{user.email}</p>
-            <p className="text-xs capitalize text-mist-400">
+            <p className="font-semibold text-mid">{user.email}</p>
+            <p className="text-xs capitalize text-low">
               {user.role === 'admin' ? 'Administrator · Unlimited' : `${formatPlanLabel(user.plan)} plan`}
             </p>
           </div>
@@ -35,23 +35,23 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
 
         <dl className="mt-4 space-y-3 text-sm">
           <div className="flex justify-between gap-4">
-            <dt className="text-mist-400">Role</dt>
-            <dd className="font-medium capitalize text-mist">{user.role}</dd>
+            <dt className="text-low">Role</dt>
+            <dd className="font-medium capitalize text-mid">{user.role}</dd>
           </div>
               {user.role !== 'admin' && (
             <>
               <div className="flex justify-between gap-4">
-                <dt className="text-mist-400">Subscription</dt>
-                <dd className="font-medium capitalize text-mist">{user.subscriptionStatus}</dd>
+                <dt className="text-low">Subscription</dt>
+                <dd className="font-medium capitalize text-mid">{user.subscriptionStatus}</dd>
               </div>
               <div className="flex justify-between gap-4">
-                <dt className="text-mist-400">Transaction limit</dt>
-                <dd className="font-medium text-mist">{formatTxLimit(user.txLimit)} / year</dd>
+                <dt className="text-low">Transaction limit</dt>
+                <dd className="font-medium text-mid">{formatTxLimit(user.txLimit)} / year</dd>
               </div>
               {user.subscriptionExpiresAt && (
                 <div className="flex justify-between gap-4">
-                  <dt className="text-mist-400">Renews / expires</dt>
-                  <dd className="font-medium text-mist">
+                  <dt className="text-low">Renews / expires</dt>
+                  <dd className="font-medium text-mid">
                     {new Date(user.subscriptionExpiresAt).toLocaleDateString()}
                   </dd>
                 </div>
@@ -59,7 +59,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
             </>
           )}
           {user.role === 'admin' && (
-            <div className="flex items-center gap-2 rounded-lg bg-emerald/10 px-3 py-2 text-xs text-emerald-700">
+            <div className="flex items-center gap-2 rounded-lg bg-violet/10 px-3 py-2 text-xs text-gain">
               <Shield className="h-3.5 w-3.5" />
               Full access — manage API keys in Settings
             </div>
@@ -70,7 +70,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
           {onOpenSettings && (
             <button
               type="button"
-              className="flex items-center gap-2 rounded-lg border border-ink-600 px-3 py-2 text-sm text-mist hover:bg-ink-700"
+              className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-mid hover:bg-elev-3"
               onClick={() => {
                 onClose();
                 onOpenSettings();
@@ -83,7 +83,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
           {saas && user.role !== 'admin' && onOpenSettings && (
             <button
               type="button"
-              className="flex items-center gap-2 rounded-lg border border-ink-600 px-3 py-2 text-sm text-mist hover:bg-ink-700"
+              className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-mid hover:bg-elev-3"
               onClick={() => {
                 onClose();
                 onOpenSettings();

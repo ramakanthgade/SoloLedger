@@ -8,7 +8,7 @@ export function AuthGate({ children }: { children: ReactNode }) {
   if (!saas) return <>{children}</>;
   if (loading) {
     return (
-      <div className="flex min-h-[40vh] items-center justify-center text-sm text-mist-400">
+      <div className="flex min-h-[40vh] items-center justify-center text-sm text-low">
         Loading session…
       </div>
     );

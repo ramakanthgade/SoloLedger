@@ -1,55 +1,39 @@
 import type { Config } from 'tailwindcss';
 
-/** Modern Fintech v3 — navy header, teal accents, slate neutrals */
+/**
+ * Aurora (v4) — dark-only, luminous fintech theme.
+ * Semantic color tokens map to the CSS custom properties declared in
+ * `src/index.css` `:root`, so the palette lives in one place and utilities
+ * such as `bg-base`, `text-hi`, `text-mid`, `text-gain` resolve to the
+ * locked Aurora hex values.
+ */
 export default {
   content: ['./index.html', './src/**/*.{ts,tsx}'],
   theme: {
     extend: {
       colors: {
-        ink: {
-          DEFAULT: '#F4F7FA',
-          950: '#0B1F3A',
-          900: '#F8FAFC',
-          800: '#FFFFFF',
-          700: '#E2E8F0',
-          600: '#CBD5E1'
-        },
-        mist: {
-          DEFAULT: '#1E293B',
-          400: '#64748B',
-          300: '#94A3B8',
-          100: '#F1F5F9'
-        },
-        emerald: {
-          DEFAULT: '#14B8A6',
-          600: '#0D9488',
-          400: '#2DD4BF'
-        },
-        gold: {
-          DEFAULT: '#D97706',
-          600: '#B45309',
-          400: '#F59E0B'
-        },
-        loss: '#DC2626',
-        violet: {
-          DEFAULT: '#0B1F3A',
-          600: '#0F2744',
-          100: '#F0FDFA'
-        },
-        pink: {
-          DEFAULT: '#0D9488',
-          100: '#F0FDFA'
-        },
-        navy: {
-          DEFAULT: '#0B1F3A',
-          800: '#0F2744',
-          700: '#152D4A'
-        },
-        teal: {
-          DEFAULT: '#14B8A6',
-          600: '#0D9488',
-          50: '#F0FDFA'
-        }
+        // Canvas / surfaces (dark). Mapped to the `:root` RGB-channel custom
+        // properties so Tailwind opacity modifiers (e.g. `bg-violet/10`) work.
+        base: 'rgb(var(--bg-base-rgb) / <alpha-value>)',
+        'elev-1': 'rgb(var(--bg-elev-1-rgb) / <alpha-value>)',
+        'elev-2': 'rgb(var(--bg-elev-2-rgb) / <alpha-value>)',
+        'elev-3': 'rgb(var(--bg-elev-3-rgb) / <alpha-value>)',
+        // Text
+        hi: 'rgb(var(--text-hi-rgb) / <alpha-value>)',
+        mid: 'rgb(var(--text-mid-rgb) / <alpha-value>)',
+        low: 'rgb(var(--text-low-rgb) / <alpha-value>)',
+        faint: 'rgb(var(--text-faint-rgb) / <alpha-value>)',
+        // Brand accents (pulled from the Aurora gradient)
+        violet: 'rgb(var(--violet-rgb) / <alpha-value>)',
+        blue: 'rgb(var(--blue-rgb) / <alpha-value>)',
+        teal: 'rgb(var(--teal-rgb) / <alpha-value>)',
+        // Semantic / finance
+        gain: 'rgb(var(--gain-rgb) / <alpha-value>)',
+        loss: 'rgb(var(--loss-rgb) / <alpha-value>)',
+        warn: 'rgb(var(--warn-rgb) / <alpha-value>)'
+      },
+      backgroundImage: {
+        aurora: 'var(--aurora)'
       },
       fontFamily: {
         display: ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
@@ -57,16 +41,17 @@ export default {
         mono: ['"IBM Plex Mono"', 'ui-monospace', 'monospace']
       },
       borderRadius: {
-        sm: '6px',
-        DEFAULT: '8px',
+        sm: '8px',
+        DEFAULT: '10px',
         lg: '12px',
         xl: '16px'
       },
       boxShadow: {
-        soft: '0 1px 2px rgba(15, 39, 68, 0.04), 0 0 0 1px rgba(15, 39, 68, 0.03)',
-        card: '0 1px 3px rgba(15, 39, 68, 0.06), 0 1px 2px rgba(15, 39, 68, 0.04)',
-        'card-hover': '0 8px 24px rgba(15, 39, 68, 0.07), 0 2px 6px rgba(15, 39, 68, 0.04)',
-        pop: '0 4px 14px rgba(20, 184, 166, 0.22)'
+        soft: '0 8px 32px rgba(0, 0, 0, 0.4)',
+        card: '0 8px 32px rgba(0, 0, 0, 0.4)',
+        'card-hover': '0 12px 40px rgba(0, 0, 0, 0.5)',
+        pop: '0 0 40px rgba(124, 92, 255, 0.35)',
+        glow: '0 0 40px rgba(124, 92, 255, 0.35)'
       }
     }
   },

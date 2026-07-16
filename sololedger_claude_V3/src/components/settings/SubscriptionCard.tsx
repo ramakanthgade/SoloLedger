@@ -35,21 +35,21 @@ export function SubscriptionCard() {
   };
 
   return (
-    <div className="rounded-2xl border border-teal-200 bg-white shadow-sm">
-      <div className="border-b border-teal-100 px-6 py-5">
-        <p className="text-xs font-semibold uppercase tracking-wider text-teal-700">Subscription</p>
+    <div className="rounded-2xl border border-violet/30 bg-white shadow-sm">
+      <div className="border-b border-violet/20 px-6 py-5">
+        <p className="text-xs font-semibold uppercase tracking-wider text-blue">Subscription</p>
         <div className="mt-2 flex flex-wrap items-baseline justify-between gap-3">
           <div>
-            <h3 className="font-display text-2xl font-bold capitalize text-navy">
+            <h3 className="font-display text-2xl font-bold capitalize text-hi">
               {formatPlanLabel(user.plan)}
             </h3>
-            <p className="mt-1 text-sm text-mist-400">
+            <p className="mt-1 text-sm text-low">
               {formatTxLimit(user.txLimit)} transactions per year
               {!user.subscriptionActive && ' · renewal needed'}
             </p>
           </div>
           {user.plan === 'starter' && (
-            <span className="rounded-full bg-teal-100 px-3 py-1 text-xs font-semibold text-teal-800">
+            <span className="rounded-full bg-violet/15 px-3 py-1 text-xs font-semibold text-blue">
               Free tier
             </span>
           )}
@@ -69,13 +69,13 @@ export function SubscriptionCard() {
           return (
             <div
               key={p.id}
-              className={`flex flex-wrap items-center justify-between gap-3 px-6 py-4 ${highlight ? 'bg-teal-50/60' : ''}`}
+              className={`flex flex-wrap items-center justify-between gap-3 px-6 py-4 ${highlight ? 'bg-violet/10' : ''}`}
             >
               <div>
-                <p className="font-semibold text-navy">
+                <p className="font-semibold text-hi">
                   {p.name}
                   {p.featured && (
-                    <span className="ml-2 rounded bg-emerald-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-emerald-800">
+                    <span className="ml-2 rounded bg-gain/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-gain">
                       Popular
                     </span>
                   )}
@@ -85,7 +85,7 @@ export function SubscriptionCard() {
                     </span>
                   )}
                 </p>
-                <p className="text-sm text-mist-400">
+                <p className="text-sm text-low">
                   {p.price}
                   {p.period} · {p.limit} · {p.tagline}
                 </p>
@@ -95,7 +95,7 @@ export function SubscriptionCard() {
                   type="button"
                   disabled={busy === p.id}
                   onClick={() => upgrade(p.id)}
-                  className="rounded-lg border border-teal-300 bg-white px-4 py-2 text-sm font-semibold text-teal-800 transition hover:bg-teal-50 disabled:opacity-50"
+                  className="rounded-lg border border-violet/40 bg-white px-4 py-2 text-sm font-semibold text-blue transition hover:bg-violet/10 disabled:opacity-50"
                 >
                   {busy === p.id ? '…' : p.contactOnly ? 'Contact' : 'Select'}
                 </button>

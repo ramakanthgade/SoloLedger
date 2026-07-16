@@ -45,8 +45,8 @@ export default defineConfig({
         name: 'SoloLedger — Private Crypto Tax',
         short_name: 'SoloLedger',
         description: 'Fully local, offline-first crypto capital gains & tax reporting.',
-        theme_color: '#F8F6FE',
-        background_color: '#F8F6FE',
+        theme_color: '#0A0B1A',
+        background_color: '#0A0B1A',
         display: 'standalone',
         icons: [
           { src: 'icon-192.png', sizes: '192x192', type: 'image/png' },

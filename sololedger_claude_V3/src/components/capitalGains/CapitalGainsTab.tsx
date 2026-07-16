@@ -325,7 +325,7 @@ export function CapitalGainsTab() {
             setFy(Number(e.target.value));
             setFyInitialized(true);
           }}
-          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist"
+          className="rounded-full border border-white/10 bg-elev-2 px-4 py-1.5 text-sm text-mid"
         >
           {availableFys.map((y) => (
             <option key={y} value={y}>
@@ -336,15 +336,15 @@ export function CapitalGainsTab() {
         <select
           value={method}
           onChange={(e) => setMethod(e.target.value as 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID')}
-          className="rounded-full border border-ink-600 bg-ink-800 px-4 py-1.5 text-sm text-mist"
+          className="rounded-full border border-white/10 bg-elev-2 px-4 py-1.5 text-sm text-mid"
         >
           <option value="FIFO">FIFO matching</option>
           <option value="LIFO">LIFO matching</option>
           <option value="HIFO">HIFO matching</option>
           <option value="SpecID">Specific ID</option>
         </select>
-        <span className="text-xs text-mist-400">{JURISDICTIONS[jurisdiction].label}</span>
-        <span className="text-xs text-mist-400">Export: CSV/JSON recommended for detailed CA review</span>
+        <span className="text-xs text-low">{JURISDICTIONS[jurisdiction].label}</span>
+        <span className="text-xs text-low">Export: CSV/JSON recommended for detailed CA review</span>
         <div className="ml-auto flex gap-2">
           <Button variant="secondary" onClick={exportCapitalGainsCsv}>CSV</Button>
           <Button variant="secondary" onClick={exportCapitalGainsJson}>JSON</Button>
@@ -353,16 +353,16 @@ export function CapitalGainsTab() {
       </div>
 
       {taxableTxCount === 0 && (
-        <div className="rounded-lg border border-gold/40 bg-gold/10 px-4 py-3 text-sm text-mist-300">
-          Wallet imports arrive as <strong className="text-mist">transfer_in / transfer_out</strong> — they do not
-          create capital gains until you classify swaps as <strong className="text-mist">trade</strong> or acquisitions
-          as <strong className="text-mist">buy</strong> in Review. CSV exchange imports (Coinbase, Binance) classify
+        <div className="rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-low">
+          Wallet imports arrive as <strong className="text-mid">transfer_in / transfer_out</strong> — they do not
+          create capital gains until you classify swaps as <strong className="text-mid">trade</strong> or acquisitions
+          as <strong className="text-mid">buy</strong> in Review. CSV exchange imports (Coinbase, Binance) classify
           automatically.
         </div>
       )}
 
       {shortfalls.length > 0 && (
-        <div className="rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
+        <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
           {shortfalls.length} disposal(s) could not be fully matched to prior acquisitions — cost basis may be
           understated. Check Review for missing prices or unclassified transfers.
         </div>
@@ -376,13 +376,13 @@ export function CapitalGainsTab() {
           <CardContent>
             <p
               className={`font-mono text-xl font-semibold tabular-figures whitespace-nowrap sm:text-2xl ${
-                totalGain >= 0 ? 'text-emerald-600' : 'text-loss'
+                totalGain >= 0 ? 'text-gain' : 'text-loss'
               }`}
             >
               {totalGain >= 0 ? '+' : ''}
               {formatCurrency(totalGain, currency)}
             </p>
-            <p className="mt-1 text-xs text-mist-400">{yearMatches.length} matched lot row(s) · spot</p>
+            <p className="mt-1 text-xs text-low">{yearMatches.length} matched lot row(s) · spot</p>
           </CardContent>
         </Card>
         <Card>
@@ -390,10 +390,10 @@ export function CapitalGainsTab() {
             <CardTitle>Spot income — {getFyLabel(fy, jurisdiction)}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="font-mono text-xl font-semibold tabular-figures whitespace-nowrap text-gold-600 sm:text-2xl">
+            <p className="font-mono text-xl font-semibold tabular-figures whitespace-nowrap text-warn sm:text-2xl">
               {formatCurrency(totalIncome, currency)}
             </p>
-            <p className="mt-1 text-xs text-mist-400">
+            <p className="mt-1 text-xs text-low">
               Staking, airdrops, mining (excludes derivatives)
             </p>
           </CardContent>
@@ -408,13 +408,13 @@ export function CapitalGainsTab() {
             <CardContent>
               <p
                 className={`font-mono text-xl font-semibold tabular-figures whitespace-nowrap sm:text-2xl ${
-                  (businessMode ? totalDerivNetBusiness : totalDerivCg) >= 0 ? 'text-emerald-600' : 'text-loss'
+                  (businessMode ? totalDerivNetBusiness : totalDerivCg) >= 0 ? 'text-gain' : 'text-loss'
                 }`}
               >
                 {(businessMode ? totalDerivNetBusiness : totalDerivCg) >= 0 ? '+' : ''}
                 {formatCurrency(businessMode ? totalDerivNetBusiness : totalDerivCg, currency)}
               </p>
-              <p className="mt-1 text-xs text-mist-400">
+              <p className="mt-1 text-xs text-low">
                 {businessMode
                   ? `Income ${formatCurrency(totalDerivIncome, currency)} − expenses ${formatCurrency(totalDerivExpense, currency)}`
                   : `Trading fees ${formatCurrency(totalDerivFees, currency)} (excluded from CG — see note below)`}
@@ -431,7 +431,7 @@ export function CapitalGainsTab() {
         <CardContent>
           <div className="overflow-x-auto">
             <table className="w-full min-w-[920px] text-xs">
-              <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
+              <thead className="bg-elev-2 text-left uppercase tracking-wide text-low">
                 <tr>
                   <th className="px-2 py-2" colSpan={4}>
                     Disposal (sell)
@@ -441,7 +441,7 @@ export function CapitalGainsTab() {
                   </th>
                   <th className="px-2 py-2 text-right">Gain / loss</th>
                 </tr>
-                <tr className="border-t border-ink-700/60 normal-case">
+                <tr className="border-t border-white/10 normal-case">
                   <th className="px-2 py-1">Date</th>
                   <th className="px-2 py-1">Asset</th>
                   <th className="px-2 py-1 text-right">Qty</th>
@@ -457,20 +457,20 @@ export function CapitalGainsTab() {
                 {yearMatches.map((r) => {
                   const chainLabel = r.chain ? CHAINS.find((c) => c.id === r.chain)?.label : undefined;
                   return (
-                    <tr key={r.id} className="border-t border-ink-700/60 hover:bg-ink-700/20">
-                      <td className="px-2 py-2 text-mist-300 whitespace-nowrap">{formatDateTime(r.sellDate)}</td>
-                      <td className="px-2 py-2 text-mist">
+                    <tr key={r.id} className="border-t border-white/10 hover:bg-elev-3/20">
+                      <td className="px-2 py-2 text-low whitespace-nowrap">{formatDateTime(r.sellDate)}</td>
+                      <td className="px-2 py-2 text-mid">
                         {resolveAssetLabel(r.asset, undefined, r.chain)}
-                        {chainLabel && <span className="ml-1 text-mist-400">({chainLabel})</span>}
+                        {chainLabel && <span className="ml-1 text-low">({chainLabel})</span>}
                       </td>
-                      <td className="px-2 py-2 text-right text-mist-300">{formatCompactAmount(r.sellAmount)}</td>
-                      <td className="px-2 py-2 text-right text-mist-300">{formatCurrency(r.proceeds, currency)}</td>
-                      <td className="px-2 py-2 text-mist-300 whitespace-nowrap">{formatDateTime(r.buyDate)}</td>
-                      <td className="px-2 py-2 text-mist">{resolveAssetLabel(r.asset, undefined, r.chain)}</td>
-                      <td className="px-2 py-2 text-right text-mist-300">{formatCompactAmount(r.buyAmount)}</td>
-                      <td className="px-2 py-2 text-right text-mist-300">{formatCurrency(r.costBasis, currency)}</td>
+                      <td className="px-2 py-2 text-right text-low">{formatCompactAmount(r.sellAmount)}</td>
+                      <td className="px-2 py-2 text-right text-low">{formatCurrency(r.proceeds, currency)}</td>
+                      <td className="px-2 py-2 text-low whitespace-nowrap">{formatDateTime(r.buyDate)}</td>
+                      <td className="px-2 py-2 text-mid">{resolveAssetLabel(r.asset, undefined, r.chain)}</td>
+                      <td className="px-2 py-2 text-right text-low">{formatCompactAmount(r.buyAmount)}</td>
+                      <td className="px-2 py-2 text-right text-low">{formatCurrency(r.costBasis, currency)}</td>
                       <td
-                        className={`px-2 py-2 text-right font-semibold ${r.gain >= 0 ? 'text-emerald-600' : 'text-loss'}`}
+                        className={`px-2 py-2 text-right font-semibold ${r.gain >= 0 ? 'text-gain' : 'text-loss'}`}
                       >
                         {r.gain >= 0 ? '+' : ''}
                         {formatCurrency(r.gain, currency)}
@@ -480,7 +480,7 @@ export function CapitalGainsTab() {
                 })}
                 {yearMatches.length === 0 && (
                   <tr>
-                    <td colSpan={9} className="px-2 py-8 text-center text-mist-400">
+                    <td colSpan={9} className="px-2 py-8 text-center text-low">
                       No matched disposals in {getFyLabel(fy, jurisdiction)}. Classify sells/trades in Review or import exchange CSVs.
                     </td>
                   </tr>
@@ -498,7 +498,7 @@ export function CapitalGainsTab() {
         <CardContent>
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
-              <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
+              <thead className="bg-elev-2 text-left uppercase tracking-wide text-low">
                 <tr>
                   <th className="px-2 py-2">Date</th>
                   <th className="px-2 py-2">Kind</th>
@@ -510,26 +510,26 @@ export function CapitalGainsTab() {
               </thead>
               <tbody className="font-mono tabular-figures">
                 {yearIncome.map((r) => (
-                  <tr key={r.id} className="border-t border-ink-700/60">
-                    <td className="px-2 py-2 text-mist-300">{formatDateTime(r.date)}</td>
+                  <tr key={r.id} className="border-t border-white/10">
+                    <td className="px-2 py-2 text-low">{formatDateTime(r.date)}</td>
                     <td className="px-2 py-2">
                       <Badge tone={r.kind.includes('suspected') ? 'gold' : 'emerald'}>
                         {r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind}
                       </Badge>
                     </td>
-                    <td className="px-2 py-2 text-mist">
+                    <td className="px-2 py-2 text-mid">
                       {resolveAssetLabel(r.asset, undefined, r.chain as ChainId | undefined)}
                     </td>
                     <td className="px-2 py-2 text-right">{formatCompactAmount(r.amount)}</td>
-                    <td className="px-2 py-2 text-right text-gold-600">{formatCurrency(r.fiatValue, currency)}</td>
-                    <td className="px-2 py-2 text-mist-400 truncate max-w-[8rem]" title={r.counterparty}>
+                    <td className="px-2 py-2 text-right text-warn">{formatCurrency(r.fiatValue, currency)}</td>
+                    <td className="px-2 py-2 text-low truncate max-w-[8rem]" title={r.counterparty}>
                       {r.counterparty ? `${r.counterparty.slice(0, 8)}…` : '—'}
                     </td>
                   </tr>
                 ))}
                 {yearIncome.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-2 py-8 text-center text-mist-400">
+                    <td colSpan={6} className="px-2 py-8 text-center text-low">
                       No income events in {getFyLabel(fy, jurisdiction)}.
                     </td>
                   </tr>
@@ -537,7 +537,7 @@ export function CapitalGainsTab() {
               </tbody>
             </table>
           </div>
-          <p className="mt-3 text-xs text-mist-400">
+          <p className="mt-3 text-xs text-low">
             Suspected airdrops/staking are inferred from inbound transfers with a contract/program sender — verify in
             Review and reclassify if needed. Derivatives are listed separately below (see Settings → Derivatives tax treatment).
           </p>
@@ -551,13 +551,13 @@ export function CapitalGainsTab() {
               <CardTitle>Derivatives — business income — {getFyLabel(fy, jurisdiction)}</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="mb-3 text-sm text-mist-300">
+              <p className="mb-3 text-sm text-low">
                 Total income:{' '}
-                <span className="font-mono text-gold-600">{formatCurrency(totalDerivIncome, currency)}</span>
+                <span className="font-mono text-warn">{formatCurrency(totalDerivIncome, currency)}</span>
               </p>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
-                  <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
+                  <thead className="bg-elev-2 text-left uppercase tracking-wide text-low">
                     <tr>
                       <th className="px-2 py-2">Date</th>
                       <th className="px-2 py-2">Asset</th>
@@ -568,19 +568,19 @@ export function CapitalGainsTab() {
                   </thead>
                   <tbody className="font-mono tabular-figures">
                     {yearDerivIncome.map((r) => (
-                      <tr key={r.id} className="border-t border-ink-700/60">
-                        <td className="px-2 py-2 text-mist-300">{formatDateTime(r.date)}</td>
-                        <td className="px-2 py-2 text-mist">{r.asset}</td>
+                      <tr key={r.id} className="border-t border-white/10">
+                        <td className="px-2 py-2 text-low">{formatDateTime(r.date)}</td>
+                        <td className="px-2 py-2 text-mid">{r.asset}</td>
                         <td className="px-2 py-2 text-right">{formatCompactAmount(r.amount)}</td>
-                        <td className="px-2 py-2 text-right text-gold-600">{formatCurrency(r.fiatValue, currency)}</td>
-                        <td className="px-2 py-2 text-mist-400 truncate max-w-[16rem]" title={r.notes}>
+                        <td className="px-2 py-2 text-right text-warn">{formatCurrency(r.fiatValue, currency)}</td>
+                        <td className="px-2 py-2 text-low truncate max-w-[16rem]" title={r.notes}>
                           {r.notes ?? '—'}
                         </td>
                       </tr>
                     ))}
                     {yearDerivIncome.length === 0 && (
                       <tr>
-                        <td colSpan={5} className="px-2 py-8 text-center text-mist-400">
+                        <td colSpan={5} className="px-2 py-8 text-center text-low">
                           No derivative profits in {getFyLabel(fy, jurisdiction)}.
                         </td>
                       </tr>
@@ -596,16 +596,16 @@ export function CapitalGainsTab() {
               <CardTitle>Derivatives — business expenses — {getFyLabel(fy, jurisdiction)}</CardTitle>
             </CardHeader>
             <CardContent>
-              <p className="mb-3 text-sm text-mist-300">
+              <p className="mb-3 text-sm text-low">
                 Total expenses:{' '}
                 <span className="font-mono text-loss">{formatCurrency(totalDerivExpense, currency)}</span>
-                <span className="ml-2 text-mist-400">
+                <span className="ml-2 text-low">
                   (fees + realized losses) · Net = {formatCurrency(totalDerivNetBusiness, currency)}
                 </span>
               </p>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs">
-                  <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
+                  <thead className="bg-elev-2 text-left uppercase tracking-wide text-low">
                     <tr>
                       <th className="px-2 py-2">Date</th>
                       <th className="px-2 py-2">Kind</th>
@@ -617,24 +617,24 @@ export function CapitalGainsTab() {
                   </thead>
                   <tbody className="font-mono tabular-figures">
                     {yearDerivExpense.map((r) => (
-                      <tr key={r.id} className="border-t border-ink-700/60">
-                        <td className="px-2 py-2 text-mist-300">{formatDateTime(r.date)}</td>
+                      <tr key={r.id} className="border-t border-white/10">
+                        <td className="px-2 py-2 text-low">{formatDateTime(r.date)}</td>
                         <td className="px-2 py-2">
                           <Badge tone={r.kind === 'realized_loss' ? 'loss' : 'gold'}>
                             {r.kind === 'realized_loss' ? 'Realized loss' : 'Trading fee'}
                           </Badge>
                         </td>
-                        <td className="px-2 py-2 text-mist">{r.asset}</td>
+                        <td className="px-2 py-2 text-mid">{r.asset}</td>
                         <td className="px-2 py-2 text-right">{formatCompactAmount(r.amount)}</td>
                         <td className="px-2 py-2 text-right text-loss">{formatCurrency(r.fiatValue, currency)}</td>
-                        <td className="px-2 py-2 text-mist-400 truncate max-w-[16rem]" title={r.notes}>
+                        <td className="px-2 py-2 text-low truncate max-w-[16rem]" title={r.notes}>
                           {r.notes ?? '—'}
                         </td>
                       </tr>
                     ))}
                     {yearDerivExpense.length === 0 && (
                       <tr>
-                        <td colSpan={6} className="px-2 py-8 text-center text-mist-400">
+                        <td colSpan={6} className="px-2 py-8 text-center text-low">
                           No derivative fees/losses in {getFyLabel(fy, jurisdiction)}.
                         </td>
                       </tr>
@@ -653,22 +653,22 @@ export function CapitalGainsTab() {
             <CardTitle>Derivatives — capital gains / losses — {getFyLabel(fy, jurisdiction)}</CardTitle>
           </CardHeader>
           <CardContent>
-            <p className="mb-3 text-sm text-mist-300">
+            <p className="mb-3 text-sm text-low">
               {yearDerivCg.length} close(s) · close notional = proceeds; implied open notional (close − closed PnL) =
               cost. Gain = closed PnL. Total:{' '}
-              <span className={`font-mono whitespace-nowrap ${totalDerivCg >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
+              <span className={`font-mono whitespace-nowrap ${totalDerivCg >= 0 ? 'text-gain' : 'text-loss'}`}>
                 {totalDerivCg >= 0 ? '+' : ''}
                 {formatCurrency(totalDerivCg, currency)}
               </span>
             </p>
-            <p className="mb-3 text-xs text-mist-400">
+            <p className="mb-3 text-xs text-low">
               Trading fees {formatCurrency(totalDerivFees, currency)} are not included in these rows (same as spot
               capital gains). That is why Business income net differs from this CG total — switch Settings to Business
               income to include fees + losses as expenses, or filter Derivatives in Review.
             </p>
             <div className="overflow-x-auto">
               <table className="w-full min-w-[720px] text-xs">
-                <thead className="bg-ink-800 text-left uppercase tracking-wide text-mist-400">
+                <thead className="bg-elev-2 text-left uppercase tracking-wide text-low">
                   <tr>
                     <th className="px-2 py-2">Date</th>
                     <th className="px-2 py-2">Asset</th>
@@ -679,12 +679,12 @@ export function CapitalGainsTab() {
                 </thead>
                 <tbody className="font-mono tabular-figures">
                   {yearDerivCg.map((r) => (
-                    <tr key={r.id} className="border-t border-ink-700/60">
-                      <td className="px-2 py-2 text-mist-300">{formatDateTime(r.sellDate)}</td>
-                      <td className="px-2 py-2 text-mist">{r.asset}</td>
+                    <tr key={r.id} className="border-t border-white/10">
+                      <td className="px-2 py-2 text-low">{formatDateTime(r.sellDate)}</td>
+                      <td className="px-2 py-2 text-mid">{r.asset}</td>
                       <td className="px-2 py-2 text-right">{formatCurrency(r.proceeds, currency)}</td>
                       <td className="px-2 py-2 text-right">{formatCurrency(r.costBasis, currency)}</td>
-                      <td className={`px-2 py-2 text-right font-semibold ${r.gain >= 0 ? 'text-emerald-600' : 'text-loss'}`}>
+                      <td className={`px-2 py-2 text-right font-semibold ${r.gain >= 0 ? 'text-gain' : 'text-loss'}`}>
                         {r.gain >= 0 ? '+' : ''}
                         {formatCurrency(r.gain, currency)}
                       </td>
@@ -692,7 +692,7 @@ export function CapitalGainsTab() {
                   ))}
                   {yearDerivCg.length === 0 && (
                     <tr>
-                      <td colSpan={5} className="px-2 py-8 text-center text-mist-400">
+                      <td colSpan={5} className="px-2 py-8 text-center text-low">
                         No derivative PnL in {getFyLabel(fy, jurisdiction)}.
                       </td>
                     </tr>

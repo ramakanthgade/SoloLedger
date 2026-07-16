@@ -270,7 +270,7 @@ export function ImportTab() {
     <div className="space-y-6">
       <div>
         <h2 className="page-title">Bring in your transactions</h2>
-        <p className="mt-1 text-sm text-mist-400">
+        <p className="mt-1 text-sm text-low">
           Everything's read right here in your browser — nothing gets uploaded anywhere.
         </p>
       </div>
@@ -282,7 +282,7 @@ export function ImportTab() {
             onClick={() => setMode(m.id)}
             className={cn(
               'rounded-full px-4 py-2 text-sm font-medium transition-all hover:scale-[1.03] active:scale-95',
-              mode === m.id ? 'bg-emerald text-white shadow-pop' : 'bg-ink-700/50 text-mist-400 hover:text-mist'
+              mode === m.id ? 'bg-violet text-white shadow-pop' : 'bg-elev-3/50 text-low hover:text-mid'
             )}
           >
             {m.label}
@@ -301,13 +301,13 @@ export function ImportTab() {
             onDrop={onDrop}
             className={
               'flex flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-14 text-center transition-colors ' +
-              (dragOver ? 'border-emerald bg-emerald-100' : 'border-ink-600 bg-ink-800')
+              (dragOver ? 'border-violet bg-gain/15' : 'border-white/10 bg-elev-2')
             }
           >
             {saving ? (
               <>
-                <Loader2 className="mb-3 h-6 w-6 animate-spin text-emerald-600" />
-                <p className="text-sm text-mist-300">
+                <Loader2 className="mb-3 h-6 w-6 animate-spin text-gain" />
+                <p className="text-sm text-low">
                   {importPhase === 'pricing'
                     ? 'Fetching missing market prices…'
                     : 'Importing and saving transactions…'}
@@ -315,8 +315,8 @@ export function ImportTab() {
               </>
             ) : (
               <>
-                <Upload className="mb-3 h-6 w-6 text-emerald-600" />
-                <p className="text-sm text-mist-300">
+                <Upload className="mb-3 h-6 w-6 text-gain" />
+                <p className="text-sm text-low">
                   Drop a CSV or Excel (.xlsx) file — multi-sheet workbooks are scanned automatically, or
                 </p>
                 <label className="mt-3">
@@ -331,26 +331,26 @@ export function ImportTab() {
                       e.target.value = '';
                     }}
                   />
-                  <span className="cursor-pointer rounded-full bg-emerald px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-emerald-600 active:scale-95">
+                  <span className="cursor-pointer rounded-full bg-violet px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-violet active:scale-95">
                     Choose file
                   </span>
                 </label>
               </>
             )}
             {fileName && !duplicateBlocked && !saving && outcome && (
-              <p className="mt-3 font-mono text-xs text-mist-400">{fileName}</p>
+              <p className="mt-3 font-mono text-xs text-low">{fileName}</p>
             )}
           </div>
 
           {duplicateBlocked && (
-            <div className="rounded-lg border border-gold/30 bg-gold/10 px-4 py-3 text-sm text-gold-600">
+            <div className="rounded-lg border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">
               <strong>{fileName}</strong> was already imported. Remove it from{' '}
               <strong>Files already imported</strong> below to upload it again with different mapping.
             </div>
           )}
 
           {extractionNote && (
-            <div className="rounded-lg border border-emerald/30 bg-emerald/10 px-4 py-3 text-sm text-mist-300">
+            <div className="rounded-lg border border-violet/30 bg-violet/10 px-4 py-3 text-sm text-low">
               {extractionNote}
             </div>
           )}
@@ -359,10 +359,10 @@ export function ImportTab() {
             {SUPPORTED.map((s) => (
               <Card key={s.id}>
                 <CardContent className="flex items-start gap-3 py-4">
-                  <FileCheck2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+                  <FileCheck2 className="mt-0.5 h-4 w-4 shrink-0 text-gain" />
                   <div>
-                    <p className="text-sm font-medium text-mist">{s.label}</p>
-                    <p className="mt-0.5 text-xs text-mist-400">{s.guide}</p>
+                    <p className="text-sm font-medium text-mid">{s.label}</p>
+                    <p className="mt-0.5 text-xs text-low">{s.guide}</p>
                   </div>
                 </CardContent>
               </Card>
@@ -388,7 +388,7 @@ export function ImportTab() {
                 </div>
 
                 {outcome.warnings.map((w, i) => (
-                  <div key={i} className="flex items-start gap-2 rounded-sm bg-gold/5 px-3 py-2 text-xs text-gold-600">
+                  <div key={i} className="flex items-start gap-2 rounded-sm bg-warn/5 px-3 py-2 text-xs text-warn">
                     <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                     <span>{w}</span>
                   </div>
@@ -399,7 +399,7 @@ export function ImportTab() {
                 )}
 
                 {outcome.detectedParser && outcome.transactions.length === 0 && (
-                  <p className="text-sm text-mist-400">
+                  <p className="text-sm text-low">
                     No transactions could be imported from this file. Check the warnings above or try a different export.
                   </p>
                 )}
@@ -408,20 +408,20 @@ export function ImportTab() {
           )}
 
           {csvImports.length > 0 && (
-            <div className="rounded-lg border border-ink-700 bg-ink-800 p-4">
-              <h3 className="mb-3 text-sm font-medium text-mist">Files already imported</h3>
+            <div className="rounded-lg border border-white/10 bg-elev-2 p-4">
+              <h3 className="mb-3 text-sm font-medium text-mid">Files already imported</h3>
               <div className="space-y-2">
                 {csvImports.map((row) => (
                   <div
                     key={row.id}
-                    className="flex flex-wrap items-center gap-2 rounded-lg bg-ink-700/40 px-3 py-2 text-xs"
+                    className="flex flex-wrap items-center gap-2 rounded-lg bg-elev-3/40 px-3 py-2 text-xs"
                   >
                     <Badge tone="violet">{row.parserId ?? 'mapped'}</Badge>
-                    <span className="font-medium text-mist" title={row.fileName}>
+                    <span className="font-medium text-mid" title={row.fileName}>
                       {row.fileName.length > 40 ? `${row.fileName.slice(0, 28)}…${row.fileName.slice(-10)}` : row.fileName}
                     </span>
-                    <span className="text-mist-400">{row.txCount} txs</span>
-                    <span className="text-mist-400">imported {new Date(row.importedAt).toLocaleDateString()}</span>
+                    <span className="text-low">{row.txCount} txs</span>
+                    <span className="text-low">imported {new Date(row.importedAt).toLocaleDateString()}</span>
                     <button
                       className="ml-auto flex items-center gap-1 text-loss hover:underline"
                       onClick={() => setRemoveConfirm({ id: row.id, fileName: row.fileName, txCount: row.txCount })}
@@ -442,25 +442,25 @@ export function ImportTab() {
 
       {savedCount !== null && (
         <div className="space-y-2">
-          <div className="flex items-center gap-2 rounded-lg border border-emerald/30 bg-emerald/15 px-4 py-2.5 text-sm text-emerald-600">
+          <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/15 px-4 py-2.5 text-sm text-gain">
             <CheckCircle2 className="h-4 w-4" />
             Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local database. Head to Review to
             categorize them.
           </div>
           {importWarnings.map((w, i) => (
-            <div key={i} className="flex items-start gap-2 rounded-sm bg-gold/5 px-3 py-2 text-xs text-gold-600">
+            <div key={i} className="flex items-start gap-2 rounded-sm bg-warn/5 px-3 py-2 text-xs text-warn">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
               <span>{w}</span>
             </div>
           ))}
           {conversionNote && (
-            <div className="flex items-start gap-2 rounded-lg border border-emerald/30 bg-emerald/10 px-4 py-2.5 text-sm text-mist-300">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-emerald-600" />
+            <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-low">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-gain" />
               <span>{conversionNote}</span>
             </div>
           )}
           {priceFetchNote && (
-            <div className="flex items-start gap-2 rounded-lg border border-emerald/30 bg-emerald/10 px-4 py-2.5 text-sm text-emerald-600">
+            <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-gain">
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{priceFetchNote}</span>
             </div>
@@ -469,13 +469,13 @@ export function ImportTab() {
       )}
 
       {removeConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/60 p-4">
-          <div className="max-w-md rounded-lg border border-ink-700 bg-ink-800 p-5 shadow-xl">
-            <h3 className="text-sm font-semibold text-mist">Remove import and its transactions?</h3>
-            <p className="mt-2 text-xs text-mist-400">
-              Deletes <strong className="text-mist">{removeConfirm.txCount}</strong> transaction
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-base/60 p-4">
+          <div className="max-w-md rounded-lg border border-white/10 bg-elev-2 p-5 shadow-xl">
+            <h3 className="text-sm font-semibold text-mid">Remove import and its transactions?</h3>
+            <p className="mt-2 text-xs text-low">
+              Deletes <strong className="text-mid">{removeConfirm.txCount}</strong> transaction
               {removeConfirm.txCount === 1 ? '' : 's'} from{' '}
-              <span className="text-mist-300">{removeConfirm.fileName}</span>. You can re-import the file after.
+              <span className="text-low">{removeConfirm.fileName}</span>. You can re-import the file after.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setRemoveConfirm(null)}>Cancel</Button>
