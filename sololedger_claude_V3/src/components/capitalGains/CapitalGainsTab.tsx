@@ -19,6 +19,8 @@ import { useTabNav } from '@/lib/tabNav';
 import { TrendingUp } from 'lucide-react';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
+import { useExportGuard } from '@/components/billing/ExportGateDialog';
+import { useAuth } from '@/lib/saas/authContext';
 
 const INCOME_KIND_LABEL: Record<string, string> = {
   income: 'Income',
@@ -171,6 +173,16 @@ export function CapitalGainsTab() {
   const taxableTxCount = transactions.filter(
     (t) => !t.isInternalTransfer && !['transfer_in', 'transfer_out', 'fee'].includes(t.type)
   ).length;
+
+  const { user } = useAuth();
+  const authSnapshot = user ? { plan: user.plan, includedUnits: user.includedUnits } : null;
+  const { runGuarded, gateDialog } = useExportGuard({
+    disposals,
+    transactions,
+    fy,
+    jurisdiction,
+    auth: authSnapshot
+  });
 
   const downloadBlob = (content: string, mime: string, filename: string) => {
     const blob = new Blob([content], { type: mime });
@@ -354,11 +366,13 @@ export function CapitalGainsTab() {
         <span className="text-xs text-low">{JURISDICTIONS[jurisdiction].label}</span>
         <span className="text-xs text-low">Export: CSV/JSON recommended for detailed CA review</span>
         <div className="ml-auto flex gap-2">
-          <Button variant="secondary" onClick={exportCapitalGainsCsv}>CSV</Button>
-          <Button variant="secondary" onClick={exportCapitalGainsJson}>JSON</Button>
+          <Button variant="secondary" onClick={() => void runGuarded(exportCapitalGainsCsv)}>CSV</Button>
+          <Button variant="secondary" onClick={() => void runGuarded(exportCapitalGainsJson)}>JSON</Button>
           <Button variant="secondary" onClick={() => setPdfConfirmOpen(true)}>PDF</Button>
         </div>
       </div>
+
+      {gateDialog}
 
       <ConfirmDialog
         open={pdfConfirmOpen}
@@ -367,7 +381,7 @@ export function CapitalGainsTab() {
         confirmLabel="Continue with PDF"
         onConfirm={() => {
           setPdfConfirmOpen(false);
-          void exportCapitalGainsPdf();
+          void runGuarded(exportCapitalGainsPdf);
         }}
         onCancel={() => setPdfConfirmOpen(false)}
       />

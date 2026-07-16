@@ -3,6 +3,7 @@ import * as ed from '@noble/ed25519';
 import {
   base64urlEncode,
   encodeLicenseKey,
+  isLicensingConfigured,
   licensePayloadBytes,
   verifyLicenseKey,
   type LicensePayload
@@ -84,10 +85,33 @@ describe('verifyLicenseKey', () => {
     expect((await verifyLicenseKey('.', publicKeyB64url)).valid).toBe(false);
   });
 
-  it('rejects everything against the default (placeholder) embedded key', async () => {
+  it('reports notConfigured (not just invalid) against the placeholder key', async () => {
+    // No env pubkey is injected in the test build, so the module default is the
+    // all-zero placeholder → licensing is NOT configured. A validly-signed key
+    // must be reported as `notConfigured`, distinct from a genuinely bad key,
+    // so ops/support can be prompted instead of silently rejecting real keys.
+    expect(isLicensingConfigured()).toBe(false);
     const key = await signPayload(PAYLOAD, privateKey);
-    // No override → uses the all-zero placeholder public key.
+    // No override → uses the placeholder public key.
     const r = await verifyLicenseKey(key);
     expect(r.valid).toBe(false);
+    expect(r.notConfigured).toBe(true);
+    expect(r.tier).toBeUndefined();
+  });
+
+  it('treats an injected real key as configured and does not flag notConfigured', async () => {
+    // With a real (test) public key override, licensing IS configured: a valid
+    // key unlocks and a bad key is `valid:false` WITHOUT notConfigured.
+    expect(isLicensingConfigured(publicKeyB64url)).toBe(true);
+
+    const good = await signPayload(PAYLOAD, privateKey);
+    const okResult = await verifyLicenseKey(good, publicKeyB64url);
+    expect(okResult.valid).toBe(true);
+    expect(okResult.notConfigured).toBeUndefined();
+
+    const wrong = await signPayload(PAYLOAD, ed.utils.randomPrivateKey());
+    const badResult = await verifyLicenseKey(wrong, publicKeyB64url);
+    expect(badResult.valid).toBe(false);
+    expect(badResult.notConfigured).toBeUndefined();
   });
 });

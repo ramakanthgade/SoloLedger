@@ -32,6 +32,13 @@ export interface TdsReconciliationViewProps {
   fy: number;
   jurisdiction: Jurisdiction;
   currency: string;
+  /**
+   * Billing export gate (D6). Wraps each export so it only runs within the
+   * license allowance. Defaults to running the export directly when omitted
+   * (e.g. in standalone render tests) — the parent Reports tab supplies the
+   * real gate.
+   */
+  guardExport?: (exportFn: () => void | Promise<void>) => void | Promise<void>;
 }
 
 function downloadBlob(content: string, mime: string, filename: string) {
@@ -48,8 +55,11 @@ export function TdsReconciliationView({
   reconciliation,
   fy,
   jurisdiction,
-  currency
+  currency,
+  guardExport
 }: TdsReconciliationViewProps) {
+  const runExport = (fn: () => void | Promise<void>) =>
+    guardExport ? void guardExport(fn) : void fn();
   const rows = useMemo(() => buildTdsExchangeRows(reconciliation), [reconciliation]);
   // User-entered Form 26AS amounts, keyed by raw exchange source. Purely
   // user-supplied — never persisted or app-verified.
@@ -132,8 +142,8 @@ export function TdsReconciliationView({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={exportCsv}>CSV</Button>
-          <Button size="sm" onClick={() => void exportPdf()}>Export PDF</Button>
+          <Button variant="secondary" size="sm" onClick={() => runExport(exportCsv)}>CSV</Button>
+          <Button size="sm" onClick={() => runExport(exportPdf)}>Export PDF</Button>
         </div>
       </div>
 

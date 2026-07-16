@@ -8,6 +8,8 @@ export function SubscriptionCard() {
   const { user } = useAuth();
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
+  // Enterprise only: N prepaid 1,000-event packs above the 10,000 base.
+  const [extraPacks, setExtraPacks] = useState(0);
 
   if (!user || user.role === 'admin') return null;
 
@@ -22,7 +24,7 @@ export function SubscriptionCard() {
     setBusy(plan);
     setError(null);
     try {
-      const url = await startCheckout(plan);
+      const url = await startCheckout(plan, plan === 'enterprise' ? extraPacks : 0);
       if (url) {
         sessionStorage.removeItem(SELECTED_PLAN_KEY);
         window.location.href = url;
@@ -89,6 +91,23 @@ export function SubscriptionCard() {
                   {p.price}
                   {p.period} · {p.limit} · {p.tagline}
                 </p>
+                {p.id === 'enterprise' && (
+                  <label className="mt-2 flex items-center gap-2 text-xs text-low">
+                    Extra 1,000-event packs
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={extraPacks}
+                      aria-label="Enterprise extra 1,000-event packs"
+                      onChange={(e) => setExtraPacks(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+                      className="h-8 w-20 rounded-lg border border-violet/40 bg-white px-2 text-right font-mono text-sm text-hi"
+                    />
+                    <span className="text-low">
+                      → {formatUnitLimit(10_000 + extraPacks * 1_000)} events
+                    </span>
+                  </label>
+                )}
               </div>
               {!isCurrent && (
                 <button

@@ -92,10 +92,17 @@ export async function fetchMe(): Promise<PublicUser> {
   return data.user;
 }
 
-export async function startCheckout(plan: string): Promise<string | null> {
+/**
+ * Start a Stripe checkout for `plan`. For Enterprise, `extraPacks` requests N
+ * prepaid 1,000-event allowance packs above the 10,000 base — the server only
+ * honours (and charges for) packs when its pack price ID is configured, and
+ * rejects the request otherwise so a buyer is never granted unpaid allowance.
+ * `extraPacks` is ignored by the server for non-Enterprise plans.
+ */
+export async function startCheckout(plan: string, extraPacks = 0): Promise<string | null> {
   const res = await apiFetch('/api/billing/checkout', {
     method: 'POST',
-    body: JSON.stringify({ plan })
+    body: JSON.stringify({ plan, extraPacks })
   });
   const data = await res.json();
   if (!res.ok) throw new Error(data.error ?? 'Checkout failed');

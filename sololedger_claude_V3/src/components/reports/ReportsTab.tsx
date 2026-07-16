@@ -28,6 +28,8 @@ import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/s
 import { ScheduleVdaView } from '@/components/reports/ScheduleVdaView';
 import { TdsReconciliationView } from '@/components/reports/TdsReconciliationView';
 import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
+import { useExportGuard } from '@/components/billing/ExportGateDialog';
+import { useAuth } from '@/lib/saas/authContext';
 
 export function ReportsTab() {
   const { goToImport } = useTabNav();
@@ -158,6 +160,16 @@ export function ReportsTab() {
       ),
     [transactions, disposals, jurisdiction]
   );
+
+  const { user } = useAuth();
+  const authSnapshot = user ? { plan: user.plan, includedUnits: user.includedUnits } : null;
+  const { runGuarded, gateDialog } = useExportGuard({
+    disposals,
+    transactions,
+    fy: year,
+    jurisdiction,
+    auth: authSnapshot
+  });
 
   const buildDeidentifiedTxMap = async () => {
     if (!deidentify) return new Map(transactions.map((t) => [t.id, t]));
@@ -339,6 +351,7 @@ export function ReportsTab() {
 
   return (
     <div className="space-y-8">
+      {gateDialog}
       <PageHeader
         title="Reports"
         subtitle="Everything your CA needs to file — a Schedule VDA statement, TDS reconciliation, and tax estimate — built on this device and downloaded straight to it."
@@ -396,12 +409,12 @@ export function ReportsTab() {
           Light header for print
         </label>
         <div className="ml-auto flex gap-2">
-          <Button variant="secondary" size="sm" onClick={exportCsv}>CSV</Button>
-          <Button variant="secondary" size="sm" onClick={exportJson}>JSON</Button>
+          <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportCsv)}>CSV</Button>
+          <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportJson)}>JSON</Button>
           {isIndia && (
-            <Button variant="secondary" size="sm" onClick={exportScheduleVdaCsv}>Schedule VDA CSV</Button>
+            <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportScheduleVdaCsv)}>Schedule VDA CSV</Button>
           )}
-          <Button size="sm" onClick={exportPdf}>Export PDF</Button>
+          <Button size="sm" onClick={() => void runGuarded(exportPdf)}>Export PDF</Button>
         </div>
       </div>
 
@@ -566,6 +579,7 @@ export function ReportsTab() {
           fy={year}
           jurisdiction={jurisdiction}
           currency={rules.currency}
+          guardExport={runGuarded}
         />
       )}
 
@@ -575,6 +589,7 @@ export function ReportsTab() {
           fy={year}
           jurisdiction={jurisdiction}
           currency={rules.currency}
+          guardExport={runGuarded}
         />
       )}
 

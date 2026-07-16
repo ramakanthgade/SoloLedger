@@ -24,18 +24,62 @@ import { verifyAsync } from '@noble/ed25519';
 import type { PlanId } from '@/lib/saas/plans';
 
 /**
- * SoloLedger license-signing PUBLIC key (Ed25519, 32 bytes, base64url).
+ * SoloLedger license-signing PUBLIC key injection (Ed25519, 32 bytes,
+ * base64url).
  *
- * This is a build-time constant. The corresponding private key is kept offline
- * by the issuer and is used to stamp customer licenses out-of-band. Replace
- * this placeholder with the real production public key before shipping paid
- * licenses; the verifier below rejects anything not signed by this key.
+ * OPS: inject the real production public key at build time via the env var
  *
- * NOTE: the value below is a documented PLACEHOLDER (all-zero key) so the
- * verifier is wired end-to-end; every real license will fail against it until
- * the production key is dropped in, which is the safe default.
+ *     VITE_SOLOLEDGER_LICENSE_PUBKEY=<base64url(32-byte Ed25519 public key)>
+ *
+ * (e.g. in the CI/Pages build environment, or a local `.env`). Vite inlines
+ * `import.meta.env.VITE_*` at build time, so the key is baked into the client
+ * bundle — this is expected: it is a PUBLIC key and safe to ship. The matching
+ * PRIVATE key is held OFFLINE by the issuer, used to stamp customer licenses
+ * out-of-band, and MUST NEVER appear in client code or the repo.
+ *
+ * When the env var is unset, the embedded value below is the documented
+ * PLACEHOLDER (all-zero key). In that state licensing is treated as NOT
+ * CONFIGURED: {@link isLicensingConfigured} returns false and
+ * {@link verifyLicenseKey} reports `{ valid: false, notConfigured: true }`
+ * for every key (a safe default that clearly signals mis-provisioning rather
+ * than silently rejecting otherwise-valid keys). A production build with the
+ * placeholder still in place should be caught by ops via that flag / the
+ * console warning emitted below.
  */
-export const SOLOLEDGER_LICENSE_PUBLIC_KEY_B64URL = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+const PLACEHOLDER_PUBLIC_KEY_B64URL = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+/**
+ * The active license-signing public key: the ops-injected build-time value
+ * when present, else the placeholder (licensing not configured).
+ */
+export const SOLOLEDGER_LICENSE_PUBLIC_KEY_B64URL =
+  (import.meta.env?.VITE_SOLOLEDGER_LICENSE_PUBKEY as string | undefined)?.trim() ||
+  PLACEHOLDER_PUBLIC_KEY_B64URL;
+
+/**
+ * True when a real production public key has been injected (i.e. the active
+ * key is NOT the all-zero placeholder). When false, licensing is not
+ * configured and no license — valid or not — can unlock a paid tier.
+ */
+export function isLicensingConfigured(
+  publicKeyB64url: string = SOLOLEDGER_LICENSE_PUBLIC_KEY_B64URL
+): boolean {
+  return publicKeyB64url.trim() !== PLACEHOLDER_PUBLIC_KEY_B64URL;
+}
+
+// Fail loudly in a production build if ops forgot to inject the real key —
+// paid licenses cannot validate until VITE_SOLOLEDGER_LICENSE_PUBKEY is set.
+if (
+  import.meta.env?.PROD &&
+  !isLicensingConfigured() &&
+  typeof console !== 'undefined'
+) {
+  console.error(
+    '[SoloLedger] Licensing NOT configured: VITE_SOLOLEDGER_LICENSE_PUBKEY is ' +
+      'unset, so the all-zero placeholder public key is in use and NO paid ' +
+      'license can validate. Inject the real Ed25519 public key at build time.'
+  );
+}
 
 export interface LicensePayload {
   tier: PlanId;
@@ -51,6 +95,13 @@ export interface LicenseVerificationResult {
   taxYear?: number;
   includedUnits?: number;
   licenseId?: string;
+  /**
+   * True when verification could not even be attempted because the production
+   * public key was never injected (see {@link isLicensingConfigured}). Lets
+   * the UI distinguish "your key is invalid" from "this build has no license
+   * key configured — contact support" instead of silently rejecting.
+   */
+  notConfigured?: boolean;
 }
 
 const PAID_TIERS: PlanId[] = ['starter', 'standard', 'pro', 'investor', 'enterprise'];
@@ -122,6 +173,13 @@ export async function verifyLicenseKey(
   publicKeyB64url: string = SOLOLEDGER_LICENSE_PUBLIC_KEY_B64URL
 ): Promise<LicenseVerificationResult> {
   try {
+    // Licensing not configured (placeholder key still in place): never attempt
+    // verification — surface `notConfigured` so callers can prompt ops/support
+    // rather than treat a real key as merely "invalid".
+    if (!isLicensingConfigured(publicKeyB64url)) {
+      return { valid: false, notConfigured: true };
+    }
+
     const trimmed = key.trim();
     const dot = trimmed.indexOf('.');
     if (dot <= 0 || dot === trimmed.length - 1) return { valid: false };

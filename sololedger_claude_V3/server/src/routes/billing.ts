@@ -47,6 +47,52 @@ export function resolveEnterprisePurchase(extraPacks: unknown): {
   return { includedUnits, priceInr: enterprisePriceInr(includedUnits), overageBlocks: packs };
 }
 
+export interface CheckoutGrant {
+  /** True when the request must be rejected (400) — unpaid packs requested. */
+  rejected: boolean;
+  /** Human-readable reason when rejected. */
+  error?: string;
+  /** Packs that will actually be charged as line items (0 for non-Enterprise). */
+  chargedPacks: number;
+  /** Included units to encode in checkout metadata (never exceeds paid packs). */
+  grantedUnits: number;
+}
+
+/**
+ * Decide, for a checkout request, how many Enterprise packs can be charged and
+ * therefore how many units to grant — the SINGLE safety point that prevents
+ * granting unpaid allowance.
+ *
+ * If the buyer requests extra packs but no pack price ID is configured, the
+ * request is REJECTED (we cannot charge for the packs). Only packs charged as
+ * line items count toward the granted allowance; a non-Enterprise plan always
+ * gets its catalog `includedUnits`.
+ */
+export function resolveCheckoutGrant(
+  plan: PlanId,
+  extraPacks: unknown,
+  packPriceId: string | undefined
+): CheckoutGrant {
+  const priceId = packPriceId?.trim();
+  if (plan !== 'enterprise') {
+    return { rejected: false, chargedPacks: 0, grantedUnits: PLANS[plan].includedUnits };
+  }
+
+  const requestedPacks = resolveEnterprisePurchase(extraPacks).overageBlocks;
+  if (requestedPacks > 0 && !priceId) {
+    return {
+      rejected: true,
+      error:
+        'Enterprise allowance packs are not available for purchase yet (pack price not configured). Contact support to buy additional allowance.',
+      chargedPacks: 0,
+      grantedUnits: PLANS.enterprise.includedUnits
+    };
+  }
+
+  const chargedPacks = priceId ? requestedPacks : 0;
+  return { rejected: false, chargedPacks, grantedUnits: enterpriseUnitsForPacks(chargedPacks) };
+}
+
 billingRouter.get('/plans', (_req, res) => {
   res.json({ plans: Object.values(PLANS) });
 });
@@ -78,16 +124,22 @@ billingRouter.post('/checkout', authMiddleware, async (req: AuthedRequest, res) 
 
   // Enterprise = prepaid allowance packs: the buyer picks N extra 1,000-event
   // packs at checkout; the issued license encodes the purchased allowance in
-  // its signed includedUnits. `quantity` prices the base + N overage packs.
-  const enterprise = plan === 'enterprise' ? resolveEnterprisePurchase(req.body?.extraPacks) : null;
-  const overageQty = enterprise ? enterprise.overageBlocks : 0;
-  const overagePriceId = process.env.STRIPE_PRICE_ENTERPRISE_PACK;
+  // its signed includedUnits. Only packs we can actually charge for count —
+  // resolveCheckoutGrant rejects unpaid-pack requests so no free allowance is
+  // ever granted.
+  const overagePriceId = process.env.STRIPE_PRICE_ENTERPRISE_PACK?.trim();
+  const grant = resolveCheckoutGrant(plan, req.body?.extraPacks, overagePriceId);
+  if (grant.rejected) {
+    res.status(400).json({ error: grant.error });
+    return;
+  }
+  const { chargedPacks, grantedUnits } = grant;
 
   const line_items: Stripe.Checkout.SessionCreateParams.LineItem[] = [
     { price: priceId, quantity: 1 }
   ];
-  if (enterprise && overageQty > 0 && overagePriceId) {
-    line_items.push({ price: overagePriceId, quantity: overageQty });
+  if (chargedPacks > 0 && overagePriceId) {
+    line_items.push({ price: overagePriceId, quantity: chargedPacks });
   }
 
   const session = await stripe.checkout.sessions.create({
@@ -99,8 +151,8 @@ billingRouter.post('/checkout', authMiddleware, async (req: AuthedRequest, res) 
     metadata: {
       userId: user.id,
       plan,
-      includedUnits: String(enterprise ? enterprise.includedUnits : PLANS[plan].includedUnits),
-      overageBlocks: String(overageQty)
+      includedUnits: String(grantedUnits),
+      overageBlocks: String(chargedPacks)
     }
   });
 

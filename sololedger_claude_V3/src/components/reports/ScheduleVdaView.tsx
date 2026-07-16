@@ -35,6 +35,13 @@ export interface ScheduleVdaViewProps {
   fy: number;
   jurisdiction: Jurisdiction;
   currency: string;
+  /**
+   * Billing export gate (D6). Wraps each export so it only runs within the
+   * license allowance. Defaults to running the export directly when omitted
+   * (e.g. in standalone render tests) — the parent Reports tab supplies the
+   * real gate.
+   */
+  guardExport?: (exportFn: () => void | Promise<void>) => void | Promise<void>;
 }
 
 function downloadBlob(content: string, mime: string, filename: string) {
@@ -53,8 +60,11 @@ export function ScheduleVdaView({
   transactions,
   fy,
   jurisdiction,
-  currency
+  currency,
+  guardExport
 }: ScheduleVdaViewProps) {
+  const runExport = (fn: () => void | Promise<void>) =>
+    guardExport ? void guardExport(fn) : void fn();
   const tdsByRow = useMemo(
     () => allocateTdsToRows(matchedRows, transactions, fy, jurisdiction),
     [matchedRows, transactions, fy, jurisdiction]
@@ -148,8 +158,8 @@ export function ScheduleVdaView({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={exportCsv}>CSV</Button>
-          <Button size="sm" onClick={() => void exportPdf()}>Export PDF</Button>
+          <Button variant="secondary" size="sm" onClick={() => runExport(exportCsv)}>CSV</Button>
+          <Button size="sm" onClick={() => runExport(exportPdf)}>Export PDF</Button>
         </div>
       </div>
 
