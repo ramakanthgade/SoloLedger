@@ -93,7 +93,10 @@ export function setMode(mode: AppMode): void {
  */
 export function hasSelectedMode(): boolean {
   try {
-    return localStorage.getItem(APP_MODE_SELECTED_KEY) === '1';
+    // Require BOTH the marker AND a valid stored mode: a corrupt/invalid
+    // `APP_MODE_KEY` falls back to the seed in `initMode()`, and that seeded
+    // fallback must not be mistaken for an explicit choice.
+    return localStorage.getItem(APP_MODE_SELECTED_KEY) === '1' && readStoredMode() !== null;
   } catch {
     return false;
   }

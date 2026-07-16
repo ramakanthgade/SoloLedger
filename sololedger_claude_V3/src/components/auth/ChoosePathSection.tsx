@@ -15,7 +15,7 @@ type ChoosePathSectionProps = {
   onSelectMode: (mode: AppMode) => void;
 };
 
-type Bullet = { text: string; tone: 'ck' | 'info' };
+type Bullet = { text: string; tone: 'check' | 'info' };
 
 type PathCard = {
   mode: AppMode;
@@ -41,8 +41,8 @@ const CARDS: PathCard[] = [
     value:
       'Everything runs in your browser. No account, no keys — your data never leaves your device.',
     bullets: [
-      { text: 'CSV import & all tax math run fully on-device', tone: 'ck' },
-      { text: 'Best privacy — nothing is uploaded', tone: 'ck' },
+      { text: 'CSV import & all tax math run fully on-device', tone: 'check' },
+      { text: 'Best privacy — nothing is uploaded', tone: 'check' },
       { text: 'Wallet lookup & live prices need a network call', tone: 'info' }
     ],
     cta: 'Start locally — free'
@@ -57,9 +57,9 @@ const CARDS: PathCard[] = [
     value:
       'Paste your own API keys. Data flows straight from your browser to your providers — SoloLedger is never in the middle.',
     bullets: [
-      { text: 'Alchemy · Helius · Moralis for wallet data', tone: 'ck' },
-      { text: 'CoinGecko · Birdeye pricing, plus your AI key', tone: 'ck' },
-      { text: 'You control usage & billing at the source', tone: 'ck' }
+      { text: 'Alchemy · Helius · Moralis for wallet data', tone: 'check' },
+      { text: 'CoinGecko · Birdeye pricing, plus your AI key', tone: 'check' },
+      { text: 'You control usage & billing at the source', tone: 'check' }
     ],
     cta: 'Use my keys'
   },
@@ -73,9 +73,9 @@ const CARDS: PathCard[] = [
     value:
       'No keys to manage. Upload CSVs or wallet addresses — we handle lookups & pricing on our secure proxy.',
     bullets: [
-      { text: 'Zero setup — no API keys to find or paste', tone: 'ck' },
-      { text: 'We never log your data or tax details', tone: 'ck' },
-      { text: 'Plans scale with your taxable events', tone: 'ck' }
+      { text: 'Zero setup — no API keys to find or paste', tone: 'check' },
+      { text: 'We never log your data or tax details', tone: 'check' },
+      { text: 'Plans scale with your taxable events', tone: 'check' }
     ],
     cta: 'Create account',
     featured: true

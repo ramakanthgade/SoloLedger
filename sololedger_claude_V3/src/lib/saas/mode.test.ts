@@ -70,4 +70,27 @@ describe('initialPhase (reload resume, test-plan case 17)', () => {
     expect(initialPhase(getMode())).toBe('app');
     setAuthToken(null);
   });
+
+  it('back-compat: a legacy hosted user (token, no selection marker) resumes into the app', () => {
+    // Simulate a user from the pre-migration hosted build: an auth token exists
+    // but the new APP_MODE_SELECTED_KEY marker was never written.
+    localStorage.setItem(APP_MODE_KEY, 'hosted');
+    localStorage.removeItem(APP_MODE_SELECTED_KEY);
+    initMode();
+    setAuthToken('legacy-token');
+    expect(hasSelectedMode()).toBe(false);
+    expect(initialPhase(getMode())).toBe('app');
+    setAuthToken(null);
+  });
+
+  it('corrupt storage: invalid mode + stale selection marker falls back to landing', () => {
+    // A corrupt APP_MODE_KEY must not be treated as an explicit selection even
+    // if the marker is set — initMode() falls back to the seed, and the seeded
+    // default must route to landing, not app.
+    localStorage.setItem(APP_MODE_KEY, 'bad-value');
+    localStorage.setItem(APP_MODE_SELECTED_KEY, '1');
+    initMode();
+    expect(hasSelectedMode()).toBe(false);
+    expect(initialPhase(getMode())).toBe('landing');
+  });
 });

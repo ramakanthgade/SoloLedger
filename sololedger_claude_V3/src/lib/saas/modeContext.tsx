@@ -16,9 +16,7 @@ interface ModeContextValue {
    * directly (no account); `hosted` routes to the auth page (register/login).
    */
   selectMode: (mode: AppMode) => void;
-  /** Go to the hosted auth page (used by the header "Sign in" link). */
-  goToAuth: (mode: AppMode) => void;
-  /** Return to the landing page and reset the selection to a non-hosted default. */
+  /** Return to the landing page without persisting a new mode choice. */
   backToLanding: () => void;
 }
 
@@ -33,8 +31,13 @@ const ModeContext = createContext<ModeContextValue | null>(null);
  *     so they can sign back in.
  */
 export function initialPhase(mode: AppMode): ModePhase {
+  // Back-compat: a user from the pre-migration hosted build has a stored auth
+  // token but no `APP_MODE_SELECTED_KEY` marker. Treat a hosted session with a
+  // valid token as an explicit returning choice so they resume into the app
+  // instead of being bounced to the landing page.
+  if (mode === 'hosted' && getAuthToken()) return 'app';
   if (!hasSelectedMode()) return 'landing';
-  if (mode === 'hosted') return getAuthToken() ? 'app' : 'auth';
+  if (mode === 'hosted') return 'auth';
   return 'app';
 }
 
@@ -48,12 +51,6 @@ export function ModeProvider({ children }: { children: ReactNode }) {
     setPhase(next === 'hosted' ? 'auth' : 'app');
   }, []);
 
-  const goToAuth = useCallback((next: AppMode) => {
-    persistMode(next);
-    setModeState(next);
-    setPhase('auth');
-  }, []);
-
   const backToLanding = useCallback(() => {
     // Return to the landing page WITHOUT persisting a new choice: a returning
     // hosted user who opens Sign-in then backs out must keep their stored
@@ -63,8 +60,8 @@ export function ModeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<ModeContextValue>(
-    () => ({ mode, phase, selectMode, goToAuth, backToLanding }),
-    [mode, phase, selectMode, goToAuth, backToLanding]
+    () => ({ mode, phase, selectMode, backToLanding }),
+    [mode, phase, selectMode, backToLanding]
   );
 
   return <ModeContext.Provider value={value}>{children}</ModeContext.Provider>;

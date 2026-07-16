@@ -199,48 +199,29 @@ function MainApp() {
 
 export default function App() {
   const { user, loading } = useAuth();
-  const { phase, mode, selectMode, goToAuth, backToLanding } = useAppMode();
+  const { phase, mode, selectMode, backToLanding } = useAppMode();
   const [authMode, setAuthMode] = useState<'login' | 'register'>('register');
 
   // Everyone first sees the landing page until they pick a path.
   if (phase === 'landing') {
     return (
       <LandingPage
-        onSelectMode={(m) => selectMode(m)}
+        onSelectMode={selectMode}
         onSignIn={() => {
           setAuthMode('login');
-          goToAuth('hosted');
+          selectMode('hosted');
         }}
       />
     );
   }
 
-  // Hosted path: require an account before entering the app. Once picked, the
-  // AuthProvider has remounted (keyed on mode) and bootstrapped hosted session.
-  if (phase === 'auth') {
+  // Hosted requires an account before entering the app. The second clause is a
+  // defensive guard for a resumed hosted session whose token is still loading.
+  if (phase === 'auth' || (mode === 'hosted' && !user)) {
     if (loading) return <LoadingScreen message="Loading session…" />;
-    if (!user) {
-      return (
-        <AuthPage
-          initialMode={authMode}
-          onBack={backToLanding}
-        />
-      );
-    }
-    return <MainApp />;
+    if (!user) return <AuthPage initialMode={authMode} onBack={backToLanding} />;
   }
 
-  // Local / BYOK: no account required — drop straight into the app.
-  if (mode === 'hosted' && !user) {
-    // Defensive: hosted must never reach the app without a session.
-    if (loading) return <LoadingScreen message="Loading session…" />;
-    return (
-      <AuthPage
-        initialMode={authMode}
-        onBack={backToLanding}
-      />
-    );
-  }
-
+  // Local / BYOK (and authenticated hosted): drop into the app.
   return <MainApp />;
 }
