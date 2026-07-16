@@ -297,9 +297,14 @@ export async function runWalletImport(
   }
 
   // --- Phase 3: Auto price fetch ---
+  // Only runs when the EFFECTIVE priceApiEnabled flag is on. `settings` here is
+  // already the effective settings (WalletLookupPanel passes getEffectiveSettings()),
+  // so in hosted mode this stays true; in local/BYOK it defaults to false and we
+  // skip all network price/FX egress — unpriced rows surface as "price unavailable"
+  // in ReviewTab.
   importJob._setPhase('pricing');
   let pricesUpdated = 0;
-  if (txsToStore.length > 0) {
+  if (settings.priceApiEnabled && txsToStore.length > 0) {
     const priceResult = await fetchMissingPricesForAllTransactions(
       settings,
       (done, total) => importJob._setProgress({ done, total })

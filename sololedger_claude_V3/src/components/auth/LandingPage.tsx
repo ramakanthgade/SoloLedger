@@ -75,8 +75,8 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
   const handlePlan = (planId: PlanId) => onSelectMode(planId === 'local' ? 'local' : 'hosted');
 
   return (
-    <div className="min-h-screen bg-base text-hi">
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-base/70 backdrop-blur-xl">
+    <div className="min-h-screen bg-canvas text-hi">
+      <header className="sticky top-0 z-30 border-b border-white/10 bg-canvas/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
           <BrandLogo variant="on-glass" />
           <div className="flex items-center gap-3">

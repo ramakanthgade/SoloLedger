@@ -24,8 +24,12 @@ import {
   countCsvImportTransactions,
   deduplicateTransactions
 } from '@/lib/storage/db';
-import { convertTransactionsToReportingCurrency } from '@/lib/pricing/fiatConvert';
+import {
+  convertTransactionsToReportingCurrency,
+  normalizeFiatToReportingCurrencyLocal
+} from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import type { Transaction } from '@/types/transaction';
@@ -291,7 +295,10 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
     setSaving(true);
     setSavePhase('saving');
     try {
+      // Raw local settings carry BYOK API keys; effective settings decide
+      // whether Live price lookup is on (server-driven ON in hosted, OFF locally).
       const settings = await getSettings();
+      const priceApiEnabled = (await getEffectiveSettings()).priceApiEnabled;
       const stamped = preview.transactions.map((t) => ({
         ...t,
         importBatchId: preview.hash,
@@ -299,17 +306,20 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         fiatValue: normalizeFiatMagnitude(t.fiatValue),
         feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
       }));
-      const { transactions: converted } = await convertTransactionsToReportingCurrency(
-        stamped,
-        settings
-      );
+      // Live price lookup OFF — no network FX. INR-priced rows normalize in place;
+      // foreign-fiat rows stay unpriced and surface as "price unavailable" in Review.
+      const converted = priceApiEnabled
+        ? (await convertTransactionsToReportingCurrency(stamped, settings)).transactions
+        : normalizeFiatToReportingCurrencyLocal(stamped, settings.reportingCurrency);
       await db.transactions.bulkPut(converted);
       await deduplicateTransactions();
       const count = await countCsvImportTransactions(preview.hash);
       await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, count);
 
-      setSavePhase('pricing');
-      await fetchMissingPricesForAllTransactions(settings);
+      if (priceApiEnabled) {
+        setSavePhase('pricing');
+        await fetchMissingPricesForAllTransactions(settings);
+      }
 
       setSavedCount(preview.transactions.length);
       onComplete?.(preview.transactions.length);

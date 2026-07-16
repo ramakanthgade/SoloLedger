@@ -227,3 +227,27 @@ export async function convertTransactionsToReportingCurrency(
 
   return { transactions: out, converted, failed };
 }
+
+/**
+ * No-network variant used when Live price lookup is OFF (local/BYOK without the
+ * flag). Rows whose fiat currency already equals the reporting currency are
+ * normalized in place WITHOUT any network call. Rows in a foreign fiat currency
+ * cannot be converted without a network FX lookup, so their fiatValue is cleared
+ * — they surface as "price unavailable" in Review instead of showing a raw
+ * foreign-currency number as if it were the reporting currency.
+ */
+export function normalizeFiatToReportingCurrencyLocal(
+  transactions: Transaction[],
+  reportingCurrency: string
+): Transaction[] {
+  const reporting = reportingCurrency.toUpperCase();
+  return transactions.map((t) => {
+    const magnitude = normalizeFiatMagnitude(t.fiatValue);
+    if (magnitude == null) return t;
+    if (!needsFiatConversion(t.fiatCurrency, reporting)) {
+      return { ...t, fiatValue: magnitude, fiatCurrency: reporting };
+    }
+    // Foreign fiat without live lookup — leave unpriced (no network conversion).
+    return { ...t, fiatValue: undefined };
+  });
+}

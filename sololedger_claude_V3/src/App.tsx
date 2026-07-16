@@ -23,6 +23,7 @@ import { useImportJob } from '@/lib/importJob';
 import {
   Upload, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2, Shield
 } from 'lucide-react';
+import { SwitchModeButton } from '@/components/SwitchModeButton';
 import { cn } from '@/lib/utils';
 
 const BASE_TABS = [
@@ -46,7 +47,7 @@ const PHASE_LABEL: Record<string, string> = {
 
 function LoadingScreen({ message }: { message: string }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-base text-sm text-low">
+    <div className="flex min-h-screen items-center justify-center bg-canvas text-sm text-low">
       {message}
     </div>
   );
@@ -96,17 +97,23 @@ function MainApp() {
   }
 
   if (!onboardingDismissed && shouldShowOnboarding(txCount)) {
-    return <OnboardingFlow onDone={() => setOnboardingDismissed(true)} />;
+    return (
+      <OnboardingFlow
+        onDone={() => setOnboardingDismissed(true)}
+        onSkip={() => setOnboardingDismissed(true)}
+      />
+    );
   }
 
   return (
     <TabNavProvider value={{ goToImport: () => setActive('import') }}>
-    <div className="min-h-screen bg-base" key={user?.id ?? 'guest'}>
-      <header className="border-b border-white/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
+    <div className="min-h-screen bg-canvas" key={user?.id ?? 'guest'}>
+      <header className="relative z-50 border-b border-white/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
           <BrandLogo variant="on-glass" />
           <div className="flex items-center gap-3">
             <LocalOnlyBadge />
+            <SwitchModeButton />
             <UserProfileMenu onOpenSettings={() => setActive('settings')} />
           </div>
         </div>

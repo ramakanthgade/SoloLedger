@@ -325,7 +325,7 @@ export function WalletLookupPanel() {
 
       {/* Remove confirmation */}
       {removeConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-base/60 p-4">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/60 p-4">
           <div className="max-w-md rounded-lg border border-white/10 bg-elev-2 p-5 shadow-xl">
             <h3 className="text-sm font-semibold text-mid">Remove wallet and its transactions?</h3>
             <p className="mt-2 text-xs text-low">

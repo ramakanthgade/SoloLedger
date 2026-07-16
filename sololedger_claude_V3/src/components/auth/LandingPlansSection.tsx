@@ -28,7 +28,7 @@ export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) 
         <div className="mx-auto mt-8 max-w-3xl rounded-2xl border border-violet/20 bg-elev-2/70 p-5 text-center shadow-card">
           <p className="text-sm leading-relaxed text-mid">
             <strong className="text-hi">Up to ~25× cheaper per underlying transaction.</strong>{' '}
-            Tools like KoinX bill every raw transaction; we only count your{' '}
+            Other exchanges bill every raw transaction; we only count your{' '}
             <strong className="text-hi">taxable disposals + income events</strong>. A 20,000-line
             trade history is often a few hundred taxable events — so you pay for what you file, not
             every line. (Actual saving varies with your trading style — typically ~1.5–4 raw

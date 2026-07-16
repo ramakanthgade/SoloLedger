@@ -13,8 +13,12 @@ import {
   countCsvImportTransactions,
   deduplicateTransactions
 } from '@/lib/storage/db';
-import { convertTransactionsToReportingCurrency } from '@/lib/pricing/fiatConvert';
+import {
+  convertTransactionsToReportingCurrency,
+  normalizeFiatToReportingCurrencyLocal
+} from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import type { Transaction } from '@/types/transaction';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -68,7 +72,12 @@ export function ImportTab() {
   ): Promise<{ converted: number; failed: number; pricesUpdated: number; pricesFailed: number; warnings: string[] }> => {
     setConversionNote(null);
     setPriceFetchNote(null);
+    // Raw local settings carry BYOK API keys for the actual fetch; the effective
+    // settings decide whether Live price lookup is enabled (server-driven ON in
+    // hosted, default OFF locally).
     const settings = await getSettings();
+    const effective = await getEffectiveSettings();
+    const priceApiEnabled = effective.priceApiEnabled;
     const stamped = txs.map((t) => ({
       ...t,
       importBatchId: hash,
@@ -77,23 +86,46 @@ export function ImportTab() {
       fiatValue: normalizeFiatMagnitude(t.fiatValue),
       feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
     }));
-    const { transactions: converted, converted: nConverted, failed: nFailed } =
-      await convertTransactionsToReportingCurrency(stamped, settings);
-    if (nConverted > 0) {
-      setConversionNote(
-        `Converted ${nConverted} value${nConverted === 1 ? '' : 's'} to ${settings.reportingCurrency} using historical exchange rates.`
-      );
+
+    let converted: Transaction[];
+    let nConverted = 0;
+    let nFailed = 0;
+    if (priceApiEnabled) {
+      const result = await convertTransactionsToReportingCurrency(stamped, settings);
+      converted = result.transactions;
+      nConverted = result.converted;
+      nFailed = result.failed;
+      if (nConverted > 0) {
+        setConversionNote(
+          `Converted ${nConverted} value${nConverted === 1 ? '' : 's'} to ${settings.reportingCurrency} using historical exchange rates.`
+        );
+      }
+      if (nFailed > 0) {
+        setConversionNote(
+          (prev) =>
+            `${prev ? `${prev} ` : ''}${nFailed} value${nFailed === 1 ? '' : 's'} could not be converted to ${settings.reportingCurrency} — edit in Review if needed.`
+        );
+      }
+    } else {
+      // Live price lookup OFF — no network FX. INR-priced rows normalize in place;
+      // foreign-fiat rows stay unpriced and surface as "price unavailable" in Review.
+      converted = normalizeFiatToReportingCurrencyLocal(stamped, settings.reportingCurrency);
     }
-    if (nFailed > 0) {
-      setConversionNote(
-        (prev) =>
-          `${prev ? `${prev} ` : ''}${nFailed} value${nFailed === 1 ? '' : 's'} could not be converted to ${settings.reportingCurrency} — edit in Review if needed.`
-      );
-    }
+
     await db.transactions.bulkPut(converted);
     await deduplicateTransactions();
     const count = await countCsvImportTransactions(hash);
     await upsertCsvImport(hash, name, parserId, count);
+
+    if (!priceApiEnabled) {
+      return {
+        converted: nConverted,
+        failed: nFailed,
+        pricesUpdated: 0,
+        pricesFailed: 0,
+        warnings: []
+      };
+    }
 
     setImportPhase('pricing');
     const priceResult = await fetchMissingPricesForAllTransactions(settings);
