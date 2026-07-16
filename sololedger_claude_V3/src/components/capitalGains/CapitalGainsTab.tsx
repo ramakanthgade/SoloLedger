@@ -306,7 +306,7 @@ export function CapitalGainsTab() {
   if (transactions.length === 0) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Capital Gains" subtitle="Import transactions first to see matched buy/sell pairs and P&amp;L." />
+        <PageHeader title="Capital Gains" subtitle="Import your trades first — then see every sale matched to what you bought, and the gain that gets taxed." />
         <EmptyState
           icon={<TrendingUp className="h-11 w-11" />}
           title="No gains to calculate yet"
@@ -323,7 +323,7 @@ export function CapitalGainsTab() {
     <div className="space-y-6">
       <PageHeader
         title="Capital Gains"
-        subtitle="Realized gains with matched acquisitions — disposal-level detail for tax filing."
+        subtitle="Every sale this Financial Year (Apr–Mar), matched to what you paid — the gain India taxes at a flat 30% + 4% cess, disposal by disposal."
       />
 
       <div className="flex flex-wrap items-center gap-3">

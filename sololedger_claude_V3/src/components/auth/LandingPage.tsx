@@ -56,10 +56,10 @@ const DIFFERENTIATORS = [
 ];
 
 const PRIVACY_TILES = [
-  { icon: Lock, title: 'Local by default', line: 'Calculations stay on your device.' },
-  { icon: Server, title: 'Proxy, not storage', line: 'Wallet queries forwarded — never kept.' },
-  { icon: Shield, title: 'Zero address logging', line: 'We do not log wallet addresses.' },
-  { icon: Globe2, title: 'Works worldwide', line: 'Any jurisdiction. Your currency.' }
+  { icon: Lock, title: 'Local by default', line: 'Imports, calculations and reports run on your device.' },
+  { icon: Server, title: 'Opt-in network', line: 'Wallet lookup and the AI advisor stay off until you turn them on.' },
+  { icon: Shield, title: 'You see every exit', line: 'A live badge shows the moment anything leaves your device.' },
+  { icon: Globe2, title: 'You hold the keys', line: 'Cross-device backups are encrypted on your device first — we can’t read them.' }
 ];
 
 export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {

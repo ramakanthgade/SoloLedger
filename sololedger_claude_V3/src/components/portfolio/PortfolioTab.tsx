@@ -385,7 +385,7 @@ export function PortfolioTab() {
       <div className="space-y-6">
         <PageHeader
           title="Portfolio"
-          subtitle="Holdings and cost basis from your transaction history. Import all wallets for a complete picture."
+          subtitle="What you hold now, in ₹, with the cost basis behind it. Import every wallet and exchange so the picture is complete."
         />
         <EmptyState
           icon={<PieChart className="h-11 w-11" />}
@@ -403,7 +403,7 @@ export function PortfolioTab() {
     <div className="space-y-6">
       <PageHeader
         title="Portfolio"
-        subtitle="Holdings and cost basis from your transaction history. Import all wallets for a complete picture."
+        subtitle="What you hold now, in ₹, with the cost basis behind it. Import every wallet and exchange so the picture is complete."
       />
 
       {/* Filters */}

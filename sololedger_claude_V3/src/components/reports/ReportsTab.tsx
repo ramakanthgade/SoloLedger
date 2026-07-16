@@ -310,7 +310,7 @@ export function ReportsTab() {
       <div className="space-y-6">
         <PageHeader
           title="Reports"
-          subtitle="Generated locally — files are written directly on your device."
+          subtitle="Everything your CA needs to file — a Schedule VDA statement, TDS reconciliation, and tax estimate — built on this device and downloaded straight to it."
         />
         <EmptyState
           icon={<FileText className="h-11 w-11" />}
@@ -327,7 +327,7 @@ export function ReportsTab() {
     <div className="space-y-8">
       <PageHeader
         title="Reports"
-        subtitle="Generated locally — files are written directly on your device."
+        subtitle="Everything your CA needs to file — a Schedule VDA statement, TDS reconciliation, and tax estimate — built on this device and downloaded straight to it."
       />
 
       <div className="toolbar-card">

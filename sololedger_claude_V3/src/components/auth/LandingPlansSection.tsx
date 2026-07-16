@@ -25,6 +25,17 @@ export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) 
           </p>
         </div>
 
+        <div className="mx-auto mt-8 max-w-3xl rounded-2xl border border-violet/20 bg-white/70 p-5 text-center shadow-sm">
+          <p className="text-sm leading-relaxed text-slate-600">
+            <strong className="text-hi">Up to ~25× cheaper per underlying transaction.</strong>{' '}
+            Tools like KoinX bill every raw transaction; we only count your{' '}
+            <strong className="text-hi">taxable disposals + income events</strong>. A 20,000-line
+            trade history is often a few hundred taxable events — so you pay for what you file, not
+            every line. (Actual saving varies with your trading style — typically ~1.5–4 raw
+            transactions per disposal.)
+          </p>
+        </div>
+
         <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {PLAN_CATALOG.map((p) => {
             const Icon = p.icon;

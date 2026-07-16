@@ -71,6 +71,9 @@ export function TaxEstimateCard({
             Net of TDS credit: {formatCurrency(netPayable, currency)}
           </p>
         )}
+        <p className="mt-1 text-[0.625rem] text-faint" data-testid="tax-estimate-kpi-note">
+          Estimate — not tax advice.
+        </p>
       </div>
     );
   }

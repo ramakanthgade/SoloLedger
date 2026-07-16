@@ -273,9 +273,10 @@ export function ImportTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="page-title">Bring in your transactions</h2>
+        <h2 className="page-title">Bring in your trades</h2>
         <p className="mt-1 text-sm text-low">
-          Everything's read right here in your browser — nothing gets uploaded anywhere.
+          Drop in a CSV or Excel export from your exchange and we'll do the rest. Files are read
+          right here in your browser — nothing is uploaded.
         </p>
       </div>
 
