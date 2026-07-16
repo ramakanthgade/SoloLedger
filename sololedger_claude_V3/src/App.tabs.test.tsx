@@ -1,26 +1,57 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '@/App';
 import { AuthProvider } from '@/lib/saas/authContext';
+import { ModeProvider } from '@/lib/saas/modeContext';
+import { db } from '@/lib/storage/db';
+import type { Transaction } from '@/types/transaction';
 
 /**
  * Tab a11y (Task T2): the primary nav is a WAI-ARIA tablist with roving
- * tabindex and Left/Right/Home/End arrow-key navigation. In default local mode
- * `dbReady` is immediately true and no network call fires, so we can render the
- * whole app and drive the real tablist.
+ * tabindex and Left/Right/Home/End arrow-key navigation. Everyone now starts on
+ * the landing page; picking the account-free "local" path enters MainApp with
+ * `dbReady` immediately true and no network call, so we can drive the real
+ * tablist.
  */
+const seedTx: Transaction = {
+  id: 'seed-1',
+  timestamp: 1_700_000_000_000,
+  type: 'buy',
+  asset: 'BTC',
+  amount: 1,
+  fiatCurrency: 'INR',
+  fiatValue: 1000,
+  source: 'manual',
+  flags: [],
+  isInternalTransfer: false
+};
+
 describe('App tab navigation (a11y)', () => {
+  beforeAll(async () => {
+    // Seed one transaction so the empty-ledger onboarding gate does not show,
+    // leaving the tablist as the deterministic first view of MainApp.
+    await db.transactions.put(seedTx);
+  });
+
   beforeEach(() => {
     sessionStorage.clear();
+    localStorage.clear();
+    // Skip the background dedup effect (it churns the table on every mount);
+    // this test only drives the tablist a11y, not dedup.
+    sessionStorage.setItem('sololedger_dedup_session_local', '1');
   });
 
   async function renderApp() {
     render(
-      <AuthProvider>
-        <App />
-      </AuthProvider>
+      <ModeProvider>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </ModeProvider>
     );
+    // Enter the app via the account-free local path.
+    fireEvent.click(await screen.findByRole('button', { name: /start locally/i }));
     // Wait for the tablist to mount (dbReady resolves on a microtask).
     return waitFor(() => screen.getByRole('tablist'));
   }

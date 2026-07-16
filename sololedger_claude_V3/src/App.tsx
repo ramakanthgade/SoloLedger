@@ -18,7 +18,7 @@ import { AuthPage } from '@/components/auth/AuthPage';
 import { LandingPage } from '@/components/auth/LandingPage';
 import { UserProfileMenu } from '@/components/auth/UserProfileMenu';
 import { useAuth } from '@/lib/saas/authContext';
-import { isSaasMode } from '@/lib/saas/config';
+import { useAppMode } from '@/lib/saas/modeContext';
 import { useImportJob } from '@/lib/importJob';
 import {
   Upload, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2, Shield
@@ -37,7 +37,6 @@ const BASE_TABS = [
 const ADMIN_TAB = { id: 'admin', label: 'Admin', icon: Shield, component: AdminPanel } as const;
 
 type TabId = (typeof BASE_TABS)[number]['id'] | typeof ADMIN_TAB.id;
-type PublicView = 'landing' | 'login' | 'register';
 
 const PHASE_LABEL: Record<string, string> = {
   importing: 'Importing transactions',
@@ -200,32 +199,47 @@ function MainApp() {
 
 export default function App() {
   const { user, loading } = useAuth();
-  const saas = isSaasMode();
-  const [publicView, setPublicView] = useState<PublicView>('landing');
+  const { phase, mode, selectMode, goToAuth, backToLanding } = useAppMode();
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('register');
 
-  useEffect(() => {
-    if (saas && !user && !loading) setPublicView('landing');
-  }, [saas, user, loading]);
+  // Everyone first sees the landing page until they pick a path.
+  if (phase === 'landing') {
+    return (
+      <LandingPage
+        onSelectMode={(m) => selectMode(m)}
+        onSignIn={() => {
+          setAuthMode('login');
+          goToAuth('hosted');
+        }}
+      />
+    );
+  }
 
-  if (saas) {
+  // Hosted path: require an account before entering the app. Once picked, the
+  // AuthProvider has remounted (keyed on mode) and bootstrapped hosted session.
+  if (phase === 'auth') {
     if (loading) return <LoadingScreen message="Loading session…" />;
     if (!user) {
-      if (publicView === 'landing') {
-        return (
-          <LandingPage
-            onSignIn={() => setPublicView('login')}
-            onGetStarted={() => setPublicView('register')}
-          />
-        );
-      }
       return (
         <AuthPage
-          initialMode={publicView === 'register' ? 'register' : 'login'}
-          onBack={() => setPublicView('landing')}
+          initialMode={authMode}
+          onBack={backToLanding}
         />
       );
     }
     return <MainApp />;
+  }
+
+  // Local / BYOK: no account required — drop straight into the app.
+  if (mode === 'hosted' && !user) {
+    // Defensive: hosted must never reach the app without a session.
+    if (loading) return <LoadingScreen message="Loading session…" />;
+    return (
+      <AuthPage
+        initialMode={authMode}
+        onBack={backToLanding}
+      />
+    );
   }
 
   return <MainApp />;
