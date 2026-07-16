@@ -25,6 +25,14 @@ export type AppMode = 'local' | 'byok' | 'hosted';
 
 export const APP_MODE_KEY = 'sololedger_app_mode';
 
+/**
+ * Marker recording that the user EXPLICITLY chose a mode from the landing page
+ * (vs. the value in `APP_MODE_KEY` merely being the seeded default). This lets
+ * routing resume a returning user straight into the app on reload instead of
+ * bouncing them back to "Choose your path".
+ */
+export const APP_MODE_SELECTED_KEY = 'sololedger_app_mode_selected';
+
 const VALID_MODES: readonly AppMode[] = ['local', 'byok', 'hosted'];
 
 function isAppMode(value: unknown): value is AppMode {
@@ -70,8 +78,24 @@ export function setMode(mode: AppMode): void {
   currentMode = mode;
   try {
     localStorage.setItem(APP_MODE_KEY, mode);
+    // Any persisted mode is, by definition, an explicit user choice — the
+    // seeded default is never written here (it only lives in the singleton).
+    localStorage.setItem(APP_MODE_SELECTED_KEY, '1');
   } catch {
     /* persistence is best-effort; the singleton is still updated */
+  }
+}
+
+/**
+ * Whether the user has explicitly selected a mode (vs. running on the seeded
+ * default). Used by routing to decide between showing the landing page and
+ * resuming a returning user into the app.
+ */
+export function hasSelectedMode(): boolean {
+  try {
+    return localStorage.getItem(APP_MODE_SELECTED_KEY) === '1';
+  } catch {
+    return false;
   }
 }
 

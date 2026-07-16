@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, beforeEach, beforeAll } from 'vitest';
+import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import App from '@/App';
 import { AuthProvider } from '@/lib/saas/authContext';
@@ -13,7 +13,36 @@ import type { Transaction } from '@/types/transaction';
  * the landing page; picking the account-free "local" path enters MainApp with
  * `dbReady` immediately true and no network call, so we can drive the real
  * tablist.
+ *
+ * The individual tab-panel bodies (ImportTab/ReviewTab/…) are stubbed here: this
+ * test only exercises the tablist/roving-tabindex/keyboard logic that lives in
+ * `App.tsx`, and the real panels run heavy Dexie `useLiveQuery` + effect chains
+ * that never settle under jsdom/fake-indexeddb's microtask model (they behave
+ * fine in a real browser where microtasks resolve between renders). Stubbing
+ * them keeps this a focused, deterministic a11y test.
  */
+vi.mock('@/components/import/ImportTab', () => ({
+  ImportTab: () => <div data-testid="panel-import">Import</div>
+}));
+vi.mock('@/components/review/ReviewTab', () => ({
+  ReviewTab: () => <div data-testid="panel-review">Review</div>
+}));
+vi.mock('@/components/portfolio/PortfolioTab', () => ({
+  PortfolioTab: () => <div data-testid="panel-portfolio">Portfolio</div>
+}));
+vi.mock('@/components/capitalGains/CapitalGainsTab', () => ({
+  CapitalGainsTab: () => <div data-testid="panel-capital-gains">Capital Gains</div>
+}));
+vi.mock('@/components/reports/ReportsTab', () => ({
+  ReportsTab: () => <div data-testid="panel-reports">Reports</div>
+}));
+vi.mock('@/components/settings/SettingsTab', () => ({
+  SettingsTab: () => <div data-testid="panel-settings">Settings</div>
+}));
+vi.mock('@/components/ai/AiAdvisor', () => ({
+  AiAdvisor: () => null
+}));
+
 const seedTx: Transaction = {
   id: 'seed-1',
   timestamp: 1_700_000_000_000,

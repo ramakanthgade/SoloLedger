@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
-import { getMode, setMode as persistMode, type AppMode } from './mode';
+import { getMode, setMode as persistMode, hasSelectedMode, type AppMode } from './mode';
+import { getAuthToken } from './api';
 
 /**
  * Landing/auth/app routing phase. Everyone starts at `landing`; picking a path
@@ -23,9 +24,23 @@ interface ModeContextValue {
 
 const ModeContext = createContext<ModeContextValue | null>(null);
 
+/**
+ * Initial routing phase for a returning visitor. A first-time visitor (no
+ * explicit mode choice persisted) always starts on `landing`. A returning
+ * visitor resumes where they left off:
+ *   - local/byok → straight into the `app` (account-free).
+ *   - hosted → into the `app` if a valid auth token is present, else `auth`
+ *     so they can sign back in.
+ */
+export function initialPhase(mode: AppMode): ModePhase {
+  if (!hasSelectedMode()) return 'landing';
+  if (mode === 'hosted') return getAuthToken() ? 'app' : 'auth';
+  return 'app';
+}
+
 export function ModeProvider({ children }: { children: ReactNode }) {
   const [mode, setModeState] = useState<AppMode>(() => getMode());
-  const [phase, setPhase] = useState<ModePhase>('landing');
+  const [phase, setPhase] = useState<ModePhase>(() => initialPhase(getMode()));
 
   const selectMode = useCallback((next: AppMode) => {
     persistMode(next);
@@ -40,10 +55,10 @@ export function ModeProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const backToLanding = useCallback(() => {
-    // Reset selection so a user who backs out of hosted auth is never stuck in
-    // a broken hosted-no-session state; landing itself makes no transport calls.
-    persistMode('local');
-    setModeState('local');
+    // Return to the landing page WITHOUT persisting a new choice: a returning
+    // hosted user who opens Sign-in then backs out must keep their stored
+    // `hosted` preference (don't clobber it to `local`). Landing itself makes
+    // no transport calls, so the in-memory mode can stay as-is until they pick.
     setPhase('landing');
   }, []);
 
