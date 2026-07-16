@@ -20,6 +20,8 @@ import {
   buildMatchedGainRows
 } from '@/lib/costBasis/matchedGains';
 import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
+import { aggregateTds } from '@/lib/tax/tds';
+import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/scheduleVDA';
 
 export function ReportsTab() {
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
@@ -100,6 +102,21 @@ export function ReportsTab() {
 
   const rules = JURISDICTIONS[jurisdiction];
   const yearLabel = getFyLabel(year, jurisdiction);
+  const isIndia = jurisdiction === 'IN';
+
+  // India Schedule VDA (Task B4): per-transfer row model + 30%+cess estimate
+  // with the Section 194S TDS total shown as an offset. IN-only.
+  const scheduleVda = useMemo(() => {
+    if (!isIndia) return null;
+    const tds = aggregateTds(transactions, year, jurisdiction);
+    return buildScheduleVdaReport(
+      matchedRows,
+      tds.totalTdsInr,
+      year,
+      jurisdiction,
+      summary.vdaReceiptIncome
+    );
+  }, [isIndia, transactions, matchedRows, year, jurisdiction, summary.vdaReceiptIncome]);
 
   const years = useMemo(
     () =>
@@ -263,6 +280,15 @@ export function ReportsTab() {
     );
   };
 
+  const exportScheduleVdaCsv = () => {
+    if (!scheduleVda) return;
+    downloadBlob(
+      serializeScheduleVdaCsv(scheduleVda),
+      'text/csv',
+      `sololedger-IN-${yearLabel.replace(/\s/g, '')}-schedule-vda.csv`
+    );
+  };
+
   return (
     <div className="space-y-8">
       <PageHeader
@@ -298,6 +324,9 @@ export function ReportsTab() {
         <div className="ml-auto flex gap-2">
           <Button variant="secondary" size="sm" onClick={exportCsv}>CSV</Button>
           <Button variant="secondary" size="sm" onClick={exportJson}>JSON</Button>
+          {isIndia && (
+            <Button variant="secondary" size="sm" onClick={exportScheduleVdaCsv}>Schedule VDA CSV</Button>
+          )}
           <Button size="sm" onClick={exportPdf}>Export PDF</Button>
         </div>
       </div>
@@ -442,6 +471,31 @@ export function ReportsTab() {
         </div>
       </div>
         </>
+      )}
+
+      {isIndia && scheduleVda && (
+        <Card>
+          <CardHeader>
+            <CardTitle>Schedule VDA — {yearLabel}</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm leading-relaxed text-low">
+              {scheduleVda.rows.length} VDA transfer(s) reported per Section 115BBH. Estimated
+              liability (30% + 4% cess) on {formatCurrency(scheduleVda.estimate.taxableGains, rules.currency)} taxable gains
+              is {formatCurrency(scheduleVda.estimate.estimatedLiability, rules.currency)}; less TDS withheld (Section 194S) {formatCurrency(scheduleVda.estimate.tdsOffset, rules.currency)},
+              net {formatCurrency(scheduleVda.estimate.netAfterTdsOffset, rules.currency)}.
+            </p>
+            {scheduleVda.vdaReceiptIncome != null && scheduleVda.vdaReceiptIncome > 0 && (
+              <p className="mt-2 text-sm leading-relaxed text-low">
+                VDA receipt income (Section 56(2)(x), taxed at slab rate — separate): {formatCurrency(scheduleVda.vdaReceiptIncome, rules.currency)}.
+              </p>
+            )}
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <Button variant="secondary" size="sm" onClick={exportScheduleVdaCsv}>Download Schedule VDA CSV</Button>
+              <Badge tone="neutral">Non-advice estimate — verify with your CA</Badge>
+            </div>
+          </CardContent>
+        </Card>
       )}
 
       <Card>
