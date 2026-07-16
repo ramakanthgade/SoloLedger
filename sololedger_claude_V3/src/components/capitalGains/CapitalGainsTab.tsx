@@ -7,7 +7,7 @@ import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { formatAmountForExport, formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
+import { formatAmountForExport, formatCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel, downloadBlob } from '@/lib/utils';
 import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS, summarizeYear } from '@/lib/tax/jurisdictions';
 import { resolveDerivativesTreatment } from '@/lib/tax/derivatives';
@@ -184,15 +184,6 @@ export function CapitalGainsTab() {
     auth: authSnapshot
   });
 
-  const downloadBlob = (content: string, mime: string, filename: string) => {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const exportCapitalGainsCsv = () => {
     const cur = currency.toUpperCase();

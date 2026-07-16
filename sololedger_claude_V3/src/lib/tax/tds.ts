@@ -11,7 +11,7 @@
  * that actually carry an INR-denominated TDS figure contribute.
  */
 import type { Transaction, Jurisdiction } from '@/types/transaction';
-import { isInFy } from '@/lib/utils';
+import { isInFy, IST_OFFSET_MS } from '@/lib/utils';
 import { add, toNumber } from '@/lib/costBasis/decimal';
 
 export interface TdsRow {
@@ -40,7 +40,7 @@ export interface TdsReconciliation {
 
 /** IST-local `YYYY-MM` month key for a UTC epoch (India runs at a fixed +05:30). */
 function istMonthKey(timestampMs: number): string {
-  const ist = new Date(timestampMs + 5.5 * 60 * 60 * 1000);
+  const ist = new Date(timestampMs + IST_OFFSET_MS);
   const y = ist.getUTCFullYear();
   const m = String(ist.getUTCMonth() + 1).padStart(2, '0');
   return `${y}-${m}`;

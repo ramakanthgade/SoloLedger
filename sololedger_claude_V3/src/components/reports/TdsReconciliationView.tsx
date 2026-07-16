@@ -17,7 +17,7 @@ import { useMemo, useState } from 'react';
 import type { Jurisdiction } from '@/types/transaction';
 import type { TdsReconciliation } from '@/lib/tax/tds';
 import { Button } from '@/components/ui/button';
-import { formatCurrency, formatAmountForExport, getFyLabel } from '@/lib/utils';
+import { formatCurrency, formatAmountForExport, getFyLabel, downloadBlob } from '@/lib/utils';
 import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { toNumber, add } from '@/lib/costBasis/decimal';
@@ -39,16 +39,6 @@ export interface TdsReconciliationViewProps {
    * real gate.
    */
   guardExport?: (exportFn: () => void | Promise<void>) => void | Promise<void>;
-}
-
-function downloadBlob(content: string, mime: string, filename: string) {
-  const blob = new Blob([content], { type: mime });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
 }
 
 export function TdsReconciliationView({

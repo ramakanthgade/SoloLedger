@@ -9,7 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui
 import { Button } from '@/components/ui/button';
 import { SkeletonCards, SkeletonTable } from '@/components/ui/Skeleton';
 import { PageHeader } from '@/components/PageHeader';
-import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel } from '@/lib/utils';
+import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel, downloadBlob } from '@/lib/utils';
 import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { AlertTriangle, FileText } from 'lucide-react';
@@ -246,7 +246,7 @@ export function ReportsTab() {
           fmt(d.costBasis),
           fmt(d.gain),
           String(d.holdingPeriodDays),
-          deidentify ? truncatePdfRef(ref) : truncatePdfRef(ref)
+          truncatePdfRef(ref)
         ];
       })
     });
@@ -255,15 +255,6 @@ export function ReportsTab() {
     doc.save(`sololedger-${jurisdiction}-${yearLabel.replace(/\s/g, '')}-report.pdf`);
   };
 
-  const downloadBlob = (content: string, mime: string, filename: string) => {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const exportCsv = async () => {
     const txMap = await buildDeidentifiedTxMap();

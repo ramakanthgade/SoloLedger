@@ -26,7 +26,7 @@ import type { Jurisdiction } from '@/types/transaction';
 import type { MatchedGainRow, MatchedGainStatus } from '@/lib/costBasis/matchedGains';
 import { add, toNumber } from '@/lib/costBasis/decimal';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
-import { isInFy } from '@/lib/utils';
+import { isInFy, istDateKey, csvField } from '@/lib/utils';
 
 /** One Schedule VDA line — a single matched transfer (per-lot). */
 export interface ScheduleVdaRow {
@@ -122,13 +122,6 @@ export const SCHEDULE_VDA_NOT_ADVICE_NOTE =
   'shown as an offset. Surcharge and slab-rate effects are out of scope — ' +
   'confirm final figures with your tax professional.';
 
-const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
-
-/** IST-local `YYYY-MM-DD` for an epoch (India runs at a fixed +05:30, no DST). */
-export function istDateKey(timestampMs: number): string {
-  return new Date(timestampMs + IST_OFFSET_MS).toISOString().slice(0, 10);
-}
-
 /**
  * Build the Schedule VDA rows for a financial year: one row per matched lot,
  * mapping 1:1 to the MatchedGainRow[] whose transfer (sell) date falls in the FY.
@@ -220,10 +213,6 @@ const CSV_HEADER = [
   'income_gain_inr'
 ];
 
-/** Quote a CSV field only when it contains a comma, quote or newline. */
-function csvField(value: string): string {
-  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
-}
 
 /**
  * Serialize a Schedule VDA report to CSV.

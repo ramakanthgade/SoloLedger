@@ -13,8 +13,7 @@ import type { Transaction, Jurisdiction } from '@/types/transaction';
 import type { MatchedGainRow } from '@/lib/costBasis/matchedGains';
 import type { ScheduleVdaReport } from '@/lib/reports/scheduleVDA';
 import type { TdsReconciliation } from '@/lib/tax/tds';
-import { istDateKey } from '@/lib/reports/scheduleVDA';
-import { isInFy } from '@/lib/utils';
+import { isInFy, istDateKey, csvField } from '@/lib/utils';
 import { add, mul, toNumber } from '@/lib/costBasis/decimal';
 
 /**
@@ -200,11 +199,6 @@ export function buildTdsExchangeRows(recon: TdsReconciliation): TdsExchangeRow[]
       tdsInr
     }))
     .sort((a, b) => b.tdsInr - a.tdsInr);
-}
-
-/** Quote a CSV field only when it contains a comma, quote or newline. */
-function csvField(value: string): string {
-  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
 /**

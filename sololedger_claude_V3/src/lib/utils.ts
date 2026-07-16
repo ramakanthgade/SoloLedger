@@ -42,11 +42,6 @@ export function formatAmountForExport(amount: number, currency: string): string 
   return `${sign}${formatNumberLocale(amount, currency)}`;
 }
 
-/** @deprecated Use formatAmountForExport — kept for any external references. */
-export function formatCurrencyForPdf(amount: number, currency: string): string {
-  return formatAmountForExport(amount, currency);
-}
-
 /** CSV column suffix for monetary fields, e.g. "proceeds (INR)". */
 export function monetaryColumnLabel(base: string, currency: string): string {
   return `${base} (${currency.toUpperCase()})`;
@@ -99,7 +94,36 @@ export function formatDateTime(timestampMs: number): string {
 //   helpers instead of relying on the host's local zone.
 
 /** Fixed India Standard Time offset (UTC+5:30). India observes no DST. */
-const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+export const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+/** IST civil calendar day key (YYYY-MM-DD) for a UTC-epoch timestamp. */
+export function istDateKey(timestampMs: number): string {
+  return new Date(timestampMs + IST_OFFSET_MS).toISOString().slice(0, 10);
+}
+
+/**
+ * Trigger a client-side file download for the given text content.
+ * Pure DOM side-effect; used by every CSV/JSON export path.
+ */
+export function downloadBlob(content: string, mime: string, filename: string): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Escape a single CSV field: wrap in quotes and double any embedded quotes
+ * only when the value contains a quote, comma, or newline (RFC 4180).
+ */
+export function csvField(value: string): string {
+  return /[",\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
+}
 
 /**
  * Returns the start and end timestamps (ms, UTC epoch) of a financial year.

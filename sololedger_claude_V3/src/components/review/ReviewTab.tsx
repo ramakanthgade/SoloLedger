@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/transaction';
-import { formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel } from '@/lib/utils';
+import { formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
@@ -531,15 +531,6 @@ export function ReviewTab() {
     setSelected(new Set());
   };
 
-  const downloadBlob = (content: string, mime: string, filename: string) => {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const exportFilteredCsv = () => {
     const exportCurrency = (settings?.reportingCurrency ?? 'INR').toUpperCase();
@@ -575,8 +566,8 @@ export function ReviewTab() {
         displayFlags(t).join('|'),
         t.isInternalTransfer ? 'yes' : 'no',
         t.isSpam ? 'yes' : 'no',
-        (t.notes ?? '').replace(/"/g, '""')
-      ].map((v) => `"${String(v)}"`).join(',');
+        (t.notes ?? '')
+      ].map((v) => csvField(String(v))).join(',');
     });
     downloadBlob([header.join(','), ...rows].join('\n'), 'text/csv', 'sololedger-review-transactions.csv');
   };
