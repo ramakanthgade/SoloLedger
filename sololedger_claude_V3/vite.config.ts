@@ -1,6 +1,7 @@
 /// <reference types="vitest/config" />
 import path from 'path';
 import { defineConfig } from 'vite';
+import { configDefaults } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
@@ -132,6 +133,13 @@ export default defineConfig({
     globals: true,
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
-    css: false
+    css: false,
+    // Only run the CLIENT suite here. The `server/` workspace has its own
+    // Vitest config, its own dependencies (express, jsonwebtoken, …) in
+    // `server/node_modules`, and a Node (not jsdom) environment. Without this
+    // scope Vitest's default glob sweeps `server/**` too and the client job
+    // fails to resolve server-only imports.
+    include: ['src/**/*.test.{ts,tsx}'],
+    exclude: [...configDefaults.exclude, 'server/**']
   }
 });
