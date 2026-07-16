@@ -60,7 +60,7 @@ const STATES: Record<NetworkMode, StateConfig> = {
     suffix: '· via SoloLedger',
     title: 'Local + relay',
     disclosure:
-      'An encrypted backup blob relays through SoloLedger to your other devices — it is encrypted on this device first, so we can never read inside it.',
+      "A network feature you used routed a request through SoloLedger's backend — depending on the feature this may include API/auth requests, AI summary relay, or RPC/pricing proxying. Raw transaction data is only sent where that feature explicitly says so.",
     pill: 'bg-violet/10 border-violet/30 text-violet',
     dot: 'bg-violet',
     dotGlow: 'shadow-[0_0_8px_rgba(124,92,255,0.9)]',
