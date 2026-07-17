@@ -25,6 +25,7 @@ import { useAuth } from '@/lib/saas/authContext';
 const INCOME_KIND_LABEL: Record<string, string> = {
   income: 'Income',
   gift_received: 'Gift received',
+  mining_reward: 'Mining reward',
   airdrop_suspected: 'Suspected airdrop',
   genesis_reward: 'Dabba Genesis Reward',
   staking_reward: 'Dabba Staking Reward',

@@ -14,7 +14,7 @@
 
 import { makeId } from '@/lib/parsers/types';
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
-import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
+import { classifyRewardIncome } from '@/lib/assets/rewardRegistry';
 import { classifyFromHelius } from '@/lib/rpc/classificationEngine';
 import type { Transaction, FlagReason, TxType } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
@@ -159,7 +159,7 @@ function pushSplBalanceRow(
     fromAccountData: boolean;
   }
 ): void {
-  const { htx, walletAddress, mint, net, counterparty, fromAccountData } = opts;
+  const { htx, walletAddress, mint, net, counterparty } = opts;
   if (Math.abs(net) < 1e-9) return;
 
   const asset = resolveSymbol(mint);
@@ -173,21 +173,18 @@ function pushSplBalanceRow(
 
   const inbound = net > 0;
   const amount = Math.abs(net);
-  const dbtIncome =
-    inbound && isDbtToken(mint) && counterparty !== walletAddress
-      ? classifyDbtIncome(mint, counterparty) ?? {
-          kind: 'genesis_reward' as const,
-          label: 'Dabba Network DBT reward',
-          notes: fromAccountData
-            ? 'Auto-classified as DBT income (account balance change)'
-            : 'Auto-classified as DBT income'
-        }
+  // Reward-token registry: classify inbound reward tokens (GEOD, DBT, …) as
+  // income. Returns null when the sender isn't a known rewards wallet (e.g. GEOD
+  // from a non-rewards address), in which case it stays a plain transfer_in.
+  const reward =
+    inbound && counterparty !== walletAddress
+      ? classifyRewardIncome(mint, counterparty)
       : null;
 
   rows.push({
     id: makeId('rpc'),
     timestamp: htx.timestamp * 1000,
-    type: dbtIncome ? 'income' : inbound ? 'transfer_in' : 'transfer_out',
+    type: reward ? 'income' : inbound ? 'transfer_in' : 'transfer_out',
     asset,
     amount,
     contractAddress: mint,
@@ -198,9 +195,9 @@ function pushSplBalanceRow(
     walletAddress,
     counterpartyAddress: counterparty,
     chain: 'solana',
-    category: dbtIncome?.kind,
-    notes: dbtIncome?.notes,
-    flags: dbtIncome ? [] : (['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[]),
+    category: reward?.kind,
+    notes: reward?.notes,
+    flags: reward ? [] : (['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[]),
     isInternalTransfer: false
   });
 }

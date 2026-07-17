@@ -1,32 +1,34 @@
 import { db } from '@/lib/storage/db';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import { batchClassifyNoves } from '@/lib/rpc/noves';
-import { classifyDbtIncome, DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
+import { classifyRewardIncome, isKnownRewardToken } from '@/lib/assets/rewardRegistry';
 import type { Transaction, FlagReason } from '@/types/transaction';
 
 /**
- * Classify all unclassified DBT `transfer_in` rows as Dabba income.
+ * Classify all unclassified reward-token `transfer_in` rows as income.
  *
- * Rule: DBT is a Dabba-specific token. Any inbound DBT that is:
+ * Registry-driven (see rewardRegistry.ts): any inbound transfer of a known reward
+ * token (GEOD, DBT, …) that is:
  *   1. NOT from one of the user's own wallets
- *   2. NOT a DCA vault return (those are handled by DCA classification)
- * is income from Dabba Network — either genesis reward, staking reward,
- * mainnet emission, airdrop, or Streamflow vesting.
+ *   2. NOT internal / spam
+ *   3. From a sender the registry recognizes as a rewards source
+ *      (e.g. the Geodnet rewards wallet, or any DBT sender per Dabba's rule)
+ * is reclassified as `income` of the right kind.
  *
- * Known programs are matched specifically; anything else defaults to genesis_reward.
- * Users can always reclassify manually in Review if needed.
+ * Only rows still typed `transfer_in` are touched — a row the user manually
+ * reclassified, made internal, or marked spam is never overridden.
  */
-export async function reprocessDbtIncome(): Promise<number> {
+export async function reprocessRewardIncome(): Promise<number> {
   const all = await db.transactions.toArray();
   const ownWallets = new Set(
     all.map((t) => t.walletAddress?.toLowerCase()).filter(Boolean) as string[]
   );
 
-  // Find DBT transfer_ins that are still unclassified (still transfer_in type)
+  // Candidate reward-token transfer_ins that are still unclassified.
   const candidates = all.filter(
     (t) =>
       t.type === 'transfer_in' &&
-      t.contractAddress === DBT_TOKEN_MINT &&
+      isKnownRewardToken(t.contractAddress) &&
       !t.isInternalTransfer &&
       !t.isSpam
   );
@@ -36,20 +38,17 @@ export async function reprocessDbtIncome(): Promise<number> {
     // Skip if the sender is one of the user's own wallets
     if (t.counterpartyAddress && ownWallets.has(t.counterpartyAddress.toLowerCase())) continue;
 
-    // Attempt exact Dabba program match first
-    const knownProgram = t.counterpartyAddress
-      ? classifyDbtIncome(t.contractAddress, t.counterpartyAddress)
-      : null;
-
-    const kind = knownProgram?.kind ?? 'genesis_reward';
-    const label = knownProgram?.label ?? 'Dabba Network DBT reward';
-    const notes = `${label} — auto-classified as income`;
+    // Only flip rows the registry recognizes as a reward payout. A reward-token
+    // transfer from a non-rewards sender (e.g. GEOD from a friend) returns null
+    // and is left as transfer_in.
+    const classification = classifyRewardIncome(t.contractAddress, t.counterpartyAddress);
+    if (!classification) continue;
 
     // eslint-disable-next-line no-await-in-loop
     await db.transactions.update(t.id, {
       type: 'income',
-      category: kind,
-      notes,
+      category: classification.kind,
+      notes: classification.notes,
       flags: [] as FlagReason[],
       isInternalTransfer: false
     });
@@ -57,6 +56,9 @@ export async function reprocessDbtIncome(): Promise<number> {
   }
   return updated;
 }
+
+/** Backwards-compatible alias (DBT is one of the registry tokens). */
+export const reprocessDbtIncome = reprocessRewardIncome;
 
 export interface ReprocessResult {
   tradesCreated: number;
@@ -73,8 +75,8 @@ export async function reprocessSwapDetectionInDb(
   novesApiKey?: string,
   onProgress?: (done: number, total: number) => void
 ): Promise<ReprocessResult> {
-  // --- Phase 0: DBT income reclassification (Dabba Foundation programs) ---
-  const dbtIncomeUpdated = await reprocessDbtIncome();
+  // --- Phase 0: reward-token income reclassification (GEOD, DBT, …) ---
+  const rewardIncomeUpdated = await reprocessRewardIncome();
 
   const all = await db.transactions.toArray();
 
@@ -245,7 +247,7 @@ export async function reprocessSwapDetectionInDb(
     : '';
 
   const parts: string[] = [];
-  if (dbtIncomeUpdated > 0) parts.push(`${dbtIncomeUpdated} DBT reward${dbtIncomeUpdated === 1 ? '' : 's'} classified as income`);
+  if (rewardIncomeUpdated > 0) parts.push(`${rewardIncomeUpdated} reward${rewardIncomeUpdated === 1 ? '' : 's'} classified as income`);
   if (total > 0) parts.push(`${total} swap${total === 1 ? '' : 's'} detected`);
   if (novesReclassified > 0) parts.push(`${novesReclassified} reclassified (staking/income/DeFi)`);
 

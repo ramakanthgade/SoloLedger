@@ -11,7 +11,7 @@
  * - Etherscan-compatible is kept as a manual fallback for other EVM chains / custom explorers.
  */
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
-import { classifyDbtIncome, isDbtToken } from '@/lib/assets/dabbaRegistry';
+import { classifyRewardIncome } from '@/lib/assets/rewardRegistry';
 import { makeId } from '@/lib/parsers/types';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
@@ -467,27 +467,21 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
       // eslint-disable-next-line no-await-in-loop
       const meta = await getSolanaAssetMeta(apiKey, mint);
 
-      // Auto-classify DBT income. Known programs get a specific label;
-      // any other inbound DBT (e.g. Streamflow genesis vesting) defaults to genesis_reward.
-      // DBT is Dabba-specific — all inbound transfers from non-user addresses are income.
+      // Auto-classify reward-token income (GEOD, DBT, …) via the reward registry.
+      // Returns null when the sender isn't a known rewards wallet, so it stays a
+      // plain transfer_in.
       const ownAddressSet = new Set([address.toLowerCase()]);
-      const isDbtIncome =
+      const reward =
         delta > 0 &&
-        isDbtToken(mint) &&
         tokenCounterparty &&
-        !ownAddressSet.has(tokenCounterparty.toLowerCase());
-      const dbtIncome = isDbtIncome
-        ? classifyDbtIncome(mint, tokenCounterparty) ?? {
-            kind: 'genesis_reward' as const,
-            label: 'Dabba Network DBT reward',
-            notes: 'Auto-classified as DBT income (genesis/staking/mainnet reward)'
-          }
-        : null;
+        !ownAddressSet.has(tokenCounterparty.toLowerCase())
+          ? classifyRewardIncome(mint, tokenCounterparty)
+          : null;
 
       transactions.push({
         id: makeId('rpc'),
         timestamp,
-        type: dbtIncome ? 'income' : (delta > 0 ? 'transfer_in' : 'transfer_out'),
+        type: reward ? 'income' : (delta > 0 ? 'transfer_in' : 'transfer_out'),
         asset: meta.symbol,
         amount: Math.abs(delta),
         fiatCurrency: 'USD',
@@ -498,11 +492,9 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
         counterpartyAddress: tokenCounterparty,
         contractAddress: mint,
         chain: 'solana',
-        category: meta.isNft ? 'nft' : dbtIncome ? dbtIncome.kind : undefined,
-        notes: dbtIncome
-          ? `${dbtIncome.label} — auto-classified as DBT income`
-          : undefined,
-        flags: dbtIncome ? [] : ['possible_internal_transfer', 'missing_cost_basis'],
+        category: meta.isNft ? 'nft' : reward ? reward.kind : undefined,
+        notes: reward ? `${reward.label} — auto-classified as income` : undefined,
+        flags: reward ? [] : ['possible_internal_transfer', 'missing_cost_basis'],
         isInternalTransfer: false,
         raw: tx
       });
