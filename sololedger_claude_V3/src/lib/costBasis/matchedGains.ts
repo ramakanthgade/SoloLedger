@@ -1,5 +1,9 @@
 import type { Disposal, Lot, Transaction } from '@/types/transaction';
 import { identifyDabbaProgram, DABBA_KIND_LABEL, type DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
+import { REWARD_KIND_LABEL } from '@/lib/assets/rewardRegistry';
+
+/** Display labels for income kinds (Dabba kinds + generic reward kinds). */
+const INCOME_KIND_LABEL: Record<string, string> = { ...DABBA_KIND_LABEL, ...REWARD_KIND_LABEL };
 import { DUST } from '@/lib/costBasis/decimal';
 import {
   derivativeExpenseKind,
@@ -118,6 +122,7 @@ export type IncomeKind =
   | 'gift_received'
   | 'airdrop_suspected'
   | 'staking_suspected'
+  | 'mining_reward'
   | DabbaIncomeKind;
 
 export interface IncomeRow {
@@ -176,11 +181,11 @@ export function buildIncomeRows(
 
     // Explicitly classified income (auto-classified or user-set)
     if (t.type === 'income' || t.type === 'gift_received') {
-      // Dabba-specific income classification using category field
-      const dabbaKind = t.category as DabbaIncomeKind | undefined;
-      const dabbaLabel = dabbaKind && DABBA_KIND_LABEL[dabbaKind]
-        ? DABBA_KIND_LABEL[dabbaKind]
-        : undefined;
+      // Income kind comes from the category field: Dabba kinds (genesis/staking/
+      // airdrop/mainnet) and generic reward kinds (mining_reward). One merged map
+      // resolves the display label; unknown kinds yield an undefined label.
+      const kind = t.category as IncomeKind | undefined;
+      const kindLabel = kind ? INCOME_KIND_LABEL[kind] : undefined;
 
       rows.push({
         id: t.id,
@@ -189,8 +194,8 @@ export function buildIncomeRows(
         amount: t.amount,
         fiatValue: t.fiatValue ?? 0,
         source: t.source,
-        kind: dabbaKind ?? (t.type === 'gift_received' ? 'gift_received' : 'income'),
-        kindLabel: dabbaLabel,
+        kind: kind ?? (t.type === 'gift_received' ? 'gift_received' : 'income'),
+        kindLabel,
         chain: t.chain,
         counterparty: t.counterpartyAddress,
         txId: t.id

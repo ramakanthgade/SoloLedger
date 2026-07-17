@@ -30,7 +30,7 @@ vi.mock('@/lib/rpc/providers', () => ({
 }));
 
 vi.mock('@/lib/rpc/reprocessSwaps', () => ({
-  reprocessDbtIncome: vi.fn(async () => 0),
+  reprocessRewardIncome: vi.fn(async () => 0),
   reprocessSwapDetectionInDb: vi.fn(async () => ({
     tradesCreated: 0,
     reclassified: 0,

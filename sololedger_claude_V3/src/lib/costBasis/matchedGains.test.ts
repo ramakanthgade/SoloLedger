@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildMatchedGainRows, buildReceiptIncomeRows } from './matchedGains';
+import { buildMatchedGainRows, buildReceiptIncomeRows, buildIncomeRows } from './matchedGains';
 import type { Disposal, Lot, Transaction } from '@/types/transaction';
 
 const DAY = 86_400_000;
@@ -148,5 +148,35 @@ describe('buildReceiptIncomeRows — Section 56(2)(x) inclusion/exclusion', () =
     expect(ids).not.toContain('mine');
     expect(ids).toContain('stake');
     expect(rows.reduce((s, r) => s + r.fiatValue, 0)).toBe(300);
+  });
+
+  it('INCLUDES a GEOD-style mining_reward (category mining_reward, NOT mining) as receipt income', () => {
+    const rows = buildReceiptIncomeRows([
+      tx({ id: 'geod', type: 'income', category: 'mining_reward', fiatValue: 250, timestamp: 9 * DAY })
+    ]);
+    const ids = rows.map((r) => r.txId);
+    expect(ids).toContain('geod');
+    const geod = rows.find((r) => r.txId === 'geod')!;
+    expect(geod.kind).toBe('mining_reward');
+    expect(geod.fiatValue).toBe(250);
+  });
+});
+
+describe('buildIncomeRows — reward kind + label', () => {
+  it('GEOD mining_reward row yields kind mining_reward and label "Mining reward"', () => {
+    const rows = buildIncomeRows([
+      tx({ id: 'geod', type: 'income', category: 'mining_reward', asset: 'GEOD', fiatValue: 250, timestamp: 9 * DAY })
+    ]);
+    const geod = rows.find((r) => r.txId === 'geod')!;
+    expect(geod.kind).toBe('mining_reward');
+    expect(geod.kindLabel).toBe('Mining reward');
+  });
+
+  it('a control mining row (category mining) keeps no mining_reward label', () => {
+    const rows = buildIncomeRows([
+      tx({ id: 'mine', type: 'income', category: 'mining', fiatValue: 250, timestamp: 9 * DAY })
+    ]);
+    const mine = rows.find((r) => r.txId === 'mine')!;
+    expect(mine.kind).not.toBe('mining_reward');
   });
 });

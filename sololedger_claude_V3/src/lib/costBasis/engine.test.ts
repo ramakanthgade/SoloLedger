@@ -268,6 +268,18 @@ describe('cost-basis engine', () => {
       expect(disposals[0].costBasis).toBe(0);
       expect(disposals[0].gain).toBe(1000); // full consideration
     });
+
+    it('GEOD-style mining_reward (category mining_reward) opens a NORMAL FMV-cost lot, NOT zero-cost', () => {
+      const { lots, disposals } = run([
+        tx({ id: 'geod', type: 'income', category: 'mining_reward', amount: 1, fiatValue: 400, timestamp: 1 * DAY }),
+        tx({ id: 'sell', type: 'sell', amount: 1, fiatValue: 1000, timestamp: 2 * DAY })
+      ]);
+      // Receipt-side income at FMV: cost of acquisition = FMV at receipt (400),
+      // so the later sale is taxed only on the gain above that (not the full 1000).
+      expect(lots[0].costBasisTotal).toBe(400);
+      expect(disposals[0].costBasis).toBe(400);
+      expect(disposals[0].gain).toBe(600);
+    });
   });
 
   it('decimal-vs-float regression on a long synthetic history', () => {
