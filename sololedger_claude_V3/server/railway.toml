@@ -4,8 +4,10 @@
 [build]
 builder = "NIXPACKS"
 buildCommand = "npm run build"
-# Only redeploy when API files change (frontend pushes won't restart this service)
-watchPatterns = ["**"]
+# Only redeploy when API/server files change so frontend-only pushes don't restart
+# this service. watchPatterns are evaluated relative to the REPO ROOT (not the
+# service Root Directory), so the path must include the full monorepo prefix.
+watchPatterns = ["sololedger_claude_V3/server/**"]
 
 [deploy]
 startCommand = "npm start"
