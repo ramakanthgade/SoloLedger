@@ -11,7 +11,7 @@ import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
-import { applyDefiLlamaRewardSuggestions } from '@/lib/rpc/rewardSuggestions';
+import { applyDefiLlamaRewardSuggestions, countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -380,10 +380,7 @@ export function ReviewTab() {
   );
 
   /** The review queue: rows flagged needs_review (e.g. DefiLlama suggestions). */
-  const needsReviewCount = useMemo(
-    () => transactions.filter((t) => !t.isSpam && (t.flags ?? []).includes('needs_review')).length,
-    [transactions]
-  );
+  const needsReviewCount = useMemo(() => countNeedsReview(transactions), [transactions]);
 
   const suggestRewardIncome = async () => {
     if (llamaSuggesting) return;
