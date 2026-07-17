@@ -18,8 +18,13 @@ describe('BrandLogo', () => {
     // Tagline.
     expect(screen.getByText('Private. Precise. Yours.')).toBeInTheDocument();
 
-    // Variant-B shield stroke uses the aurora gradient (url(#brand-au-b)).
-    const shield = container.querySelector('path[stroke="url(#brand-au-b)"]');
+    // Variant-B shield stroke uses a gradient stroke whose id is generated
+    // per-instance (useId) so multiple logos on one page don't collide.
+    const gradient = container.querySelector('linearGradient');
+    expect(gradient).not.toBeNull();
+    const gradientId = gradient?.getAttribute('id');
+    expect(gradientId).toBeTruthy();
+    const shield = container.querySelector(`path[stroke="url(#${gradientId})"]`);
     expect(shield).not.toBeNull();
 
     // White ledger lines + teal verification tick.
@@ -30,8 +35,13 @@ describe('BrandLogo', () => {
   it('renders the variant-C filled chip in mark mode (no wordmark/tagline)', () => {
     const { container } = render(<BrandLogo mode="mark" />);
 
-    // Filled aurora chip: a <rect> filled with the variant-C gradient.
-    const chip = container.querySelector('rect[fill="url(#brand-au-c)"]');
+    // Filled aurora chip: a <rect> filled with the variant-C gradient, whose
+    // id is generated per-instance (useId).
+    const gradient = container.querySelector('linearGradient');
+    expect(gradient).not.toBeNull();
+    const gradientId = gradient?.getAttribute('id');
+    expect(gradientId).toBeTruthy();
+    const chip = container.querySelector(`rect[fill="url(#${gradientId})"]`);
     expect(chip).not.toBeNull();
 
     // Dark mark drawn on the aurora fill.
@@ -46,5 +56,26 @@ describe('BrandLogo', () => {
     render(<BrandLogo variant="on-glass" showTagline={false} />);
     expect(screen.getByText('Solo')).toBeInTheDocument();
     expect(screen.queryByText('Private. Precise. Yours.')).not.toBeInTheDocument();
+  });
+
+  it('gives each instance a unique gradient id so multiple logos on one page do not collide', () => {
+    const { container } = render(
+      <>
+        <BrandLogo variant="on-glass" />
+        <BrandLogo variant="on-glass" />
+      </>
+    );
+    const ids = Array.from(container.querySelectorAll('linearGradient')).map((g) =>
+      g.getAttribute('id')
+    );
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBeTruthy();
+    expect(ids[1]).toBeTruthy();
+    // Distinct ids — the duplicate-id collision that dropped the stroke is gone.
+    expect(ids[0]).not.toBe(ids[1]);
+    // Each shield stroke references its own gradient.
+    ids.forEach((id) => {
+      expect(container.querySelector(`path[stroke="url(#${id})"]`)).not.toBeNull();
+    });
   });
 });

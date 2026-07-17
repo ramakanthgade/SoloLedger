@@ -4,7 +4,7 @@ import type { Config } from 'tailwindcss';
  * Aurora (v4) — dark-only, luminous fintech theme.
  * Semantic color tokens map to the CSS custom properties declared in
  * `src/index.css` `:root`, so the palette lives in one place and utilities
- * such as `bg-base`, `text-hi`, `text-mid`, `text-gain` resolve to the
+ * such as `bg-canvas`, `text-hi`, `text-mid`, `text-gain` resolve to the
  * locked Aurora hex values.
  */
 export default {
@@ -14,7 +14,11 @@ export default {
       colors: {
         // Canvas / surfaces (dark). Mapped to the `:root` RGB-channel custom
         // properties so Tailwind opacity modifiers (e.g. `bg-violet/10`) work.
-        base: 'rgb(var(--bg-base-rgb) / <alpha-value>)',
+        // Named `canvas` (not `base`) so it never shadows Tailwind's built-in
+        // `text-base` font-size utility — a `base` color token makes
+        // `text-base` emit a near-black `color` rule that silently overrides
+        // sibling text-color classes. Backing CSS var stays `--bg-base-rgb`.
+        canvas: 'rgb(var(--bg-base-rgb) / <alpha-value>)',
         'elev-1': 'rgb(var(--bg-elev-1-rgb) / <alpha-value>)',
         'elev-2': 'rgb(var(--bg-elev-2-rgb) / <alpha-value>)',
         'elev-3': 'rgb(var(--bg-elev-3-rgb) / <alpha-value>)',

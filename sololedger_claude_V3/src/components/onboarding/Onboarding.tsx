@@ -11,12 +11,18 @@ import {
 } from 'lucide-react';
 import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
+import { SwitchModeButton } from '@/components/SwitchModeButton';
 import { getSettings, saveSettings } from '@/lib/storage/db';
 import { cn } from '@/lib/utils';
 
 interface OnboardingProps {
   /** Called when the user finishes onboarding and wants to import. */
   onStartImport: () => void;
+  /**
+   * Called when the user skips the guided setup and wants to go straight to the
+   * Import screen (e.g. to use Wallet Lookup instead of an exchange CSV).
+   */
+  onSkip?: () => void;
 }
 
 /**
@@ -30,7 +36,7 @@ interface OnboardingProps {
  *
  * Aurora styling follows the approved mockup for the remaining steps.
  */
-export function Onboarding({ onStartImport }: OnboardingProps) {
+export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
   const [step, setStep] = useState<0 | 1>(0);
 
   // Silently lock in India + INR via the existing settings persistence. This
@@ -44,9 +50,22 @@ export function Onboarding({ onStartImport }: OnboardingProps) {
     })();
   }, []);
 
+  const skipLink = onSkip && (
+    <button
+      type="button"
+      onClick={onSkip}
+      className="text-center text-xs font-medium text-low transition-colors hover:text-mid focus:outline-none focus-visible:underline"
+    >
+      Skip setup — go straight to Import
+    </button>
+  );
+
   return (
-    <div className="min-h-screen bg-base px-6 py-12 lg:px-8">
+    <div className="min-h-screen bg-canvas px-6 py-12 lg:px-8">
       <div className="mx-auto max-w-2xl">
+        <div className="mb-6 flex justify-end">
+          <SwitchModeButton />
+        </div>
         <div className="mb-8 flex flex-col items-center gap-2">
           <BrandLogo variant="on-glass" />
           <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.22em] text-low">
@@ -116,10 +135,11 @@ export function Onboarding({ onStartImport }: OnboardingProps) {
                 </div>
               </div>
             </div>
-            <div className="flex items-center gap-3 border-t border-white/5 px-6 py-4">
+            <div className="flex flex-col items-stretch gap-3 border-t border-white/5 px-6 py-4">
               <Button className="w-full" onClick={() => setStep(1)}>
                 Continue <ChevronRight className="h-4 w-4" />
               </Button>
+              {skipLink}
             </div>
           </section>
         ) : (
@@ -154,13 +174,16 @@ export function Onboarding({ onStartImport }: OnboardingProps) {
                 body="See your 30% liability, your 1% TDS credit, and a Schedule VDA report ready to file."
               />
             </div>
-            <div className="flex items-center gap-3 border-t border-white/5 px-6 py-4">
-              <Button variant="ghost" onClick={() => setStep(0)}>
-                Back
-              </Button>
-              <Button className="flex-1" onClick={onStartImport}>
-                Import my first trades <ChevronRight className="h-4 w-4" />
-              </Button>
+            <div className="flex flex-col gap-3 border-t border-white/5 px-6 py-4">
+              <div className="flex items-center gap-3">
+                <Button variant="ghost" onClick={() => setStep(0)}>
+                  Back
+                </Button>
+                <Button className="flex-1" onClick={onStartImport}>
+                  Import my first trades <ChevronRight className="h-4 w-4" />
+                </Button>
+              </div>
+              {skipLink}
             </div>
           </section>
         )}

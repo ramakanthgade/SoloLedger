@@ -33,7 +33,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   render(): ReactNode {
     if (this.state.hasError) {
       return (
-        <div className="flex min-h-screen items-center justify-center bg-base px-4">
+        <div className="flex min-h-screen items-center justify-center bg-canvas px-4">
           <div className="w-full max-w-md rounded-lg border border-white/10 bg-elev-2 p-6 text-center shadow-card">
             <h1 className="text-base font-semibold text-hi">Something went wrong</h1>
             <p className="mt-2 text-sm text-low">

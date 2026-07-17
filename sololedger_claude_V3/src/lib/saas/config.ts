@@ -1,6 +1,16 @@
-/** True when the app is built for hosted SaaS (API keys on server, auth required). */
+import { getMode } from './mode';
+
+/**
+ * True when the app is running in hosted SaaS mode (API keys on the server,
+ * auth required, requests routed through the Railway proxy).
+ *
+ * Back-compat shim: mode is now RUNTIME state (see ./mode). Only 'hosted' is a
+ * SaaS environment — 'local' and 'byok' both map to non-hosted and share the
+ * exact same transport branch, so the ~13 existing `isSaasMode()` call sites
+ * keep working unchanged.
+ */
 export function isSaasMode(): boolean {
-  return import.meta.env.VITE_SAAS_MODE === 'true';
+  return getMode() === 'hosted';
 }
 
 /** SoloLedger API base URL (no trailing slash). */

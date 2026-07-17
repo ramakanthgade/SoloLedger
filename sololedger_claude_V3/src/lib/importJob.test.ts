@@ -1,0 +1,121 @@
+import 'fake-indexeddb/auto';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import type { TaxSettings, Transaction } from '@/types/transaction';
+import type { ChainDef, LookupConfig } from '@/lib/rpc/providers';
+
+// --- Mock the RPC + classification transports so no real network happens ---
+const importedTx: Transaction = {
+  id: 'tx-1',
+  timestamp: 1_700_000_000_000,
+  type: 'buy',
+  asset: 'ETH',
+  amount: 1,
+  fiatCurrency: 'INR',
+  fiatValue: undefined,
+  source: 'rpc:ethereum',
+  sourceRef: 'sig-1',
+  walletAddress: '0xabc',
+  chain: 'ethereum',
+  flags: [],
+  isInternalTransfer: false
+};
+
+vi.mock('@/lib/rpc/providers', () => ({
+  lookupManyAddresses: vi.fn(async () => ({
+    transactions: [importedTx],
+    warnings: [],
+    failed: [],
+    perAddress: [{ address: '0xabc', count: 1 }]
+  }))
+}));
+
+vi.mock('@/lib/rpc/reprocessSwaps', () => ({
+  reprocessDbtIncome: vi.fn(async () => 0),
+  reprocessSwapDetectionInDb: vi.fn(async () => ({
+    tradesCreated: 0,
+    reclassified: 0,
+    message: ''
+  }))
+}));
+
+vi.mock('@/lib/rpc/swapDetection', () => ({
+  isAbsorbedTradeLeg: vi.fn(() => false)
+}));
+
+vi.mock('@/lib/rpc/dcaDetection', () => ({
+  detectDcaGroups: vi.fn(() => []),
+  applyDcaClassification: vi.fn(async () => 0)
+}));
+
+const fetchMissingPricesForAllTransactions = vi.fn(async (..._args: unknown[]) => ({
+  updated: 3,
+  failed: 0,
+  total: 3
+}));
+vi.mock('@/lib/pricing/autoFetch', () => ({
+  fetchMissingPricesForAllTransactions: (...args: unknown[]) =>
+    fetchMissingPricesForAllTransactions(...args)
+}));
+
+// Minimal in-memory DB stub so we don't depend on the full Dexie schema.
+const store = new Map<string, Transaction>();
+vi.mock('@/lib/storage/db', () => ({
+  db: {
+    transactions: {
+      toArray: async () => Array.from(store.values()),
+      bulkPut: async (txs: Transaction[]) => {
+        for (const t of txs) store.set(t.id, t);
+      },
+      filter: () => ({ toArray: async () => [] })
+    }
+  },
+  getLookupAddresses: vi.fn(async () => []),
+  upsertLookupAddress: vi.fn(async () => {}),
+  deduplicateTransactions: vi.fn(async () => 0),
+  filterAlreadyImported: vi.fn(async (txs: Transaction[]) => txs)
+}));
+
+vi.mock('@/lib/saas/config', () => ({ isSaasMode: vi.fn(() => false) }));
+vi.mock('@/lib/saas/lookupConfig', () => ({ SAAS_PROXY_KEY: 'proxy-key' }));
+
+import { runWalletImport, importJob } from '@/lib/importJob';
+
+const CHAIN: ChainDef = {
+  id: 'ethereum',
+  label: 'Ethereum',
+  asset: 'ETH',
+  provider: 'alchemy_evm',
+  needsKey: true
+};
+const CONFIG = {} as LookupConfig;
+
+function settings(overrides: Partial<TaxSettings> = {}): TaxSettings {
+  return {
+    jurisdiction: 'IN',
+    reportingCurrency: 'INR',
+    defaultCostBasisMethod: 'FIFO',
+    priceApiEnabled: false,
+    rpcLookupEnabled: true,
+    ...overrides
+  };
+}
+
+describe('runWalletImport auto-pricing gate', () => {
+  beforeEach(() => {
+    store.clear();
+    fetchMissingPricesForAllTransactions.mockClear();
+    importJob.reset();
+  });
+
+  it('does NOT fetch prices when effective priceApiEnabled is false (local/BYOK)', async () => {
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: false }), CONFIG);
+    expect(fetchMissingPricesForAllTransactions).not.toHaveBeenCalled();
+    expect(importJob.get().result?.pricesUpdated).toBe(0);
+  });
+
+  it('fetches prices when effective priceApiEnabled is true (hosted)', async () => {
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
+    expect(importJob.get().result?.pricesUpdated).toBe(3);
+  });
+});

@@ -7,7 +7,7 @@ import { join, resolve } from 'node:path';
  *
  * The Aurora migration replaced the old light-palette Tailwind color names
  * (`ink` / `mist` / `emerald` / `navy` / `teal` / `gold` / `pink`) with the
- * new semantic tokens (`base` / `elev-*` / `hi` / `mid` / `low` / `violet` /
+ * new semantic tokens (`canvas` / `elev-*` / `hi` / `mid` / `low` / `violet` /
  * `blue` / `teal(new)` / `gain` / `loss` / `warn`).
  *
  * This test scans every `src/**\/*.{ts,tsx}` file (excluding tests) and FAILS

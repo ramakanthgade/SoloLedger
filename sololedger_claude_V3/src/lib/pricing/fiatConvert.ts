@@ -198,7 +198,7 @@ export async function convertTransactionsToReportingCurrency(
       continue;
     }
     if (!needsFiatConversion(t.fiatCurrency, reporting)) {
-      out.push({ ...t, fiatValue: magnitude, fiatCurrency: reporting });
+      out.push(normalizeReportingRow(t, magnitude, reporting));
       continue;
     }
 
@@ -226,4 +226,65 @@ export async function convertTransactionsToReportingCurrency(
   }
 
   return { transactions: out, converted, failed };
+}
+
+/** Stamp a row that is already in (or normalizes to) the reporting currency. */
+function normalizeReportingRow(
+  t: Transaction,
+  magnitude: number,
+  reporting: string
+): Transaction {
+  return { ...t, fiatValue: magnitude, fiatCurrency: reporting };
+}
+
+/**
+ * No-network variant used when Live price lookup is OFF (local/BYOK without the
+ * flag). Rows whose fiat currency already equals the reporting currency are
+ * normalized in place WITHOUT any network call. Rows in a foreign fiat currency
+ * cannot be converted without a network FX lookup, so their fiatValue is cleared
+ * — they surface as "price unavailable" in Review instead of showing a raw
+ * foreign-currency number as if it were the reporting currency. fiatCurrency is
+ * set to the reporting currency so a manually entered Review value is stored in
+ * the reporting currency (saveFiat only writes fiatValue).
+ */
+export function normalizeFiatToReportingCurrencyLocal(
+  transactions: Transaction[],
+  reportingCurrency: string
+): Transaction[] {
+  const reporting = reportingCurrency.toUpperCase();
+  return transactions.map((t) => {
+    const magnitude = normalizeFiatMagnitude(t.fiatValue);
+    if (magnitude == null) return t;
+    if (!needsFiatConversion(t.fiatCurrency, reporting)) {
+      return normalizeReportingRow(t, magnitude, reporting);
+    }
+    // Foreign fiat without live lookup — leave unpriced (no network conversion),
+    // but stamp the reporting currency so a manual Review entry lands in it.
+    return { ...t, fiatValue: undefined, fiatCurrency: reporting };
+  });
+}
+
+/**
+ * Single entry point for the import pipeline's fiat handling.
+ * When Live price lookup is ON, converts foreign-fiat values to the reporting
+ * currency via historical FX (network). When OFF, no network egress: rows already
+ * in the reporting currency are normalized in place; foreign-fiat rows are left
+ * unpriced and surface as "price unavailable" in Review.
+ */
+export async function convertOrNormalizeForImport(
+  transactions: Transaction[],
+  settings: Pick<TaxSettings, 'reportingCurrency' | 'coingeckoApiKey'>,
+  priceApiEnabled: boolean
+): Promise<FiatConvertResult> {
+  if (priceApiEnabled) {
+    return convertTransactionsToReportingCurrency(transactions, settings);
+  }
+  return {
+    transactions: normalizeFiatToReportingCurrencyLocal(
+      transactions,
+      settings.reportingCurrency
+    ),
+    converted: 0,
+    failed: 0
+  };
 }

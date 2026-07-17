@@ -18,11 +18,12 @@ import { AuthPage } from '@/components/auth/AuthPage';
 import { LandingPage } from '@/components/auth/LandingPage';
 import { UserProfileMenu } from '@/components/auth/UserProfileMenu';
 import { useAuth } from '@/lib/saas/authContext';
-import { isSaasMode } from '@/lib/saas/config';
+import { useAppMode } from '@/lib/saas/modeContext';
 import { useImportJob } from '@/lib/importJob';
 import {
   Upload, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2, Shield
 } from 'lucide-react';
+import { SwitchModeButton } from '@/components/SwitchModeButton';
 import { cn } from '@/lib/utils';
 
 const BASE_TABS = [
@@ -37,7 +38,6 @@ const BASE_TABS = [
 const ADMIN_TAB = { id: 'admin', label: 'Admin', icon: Shield, component: AdminPanel } as const;
 
 type TabId = (typeof BASE_TABS)[number]['id'] | typeof ADMIN_TAB.id;
-type PublicView = 'landing' | 'login' | 'register';
 
 const PHASE_LABEL: Record<string, string> = {
   importing: 'Importing transactions',
@@ -47,7 +47,7 @@ const PHASE_LABEL: Record<string, string> = {
 
 function LoadingScreen({ message }: { message: string }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-base text-sm text-low">
+    <div className="flex min-h-screen items-center justify-center bg-canvas text-sm text-low">
       {message}
     </div>
   );
@@ -97,17 +97,26 @@ function MainApp() {
   }
 
   if (!onboardingDismissed && shouldShowOnboarding(txCount)) {
-    return <OnboardingFlow onDone={() => setOnboardingDismissed(true)} />;
+    return (
+      <OnboardingFlow
+        onDone={() => setOnboardingDismissed(true)}
+        onSkip={() => {
+          setActive('import');
+          setOnboardingDismissed(true);
+        }}
+      />
+    );
   }
 
   return (
     <TabNavProvider value={{ goToImport: () => setActive('import') }}>
-    <div className="min-h-screen bg-base" key={user?.id ?? 'guest'}>
-      <header className="border-b border-white/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
+    <div className="min-h-screen bg-canvas" key={user?.id ?? 'guest'}>
+      <header className="relative z-50 border-b border-white/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
           <BrandLogo variant="on-glass" />
           <div className="flex items-center gap-3">
             <LocalOnlyBadge />
+            <SwitchModeButton />
             <UserProfileMenu onOpenSettings={() => setActive('settings')} />
           </div>
         </div>
@@ -200,33 +209,29 @@ function MainApp() {
 
 export default function App() {
   const { user, loading } = useAuth();
-  const saas = isSaasMode();
-  const [publicView, setPublicView] = useState<PublicView>('landing');
+  const { phase, mode, selectMode, backToLanding } = useAppMode();
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('register');
 
-  useEffect(() => {
-    if (saas && !user && !loading) setPublicView('landing');
-  }, [saas, user, loading]);
-
-  if (saas) {
-    if (loading) return <LoadingScreen message="Loading session…" />;
-    if (!user) {
-      if (publicView === 'landing') {
-        return (
-          <LandingPage
-            onSignIn={() => setPublicView('login')}
-            onGetStarted={() => setPublicView('register')}
-          />
-        );
-      }
-      return (
-        <AuthPage
-          initialMode={publicView === 'register' ? 'register' : 'login'}
-          onBack={() => setPublicView('landing')}
-        />
-      );
-    }
-    return <MainApp />;
+  // Everyone first sees the landing page until they pick a path.
+  if (phase === 'landing') {
+    return (
+      <LandingPage
+        onSelectMode={selectMode}
+        onSignIn={() => {
+          setAuthMode('login');
+          selectMode('hosted');
+        }}
+      />
+    );
   }
 
+  // Hosted requires an account before entering the app. The second clause is a
+  // defensive guard for a resumed hosted session whose token is still loading.
+  if (phase === 'auth' || (mode === 'hosted' && !user)) {
+    if (loading) return <LoadingScreen message="Loading session…" />;
+    if (!user) return <AuthPage initialMode={authMode} onBack={backToLanding} />;
+  }
+
+  // Local / BYOK (and authenticated hosted): drop into the app.
   return <MainApp />;
 }

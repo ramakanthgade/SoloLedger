@@ -15,16 +15,20 @@ import {
 import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
 import { LandingPlansSection } from '@/components/auth/LandingPlansSection';
-import type { PaidPlanId } from '@/lib/saas/planCatalog';
+import { ChoosePathSection } from '@/components/auth/ChoosePathSection';
+import type { AppMode } from '@/lib/saas/mode';
+import type { PlanId } from '@/lib/saas/planCatalog';
 
 type LandingPageProps = {
+  /** Pick a usage mode (from the Choose-your-path cards or plan cards). */
+  onSelectMode: (mode: AppMode) => void;
+  /** Go to hosted sign-in (header "Sign in" link). */
   onSignIn: () => void;
-  onGetStarted: () => void;
 };
 
 const HERO_PILLS = [
   { icon: Lock, label: 'Local-first', color: 'bg-violet/15 text-blue' },
-  { icon: Wallet, label: 'Solana-ready', color: 'bg-purple-100 text-purple-800' },
+  { icon: Wallet, label: 'Solana-ready', color: 'bg-teal/15 text-teal' },
   { icon: Shield, label: 'No tx storage', color: 'bg-gain/15 text-gain' }
 ];
 
@@ -39,19 +43,19 @@ const DIFFERENTIATORS = [
     icon: Repeat,
     title: 'Jupiter DCA, decoded',
     line: 'Auto-compute every DCA fill — exact amounts, not guesses.',
-    gradient: 'from-violet-500 to-purple-600'
+    gradient: 'from-violet to-[#a78bfa]'
   },
   {
     icon: FileSpreadsheet,
     title: 'CSV or wallet sync',
     line: 'Exchange exports or one-address Solana import.',
-    gradient: 'from-amber-500 to-orange-500'
+    gradient: 'from-warn to-[#FF8A3D]'
   },
   {
     icon: Bot,
     title: 'AI tax advisor',
     line: 'Opt-in — sends an aggregated summary, never raw wallets or hashes.',
-    gradient: 'from-elev-1 to-blue'
+    gradient: 'from-blue to-teal'
   }
 ];
 
@@ -62,23 +66,31 @@ const PRIVACY_TILES = [
   { icon: Globe2, title: 'You hold the keys', line: 'Cross-device backups are encrypted on your device first — we can’t read them.' }
 ];
 
-export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
-  const handlePlan = (_planId: PaidPlanId) => onGetStarted();
+function scrollToChoose() {
+  document.getElementById('choose')?.scrollIntoView({ behavior: 'smooth' });
+}
+
+export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
+  // Local plan is account-free; every paid tier is a hosted plan → register.
+  const handlePlan = (planId: PlanId) => onSelectMode(planId === 'local' ? 'local' : 'hosted');
 
   return (
-    <div className="min-h-screen bg-[#faf9f6] text-hi">
-      <header className="sticky top-0 z-30 border-b border-slate-200/80 bg-[#faf9f6]/90 backdrop-blur-md">
+    <div className="min-h-screen bg-canvas text-hi">
+      <header className="sticky top-0 z-30 border-b border-white/10 bg-canvas/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
           <BrandLogo variant="on-glass" />
           <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={onSignIn}
-              className="hidden text-sm font-medium text-hi/80 hover:text-hi sm:inline"
+              className="hidden text-sm font-semibold text-mid hover:text-hi sm:inline"
             >
               Sign in
             </button>
-            <Button onClick={onGetStarted} className="rounded-full bg-elev-1 px-5 hover:bg-elev-2">
+            <Button
+              onClick={scrollToChoose}
+              className="h-9 rounded-full bg-aurora px-5 text-[#0A0B1A] hover:brightness-105"
+            >
               Get started free
             </Button>
           </div>
@@ -88,9 +100,9 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
       {/* Hero */}
       <section className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-0">
-          <div className="absolute -left-20 top-10 h-72 w-72 rounded-full bg-violet/20 blur-3xl" />
-          <div className="absolute right-0 top-32 h-96 w-96 rounded-full bg-amber-200/40 blur-3xl" />
-          <div className="absolute bottom-0 left-1/3 h-64 w-64 rounded-full bg-gain/30 blur-3xl" />
+          <div className="absolute -left-24 top-4 h-80 w-80 rounded-full bg-violet/20 blur-3xl" />
+          <div className="absolute -right-16 top-24 h-96 w-96 rounded-full bg-blue/[0.16] blur-3xl" />
+          <div className="absolute -bottom-16 left-1/3 h-72 w-72 rounded-full bg-teal/[0.14] blur-3xl" />
         </div>
         <div className="relative mx-auto max-w-6xl px-6 pb-16 pt-14 lg:px-8 lg:pb-24 lg:pt-20">
           <div className="flex flex-wrap gap-2">
@@ -105,76 +117,82 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
             ))}
           </div>
 
-          <h1 className="mt-8 max-w-4xl font-display text-5xl font-bold leading-[1.05] text-hi sm:text-6xl lg:text-7xl">
+          <h1 className="mt-8 max-w-4xl font-display text-5xl font-bold leading-[1.05] tracking-tight text-hi sm:text-6xl lg:text-7xl">
             Crypto taxes that{' '}
-            <span className="bg-gradient-to-r from-violet via-blue to-blue bg-clip-text text-transparent">
+            <span className="bg-aurora bg-clip-text text-transparent">
               stay on your device by default
             </span>
           </h1>
-          <p className="mt-6 max-w-2xl text-xl text-slate-600 sm:text-2xl">
+          <p className="mt-6 max-w-2xl text-xl text-mid sm:text-2xl">
             Private. Precise. Built for Solana — and every major chain. Network features (wallet lookup, AI advisor)
             are opt-in.
           </p>
 
           <div className="mt-10 flex flex-wrap gap-4">
             <Button
-              onClick={onGetStarted}
-              className="h-14 rounded-full bg-gradient-to-r from-violet to-blue px-10 text-lg font-semibold shadow-lg shadow-glow hover:from-violet hover:to-blue"
+              onClick={scrollToChoose}
+              className="h-14 rounded-full bg-aurora px-10 text-lg font-semibold text-[#0A0B1A] shadow-glow hover:brightness-105"
             >
               Start for free (up to 100 transactions)
               <ArrowRight className="ml-2 h-5 w-5" />
             </Button>
-            <Button onClick={onSignIn} className="h-14 rounded-full px-8 text-base">
+            <Button
+              onClick={onSignIn}
+              className="h-14 rounded-full border border-white/10 bg-white/[0.03] px-8 text-base text-hi hover:border-violet/50 hover:bg-violet/[0.08]"
+            >
               Sign in
             </Button>
           </div>
-          <p className="mt-4 text-sm text-slate-500">No credit card · Wallet lookup included on free tier</p>
+          <p className="mt-4 text-sm text-low">No credit card · Wallet lookup included on free tier</p>
 
           {/* Differentiator cards */}
           <div className="mt-16 grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
             {DIFFERENTIATORS.map(({ icon: Icon, title, line, gradient }) => (
               <div
                 key={title}
-                className="group rounded-2xl border border-white/80 bg-white/80 p-5 shadow-lg backdrop-blur-sm transition hover:-translate-y-1 hover:shadow-xl"
+                className="group rounded-2xl border border-white/10 bg-elev-2 p-5 shadow-card transition hover:-translate-y-1 hover:border-violet/40 hover:shadow-card-hover"
               >
                 <div
-                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br text-white shadow-md ${gradient}`}
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br text-[#0A0B1A] shadow-soft ${gradient}`}
                 >
                   <Icon className="h-5 w-5" />
                 </div>
                 <h3 className="mt-4 text-lg font-bold text-hi">{title}</h3>
-                <p className="mt-1 text-sm leading-relaxed text-slate-600">{line}</p>
+                <p className="mt-1 text-sm leading-relaxed text-mid">{line}</p>
               </div>
             ))}
           </div>
         </div>
       </section>
 
+      {/* Choose how you want to use SoloLedger */}
+      <ChoosePathSection onSelectMode={onSelectMode} />
+
       {/* Solana / Jupiter DCA */}
-      <section className="border-y border-slate-200/80 bg-gradient-to-br from-elev-1 via-elev-2 to-blue py-20 text-white">
+      <section className="border-y border-white/[0.06] bg-gradient-to-br from-elev-1 via-elev-2 to-elev-3 py-20 text-hi">
         <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 lg:grid-cols-2 lg:px-8">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-4 py-1.5 text-sm font-semibold text-blue">
+            <div className="inline-flex items-center gap-2 rounded-full bg-blue/[0.14] px-4 py-1.5 text-sm font-semibold text-blue">
               <Sparkles className="h-4 w-4" />
               Built for Solana power users
             </div>
-            <h2 className="mt-6 font-display text-4xl font-bold leading-tight sm:text-5xl">
+            <h2 className="mt-6 font-display text-4xl font-bold leading-tight text-hi sm:text-5xl">
               Jupiter DCA trades, automatically computed
             </h2>
-            <p className="mt-5 text-lg leading-relaxed text-blue">
+            <p className="mt-5 text-lg leading-relaxed text-mid">
               Enter a Solana address — SoloLedger imports your on-chain history, detects Jupiter recurring
               orders, resolves exact fill amounts, and classifies every DCA sell/buy. No spreadsheet stitching.
             </p>
             <Button
-              onClick={onGetStarted}
-              className="mt-8 h-12 rounded-full bg-white px-8 font-semibold text-hi hover:bg-violet/10"
+              onClick={scrollToChoose}
+              className="mt-8 h-12 rounded-full bg-hi px-8 font-semibold text-[#0A0B1A] hover:bg-[#e4e6ff]"
             >
               Try wallet import
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </div>
           <div className="relative">
-            <div className="rounded-2xl border border-white/10 bg-white/5 p-8 backdrop-blur-sm">
+            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-8 shadow-card backdrop-blur-sm">
               <Wallet className="h-12 w-12 text-blue" />
               <ul className="mt-6 space-y-4">
                 {[
@@ -184,7 +202,7 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
                   'Secure proxy — keys never in your browser'
                 ].map((item) => (
                   <li key={item} className="flex items-start gap-3 text-hi">
-                    <Zap className="mt-0.5 h-5 w-5 shrink-0 text-amber-400" />
+                    <Zap className="mt-0.5 h-5 w-5 shrink-0 text-warn" />
                     <span className="text-base">{item}</span>
                   </li>
                 ))}
@@ -204,21 +222,21 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
             {PRIVACY_TILES.map(({ icon: Icon, title, line }) => (
               <div
                 key={title}
-                className="rounded-2xl border border-slate-100 bg-white p-6 text-center shadow-sm transition hover:shadow-md"
+                className="rounded-2xl border border-white/10 bg-elev-2 p-6 text-center shadow-card transition hover:border-violet/30 hover:shadow-card-hover"
               >
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet/20 to-blue text-blue">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet/25 to-blue/25 text-blue">
                   <Icon className="h-7 w-7" />
                 </div>
                 <h3 className="mt-4 text-lg font-bold text-hi">{title}</h3>
-                <p className="mt-1 text-sm text-slate-600">{line}</p>
+                <p className="mt-1 text-sm text-mid">{line}</p>
               </div>
             ))}
           </div>
-          <div className="mx-auto mt-10 max-w-3xl rounded-2xl bg-gradient-to-r from-slate-800 to-blue p-6 text-center text-white shadow-xl">
-            <p className="text-xs font-bold uppercase tracking-widest text-blue">Automatic wallet import</p>
-            <p className="mt-2 text-base text-hi">
+          <div className="mx-auto mt-10 max-w-3xl rounded-2xl border border-white/10 bg-gradient-to-r from-elev-1 to-elev-3 p-6 text-center shadow-card-hover">
+            <p className="text-xs font-bold uppercase tracking-widest text-teal">Automatic wallet import</p>
+            <p className="mt-2 text-base text-mid">
               Requests are forwarded to blockchain providers and discarded immediately.{' '}
-              <strong className="text-white">We never store wallet addresses or transaction data.</strong>
+              <strong className="text-hi">We never store wallet addresses or transaction data.</strong>
             </p>
           </div>
         </div>
@@ -227,20 +245,20 @@ export function LandingPage({ onSignIn, onGetStarted }: LandingPageProps) {
       <LandingPlansSection onSelectPlan={handlePlan} />
 
       {/* CTA */}
-      <section className="bg-gradient-to-r from-violet to-blue py-16">
-        <div className="mx-auto max-w-3xl px-6 text-center text-white lg:px-8">
+      <section className="bg-aurora py-16">
+        <div className="mx-auto max-w-3xl px-6 text-center text-[#0A0B1A] lg:px-8">
           <h2 className="font-display text-4xl font-bold">Ready when you are</h2>
-          <p className="mt-3 text-lg text-blue">Local by default. Powerful when you need it.</p>
+          <p className="mt-3 text-lg text-[#0A0B1A]/70">Local by default. Powerful when you need it.</p>
           <Button
-            onClick={onGetStarted}
-            className="mt-8 h-12 rounded-full bg-white px-10 text-base font-semibold text-hi hover:bg-violet/10"
+            onClick={scrollToChoose}
+            className="mt-8 h-12 rounded-full bg-hi px-10 text-base font-semibold text-[#0A0B1A] hover:bg-[#e4e6ff]"
           >
             Get started — free
           </Button>
         </div>
       </section>
 
-      <footer className="border-t border-slate-200 py-8 text-center text-xs text-slate-500">
+      <footer className="border-t border-white/10 py-8 text-center text-xs text-low">
         <p>SoloLedger · Private. Precise. Yours.</p>
       </footer>
     </div>

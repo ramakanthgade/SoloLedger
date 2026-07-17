@@ -137,7 +137,7 @@ export function Dialog({
 
   return (
     <div
-      className="fixed inset-0 z-[60] flex items-center justify-center bg-base/70 p-4 backdrop-blur-sm"
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-canvas/70 p-4 backdrop-blur-sm"
       onMouseDown={(e) => {
         // Click-outside: only when the backdrop itself is the mousedown target.
         if (e.target === e.currentTarget) onClose();
