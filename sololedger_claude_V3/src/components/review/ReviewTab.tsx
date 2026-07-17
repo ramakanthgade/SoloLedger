@@ -16,15 +16,22 @@ import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection'
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+import {
+  DISPOSAL_TYPES,
+  bulkFlagsPatch,
+  bulkTypeImpactLines,
+  bulkTypePatch,
+  initialBulkFlagsSelection,
+  summarizeBulkTypeChange
+} from '@/lib/review/bulkEdit';
+import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2, ListChecks } from 'lucide-react';
+import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2, ListChecks, Tags, Flag } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useTabNav } from '@/lib/tabNav';
 import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
-
-const DISPOSAL_TYPES = new Set(['sell', 'trade', 'gift_sent', 'nft_sell']);
 
 const ALL_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out',
@@ -244,6 +251,7 @@ function txFromToAddresses(t: Transaction): { fromAddr?: string; toAddr?: string
 export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
+  const [typeFilter, setTypeFilter] = useState<TxType | 'all'>('all');
   const [walletFilter, setWalletFilter] = useState<string>('all');
   const [fyFilter, setFyFilter] = useState<number | null>(null);
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
@@ -257,6 +265,12 @@ export function ReviewTab() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
+  // Bulk-edit: "Set type" (dropdown → impact-summary confirm) + "Set flags".
+  const [bulkTypeMenuOpen, setBulkTypeMenuOpen] = useState(false);
+  const [pendingBulkType, setPendingBulkType] = useState<TxType | null>(null);
+  const [bulkFlagsMenuOpen, setBulkFlagsMenuOpen] = useState(false);
+  const [bulkFlagsSel, setBulkFlagsSel] = useState<BulkFlagsSelection | null>(null);
+  const [applyingBulk, setApplyingBulk] = useState(false);
   const [dcaGroups, setDcaGroups] = useState<Awaited<ReturnType<typeof detectDcaGroups>>>([]);
   const [applyingDca, setApplyingDca] = useState(false);
   const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
@@ -458,6 +472,7 @@ export function ReviewTab() {
       if (showSpam && !t.isSpam) return false;
       if (showNeedsPrice && !(t.fiatValue == null && !t.isSpam)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
+      if (typeFilter !== 'all' && t.type !== typeFilter) return false;
       if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
       if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;
       if (instrumentFilter === 'derivative' && !isDerivativeTransaction(t)) return false;
@@ -481,7 +496,7 @@ export function ReviewTab() {
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
+  }, [transactions, assetFilter, typeFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -493,7 +508,7 @@ export function ReviewTab() {
   // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [assetFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
+  }, [assetFilter, typeFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -524,6 +539,69 @@ export function ReviewTab() {
       Array.from(selected).map((id) => db.transactions.update(id, { isInternalTransfer: true, flags: [] }))
     );
     setSelected(new Set());
+  };
+
+  // ---- Bulk "Set type" + "Set flags" ----
+
+  const selectedTxs = useMemo(
+    () => transactions.filter((t) => selected.has(t.id)),
+    [transactions, selected]
+  );
+
+  const bulkTypeImpact = useMemo(
+    () => (pendingBulkType ? summarizeBulkTypeChange(selectedTxs, pendingBulkType) : null),
+    [selectedTxs, pendingBulkType]
+  );
+
+  const applyBulkType = async () => {
+    if (!pendingBulkType) return;
+    const newType = pendingBulkType;
+    setApplyingBulk(true);
+    try {
+      // Rows already of the target type are left completely untouched (the
+      // impact dialog counts them as "unchanged"), mirroring TypeSelector's
+      // early-return when next === current.
+      await Promise.all(
+        selectedTxs
+          .filter((t) => t.type !== newType)
+          .map((t) => db.transactions.update(t.id, bulkTypePatch(t, newType)))
+      );
+    } finally {
+      setApplyingBulk(false);
+      setPendingBulkType(null);
+      setSelected(new Set());
+    }
+  };
+
+  const openBulkFlags = () => {
+    setBulkTypeMenuOpen(false);
+    setBulkFlagsSel(initialBulkFlagsSelection(selectedTxs));
+    setBulkFlagsMenuOpen(true);
+  };
+
+  const setBulkFlag = (flag: FlagReason, on: boolean) => {
+    setBulkFlagsSel((cur) => {
+      if (!cur) return cur;
+      const flags = new Map(cur.flags);
+      flags.set(flag, on);
+      return { ...cur, flags };
+    });
+  };
+
+  const applyBulkFlags = async () => {
+    if (!bulkFlagsSel) return;
+    const sel = bulkFlagsSel;
+    setApplyingBulk(true);
+    try {
+      await Promise.all(
+        selectedTxs.map((t) => db.transactions.update(t.id, bulkFlagsPatch(t, sel)))
+      );
+    } finally {
+      setApplyingBulk(false);
+      setBulkFlagsMenuOpen(false);
+      setBulkFlagsSel(null);
+      setSelected(new Set());
+    }
   };
 
   const bulkDelete = async () => {
@@ -791,6 +869,18 @@ export function ReviewTab() {
           {assets.map((a) => (<option key={a} value={a}>{a}</option>))}
         </select>
 
+        {/* Type filter */}
+        <select
+          value={typeFilter}
+          onChange={(e) => setTypeFilter(e.target.value as TxType | 'all')}
+          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
+        >
+          <option value="all">All types</option>
+          {ALL_TYPES.map((t) => (
+            <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
+          ))}
+        </select>
+
         {/* Wallet filter */}
         {availableWallets.length > 1 && (
           <select
@@ -896,13 +986,134 @@ export function ReviewTab() {
         )}
 
         {selected.size > 0 && (
-          <div className="ml-auto flex gap-2">
-            <Button variant="secondary" onClick={bulkMarkInternal}>
+          <div className="ml-auto flex flex-wrap items-center gap-2">
+            {/* Bulk: Set type (dropdown → impact-summary confirm) */}
+            <div className="relative">
+              <Button
+                variant="secondary"
+                disabled={applyingBulk}
+                onClick={() => {
+                  setBulkFlagsMenuOpen(false);
+                  setBulkTypeMenuOpen((o) => !o);
+                }}
+              >
+                <Tags className="mr-1 h-3 w-3" />
+                Set type ({selected.size})
+              </Button>
+              {bulkTypeMenuOpen && (
+                <div className="absolute right-0 top-10 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
+                  <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">
+                    Set {selected.size} selected to
+                  </p>
+                  {ALL_TYPES.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      onClick={() => {
+                        setBulkTypeMenuOpen(false);
+                        setPendingBulkType(t);
+                      }}
+                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-1"
+                    >
+                      <Badge tone={TYPE_TONE[t]} className="pointer-events-none text-[10px]">{t}</Badge>
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setBulkTypeMenuOpen(false)}
+                    className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
+                  >
+                    <X className="h-3 w-3" /> Cancel
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* Bulk: Set flags (checkbox list → Apply) */}
+            <div className="relative">
+              <Button variant="secondary" disabled={applyingBulk} onClick={openBulkFlags}>
+                <Flag className="mr-1 h-3 w-3" />
+                Set flags ({selected.size})
+              </Button>
+              {bulkFlagsMenuOpen && bulkFlagsSel && (
+                <div className="absolute right-0 top-10 z-30 min-w-[16rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
+                  <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">
+                    Apply to {selected.size} selected
+                  </p>
+                  <p className="px-3 pb-1 text-[10px] text-low">
+                    Checked = set on all · unchecked = remove from all
+                  </p>
+                  {ALL_FLAGS.map((flag) => (
+                    <label
+                      key={flag}
+                      className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={bulkFlagsSel.flags.get(flag) ?? false}
+                        onChange={(e) => setBulkFlag(flag, e.target.checked)}
+                        className="accent-violet"
+                      />
+                      {FLAG_LABELS[flag]}
+                    </label>
+                  ))}
+                  <p className="px-3 pb-1 text-[10px] text-low">
+                    “Missing cost basis” also appears automatically while a row has no fiat value.
+                  </p>
+                  <div className="my-1 border-t border-white/10" />
+                  <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1">
+                    <input
+                      type="checkbox"
+                      checked={bulkFlagsSel.internal}
+                      onChange={(e) =>
+                        setBulkFlagsSel((cur) => (cur ? { ...cur, internal: e.target.checked } : cur))
+                      }
+                      className="accent-violet"
+                    />
+                    Internal transfer (non-taxable)
+                  </label>
+                  <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1">
+                    <input
+                      type="checkbox"
+                      checked={bulkFlagsSel.spam}
+                      onChange={(e) =>
+                        setBulkFlagsSel((cur) => (cur ? { ...cur, spam: e.target.checked } : cur))
+                      }
+                      className="accent-violet"
+                    />
+                    Spam (excluded everywhere)
+                  </label>
+                  <div className="mt-1 flex justify-end gap-2 border-t border-white/10 px-3 py-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setBulkFlagsMenuOpen(false);
+                        setBulkFlagsSel(null);
+                      }}
+                      className="rounded-full px-3 py-1 text-xs text-low hover:text-mid"
+                    >
+                      Cancel
+                    </button>
+                    <Button
+                      variant="primary"
+                      disabled={applyingBulk}
+                      onClick={() => void applyBulkFlags()}
+                      className="px-3 py-1 text-xs"
+                    >
+                      {applyingBulk ? 'Applying…' : `Apply to ${selected.size}`}
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            <Button variant="secondary" disabled={applyingBulk} onClick={bulkMarkInternal}>
               Mark {selected.size} as internal
             </Button>
             <Button
               variant="secondary"
               onClick={bulkMarkSpam}
+              disabled={applyingBulk}
               className="border-loss/40 text-loss hover:bg-loss/10"
             >
               <Ban className="mr-1 h-3 w-3" />
@@ -943,6 +1154,36 @@ export function ReviewTab() {
           void exportFilteredPdf();
         }}
         onCancel={() => setPdfConfirmOpen(false)}
+      />
+
+      {/* Bulk "Set type" — impact-summary confirmation */}
+      <ConfirmDialog
+        open={pendingBulkType != null && bulkTypeImpact != null}
+        title={
+          pendingBulkType
+            ? `Set ${selectedTxs.length} transaction${selectedTxs.length === 1 ? '' : 's'} to "${pendingBulkType.replace(/_/g, ' ')}"?`
+            : ''
+        }
+        body={
+          bulkTypeImpact ? (
+            <div className="space-y-2">
+              <p>
+                Now:{' '}
+                {bulkTypeImpact.fromCounts
+                  .map(([t, n]) => `${n}× ${t.replace(/_/g, ' ')}`)
+                  .join(', ')}
+              </p>
+              <ul className="list-disc space-y-1 pl-4">
+                {bulkTypeImpactLines(bulkTypeImpact).map((line) => (
+                  <li key={line}>{line}</li>
+                ))}
+              </ul>
+            </div>
+          ) : undefined
+        }
+        confirmLabel={applyingBulk ? 'Applying…' : `Apply to ${selectedTxs.length}`}
+        onConfirm={() => void applyBulkType()}
+        onCancel={() => setPendingBulkType(null)}
       />
 
       <div className="overflow-x-auto rounded-lg border border-white/10">
