@@ -110,9 +110,9 @@ app.post('/api/public/solana-rpc', async (req, res) => {
     const text = await upstream.text();
     res.status(upstream.status).type('application/json').send(text);
   } catch (err) {
-    res.status(502).json({
-      error: err instanceof Error ? err.message : 'Solana RPC proxy failed'
-    });
+    // Log the real detail server-side only; never leak upstream URLs/messages to clients.
+    console.error('[solana-rpc] upstream request failed:', err);
+    res.status(502).json({ error: 'Upstream request failed' });
   }
 });
 

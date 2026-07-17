@@ -8,6 +8,8 @@
     "build": "tsc -b && vite build",
     "build:pages": "cross-env VITE_BASE_PATH=/SoloLedger/ VITE_SAAS_MODE=true VITE_API_URL=https://sololedger-production.up.railway.app vite build",
     "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "lint": "eslint .",
     "deploy:pages": "npm run build:pages && npx --yes gh-pages -d dist -t"
   },
@@ -28,15 +30,26 @@
     "zustand": "^4.5.5"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/papaparse": "^5.3.14",
     "@types/react": "^18.3.3",
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.19",
     "cross-env": "^10.1.0",
+    "eslint": "^10.7.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.3",
+    "fake-indexeddb": "^6.2.5",
+    "globals": "^17.7.0",
+    "jsdom": "^29.1.1",
     "postcss": "^8.4.40",
     "tailwindcss": "^3.4.7",
     "typescript": "^5.5.4",
-    "vite": "^5.3.5"
+    "typescript-eslint": "^8.64.0",
+    "vite": "^5.3.5",
+    "vitest": "^4.1.10"
   }
 }

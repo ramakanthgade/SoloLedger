@@ -1,5 +1,7 @@
+/// <reference types="vitest/config" />
 import path from 'path';
 import { defineConfig } from 'vite';
+import { configDefaults } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
@@ -66,7 +68,7 @@ export default defineConfig({
     // Cursor Cloud (and similar remote dev proxies) forward the app through
     // a changing *.cursorvm.com / *.agent.cvm.dev hostname. Vite blocks unknown
     // hosts by default to prevent DNS rebinding; allow those proxy domains in dev.
-    allowedHosts: ['.cursorvm.com', '.agent.cvm.dev', 'localhost'],
+    allowedHosts: true,
     // Browser → localhost → Vite → Alchemy. Avoids CORS blocks on direct Alchemy calls.
     proxy: {
       ...alchemyDevProxy,
@@ -112,6 +114,32 @@ export default defineConfig({
   },
   build: {
     target: 'es2020',
-    sourcemap: false
+    sourcemap: false,
+    rollupOptions: {
+      output: {
+        // Split heavy vendor libraries into dedicated chunks so the main
+        // entry chunk stays well under Vite's 500 KB warning threshold.
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom'],
+          'vendor-xlsx': ['xlsx'],
+          'vendor-pdf': ['jspdf', 'jspdf-autotable'],
+          'vendor-papaparse': ['papaparse'],
+          'vendor-dexie': ['dexie', 'dexie-react-hooks']
+        }
+      }
+    }
+  },
+  test: {
+    globals: true,
+    environment: 'jsdom',
+    setupFiles: ['./src/test/setup.ts'],
+    css: false,
+    // Only run the CLIENT suite here. The `server/` workspace has its own
+    // Vitest config, its own dependencies (express, jsonwebtoken, …) in
+    // `server/node_modules`, and a Node (not jsdom) environment. Without this
+    // scope Vitest's default glob sweeps `server/**` too and the client job
+    // fails to resolve server-only imports.
+    include: ['src/**/*.test.{ts,tsx}'],
+    exclude: [...configDefaults.exclude, 'server/**']
   }
 });

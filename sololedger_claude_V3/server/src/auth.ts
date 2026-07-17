@@ -11,7 +11,31 @@ import {
 } from './store.js';
 import { getPlanTxLimit, UNLIMITED_TX, type PlanId } from './plans.js';
 
-const JWT_SECRET = process.env.JWT_SECRET ?? 'dev-only-change-me';
+export const DEV_JWT_SECRET = 'dev-only-change-me';
+
+export function resolveJwtSecret(): string {
+  const configured = process.env.JWT_SECRET?.trim();
+  const isProduction = process.env.NODE_ENV === 'production';
+  const isInsecure = !configured || configured === DEV_JWT_SECRET;
+
+  if (isProduction && isInsecure) {
+    throw new Error(
+      'JWT_SECRET must be set to a strong secret in production. ' +
+        'Refusing to start with an unset or default JWT_SECRET.'
+    );
+  }
+
+  if (isInsecure) {
+    console.warn(
+      '[auth] JWT_SECRET is unset or using the insecure dev default — DO NOT use this in production.'
+    );
+    return DEV_JWT_SECRET;
+  }
+
+  return configured;
+}
+
+const JWT_SECRET = resolveJwtSecret();
 
 export interface AuthTokenPayload {
   sub: string;

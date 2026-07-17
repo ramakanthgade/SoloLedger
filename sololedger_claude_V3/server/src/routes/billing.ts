@@ -60,9 +60,14 @@ billingRouter.post('/checkout', authMiddleware, async (req: AuthedRequest, res) 
   res.json({ url: session.url });
 });
 
+/** activate-dev is a dev/test-only escape hatch — never available in production. */
+export function isDevActivateBlocked(): boolean {
+  return process.env.NODE_ENV === 'production';
+}
+
 /** Dev / manual activation when Stripe is not wired up */
 billingRouter.post('/activate-dev', authMiddleware, (req: AuthedRequest, res) => {
-  if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEV_ACTIVATE !== 'true') {
+  if (isDevActivateBlocked()) {
     res.status(403).json({ error: 'Not available in production' });
     return;
   }

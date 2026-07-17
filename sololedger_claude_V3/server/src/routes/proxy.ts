@@ -25,7 +25,7 @@ function requireActiveSubscription(req: AuthedRequest, res: Response): boolean {
   return true;
 }
 
-async function forward(
+export async function forward(
   targetUrl: string,
   req: Request,
   res: Response,
@@ -45,11 +45,33 @@ async function forward(
     init.body = JSON.stringify(req.body ?? {});
   }
 
-  const upstream = await fetch(targetUrl, init);
+  let upstream: Awaited<ReturnType<typeof fetch>>;
+  try {
+    upstream = await fetch(targetUrl, init);
+  } catch (err) {
+    // Network-level failure. Log the real detail (incl. target URL) server-side only;
+    // never leak the upstream URL / API key to the client.
+    console.error(`[proxy] upstream request failed [${method} ${req.path}]:`, err);
+    res.status(502).json({ error: 'Upstream request failed' });
+    return;
+  }
+
   const contentType = upstream.headers.get('content-type') ?? 'application/json';
+  const text = await upstream.text();
+
+  if (!upstream.ok) {
+    // Do not echo upstream error bodies — they can reflect the proxied URL
+    // (which embeds the provider API key) or other internal details.
+    // Log the real detail server-side and return a generic message to the client.
+    console.error(
+      `[proxy] upstream error ${upstream.status} [${method} ${req.path}]: ${text.slice(0, 500)}`
+    );
+    res.status(upstream.status).json({ error: 'Upstream request failed' });
+    return;
+  }
+
   res.status(upstream.status);
   res.setHeader('content-type', contentType);
-  const text = await upstream.text();
   res.send(text);
 }
 

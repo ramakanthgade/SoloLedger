@@ -155,7 +155,7 @@ export async function saveSettings(settings: TaxSettings): Promise<void> {
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -164,6 +164,8 @@ export async function clearAllData(): Promise<void> {
       await db.lookupAddresses.clear();
       await db.priceCache.clear();
       await db.csvImports.clear();
+      // "Delete all data" promises to remove everything — reset settings to defaults too.
+      await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
     }
   );
 }
