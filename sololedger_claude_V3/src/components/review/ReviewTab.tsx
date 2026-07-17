@@ -17,6 +17,7 @@ import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import {
+  ALL_FLAGS,
   DISPOSAL_TYPES,
   bulkFlagsPatch,
   bulkTypeImpactLines,
@@ -38,14 +39,6 @@ const ALL_TYPES: TxType[] = [
   'income', 'gift_sent', 'gift_received', 'fee',
   'nft_mint', 'nft_buy', 'nft_sell',
   'defi_deposit', 'defi_withdraw', 'other'
-];
-
-const ALL_FLAGS: FlagReason[] = [
-  'possible_internal_transfer',
-  'missing_cost_basis',
-  'duplicate_suspected',
-  'unrecognized_asset',
-  'needs_review'
 ];
 
 const FLAG_LABELS: Record<FlagReason, string> = {
@@ -155,25 +148,15 @@ function FlagSelector({ tx }: { tx: Transaction }) {
   );
 }
 
-function TypeSelector({
-  txId,
-  current,
-  flags
-}: {
-  txId: string;
-  current: TxType;
-  flags: string[];
-}) {
+function TypeSelector({ tx }: { tx: Transaction }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const current = tx.type;
 
   const reclassify = async (next: TxType) => {
     if (next === current) { setOpen(false); return; }
     setSaving(true);
-    const newFlags = (flags ?? []).filter(
-      (f) => f !== 'possible_internal_transfer' && f !== 'missing_cost_basis'
-    ) as import('@/types/transaction').FlagReason[];
-    await db.transactions.update(txId, { type: next, flags: newFlags });
+    await db.transactions.update(tx.id, bulkTypePatch(tx, next));
     setSaving(false);
     setOpen(false);
   };
@@ -578,6 +561,9 @@ export function ReviewTab() {
     setBulkFlagsSel(initialBulkFlagsSelection(selectedTxs));
     setBulkFlagsMenuOpen(true);
   };
+
+  const patchBulkFlagsSel = (patch: Partial<BulkFlagsSelection>) =>
+    setBulkFlagsSel((cur) => (cur ? { ...cur, ...patch } : cur));
 
   const setBulkFlag = (flag: FlagReason, on: boolean) => {
     setBulkFlagsSel((cur) => {
@@ -1065,9 +1051,7 @@ export function ReviewTab() {
                     <input
                       type="checkbox"
                       checked={bulkFlagsSel.internal}
-                      onChange={(e) =>
-                        setBulkFlagsSel((cur) => (cur ? { ...cur, internal: e.target.checked } : cur))
-                      }
+                      onChange={(e) => patchBulkFlagsSel({ internal: e.target.checked })}
                       className="accent-violet"
                     />
                     Internal transfer (non-taxable)
@@ -1076,9 +1060,7 @@ export function ReviewTab() {
                     <input
                       type="checkbox"
                       checked={bulkFlagsSel.spam}
-                      onChange={(e) =>
-                        setBulkFlagsSel((cur) => (cur ? { ...cur, spam: e.target.checked } : cur))
-                      }
+                      onChange={(e) => patchBulkFlagsSel({ spam: e.target.checked })}
                       className="accent-violet"
                     />
                     Spam (excluded everywhere)
@@ -1158,7 +1140,7 @@ export function ReviewTab() {
 
       {/* Bulk "Set type" — impact-summary confirmation */}
       <ConfirmDialog
-        open={pendingBulkType != null && bulkTypeImpact != null}
+        open={pendingBulkType != null}
         title={
           pendingBulkType
             ? `Set ${selectedTxs.length} transaction${selectedTxs.length === 1 ? '' : 's'} to "${pendingBulkType.replace(/_/g, ' ')}"?`
@@ -1227,7 +1209,7 @@ export function ReviewTab() {
                     </td>
                     <td className="px-3 py-2 text-low">{new Date(t.timestamp).toISOString().slice(0, 10)}</td>
                     <td className="px-3 py-2">
-                      <TypeSelector txId={t.id} current={t.type} flags={t.flags} />
+                      <TypeSelector tx={t} />
                     </td>
                     <td className="px-3 py-2 text-low">{chainLabel}</td>
                     <td className="px-3 py-2 text-mid" title={t.contractAddress}>

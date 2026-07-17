@@ -5,8 +5,9 @@
  * Semantics deliberately mirror the per-row controls in ReviewTab.tsx so bulk
  * and per-row edits can never diverge:
  *  - Type change: sets `type` and strips the auto-derived flags
- *    (`possible_internal_transfer`, `missing_cost_basis`) — same as
- *    `TypeSelector.reclassify`.
+ *    (`possible_internal_transfer`, `missing_cost_basis`). `bulkTypePatch` is
+ *    the single implementation — the per-row `TypeSelector` calls it too, so
+ *    bulk and per-row edits can never diverge.
  *  - Flag change: absolute apply — a checked flag is added to every selected
  *    row, an unchecked one is removed. `isInternalTransfer` / `isSpam` are real
  *    booleans (not stored flags), so they are patched as booleans; marking
@@ -33,6 +34,16 @@ export const DISPOSAL_TYPES: ReadonlySet<TxType> = new Set([
   'nft_sell'
 ]);
 
+/** All stored flags, in display order — the single list behind both the
+ *  per-row FlagSelector checkboxes and the bulk "Set flags" dropdown. */
+export const ALL_FLAGS: readonly FlagReason[] = [
+  'possible_internal_transfer',
+  'missing_cost_basis',
+  'duplicate_suspected',
+  'unrecognized_asset',
+  'needs_review'
+];
+
 /** Flags stripped whenever a row's type changes (they are re-derived from the
  *  new type / fiat state by the rest of the app). */
 const TYPE_CHANGE_STRIPPED_FLAGS: readonly FlagReason[] = [
@@ -40,7 +51,8 @@ const TYPE_CHANGE_STRIPPED_FLAGS: readonly FlagReason[] = [
   'missing_cost_basis'
 ];
 
-/** The patch applied to one row for a bulk "Set type" — mirrors TypeSelector. */
+/** The patch applied to one row when its type changes — used by both the bulk
+ *  "Set type" action and the per-row TypeSelector. */
 export function bulkTypePatch(t: Transaction, newType: TxType): Partial<Transaction> {
   return {
     type: newType,
@@ -112,6 +124,7 @@ export function summarizeBulkTypeChange(
 
 /** One concise consequence line per notable impact, for the confirm dialog. */
 export function bulkTypeImpactLines(impact: BulkTypeImpact): string[] {
+  const rowCount = (n: number) => `${n} row${n === 1 ? '' : 's'}`;
   const lines: string[] = [];
   if (impact.newType === 'trade' && impact.total - impact.alreadyOfType > 0) {
     lines.push(
@@ -120,32 +133,32 @@ export function bulkTypeImpactLines(impact: BulkTypeImpact): string[] {
   }
   if (impact.disposalsCreated > 0) {
     lines.push(
-      `${impact.disposalsCreated} row${impact.disposalsCreated === 1 ? '' : 's'} become taxable disposal${impact.disposalsCreated === 1 ? '' : 's'} — they will appear in Capital Gains once priced.`
+      `${rowCount(impact.disposalsCreated)} become taxable disposal${impact.disposalsCreated === 1 ? '' : 's'} — they will appear in Capital Gains once priced.`
     );
   }
   if (impact.disposalsRemoved > 0) {
     lines.push(
-      `${impact.disposalsRemoved} row${impact.disposalsRemoved === 1 ? '' : 's'} stop being disposals — they leave Capital Gains.`
+      `${rowCount(impact.disposalsRemoved)} stop being disposals — they leave Capital Gains.`
     );
   }
   if (impact.incomeCreated > 0) {
     lines.push(
-      `${impact.incomeCreated} row${impact.incomeCreated === 1 ? '' : 's'} become income — taxable at fair-market value on receipt.`
+      `${rowCount(impact.incomeCreated)} become income — taxable at fair-market value on receipt.`
     );
   }
   if (impact.transfersCreated > 0) {
     lines.push(
-      `${impact.transfersCreated} row${impact.transfersCreated === 1 ? '' : 's'} become non-taxable transfers.`
+      `${rowCount(impact.transfersCreated)} become non-taxable transfers.`
     );
   }
   if (impact.missingFiat > 0) {
     lines.push(
-      `${impact.missingFiat} row${impact.missingFiat === 1 ? '' : 's'} still have no fiat value — fetch prices afterwards.`
+      `${rowCount(impact.missingFiat)} still have no fiat value — fetch prices afterwards.`
     );
   }
   if (impact.alreadyOfType > 0) {
     lines.push(
-      `${impact.alreadyOfType} row${impact.alreadyOfType === 1 ? ' is' : 's are'} already "${impact.newType}" (unchanged).`
+      `${rowCount(impact.alreadyOfType)} ${impact.alreadyOfType === 1 ? 'is' : 'are'} already "${impact.newType}" (unchanged).`
     );
   }
   return lines;
@@ -189,15 +202,8 @@ export function bulkFlagsPatch(
 /** Initial checkbox state for the bulk "Set flags" dropdown: a box starts
  *  checked only when EVERY selected row has it. */
 export function initialBulkFlagsSelection(selectedTxs: Transaction[]): BulkFlagsSelection {
-  const allFlags: FlagReason[] = [
-    'possible_internal_transfer',
-    'missing_cost_basis',
-    'duplicate_suspected',
-    'unrecognized_asset',
-    'needs_review'
-  ];
   const flags = new Map<FlagReason, boolean>();
-  for (const f of allFlags) {
+  for (const f of ALL_FLAGS) {
     flags.set(f, selectedTxs.length > 0 && selectedTxs.every((t) => (t.flags ?? []).includes(f)));
   }
   return {
