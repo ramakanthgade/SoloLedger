@@ -14,7 +14,7 @@
  * and (2) the known distributor wallet that pays it out. Both are matched here.
  */
 
-import { classifyDbtIncome, isDbtToken, DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
+import { classifyDbtIncome, DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 import type { DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
 
 /** Geodnet GEOD SPL token mint on Solana mainnet. */
@@ -81,7 +81,7 @@ export const REWARD_TOKENS: RewardTokenEntry[] = [
     defaultKind: 'genesis_reward',
     label: 'Dabba Network DBT reward',
     notes: 'Auto-classified as DBT income',
-    classifyByCounterparty: (mint, counterparty) => classifyDbtIncome(mint, counterparty)
+    classifyByCounterparty: classifyDbtIncome
   }
 ];
 
@@ -93,8 +93,7 @@ export const REWARD_KIND_LABEL: Partial<Record<RewardIncomeKind, string>> = {
 /** True if the mint belongs to a known reward token. NOTE: this alone does NOT
  *  mean an inbound transfer is income — use classifyRewardIncome for that. */
 export function isKnownRewardToken(mint?: string): boolean {
-  if (!mint) return false;
-  return REWARD_TOKENS.some((e) => e.mint === mint);
+  return getEntry(mint) !== undefined;
 }
 
 function getEntry(mint?: string): RewardTokenEntry | undefined {
@@ -113,23 +112,27 @@ export function classifyRewardIncome(
   counterpartyAddress?: string
 ): RewardClassification | null {
   const entry = getEntry(mint);
-  if (!entry || !counterpartyAddress) return null;
+  if (!entry) return null;
 
-  // Rich per-counterparty classifier (e.g. Dabba). Fall back to the default kind
-  // when it returns null (mirrors the existing DBT `?? genesis_reward` behaviour).
+  // Rich per-counterparty classifier (e.g. Dabba). A missing/unknown counterparty
+  // falls back to the default kind (mirrors the existing DBT `?? genesis_reward`
+  // behaviour, including the ATA-balance-change path where no sender is known).
   if (entry.classifyByCounterparty) {
-    const specific = entry.classifyByCounterparty(mint, counterpartyAddress);
+    const specific = counterpartyAddress
+      ? entry.classifyByCounterparty(mint, counterpartyAddress)
+      : null;
     if (specific) return specific;
     return { kind: entry.defaultKind, label: entry.label, notes: entry.notes };
   }
 
-  // Distributor allowlist: only the known rewards wallet counts as income.
-  if (entry.distributorAllowlist && entry.distributorAllowlist.length > 0) {
-    if (!entry.distributorAllowlist.includes(counterpartyAddress)) return null;
+  // Distributor allowlist: only the known rewards wallet counts as income. A
+  // missing or non-allowlisted sender is NOT income (the GEOD guard the user
+  // explicitly required). With no allowlist and no sender there's nothing to
+  // match against either.
+  if (!counterpartyAddress) return null;
+  if (entry.distributorAllowlist?.length && !entry.distributorAllowlist.includes(counterpartyAddress)) {
+    return null;
   }
 
   return { kind: entry.defaultKind, label: entry.label, notes: entry.notes };
 }
-
-/** Re-export so existing consumers keep working; DBT logic stays in dabbaRegistry. */
-export { isDbtToken, DBT_TOKEN_MINT };

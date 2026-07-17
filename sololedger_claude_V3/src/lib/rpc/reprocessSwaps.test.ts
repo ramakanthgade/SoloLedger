@@ -123,6 +123,36 @@ describe('reprocessRewardIncome', () => {
     expect(store[0].type).toBe('transfer_in');
   });
 
+  it('flips a stored DBT transfer_in with NO counterparty (ATA path) to income/genesis_reward', async () => {
+    store = [
+      tx({
+        id: 'dbt-nocp',
+        asset: 'DBT',
+        contractAddress: DBT_TOKEN_MINT,
+        counterpartyAddress: undefined,
+        walletAddress: USER_WALLET
+      })
+    ];
+    const n = await reprocessRewardIncome();
+    expect(n).toBe(1);
+    expect(store[0].type).toBe('income');
+    expect(store[0].category).toBe('genesis_reward');
+  });
+
+  it('leaves a stored GEOD transfer_in with NO counterparty untouched', async () => {
+    store = [
+      tx({
+        id: 'geod-nocp',
+        contractAddress: GEOD_TOKEN_MINT,
+        counterpartyAddress: undefined,
+        walletAddress: USER_WALLET
+      })
+    ];
+    const n = await reprocessRewardIncome();
+    expect(n).toBe(0);
+    expect(store[0].type).toBe('transfer_in');
+  });
+
   it('ignores non-registry tokens entirely', async () => {
     store = [
       tx({ id: 'usdc', asset: 'USDC', contractAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', counterpartyAddress: GEOD_REWARDS_WALLET })

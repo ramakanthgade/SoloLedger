@@ -8,7 +8,7 @@
  */
 import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions, filterAlreadyImported } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
-import { reprocessSwapDetectionInDb, reprocessDbtIncome } from '@/lib/rpc/reprocessSwaps';
+import { reprocessSwapDetectionInDb, reprocessRewardIncome } from '@/lib/rpc/reprocessSwaps';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -261,8 +261,8 @@ export async function runWalletImport(
   let swapsDetected = 0;
 
   if (txsToStore.length > 0) {
-    // Phase 2a: Reclassify DBT income (always free, no API)
-    await reprocessDbtIncome();
+    // Phase 2a: Reclassify reward-token income (GEOD, DBT, …) — always free, no API
+    await reprocessRewardIncome();
 
     // Phase 2b: Local swap merge (always) + optional Noves for legacy sources.
     const swapResult = await reprocessSwapDetectionInDb(

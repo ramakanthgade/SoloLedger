@@ -57,9 +57,6 @@ export async function reprocessRewardIncome(): Promise<number> {
   return updated;
 }
 
-/** Backwards-compatible alias (DBT is one of the registry tokens). */
-export const reprocessDbtIncome = reprocessRewardIncome;
-
 export interface ReprocessResult {
   tradesCreated: number;
   reclassified: number;

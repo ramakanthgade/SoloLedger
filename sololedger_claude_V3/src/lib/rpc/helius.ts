@@ -156,7 +156,6 @@ function pushSplBalanceRow(
     mint: string;
     net: number;
     counterparty?: string;
-    fromAccountData: boolean;
   }
 ): void {
   const { htx, walletAddress, mint, net, counterparty } = opts;
@@ -420,8 +419,7 @@ function heliusTransferToRows(
       walletAddress,
       mint,
       net,
-      counterparty,
-      fromAccountData
+      counterparty
     });
   }
 
