@@ -1,0 +1,54 @@
+[
+  {
+    "timestamp": 1748752200000,
+    "type": "buy",
+    "asset": "MATIC",
+    "amount": 100,
+    "counterAsset": "INR",
+    "counterAmount": 8000,
+    "fiatCurrency": "INR",
+    "fiatValue": 8000,
+    "feeAmount": 20,
+    "feeAsset": "INR",
+    "source": "coinswitch",
+    "sourceRef": "coinswitch:1748752200000:buy:MATIC:100.0000",
+    "notes": "CoinSwitch · MATICINR · Spot buy",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1748845800000,
+    "type": "sell",
+    "asset": "BTC",
+    "amount": 0.005,
+    "counterAsset": "INR",
+    "counterAmount": 26000,
+    "fiatCurrency": "INR",
+    "fiatValue": 26000,
+    "feeAmount": 13,
+    "feeAsset": "INR",
+    "tdsAmount": 260,
+    "tdsAsset": "INR",
+    "tdsInr": 260,
+    "source": "coinswitch",
+    "sourceRef": "coinswitch:1748845800000:sell:BTC:0.005000",
+    "notes": "CoinSwitch · BTCINR · TDS 260 INR · Spot sell",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1748917800000,
+    "type": "transfer_in",
+    "asset": "INR",
+    "amount": 5000,
+    "fiatCurrency": "INR",
+    "fiatValue": 5000,
+    "source": "coinswitch",
+    "sourceRef": "coinswitch:1748917800000:transfer_in:INR:5000.0000",
+    "notes": "UPI deposit",
+    "flags": [
+      "possible_internal_transfer"
+    ],
+    "isInternalTransfer": false
+  }
+]

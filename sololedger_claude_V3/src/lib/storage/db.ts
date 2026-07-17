@@ -101,6 +101,20 @@ class SoloLedgerDB extends Dexie {
       priceCache: 'key, fetchedAt',
       csvImports: 'id, importedAt, fileName'
     });
+    // v7: structured India TDS fields on transactions (tdsAmount/tdsAsset/tdsInr).
+    // Field-only migration — the new columns are optional and default to
+    // undefined, so existing rows are left completely intact (no reindex needed).
+    // This is the SINGLE schema bump for Phase 1 (India MVP).
+    this.version(7).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName'
+    });
   }
 }
 
@@ -207,25 +221,44 @@ export async function setCachedPrice(key: string, price: number): Promise<void> 
 
 // ---- Wallet addresses ----
 
+/**
+ * Sources whose `sourceRef` is a stable, content-addressed dedup key.
+ * Includes CEX CSV exports (Binance/Coinbase/WazirX/Hyperliquid) AND
+ * manual / AI-mapped imports — the latter now carry a `contentHashRef`
+ * (hash of timestamp+type+asset+amount+counter) so a re-import of the same
+ * file yields the same ref and therefore the same key.
+ */
+function isStableRefSource(source: string): boolean {
+  return (
+    source.startsWith('binance') ||
+    source === 'coinbase' ||
+    source.startsWith('wazirx') ||
+    source.startsWith('hyperliquid') ||
+    source === 'manual_mapping' ||
+    source === 'ai_mapping'
+  );
+}
+
 /** Dedup key for exchange CSV rows (Binance, Coinbase) — uses sourceRef when set. */
 export function transactionExchangeKey(
   t: Pick<Transaction, 'source' | 'sourceRef'>
 ): string | null {
   if (!t.sourceRef) return null;
-  if (
-    t.source.startsWith('binance') ||
-    t.source === 'coinbase' ||
-    t.source.startsWith('wazirx') ||
-    t.source.startsWith('hyperliquid')
-  ) {
+  if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;
   }
   return null;
 }
-/** Stable amount for dedup keys — large SPL amounts lose precision with toFixed(6). */
+/**
+ * Stable amount for dedup keys — tiered precision (>=1 → 4dp, >=1e-4 → 6dp,
+ * else 9dp). Kept in lockstep with `stableAmountKey`/`exchangeSourceRef` in
+ * the parser layer so an amount embedded in a stable/content-hash ref rounds
+ * identically to one used in an on-chain import key — a re-import of the same
+ * row therefore produces the same dedup key (no 4/6/9 vs 2/6/9 mismatch).
+ */
 function normalizeImportAmount(amount: number): string {
   const a = Math.abs(amount);
-  if (a >= 1) return a.toFixed(2);
+  if (a >= 1) return a.toFixed(4);
   if (a >= 0.0001) return a.toFixed(6);
   return a.toFixed(9);
 }

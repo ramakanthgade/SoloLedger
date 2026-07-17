@@ -58,6 +58,14 @@ export interface Transaction {
    */
   instrumentClass?: 'spot' | 'derivative';
   importBatchId?: string;       // links row to a CSV import batch (file hash)
+  /**
+   * India TDS (Section 194S — 1% on VDA transfers) withheld on this transaction.
+   * Captured structurally so it can be reconciled FY-by-FY. All optional/additive:
+   * rows imported before this existed simply leave them undefined.
+   */
+  tdsAmount?: number;           // quantity of `tdsAsset` withheld (e.g. 0.0001 BTC or 5 INR)
+  tdsAsset?: string;            // asset the TDS was taken in, e.g. "INR", "USDT", "BTC"
+  tdsInr?: number;              // TDS value in INR when derivable (from the export or a fiat leg)
   raw?: Record<string, unknown>; // original parsed row, kept for traceability/debugging only
 }
 
@@ -70,7 +78,7 @@ export interface Lot {
   costBasisPerUnit: number;    // in reporting fiat currency
   costBasisTotal: number;
   sourceTxId: string;
-  acquisitionType: Extract<TxType, 'buy' | 'trade' | 'income' | 'gift_received' | 'nft_mint'>;
+  acquisitionType: Extract<TxType, 'buy' | 'trade' | 'income' | 'gift_received' | 'nft_mint' | 'nft_buy'>;
 }
 
 export interface Disposal {
@@ -84,7 +92,7 @@ export interface Disposal {
   holdingPeriodDays: number;
   lotConsumption: { lotId: string; amount: number; costBasis: number }[];
   sourceTxId: string;
-  method: 'FIFO' | 'SpecID';
+  method: 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
 }
 
 export type Jurisdiction = 'IN' | 'US' | 'CA' | 'AE';
@@ -95,7 +103,7 @@ export type DerivativesTreatment = 'business_income' | 'capital_gains';
 export interface TaxSettings {
   jurisdiction: Jurisdiction;
   reportingCurrency: string;   // "INR", "USD", "CAD", "AED"
-  defaultCostBasisMethod: 'FIFO' | 'SpecID';
+  defaultCostBasisMethod: 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
   /**
    * Tax presentation for derivatives. When unset, defaults from jurisdiction
    * (IN/CA → business_income, US/AE → capital_gains). Applied at report time.
@@ -128,9 +136,23 @@ export interface TaxSettings {
   aiApiKey?: string;
   /** OpenRouter model id, e.g. anthropic/claude-opus-4-5 */
   aiModel?: string;
+  /**
+   * First-use consent for the AI Tax Advisor (A2). Off by default — the AI
+   * Advisor is the one feature that sends data off-device (an aggregated
+   * summary + the typed question), so no AI request runs until the user
+   * explicitly opts in. Stored via the existing settings persistence — no
+   * Dexie schema bump. Revocable any time from Settings → AI Advisor.
+   */
+  aiConsentGranted?: boolean;
   /** For the "other EVM chain" manual fallback in wallet lookup. */
   customExplorerBaseUrl?: string;
   customExplorerApiKey?: string;
+  /**
+   * On-device Ed25519-signed license key (D6). Bearer credential stored as-is
+   * via the existing settings persistence (no Dexie schema bump). Re-verified
+   * on load by `src/lib/billing/license.ts`.
+   */
+  licenseKey?: string;
 }
 
 export interface TaxYearSummary {
@@ -139,8 +161,49 @@ export interface TaxYearSummary {
   totalProceeds: number;
   totalCostBasis: number;
   totalGain: number;
+  /**
+   * The taxable base actually charged, after any jurisdiction inclusion rate is
+   * applied (Canada: 50% of the net gain). Equals `totalGain` where no
+   * inclusion rate applies (IN/US/AE). Never negative.
+   */
+  taxableGain?: number;
   shortTermGain?: number;   // where jurisdiction distinguishes holding periods
   longTermGain?: number;
+  /** Sum of positive-gain consumed lots (gross gains, before any offset). */
+  totalGains?: number;
+  /** Sum of the magnitudes of negative-gain consumed lots (gross losses). */
+  totalLosses?: number;
+  /**
+   * Losses that cannot offset gains under the jurisdiction's rules (India,
+   * Section 115BBH). 0/undefined where losses may offset gains.
+   */
+  disallowedLosses?: number;
+  /** Capital-gains inclusion rate (e.g. CA 0.5). Undefined where not applicable. */
+  inclusionRate?: number;
+  /** Non-advice estimated tax (e.g. India VDA 30% + 4% cess). */
+  estimatedTax?: number;
+  /**
+   * Count of matched-gain rows in the year with `status === 'missing_cost_basis'`
+   * — disposal proceeds included at zero cost basis because no acquisition was
+   * matched. Flagged so the filer can reconcile before relying on the figures.
+   */
+  reviewRequiredCount?: number;
+  /**
+   * DEPRECATED / never raised as of B9a. Previously flagged India income/gift/
+   * airdrop VDA lots as having receipt-side treatment that was not yet modelled.
+   * The treatment is now VALIDATED from primary sources (Section 115BBH(2)(a)
+   * cost-of-acquisition-only + Section 56(2)(x) FMV-at-receipt-as-income), so it
+   * is always false for IN. Field kept (additive) for back-compat consumers.
+   */
+  incomeGiftTreatmentLimited?: boolean;
+  /**
+   * India Section 56(2)(x): total FMV-at-receipt (in reporting fiat) of
+   * income/gift/airdrop/staking VDA events in the financial year. This is income
+   * from other sources taxed at the recipient's SLAB rate — separate from the
+   * 30% + 4% cess on VDA transfers (Section 115BBH). Reports surface it as its
+   * own line; slab-rate tax is out of scope (depends on total income).
+   */
+  vdaReceiptIncome?: number;
   totalIncome: number;      // staking/airdrop/mining etc. valued at FMV
   /** Derivatives business income (profits) when treatment = business_income. */
   derivativesIncome?: number;

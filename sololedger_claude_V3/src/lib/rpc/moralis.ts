@@ -21,6 +21,7 @@ import { classifyFromMoralis } from '@/lib/rpc/classificationEngine';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import type { ChainId } from '@/lib/rpc/providers';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const MORALIS_BASE = 'https://deep-index.moralis.io/api/v2.2';
 
@@ -246,6 +247,7 @@ export async function fetchMoralisEvm(
         : `${MORALIS_BASE}/wallets/${address}/history?chain=${moralisChain}&order=DESC&limit=100`;
     if (cursor) url += `&cursor=${cursor}`;
 
+    recordNetworkActivity(resolveMode(isSaasMode()));
     const res = isSaasMode()
       ? await saasProxyFetch(url.replace(getApiBase(), ''))
       : await fetch(url, { headers: { 'X-API-Key': apiKey, accept: 'application/json' } });

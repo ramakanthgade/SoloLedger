@@ -1,0 +1,5 @@
+Date,Asset,Income,Expense,Fee Amount,Balance,Reason,Remarks
+2025-06-01 12:00:00,USDT,0,500,0,1500,Trade,TRADE SUB
+2025-06-01 12:00:00,BTC,0.01,0,0,0.01,Trade,TRADE PLUS
+2025-06-01 12:00:00,BTC,0,0.00001,0,0.00999,Fee,FEE CHARGE
+2025-06-01 12:00:00,INR,1000,0,0,1000,Deposit,Bank deposit

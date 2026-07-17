@@ -10,28 +10,62 @@ export const PDF = {
   slateBorder: [226, 232, 240] as [number, number, number]
 } as const;
 
+/**
+ * Aurora header palette (RGB) — mirrors `print-report-aurora-header.html`.
+ * The report BODY stays light/print-safe (see {@link pdfTableStyles}); only the
+ * branded header band uses these dark/gradient tokens.
+ */
+export const AURORA = {
+  /** Header band gradient stops: #12132A (top) → #0A0B1A (bottom). */
+  bandTop: [18, 19, 42] as [number, number, number],
+  bandBottom: [10, 11, 26] as [number, number, number],
+  /** Gradient rule stops: violet → blue → teal. */
+  violet: [124, 92, 255] as [number, number, number],
+  blue: [78, 168, 255] as [number, number, number],
+  tealBright: [34, 225, 195] as [number, number, number],
+  /** Light text on the dark band. */
+  headText: [245, 246, 255] as [number, number, number],
+  headMuted: [180, 183, 217] as [number, number, number],
+  kicker: [124, 128, 168] as [number, number, number]
+} as const;
+
+/** Which header treatment `createBrandedPdf` draws. */
+export type BrandHeader = 'aurora' | 'light';
+
 export type BrandedPdfOptions = {
   reportTitle: string;
   metaLines?: string[];
   landscape?: boolean;
+  /**
+   * Header style. `'aurora'` (default) draws the dark aurora band with a
+   * gradient rule and light logo/text. `'light'` draws a white header + hairline
+   * rule + dark logo/text so black-and-white printouts never lose branding.
+   */
+  brandHeader?: BrandHeader;
 };
 
 const HEADER_H = 24;
-let logoCache: string | null | undefined;
 
-async function fetchLogoPngDataUrl(): Promise<string | null> {
-  if (logoCache !== undefined) return logoCache;
+/** Logo assets: variant-B aurora (light strokes) for the dark band; navy for light. */
+const LOGO_AURORA = 'assets/logo-aurora-b.svg';
+const LOGO_NAVY = 'assets/logo-ledger-shield-navy.svg';
+
+/** Rasterized-logo cache, keyed by asset path (aurora vs. navy variant). */
+const logoCache = new Map<string, string | null>();
+
+async function fetchLogoPngDataUrl(assetPath: string): Promise<string | null> {
+  if (logoCache.has(assetPath)) return logoCache.get(assetPath) ?? null;
   try {
-    const url = `${import.meta.env.BASE_URL}assets/logo-ledger-shield.svg`;
+    const url = `${import.meta.env.BASE_URL}${assetPath}`;
     const res = await fetch(url);
     if (!res.ok) {
-      logoCache = null;
+      logoCache.set(assetPath, null);
       return null;
     }
     const svgText = await res.text();
     const blob = new Blob([svgText], { type: 'image/svg+xml' });
     const objectUrl = URL.createObjectURL(blob);
-    logoCache = await new Promise<string | null>((resolve) => {
+    const dataUrl = await new Promise<string | null>((resolve) => {
       const img = new Image();
       img.onload = () => {
         const canvas = document.createElement('canvas');
@@ -52,44 +86,109 @@ async function fetchLogoPngDataUrl(): Promise<string | null> {
       };
       img.src = objectUrl;
     });
-    return logoCache;
+    logoCache.set(assetPath, dataUrl);
+    return dataUrl;
   } catch {
-    logoCache = null;
+    logoCache.set(assetPath, null);
     return null;
   }
 }
 
-/** Create a jsPDF with SoloLedger navy header bar, logo, and branding. */
-export async function createBrandedPdf({ reportTitle, metaLines = [], landscape }: BrandedPdfOptions): Promise<{
+/** Draw the dark Aurora header band + gradient rule + light logo/branding. */
+async function drawAuroraHeader(doc: jsPDF, pageW: number, reportTitle: string) {
+  // Two-stop vertical gradient hint: #12132A over #0A0B1A.
+  const split = HEADER_H * 0.55;
+  doc.setFillColor(...AURORA.bandTop);
+  doc.rect(0, 0, pageW, split, 'F');
+  doc.setFillColor(...AURORA.bandBottom);
+  doc.rect(0, split, pageW, HEADER_H - split, 'F');
+
+  // Aurora gradient rule (violet → blue → teal) along the band's bottom edge.
+  const ruleH = 1.1;
+  const ruleY = HEADER_H - ruleH;
+  const seg = pageW / 3;
+  doc.setFillColor(...AURORA.violet);
+  doc.rect(0, ruleY, seg, ruleH, 'F');
+  doc.setFillColor(...AURORA.blue);
+  doc.rect(seg, ruleY, seg, ruleH, 'F');
+  doc.setFillColor(...AURORA.tealBright);
+  doc.rect(seg * 2, ruleY, pageW - seg * 2, ruleH, 'F');
+
+  const logo = await fetchLogoPngDataUrl(LOGO_AURORA);
+  if (logo) doc.addImage(logo, 'PNG', 12, 4.5, 15, 15);
+
+  const textX = logo ? 30 : 14;
+  doc.setTextColor(...AURORA.headText);
+  doc.setFontSize(13);
+  doc.setFont('helvetica', 'bold');
+  doc.text('SoloLedger', textX, 10);
+
+  doc.setFontSize(6);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(...AURORA.headMuted);
+  doc.text('PRIVATE · PRECISE · YOURS', textX, 14.5, { charSpace: 0.4 });
+
+  // Right-aligned report title.
+  doc.setFontSize(10.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(...AURORA.headText);
+  doc.text(reportTitle, pageW - 14, 13, { align: 'right', maxWidth: pageW - textX - 18 });
+}
+
+/** Draw the light/print-safe header: white band + hairline rule + dark logo/text. */
+async function drawLightHeader(doc: jsPDF, pageW: number, reportTitle: string) {
+  doc.setFillColor(...PDF.white);
+  doc.rect(0, 0, pageW, HEADER_H, 'F');
+
+  // Hairline rule along the bottom edge.
+  doc.setDrawColor(...PDF.slateBorder);
+  doc.setLineWidth(0.4);
+  doc.line(14, HEADER_H, pageW - 14, HEADER_H);
+
+  const logo = await fetchLogoPngDataUrl(LOGO_NAVY);
+  if (logo) doc.addImage(logo, 'PNG', 12, 4.5, 15, 15);
+
+  const textX = logo ? 30 : 14;
+  doc.setTextColor(...PDF.navy);
+  doc.setFontSize(13);
+  doc.setFont('helvetica', 'bold');
+  doc.text('SoloLedger', textX, 10);
+
+  doc.setFontSize(6);
+  doc.setFont('helvetica', 'normal');
+  doc.setTextColor(...PDF.slate);
+  doc.text('PRIVATE · PRECISE · YOURS', textX, 14.5, { charSpace: 0.4 });
+
+  doc.setFontSize(10.5);
+  doc.setFont('helvetica', 'bold');
+  doc.setTextColor(...PDF.navy);
+  doc.text(reportTitle, pageW - 14, 13, { align: 'right', maxWidth: pageW - textX - 18 });
+}
+
+/**
+ * Create a jsPDF with the SoloLedger branded header and light/print-safe body.
+ *
+ * The header defaults to the dark Aurora band (`brandHeader: 'aurora'`); pass
+ * `brandHeader: 'light'` for a white header that survives black-and-white
+ * printing. The body (tables, meta, disclaimer) stays light either way.
+ */
+export async function createBrandedPdf({
+  reportTitle,
+  metaLines = [],
+  landscape,
+  brandHeader = 'aurora'
+}: BrandedPdfOptions): Promise<{
   doc: jsPDF;
   startY: number;
 }> {
   const doc = new jsPDF({ orientation: landscape ? 'landscape' : 'portrait', unit: 'mm', format: 'a4' });
   const pageW = landscape ? 297 : 210;
 
-  doc.setFillColor(...PDF.navy);
-  doc.rect(0, 0, pageW, HEADER_H, 'F');
-
-  const logo = await fetchLogoPngDataUrl();
-  if (logo) {
-    doc.addImage(logo, 'PNG', 12, 4.5, 15, 15);
+  if (brandHeader === 'light') {
+    await drawLightHeader(doc, pageW, reportTitle);
+  } else {
+    await drawAuroraHeader(doc, pageW, reportTitle);
   }
-
-  const textX = logo ? 30 : 14;
-  doc.setTextColor(...PDF.white);
-  doc.setFontSize(12);
-  doc.setFont('helvetica', 'bold');
-  doc.text('SoloLedger', textX, 9);
-
-  doc.setFontSize(6.5);
-  doc.setFont('helvetica', 'normal');
-  doc.setTextColor(203, 213, 225);
-  doc.text('Private. Precise. Yours.', textX, 13.5);
-
-  doc.setFontSize(9.5);
-  doc.setFont('helvetica', 'bold');
-  doc.setTextColor(...PDF.white);
-  doc.text(reportTitle, textX, 19.5);
 
   let y = HEADER_H + 6;
   doc.setTextColor(...PDF.navy);

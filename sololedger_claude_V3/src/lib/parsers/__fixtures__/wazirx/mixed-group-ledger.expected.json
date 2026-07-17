@@ -1,0 +1,46 @@
+[
+  {
+    "timestamp": 1748759400000,
+    "type": "buy",
+    "asset": "BTC",
+    "amount": 0.01,
+    "counterAsset": "USDT",
+    "counterAmount": 500,
+    "fiatCurrency": "USD",
+    "fiatValue": 500,
+    "source": "wazirx_ledger",
+    "sourceRef": "wazirx:1748759400000:buy:BTC:0.010000",
+    "notes": "TRADE SUB · TRADE PLUS",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1748759400000,
+    "type": "fee",
+    "asset": "BTC",
+    "amount": 0.00001,
+    "feeAmount": 0.00001,
+    "feeAsset": "BTC",
+    "fiatCurrency": "INR",
+    "source": "wazirx_ledger",
+    "sourceRef": "wazirx:1748759400000:fee:BTC:0.000010000",
+    "notes": "FEE CHARGE",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1748759400000,
+    "type": "transfer_in",
+    "asset": "INR",
+    "amount": 1000,
+    "fiatCurrency": "INR",
+    "fiatValue": 1000,
+    "source": "wazirx_ledger",
+    "sourceRef": "wazirx:1748759400000:transfer_in:INR:1000.0000",
+    "notes": "Bank deposit",
+    "flags": [
+      "possible_internal_transfer"
+    ],
+    "isInternalTransfer": false
+  }
+]

@@ -22,6 +22,7 @@ import {
 } from './types';
 import { headerMap, col, colIncludes } from './headerMap';
 import { quoteToFiatCurrency } from './pairUtils';
+import { add, toNumber } from '@/lib/costBasis/decimal';
 
 interface LedgerLeg {
   asset: string;
@@ -118,8 +119,7 @@ export function stitchIncomeExpenseLedger(rows: Record<string, string>[]): Parse
   }
 
   for (const [timestamp, legs] of groups) {
-    const reasonLower = (legs[0]?.reason || '').toLowerCase();
-    const allTrade = legs.every((l) => l.reason.toLowerCase() === 'trade');
+    const anyTrade = legs.some((l) => l.reason.toLowerCase() === 'trade');
     const allRebalance = legs.every((l) =>
       l.reason.toLowerCase().includes('rebalance')
     );
@@ -129,7 +129,11 @@ export function stitchIncomeExpenseLedger(rows: Record<string, string>[]): Parse
         l.remarks.toUpperCase().includes('FEE')
     );
 
-    if (allTrade || (reasonLower === 'trade' && legs.some((l) => l.reason.toLowerCase() === 'trade'))) {
+    // Mixed-group: if ANY leg in the timestamp group is a trade, stitch the
+    // trade legs into a single buy/sell/trade and emit the remaining
+    // (fee/deposit/withdraw/reward) legs individually — instead of the old
+    // "first leg must be trade" gate that mis-classified mixed groups.
+    if (anyTrade) {
       const tradeLegs = legs.filter((l) => l.reason.toLowerCase() === 'trade');
       const otherLegs = legs.filter((l) => l.reason.toLowerCase() !== 'trade');
       stitchTradeGroup(timestamp, tradeLegs, transactions);
@@ -172,6 +176,48 @@ function remarkKind(remarks: string): 'plus' | 'sub' | 'tds' | 'other' {
   return 'other';
 }
 
+/**
+ * Collapse the TDS legs of a stitched trade into structured fields.
+ * Each leg withholds `expense` (or `income`) of `leg.asset`. We sum per-asset
+ * and pick the dominant asset as `tdsAsset`; `tdsInr` totals only the legs
+ * withheld in a fiat currency (so a mix of asset-denominated + INR TDS still
+ * yields a usable INR reconciliation figure).
+ */
+function summarizeTdsLegs(tds: LedgerLeg[]): {
+  tdsAmount?: number;
+  tdsAsset?: string;
+  tdsInr?: number;
+} {
+  if (tds.length === 0) return {};
+  const byAsset = new Map<string, number>();
+  let inrTotal = 0;
+  let hasInr = false;
+  for (const leg of tds) {
+    const amt = leg.expense || leg.income;
+    if (amt <= 0) continue;
+    byAsset.set(leg.asset, toNumber(add(byAsset.get(leg.asset) ?? 0, amt)));
+    if (isFiat(leg.asset)) {
+      inrTotal = toNumber(add(inrTotal, amt));
+      hasInr = true;
+    }
+  }
+  if (byAsset.size === 0) return {};
+  // Dominant asset = the one with the largest summed TDS.
+  let tdsAsset: string | undefined;
+  let tdsAmount = 0;
+  for (const [asset, sum] of byAsset) {
+    if (sum > tdsAmount) {
+      tdsAmount = sum;
+      tdsAsset = asset;
+    }
+  }
+  return {
+    tdsAmount: tdsAmount > 0 ? tdsAmount : undefined,
+    tdsAsset,
+    tdsInr: hasInr && inrTotal > 0 ? inrTotal : undefined
+  };
+}
+
 function stitchTradeGroup(
   timestamp: number,
   legs: LedgerLeg[],
@@ -212,6 +258,12 @@ function emitTradeFromLegs(
     tds.length > 0
       ? tds.map((t) => `TDS ${t.expense || t.income} ${t.asset}`).join(', ')
       : '';
+
+  // Aggregate the TDS legs into structured fields. Each leg withholds
+  // `expense` (or `income`) of `t.asset`; sum them per-asset so the emitted
+  // trade carries a single tdsAmount/tdsAsset, plus an INR total where a leg
+  // is denominated in a fiat currency (INR/USD/etc.).
+  const tdsSummary = summarizeTdsLegs(tds);
 
   const spentIsFiat = isFiat(primarySpent.asset);
   const recvIsFiat = isFiat(primaryReceived.asset);
@@ -282,6 +334,9 @@ function emitTradeFromLegs(
     counterAmount,
     fiatCurrency,
     fiatValue,
+    tdsAmount: tdsSummary.tdsAmount,
+    tdsAsset: tdsSummary.tdsAsset,
+    tdsInr: tdsSummary.tdsInr,
     source: 'wazirx_ledger',
     sourceRef: exchangeSourceRef('wazirx', timestamp, type, asset, amount),
     notes: [primarySpent.remarks, primaryReceived.remarks, tdsNote].filter(Boolean).join(' · ') || undefined,

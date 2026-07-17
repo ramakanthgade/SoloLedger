@@ -13,6 +13,7 @@ import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 export interface TokenBalance {
   asset: string;
@@ -48,10 +49,11 @@ async function solanaRpc(rpcUrl: string, method: string, params: unknown[]): Pro
     body
   };
   const apiBase = isSaasMode() ? getApiBase() : '';
-  const res =
-    apiBase && rpcUrl.startsWith(apiBase)
-      ? await saasProxyFetch(rpcUrl.slice(apiBase.length), init)
-      : await fetch(rpcUrl, init);
+  const viaProxy = Boolean(apiBase && rpcUrl.startsWith(apiBase));
+  recordNetworkActivity(resolveMode(viaProxy));
+  const res = viaProxy
+    ? await saasProxyFetch(rpcUrl.slice(apiBase.length), init)
+    : await fetch(rpcUrl, init);
   const data = await res.json();
   return data?.result;
 }
@@ -117,6 +119,8 @@ async function fetchMoralisBalances(
   const headers = { 'X-API-Key': apiKey, accept: 'application/json' };
 
   try {
+    // Direct Moralis REST calls (BYO key) — not routed through the SaaS proxy.
+    recordNetworkActivity(resolveMode(false));
     // Native
     const nRes = await fetch(
       `https://deep-index.moralis.io/api/v2.2/${address}/balance?chain=${moralisChain}`,

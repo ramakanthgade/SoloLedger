@@ -1,7 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { LocalOnlyBadge } from '@/components/LocalOnlyBadge';
 import { BrandLogo } from '@/components/BrandLogo';
-import { deduplicateTransactions } from '@/lib/storage/db';
+import { db, deduplicateTransactions } from '@/lib/storage/db';
+import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow';
+import { shouldShowOnboarding } from '@/components/onboarding/onboardingPredicate';
+import { TabNavProvider } from '@/lib/tabNav';
 import { ImportTab } from '@/components/import/ImportTab';
 import { ReviewTab } from '@/components/review/ReviewTab';
 import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
@@ -43,7 +47,7 @@ const PHASE_LABEL: Record<string, string> = {
 
 function LoadingScreen({ message }: { message: string }) {
   return (
-    <div className="flex min-h-screen items-center justify-center bg-ink text-sm text-mist-400">
+    <div className="flex min-h-screen items-center justify-center bg-base text-sm text-low">
       {message}
     </div>
   );
@@ -55,23 +59,53 @@ function MainApp() {
   const [active, setActive] = useState<TabId>('import');
   const ActiveComponent = tabs.find((t) => t.id === active)!.component;
   const importState = useImportJob();
+  const [deduping, setDeduping] = useState(false);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  // First-run onboarding gate (Task T3): show onboarding whenever the local
+  // ledger is empty (0 transactions), not behind a one-time flag — so a
+  // returning-but-empty user still gets help. `onboardingDismissed` lets a user
+  // who exits the flow without importing reach the main app for this session.
+  const txCount = useLiveQuery(() => db.transactions.count(), []);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
 
   useEffect(() => {
     const key = `sololedger_dedup_session_${user?.id ?? 'local'}`;
     if (sessionStorage.getItem(key)) return;
     sessionStorage.setItem(key, '1');
-    void deduplicateTransactions();
+    setDeduping(true);
+    void deduplicateTransactions().finally(() => setDeduping(false));
   }, [user?.id]);
+
+  // Roving-tabindex arrow-key navigation across the tablist.
+  const handleTabKeyDown = (e: React.KeyboardEvent, index: number) => {
+    const count = tabs.length;
+    let next = index;
+    if (e.key === 'ArrowRight') next = (index + 1) % count;
+    else if (e.key === 'ArrowLeft') next = (index - 1 + count) % count;
+    else if (e.key === 'Home') next = 0;
+    else if (e.key === 'End') next = count - 1;
+    else return;
+    e.preventDefault();
+    const nextTab = tabs[next];
+    setActive(nextTab.id);
+    tabRefs.current[next]?.focus();
+  };
 
   if (!dbReady) {
     return <LoadingScreen message="Loading your workspace…" />;
   }
 
+  if (!onboardingDismissed && shouldShowOnboarding(txCount)) {
+    return <OnboardingFlow onDone={() => setOnboardingDismissed(true)} />;
+  }
+
   return (
-    <div className="min-h-screen bg-ink" key={user?.id ?? 'guest'}>
-      <header className="bg-gradient-to-br from-navy via-navy-800 to-navy-700">
+    <TabNavProvider value={{ goToImport: () => setActive('import') }}>
+    <div className="min-h-screen bg-base" key={user?.id ?? 'guest'}>
+      <header className="border-b border-white/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
-          <BrandLogo variant="light" />
+          <BrandLogo variant="on-glass" />
           <div className="flex items-center gap-3">
             <LocalOnlyBadge />
             <UserProfileMenu onOpenSettings={() => setActive('settings')} />
@@ -79,24 +113,41 @@ function MainApp() {
         </div>
       </header>
 
-      <div className="border-b border-ink-700 bg-ink-800/95 shadow-sm backdrop-blur-sm">
-        <nav className="mx-auto flex max-w-5xl gap-0 overflow-x-auto px-4 lg:px-6">
-          {tabs.map((tab) => {
+      <div className="border-b border-white/10 bg-elev-1/40 backdrop-blur-md">
+        <nav
+          role="tablist"
+          aria-label="Sections"
+          className="mx-auto flex max-w-5xl gap-0 overflow-x-auto px-4 lg:px-6"
+        >
+          {tabs.map((tab, i) => {
             const Icon = tab.icon;
             const isActive = tab.id === active;
             return (
               <button
                 key={tab.id}
+                ref={(el) => {
+                  tabRefs.current[i] = el;
+                }}
+                role="tab"
+                id={`tab-${tab.id}`}
+                aria-selected={isActive}
+                aria-controls={`tabpanel-${tab.id}`}
+                tabIndex={isActive ? 0 : -1}
                 onClick={() => setActive(tab.id)}
+                onKeyDown={(e) => handleTabKeyDown(e, i)}
                 className={cn(
-                  'flex shrink-0 items-center gap-2 border-b-2 px-4 py-3.5 text-sm font-medium transition-colors',
+                  'relative flex min-h-[44px] shrink-0 items-center gap-2 px-4 py-3.5 text-sm font-medium transition-colors',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet/40',
                   isActive
-                    ? 'border-emerald text-ink-950'
-                    : 'border-transparent text-mist-400 hover:text-mist'
+                    ? 'text-hi'
+                    : 'text-low hover:text-mid'
                 )}
               >
-                <Icon className={cn('h-4 w-4', isActive && 'text-emerald-600')} />
+                <Icon className={cn('h-4 w-4 transition-colors', isActive ? 'text-teal' : 'text-low')} />
                 {tab.label}
+                {isActive && (
+                  <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-aurora shadow-glow" />
+                )}
               </button>
             );
           })}
@@ -104,32 +155,46 @@ function MainApp() {
       </div>
 
       {importState.active && (
-        <div className="sticky top-0 z-40 border-b border-emerald/20 bg-teal-50 px-6 py-2.5">
+        <div className="sticky top-0 z-40 border-b border-violet/20 bg-violet/10 backdrop-blur-md px-6 py-2.5">
           <div className="mx-auto flex max-w-5xl items-center gap-3">
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-emerald-600" />
-            <span className="text-sm text-mist">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal" />
+            <span className="text-sm text-mid">
               {PHASE_LABEL[importState.phase] ?? 'Working'}
               {importState.progress
                 ? ` — ${importState.progress.done}/${importState.progress.total}`
                 : '…'}
             </span>
-            <span className="text-xs text-mist-400">
+            <span className="text-xs text-low">
               {importState.chainLabel}{' '}
               {importState.addresses.slice(0, 2).map((a) => `${a.slice(0, 6)}…`).join(', ')}
             </span>
-            <span className="ml-auto hidden text-xs text-mist-400 sm:inline">
+            <span className="ml-auto hidden text-xs text-low sm:inline">
               You can keep browsing — this runs in the background
             </span>
           </div>
         </div>
       )}
 
-      <main className="mx-auto max-w-5xl px-6 py-10 lg:px-8">
-        <ActiveComponent />
+      <main
+        role="tabpanel"
+        id={`tabpanel-${active}`}
+        aria-labelledby={`tab-${active}`}
+        tabIndex={0}
+        className="mx-auto max-w-5xl px-6 py-10 focus:outline-none lg:px-8"
+      >
+        {deduping ? (
+          <div aria-busy="true" className="flex items-center gap-3 text-sm text-low">
+            <Loader2 className="h-4 w-4 animate-spin text-teal" />
+            Tidying up your transactions (removing duplicates)…
+          </div>
+        ) : (
+          <ActiveComponent />
+        )}
       </main>
 
       <AiAdvisor />
     </div>
+    </TabNavProvider>
   );
 }
 

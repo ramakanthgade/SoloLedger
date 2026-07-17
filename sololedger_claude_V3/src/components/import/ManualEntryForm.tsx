@@ -11,7 +11,7 @@ const TX_TYPES: TxType[] = [
 ];
 
 const inputCls =
-  'mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm text-mist focus:border-emerald focus:outline-none';
+  'mt-1 block w-full rounded border border-white/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-violet focus:outline-none';
 
 export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
   const [type, setType] = useState<TxType>('buy');
@@ -57,9 +57,9 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
   };
 
   return (
-    <div className="space-y-4 rounded-lg border border-ink-700 bg-ink-800/40 p-4">
+    <div className="space-y-4 rounded-lg border border-white/10 bg-elev-2/40 p-4">
       <div className="grid gap-3 sm:grid-cols-3">
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Type
           <select className={inputCls} value={type} onChange={(e) => setType(e.target.value as TxType)}>
             {TX_TYPES.map((t) => (
@@ -67,15 +67,15 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
             ))}
           </select>
         </label>
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Date
           <input type="date" className={inputCls} value={date} onChange={(e) => setDate(e.target.value)} />
         </label>
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Asset
           <input placeholder="BTC" className={inputCls} value={asset} onChange={(e) => setAsset(e.target.value)} />
         </label>
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Amount
           <input
             type="number"
@@ -86,7 +86,7 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
             onChange={(e) => setAmount(e.target.value)}
           />
         </label>
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Fiat value
           <input
             type="number"
@@ -97,13 +97,13 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
             onChange={(e) => setFiatValue(e.target.value)}
           />
         </label>
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Fiat currency
           <input className={inputCls} value={fiatCurrency} onChange={(e) => setFiatCurrency(e.target.value)} />
         </label>
         {isTrade && (
           <>
-            <label className="text-xs text-mist-400">
+            <label className="text-xs text-low">
               Received asset (counter)
               <input
                 placeholder="ETH"
@@ -112,7 +112,7 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
                 onChange={(e) => setCounterAsset(e.target.value)}
               />
             </label>
-            <label className="text-xs text-mist-400">
+            <label className="text-xs text-low">
               Received amount (counter)
               <input
                 type="number"
@@ -124,7 +124,7 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
             </label>
           </>
         )}
-        <label className="text-xs text-mist-400 sm:col-span-3">
+        <label className="text-xs text-low sm:col-span-3">
           Notes
           <input className={inputCls} value={notes} onChange={(e) => setNotes(e.target.value)} />
         </label>
@@ -133,7 +133,7 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
         <Button disabled={!valid} onClick={save}>
           Add transaction
         </Button>
-        {saved && <span className="text-xs text-emerald-600">Saved.</span>}
+        {saved && <span className="text-xs text-gain">Saved.</span>}
       </div>
     </div>
   );

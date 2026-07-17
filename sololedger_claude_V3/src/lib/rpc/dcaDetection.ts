@@ -17,6 +17,7 @@ import { saasProxyFetch } from '@/lib/saas/api';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 export interface DcaGroup {
   vaultAddress: string;
@@ -46,6 +47,7 @@ async function alchemyGetTransaction(txSignature: string, alchemyApiKey: string)
       params: [txSignature, { maxSupportedTransactionVersion: 0, encoding: 'json' }]
     });
     if (isSaasMode() && alchemyApiKey === SAAS_PROXY_KEY) {
+      recordNetworkActivity(resolveMode(true));
       const res = await saasProxyFetch('/api/proxy/alchemy/solana-mainnet', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -54,6 +56,7 @@ async function alchemyGetTransaction(txSignature: string, alchemyApiKey: string)
       if (!res.ok) return null;
       return (await res.json())?.result ?? null;
     }
+    recordNetworkActivity(resolveMode(false));
     const res = await fetch(`https://solana-mainnet.g.alchemy.com/v2/${alchemyApiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

@@ -38,6 +38,9 @@ export async function deidentifyTransactions(
     if (clone.sourceRef) {
       clone.sourceRef = await pseudonymize(clone.sourceRef, options.salt);
     }
+    // TDS fields (tdsAmount / tdsAsset / tdsInr) are numeric/symbol values, not
+    // identifying — they survive the spread above and are deliberately kept so
+    // an accountant can still reconcile withheld TDS from a de-identified report.
     clone.notes = clone.notes ? '[redacted]' : undefined;
     clone.raw = undefined;
     out.push(clone);

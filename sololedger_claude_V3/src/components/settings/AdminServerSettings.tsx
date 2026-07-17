@@ -75,7 +75,7 @@ export function AdminServerSettings() {
 
   return (
     <>
-      <p className="text-sm text-mist-400">
+      <p className="text-sm text-low">
         Admin only — keys are saved on the proxy server and used for all subscribers. Not stored in GitHub.
       </p>
 
@@ -83,7 +83,7 @@ export function AdminServerSettings() {
         <CardHeader>
           <CardTitle>Network features (subscriber defaults)</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3 text-sm text-mist-300">
+        <CardContent className="space-y-3 text-sm text-low">
           <label className="flex items-center gap-2">
             <input
               type="checkbox"
@@ -172,7 +172,7 @@ export function AdminServerSettings() {
             onDelete={() => void deleteKey('openrouterApiKey')}
             placeholder="sk-or-v1-…"
           />
-          {message && <p className="text-xs text-emerald-600">{message}</p>}
+          {message && <p className="text-xs text-gain">{message}</p>}
         </CardContent>
       </Card>
     </>

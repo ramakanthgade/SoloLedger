@@ -3,14 +3,90 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    /* Canvas / surfaces (dark) — locked Aurora hex tokens */
+    --bg-base: #0A0B1A;
+    --bg-elev-1: #12132A;
+    --bg-elev-2: #1A1B38;
+    --bg-elev-3: #232551;
+    /* Text */
+    --text-hi: #F5F6FF;
+    --text-mid: #B4B7D9;
+    --text-low: #7C80A8;
+    --text-faint: #565A82;
+    /* Brand accents */
+    --violet: #7C5CFF;
+    --blue: #4EA8FF;
+    --teal: #22E1C3;
+    /* Semantic / finance */
+    --gain: #2CE5A6;
+    --loss: #FF5C7A;
+    --warn: #FFB020;
+    /* Signature gradient + effects */
+    --aurora: linear-gradient(135deg, #7C5CFF 0%, #4EA8FF 50%, #22E1C3 100%);
+    --border: rgba(255, 255, 255, 0.08);
+    --shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+    --glow: 0 0 40px rgba(124, 92, 255, 0.35);
+
+    /*
+     * RGB channel companions of every token above. Tailwind maps its color
+     * utilities to `rgb(var(--x-rgb) / <alpha-value>)` so opacity modifiers
+     * (e.g. `bg-violet/10`, `border-white/10`) work against the theme palette.
+     */
+    --bg-base-rgb: 10 11 26;
+    --bg-elev-1-rgb: 18 19 42;
+    --bg-elev-2-rgb: 26 27 56;
+    --bg-elev-3-rgb: 35 37 81;
+    --text-hi-rgb: 245 246 255;
+    --text-mid-rgb: 180 183 217;
+    --text-low-rgb: 124 128 168;
+    --text-faint-rgb: 86 90 130;
+    --violet-rgb: 124 92 255;
+    --blue-rgb: 78 168 255;
+    --teal-rgb: 34 225 195;
+    --gain-rgb: 44 229 166;
+    --loss-rgb: 255 92 122;
+    --warn-rgb: 255 176 32;
+
+    color-scheme: dark;
+  }
+
   html {
-    color-scheme: light;
+    color-scheme: dark;
   }
+
+  body {
+    /* Subtle radial aurora glows behind the app canvas. */
+    background-color: var(--bg-base);
+    background-image:
+      radial-gradient(1200px 500px at 80% -10%, rgba(124, 92, 255, 0.14), transparent 60%),
+      radial-gradient(900px 500px at 0% 0%, rgba(34, 225, 195, 0.08), transparent 55%);
+    background-attachment: fixed;
+  }
+
   ::selection {
-    background-color: rgba(20, 184, 166, 0.2);
+    background-color: rgba(124, 92, 255, 0.32);
+    color: var(--text-hi);
   }
+
   * {
-    scrollbar-color: #CBD5E1 #F4F7FA;
+    scrollbar-color: var(--bg-elev-3) var(--bg-base);
+  }
+
+  *::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  *::-webkit-scrollbar-track {
+    background: var(--bg-base);
+  }
+  *::-webkit-scrollbar-thumb {
+    background: var(--bg-elev-3);
+    border-radius: 999px;
+    border: 2px solid var(--bg-base);
+  }
+  *::-webkit-scrollbar-thumb:hover {
+    background: #2e3170;
   }
 }
 
@@ -20,43 +96,73 @@
   }
 
   .page-title {
-    @apply text-2xl font-bold tracking-tight text-ink-950;
+    @apply text-2xl font-bold tracking-tight text-hi;
   }
 
   .page-subtitle {
-    @apply mt-2 max-w-2xl text-sm leading-relaxed text-mist-400;
+    @apply mt-2 max-w-2xl text-sm leading-relaxed text-mid;
   }
 
   .sl-select {
-    @apply h-9 rounded-md border border-ink-700 bg-ink-800 px-3 text-sm text-mist shadow-soft
-      transition-colors focus:border-emerald focus:outline-none focus:ring-2 focus:ring-emerald/20;
+    @apply h-9 rounded-[10px] border border-white/10 bg-elev-3 px-3 text-sm text-hi shadow-soft
+      transition-colors focus:border-violet/50 focus:outline-none focus:ring-2 focus:ring-violet/30;
   }
 
   .toolbar-card {
-    @apply flex flex-wrap items-center gap-3 rounded-lg border border-ink-700 bg-ink-800 p-4 shadow-soft;
+    @apply flex flex-wrap items-center gap-3 rounded-2xl border border-white/10 bg-elev-2 p-4 shadow-soft;
   }
 
   .stat-card {
-    @apply rounded-lg border border-ink-700 bg-ink-800 p-5 shadow-soft transition-shadow hover:shadow-card-hover;
+    @apply rounded-2xl border border-white/10 bg-elev-2 p-5 shadow-card transition-shadow hover:shadow-card-hover;
   }
 
   .stat-card-featured {
-    @apply border-emerald/25 bg-gradient-to-br from-ink-800 to-teal-50 shadow-card;
+    @apply border-violet/40 bg-gradient-to-br from-elev-2 to-elev-3 shadow-glow;
   }
 
   .data-panel {
-    @apply overflow-hidden rounded-lg border border-ink-700 bg-ink-800 shadow-card;
+    @apply overflow-hidden rounded-2xl border border-white/10 bg-elev-2 shadow-card;
   }
 
   .data-panel-head {
-    @apply flex items-center justify-between border-b border-ink-700 bg-ink-900/80 px-5 py-4;
+    @apply flex items-center justify-between border-b border-white/10 bg-elev-1/80 px-5 py-4;
   }
 
   .alert-warning {
-    @apply grid grid-cols-[auto_1fr] gap-3.5 rounded-lg border border-amber-200 bg-gradient-to-br from-amber-50 to-amber-50/50 p-4 shadow-soft;
+    @apply grid grid-cols-[auto_1fr] gap-3.5 rounded-2xl border border-warn/30 bg-warn/10 p-4 shadow-soft;
   }
 
   .empty-state {
-    @apply rounded-lg border border-dashed border-ink-600 bg-ink-800 px-6 py-14 text-center text-sm text-mist-400;
+    @apply rounded-2xl border border-dashed border-white/10 bg-elev-1 px-6 py-14 text-center text-sm text-mid;
+  }
+
+  /* Aurora shimmer skeleton (Task T2). A muted elevated surface with a
+   * sweeping highlight to signal a pending load / computation. */
+  .sl-skeleton {
+    @apply relative overflow-hidden rounded-lg bg-elev-3/60;
+  }
+  .sl-skeleton::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    transform: translateX(-100%);
+    background: linear-gradient(
+      90deg,
+      transparent,
+      rgba(124, 92, 255, 0.14),
+      rgba(34, 225, 195, 0.1),
+      transparent
+    );
+    animation: sl-shimmer 1.4s ease-in-out infinite;
+  }
+  @keyframes sl-shimmer {
+    100% {
+      transform: translateX(100%);
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .sl-skeleton::after {
+      animation: none;
+    }
   }
 }

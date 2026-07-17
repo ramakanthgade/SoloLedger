@@ -1,0 +1,4 @@
+Date,Type,Coin Pair,Side,Price,Quantity,Order Value INR,Currency,Amount,Fee,Fee Currency,TDS Amount,TDS INR,TDS Currency,Transaction Hash,Remarks
+2025-06-01 09:00:00,TRADE,BTCINR,BUY,5100000,0.01,51000,,,25.5,INR,,,,,Spot buy
+2025-06-02 10:00:00,TRADE,ETHINR,SELL,250000,0.2,50000,,,25,INR,500,500,INR,,Spot sell
+2025-06-06 11:00:00,DEPOSIT,,,,,,USDT,100,0,USDT,,,,0xfeed00011122,Crypto deposit

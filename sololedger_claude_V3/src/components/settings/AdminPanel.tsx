@@ -15,7 +15,7 @@ interface KeyStatus {
   etherscanApiKey: boolean;
 }
 
-const PLANS = ['starter', 'standard', 'pro', 'investor', 'enterprise', 'trial'] as const;
+const PLANS = ['local', 'starter', 'standard', 'pro', 'investor', 'enterprise'] as const;
 
 export function AdminPanel() {
   const [keys, setKeys] = useState<KeyStatus | null>(null);
@@ -51,20 +51,20 @@ export function AdminPanel() {
     <div className="max-w-4xl space-y-6">
       <div>
         <h2 className="page-title">Admin</h2>
-        <p className="mt-1 text-sm text-mist-400">
+        <p className="mt-1 text-sm text-low">
           Manage subscribers here. API keys and network defaults are in <strong>Settings</strong>.
         </p>
       </div>
 
       <Card className="border-amber-300/40 bg-amber-50/50">
         <CardHeader><CardTitle>User persistence (Railway)</CardTitle></CardHeader>
-        <CardContent className="space-y-2 text-sm text-mist-300">
+        <CardContent className="space-y-2 text-sm text-low">
           <p>
-            Subscriber accounts are stored in <code className="text-mist">store.json</code> on the API server. On
-            Railway, attach a <strong>Volume</strong> and set <code className="text-mist">DATA_DIR=/data</code> so
+            Subscriber accounts are stored in <code className="text-mid">store.json</code> on the API server. On
+            Railway, attach a <strong>Volume</strong> and set <code className="text-mid">DATA_DIR=/data</code> so
             users survive redeploys.
           </p>
-          <p className="text-mist-400">
+          <p className="text-low">
             Without a volume, redeploys wipe registered users — they will need to register again.
           </p>
         </CardContent>
@@ -75,7 +75,7 @@ export function AdminPanel() {
         <CardContent className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
           {keys &&
             Object.entries(keys).map(([name, ok]) => (
-              <div key={name} className={ok ? 'text-emerald-600' : 'text-loss'}>
+              <div key={name} className={ok ? 'text-gain' : 'text-loss'}>
                 {name.replace('ApiKey', '')}: {ok ? '✓' : 'missing'}
               </div>
             ))}
@@ -87,12 +87,12 @@ export function AdminPanel() {
         <CardContent className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead>
-              <tr className="border-b border-ink-700 text-xs uppercase tracking-wide text-mist-400">
+              <tr className="border-b border-white/10 text-xs uppercase tracking-wide text-low">
                 <th className="py-2 pr-3">Email</th>
                 <th className="py-2 pr-3">Role</th>
                 <th className="py-2 pr-3">Plan</th>
                 <th className="py-2 pr-3">Status</th>
-                <th className="py-2 pr-3">Tx limit</th>
+                <th className="py-2 pr-3">Included events</th>
                 <th className="py-2">Save</th>
               </tr>
             </thead>
@@ -102,7 +102,7 @@ export function AdminPanel() {
               ))}
             </tbody>
           </table>
-          {message && <p className="mt-3 text-xs text-emerald-600">{message}</p>}
+          {message && <p className="mt-3 text-xs text-gain">{message}</p>}
         </CardContent>
       </Card>
     </div>
@@ -119,40 +119,38 @@ function UserRow({
   const isAdmin = user.role === 'admin';
   const [plan, setPlan] = useState(user.plan);
   const [status, setStatus] = useState(user.subscriptionStatus);
-  const [txLimit, setTxLimit] = useState(
-    user.txLimitUnlimited ? 'Unlimited' : String(user.txLimit)
-  );
+  const [includedUnits, setIncludedUnits] = useState(String(user.includedUnits));
 
   if (isAdmin) {
     return (
-      <tr className="border-b border-ink-700/60 bg-emerald/5">
-        <td className="py-3 pr-3 font-medium text-mist">{user.email}</td>
-        <td className="py-3 pr-3 capitalize text-mist-300">Admin</td>
+      <tr className="border-b border-white/10 bg-violet/5">
+        <td className="py-3 pr-3 font-medium text-mid">{user.email}</td>
+        <td className="py-3 pr-3 capitalize text-low">Admin</td>
         <td className="py-3 pr-3">
-          <span className="rounded-full bg-navy/10 px-2 py-0.5 text-xs font-semibold capitalize text-navy">
+          <span className="rounded-full bg-elev-1/10 px-2 py-0.5 text-xs font-semibold capitalize text-hi">
             {formatPlanLabel('enterprise')}
           </span>
         </td>
         <td className="py-3 pr-3">
-          <span className="text-xs font-medium text-emerald-700">active</span>
+          <span className="text-xs font-medium text-gain">active</span>
         </td>
-        <td className="py-3 pr-3 text-xs font-semibold text-emerald-700">Unlimited</td>
-        <td className="py-3 text-xs text-mist-400">—</td>
+        <td className="py-3 pr-3 text-xs font-semibold text-gain">Full access</td>
+        <td className="py-3 text-xs text-low">—</td>
       </tr>
     );
   }
 
   return (
-    <tr className="border-b border-ink-700/60">
-      <td className="py-3 pr-3 font-medium text-mist">{user.email}</td>
-      <td className="py-3 pr-3 capitalize text-mist-300">{user.role}</td>
+    <tr className="border-b border-white/10">
+      <td className="py-3 pr-3 font-medium text-mid">{user.email}</td>
+      <td className="py-3 pr-3 capitalize text-low">{user.role}</td>
       <td className="py-3 pr-3">
         <select
           value={plan}
           onChange={(e) => setPlan(e.target.value as PublicUser['plan'])}
           className="sl-select text-xs"
         >
-          {PLANS.filter((p) => p !== 'trial').map((p) => (
+          {PLANS.map((p) => (
             <option key={p} value={p}>{formatPlanLabel(p)}</option>
           ))}
         </select>
@@ -171,9 +169,9 @@ function UserRow({
       <td className="py-3 pr-3">
         <input
           type="text"
-          value={txLimit}
-          onChange={(e) => setTxLimit(e.target.value)}
-          className="w-28 rounded border border-ink-600 bg-ink-800 px-2 py-1 text-xs"
+          value={includedUnits}
+          onChange={(e) => setIncludedUnits(e.target.value)}
+          className="w-28 rounded border border-white/10 bg-elev-2 px-2 py-1 text-xs"
         />
       </td>
       <td className="py-3">
@@ -184,8 +182,7 @@ function UserRow({
             onSave({
               plan,
               subscriptionStatus: status,
-              customTxLimit:
-                txLimit.toLowerCase() === 'unlimited' ? 9999999 : Number(txLimit)
+              customIncludedUnits: includedUnits.trim() === '' ? null : Number(includedUnits)
             })
           }
         >

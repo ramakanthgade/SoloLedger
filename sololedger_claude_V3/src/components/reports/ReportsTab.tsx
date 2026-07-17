@@ -7,27 +7,48 @@ import { deidentifyTransactions } from '@/lib/reports/deidentify';
 import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { SkeletonCards, SkeletonTable } from '@/components/ui/Skeleton';
 import { PageHeader } from '@/components/PageHeader';
-import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel } from '@/lib/utils';
+import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel, downloadBlob } from '@/lib/utils';
 import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
-import { AlertTriangle } from 'lucide-react';
+import { AlertTriangle, FileText } from 'lucide-react';
+import { EmptyState } from '@/components/ui/EmptyState';
+import { useTabNav } from '@/lib/tabNav';
 import {
   buildDerivativeBusinessExpenseRows,
   buildDerivativeBusinessIncomeRows,
-  buildDerivativeCapitalGainRows
+  buildDerivativeCapitalGainRows,
+  buildMatchedGainRows,
+  buildReceiptIncomeRows
 } from '@/lib/costBasis/matchedGains';
 import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
+import { aggregateTds } from '@/lib/tax/tds';
+import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/scheduleVDA';
+import { ScheduleVdaView } from '@/components/reports/ScheduleVdaView';
+import { TdsReconciliationView } from '@/components/reports/TdsReconciliationView';
+import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
+import { useExportGuard } from '@/components/billing/ExportGateDialog';
+import { useAuth } from '@/lib/saas/authContext';
 
 export function ReportsTab() {
+  const { goToImport } = useTabNav();
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
-  const [method, setMethod] = useState<'FIFO' | 'SpecID'>('FIFO');
+  const [method, setMethod] = useState<'FIFO' | 'LIFO' | 'HIFO' | 'SpecID'>('FIFO');
   const [year, setYear] = useState<number>(getCurrentFy('IN'));
   const [deidentify, setDeidentify] = useState(false);
+  // Report header treatment for the branded PDF: 'aurora' (dark band, default)
+  // or 'light' (white header) so black-and-white printouts keep branding.
+  const [lightHeader, setLightHeader] = useState(false);
   const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
 
-  const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
+  const transactionsRaw = useLiveQuery(() => db.transactions.toArray(), []);
+  const transactions = transactionsRaw ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
+  // Cost basis is (re)computed synchronously in useMemo once transactions
+  // resolve; until the initial live query settles we show a skeleton so the
+  // tab doesn't flash empty numbers.
+  const computing = transactionsRaw === undefined;
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -39,9 +60,14 @@ export function ReportsTab() {
     });
   }, []);
 
-  const { disposals, shortfalls } = useMemo(
+  const { disposals, lots, shortfalls } = useMemo(
     () => calculateCostBasis(transactions, { method, specIdHints: hints }),
     [transactions, method, hints]
+  );
+
+  const matchedRows = useMemo(
+    () => buildMatchedGainRows(disposals, lots, transactions),
+    [disposals, lots, transactions]
   );
 
   const incomeEvents = useMemo(
@@ -49,6 +75,18 @@ export function ReportsTab() {
       transactions
         .filter((t) => t.type === 'income' && !isDerivativeTransaction(t))
         .map((t) => ({ fiatValue: t.fiatValue ?? 0, timestamp: t.timestamp })),
+    [transactions]
+  );
+
+  // India Section 56(2)(x) receipt-side income: income/gift/airdrop/staking
+  // receipts at FMV, MINING EXCLUDED (zero-cost case). Single lib source of
+  // truth so `summary.vdaReceiptIncome` is correct.
+  const receiptIncomeEvents = useMemo(
+    () =>
+      buildReceiptIncomeRows(transactions).map((r) => ({
+        fiatValue: r.fiatValue,
+        timestamp: r.timestamp
+      })),
     [transactions]
   );
 
@@ -74,11 +112,12 @@ export function ReportsTab() {
 
   const summary = useMemo(
     () =>
-      summarizeYear(disposals, incomeEvents, year, jurisdiction, {
+      summarizeYear(disposals, matchedRows, incomeEvents, year, jurisdiction, {
         derivativesIncome: businessMode ? yearDerivIncome : undefined,
-        derivativesExpenses: businessMode ? yearDerivExpense : undefined
+        derivativesExpenses: businessMode ? yearDerivExpense : undefined,
+        receiptIncomeEvents
       }),
-    [disposals, incomeEvents, year, jurisdiction, businessMode, yearDerivIncome, yearDerivExpense]
+    [disposals, matchedRows, incomeEvents, receiptIncomeEvents, year, jurisdiction, businessMode, yearDerivIncome, yearDerivExpense]
   );
 
   const yearDisposals = useMemo(
@@ -88,6 +127,27 @@ export function ReportsTab() {
 
   const rules = JURISDICTIONS[jurisdiction];
   const yearLabel = getFyLabel(year, jurisdiction);
+  const isIndia = jurisdiction === 'IN';
+
+  // India TDS reconciliation (Task B3): FY-scoped Section 194S aggregation used
+  // by both the Schedule VDA estimate (offset) and the TDS reconciliation view.
+  const tdsReconciliation = useMemo(
+    () => (isIndia ? aggregateTds(transactions, year, jurisdiction) : null),
+    [isIndia, transactions, year, jurisdiction]
+  );
+
+  // India Schedule VDA (Task B4): per-transfer row model + 30%+cess estimate
+  // with the Section 194S TDS total shown as an offset. IN-only.
+  const scheduleVda = useMemo(() => {
+    if (!isIndia || !tdsReconciliation) return null;
+    return buildScheduleVdaReport(
+      matchedRows,
+      tdsReconciliation.totalTdsInr,
+      year,
+      jurisdiction,
+      summary.vdaReceiptIncome
+    );
+  }, [isIndia, tdsReconciliation, matchedRows, year, jurisdiction, summary.vdaReceiptIncome]);
 
   const years = useMemo(
     () =>
@@ -101,6 +161,16 @@ export function ReportsTab() {
     [transactions, disposals, jurisdiction]
   );
 
+  const { user } = useAuth();
+  const authSnapshot = user ? { plan: user.plan, includedUnits: user.includedUnits } : null;
+  const { runGuarded, gateDialog } = useExportGuard({
+    disposals,
+    transactions,
+    fy: year,
+    jurisdiction,
+    auth: authSnapshot
+  });
+
   const buildDeidentifiedTxMap = async () => {
     if (!deidentify) return new Map(transactions.map((t) => [t.id, t]));
     const salt = crypto.randomUUID();
@@ -113,6 +183,7 @@ export function ReportsTab() {
     const fmt = (n: number) => formatAmountForExport(n, rules.currency);
     const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Capital Gains Report',
+      brandHeader: lightHeader ? 'light' : 'aurora',
       metaLines: [
         `Jurisdiction: ${rules.label} · Tax year: ${yearLabel} · Method: ${method}`,
         `Currency: ${rules.currency} · ${deidentify ? 'De-identified (pseudonymized refs)' : 'Full detail'}`
@@ -175,7 +246,7 @@ export function ReportsTab() {
           fmt(d.costBasis),
           fmt(d.gain),
           String(d.holdingPeriodDays),
-          deidentify ? truncatePdfRef(ref) : truncatePdfRef(ref)
+          truncatePdfRef(ref)
         ];
       })
     });
@@ -184,15 +255,6 @@ export function ReportsTab() {
     doc.save(`sololedger-${jurisdiction}-${yearLabel.replace(/\s/g, '')}-report.pdf`);
   };
 
-  const downloadBlob = (content: string, mime: string, filename: string) => {
-    const blob = new Blob([content], { type: mime });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = filename;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
 
   const exportCsv = async () => {
     const txMap = await buildDeidentifiedTxMap();
@@ -251,11 +313,39 @@ export function ReportsTab() {
     );
   };
 
+  const exportScheduleVdaCsv = () => {
+    if (!scheduleVda) return;
+    downloadBlob(
+      serializeScheduleVdaCsv(scheduleVda),
+      'text/csv',
+      `sololedger-IN-${yearLabel.replace(/\s/g, '')}-schedule-vda.csv`
+    );
+  };
+
+  if (!computing && transactions.length === 0) {
+    return (
+      <div className="space-y-6">
+        <PageHeader
+          title="Reports"
+          subtitle="Everything your CA needs to file — a Schedule VDA statement, TDS reconciliation, and tax estimate — built on this device and downloaded straight to it."
+        />
+        <EmptyState
+          icon={<FileText className="h-11 w-11" />}
+          title="No reports to export"
+          description="When your numbers are ready, generate a transaction-wise Schedule VDA statement, a TDS reconciliation, and a tax estimate — ready to hand your CA."
+          actionLabel="Import your trades"
+          onAction={goToImport}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
+      {gateDialog}
       <PageHeader
         title="Reports"
-        subtitle="Generated locally — files are written directly on your device."
+        subtitle="Everything your CA needs to file — a Schedule VDA statement, TDS reconciliation, and tax estimate — built on this device and downloaded straight to it."
       />
 
       <div className="toolbar-card">
@@ -268,35 +358,66 @@ export function ReportsTab() {
             <option key={j.code} value={j.code}>{j.label}</option>
           ))}
         </select>
-        <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="sl-select">
-          {years.map((y) => (
-            <option key={y} value={y}>{getFyLabel(y, jurisdiction)}</option>
-          ))}
-        </select>
-        <select value={method} onChange={(e) => setMethod(e.target.value as 'FIFO' | 'SpecID')} className="sl-select">
+        <label className="flex flex-col gap-1">
+          <span className="flex items-center gap-1 text-[0.625rem] font-semibold uppercase tracking-wider text-low">
+            {isIndia ? 'Financial Year (Apr–Mar)' : 'Tax year'}
+            {isIndia && (
+              <span
+                className="cursor-help text-low"
+                title="India's financial year runs 1 Apr – 31 Mar. Transactions are bucketed by their date in Indian Standard Time (IST, UTC+5:30) — a trade near midnight IST on 31 Mar / 1 Apr falls in the FY of its IST calendar date, not its UTC date."
+                aria-label="Financial year boundary information"
+              >
+                ⓘ
+              </span>
+            )}
+          </span>
+          <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="sl-select">
+            {years.map((y) => (
+              <option key={y} value={y}>{getFyLabel(y, jurisdiction)}</option>
+            ))}
+          </select>
+        </label>
+        <select value={method} onChange={(e) => setMethod(e.target.value as 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID')} className="sl-select">
           <option value="FIFO">FIFO</option>
+          <option value="LIFO">LIFO</option>
+          <option value="HIFO">HIFO</option>
           <option value="SpecID">Specific Identification</option>
         </select>
-        <label className="flex items-center gap-2 text-sm text-mist-400">
-          <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-emerald-600" />
+        <label className="flex items-center gap-2 text-sm text-low">
+          <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-violet" />
           De-identify for sharing
         </label>
+        <label
+          className="flex items-center gap-2 text-sm text-low"
+          title="Use a white PDF header with a dark logo so branding stays legible on black-and-white printers. Off = dark Aurora header band."
+        >
+          <input
+            type="checkbox"
+            checked={lightHeader}
+            onChange={(e) => setLightHeader(e.target.checked)}
+            className="accent-violet"
+          />
+          Light header for print
+        </label>
         <div className="ml-auto flex gap-2">
-          <Button variant="secondary" size="sm" onClick={exportCsv}>CSV</Button>
-          <Button variant="secondary" size="sm" onClick={exportJson}>JSON</Button>
-          <Button size="sm" onClick={exportPdf}>Export PDF</Button>
+          <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportCsv)}>CSV</Button>
+          <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportJson)}>JSON</Button>
+          {isIndia && (
+            <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportScheduleVdaCsv)}>Schedule VDA CSV</Button>
+          )}
+          <Button size="sm" onClick={() => void runGuarded(exportPdf)}>Export PDF</Button>
         </div>
       </div>
 
       {method === 'SpecID' && (
-        <p className="text-xs text-mist-400">
+        <p className="text-xs text-low">
           Specific ID uses lot choices saved in Review. Unmatched remainder falls back to oldest-lots-first.
         </p>
       )}
 
       {shortfalls.length > 0 && (
         <div className="alert-warning">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-amber-100 text-gold-600">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-amber-100 text-warn">
             <AlertTriangle className="h-4 w-4" />
           </div>
           <div>
@@ -309,34 +430,41 @@ export function ReportsTab() {
         </div>
       )}
 
+      {computing ? (
+        <>
+          <SkeletonCards count={5} data-testid="reports-skeleton" />
+          <SkeletonTable rows={6} columns={5} />
+        </>
+      ) : (
+        <>
       <div className="grid gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <div className="stat-card stat-card-featured min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Total gain / loss</p>
-          <p className={'mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap sm:text-xl ' + (summary.totalGain >= 0 ? 'text-emerald-600' : 'text-loss')}>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Total gain / loss</p>
+          <p className={'mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap sm:text-xl ' + (summary.totalGain >= 0 ? 'text-gain' : 'text-loss')}>
             {formatCurrency(summary.totalGain, rules.currency)}
           </p>
         </div>
         <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Proceeds</p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-ink-950 sm:text-xl">{formatCurrency(summary.totalProceeds, rules.currency)}</p>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Proceeds</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-hi sm:text-xl">{formatCurrency(summary.totalProceeds, rules.currency)}</p>
         </div>
         <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Cost basis</p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-ink-950 sm:text-xl">{formatCurrency(summary.totalCostBasis, rules.currency)}</p>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Cost basis</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-hi sm:text-xl">{formatCurrency(summary.totalCostBasis, rules.currency)}</p>
         </div>
         <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">Spot income</p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-gold-600 sm:text-xl">{formatCurrency(summary.totalIncome, rules.currency)}</p>
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">Spot income</p>
+          <p className="mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap text-warn sm:text-xl">{formatCurrency(summary.totalIncome, rules.currency)}</p>
         </div>
         <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mist-400">
+          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
             {businessMode ? 'Derivatives net' : 'Derivatives P&L'}
           </p>
           <p
             className={
               'mt-2 font-mono text-lg font-semibold tabular-figures whitespace-nowrap sm:text-xl ' +
               ((businessMode ? yearDerivIncome - yearDerivExpense : yearDerivCg) >= 0
-                ? 'text-emerald-600'
+                ? 'text-gain'
                 : 'text-loss')
             }
           >
@@ -347,13 +475,14 @@ export function ReportsTab() {
 
       <div className="data-panel">
         <div className="data-panel-head">
-          <h3 className="text-sm font-semibold text-ink-950">Disposals — {yearLabel}</h3>
-          <span className="text-xs text-mist-400">{yearDisposals.length} events</span>
+          <h3 className="text-sm font-semibold text-hi">Disposals — {yearLabel}</h3>
+          <span className="text-xs text-low">{yearDisposals.length} events</span>
         </div>
-        <div className="overflow-x-auto p-1">
+        {/* Desktop / tablet: table (sm and up) */}
+        <div className="hidden overflow-x-auto p-1 sm:block">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-ink-700 bg-ink-900/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-mist-400">
+              <tr className="border-b border-white/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
                 <th className="px-5 py-3">Date</th>
                 <th className="px-5 py-3">Asset</th>
                 <th className="px-5 py-3 text-right">Amount</th>
@@ -365,33 +494,100 @@ export function ReportsTab() {
             </thead>
             <tbody className="font-mono text-xs tabular-figures">
               {yearDisposals.slice(0, 100).map((d) => (
-                <tr key={d.id} className="border-b border-ink-700/60 transition-colors hover:bg-ink-900/50">
-                  <td className="px-5 py-3.5 text-mist-400">{new Date(d.disposedAt).toISOString().slice(0, 10)}</td>
-                  <td className="px-5 py-3.5"><span className="rounded-md border border-ink-700 bg-mist-100 px-2 py-0.5 text-xs font-semibold text-mist">{d.asset}</span></td>
-                  <td className="px-5 py-3.5 text-right text-mist-400">{d.amount.toFixed(6)}</td>
-                  <td className="px-5 py-3.5 text-right text-mist-400">{formatAmountForExport(d.proceeds, rules.currency)}</td>
-                  <td className="px-5 py-3.5 text-right text-mist-400">{formatAmountForExport(d.costBasis, rules.currency)}</td>
-                  <td className={'px-5 py-3.5 text-right font-semibold ' + (d.gain >= 0 ? 'text-emerald-600' : 'text-loss')}>
+                <tr key={d.id} className="border-b border-white/10 transition-colors hover:bg-elev-1/50">
+                  <td className="px-5 py-3.5 text-low">{new Date(d.disposedAt).toISOString().slice(0, 10)}</td>
+                  <td className="px-5 py-3.5"><span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span></td>
+                  <td className="px-5 py-3.5 text-right text-low">{d.amount.toFixed(6)}</td>
+                  <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(d.proceeds, rules.currency)}</td>
+                  <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(d.costBasis, rules.currency)}</td>
+                  <td className={'px-5 py-3.5 text-right font-semibold ' + (d.gain >= 0 ? 'text-gain' : 'text-loss')}>
                     {formatAmountForExport(d.gain, rules.currency)}
                   </td>
-                  <td className="px-5 py-3.5 text-right text-mist-400">{d.holdingPeriodDays}</td>
+                  <td className="px-5 py-3.5 text-right text-low">{d.holdingPeriodDays}</td>
                 </tr>
               ))}
               {yearDisposals.length === 0 && (
-                <tr><td colSpan={7} className="px-5 py-10 text-center text-mist-400">No disposals in {yearLabel}.</td></tr>
+                <tr><td colSpan={7} className="px-5 py-10 text-center text-low">No disposals in {yearLabel}.</td></tr>
               )}
             </tbody>
           </table>
           {yearDisposals.length > 100 && (
-            <p className="px-5 py-3 text-xs text-mist-400">Showing first 100 of {yearDisposals.length} — full list in CSV/JSON/PDF export.</p>
+            <p className="px-5 py-3 text-xs text-low">Showing first 100 of {yearDisposals.length} — full list in CSV/JSON/PDF export.</p>
+          )}
+        </div>
+
+        {/* Mobile: stacked cards (below sm) */}
+        <div className="space-y-3 p-4 sm:hidden">
+          {yearDisposals.slice(0, 100).map((d) => (
+            <div key={d.id} className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+              <div className="flex items-center justify-between">
+                <span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span>
+                <span className="font-mono text-xs text-low">{new Date(d.disposedAt).toISOString().slice(0, 10)}</span>
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-xs tabular-figures">
+                <span className="text-low">Amount</span>
+                <span className="text-right text-mid">{d.amount.toFixed(6)}</span>
+                <span className="text-low">Proceeds</span>
+                <span className="text-right text-mid">{formatAmountForExport(d.proceeds, rules.currency)}</span>
+                <span className="text-low">Cost basis</span>
+                <span className="text-right text-mid">{formatAmountForExport(d.costBasis, rules.currency)}</span>
+                <span className="text-low">Gain / loss</span>
+                <span className={'text-right font-semibold ' + (d.gain >= 0 ? 'text-gain' : 'text-loss')}>
+                  {formatAmountForExport(d.gain, rules.currency)}
+                </span>
+                <span className="text-low">Held (days)</span>
+                <span className="text-right text-mid">{d.holdingPeriodDays}</span>
+              </div>
+            </div>
+          ))}
+          {yearDisposals.length === 0 && (
+            <div className="px-5 py-10 text-center text-low">No disposals in {yearLabel}.</div>
+          )}
+          {yearDisposals.length > 100 && (
+            <p className="text-xs text-low">Showing first 100 of {yearDisposals.length} — full list in CSV/JSON/PDF export.</p>
           )}
         </div>
       </div>
+        </>
+      )}
+
+      {isIndia && scheduleVda && (
+        <TaxEstimateCard
+          variant="panel"
+          taxableGains={scheduleVda.estimate.taxableGains}
+          tdsWithheld={scheduleVda.estimate.tdsOffset}
+          receiptIncome={scheduleVda.vdaReceiptIncome}
+          fy={year}
+          currency={rules.currency}
+        />
+      )}
+
+      {isIndia && scheduleVda && (
+        <ScheduleVdaView
+          report={scheduleVda}
+          matchedRows={matchedRows}
+          transactions={transactions}
+          fy={year}
+          jurisdiction={jurisdiction}
+          currency={rules.currency}
+          guardExport={runGuarded}
+        />
+      )}
+
+      {isIndia && tdsReconciliation && (
+        <TdsReconciliationView
+          reconciliation={tdsReconciliation}
+          fy={year}
+          jurisdiction={jurisdiction}
+          currency={rules.currency}
+          guardExport={runGuarded}
+        />
+      )}
 
       <Card>
         <CardHeader><CardTitle>{rules.label} rules note</CardTitle></CardHeader>
         <CardContent>
-          <p className="text-sm leading-relaxed text-mist-400">{rules.notes}</p>
+          <p className="text-sm leading-relaxed text-low">{rules.notes}</p>
           <Badge tone="neutral" className="mt-4">Not tax advice — verify with a professional</Badge>
         </CardContent>
       </Card>

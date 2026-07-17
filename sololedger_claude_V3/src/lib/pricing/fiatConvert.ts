@@ -6,6 +6,7 @@
 import type { Transaction, TaxSettings } from '@/types/transaction';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import { usdToCurrencyRate } from './coingecko';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const USD_EQUIVALENT = new Set(['USD', 'USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI']);
 const SUPPORTED_REPORTING_FIAT = new Set(['USD', 'INR', 'CAD', 'AED']);
@@ -27,6 +28,8 @@ async function usdToCurrencyRateFrankfurter(
   if (frankfurterCache.has(key)) return frankfurterCache.get(key)!;
 
   try {
+    // Frankfurter FX API — public, no key, called directly.
+    recordNetworkActivity(resolveMode(false));
     const res = await fetch(`https://api.frankfurter.dev/v1/${date}?from=USD&to=${to}`);
     if (!res.ok) return null;
     const data = (await res.json()) as { rates?: Record<string, number> };
@@ -55,6 +58,8 @@ async function fiatToFiatRateFrankfurter(
   if (frankfurterCache.has(key)) return frankfurterCache.get(key)!;
 
   try {
+    // Frankfurter FX API — public, no key, called directly.
+    recordNetworkActivity(resolveMode(false));
     const res = await fetch(`https://api.frankfurter.dev/v1/${date}?from=${from}&to=${to}`);
     if (!res.ok) return null;
     const data = (await res.json()) as { rates?: Record<string, number> };

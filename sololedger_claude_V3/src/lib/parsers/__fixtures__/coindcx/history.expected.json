@@ -1,0 +1,70 @@
+[
+  {
+    "timestamp": 1748752200000,
+    "type": "sell",
+    "asset": "BTC",
+    "amount": 0.01,
+    "counterAsset": "INR",
+    "counterAmount": 50000,
+    "fiatCurrency": "INR",
+    "fiatValue": 50000,
+    "feeAmount": 25,
+    "feeAsset": "INR",
+    "tdsAmount": 500,
+    "tdsAsset": "INR",
+    "tdsInr": 500,
+    "source": "coindcx",
+    "sourceRef": "coindcx:1748752200000:sell:BTC:0.010000",
+    "notes": "CoinDCX · BTCINR · TDS 500 INR · Spot sell",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1748844000000,
+    "type": "buy",
+    "asset": "ETH",
+    "amount": 0.5,
+    "counterAsset": "USDT",
+    "counterAmount": 1500,
+    "fiatCurrency": "USD",
+    "fiatValue": 1500,
+    "feeAmount": 1.5,
+    "feeAsset": "USDT",
+    "source": "coindcx",
+    "sourceRef": "coindcx:1748844000000:buy:ETH:0.500000",
+    "notes": "CoinDCX · ETHUSDT · Spot buy",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1748922300000,
+    "type": "transfer_in",
+    "asset": "INR",
+    "amount": 10000,
+    "fiatCurrency": "INR",
+    "fiatValue": 10000,
+    "source": "coindcx",
+    "sourceRef": "coindcx:1748922300000:transfer_in:INR:10000.0000",
+    "notes": "Bank deposit",
+    "flags": [
+      "possible_internal_transfer"
+    ],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1749028500000,
+    "type": "transfer_out",
+    "asset": "SOL",
+    "amount": 2,
+    "fiatCurrency": "INR",
+    "feeAmount": 0.01,
+    "feeAsset": "SOL",
+    "source": "coindcx",
+    "sourceRef": "coindcx:1749028500000:transfer_out:SOL:2.0000",
+    "notes": "Withdraw to wallet · Tx 0xabc123def456…",
+    "flags": [
+      "possible_internal_transfer"
+    ],
+    "isInternalTransfer": false
+  }
+]

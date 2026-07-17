@@ -12,7 +12,7 @@
  *   withdraw → transfer_out USDC
  *   Fee is recorded in notes only (accountValueChange is the net HL balance change).
  */
-import type { Transaction, TxType } from '@/types/transaction';
+import type { Transaction, TxType, FlagReason } from '@/types/transaction';
 import {
   makeId,
   exchangeSourceRef,
@@ -31,6 +31,13 @@ function mapAction(raw: string): TxType | null {
   if (a.includes('deposit') || a === 'credit') return 'transfer_in';
   if (a.includes('withdraw') || a === 'debit') return 'transfer_out';
   return null;
+}
+
+/** USD-equivalent collateral assets whose amount ≈ USD fiat value 1:1. */
+const USD_EQUIVALENT = new Set(['USD', 'USDC', 'USDT', 'DAI', 'USDP', 'BUSD', 'TUSD', 'FDUSD']);
+
+function isUsdEquivalent(asset: string): boolean {
+  return USD_EQUIVALENT.has(asset.toUpperCase());
 }
 
 export const hyperliquidDepositsParser: ExchangeParser = {
@@ -79,25 +86,40 @@ export const hyperliquidDepositsParser: ExchangeParser = {
       const row = rows[i];
       const mapped = mapAction(row[actionCol] || '');
       const timestamp = parseHyperliquidTime(row[timeCol]);
-      const amount = parseHyperliquidNumber(row[changeCol]);
-      const fee = feeCol ? parseHyperliquidNumber(row[feeCol]) : 0;
       const source = sourceCol ? (row[sourceCol] || '').trim() : '';
       const dest = destCol ? (row[destCol] || '').trim() : '';
+
+      // Detect asset from the change cell (default USDC), then strip the asset
+      // ticker before parsing the number so non-USDC cells (e.g. "5 ETH") still
+      // yield a numeric amount — `parseHyperliquidNumber` only strips "USDC".
+      const changeRaw = String(row[changeCol] || '').trim();
+      const assetMatch = changeRaw.toUpperCase().match(/([A-Z]{2,10})\s*$/);
+      const asset = assetMatch?.[1] ?? 'USDC';
+      const changeNumeric = changeRaw.replace(/[A-Za-z]+\s*$/, '').trim();
+      const amount = parseHyperliquidNumber(changeNumeric || changeRaw);
+      const feeRaw = feeCol ? String(row[feeCol] || '').replace(/[A-Za-z]+\s*$/, '').trim() : '';
+      const fee = feeCol ? parseHyperliquidNumber(feeRaw || (row[feeCol] ?? '')) : 0;
 
       if (!mapped || !Number.isFinite(timestamp) || amount === 0) {
         skippedRows++;
         continue;
       }
 
-      // Detect asset from the change cell (default USDC)
-      const changeRaw = String(row[changeCol] || '').trim();
-      const assetMatch = changeRaw.toUpperCase().match(/([A-Z]{2,10})\s*$/);
-      const asset = assetMatch?.[1] ?? 'USDC';
+      // Only USD/USDC-equivalent collateral can be valued 1:1 in USD. For any
+      // other asset (e.g. a token deposit) the change amount is a token
+      // quantity, NOT a USD value — leave it unpriced and flag for a price
+      // lookup instead of silently mis-stating fiatValue = amount.
+      const usdEquivalent = isUsdEquivalent(asset);
+      const fiatValue = usdEquivalent ? amount : undefined;
+      const flags: FlagReason[] = usdEquivalent
+        ? ['possible_internal_transfer']
+        : ['possible_internal_transfer', 'missing_cost_basis'];
 
       const notesParts = [
         mapped === 'transfer_in' ? 'HL deposit' : 'HL withdraw',
         source && dest ? `${source} → ${dest}` : source || dest,
-        fee > 0 ? `fee ${fee} ${asset}` : ''
+        fee > 0 ? `fee ${fee} ${asset}` : '',
+        usdEquivalent ? '' : `${asset} value not in USD — fetch price`
       ].filter(Boolean);
 
       transactions.push({
@@ -107,11 +129,11 @@ export const hyperliquidDepositsParser: ExchangeParser = {
         asset,
         amount,
         fiatCurrency: 'USD',
-        fiatValue: amount,
+        fiatValue,
         source: 'hyperliquid_deposits',
         sourceRef: exchangeSourceRef('hyperliquid', timestamp, mapped, asset, amount),
         notes: notesParts.join(' · '),
-        flags: ['possible_internal_transfer'],
+        flags,
         isInternalTransfer: false,
         category: 'perp_collateral',
         instrumentClass: 'derivative',

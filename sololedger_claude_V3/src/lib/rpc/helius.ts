@@ -20,6 +20,7 @@ import type { Transaction, FlagReason, TxType } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { transactionSourceKey } from '@/lib/storage/db';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const HELIUS_BASE = 'https://mainnet.helius-rpc.com';
 
@@ -563,6 +564,7 @@ export async function fetchHeliusSolana(
       if (cursorSignature) url += `&before-signature=${cursorSignature}`;
     }
 
+    recordNetworkActivity(resolveMode(isSaasMode()));
     // eslint-disable-next-line no-await-in-loop
     const res = isSaasMode()
       ? await saasProxyFetch(url.replace(getApiBase(), ''))

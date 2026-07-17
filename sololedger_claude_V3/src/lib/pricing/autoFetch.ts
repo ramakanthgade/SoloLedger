@@ -10,7 +10,6 @@ import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
 import type { Transaction, TaxSettings, FlagReason } from '@/types/transaction';
 import type { PriceRequest } from './coingecko';
-import { recordNetworkActivity } from '@/lib/networkActivity';
 
 interface PriceRequestWithMeta {
   tx: Transaction;
@@ -100,8 +99,8 @@ export async function fetchMissingPricesForAllTransactions(
     return { updated: 0, failed: 0, total: 0 };
   }
 
-  recordNetworkActivity();
-
+  // Network activity is recorded at the price/FX transports (coingecko, birdeye,
+  // alchemyPrices, fiatConvert), so no ad-hoc call is needed here.
   let updated = 0;
   let failed = 0;
 

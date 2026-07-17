@@ -35,6 +35,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [dbReady, setDbReady] = useState(!saas);
 
   const refresh = useCallback(async () => {
+    // AC-A1: In default local mode this makes NO network call (guarded by !saas).
+    // In SaaS mode the auth/config fetch below is the ONLY network call that fires
+    // at startup without an explicit user action — every other transport is
+    // triggered by user gestures (import, price fetch, ledger repair, etc.).
     if (!saas || !getAuthToken()) {
       await bindUserSession(null);
       setUser(null);

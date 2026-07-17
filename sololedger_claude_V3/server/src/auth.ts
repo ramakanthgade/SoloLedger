@@ -9,7 +9,7 @@ import {
   type UserRecord,
   type UserRole
 } from './store.js';
-import { getPlanTxLimit, UNLIMITED_TX, type PlanId } from './plans.js';
+import { ADMIN_INCLUDED_UNITS, getPlanIncludedUnits, type PlanId } from './plans.js';
 
 export const DEV_JWT_SECRET = 'dev-only-change-me';
 
@@ -94,7 +94,8 @@ export async function verifyPassword(password: string, hash: string): Promise<bo
 
 export function isSubscriptionActive(user: UserRecord): boolean {
   if (user.role === 'admin') return true;
-  if (user.plan === 'starter' || user.plan === 'trial') return true;
+  // The free `local` tier is always "active" (no subscription required).
+  if (user.plan === 'local') return true;
   if (user.subscriptionStatus === 'active' || user.subscriptionStatus === 'trialing') {
     if (!user.subscriptionExpiresAt) return true;
     return new Date(user.subscriptionExpiresAt) > new Date();
@@ -105,7 +106,9 @@ export function isSubscriptionActive(user: UserRecord): boolean {
 export function publicUser(user: UserRecord) {
   const isAdmin = user.role === 'admin';
   const plan: PlanId = isAdmin ? 'enterprise' : user.plan;
-  const txLimit = isAdmin ? UNLIMITED_TX : getPlanTxLimit(user.plan, user.customTxLimit);
+  const includedUnits = isAdmin
+    ? ADMIN_INCLUDED_UNITS
+    : getPlanIncludedUnits(user.plan, user.customIncludedUnits, user.overageBlocks);
   return {
     id: user.id,
     email: user.email,
@@ -113,9 +116,9 @@ export function publicUser(user: UserRecord) {
     plan,
     subscriptionStatus: isAdmin ? 'active' : user.subscriptionStatus,
     subscriptionExpiresAt: user.subscriptionExpiresAt,
-    txLimit,
-    txLimitUnlimited: isAdmin || txLimit >= UNLIMITED_TX,
-    customTxLimit: user.customTxLimit ?? null,
+    includedUnits,
+    customIncludedUnits: user.customIncludedUnits ?? null,
+    overageBlocks: user.overageBlocks ?? null,
     subscriptionActive: isSubscriptionActive(user)
   };
 }
@@ -133,7 +136,7 @@ export async function ensureAdminUser(): Promise<void> {
         role: 'admin',
         plan: 'enterprise',
         subscriptionStatus: 'active',
-        customTxLimit: UNLIMITED_TX
+        customIncludedUnits: ADMIN_INCLUDED_UNITS
       });
     }
     return;
@@ -146,7 +149,7 @@ export async function ensureAdminUser(): Promise<void> {
     role: 'admin',
     plan: 'enterprise',
     subscriptionStatus: 'active',
-    customTxLimit: UNLIMITED_TX,
+    customIncludedUnits: ADMIN_INCLUDED_UNITS,
     subscriptionExpiresAt: null,
     createdAt: new Date().toISOString()
   };

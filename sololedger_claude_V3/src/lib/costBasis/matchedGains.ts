@@ -1,11 +1,23 @@
 import type { Disposal, Lot, Transaction } from '@/types/transaction';
 import { identifyDabbaProgram, DABBA_KIND_LABEL, type DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
+import { DUST } from '@/lib/costBasis/decimal';
 import {
   derivativeExpenseKind,
   isDerivativeExpense,
   isDerivativeProfit,
   isDerivativeTransaction
 } from '@/lib/tax/derivatives';
+
+/**
+ * Provenance of a matched-gain row:
+ *  - `matched`: proceeds backed by a real acquisition lot (cost basis known).
+ *  - `missing_cost_basis`: proceeds for a disposal amount that could NOT be
+ *    matched to any acquisition (fully or partially). These rows carry cost
+ *    basis = 0 so the proceeds are still taxed in full — the conservative,
+ *    correct treatment under India Section 115BBH when acquisition cost is
+ *    unproven — and are flagged for the filer to review.
+ */
+export type MatchedGainStatus = 'matched' | 'missing_cost_basis';
 
 export interface MatchedGainRow {
   id: string;
@@ -23,7 +35,14 @@ export interface MatchedGainRow {
   buyTxId: string;
   gain: number;
   holdingDays: number;
-  method: 'FIFO' | 'SpecID';
+  method: 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
+  /**
+   * Row provenance (additive; defaults to `matched` when absent). A
+   * `missing_cost_basis` row represents disposal proceeds with no matched
+   * acquisition — included in the taxable base at zero cost basis and flagged
+   * "review required".
+   */
+  status?: MatchedGainStatus;
 }
 
 export function buildMatchedGainRows(
@@ -36,11 +55,14 @@ export function buildMatchedGainRows(
   const rows: MatchedGainRow[] = [];
 
   for (const d of disposals) {
+    const sellTx = txById.get(d.sourceTxId);
+    let matchedAmount = 0;
+
     for (const lc of d.lotConsumption) {
       const lot = lotById.get(lc.lotId);
       if (!lot) continue;
+      matchedAmount += lc.amount;
       const proceedsShare = d.amount > 0 ? d.proceeds * (lc.amount / d.amount) : 0;
-      const sellTx = txById.get(d.sourceTxId);
       rows.push({
         id: `${d.id}:${lc.lotId}`,
         asset: d.asset,
@@ -55,7 +77,35 @@ export function buildMatchedGainRows(
         buyTxId: lot.sourceTxId,
         gain: proceedsShare - lc.costBasis,
         holdingDays: Math.max(0, Math.round((d.disposedAt - lot.acquiredAt) / 86_400_000)),
-        method: d.method
+        method: d.method,
+        status: 'matched'
+      });
+    }
+
+    // Any disposal amount not covered by lot consumption has no proven
+    // acquisition cost. Emit an EXPLICIT zero-cost row for the unmatched
+    // portion so its proceeds are still taxed (full proceeds = gain) and the
+    // row is flagged for review — never silently dropped from tax totals.
+    const unmatchedAmount = d.amount - matchedAmount;
+    if (unmatchedAmount > DUST) {
+      const proceedsShare = d.amount > 0 ? d.proceeds * (unmatchedAmount / d.amount) : d.proceeds;
+      rows.push({
+        id: `${d.id}:unmatched`,
+        asset: d.asset,
+        chain: sellTx?.chain,
+        sellDate: d.disposedAt,
+        sellAmount: unmatchedAmount,
+        proceeds: proceedsShare,
+        sellTxId: d.sourceTxId,
+        // No acquisition lot: fall back to the disposal date, zero cost basis.
+        buyDate: d.disposedAt,
+        buyAmount: 0,
+        costBasis: 0,
+        buyTxId: '',
+        gain: proceedsShare,
+        holdingDays: 0,
+        method: d.method,
+        status: 'missing_cost_basis'
       });
     }
   }
@@ -196,6 +246,53 @@ export function buildIncomeRows(
   }
 
   return rows.sort((a, b) => b.date - a.date);
+}
+
+/**
+ * True for mining-reward income. Mining is the DISTINCT India case (B9a): the
+ * cost of acquisition is ZERO and there is NO receipt-side income under Section
+ * 56(2)(x), so a later sale is taxed on the full consideration. It must be
+ * EXCLUDED from the receipt-side income total.
+ */
+export function isMiningIncome(t: Transaction): boolean {
+  return t.type === 'income' && (t.category ?? '').toLowerCase() === 'mining';
+}
+
+/**
+ * A receipt-side income event (India Section 56(2)(x)): income / gift / airdrop
+ * / staking VDA received, valued at FMV-at-receipt in reporting fiat.
+ */
+export interface ReceiptIncomeEvent {
+  /** FMV in reporting fiat at the time of receipt. */
+  fiatValue: number;
+  /** Epoch ms of receipt (for FY filtering by the caller). */
+  timestamp: number;
+  /** Source transaction id. */
+  txId: string;
+  /** Income kind (income / gift / suspected airdrop / suspected staking / dabba). */
+  kind: IncomeKind;
+}
+
+/**
+ * Build the Section 56(2)(x) receipt-side income events from the SAME typed
+ * income rows the Capital Gains tab shows — this INCLUDES explicit `income` and
+ * `gift_received` rows plus heuristic airdrop/staking rows — and EXCLUDES
+ * mining (the zero-cost / no-receipt-side-income case, per B9a).
+ *
+ * This is the single source of truth for receipt-side income; both the report
+ * summary (`TaxYearSummary.vdaReceiptIncome`) and the UI should derive their
+ * figure from here rather than an ad-hoc `type === 'income'` filter.
+ */
+export function buildReceiptIncomeRows(
+  transactions: Transaction[],
+  dcaVaultAddresses?: Set<string>
+): ReceiptIncomeEvent[] {
+  const miningTxIds = new Set(transactions.filter(isMiningIncome).map((t) => t.id));
+  return buildIncomeRows(transactions, dcaVaultAddresses)
+    // Heuristic income rows use `income-candidate:<txId>` ids — strip the prefix
+    // so mining exclusion matches the underlying transaction id.
+    .filter((r) => !miningTxIds.has(r.txId))
+    .map((r) => ({ fiatValue: r.fiatValue, timestamp: r.date, txId: r.txId, kind: r.kind }));
 }
 
 /** Perp profits for business-income treatment. */

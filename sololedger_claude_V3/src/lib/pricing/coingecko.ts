@@ -8,6 +8,7 @@ import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { getCachedPrice, setCachedPrice, buildPriceCacheKey } from '@/lib/storage/db';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const COINGECKO_PUBLIC = 'https://api.coingecko.com/api/v3';
 const COINGECKO_PRO = 'https://pro-api.coingecko.com/api/v3';
@@ -26,6 +27,7 @@ function coingeckoHeaders(apiKey?: string): HeadersInit | undefined {
 async function coingeckoFetch(url: string, headers?: HeadersInit, retries = 2): Promise<Response> {
   let last: Response | null = null;
   for (let attempt = 0; attempt <= retries; attempt++) {
+    recordNetworkActivity(resolveMode(isSaasMode()));
     const res = isSaasMode()
       ? await saasProxyFetch(url.replace(getApiBase(), ''), headers ? { headers } : {})
       : await fetch(url, headers ? { headers } : undefined);

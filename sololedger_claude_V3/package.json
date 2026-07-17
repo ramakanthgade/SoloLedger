@@ -14,8 +14,10 @@
     "deploy:pages": "npm run build:pages && npx --yes gh-pages -d dist -t"
   },
   "dependencies": {
+    "@noble/ed25519": "^2.3.0",
     "clsx": "^2.1.1",
     "date-fns": "^3.6.0",
+    "decimal.js": "^10.6.0",
     "dexie": "^4.0.8",
     "dexie-react-hooks": "^1.1.7",
     "jspdf": "^2.5.2",

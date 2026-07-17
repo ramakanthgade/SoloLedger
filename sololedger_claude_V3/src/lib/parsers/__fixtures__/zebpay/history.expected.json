@@ -1,0 +1,56 @@
+[
+  {
+    "timestamp": 1748770200000,
+    "type": "sell",
+    "asset": "BTC",
+    "amount": 0.02,
+    "counterAsset": "INR",
+    "counterAmount": 98000,
+    "fiatCurrency": "INR",
+    "fiatValue": 98000,
+    "feeAmount": 49,
+    "feeAsset": "INR",
+    "tdsAmount": 980,
+    "tdsAsset": "INR",
+    "tdsInr": 980,
+    "source": "zebpay",
+    "sourceRef": "zebpay:1748770200000:sell:BTC:0.020000",
+    "notes": "ZebPay · BTCINR · TDS 980 INR · Spot sell",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1748862000000,
+    "type": "buy",
+    "asset": "XRP",
+    "amount": 1000,
+    "counterAsset": "USDT",
+    "counterAmount": 500,
+    "fiatCurrency": "USD",
+    "fiatValue": 500,
+    "feeAmount": 0.5,
+    "feeAsset": "USDT",
+    "source": "zebpay",
+    "sourceRef": "zebpay:1748862000000:buy:XRP:1000.0000",
+    "notes": "ZebPay · XRPUSDT · Spot buy",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1749098400000,
+    "type": "transfer_out",
+    "asset": "INR",
+    "amount": 20000,
+    "fiatCurrency": "INR",
+    "fiatValue": 20000,
+    "feeAmount": 10,
+    "feeAsset": "INR",
+    "source": "zebpay",
+    "sourceRef": "zebpay:1749098400000:transfer_out:INR:20000.0000",
+    "notes": "Bank withdrawal",
+    "flags": [
+      "possible_internal_transfer"
+    ],
+    "isInternalTransfer": false
+  }
+]

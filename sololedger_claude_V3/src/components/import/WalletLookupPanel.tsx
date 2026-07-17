@@ -15,7 +15,7 @@ import { Badge } from '@/components/ui/card';
 import { AlertTriangle, RefreshCw, Trash2, Pencil, Check, X } from 'lucide-react';
 
 const inputCls =
-  'mt-1 block w-full rounded border border-ink-600 bg-ink-800 px-2 py-1.5 text-sm text-mist focus:border-emerald focus:outline-none';
+  'mt-1 block w-full rounded border border-white/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-violet focus:outline-none';
 
 /** Detect blockchain from wallet address format — works for BTC, Solana; EVM still needs chain selection. */
 function detectChainFromAddress(address: string): ChainId | null {
@@ -60,11 +60,11 @@ export function WalletLookupPanel() {
     if (detected && detected !== chainId) setChainId(detected);
   }, [addressText]);
 
-  if (settings === null) return <p className="text-sm text-mist-400">Loading wallet lookup…</p>;
+  if (settings === null) return <p className="text-sm text-low">Loading wallet lookup…</p>;
 
   if (!settings.rpcLookupEnabled) {
     return (
-      <div className="rounded-lg border border-ink-700 bg-ink-800 p-4 text-sm text-mist-400">
+      <div className="rounded-lg border border-white/10 bg-elev-2 p-4 text-sm text-low">
         Wallet lookup is off. Enable "Wallet address lookup via public RPC/explorer" in Settings.
       </div>
     );
@@ -104,8 +104,8 @@ export function WalletLookupPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="space-y-3 rounded-lg border border-ink-700 bg-ink-800 p-4">
-        <div className="flex items-start gap-2 rounded-lg bg-gold/10 px-3 py-2 text-xs text-gold-600">
+      <div className="space-y-3 rounded-lg border border-white/10 bg-elev-2 p-4">
+        <div className="flex items-start gap-2 rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
             {isSaasMode()
@@ -114,7 +114,7 @@ export function WalletLookupPanel() {
           </span>
         </div>
 
-        <label className="text-xs text-mist-400">
+        <label className="text-xs text-low">
           Wallet addresses — one per line or comma-separated
           <textarea
             className={`${inputCls} h-24 font-mono`}
@@ -128,9 +128,9 @@ export function WalletLookupPanel() {
 
         {/* Chain selector — shown for EVM (needed) or custom; hidden for auto-detected BTC/Solana */}
         {parsedAddresses.length === 0 || isEvm || chainId === 'custom_evm' ? (
-          <label className="text-xs text-mist-400">
+          <label className="text-xs text-low">
             Chain
-            {(isBitcoin || isSolana) && <span className="ml-1 text-emerald-600">(auto-detected)</span>}
+            {(isBitcoin || isSolana) && <span className="ml-1 text-gain">(auto-detected)</span>}
             <select className={inputCls} value={chainId} onChange={(e) => setChainId(e.target.value as ChainId)}>
               {CHAINS.map((c) => (
                 <option key={c.id} value={c.id}>
@@ -140,17 +140,17 @@ export function WalletLookupPanel() {
             </select>
           </label>
         ) : (
-          <div className="flex items-center gap-2 text-xs text-emerald-600">
+          <div className="flex items-center gap-2 text-xs text-gain">
             <Check className="h-3.5 w-3.5" />
             Auto-detected: <strong>{chain.label}</strong>
             <button
-              className="text-mist-400 underline hover:text-mist"
+              className="text-low underline hover:text-mid"
               onClick={() => {/* show full selector */}}
             >
               change
             </button>
             <select
-              className="rounded border border-ink-600 bg-ink-800 px-2 py-0.5 text-xs text-mist"
+              className="rounded border border-white/10 bg-elev-2 px-2 py-0.5 text-xs text-mid"
               value={chainId}
               onChange={(e) => setChainId(e.target.value as ChainId)}
             >
@@ -164,22 +164,22 @@ export function WalletLookupPanel() {
         )}
 
         {missingAlchemyKey && (
-          <p className="rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
+          <p className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             Add a free Alchemy API key in Settings — one key covers this chain plus all others.
           </p>
         )}
 
         {chain.provider === 'etherscan_compatible' && (
           <div className="grid gap-3 sm:grid-cols-2">
-            <label className="text-xs text-mist-400 sm:col-span-2">
+            <label className="text-xs text-low sm:col-span-2">
               Explorer base URL
               <input className={inputCls} value={customBaseUrl} onChange={(e) => setCustomBaseUrl(e.target.value)} placeholder="https://api.etherscan.io/v2/api?chainid=..." />
             </label>
-            <label className="text-xs text-mist-400">
+            <label className="text-xs text-low">
               API key
               <input className={inputCls} value={customApiKey} onChange={(e) => setCustomApiKey(e.target.value)} />
             </label>
-            <label className="text-xs text-mist-400">
+            <label className="text-xs text-low">
               Asset label
               <input className={inputCls} value={customAsset} onChange={(e) => setCustomAsset(e.target.value)} placeholder="e.g. FTM" />
             </label>
@@ -187,7 +187,7 @@ export function WalletLookupPanel() {
         )}
 
         {alreadyImported.length > 0 && freshAddresses.length === 0 && (
-          <div className="rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
+          <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             {alreadyImported.length === 1
               ? 'This wallet is already imported.'
               : `All ${alreadyImported.length} addresses are already imported.`}{' '}
@@ -195,7 +195,7 @@ export function WalletLookupPanel() {
           </div>
         )}
         {alreadyImported.length > 0 && freshAddresses.length > 0 && (
-          <div className="rounded-lg border border-gold/30 bg-gold/10 px-3 py-2 text-xs text-gold-600">
+          <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             {alreadyImported.length} already imported (will be skipped). {freshAddresses.length} new will be imported.
           </div>
         )}
@@ -208,13 +208,13 @@ export function WalletLookupPanel() {
             Import {freshAddresses.length || ''} wallet{freshAddresses.length === 1 ? '' : 's'}
           </Button>
           {settings.priceApiEnabled && !job.active && freshAddresses.length > 0 && (
-            <span className="text-xs text-emerald-600">✓ Swap detection + price fetch runs automatically</span>
+            <span className="text-xs text-gain">✓ Swap detection + price fetch runs automatically</span>
           )}
         </div>
 
         {/* Job result (shown after job completes) */}
         {!job.active && job.result && (
-          <div className="rounded-lg border border-emerald/30 bg-emerald/10 px-3 py-2 text-xs text-emerald-700">
+          <div className="rounded-lg border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-gain">
             <strong>{job.result.imported}</strong> transactions imported
             {job.result.swapsDetected > 0 ? `, ${job.result.swapsDetected} swaps detected` : ''}
             {job.result.pricesUpdated > 0 ? `, ${job.result.pricesUpdated} prices fetched` : ''}.
@@ -226,7 +226,7 @@ export function WalletLookupPanel() {
           </div>
         )}
         {!job.active && job.warnings.length > 0 && (
-          <div className="space-y-1 text-xs text-gold-600">
+          <div className="space-y-1 text-xs text-warn">
             {job.warnings.slice(0, 6).map((w, i) => <p key={i}>{w}</p>)}
           </div>
         )}
@@ -239,14 +239,14 @@ export function WalletLookupPanel() {
 
       {/* Saved wallets */}
       {lookedUp.length > 0 && (
-        <div className="rounded-lg border border-ink-700 bg-ink-800 p-4">
-          <h3 className="mb-3 text-sm font-medium text-mist">Your wallets</h3>
+        <div className="rounded-lg border border-white/10 bg-elev-2 p-4">
+          <h3 className="mb-3 text-sm font-medium text-mid">Your wallets</h3>
           <div className="space-y-2">
             {lookedUp.map((row) => {
               const chainLabel = CHAINS.find((c) => c.id === row.chain)?.label ?? row.chain;
               const isEditing = editingLabel === row.id;
               return (
-                <div key={row.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-ink-700/40 px-3 py-2 text-xs">
+                <div key={row.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-elev-3/40 px-3 py-2 text-xs">
                   <Badge tone="violet">{chainLabel}</Badge>
 
                   {isEditing ? (
@@ -259,37 +259,37 @@ export function WalletLookupPanel() {
                           if (e.key === 'Enter') void saveLabel(row.id);
                           if (e.key === 'Escape') setEditingLabel(null);
                         }}
-                        className="w-44 rounded border border-emerald bg-ink-800 px-2 py-0.5 text-xs text-mist focus:outline-none"
+                        className="w-44 rounded border border-violet bg-elev-2 px-2 py-0.5 text-xs text-mid focus:outline-none"
                         placeholder="e.g. My Phantom wallet"
                       />
-                      <button onClick={() => void saveLabel(row.id)} className="text-emerald-600"><Check className="h-3.5 w-3.5" /></button>
-                      <button onClick={() => setEditingLabel(null)} className="text-mist-400"><X className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => void saveLabel(row.id)} className="text-gain"><Check className="h-3.5 w-3.5" /></button>
+                      <button onClick={() => setEditingLabel(null)} className="text-low"><X className="h-3.5 w-3.5" /></button>
                     </span>
                   ) : (
                     <button
                       onClick={() => { setEditingLabel(row.id); setLabelDraft(row.label ?? ''); }}
-                      className="flex items-center gap-1 text-mist-300 hover:text-mist"
+                      className="flex items-center gap-1 text-low hover:text-mid"
                       title={row.address}
                     >
                       {row.label
-                        ? <span className="font-medium text-mist">{row.label}</span>
+                        ? <span className="font-medium text-mid">{row.label}</span>
                         : <span className="font-mono">{row.address.length > 16 ? `${row.address.slice(0, 8)}…${row.address.slice(-6)}` : row.address}</span>}
                       <Pencil className="h-3 w-3 opacity-40" />
                     </button>
                   )}
 
                   {row.label && (
-                    <span className="font-mono text-mist-400" title={row.address}>
+                    <span className="font-mono text-low" title={row.address}>
                       {row.address.slice(0, 6)}…{row.address.slice(-4)}
                     </span>
                   )}
 
-                  <span className="text-mist-400">{row.txCount} txs</span>
-                  <span className="text-mist-400">synced {new Date(row.lastSyncedAt).toLocaleDateString()}</span>
+                  <span className="text-low">{row.txCount} txs</span>
+                  <span className="text-low">synced {new Date(row.lastSyncedAt).toLocaleDateString()}</span>
 
                   <div className="ml-auto flex gap-2">
                     <button
-                      className="flex items-center gap-1 text-emerald-600 hover:underline disabled:opacity-40"
+                      className="flex items-center gap-1 text-gain hover:underline disabled:opacity-40"
                       disabled={job.active}
                       onClick={() => {
                         const c = CHAINS.find((ch) => ch.id === row.chain);
@@ -325,13 +325,13 @@ export function WalletLookupPanel() {
 
       {/* Remove confirmation */}
       {removeConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-ink-950/60 p-4">
-          <div className="max-w-md rounded-lg border border-ink-700 bg-ink-800 p-5 shadow-xl">
-            <h3 className="text-sm font-semibold text-mist">Remove wallet and its transactions?</h3>
-            <p className="mt-2 text-xs text-mist-400">
-              Deletes <strong className="text-mist">{removeConfirm.txCount}</strong> transaction
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-base/60 p-4">
+          <div className="max-w-md rounded-lg border border-white/10 bg-elev-2 p-5 shadow-xl">
+            <h3 className="text-sm font-semibold text-mid">Remove wallet and its transactions?</h3>
+            <p className="mt-2 text-xs text-low">
+              Deletes <strong className="text-mid">{removeConfirm.txCount}</strong> transaction
               {removeConfirm.txCount === 1 ? '' : 's'} for{' '}
-              <span className="font-mono text-mist-300">{removeConfirm.address}</span>. Cannot be undone.
+              <span className="font-mono text-low">{removeConfirm.address}</span>. Cannot be undone.
             </p>
             <div className="mt-4 flex justify-end gap-2">
               <Button variant="secondary" onClick={() => setRemoveConfirm(null)}>Cancel</Button>

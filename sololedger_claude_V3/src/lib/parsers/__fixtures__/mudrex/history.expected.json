@@ -1,0 +1,53 @@
+[
+  {
+    "timestamp": 1748748600000,
+    "type": "buy",
+    "asset": "BTC",
+    "amount": 0.01,
+    "counterAsset": "INR",
+    "counterAmount": 51000,
+    "fiatCurrency": "INR",
+    "fiatValue": 51000,
+    "feeAmount": 25.5,
+    "feeAsset": "INR",
+    "source": "mudrex",
+    "sourceRef": "mudrex:1748748600000:buy:BTC:0.010000",
+    "notes": "Mudrex · BTCINR · Spot buy",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1748838600000,
+    "type": "sell",
+    "asset": "ETH",
+    "amount": 0.2,
+    "counterAsset": "INR",
+    "counterAmount": 50000,
+    "fiatCurrency": "INR",
+    "fiatValue": 50000,
+    "feeAmount": 25,
+    "feeAsset": "INR",
+    "tdsAmount": 500,
+    "tdsAsset": "INR",
+    "tdsInr": 500,
+    "source": "mudrex",
+    "sourceRef": "mudrex:1748838600000:sell:ETH:0.200000",
+    "notes": "Mudrex · ETHINR · TDS 500 INR · Spot sell",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1749187800000,
+    "type": "transfer_in",
+    "asset": "USDT",
+    "amount": 100,
+    "fiatCurrency": "INR",
+    "source": "mudrex",
+    "sourceRef": "mudrex:1749187800000:transfer_in:USDT:100.0000",
+    "notes": "Crypto deposit · Tx 0xfeed00011122…",
+    "flags": [
+      "possible_internal_transfer"
+    ],
+    "isInternalTransfer": false
+  }
+]

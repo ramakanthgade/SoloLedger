@@ -1,17 +1,55 @@
-import type { Transaction, Lot, Disposal, TxType } from '@/types/transaction';
+import type { Transaction, Lot, Disposal, TxType, FlagReason } from '@/types/transaction';
 import type { CostBasisStrategy } from './strategy';
 import { fifoStrategy } from './fifo';
+import { lifoStrategy } from './lifo';
+import { hifoStrategy } from './hifo';
 import { specIdStrategy } from './specId';
 import { makeId } from '@/lib/parsers/types';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
+import { D, add, sub, mul, div, toNumber, isPositive, isDust } from './decimal';
 
-export const STRATEGIES: Record<'FIFO' | 'SpecID', CostBasisStrategy> = {
+export type CostBasisMethod = 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
+
+export const STRATEGIES: Record<CostBasisMethod, CostBasisStrategy> = {
   FIFO: fifoStrategy,
+  LIFO: lifoStrategy,
+  HIFO: hifoStrategy,
   SpecID: specIdStrategy
 };
 
-const ACQUISITION_TYPES: TxType[] = ['buy', 'income', 'gift_received', 'nft_mint'];
+const ACQUISITION_TYPES: TxType[] = ['buy', 'income', 'gift_received', 'nft_mint', 'nft_buy'];
 const DISPOSAL_TYPES: TxType[] = ['sell', 'gift_sent', 'nft_sell'];
+
+/**
+ * India VDA cost-of-acquisition linkage (validated from primary sources):
+ *
+ *  - Airdrops / staking rewards / gifts are income from other sources under
+ *    Section 56(2)(x) AT RECEIPT, valued at Fair Market Value (FMV) in INR at
+ *    the time of receipt (taxed at the recipient's slab rate). That
+ *    FMV-at-receipt then BECOMES the cost of acquisition for the later sale
+ *    under Section 115BBH — so a later disposal gains = sale price − FMV, not
+ *    sale price − 0. The engine therefore opens these lots at FMV-at-receipt
+ *    (the transaction's `fiatValue`), which is CORRECT.
+ *
+ *  - Mining rewards are the DISTINCT case: cost of acquisition is treated as
+ *    ZERO (no receipt-side income under this analogy), so a later sale is taxed
+ *    on the full consideration. Mining is flagged via `category === 'mining'`
+ *    on an `income` transaction and is the only income path that opens a
+ *    zero-cost lot.
+ */
+function isMiningIncome(tx: Transaction): boolean {
+  return tx.type === 'income' && (tx.category ?? '').toLowerCase() === 'mining';
+}
+
+/**
+ * How trading/network fees affect cost basis. Jurisdiction-aware: the engine
+ * only ever applies the policy it is handed — it does not decide the policy.
+ * - `add_to_basis`: a fee denominated in the reporting fiat currency is added
+ *    to an acquisition's cost basis (US/CA-style).
+ * - `exclude`: fees never touch cost basis (India — VDA allows only cost of
+ *    acquisition, no incidental expenses). This is the default for IN.
+ */
+export type FeePolicy = 'add_to_basis' | 'exclude';
 
 /**
  * A `trade` (asset-for-asset swap) is really two legs: a disposal of `asset`
@@ -20,9 +58,20 @@ const DISPOSAL_TYPES: TxType[] = ['sell', 'gift_sent', 'nft_sell'];
  * single-asset acquisitions/disposals. Both legs share the same fiat value —
  * the fair market value of the swap at execution — and are tagged back to
  * the original transaction id for traceability.
+ *
+ * When the acquisition leg cannot be opened because the swap has no usable
+ * `counterAmount` (missing or zero), we surface it as a shortfall/flag on the
+ * counter asset instead of silently dropping value.
  */
-function expandTrades(transactions: Transaction[]): Transaction[] {
+interface ExpandResult {
+  transactions: Transaction[];
+  droppedTradeLegs: { transactionId: string; asset: string; reason: FlagReason }[];
+}
+
+function expandTrades(transactions: Transaction[]): ExpandResult {
   const expanded: Transaction[] = [];
+  const droppedTradeLegs: ExpandResult['droppedTradeLegs'] = [];
+
   for (const tx of transactions) {
     if (tx.type !== 'trade') {
       expanded.push(tx);
@@ -36,7 +85,7 @@ function expandTrades(transactions: Transaction[]): Transaction[] {
       sourceRef: tx.sourceRef ?? tx.id,
       raw: undefined
     });
-    if (tx.counterAsset && tx.counterAmount) {
+    if (tx.counterAsset && tx.counterAmount && isPositive(Math.abs(tx.counterAmount))) {
       expanded.push({
         ...tx,
         id: `${tx.id}__acquisition`,
@@ -49,15 +98,30 @@ function expandTrades(transactions: Transaction[]): Transaction[] {
         sourceRef: tx.sourceRef ?? tx.id,
         raw: undefined
       });
+    } else if (tx.counterAsset) {
+      // The user swapped into `counterAsset` but we have no (or zero) amount for
+      // that leg — we can't open a lot, so record it on the counter asset so a
+      // later disposal of that asset isn't silently unmatched.
+      droppedTradeLegs.push({
+        transactionId: tx.id,
+        asset: tx.counterAsset,
+        reason: 'missing_cost_basis'
+      });
     }
   }
-  return expanded;
+
+  return { transactions: expanded, droppedTradeLegs };
 }
 
 export interface EngineOptions {
-  method: 'FIFO' | 'SpecID';
+  method: CostBasisMethod;
   /** For SpecID: user's chosen lot order per disposal transaction id. */
   specIdHints?: Record<string, string[]>;
+  /**
+   * Jurisdiction-aware fee handling. The caller decides this from the active
+   * jurisdiction; the engine just applies it. Defaults to `exclude` (India).
+   */
+  feePolicy?: FeePolicy;
 }
 
 export interface DisposalCandidateLot {
@@ -67,11 +131,24 @@ export interface DisposalCandidateLot {
   costBasisPerUnit: number;
 }
 
+/** An acquisition/leg the engine could not turn into a lot, surfaced for review. */
+export interface EngineFlag {
+  transactionId: string;
+  asset: string;
+  reason: FlagReason;
+}
+
 export interface EngineResult {
   lots: Lot[];
   disposals: Disposal[];
   /** Disposals that couldn't be fully matched to cost basis (insufficient lots). */
   shortfalls: { transactionId: string; asset: string; unmatchedAmount: number }[];
+  /**
+   * Acquisitions rejected for invalid data (non-finite fiat value, non-positive
+   * amount) and trade acquisition legs dropped for a missing/zero counter
+   * amount — flagged instead of creating a zero/negative lot.
+   */
+  flags: EngineFlag[];
   /**
    * For every disposal, the pool of open lots available at that moment,
    * captured before the strategy consumes them. Used by the Specific ID
@@ -87,6 +164,28 @@ function originalTxId(id: string): string {
 }
 
 /**
+ * Fee added to an acquisition's cost basis under the given policy. Only a fee
+ * denominated in the reporting fiat currency can be valued without a price
+ * lookup, so any crypto-denominated fee is left out (the engine never guesses
+ * an FX rate). Returns 0 under the `exclude` policy.
+ */
+function feeForBasis(tx: Transaction, feePolicy: FeePolicy) {
+  if (feePolicy !== 'add_to_basis') return D(0);
+  if (tx.feeAmount == null || !Number.isFinite(tx.feeAmount)) return D(0);
+  if (!tx.feeAsset || tx.feeAsset.toUpperCase() !== tx.fiatCurrency.toUpperCase()) return D(0);
+  return D(Math.abs(tx.feeAmount));
+}
+
+/**
+ * Ranks two transactions sharing the same timestamp so ordering is fully
+ * deterministic: acquisitions are processed before disposals (so a same-second
+ * buy is available to a same-second sell), then ties break by id.
+ */
+function sameTimestampRank(tx: Transaction): number {
+  return ACQUISITION_TYPES.includes(tx.type) ? 0 : 1;
+}
+
+/**
  * Walks a chronologically-sorted transaction list per asset, opening a Lot
  * for every acquisition and matching every disposal against open lots using
  * the chosen strategy. Pure function — no I/O, fully testable, and cheap
@@ -94,11 +193,13 @@ function originalTxId(id: string): string {
  * rows (single pass per asset, O(n log n) for the sort).
  */
 export function calculateCostBasis(rawTransactions: Transaction[], options: EngineOptions): EngineResult {
-  const transactions = expandTrades(rawTransactions);
+  const { transactions, droppedTradeLegs } = expandTrades(rawTransactions);
   const strategy = STRATEGIES[options.method];
+  const feePolicy: FeePolicy = options.feePolicy ?? 'exclude';
   const lots: Lot[] = [];
   const disposals: Disposal[] = [];
   const shortfalls: EngineResult['shortfalls'] = [];
+  const flags: EngineFlag[] = [...droppedTradeLegs];
   const disposalCandidates: EngineResult['disposalCandidates'] = {};
 
   const byAsset = new Map<string, Transaction[]>();
@@ -111,7 +212,12 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
   }
 
   for (const [asset, assetTxs] of byAsset) {
-    const sorted = [...assetTxs].sort((a, b) => a.timestamp - b.timestamp);
+    const sorted = [...assetTxs].sort(
+      (a, b) =>
+        a.timestamp - b.timestamp ||
+        sameTimestampRank(a) - sameTimestampRank(b) ||
+        (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
+    );
     const openLots: Lot[] = [];
 
     for (const tx of sorted) {
@@ -121,15 +227,33 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
         if (tx.type === 'income' && isDerivativeTransaction(tx)) {
           continue;
         }
-        const costBasisTotal = Math.abs(tx.fiatValue ?? 0);
+
+        // Validate the acquisition: a lot needs a positive quantity and a finite
+        // fiat cost basis. Reject anything else with a flag rather than opening a
+        // zero/negative lot that would silently distort later disposals.
+        const rawFiat = tx.fiatValue ?? 0;
+        if (!Number.isFinite(tx.amount) || !isPositive(tx.amount) || !Number.isFinite(rawFiat)) {
+          flags.push({ transactionId: originalTxId(tx.id), asset, reason: 'missing_cost_basis' });
+          continue;
+        }
+
+        // Section 56(2)(x) → 115BBH: income/gift/airdrop lots open at
+        // FMV-at-receipt (`fiatValue`) as their cost of acquisition, so a later
+        // 115BBH sale is taxed on (sale price − FMV). Mining is the distinct
+        // case — cost of acquisition is ZERO, so a later sale is taxed on the
+        // full consideration.
+        const costBasisTotal = isMiningIncome(tx)
+          ? D(0)
+          : add(Math.abs(rawFiat), feeForBasis(tx, feePolicy));
+        const amount = D(tx.amount);
         const lot: Lot = {
           id: makeId('lot'),
           asset,
           acquiredAt: tx.timestamp,
-          amountRemaining: tx.amount,
-          amountOriginal: tx.amount,
-          costBasisPerUnit: tx.amount > 0 ? costBasisTotal / tx.amount : 0,
-          costBasisTotal,
+          amountRemaining: toNumber(amount),
+          amountOriginal: toNumber(amount),
+          costBasisPerUnit: toNumber(div(costBasisTotal, amount)),
+          costBasisTotal: toNumber(costBasisTotal),
           sourceTxId: originalTxId(tx.id),
           acquisitionType: tx.type as Lot['acquisitionType']
         };
@@ -141,8 +265,8 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
         const origId = originalTxId(tx.id);
 
         disposalCandidates[origId] = openLots
-          .filter((l) => l.amountRemaining > 1e-12)
-          .sort((a, b) => a.acquiredAt - b.acquiredAt)
+          .filter((l) => isPositive(l.amountRemaining))
+          .sort((a, b) => a.acquiredAt - b.acquiredAt || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
           .map((l) => ({
             lotId: l.id,
             acquiredAt: l.acquiredAt,
@@ -154,18 +278,22 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
           preferredLotIds: options.specIdHints?.[origId]
         });
 
-        const matchedAmount = selections.reduce((s, sel) => s + sel.amount, 0);
-        if (matchedAmount < tx.amount - 1e-9) {
-          shortfalls.push({ transactionId: origId, asset, unmatchedAmount: tx.amount - matchedAmount });
+        const matchedAmount = selections.reduce((s, sel) => add(s, sel.amount), D(0));
+        const unmatched = sub(tx.amount, matchedAmount);
+        if (isPositive(unmatched)) {
+          shortfalls.push({ transactionId: origId, asset, unmatchedAmount: toNumber(unmatched) });
         }
 
-        let costBasis = 0;
+        let costBasis = D(0);
         const lotConsumption = selections.map((sel) => {
           const lot = openLots.find((l) => l.id === sel.lotId)!;
-          const consumedCost = lot.costBasisPerUnit * sel.amount;
-          lot.amountRemaining -= sel.amount;
-          costBasis += consumedCost;
-          return { lotId: lot.id, amount: sel.amount, costBasis: consumedCost };
+          const consumedCost = mul(lot.costBasisPerUnit, sel.amount);
+          // Clamp the remaining quantity at 0 — it must never go negative, and a
+          // dust residual left by float noise collapses to exactly 0.
+          const remainingAfter = sub(lot.amountRemaining, sel.amount);
+          lot.amountRemaining = isDust(remainingAfter) ? 0 : Math.max(0, toNumber(remainingAfter));
+          costBasis = add(costBasis, consumedCost);
+          return { lotId: lot.id, amount: sel.amount, costBasis: toNumber(consumedCost) };
         });
 
         const proceeds = Math.abs(tx.fiatValue ?? 0);
@@ -174,14 +302,15 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
           : tx.timestamp;
         const holdingPeriodDays = Math.max(0, Math.round((tx.timestamp - earliestLotDate) / 86_400_000));
 
+        const costBasisNum = toNumber(costBasis);
         disposals.push({
           id: makeId('disp'),
           asset,
           disposedAt: tx.timestamp,
           amount: tx.amount,
           proceeds,
-          costBasis,
-          gain: proceeds - costBasis,
+          costBasis: costBasisNum,
+          gain: toNumber(sub(proceeds, costBasis)),
           holdingPeriodDays,
           lotConsumption,
           sourceTxId: origId,
@@ -191,5 +320,5 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
     }
   }
 
-  return { lots, disposals, shortfalls, disposalCandidates };
+  return { lots, disposals, shortfalls, flags, disposalCandidates };
 }

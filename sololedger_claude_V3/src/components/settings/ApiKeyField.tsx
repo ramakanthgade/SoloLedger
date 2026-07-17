@@ -28,10 +28,10 @@ export function ApiKeyField({ label, value, onSave, onDelete, placeholder }: Pro
 
   return (
     <div className="space-y-1.5">
-      <label className="block text-xs text-mist-400">{label}</label>
+      <label className="block text-xs text-low">{label}</label>
       {!editing && value ? (
-        <div className="flex items-center gap-2 rounded-full border border-emerald/30 bg-emerald/10 px-3 py-1.5">
-          <span className="flex-1 font-mono text-sm text-mist" title="Masked for security — the full key is stored locally">
+        <div className="flex items-center gap-2 rounded-full border border-violet/30 bg-violet/10 px-3 py-1.5">
+          <span className="flex-1 font-mono text-sm text-mid" title="Masked for security — the full key is stored locally">
             {mask(value)}
           </span>
           <button
@@ -40,7 +40,7 @@ export function ApiKeyField({ label, value, onSave, onDelete, placeholder }: Pro
               setDraft(value);
               setEditing(true);
             }}
-            className="flex items-center gap-1 text-xs text-emerald-600 hover:underline"
+            className="flex items-center gap-1 text-xs text-gain hover:underline"
           >
             <Pencil className="h-3 w-3" /> Edit
           </button>
@@ -55,7 +55,7 @@ export function ApiKeyField({ label, value, onSave, onDelete, placeholder }: Pro
       ) : (
         <div className="flex items-center gap-2">
           <input
-            className="block w-full rounded-full border border-ink-600 bg-ink-800 px-3 py-1.5 text-sm text-mist focus:border-emerald focus:outline-none"
+            className="block w-full rounded-full border border-white/10 bg-elev-2 px-3 py-1.5 text-sm text-mid focus:border-violet focus:outline-none"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             placeholder={placeholder}

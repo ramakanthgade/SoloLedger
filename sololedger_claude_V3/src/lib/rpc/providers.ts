@@ -18,6 +18,7 @@ import type { Transaction } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 function hasRpcCredential(key?: string): boolean {
   if (isSaasMode()) return true;
@@ -76,6 +77,8 @@ export interface LookupResult {
 
 // ---- Bitcoin: Blockstream/mempool.space-compatible, no key ----
 async function fetchBitcoin(address: string, baseUrl: string, asset: string): Promise<LookupResult> {
+  // Public explorer (no key, no SaaS proxy) → always a direct browser call.
+  recordNetworkActivity(resolveMode(false));
   const res = await fetch(`${baseUrl}/address/${address}/txs`);
   if (!res.ok) throw new Error(`Explorer API returned ${res.status}`);
   const data = await res.json();
@@ -133,9 +136,11 @@ function alchemyRpcUrl(network: string): string {
 
 function alchemyFetch(url: string, init: RequestInit): Promise<Response> {
   if (isSaasMode()) {
+    recordNetworkActivity(resolveMode(true));
     const path = url.replace(getApiBase(), '');
     return saasProxyFetch(path, init);
   }
+  recordNetworkActivity(resolveMode(false));
   return fetch(url, init);
 }
 
@@ -573,6 +578,8 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
     }
   };
 
+  // Etherscan-compatible explorers are called directly with the user's key.
+  recordNetworkActivity(resolveMode(false));
   const nativeRes = await fetch(nativeUrl);
   if (!nativeRes.ok) throw new Error(await parseExplorerError(nativeRes));
   const nativeData = await nativeRes.json();
@@ -618,6 +625,8 @@ async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
   let txRes: Response;
   let tokenRes: Response;
   try {
+    // Blockscout is a public explorer called directly (CORS-open, no key).
+    recordNetworkActivity(resolveMode(false));
     [txRes, tokenRes] = await Promise.all([
       fetch(blockscoutUrl(`/addresses/${address}/transactions`)),
       fetch(blockscoutUrl(`/addresses/${address}/token-transfers`))

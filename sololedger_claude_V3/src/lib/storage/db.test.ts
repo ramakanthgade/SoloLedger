@@ -55,7 +55,7 @@ describe('transactionSourceKey', () => {
 });
 
 describe('transactionImportKey', () => {
-  it('includes a precision-stable amount', () => {
+  it('includes a precision-stable amount (4dp for amounts >= 1)', () => {
     const key = transactionImportKey({
       sourceRef: 'sig',
       walletAddress: '0xWallet',
@@ -63,7 +63,9 @@ describe('transactionImportKey', () => {
       amount: 1.23456,
       contractAddress: undefined
     });
-    expect(key).toBe('sig|0xwallet|ETH|1.23');
+    // 4dp tier (reconciled with exchangeSourceRef/stableAmountKey) so a
+    // re-import produces the same key regardless of import path.
+    expect(key).toBe('sig|0xwallet|ETH|1.2346');
   });
 
   it('returns null when required fields are missing', () => {

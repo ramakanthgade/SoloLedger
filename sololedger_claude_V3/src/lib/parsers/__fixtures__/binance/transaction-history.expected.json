@@ -1,0 +1,30 @@
+[
+  {
+    "timestamp": 1746093600000,
+    "type": "buy",
+    "asset": "BTC",
+    "amount": 0.01,
+    "fiatValue": 500,
+    "fiatCurrency": "USD",
+    "counterAsset": "USDT",
+    "counterAmount": 500,
+    "sourceRef": "binance:1746093600000:buy:BTC:0.010000",
+    "source": "binance",
+    "flags": [],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1746093600000,
+    "type": "buy",
+    "asset": "ETH",
+    "amount": 2,
+    "fiatValue": 400,
+    "fiatCurrency": "USD",
+    "counterAsset": "USDT",
+    "counterAmount": 400,
+    "sourceRef": "binance:1746093600000:buy:ETH:2.0000",
+    "source": "binance",
+    "flags": [],
+    "isInternalTransfer": false
+  }
+]

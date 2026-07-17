@@ -10,6 +10,7 @@ import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { getSettings } from '@/lib/storage/db';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 function localApiSolanaProxy(): string | null {
   if (typeof window === 'undefined') return null;
@@ -53,6 +54,7 @@ export async function solanaRpc<T>(
     try {
       let res: Response;
       if (isSaasMode() && url.includes('/api/proxy/alchemy')) {
+        recordNetworkActivity(resolveMode(true));
         res = await saasProxyFetch('/api/proxy/alchemy/solana-mainnet', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -67,6 +69,7 @@ export async function solanaRpc<T>(
         }
         const headers: HeadersInit = { 'Content-Type': 'application/json' };
         if (key && url.includes('alchemy')) headers.Authorization = `Bearer ${key}`;
+        recordNetworkActivity(resolveMode(false));
         res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(payload) });
       }
       if (!res.ok) continue;

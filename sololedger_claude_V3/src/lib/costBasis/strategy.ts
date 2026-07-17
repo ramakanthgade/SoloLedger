@@ -12,7 +12,7 @@ export interface LotSelection {
 }
 
 export interface CostBasisStrategy {
-  method: 'FIFO' | 'SpecID';
+  method: 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
   /**
    * Given the open lots for an asset (sorted however the strategy wants) and
    * an amount being disposed, return which lots to consume and how much

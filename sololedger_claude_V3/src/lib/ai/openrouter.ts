@@ -7,6 +7,7 @@
 
 import { isSaasMode } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
+import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const OPENROUTER_BASE = 'https://openrouter.ai/api/v1';
 
@@ -21,6 +22,8 @@ function openrouterHeaders(apiKey: string): HeadersInit {
 }
 
 async function openrouterFetch(path: string, init: RequestInit): Promise<Response> {
+  // Relay when proxied via the SaaS backend; direct when using the user's own key.
+  recordNetworkActivity(resolveMode(isSaasMode()));
   if (isSaasMode()) return saasProxyFetch(`/api/proxy/openrouter/${path}`, init);
   return fetch(`${OPENROUTER_BASE}/${path}`, init);
 }
