@@ -57,4 +57,25 @@ describe('BrandLogo', () => {
     expect(screen.getByText('Solo')).toBeInTheDocument();
     expect(screen.queryByText('Private. Precise. Yours.')).not.toBeInTheDocument();
   });
+
+  it('gives each instance a unique gradient id so multiple logos on one page do not collide', () => {
+    const { container } = render(
+      <>
+        <BrandLogo variant="on-glass" />
+        <BrandLogo variant="on-glass" />
+      </>
+    );
+    const ids = Array.from(container.querySelectorAll('linearGradient')).map((g) =>
+      g.getAttribute('id')
+    );
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBeTruthy();
+    expect(ids[1]).toBeTruthy();
+    // Distinct ids — the duplicate-id collision that dropped the stroke is gone.
+    expect(ids[0]).not.toBe(ids[1]);
+    // Each shield stroke references its own gradient.
+    ids.forEach((id) => {
+      expect(container.querySelector(`path[stroke="url(#${id})"]`)).not.toBeNull();
+    });
+  });
 });

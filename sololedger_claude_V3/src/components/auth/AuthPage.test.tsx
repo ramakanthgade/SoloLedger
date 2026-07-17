@@ -32,12 +32,13 @@ describe('AuthPage', () => {
     expect(password.type).toBe('password');
   });
 
-  it('register mode: renders a confirm-password field with its own reveal toggle', () => {
+  it('register mode: renders a confirm-password field with its own distinctly-labelled reveal toggle', () => {
     render(<AuthPage initialMode="register" />);
     expect(screen.getByPlaceholderText('At least 8 characters')).toBeInTheDocument();
     expect(screen.getByPlaceholderText('Re-enter your password')).toBeInTheDocument();
-    // Two independent reveal toggles (password + confirm).
-    expect(screen.getAllByRole('button', { name: 'Show password' })).toHaveLength(2);
+    // Two independent, distinguishable reveal toggles.
+    expect(screen.getByRole('button', { name: 'Show password' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show confirm password' })).toBeInTheDocument();
   });
 
   it('register mode: blocks submit and shows an error when passwords do not match', async () => {
@@ -71,5 +72,26 @@ describe('AuthPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Create free account' }));
 
     await waitFor(() => expect(register).toHaveBeenCalledWith('user@example.com', 'password123'));
+  });
+
+  it('resets email/password and the mismatch error when switching modes', async () => {
+    render(<AuthPage initialMode="register" />);
+    fireEvent.change(screen.getByPlaceholderText('you@email.com'), {
+      target: { value: 'user@example.com' }
+    });
+    const password = screen.getByPlaceholderText('At least 8 characters') as HTMLInputElement;
+    fireEvent.change(password, { target: { value: 'password123' } });
+    fireEvent.change(screen.getByPlaceholderText('Re-enter your password'), {
+      target: { value: 'nope' }
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Create free account' }));
+    expect(await screen.findByText('Passwords do not match')).toBeInTheDocument();
+
+    // Switch to sign-in: fields clear, error clears, confirm field is gone.
+    fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    expect(screen.queryByText('Passwords do not match')).toBeNull();
+    expect(screen.queryByPlaceholderText('Re-enter your password')).toBeNull();
+    expect((screen.getByPlaceholderText('you@email.com') as HTMLInputElement).value).toBe('');
+    expect((screen.getByPlaceholderText('At least 8 characters') as HTMLInputElement).value).toBe('');
   });
 });

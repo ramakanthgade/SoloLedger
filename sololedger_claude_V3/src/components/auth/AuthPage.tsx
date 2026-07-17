@@ -5,6 +5,52 @@ import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
+type PasswordFieldProps = {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  autoComplete: string;
+  placeholder: string;
+};
+
+/**
+ * Password input with a built-in reveal toggle. Defaults to masked
+ * (type="password") and only reveals on explicit click. Owns its own reveal
+ * state so multiple fields (password + confirm) stay independent; the eye
+ * button's accessible name is derived from `label` so the two toggles are
+ * distinguishable to screen readers.
+ */
+function PasswordField({ label, value, onChange, autoComplete, placeholder }: PasswordFieldProps) {
+  const [show, setShow] = useState(false);
+  const action = show ? 'Hide' : 'Show';
+  return (
+    <label className="block text-sm font-medium text-mid">
+      {label}
+      <div className="relative mt-1.5">
+        <input
+          type={show ? 'text' : 'password'}
+          required
+          minLength={8}
+          autoComplete={autoComplete}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          className="block w-full rounded-xl border border-white/10 bg-elev-3 px-4 py-3 pr-12 text-hi shadow-soft outline-none transition focus:border-violet/40 focus:ring-2 focus:ring-violet/30"
+          placeholder={placeholder}
+        />
+        <button
+          type="button"
+          onClick={() => setShow((v) => !v)}
+          aria-label={`${action} ${label.toLowerCase()}`}
+          aria-pressed={show}
+          className="absolute inset-y-0 right-0 flex items-center px-3 text-mid transition hover:text-hi"
+        >
+          {show ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+        </button>
+      </div>
+    </label>
+  );
+}
+
 type AuthPageProps = {
   initialMode?: 'login' | 'register';
   onBack?: () => void;
@@ -16,8 +62,6 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -32,8 +76,8 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
     setBusy(true);
     setError(null);
     try {
-      if (mode === 'login') await login(email, password);
-      else await register(email, password);
+      if (isRegister) await register(email, password);
+      else await login(email, password);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Authentication failed');
     } finally {
@@ -44,9 +88,9 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
   const switchMode = () => {
     setMode(isRegister ? 'login' : 'register');
     setError(null);
+    setEmail('');
+    setPassword('');
     setConfirmPassword('');
-    setShowPassword(false);
-    setShowConfirmPassword(false);
   };
 
   return (
@@ -72,7 +116,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
           </div>
           <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue">Private crypto tax software</p>
           <h1 className="mt-3 font-display text-4xl font-bold leading-tight text-hi lg:text-5xl">
-            {mode === 'login' ? 'Welcome back' : 'Start for free'}
+            {isRegister ? 'Start for free' : 'Welcome back'}
           </h1>
           <p className="mt-4 max-w-md text-lg text-mid">
             Your transactions stay in your browser. We authenticate you and proxy wallet lookups — we never store your
@@ -99,9 +143,9 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
             <div className="mb-6 hidden lg:block">
               <BrandLogo variant="on-glass" showTagline={false} />
             </div>
-            <h2 className="text-xl font-bold text-hi">{mode === 'login' ? 'Sign in' : 'Create account'}</h2>
+            <h2 className="text-xl font-bold text-hi">{isRegister ? 'Create account' : 'Sign in'}</h2>
             <p className="mt-1 text-sm text-low">
-              {mode === 'login' ? 'Access your private workspace' : 'No credit card required'}
+              {isRegister ? 'No credit card required' : 'Access your private workspace'}
             </p>
 
             <form onSubmit={submit} className="mt-6 space-y-4">
@@ -117,55 +161,21 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
                   placeholder="you@email.com"
                 />
               </label>
-              <label className="block text-sm font-medium text-mid">
-                Password
-                <div className="relative mt-1.5">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    required
-                    minLength={8}
-                    autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    className="block w-full rounded-xl border border-white/10 bg-elev-3 px-4 py-3 pr-12 text-hi shadow-soft outline-none transition focus:border-violet/40 focus:ring-2 focus:ring-violet/30"
-                    placeholder="At least 8 characters"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowPassword((v) => !v)}
-                    aria-label={showPassword ? 'Hide password' : 'Show password'}
-                    aria-pressed={showPassword}
-                    className="absolute inset-y-0 right-0 flex items-center px-3 text-mid transition hover:text-hi"
-                  >
-                    {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                  </button>
-                </div>
-              </label>
+              <PasswordField
+                label="Password"
+                value={password}
+                onChange={setPassword}
+                autoComplete={isRegister ? 'new-password' : 'current-password'}
+                placeholder="At least 8 characters"
+              />
               {isRegister && (
-                <label className="block text-sm font-medium text-mid">
-                  Confirm password
-                  <div className="relative mt-1.5">
-                    <input
-                      type={showConfirmPassword ? 'text' : 'password'}
-                      required
-                      minLength={8}
-                      autoComplete="new-password"
-                      value={confirmPassword}
-                      onChange={(e) => setConfirmPassword(e.target.value)}
-                      className="block w-full rounded-xl border border-white/10 bg-elev-3 px-4 py-3 pr-12 text-hi shadow-soft outline-none transition focus:border-violet/40 focus:ring-2 focus:ring-violet/30"
-                      placeholder="Re-enter your password"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowConfirmPassword((v) => !v)}
-                      aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
-                      aria-pressed={showConfirmPassword}
-                      className="absolute inset-y-0 right-0 flex items-center px-3 text-mid transition hover:text-hi"
-                    >
-                      {showConfirmPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
-                    </button>
-                  </div>
-                </label>
+                <PasswordField
+                  label="Confirm password"
+                  value={confirmPassword}
+                  onChange={setConfirmPassword}
+                  autoComplete="new-password"
+                  placeholder="Re-enter your password"
+                />
               )}
               {error && (
                 <p className="rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-sm text-loss">{error}</p>
@@ -178,7 +188,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
                   'bg-aurora text-[#0A0B1A] hover:brightness-105'
                 )}
               >
-                {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create free account'}
+                {busy ? 'Please wait…' : isRegister ? 'Create free account' : 'Sign in'}
               </Button>
             </form>
 
