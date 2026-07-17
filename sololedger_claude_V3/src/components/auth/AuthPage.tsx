@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { ArrowLeft, Lock, Mail, Shield } from 'lucide-react';
+import { ArrowLeft, Eye, EyeOff, Lock, Mail, Shield } from 'lucide-react';
 import { useAuth } from '@/lib/saas/authContext';
 import { BrandLogo } from '@/components/BrandLogo';
 import { Button } from '@/components/ui/button';
@@ -15,11 +15,20 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
   const [mode, setMode] = useState<'login' | 'register'>(initialMode);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  const isRegister = mode === 'register';
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isRegister && password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -30,6 +39,14 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
     } finally {
       setBusy(false);
     }
+  };
+
+  const switchMode = () => {
+    setMode(isRegister ? 'login' : 'register');
+    setError(null);
+    setConfirmPassword('');
+    setShowPassword(false);
+    setShowConfirmPassword(false);
   };
 
   return (
@@ -102,17 +119,54 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
               </label>
               <label className="block text-sm font-medium text-mid">
                 Password
-                <input
-                  type="password"
-                  required
-                  minLength={8}
-                  autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="mt-1.5 block w-full rounded-xl border border-white/10 bg-elev-3 px-4 py-3 text-hi shadow-soft outline-none transition focus:border-violet/40 focus:ring-2 focus:ring-violet/30"
-                  placeholder="At least 8 characters"
-                />
+                <div className="relative mt-1.5">
+                  <input
+                    type={showPassword ? 'text' : 'password'}
+                    required
+                    minLength={8}
+                    autoComplete={mode === 'login' ? 'current-password' : 'new-password'}
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    className="block w-full rounded-xl border border-white/10 bg-elev-3 px-4 py-3 pr-12 text-hi shadow-soft outline-none transition focus:border-violet/40 focus:ring-2 focus:ring-violet/30"
+                    placeholder="At least 8 characters"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPassword((v) => !v)}
+                    aria-label={showPassword ? 'Hide password' : 'Show password'}
+                    aria-pressed={showPassword}
+                    className="absolute inset-y-0 right-0 flex items-center px-3 text-mid transition hover:text-hi"
+                  >
+                    {showPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                  </button>
+                </div>
               </label>
+              {isRegister && (
+                <label className="block text-sm font-medium text-mid">
+                  Confirm password
+                  <div className="relative mt-1.5">
+                    <input
+                      type={showConfirmPassword ? 'text' : 'password'}
+                      required
+                      minLength={8}
+                      autoComplete="new-password"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      className="block w-full rounded-xl border border-white/10 bg-elev-3 px-4 py-3 pr-12 text-hi shadow-soft outline-none transition focus:border-violet/40 focus:ring-2 focus:ring-violet/30"
+                      placeholder="Re-enter your password"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowConfirmPassword((v) => !v)}
+                      aria-label={showConfirmPassword ? 'Hide password' : 'Show password'}
+                      aria-pressed={showConfirmPassword}
+                      className="absolute inset-y-0 right-0 flex items-center px-3 text-mid transition hover:text-hi"
+                    >
+                      {showConfirmPassword ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
+                    </button>
+                  </div>
+                </label>
+              )}
               {error && (
                 <p className="rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-sm text-loss">{error}</p>
               )}
@@ -129,13 +183,13 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
             </form>
 
             <p className="mt-6 text-center text-sm text-mid">
-              {mode === 'login' ? "Don't have an account?" : 'Already have an account?'}{' '}
+              {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
               <button
                 type="button"
                 className="font-semibold text-blue underline-offset-2 hover:underline"
-                onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
+                onClick={switchMode}
               >
-                {mode === 'login' ? 'Get started free' : 'Sign in'}
+                {isRegister ? 'Sign in' : 'Get started free'}
               </button>
             </p>
           </div>

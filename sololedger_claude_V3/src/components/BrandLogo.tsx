@@ -1,3 +1,4 @@
+import { useId } from 'react';
 import { cn } from '@/lib/utils';
 
 type BrandLogoProps = {
@@ -18,6 +19,9 @@ type BrandLogoProps = {
 
 /** Variant B — aurora-gradient shield stroke, white ledger lines, teal tick. */
 function AuroraMarkB({ className, titleId }: { className?: string; titleId: string }) {
+  // Unique per instance so multiple logos on one page don't collide on the
+  // gradient id (duplicate SVG def ids make the stroke drop out in Chrome/Safari).
+  const gradientId = useId();
   return (
     <svg
       viewBox="0 0 48 48"
@@ -28,7 +32,7 @@ function AuroraMarkB({ className, titleId }: { className?: string; titleId: stri
     >
       <title id={titleId}>SoloLedger</title>
       <defs>
-        <linearGradient id="brand-au-b" x1="8" y1="6" x2="40" y2="42" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="8" y1="6" x2="40" y2="42" gradientUnits="userSpaceOnUse">
           <stop offset="0" stopColor="#7C5CFF" />
           <stop offset="0.5" stopColor="#4EA8FF" />
           <stop offset="1" stopColor="#22E1C3" />
@@ -36,7 +40,7 @@ function AuroraMarkB({ className, titleId }: { className?: string; titleId: stri
       </defs>
       <path
         d="M24 4 38 10v13c0 8.5-14 17.5-14 17.5S10 31.5 10 23V10L24 4Z"
-        stroke="url(#brand-au-b)"
+        stroke={`url(#${gradientId})`}
         strokeWidth="2"
         strokeLinejoin="round"
       />
@@ -68,6 +72,9 @@ function AuroraMarkB({ className, titleId }: { className?: string; titleId: stri
 
 /** Variant C — dark mark on an aurora-gradient filled chip. */
 function AuroraMarkC({ className, titleId }: { className?: string; titleId: string }) {
+  // Unique per instance so multiple logos on one page don't collide on the
+  // gradient id (duplicate SVG def ids make the fill drop out in Chrome/Safari).
+  const gradientId = useId();
   return (
     <svg
       viewBox="0 0 48 48"
@@ -78,13 +85,13 @@ function AuroraMarkC({ className, titleId }: { className?: string; titleId: stri
     >
       <title id={titleId}>SoloLedger</title>
       <defs>
-        <linearGradient id="brand-au-c" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+        <linearGradient id={gradientId} x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
           <stop offset="0" stopColor="#7C5CFF" />
           <stop offset="0.5" stopColor="#4EA8FF" />
           <stop offset="1" stopColor="#22E1C3" />
         </linearGradient>
       </defs>
-      <rect x="0" y="0" width="48" height="48" rx="14" fill="url(#brand-au-c)" />
+      <rect x="0" y="0" width="48" height="48" rx="14" fill={`url(#${gradientId})`} />
       <path
         d="M24 4 38 10v13c0 8.5-14 17.5-14 17.5S10 31.5 10 23V10L24 4Z"
         stroke="#0A0B1A"

@@ -293,7 +293,7 @@ export function SettingsTab() {
                   if (file) setPendingRestore(file);
                 }}
               />
-              <span className="cursor-pointer rounded border border-white/10 bg-elev-3 px-4 py-2 text-sm text-mid hover:bg-elev-3">
+              <span className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-white/10 bg-elev-2 px-4 text-sm font-semibold text-hi shadow-soft transition-all hover:bg-elev-3">
                 Import backup
               </span>
             </label>
