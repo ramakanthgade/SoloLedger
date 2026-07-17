@@ -123,6 +123,7 @@ export type IncomeKind =
   | 'airdrop_suspected'
   | 'staking_suspected'
   | 'mining_reward'
+  | 'defi_reward'
   | DabbaIncomeKind;
 
 export interface IncomeRow {
