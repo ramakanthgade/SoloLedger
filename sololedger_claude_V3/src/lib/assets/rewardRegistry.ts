@@ -18,10 +18,16 @@ import { classifyDbtIncome, DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 import type { DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
 
 /** Geodnet GEOD SPL token mint on Solana mainnet. */
-export const GEOD_TOKEN_MINT = '7JA5eZdCzztSfQbJvS8aVVxMFfd81Rs9VvwnocV1mKHu';
+export const GEOD_TOKEN_MINT_SOLANA = '7JA5eZdCzztSfQbJvS8aVVxMFfd81Rs9VvwnocV1mKHu';
 
-/** Geodnet's official rewards distributor wallet (pays out daily GEOD mining rewards). */
-export const GEOD_REWARDS_WALLET = '8eznVreusXAyh4HZirLWNjMxgoQdxzqfTi9Uw8gEL2RE';
+/** Geodnet's official Solana rewards distributor wallet (pays out daily GEOD mining rewards). */
+export const GEOD_REWARDS_WALLET_SOLANA = '8eznVreusXAyh4HZirLWNjMxgoQdxzqfTi9Uw8gEL2RE';
+
+/** Geodnet GEOD ERC-20 token contract on Polygon. */
+export const GEOD_TOKEN_POLYGON = '0xac0f66379a6d7801d7726d5a943356a172549adb';
+
+/** Geodnet's official Polygon mining distribution wallet. */
+export const GEOD_REWARDS_WALLET_POLYGON = '0x8fb9dd00b9a3d893da96d444817d0b77330d5478';
 
 /**
  * Income classification kinds for reward tokens. `mining_reward` is deliberately
@@ -41,7 +47,7 @@ export interface RewardClassification {
 }
 
 export interface RewardTokenEntry {
-  /** SPL token mint address (Solana) — the unique fingerprint of the token. */
+  /** Token mint or contract address — the unique fingerprint of the token. */
   mint: string;
   /** Ticker symbol for display. */
   symbol: string;
@@ -69,12 +75,20 @@ export interface RewardTokenEntry {
 
 export const REWARD_TOKENS: RewardTokenEntry[] = [
   {
-    mint: GEOD_TOKEN_MINT,
+    mint: GEOD_TOKEN_MINT_SOLANA,
     symbol: 'GEOD',
     defaultKind: 'mining_reward',
-    label: 'Geodnet GEOD mining reward',
-    notes: 'Geodnet GEOD mining reward — auto-classified as income',
-    distributorAllowlist: [GEOD_REWARDS_WALLET]
+    label: 'Geodnet GEOD mining reward (Solana)',
+    notes: 'Geodnet GEOD mining reward on Solana — auto-classified as income',
+    distributorAllowlist: [GEOD_REWARDS_WALLET_SOLANA]
+  },
+  {
+    mint: GEOD_TOKEN_POLYGON,
+    symbol: 'GEOD',
+    defaultKind: 'mining_reward',
+    label: 'Geodnet GEOD mining reward (Polygon)',
+    notes: 'Geodnet GEOD mining reward on Polygon — auto-classified as income',
+    distributorAllowlist: [GEOD_REWARDS_WALLET_POLYGON]
   },
   {
     mint: DBT_TOKEN_MINT,
@@ -100,7 +114,20 @@ export function isKnownRewardToken(mint?: string): boolean {
 
 function getEntry(mint?: string): RewardTokenEntry | undefined {
   if (!mint) return undefined;
-  return REWARD_TOKENS.find((e) => e.mint === mint);
+  return REWARD_TOKENS.find((e) => addressesEqual(e.mint, mint));
+}
+
+function isEvmAddress(value: string): boolean {
+  return /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+
+/** EVM addresses are case-insensitive; non-EVM identifiers (including Solana)
+ * remain case-sensitive. */
+function addressesEqual(left: string, right: string): boolean {
+  if (isEvmAddress(left) && isEvmAddress(right)) {
+    return left.toLowerCase() === right.toLowerCase();
+  }
+  return left === right;
 }
 
 /**
@@ -132,7 +159,10 @@ export function classifyRewardIncome(
   // explicitly required). With no allowlist and no sender there's nothing to
   // match against either.
   if (!counterpartyAddress) return null;
-  if (entry.distributorAllowlist?.length && !entry.distributorAllowlist.includes(counterpartyAddress)) {
+  if (
+    entry.distributorAllowlist?.length &&
+    !entry.distributorAllowlist.some((address) => addressesEqual(address, counterpartyAddress))
+  ) {
     return null;
   }
 
