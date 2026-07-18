@@ -10,7 +10,7 @@
 import type { FlagReason, Transaction } from '@/types/transaction';
 
 /** All flags shown for a row: stored flags plus the derived missing_cost_basis. */
-export function displayFlags(t: Transaction): string[] {
+export function displayFlags(t: Transaction): FlagReason[] {
   const flags = new Set(t.flags ?? []);
   if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
   return [...flags];
