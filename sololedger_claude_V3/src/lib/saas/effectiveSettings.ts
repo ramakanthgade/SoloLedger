@@ -52,6 +52,21 @@ export function hasAiAdvisor(settings: TaxSettings): boolean {
   return Boolean(settings.aiApiKey);
 }
 
+/**
+ * Whether AI column-mapping can actually run right now.
+ * - local/byok: true only when the user has pasted an AI key.
+ * - hosted: true only when the server reports `aiAdvisorEnabled` (OpenRouter
+ *   configured AND admin-enabled). Unlike `hasAiAdvisor`, this does NOT assume
+ *   every hosted session has AI — it mirrors what AiAdvisor.tsx checks so the
+ *   import flow doesn't offer a proxy call the server will reject (403/503).
+ */
+export async function isAiMappingAvailable(): Promise<boolean> {
+  const local = await getSettings();
+  if (!isSaasMode()) return Boolean(local.aiApiKey);
+  const server = await getServerConfig();
+  return Boolean(server?.aiAdvisorEnabled);
+}
+
 export function invalidateServerConfigCache(): void {
   cachedConfig = null;
   configFetchedAt = 0;
