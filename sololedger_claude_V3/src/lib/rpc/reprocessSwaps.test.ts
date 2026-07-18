@@ -1,6 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Transaction } from '@/types/transaction';
-import { GEOD_TOKEN_MINT, GEOD_REWARDS_WALLET } from '@/lib/assets/rewardRegistry';
+import {
+  GEOD_TOKEN_MINT_SOLANA,
+  GEOD_REWARDS_WALLET_SOLANA
+} from '@/lib/assets/rewardRegistry';
 import { DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 
 // ---- In-memory transactions store ----
@@ -58,8 +61,8 @@ describe('reprocessRewardIncome', () => {
     store = [
       tx({
         id: 'geod',
-        contractAddress: GEOD_TOKEN_MINT,
-        counterpartyAddress: GEOD_REWARDS_WALLET,
+        contractAddress: GEOD_TOKEN_MINT_SOLANA,
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA,
         walletAddress: USER_WALLET
       })
     ];
@@ -74,7 +77,7 @@ describe('reprocessRewardIncome', () => {
     store = [
       tx({
         id: 'geod-peer',
-        contractAddress: GEOD_TOKEN_MINT,
+        contractAddress: GEOD_TOKEN_MINT_SOLANA,
         counterpartyAddress: NON_REWARDS_SENDER,
         walletAddress: USER_WALLET
       })
@@ -102,9 +105,9 @@ describe('reprocessRewardIncome', () => {
 
   it('does not touch rows the user already classified / made internal / spammed', async () => {
     store = [
-      tx({ id: 'already-income', type: 'income', contractAddress: GEOD_TOKEN_MINT, counterpartyAddress: GEOD_REWARDS_WALLET }),
-      tx({ id: 'internal', isInternalTransfer: true, contractAddress: GEOD_TOKEN_MINT, counterpartyAddress: GEOD_REWARDS_WALLET }),
-      tx({ id: 'spam', isSpam: true, contractAddress: GEOD_TOKEN_MINT, counterpartyAddress: GEOD_REWARDS_WALLET })
+      tx({ id: 'already-income', type: 'income', contractAddress: GEOD_TOKEN_MINT_SOLANA, counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA }),
+      tx({ id: 'internal', isInternalTransfer: true, contractAddress: GEOD_TOKEN_MINT_SOLANA, counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA }),
+      tx({ id: 'spam', isSpam: true, contractAddress: GEOD_TOKEN_MINT_SOLANA, counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA })
     ];
     const n = await reprocessRewardIncome();
     expect(n).toBe(0);
@@ -116,7 +119,7 @@ describe('reprocessRewardIncome', () => {
   it('skips reward rows sent from one of the user\'s own wallets', async () => {
     store = [
       // user has two wallets; one sends GEOD to the other → self-transfer, not income
-      tx({ id: 'self', contractAddress: GEOD_TOKEN_MINT, counterpartyAddress: USER_WALLET, walletAddress: 'OtherWallet222222222222222222222222222222' })
+      tx({ id: 'self', contractAddress: GEOD_TOKEN_MINT_SOLANA, counterpartyAddress: USER_WALLET, walletAddress: 'OtherWallet222222222222222222222222222222' })
     ];
     const n = await reprocessRewardIncome();
     expect(n).toBe(0);
@@ -143,7 +146,7 @@ describe('reprocessRewardIncome', () => {
     store = [
       tx({
         id: 'geod-nocp',
-        contractAddress: GEOD_TOKEN_MINT,
+        contractAddress: GEOD_TOKEN_MINT_SOLANA,
         counterpartyAddress: undefined,
         walletAddress: USER_WALLET
       })
@@ -155,7 +158,7 @@ describe('reprocessRewardIncome', () => {
 
   it('ignores non-registry tokens entirely', async () => {
     store = [
-      tx({ id: 'usdc', asset: 'USDC', contractAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', counterpartyAddress: GEOD_REWARDS_WALLET })
+      tx({ id: 'usdc', asset: 'USDC', contractAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA })
     ];
     const n = await reprocessRewardIncome();
     expect(n).toBe(0);
