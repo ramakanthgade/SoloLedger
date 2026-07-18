@@ -60,4 +60,18 @@ describe('matchesFlagFilter', () => {
     expect(matchesFlagFilter(unpriced, 'missing_cost_basis')).toBe(true);
     expect(matchesFlagFilter(priced, 'missing_cost_basis')).toBe(false);
   });
+
+  it('narrows to spam rows for the "spam" filter', () => {
+    const spam = tx({ fiatValue: 100, isSpam: true });
+    const notSpam = tx({ fiatValue: 100, isSpam: false });
+    expect(matchesFlagFilter(spam, 'spam')).toBe(true);
+    expect(matchesFlagFilter(notSpam, 'spam')).toBe(false);
+  });
+
+  it('narrows to internal-transfer rows for the "internal" filter', () => {
+    const internal = tx({ fiatValue: 100, isInternalTransfer: true });
+    const notInternal = tx({ fiatValue: 100, isInternalTransfer: false });
+    expect(matchesFlagFilter(internal, 'internal')).toBe(true);
+    expect(matchesFlagFilter(notInternal, 'internal')).toBe(false);
+  });
 });

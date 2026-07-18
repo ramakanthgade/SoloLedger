@@ -39,3 +39,27 @@ describe('ReviewTab — Flags filter (Item 4)', () => {
     expect(source).toContain('All flags');
   });
 });
+
+describe('ReviewTab — round 2 UI fixes (Task 1)', () => {
+  it('adds Spam and Internal options to the Flags filter dropdown (Issue 3)', () => {
+    expect(source).toContain('<option value="spam">Spam</option>');
+    expect(source).toContain('<option value="internal">Internal</option>');
+  });
+
+  it('right-anchors the per-row Flags popover so it is not clipped (Issue 1)', () => {
+    // Right-anchor fix: the flags popover opens inward from the last column.
+    expect(source).toContain('absolute right-0 top-7 z-30 min-w-[14rem]');
+    expect(source).not.toContain('absolute left-0 top-7 z-30 min-w-[14rem]');
+  });
+
+  it('renders the shared pagination bar both above and below the table (Issue 2)', () => {
+    const topOfTable = source.indexOf('overflow-x-auto rounded-lg border border-white/10');
+    const firstPager = source.indexOf("renderPagination('pb-0.5')");
+    const secondPager = source.indexOf("renderPagination('pt-2')");
+    expect(firstPager).toBeGreaterThan(-1);
+    expect(secondPager).toBeGreaterThan(-1);
+    // Top bar precedes the table wrapper; bottom bar follows it.
+    expect(firstPager).toBeLessThan(topOfTable);
+    expect(secondPager).toBeGreaterThan(topOfTable);
+  });
+});
