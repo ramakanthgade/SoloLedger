@@ -18,7 +18,7 @@ vi.mock('@/lib/storage/db', () => ({
   }
 }));
 
-import { applyDefiLlamaRewardSuggestions, countNeedsReview } from '@/lib/rpc/rewardSuggestions';
+import { applyDefiLlamaRewardSuggestions, countNeedsReview, reclassifyTypePatch } from '@/lib/rpc/rewardSuggestions';
 
 const REWARD_MINT = 'R'.repeat(44);
 const SENDER = 'S'.repeat(44);
@@ -125,22 +125,13 @@ describe('applyDefiLlamaRewardSuggestions', () => {
     expect(first.suggested).toBe(1);
     expect(store[0].category).toBe('defi_reward');
 
-    // Faithfully reproduce ReviewTab's TypeSelector.reclassify patch when the
-    // user rejects the suggestion (transfer_in): strip auto-derived + needs_review
-    // flags, keep the defi_reward category as the persistent rejection marker.
+    // Reject via the REAL reclassify patch (the exact code path ReviewTab uses)
+    // so this test breaks if reclassify ever starts clearing the category marker.
     const rejected = store[0];
-    store[0] = {
-      ...rejected,
-      type: 'transfer_in',
-      flags: (rejected.flags ?? []).filter(
-        (f) =>
-          f !== 'possible_internal_transfer' &&
-          f !== 'missing_cost_basis' &&
-          f !== 'needs_review'
-      )
-    };
+    store[0] = { ...rejected, ...reclassifyTypePatch(rejected.flags, 'transfer_in') };
+    expect(store[0].type).toBe('transfer_in');
     expect(store[0].flags).not.toContain('needs_review'); // left the review queue
-    expect(store[0].category).toBe('defi_reward'); // marker persists
+    expect(store[0].category).toBe('defi_reward'); // rejection marker persists
 
     const second = await applyDefiLlamaRewardSuggestions({ hints: HINTS });
     expect(second.suggested).toBe(0);
@@ -154,6 +145,20 @@ describe('applyDefiLlamaRewardSuggestions', () => {
     expect(r.message).toContain('1 Solana reward mint');
     expect(r.message).toContain('1 suggested reward income');
     expect(r.message).toContain('Needs review');
+  });
+});
+
+describe('reclassifyTypePatch', () => {
+  it('strips auto-derived + needs_review flags but returns no category (preserves the rejection marker)', () => {
+    const patch = reclassifyTypePatch(
+      ['possible_internal_transfer', 'missing_cost_basis', 'needs_review', 'duplicate_suspected'],
+      'transfer_in'
+    );
+    expect(patch.type).toBe('transfer_in');
+    expect(patch.flags).toEqual(['duplicate_suspected']);
+    // Must NOT touch category — a rejected defi_reward row keeps that marker so
+    // applyDefiLlamaRewardSuggestions won't re-suggest it.
+    expect('category' in patch).toBe(false);
   });
 });
 

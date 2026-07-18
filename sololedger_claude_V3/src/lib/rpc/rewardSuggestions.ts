@@ -24,7 +24,37 @@ import {
   fetchSolanaRewardHints,
   type LlamaRewardHint
 } from '@/lib/assets/defiLlamaRewards';
-import type { FlagReason, Transaction } from '@/types/transaction';
+import type { FlagReason, Transaction, TxType } from '@/types/transaction';
+
+/**
+ * The transaction patch applied when a user reclassifies a row's type in the
+ * Review tab's TypeSelector. Strips auto-derived flags AND `needs_review`
+ * (reclassifying means the user acted on the row, so it should leave the
+ * "Needs review" queue).
+ *
+ * It deliberately returns NO `category`: a row that was a `defi_reward`
+ * suggestion and is rejected back to `transfer_in` KEEPS its `defi_reward`
+ * category (the update simply doesn't touch it), and that category is the
+ * persistent "already reviewed this suggestion" marker the candidate filter in
+ * `applyDefiLlamaRewardSuggestions` checks so the row is never re-flipped to
+ * income. Keeping this in one tested helper prevents the two mechanisms from
+ * silently drifting apart (e.g. someone re-adding a `category: undefined` clear
+ * here would break reject-persistence).
+ */
+export function reclassifyTypePatch(
+  flags: readonly FlagReason[] | undefined,
+  next: TxType
+): Partial<Transaction> {
+  return {
+    type: next,
+    flags: (flags ?? []).filter(
+      (f) =>
+        f !== 'possible_internal_transfer' &&
+        f !== 'missing_cost_basis' &&
+        f !== 'needs_review'
+    ) as FlagReason[]
+  };
+}
 
 export interface RewardSuggestionResult {
   /** Solana reward-token mints in the DefiLlama hint set. */

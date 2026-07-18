@@ -11,7 +11,7 @@ import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
-import { applyDefiLlamaRewardSuggestions, countNeedsReview, isNeedsReview, isUnclassifiedSolanaTransferIn } from '@/lib/rpc/rewardSuggestions';
+import { applyDefiLlamaRewardSuggestions, countNeedsReview, isNeedsReview, isUnclassifiedSolanaTransferIn, reclassifyTypePatch } from '@/lib/rpc/rewardSuggestions';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -164,20 +164,11 @@ function TypeSelector({
   const reclassify = async (next: TxType) => {
     if (next === current) { setOpen(false); return; }
     setSaving(true);
-    // Strip auto-derived flags. Also clear needs_review: reclassifying is the
-    // user acting on the row, so it should leave the "Needs review" queue.
-    const newFlags = (flags ?? []).filter(
-      (f) =>
-        f !== 'possible_internal_transfer' &&
-        f !== 'missing_cost_basis' &&
-        f !== 'needs_review'
-    ) as import('@/types/transaction').FlagReason[];
-    // NOTE: we deliberately DO NOT clear a `defi_reward` category here. On a
-    // non-income row it is invisible in the UI (only `nft` renders a badge) and
-    // serves as the persistent "already reviewed this suggestion" marker that
-    // `applyDefiLlamaRewardSuggestions` checks so a rejected row is never
-    // re-flipped back to income on the next suggestion run.
-    await db.transactions.update(txId, { type: next, flags: newFlags });
+    // reclassifyTypePatch strips auto-derived + needs_review flags and, crucially,
+    // does NOT clear a `defi_reward` category — that category persists as the
+    // "already reviewed this suggestion" marker so a rejected row is never
+    // re-flipped to income by applyDefiLlamaRewardSuggestions. See that helper.
+    await db.transactions.update(txId, reclassifyTypePatch(flags as import('@/types/transaction').FlagReason[], next));
     setSaving(false);
     setOpen(false);
   };
