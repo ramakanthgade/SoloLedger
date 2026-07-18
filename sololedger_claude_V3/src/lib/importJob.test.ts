@@ -162,4 +162,19 @@ describe('runWalletImport DefiLlama reward-suggestion gate', () => {
     await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
     expect(importJob.get().warnings.some((w) => w.includes('suggested reward income'))).toBe(true);
   });
+
+  it('treats a DefiLlama failure as non-fatal: import completes, prices still fetched', async () => {
+    applyDefiLlamaRewardSuggestions.mockRejectedValueOnce(new Error('DefiLlama request failed (HTTP 503)'));
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    const state = importJob.get();
+    // Import is not stranded — it finished, not stuck 'active'/'classifying'.
+    expect(state.active).toBe(false);
+    expect(state.phase).toBe('idle');
+    expect(state.error).toBeNull();
+    // A non-fatal warning explains the skip.
+    expect(state.warnings.some((w) => w.includes('DefiLlama reward suggestions skipped'))).toBe(true);
+    // Pricing still ran despite the DefiLlama outage.
+    expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
+    expect(state.result?.pricesUpdated).toBe(3);
+  });
 });

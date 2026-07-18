@@ -135,10 +135,16 @@ export async function applyDefiLlamaRewardSuggestions(opts?: {
 
     const hint = hints.get(t.contractAddress!)!;
 
-    // Keep any other stored flags, but drop possible_internal_transfer (we now
-    // believe this is income) and make sure needs_review is present — that
-    // flag is what puts the row into the review queue.
-    const flags = new Set((t.flags ?? []).filter((f) => f !== 'possible_internal_transfer'));
+    // Keep any other stored flags, but drop the auto-derived flags
+    // (possible_internal_transfer — we now believe this is income — and
+    // missing_cost_basis, which is re-derived from fiat state) and make sure
+    // needs_review is present — that flag is what puts the row into the review
+    // queue. User-set flags (e.g. duplicate_suspected) are preserved.
+    const flags = new Set(
+      (t.flags ?? []).filter(
+        (f) => f !== 'possible_internal_transfer' && f !== 'missing_cost_basis'
+      )
+    );
     flags.add('needs_review');
 
     // eslint-disable-next-line no-await-in-loop

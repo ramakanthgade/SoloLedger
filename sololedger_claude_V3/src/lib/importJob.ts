@@ -272,9 +272,21 @@ export async function runWalletImport(
     // local mode" policy — see defiLlamaRewards.ts). Matches become income flagged
     // needs_review so the user can confirm each one in the Review tab.
     if (settings.priceApiEnabled) {
-      const llamaResult = await applyDefiLlamaRewardSuggestions();
-      if (llamaResult.suggested > 0) {
-        apiWarnings.unshift(llamaResult.message);
+      // Wrap ONLY this phase: fetchSolanaRewardHints() can throw on a network
+      // failure with no cache to fall back to. A DefiLlama outage must NOT strand
+      // the import (leaving it stuck 'classifying' and skipping pricing) — treat
+      // it as non-fatal and continue to swap detection + pricing.
+      try {
+        const llamaResult = await applyDefiLlamaRewardSuggestions();
+        if (llamaResult.suggested > 0) {
+          apiWarnings.unshift(llamaResult.message);
+        }
+      } catch (err) {
+        apiWarnings.unshift(
+          `DefiLlama reward suggestions skipped: ${
+            err instanceof Error ? err.message : 'network error'
+          }.`
+        );
       }
     }
 

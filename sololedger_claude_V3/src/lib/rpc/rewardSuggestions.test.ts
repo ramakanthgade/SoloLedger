@@ -70,12 +70,34 @@ describe('applyDefiLlamaRewardSuggestions', () => {
     const t = store[0];
     expect(t.type).toBe('income');
     expect(t.category).toBe('defi_reward');
-    // needs_review added; possible_internal_transfer dropped; unrelated flags kept
+    // needs_review added; auto-derived flags dropped; unrelated flags kept
     expect(t.flags).toContain('needs_review');
     expect(t.flags).not.toContain('possible_internal_transfer');
+    expect(t.flags).not.toContain('missing_cost_basis');
     expect(t.flags).toContain('duplicate_suspected');
     expect(t.notes).toContain('DefiLlama');
     expect(t.notes).toContain('orca-dex');
+  });
+
+  it('strips both auto-derived flags (possible_internal_transfer + missing_cost_basis) while preserving user-set flags', async () => {
+    store = [
+      tx({
+        id: 'cand',
+        contractAddress: REWARD_MINT,
+        counterpartyAddress: SENDER,
+        flags: ['possible_internal_transfer', 'missing_cost_basis', 'duplicate_suspected', 'unrecognized_asset']
+      })
+    ];
+    const r = await applyDefiLlamaRewardSuggestions({ hints: HINTS });
+    expect(r.suggested).toBe(1);
+    const t = store[0];
+    expect(t.category).toBe('defi_reward');
+    expect(t.flags).not.toContain('possible_internal_transfer');
+    expect(t.flags).not.toContain('missing_cost_basis');
+    // User-set flags survive the suggestion pass.
+    expect(t.flags).toContain('duplicate_suspected');
+    expect(t.flags).toContain('unrecognized_asset');
+    expect(t.flags).toContain('needs_review');
   });
 
   it('skips transfers from the user\'s own wallets', async () => {
