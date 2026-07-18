@@ -133,6 +133,45 @@ describe('parseWithMapping — withdrawal robustness + chain/txHash/address (Iss
     expect(transactions[0].txHash).toBeUndefined();
   });
 
+  it('does NOT store a truncated/invalid ETH TXID as txHash (no broken link)', () => {
+    const rows = [
+      {
+        Time: '2024-02-25 16:25:22',
+        Coin: 'USDC',
+        Network: 'ETH',
+        Side: 'Withdrawl',
+        Amount: '10',
+        Fee: '1',
+        Address: ETH_ADDR,
+        TXID: '0xdeadbeef',
+        Status: 'Completed'
+      }
+    ];
+    const { transactions } = parseWithMapping(rows, WITHDRAW_MAPPING, 'USD');
+    expect(transactions[0].chain).toBe('ethereum');
+    expect(transactions[0].txHash).toBeUndefined();
+  });
+
+  it('stores a full 64-hex BTC txid (no 0x) with chain bitcoin', () => {
+    const btcTxid = '4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b';
+    const rows = [
+      {
+        Time: '2024-02-25 16:25:22',
+        Coin: 'BTC',
+        Network: 'BTC',
+        Side: 'Withdrawl',
+        Amount: '0.05',
+        Fee: '0.0001',
+        Address: 'bc1qxy',
+        TXID: btcTxid,
+        Status: 'Completed'
+      }
+    ];
+    const { transactions } = parseWithMapping(rows, WITHDRAW_MAPPING, 'USD');
+    expect(transactions[0].chain).toBe('bitcoin');
+    expect(transactions[0].txHash).toBe(btcTxid);
+  });
+
   it('parses a deposit row (implied transfer_in) → walletAddress = Address, TX ID hash', () => {
     const rows = [
       {

@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { isRealTxHash, explorerTxUrl, normalizeChain } from './explorer';
+import { isRealTxHash, isValidTxHashForChain, explorerTxUrl, normalizeChain } from './explorer';
 
 const SOL_SIG =
   '4LTQVKtCoEjceydPPzEpfUa554osbph1msH9K9gUnX79bgdk2AarFUSbeFwBwRdru2VtewvkAjtZeAVnSBzXkxA6';
 const ETH_HASH = '0x64ae15d0282286fd2d21c102c24ec35739d74cdd70f468cb0884c04a6f99904c';
+// Bitcoin txid — 64 hex, NO 0x prefix (contains 0s).
+const BTC_TXID = '4a5e1e4baab89f3a32518a88c31bc87f618f76673e2cc77ab2127b7afdeda33b';
 
-describe('isRealTxHash', () => {
+describe('isRealTxHash (synthetic-ref rejector only)', () => {
   it('rejects synthetic content-hash refs', () => {
     expect(isRealTxHash('chash:abc')).toBe(false);
   });
@@ -17,39 +19,69 @@ describe('isRealTxHash', () => {
     expect(isRealTxHash('')).toBe(false);
     expect(isRealTxHash('   ')).toBe(false);
   });
-  it('accepts EVM 0x hashes', () => {
+  it('is true for any non-synthetic ref (shape is NOT asserted here)', () => {
     expect(isRealTxHash('0xdeadbeef')).toBe(true);
     expect(isRealTxHash(ETH_HASH)).toBe(true);
-  });
-  it('accepts a plausible Solana signature (base58, long)', () => {
     expect(isRealTxHash(SOL_SIG)).toBe(true);
-  });
-  it('rejects short plain text', () => {
-    expect(isRealTxHash('Completed')).toBe(false);
+    expect(isRealTxHash('Completed')).toBe(true);
   });
 });
 
-describe('explorerTxUrl', () => {
-  it('builds an etherscan URL for ethereum', () => {
+describe('isValidTxHashForChain (chain-aware shape)', () => {
+  it('requires a full 32-byte hash for EVM chains', () => {
+    expect(isValidTxHashForChain('ethereum', ETH_HASH)).toBe(true);
+    expect(isValidTxHashForChain('bsc', ETH_HASH)).toBe(true);
+    // Truncated / internal value must be rejected.
+    expect(isValidTxHashForChain('ethereum', '0xdeadbeef')).toBe(false);
+    // 64 hex without 0x is not a valid EVM hash.
+    expect(isValidTxHashForChain('ethereum', BTC_TXID)).toBe(false);
+  });
+  it('accepts a 64-hex bitcoin txid (no 0x)', () => {
+    expect(isValidTxHashForChain('bitcoin', BTC_TXID)).toBe(true);
+    expect(isValidTxHashForChain('bitcoin', '0x' + BTC_TXID)).toBe(false);
+  });
+  it('accepts a base58 Solana signature', () => {
+    expect(isValidTxHashForChain('solana', SOL_SIG)).toBe(true);
+    expect(isValidTxHashForChain('solana', 'short')).toBe(false);
+  });
+  it('rejects unknown chains and missing values', () => {
+    expect(isValidTxHashForChain('cardano', BTC_TXID)).toBe(false);
+    expect(isValidTxHashForChain(undefined, ETH_HASH)).toBe(false);
+    expect(isValidTxHashForChain('ethereum', undefined)).toBe(false);
+  });
+});
+
+describe('explorerTxUrl (chain-aware, enforces shape)', () => {
+  it('builds an etherscan URL for a full ETH hash', () => {
     expect(explorerTxUrl('ethereum', ETH_HASH)).toBe(`https://etherscan.io/tx/${ETH_HASH}`);
   });
-  it('builds a solscan URL for solana', () => {
+  it('returns null for a truncated ETH value (the broken-link class)', () => {
+    expect(explorerTxUrl('ethereum', '0xdeadbeef')).toBeNull();
+  });
+  it('builds a mempool.space URL for a 64-hex bitcoin txid', () => {
+    expect(explorerTxUrl('bitcoin', BTC_TXID)).toBe(`https://mempool.space/tx/${BTC_TXID}`);
+  });
+  it('builds a solscan URL for an 88-char Solana sig', () => {
     expect(explorerTxUrl('solana', SOL_SIG)).toBe(`https://solscan.io/tx/${SOL_SIG}`);
   });
   it('returns null for cardano (no explorer entry)', () => {
-    expect(explorerTxUrl('cardano', 'somehash')).toBeNull();
+    expect(explorerTxUrl('cardano', BTC_TXID)).toBeNull();
   });
   it('returns null for missing chain', () => {
     expect(explorerTxUrl(undefined, ETH_HASH)).toBeNull();
   });
-  it('covers the other EVM chains', () => {
-    expect(explorerTxUrl('bsc', '0xa')).toBe('https://bscscan.com/tx/0xa');
-    expect(explorerTxUrl('polygon', '0xa')).toBe('https://polygonscan.com/tx/0xa');
-    expect(explorerTxUrl('arbitrum', '0xa')).toBe('https://arbiscan.io/tx/0xa');
-    expect(explorerTxUrl('optimism', '0xa')).toBe('https://optimistic.etherscan.io/tx/0xa');
-    expect(explorerTxUrl('base', '0xa')).toBe('https://basescan.org/tx/0xa');
-    expect(explorerTxUrl('avalanche', '0xa')).toBe('https://snowtrace.io/tx/0xa');
-    expect(explorerTxUrl('bitcoin', 'abc')).toBe('https://mempool.space/tx/abc');
+  it('never links a synthetic ref (chash:/row:) — wrong shape for any chain', () => {
+    expect(explorerTxUrl('ethereum', 'chash:abcd')).toBeNull();
+    expect(explorerTxUrl('solana', 'row:3')).toBeNull();
+  });
+  it('covers the other EVM chains with a full-length hash', () => {
+    const evmUrl = (base: string) => `${base}${ETH_HASH}`;
+    expect(explorerTxUrl('bsc', ETH_HASH)).toBe(evmUrl('https://bscscan.com/tx/'));
+    expect(explorerTxUrl('polygon', ETH_HASH)).toBe(evmUrl('https://polygonscan.com/tx/'));
+    expect(explorerTxUrl('arbitrum', ETH_HASH)).toBe(evmUrl('https://arbiscan.io/tx/'));
+    expect(explorerTxUrl('optimism', ETH_HASH)).toBe(evmUrl('https://optimistic.etherscan.io/tx/'));
+    expect(explorerTxUrl('base', ETH_HASH)).toBe(evmUrl('https://basescan.org/tx/'));
+    expect(explorerTxUrl('avalanche', ETH_HASH)).toBe(evmUrl('https://snowtrace.io/tx/'));
   });
 });
 

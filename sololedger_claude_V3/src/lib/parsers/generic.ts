@@ -2,7 +2,7 @@ import type { Transaction, TxType } from '@/types/transaction';
 import { makeId, normalizeFiatMagnitude, safeNumber, safeTimestamp, contentHashRef } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 import { headerMap, col } from './headerMap';
-import { normalizeChain, isRealTxHash } from './explorer';
+import { normalizeChain, isRealTxHash, isValidTxHashForChain } from './explorer';
 
 /** User-defined mapping from their CSV's headers to our fields, used when
  * auto-detection fails and the person manually maps columns in the UI. */
@@ -185,7 +185,14 @@ export function parseWithMapping(
 
     const chain = networkCol ? normalizeChain(row[networkCol]) : undefined;
     const rawTxHash = txHashCol ? (row[txHashCol] || '').trim() : '';
-    const txHash = rawTxHash && isRealTxHash(rawTxHash) ? rawTxHash : undefined;
+    // Store txHash only when it's a real ref AND matches the row chain's hash
+    // shape, so a truncated/internal value (e.g. 0xdeadbeef on ethereum) never
+    // becomes a broken explorer link. When chain is unknown we can't validate a
+    // shape, so we skip — no chain means no linkable explorer anyway.
+    const txHash =
+      rawTxHash && isRealTxHash(rawTxHash) && isValidTxHashForChain(chain, rawTxHash)
+        ? rawTxHash
+        : undefined;
 
     // Address orientation. `txFromToAddresses` semantics are ASYMMETRIC:
     //   transfer_in : To = walletAddress, From = counterpartyAddress

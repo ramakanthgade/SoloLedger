@@ -8,7 +8,7 @@ import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/tran
 import { formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
-import { isRealTxHash, explorerTxUrl } from '@/lib/parsers/explorer';
+import { explorerTxUrl } from '@/lib/parsers/explorer';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
@@ -1401,7 +1401,9 @@ export function ReviewTab() {
                     <td className="px-2 py-2 font-mono text-xs text-low">
                       {(() => {
                         const hash = t.txHash ?? t.sourceRef;
-                        const url = isRealTxHash(hash) ? explorerTxUrl(t.chain, hash!) : null;
+                        // explorerTxUrl is chain-aware and enforces hash shape,
+                        // so a non-null result is always safe to link.
+                        const url = hash ? explorerTxUrl(t.chain, hash) : null;
                         if (url) {
                           return (
                             <a

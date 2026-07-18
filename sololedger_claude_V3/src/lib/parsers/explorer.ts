@@ -64,9 +64,10 @@ export function normalizeChain(network?: string): string | undefined {
 const SYNTHETIC_REF_PREFIXES = ['chash:', 'row:'];
 
 /**
- * Whether `ref` is plausibly a REAL on-chain transaction hash worth linking to
- * a block explorer. Conservative — when unsure, returns false so the UI shows
- * plain text instead of a broken link.
+ * Whether `ref` is a REAL source ref (i.e. NOT a synthetic content-hash /
+ * positional ref). This is only the cheap "is this synthetic" rejector — it
+ * does NOT assert full hash shape. Use `isValidTxHashForChain` / `explorerTxUrl`
+ * to decide whether a value is actually linkable to a block explorer.
  */
 export function isRealTxHash(ref?: string): boolean {
   if (!ref) return false;
@@ -76,11 +77,38 @@ export function isRealTxHash(ref?: string): boolean {
   for (const p of SYNTHETIC_REF_PREFIXES) {
     if (lower.startsWith(p)) return false;
   }
-  // EVM tx hash: 0x followed by hex. Real ones are 64 hex chars; accept >=6 to
-  // stay lenient for truncated fixtures while still rejecting junk.
-  if (/^0x[0-9a-f]{6,}$/i.test(s)) return true;
-  // Plausible base58 hash (e.g. Solana signature): base58 alphabet, long.
-  if (/^[1-9A-HJ-NP-Za-km-z]{40,}$/.test(s)) return true;
+  return true;
+}
+
+/** EVM 32-byte tx hash: 0x + 64 hex. */
+const EVM_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
+/** Bitcoin txid: 64 hex, no 0x prefix. */
+const BTC_HASH_RE = /^[0-9a-fA-F]{64}$/;
+/** Solana signature: base58, typically 87-88 chars. Range kept generous. */
+const SOL_SIG_RE = /^[1-9A-HJ-NP-Za-km-z]{43,90}$/;
+
+const EVM_CHAINS = new Set([
+  'ethereum',
+  'bsc',
+  'polygon',
+  'arbitrum',
+  'optimism',
+  'base',
+  'avalanche'
+]);
+
+/**
+ * Chain-aware tx-hash shape validity. Returns false for unknown chains and for
+ * values that don't match the chain's expected hash shape (e.g. a truncated
+ * `0xdeadbeef` on ethereum), so we never build a broken explorer link.
+ */
+export function isValidTxHashForChain(chain: string | undefined, hash?: string): boolean {
+  if (!chain || !hash) return false;
+  const s = hash.trim();
+  if (!s) return false;
+  if (EVM_CHAINS.has(chain)) return EVM_HASH_RE.test(s);
+  if (chain === 'bitcoin') return BTC_HASH_RE.test(s);
+  if (chain === 'solana') return SOL_SIG_RE.test(s);
   return false;
 }
 
@@ -99,10 +127,13 @@ const EXPLORER_TX_BASE: Record<string, string> = {
 
 /**
  * Build an explorer URL for `hash` on `chain`, or `null` when the chain is
- * unknown/missing or has no explorer entry (e.g. cardano).
+ * unknown/missing, has no explorer entry (e.g. cardano), or the hash does not
+ * match the chain's expected shape. Enforcing the shape here means a caller can
+ * treat a non-null result as "safe to link".
  */
 export function explorerTxUrl(chain: string | undefined, hash: string): string | null {
   if (!chain || !hash) return null;
+  if (!isValidTxHashForChain(chain, hash)) return null;
   const base = EXPLORER_TX_BASE[chain];
   return base ? `${base}${hash}` : null;
 }
