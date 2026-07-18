@@ -11,7 +11,7 @@ import { coindcxParser } from './coindcx';
 import { coinswitchParser } from './coinswitch';
 import { zebpayParser } from './zebpay';
 import { mudrexParser } from './mudrex';
-import { genericHistoryParser } from './genericHistory';
+import { genericHistoryParser, detectMissingFields } from './genericHistory';
 import type { ExchangeParser, MissingField, ParseResult, SheetContext } from './types';
 import type { TxType } from '@/types/transaction';
 import { extractTableFromMatrix, isUsefulTransactionTable, cleanCell } from './tableExtract';
@@ -133,6 +133,12 @@ function parseSheetMatrix(
 
   const matched = PARSERS.find((p) => p.detect(extracted.headers, ctx));
   if (!matched) {
+    // No parser claimed the sheet (the generic parser needs date+asset+amount,
+    // so files missing one never reach parse()). Derive which required fields
+    // are absent so the UI can render actionable fix-the-file guidance, and
+    // flag a skipped preamble as its own fixable issue.
+    const missing = detectMissingFields(extracted.headers, ctx);
+    if (preambleWarning) missing.unshift('preamble');
     return {
       sheetName,
       sheetIndex,
@@ -147,7 +153,8 @@ function parseSheetMatrix(
         ...(preambleWarning ? [preambleWarning] : []),
         `Could not auto-detect format for sheet “${sheetName}”.`
       ],
-      headerScore: extracted.headerScore
+      headerScore: extracted.headerScore,
+      missingFields: missing.length > 0 ? missing : undefined
     };
   }
 
@@ -325,7 +332,11 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
             transactions: [],
             skippedRows: 0,
             warnings: ['Could not auto-detect this file’s format. Map the columns manually below.'],
-            headerScore: extracted.headerScore
+            headerScore: extracted.headerScore,
+            missingFields: (() => {
+              const missing = detectMissingFields(extracted.headers, ctx);
+              return missing.length > 0 ? missing : undefined;
+            })()
           }
         ],
         file.name

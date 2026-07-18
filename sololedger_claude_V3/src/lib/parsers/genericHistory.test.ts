@@ -132,3 +132,43 @@ describe('parser specificity — a specific parser still wins over generic_histo
     expect(outcome.detectedParser).not.toBe('generic_history');
   });
 });
+
+describe('parseImportFile — missingFields on the no-parser (unrecognized) path', () => {
+  it('derives missingFields when no parser matches (missing amount)', async () => {
+    // Date + Coin present but no amount family → generic_history.detect() is
+    // false, so parse() is never reached. The no-match branch must still
+    // surface which required field is absent.
+    const csv = ['Date,Coin,Status', '2024-01-01,BTC,Completed'].join('\n');
+    const file = new File([csv], 'nomap.csv', { type: 'text/csv' });
+    const outcome = await parseImportFile(file);
+
+    expect(outcome.transactions).toHaveLength(0);
+    expect(outcome.detectedParser).toBeNull();
+    expect(outcome.missingFields).toContain('amount');
+  });
+
+  it('derives missingFields when the asset family is absent', async () => {
+    const csv = ['Date,Amount,Type', '2024-01-01,5,deposit'].join('\n');
+    const file = new File([csv], 'noasset.csv', { type: 'text/csv' });
+    const outcome = await parseImportFile(file);
+
+    expect(outcome.transactions).toHaveLength(0);
+    expect(outcome.missingFields).toContain('asset');
+  });
+
+  it('flags a skipped preamble as its own fixable "preamble" field', async () => {
+    // Non-transaction summary rows above the header, and no parseable format,
+    // so the header row is offset. The no-match branch should emit 'preamble'.
+    const csv = [
+      'Account Statement',
+      'Generated 2024-01-01',
+      'Date,Coin,Status',
+      '2024-01-01,BTC,Completed'
+    ].join('\n');
+    const file = new File([csv], 'preamble.csv', { type: 'text/csv' });
+    const outcome = await parseImportFile(file);
+
+    expect(outcome.transactions).toHaveLength(0);
+    expect(outcome.missingFields).toContain('preamble');
+  });
+});

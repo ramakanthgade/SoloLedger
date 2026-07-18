@@ -105,11 +105,10 @@ export const genericHistoryParser: ExchangeParser = {
     const a = analyzeHeaders(headers);
 
     // Required families absent → surface which ones so callers can render
-    // actionable fix-the-file guidance instead of a generic dead-end.
-    const missingCore: MissingField[] = [];
-    if (!a.dateCol) missingCore.push('timestamp');
-    if (!a.assetCol) missingCore.push('asset');
-    if (!a.amountCol) missingCore.push('amount');
+    // actionable fix-the-file guidance instead of a generic dead-end. Reuse the
+    // shared derivation (which also treats an implied type as satisfying `type`).
+    const missing = detectMissingFields(headers, ctx);
+    const missingCore = missing.filter((f) => f !== 'type');
     if (missingCore.length > 0) {
       return {
         transactions: [],
@@ -168,6 +167,21 @@ export const genericHistoryParser: ExchangeParser = {
     // cause is unrecognized type values — report `type` so the UI can guide.
     if (result.transactions.length === 0 && hasTypeColumn) {
       return { ...result, missingFields: ['type'] };
+    }
+
+    // Surface the report title that drove the implied type, so the user can
+    // confirm we inferred it correctly (e.g. "Deposit History" → transfer_in).
+    if (!hasTypeColumn && impliedType && result.transactions.length > 0) {
+      const titleNote = ctx?.sheetTitle
+        ? `“${ctx.sheetTitle}”`
+        : 'the report title';
+      return {
+        ...result,
+        warnings: [
+          `No Type column — inferred ${impliedType} for every row from ${titleNote}.`,
+          ...result.warnings
+        ]
+      };
     }
 
     return result;

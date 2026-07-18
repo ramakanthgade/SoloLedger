@@ -26,10 +26,9 @@ import {
 } from '@/lib/storage/db';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
-import { getEffectiveSettings, hasAiAdvisor } from '@/lib/saas/effectiveSettings';
+import { getEffectiveSettings, isAiMappingAvailable } from '@/lib/saas/effectiveSettings';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
-import type { MissingField } from '@/lib/parsers/types';
-import { buildFallbackMessages, AI_MAPPING_DISCLOSURE } from './importFallback';
+import { buildFallbackMessages, FixTheFileGuidance } from './importFallback';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import type { Transaction } from '@/types/transaction';
 import { cn } from '@/lib/utils';
@@ -165,6 +164,18 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
   const [error, setError] = useState<string | null>(null);
   /** Actionable fix-the-file + AI-last-resort guidance when a file can't be read. */
   const [fallbackMessages, setFallbackMessages] = useState<string[]>([]);
+  /** Whether AI column-mapping is actually available (own key, or hosted with server AI enabled). */
+  const [aiAvailable, setAiAvailable] = useState(false);
+  /** Parsed-but-unrecognized file kept so an explicit "Try AI mapping" click can map it. */
+  const [pendingUnrecognized, setPendingUnrecognized] = useState<{
+    headers: string[];
+    rows: Record<string, string>[];
+    hash: string;
+    fileName: string;
+    fileSize: number;
+  } | null>(null);
+  /** True while an explicit AI-mapping request is in flight. */
+  const [aiMapping, setAiMapping] = useState(false);
   const [savedCount, setSavedCount] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -173,102 +184,24 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
   const global = IMPORT_SOURCES.filter((s) => s.region === 'global');
 
   // Build a preview WITHOUT persisting — this is C1's missing gate. Auto-detect
-  // parsers run first; if the format isn't recognized we fall back to AI mapping
-  // (when a key is set) but still show a preview instead of auto-saving.
-  const readFile = useCallback(async (file: File) => {
-    setError(null);
-    setFallbackMessages([]);
-    setSavedCount(null);
-    setReading(true);
-    try {
-      const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
-      const hash = await hashFileContent(hashInput);
-
-      const existing = await db.csvImports.get(hash);
-      if (existing) {
-        setError(`"${file.name}" was already imported. Remove it from the Import tab to re-import.`);
-        return;
-      }
-
-      const result: FileParseOutcome = await parseImportFile(file);
-      const settings = await getSettings();
-      // Gate AI mapping on hasAiAdvisor(effectiveSettings): true in
-      // Hosted:Managed mode (server proxy injects the key) as well as when a
-      // BYOK key is set — closes the hosted-mode gap.
-      const effectiveSettings = await getEffectiveSettings();
-      const aiOn = hasAiAdvisor(effectiveSettings);
-
-      let transactions = result.transactions;
-      let parserId = result.detectedParser;
-      const warnings = [...result.warnings];
-      let aiIncomplete = false;
-
-      // Format not directly recognized — try AI mapping for a preview only.
-      if (!result.detectedParser && result.rows.length > 0) {
-        if (aiOn) {
-          try {
-            const suggestion = await suggestCsvMappingWithAi(
-              // Hosted mode: openrouter.ts injects the real key server-side and
-              // ignores this arg; pass '' as a placeholder.
-              settings.aiApiKey ?? '',
-              result.headers,
-              result.rows,
-              settings.aiModel
-            );
-            if (!suggestion.valid) {
-              aiIncomplete = true;
-              warnings.push(
-                `AI could not confidently map: ${suggestion.missingFields.join(', ')}. Review the mapping on the Import tab before saving.`
-              );
-            }
-            const mapped = parseWithMapping(
-              result.rows,
-              {
-                timestamp: suggestion.mapping.timestamp ?? '',
-                type: suggestion.mapping.type ?? '',
-                asset: suggestion.mapping.asset ?? '',
-                amount: suggestion.mapping.amount ?? '',
-                totalValue: suggestion.mapping.totalValue,
-                pricePerUnit: suggestion.mapping.pricePerUnit,
-                fiatValue: suggestion.mapping.fiatValue,
-                fiatCurrency: suggestion.mapping.fiatCurrency,
-                feeAmount: suggestion.mapping.feeAmount,
-                feeAsset: suggestion.mapping.feeAsset,
-                assetIsTradingPair: suggestion.mapping.assetIsTradingPair,
-                typeValueMap: suggestion.mapping.typeValueMap ?? {}
-              },
-              settings.reportingCurrency
-            );
-            transactions = mapped.transactions;
-            parserId = 'ai_mapping';
-            warnings.push(
-              `AI mapped the columns (${suggestion.confidence} confidence): ${suggestion.explanation}`,
-              ...mapped.warnings
-            );
-          } catch {
-            warnings.push(
-              'This format was not recognized and AI mapping failed. Use the Import tab to map columns manually.'
-            );
-          }
-        }
-      }
-
-      if (transactions.length === 0) {
-        // Replace the generic dead-end with actionable fix-the-file guidance
-        // derived from what the deterministic parser found missing, plus the
-        // AI last-resort note (both ways to enable it when unavailable).
-        const missing = result.missingFields as MissingField[] | undefined;
-        setFallbackMessages(buildFallbackMessages(missing, aiOn));
-        setError(null);
-        return;
-      }
-
+  // parsers run first; if the format isn't recognized we surface fix-the-file
+  // guidance and an explicit "Try AI mapping" button — AI never fires
+  // automatically, so column headers + sample rows are only sent after the
+  // user opts in (with the disclosure visible).
+  const showPreview = useCallback(
+    (
+      transactions: Transaction[],
+      parserId: string | null,
+      hash: string,
+      file: { name: string; size: number },
+      warnings: string[],
+      aiIncomplete: boolean
+    ) => {
       const distinctAssets = new Set(transactions.map((t) => t.asset)).size;
       const missingPriceCount = transactions.filter(
         (t) => t.fiatValue == null && !t.isInternalTransfer
       ).length;
       const tdsTotalInr = transactions.reduce((sum, t) => sum + (t.tdsInr ?? 0), 0);
-
       setPreview({
         transactions,
         parserId,
@@ -281,12 +214,147 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         tdsTotalInr,
         aiIncomplete
       });
+      setFallbackMessages([]);
+      setPendingUnrecognized(null);
       dispatch({ type: 'fileReady' });
       dispatch({ type: 'preview' });
+    },
+    []
+  );
+
+  const readFile = useCallback(
+    async (file: File) => {
+      setError(null);
+      setFallbackMessages([]);
+      setPendingUnrecognized(null);
+      setSavedCount(null);
+      setReading(true);
+      try {
+        const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
+        const hash = await hashFileContent(hashInput);
+
+        const existing = await db.csvImports.get(hash);
+        if (existing) {
+          setError(`"${file.name}" was already imported. Remove it from the Import tab to re-import.`);
+          return;
+        }
+
+        const result: FileParseOutcome = await parseImportFile(file);
+        // Whether AI mapping is actually available (own key, or hosted with the
+        // server's aiAdvisorEnabled). Drives the "Try AI mapping" affordance.
+        const aiOn = await isAiMappingAvailable();
+        setAiAvailable(aiOn);
+
+        if (result.transactions.length === 0) {
+          // Do NOT auto-run AI mapping — that would relay headers + sample rows
+          // before the user sees the disclosure. Surface actionable
+          // fix-the-file guidance and keep the parsed rows around so an explicit
+          // "Try AI mapping" click (which shows the disclosure) can map them.
+          const missing = result.missingFields;
+          setFallbackMessages(buildFallbackMessages(missing, aiOn));
+          setError(null);
+          if (result.rows.length > 0) {
+            setPendingUnrecognized({
+              headers: result.headers,
+              rows: result.rows,
+              hash,
+              fileName: file.name,
+              fileSize: file.size
+            });
+          }
+          return;
+        }
+
+        showPreview(
+          result.transactions,
+          result.detectedParser,
+          hash,
+          file,
+          [...result.warnings],
+          false
+        );
+      } finally {
+        setReading(false);
+      }
+    },
+    [showPreview]
+  );
+
+  /**
+   * Explicit, user-triggered AI column-mapping for an unrecognized file.
+   * Reachable only via the "Try AI mapping" button (rendered under the
+   * data-sharing disclosure), so headers + sample rows are never relayed
+   * without the user's knowledge.
+   */
+  const runAiMapping = useCallback(async () => {
+    if (!pendingUnrecognized) return;
+    setAiMapping(true);
+    try {
+      const settings = await getSettings();
+      const suggestion = await suggestCsvMappingWithAi(
+        // Hosted mode: openrouter.ts injects the real key server-side and
+        // ignores this arg; pass '' as a placeholder.
+        settings.aiApiKey ?? '',
+        pendingUnrecognized.headers,
+        pendingUnrecognized.rows,
+        settings.aiModel
+      );
+      const warnings: string[] = [];
+      let aiIncomplete = false;
+      if (!suggestion.valid) {
+        aiIncomplete = true;
+        warnings.push(
+          `AI could not confidently map: ${suggestion.missingFields.join(', ')}. Review the mapping on the Import tab before saving.`
+        );
+      }
+      const mapped = parseWithMapping(
+        pendingUnrecognized.rows,
+        {
+          timestamp: suggestion.mapping.timestamp ?? '',
+          type: suggestion.mapping.type ?? '',
+          asset: suggestion.mapping.asset ?? '',
+          amount: suggestion.mapping.amount ?? '',
+          totalValue: suggestion.mapping.totalValue,
+          pricePerUnit: suggestion.mapping.pricePerUnit,
+          fiatValue: suggestion.mapping.fiatValue,
+          fiatCurrency: suggestion.mapping.fiatCurrency,
+          feeAmount: suggestion.mapping.feeAmount,
+          feeAsset: suggestion.mapping.feeAsset,
+          assetIsTradingPair: suggestion.mapping.assetIsTradingPair,
+          typeValueMap: suggestion.mapping.typeValueMap ?? {}
+        },
+        settings.reportingCurrency
+      );
+
+      if (mapped.transactions.length === 0) {
+        setFallbackMessages([
+          `AI could not confidently map this file${
+            suggestion.missingFields.length ? ` (missing: ${suggestion.missingFields.join(', ')})` : ''
+          }. Map the columns manually on the Import tab.`
+        ]);
+        return;
+      }
+
+      warnings.push(
+        `AI mapped the columns (${suggestion.confidence} confidence): ${suggestion.explanation}`,
+        ...mapped.warnings
+      );
+      showPreview(
+        mapped.transactions,
+        'ai_mapping',
+        pendingUnrecognized.hash,
+        { name: pendingUnrecognized.fileName, size: pendingUnrecognized.fileSize },
+        warnings,
+        aiIncomplete
+      );
+    } catch {
+      setFallbackMessages([
+        'AI mapping failed. Map the columns manually on the Import tab, or try a different export.'
+      ]);
     } finally {
-      setReading(false);
+      setAiMapping(false);
     }
-  }, []);
+  }, [pendingUnrecognized, showPreview]);
 
   const handleFiles = useCallback(
     (fileList: FileList | null) => {
@@ -345,7 +413,8 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         <h2 className="page-title">Let's bring your trades in — one step at a time</h2>
         <p className="mt-1 max-w-2xl text-sm text-mid">
           Pick your exchange, follow the export steps, drop in the file, and check the preview.
-          Everything is read right here in your browser — nothing is uploaded.
+          Your file is parsed right here in your browser — nothing is uploaded (unless you opt into
+          AI mapping, which sends only column names and a few sample rows).
         </p>
       </div>
 
@@ -466,7 +535,7 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
               <div>
                 <h3 className="text-base font-extrabold text-hi">Drop in your {source.label} file</h3>
                 <p className="mt-1 text-xs text-low">
-                  CSV or Excel. It's read right here — nothing is uploaded to us.
+                  CSV or Excel. It's parsed right here — nothing is uploaded to us.
                 </p>
               </div>
               <div
@@ -525,17 +594,19 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
               )}
 
               {fallbackMessages.length > 0 && (
-                <div className="space-y-2 rounded-lg border border-warn/25 bg-warn/[0.06] px-3 py-3">
-                  <p className="text-xs font-bold text-hi">Here's how to fix this file</p>
-                  <ul className="space-y-1.5">
-                    {fallbackMessages.map((m, i) => (
-                      <li key={i} className="flex items-start gap-2 text-xs text-mid">
-                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
-                        <span>{m}</span>
-                      </li>
-                    ))}
-                  </ul>
-                  <p className="pl-5 text-[11px] text-low">{AI_MAPPING_DISCLOSURE}</p>
+                <div className="space-y-3">
+                  <FixTheFileGuidance messages={fallbackMessages} />
+                  {aiAvailable && pendingUnrecognized && (
+                    <Button onClick={runAiMapping} disabled={aiMapping}>
+                      {aiMapping ? (
+                        <>
+                          <Loader2 className="h-4 w-4 animate-spin" /> Asking AI to map columns…
+                        </>
+                      ) : (
+                        'Try AI mapping'
+                      )}
+                    </Button>
+                  )}
                 </div>
               )}
 
@@ -544,10 +615,11 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
                   <ShieldCheck className="h-4 w-4" />
                 </span>
                 <div>
-                  <h5 className="text-xs font-bold text-hi">This stays 100% local</h5>
+                  <h5 className="text-xs font-bold text-hi">Parsing stays 100% local</h5>
                   <p className="mt-0.5 text-xs text-mid">
-                    Your file is parsed in this browser and never sent to SoloLedger — the badge up
-                    top stays green.
+                    Your file is parsed right here in this browser and never uploaded to SoloLedger.
+                    Only if you choose "Try AI mapping" do we send your column names and a few sample
+                    rows (never the full file) to identify columns.
                   </p>
                 </div>
               </div>

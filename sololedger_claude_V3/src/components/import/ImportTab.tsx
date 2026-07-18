@@ -15,12 +15,11 @@ import {
 } from '@/lib/storage/db';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
-import { getEffectiveSettings, hasAiAdvisor } from '@/lib/saas/effectiveSettings';
+import { getEffectiveSettings, isAiMappingAvailable } from '@/lib/saas/effectiveSettings';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
-import type { MissingField } from '@/lib/parsers/types';
 import {
   buildFallbackMessages,
-  AI_MAPPING_DISCLOSURE
+  FixTheFileGuidance
 } from './importFallback';
 import type { Transaction } from '@/types/transaction';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -62,9 +61,11 @@ export function ImportTab() {
   const [priceFetchNote, setPriceFetchNote] = useState<string | null>(null);
   const [extractionNote, setExtractionNote] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
-  const [importPhase, setImportPhase] = useState<'saving' | 'pricing' | null>(null);
+  const [importPhase, setImportPhase] = useState<'saving' | 'pricing' | 'mapping' | null>(null);
   /** Actionable fix-the-file + AI-last-resort guidance when a file can't be read. */
   const [fallbackMessages, setFallbackMessages] = useState<string[]>([]);
+  /** Whether AI column-mapping is actually available (own key, or hosted with server AI enabled). */
+  const [aiAvailable, setAiAvailable] = useState(false);
 
   const csvImports = useLiveQuery(() => getCsvImports(), []) ?? [];
 
@@ -180,11 +181,6 @@ export function ImportTab() {
       );
     }
 
-    const preambleWarning = result.warnings.find(
-      (w) =>
-        w.toLowerCase().includes('ignored ') && w.toLowerCase().includes('before the header')
-    );
-
     // Auto-save when format is recognized and rows were parsed
     if (result.detectedParser && result.transactions.length > 0) {
       setSaving(true);
@@ -202,80 +198,90 @@ export function ImportTab() {
       return;
     }
 
-    // Auto-apply AI mapping when format isn't directly recognized.
-    // Gate on hasAiAdvisor(effectiveSettings) — this is true in Hosted:Managed
-    // mode (where the server proxy injects the key) as well as when the user
-    // has pasted their own key, closing the hosted-mode gap.
-    const effectiveSettings = await getEffectiveSettings();
-    const aiOn = hasAiAdvisor(effectiveSettings);
-    if (!result.detectedParser && result.rows.length > 0) {
-      const settings = await getSettings();
-      if (aiOn) {
-        try {
-          const suggestion = await suggestCsvMappingWithAi(
-            // In hosted mode `openrouter.ts` supplies the real credential
-            // server-side and ignores this arg; pass '' as a placeholder.
-            settings.aiApiKey ?? '',
-            result.headers,
-            result.rows,
-            settings.aiModel
-          );
-          const autoMapped = parseWithMapping(
-            result.rows,
-            {
-              timestamp: suggestion.mapping.timestamp ?? '',
-              type: suggestion.mapping.type ?? '',
-              asset: suggestion.mapping.asset ?? '',
-              amount: suggestion.mapping.amount ?? '',
-              totalValue: suggestion.mapping.totalValue,
-              pricePerUnit: suggestion.mapping.pricePerUnit,
-              fiatValue: suggestion.mapping.fiatValue,
-              fiatCurrency: suggestion.mapping.fiatCurrency,
-              feeAmount: suggestion.mapping.feeAmount,
-              feeAsset: suggestion.mapping.feeAsset,
-              assetIsTradingPair: suggestion.mapping.assetIsTradingPair,
-              typeValueMap: suggestion.mapping.typeValueMap ?? {}
-            },
-            settings.reportingCurrency
-          );
-
-          if (autoMapped.transactions.length > 0) {
-            setSaving(true);
-            setImportPhase('saving');
-            try {
-              await persistTransactions(autoMapped.transactions, 'ai_mapping', hash, file.name);
-              setSavedCount(autoMapped.transactions.length);
-              setImportWarnings([
-                ...(preambleWarning ? [preambleWarning] : []),
-                `AI auto-mapped file (${suggestion.confidence} confidence): ${suggestion.explanation}`,
-                ...autoMapped.warnings
-              ]);
-              setFileName('');
-              setFileHash('');
-              setOutcome(null);
-            } finally {
-              setSaving(false);
-              setImportPhase(null);
-            }
-            return;
-          }
-        } catch {
-          // Fall through to manual mapping UI with parse warnings.
-        }
-      }
-    }
-
-    // Nothing imported — replace the generic dead-end with actionable
-    // fix-the-file guidance derived from what the deterministic parser found
-    // missing, plus the AI last-resort note. Also surfaced above the manual
-    // ColumnMappingForm when rows are available to map.
+    // Format not recognized (or recognized but produced no rows). Do NOT fire
+    // AI mapping automatically — it would relay column headers + sample rows to
+    // the AI provider (via SoloLedger's server in hosted mode) without the user
+    // seeing the data-sharing disclosure first. Instead surface actionable
+    // fix-the-file guidance and, when AI mapping is actually available, an
+    // explicit "Try AI mapping" button (which shows the disclosure). The
+    // default path stays fully local.
+    const aiOn = await isAiMappingAvailable();
+    setAiAvailable(aiOn);
     if (result.transactions.length === 0) {
-      const missing = result.missingFields as MissingField[] | undefined;
+      const missing = result.missingFields;
       setFallbackMessages(buildFallbackMessages(missing, aiOn));
     }
 
     setOutcome(result);
   }, []);
+
+  /**
+   * Explicit, user-triggered AI column-mapping. Only reachable via the
+   * "Try AI mapping" button, which renders the data-sharing disclosure first,
+   * so headers + sample rows are never relayed without the user's knowledge.
+   */
+  const runAiMapping = useCallback(async () => {
+    if (!outcome || outcome.rows.length === 0 || !fileHash) return;
+    const settings = await getSettings();
+    setSaving(true);
+    setImportPhase('mapping');
+    try {
+      const suggestion = await suggestCsvMappingWithAi(
+        // In hosted mode `openrouter.ts` supplies the real credential
+        // server-side and ignores this arg; pass '' as a placeholder.
+        settings.aiApiKey ?? '',
+        outcome.headers,
+        outcome.rows,
+        settings.aiModel
+      );
+      const autoMapped = parseWithMapping(
+        outcome.rows,
+        {
+          timestamp: suggestion.mapping.timestamp ?? '',
+          type: suggestion.mapping.type ?? '',
+          asset: suggestion.mapping.asset ?? '',
+          amount: suggestion.mapping.amount ?? '',
+          totalValue: suggestion.mapping.totalValue,
+          pricePerUnit: suggestion.mapping.pricePerUnit,
+          fiatValue: suggestion.mapping.fiatValue,
+          fiatCurrency: suggestion.mapping.fiatCurrency,
+          feeAmount: suggestion.mapping.feeAmount,
+          feeAsset: suggestion.mapping.feeAsset,
+          assetIsTradingPair: suggestion.mapping.assetIsTradingPair,
+          typeValueMap: suggestion.mapping.typeValueMap ?? {}
+        },
+        settings.reportingCurrency
+      );
+
+      if (autoMapped.transactions.length === 0) {
+        setFallbackMessages([
+          `AI could not confidently map this file${
+            suggestion.missingFields.length ? ` (missing: ${suggestion.missingFields.join(', ')})` : ''
+          }. Map the columns manually below.`
+        ]);
+        return;
+      }
+
+      setImportPhase('saving');
+      await persistTransactions(autoMapped.transactions, 'ai_mapping', fileHash, fileName);
+      setSavedCount(autoMapped.transactions.length);
+      setImportWarnings([
+        `AI mapped the columns (${suggestion.confidence} confidence): ${suggestion.explanation}`,
+        ...autoMapped.warnings
+      ]);
+      setFileName('');
+      setFileHash('');
+      setOutcome(null);
+      setFallbackMessages([]);
+    } catch {
+      setFallbackMessages([
+        'AI mapping failed. Map the columns manually below, or try a different export.'
+      ]);
+    } finally {
+      setSaving(false);
+      setImportPhase(null);
+    }
+  }, [outcome, fileHash, fileName]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
@@ -316,8 +322,9 @@ export function ImportTab() {
       <div>
         <h2 className="page-title">Bring in your trades</h2>
         <p className="mt-1 text-sm text-low">
-          Drop in a CSV or Excel export from your exchange and we'll do the rest. Files are read
-          right here in your browser — nothing is uploaded.
+          Drop in a CSV or Excel export from your exchange and we'll do the rest. Files are parsed
+          right here in your browser — nothing is uploaded. (The optional "Try AI mapping" step
+          sends just your column names and a few sample rows to identify columns.)
         </p>
       </div>
 
@@ -458,17 +465,24 @@ export function ImportTab() {
                 )}
 
                 {outcome.transactions.length === 0 && fallbackMessages.length > 0 && (
-                  <div className="space-y-2 rounded-lg border border-warn/25 bg-warn/[0.06] px-3 py-3">
-                    <p className="text-xs font-bold text-hi">Here's how to fix this file</p>
-                    <ul className="space-y-1.5">
-                      {fallbackMessages.map((m, i) => (
-                        <li key={i} className="flex items-start gap-2 text-xs text-mid">
-                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
-                          <span>{m}</span>
-                        </li>
-                      ))}
-                    </ul>
-                    <p className="pl-5 text-[11px] text-low">{AI_MAPPING_DISCLOSURE}</p>
+                  <div className="space-y-3">
+                    <FixTheFileGuidance messages={fallbackMessages} />
+                    {aiAvailable && outcome.rows.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={runAiMapping}
+                        disabled={importPhase === 'mapping' || saving}
+                        className="inline-flex items-center gap-2 rounded-full bg-violet px-4 py-2 text-sm font-medium text-white transition-all hover:scale-[1.03] active:scale-95 disabled:opacity-60"
+                      >
+                        {importPhase === 'mapping' ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" /> Asking AI to map columns…
+                          </>
+                        ) : (
+                          'Try AI mapping'
+                        )}
+                      </button>
+                    )}
                   </div>
                 )}
               </CardContent>

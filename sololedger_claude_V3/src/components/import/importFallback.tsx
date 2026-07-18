@@ -6,6 +6,7 @@
  * was absent. These helpers turn that into actionable "fix-the-file" guidance
  * plus the last-resort AI-mapping note, shared by ImportTab and ConnectionWizard.
  */
+import { AlertTriangle } from 'lucide-react';
 import type { MissingField } from '@/lib/parsers/types';
 
 /** Data-sharing disclosure shown next to any AI-mapping affordance. */
@@ -62,4 +63,27 @@ export function buildFallbackMessages(
   }
   lines.push(aiLastResortNote(aiAvailable));
   return lines;
+}
+
+/**
+ * Shared presentational panel that renders the graduated "fix-the-file"
+ * guidance list followed by the AI data-sharing disclosure. Used by both
+ * ImportTab and ConnectionWizard so the copy stays byte-identical.
+ */
+export function FixTheFileGuidance({ messages }: { messages: string[] }) {
+  if (messages.length === 0) return null;
+  return (
+    <div className="space-y-2 rounded-lg border border-warn/25 bg-warn/[0.06] px-3 py-3">
+      <p className="text-xs font-bold text-hi">Here's how to fix this file</p>
+      <ul className="space-y-1.5">
+        {messages.map((m, i) => (
+          <li key={i} className="flex items-start gap-2 text-xs text-mid">
+            <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+            <span>{m}</span>
+          </li>
+        ))}
+      </ul>
+      <p className="pl-5 text-[11px] text-low">{AI_MAPPING_DISCLOSURE}</p>
+    </div>
+  );
 }
