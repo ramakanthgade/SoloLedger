@@ -130,6 +130,21 @@ export const IMPORT_SOURCES: ImportSource[] = [
     ],
     path: ['Settings', 'Reports', 'Transaction history', 'CSV'],
     note: 'Use the transaction history export, not the tax-only summary, for a complete ledger.'
+  },
+  {
+    id: 'other',
+    label: 'Other / any exchange',
+    monogram: 'OT',
+    formatHint: 'Any CSV / Excel',
+    region: 'global',
+    steps: [
+      'In your exchange, open the reports/statements section.',
+      'Export your Trade History as CSV or Excel.',
+      'Also export your Deposits & Withdrawals history if available.',
+      'Drop the file(s) into the next step — we read the columns automatically.'
+    ],
+    path: ['Reports', 'Statements', 'CSV / XLSX'],
+    note: "Works with most CSV/Excel exports; if a file can't be read we'll tell you exactly what to fix."
   }
 ];
 
