@@ -1,17 +1,38 @@
-import type { Transaction } from '@/types/transaction';
+import type { Transaction, TxType } from '@/types/transaction';
+
+/** A required import field a file was missing — drives actionable fix-the-file guidance. */
+export type MissingField = 'type' | 'amount' | 'asset' | 'timestamp' | 'preamble';
 
 export interface ParseResult {
   transactions: Transaction[];
   skippedRows: number;
   warnings: string[];
+  /**
+   * Structured hint of which required field(s) were absent when a file could
+   * not be parsed. Lets callers render specific fix-the-file guidance instead
+   * of a generic dead-end error.
+   */
+  missingFields?: MissingField[];
+}
+
+/**
+ * Optional context threaded from `parseSheetMatrix` to a parser. Lets the
+ * generic parser resolve an implied transaction type from a sheet's report
+ * title (e.g. Binance "Deposit History") when there is no explicit type column.
+ */
+export interface SheetContext {
+  /** Type implied by the sheet/report title when no type column exists. */
+  impliedType?: TxType;
+  /** Raw sheet/report title that produced `impliedType`, for provenance. */
+  sheetTitle?: string;
 }
 
 export interface ExchangeParser {
   id: string;
   label: string;
   /** Cheap heuristic check on headers to auto-detect this format. */
-  detect: (headers: string[]) => boolean;
-  parse: (rows: Record<string, string>[]) => ParseResult;
+  detect: (headers: string[], ctx?: SheetContext) => boolean;
+  parse: (rows: Record<string, string>[], ctx?: SheetContext) => ParseResult;
 }
 
 let counter = 0;

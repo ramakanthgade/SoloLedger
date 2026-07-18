@@ -15,8 +15,13 @@ import {
 } from '@/lib/storage/db';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
-import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
+import { getEffectiveSettings, hasAiAdvisor } from '@/lib/saas/effectiveSettings';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
+import type { MissingField } from '@/lib/parsers/types';
+import {
+  buildFallbackMessages,
+  AI_MAPPING_DISCLOSURE
+} from './importFallback';
 import type { Transaction } from '@/types/transaction';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
@@ -58,6 +63,8 @@ export function ImportTab() {
   const [extractionNote, setExtractionNote] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [importPhase, setImportPhase] = useState<'saving' | 'pricing' | null>(null);
+  /** Actionable fix-the-file + AI-last-resort guidance when a file can't be read. */
+  const [fallbackMessages, setFallbackMessages] = useState<string[]>([]);
 
   const csvImports = useLiveQuery(() => getCsvImports(), []) ?? [];
 
@@ -140,6 +147,7 @@ export function ImportTab() {
     setPriceFetchNote(null);
     setExtractionNote(null);
     setOutcome(null);
+    setFallbackMessages([]);
     setFileName(file.name);
 
     const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
@@ -195,12 +203,19 @@ export function ImportTab() {
     }
 
     // Auto-apply AI mapping when format isn't directly recognized.
+    // Gate on hasAiAdvisor(effectiveSettings) — this is true in Hosted:Managed
+    // mode (where the server proxy injects the key) as well as when the user
+    // has pasted their own key, closing the hosted-mode gap.
+    const effectiveSettings = await getEffectiveSettings();
+    const aiOn = hasAiAdvisor(effectiveSettings);
     if (!result.detectedParser && result.rows.length > 0) {
       const settings = await getSettings();
-      if (settings.aiApiKey) {
+      if (aiOn) {
         try {
           const suggestion = await suggestCsvMappingWithAi(
-            settings.aiApiKey,
+            // In hosted mode `openrouter.ts` supplies the real credential
+            // server-side and ignores this arg; pass '' as a placeholder.
+            settings.aiApiKey ?? '',
             result.headers,
             result.rows,
             settings.aiModel
@@ -248,6 +263,15 @@ export function ImportTab() {
           // Fall through to manual mapping UI with parse warnings.
         }
       }
+    }
+
+    // Nothing imported — replace the generic dead-end with actionable
+    // fix-the-file guidance derived from what the deterministic parser found
+    // missing, plus the AI last-resort note. Also surfaced above the manual
+    // ColumnMappingForm when rows are available to map.
+    if (result.transactions.length === 0) {
+      const missing = result.missingFields as MissingField[] | undefined;
+      setFallbackMessages(buildFallbackMessages(missing, aiOn));
     }
 
     setOutcome(result);
@@ -433,10 +457,19 @@ export function ImportTab() {
                   <ColumnMappingForm headers={outcome.headers} rows={outcome.rows} onMapped={saveMapped} />
                 )}
 
-                {outcome.detectedParser && outcome.transactions.length === 0 && (
-                  <p className="text-sm text-low">
-                    No transactions could be imported from this file. Check the warnings above or try a different export.
-                  </p>
+                {outcome.transactions.length === 0 && fallbackMessages.length > 0 && (
+                  <div className="space-y-2 rounded-lg border border-warn/25 bg-warn/[0.06] px-3 py-3">
+                    <p className="text-xs font-bold text-hi">Here's how to fix this file</p>
+                    <ul className="space-y-1.5">
+                      {fallbackMessages.map((m, i) => (
+                        <li key={i} className="flex items-start gap-2 text-xs text-mid">
+                          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+                          <span>{m}</span>
+                        </li>
+                      ))}
+                    </ul>
+                    <p className="pl-5 text-[11px] text-low">{AI_MAPPING_DISCLOSURE}</p>
+                  </div>
                 )}
               </CardContent>
             </Card>

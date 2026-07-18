@@ -11,7 +11,9 @@ import { coindcxParser } from './coindcx';
 import { coinswitchParser } from './coinswitch';
 import { zebpayParser } from './zebpay';
 import { mudrexParser } from './mudrex';
-import type { ExchangeParser, ParseResult } from './types';
+import { genericHistoryParser } from './genericHistory';
+import type { ExchangeParser, MissingField, ParseResult, SheetContext } from './types';
+import type { TxType } from '@/types/transaction';
 import { extractTableFromMatrix, isUsefulTransactionTable, cleanCell } from './tableExtract';
 import { isSpreadsheetFile, readWorkbookSheets } from './workbook';
 import type { Transaction } from '@/types/transaction';
@@ -33,7 +35,9 @@ export const PARSERS: ExchangeParser[] = [
   mudrexParser,
   binanceSpotParser,
   coinbaseParser,
-  binanceParser
+  binanceParser,
+  // Deterministic loose fallback — MUST be last so specific parsers win.
+  genericHistoryParser
 ];
 
 export interface SheetParseOutcome {
@@ -49,6 +53,8 @@ export interface SheetParseOutcome {
   skippedRows: number;
   warnings: string[];
   headerScore: number;
+  /** Required field(s) a generic parse found missing, for fix-the-file guidance. */
+  missingFields?: MissingField[];
 }
 
 export interface FileParseOutcome extends ParseResult {
@@ -57,6 +63,28 @@ export interface FileParseOutcome extends ParseResult {
   rows: Record<string, string>[]; // raw rows for manual mapping fallback
   /** Per-sheet results when a multi-sheet workbook (or single CSV treated as one sheet). */
   sheets: SheetParseOutcome[];
+}
+
+/**
+ * Scan preamble rows above the header for a report title that implies a
+ * transaction type when the sheet has no explicit type column, e.g. Binance
+ * "Deposit History" / "Withdrawal History".
+ */
+function detectSheetContext(matrix: string[][], headerRowIndex: number): SheetContext {
+  const limit = Math.max(0, headerRowIndex);
+  for (let i = 0; i < limit; i++) {
+    for (const cell of matrix[i] ?? []) {
+      const text = cleanCell(cell);
+      if (!text) continue;
+      if (/deposit\s+history/i.test(text)) {
+        return { impliedType: 'transfer_in' as TxType, sheetTitle: text };
+      }
+      if (/withdraw(al)?\s+history/i.test(text)) {
+        return { impliedType: 'transfer_out' as TxType, sheetTitle: text };
+      }
+    }
+  }
+  return {};
 }
 
 function parseSheetMatrix(
@@ -101,7 +129,9 @@ function parseSheetMatrix(
       ? `Ignored ${extracted.headerRowIndex} non-transaction row(s) before the header on “${sheetName}”.`
       : null;
 
-  const matched = PARSERS.find((p) => p.detect(extracted.headers));
+  const ctx = detectSheetContext(matrix, extracted.headerRowIndex);
+
+  const matched = PARSERS.find((p) => p.detect(extracted.headers, ctx));
   if (!matched) {
     return {
       sheetName,
@@ -121,7 +151,7 @@ function parseSheetMatrix(
     };
   }
 
-  const result = matched.parse(extracted.rows);
+  const result = matched.parse(extracted.rows, ctx);
   // Tag raw with sheet name for provenance
   const txs = result.transactions.map((t) => ({
     ...t,
@@ -141,18 +171,30 @@ function parseSheetMatrix(
       ...(preambleWarning ? [preambleWarning] : []),
       ...result.warnings.map((w) => (w.includes(sheetName) ? w : `[${sheetName}] ${w}`))
     ],
-    headerScore: extracted.headerScore
+    headerScore: extracted.headerScore,
+    missingFields: result.missingFields
   };
 }
 
 function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): FileParseOutcome {
   const useful = sheets.filter((s) => !s.skipped);
   const parsed = useful.filter((s) => s.detectedParser && s.transactions.length > 0);
-  const unrecognized = useful.filter((s) => !s.detectedParser && s.rows.length > 0);
+  // A sheet a parser "claimed" but produced no transactions (e.g. the generic
+  // parser matched the column families but the file lacks a Type column) still
+  // needs the manual/AI-mapping fallback, so treat any useful-but-empty sheet
+  // with rows as unrecognized here.
+  const unrecognized = useful.filter((s) => s.transactions.length === 0 && s.rows.length > 0);
 
   const transactions = parsed.flatMap((s) => s.transactions);
   const skippedRows = sheets.reduce((a, s) => a + s.skippedRows, 0);
   const warnings: string[] = [];
+
+  // Aggregate structured missing-field hints from empty sheets so callers can
+  // render actionable fix-the-file guidance instead of a generic dead-end.
+  const missingFields =
+    transactions.length === 0
+      ? [...new Set(unrecognized.flatMap((s) => s.missingFields ?? []))]
+      : [];
 
   const skippedSheets = sheets.filter((s) => s.skipped);
   if (skippedSheets.length > 0) {
@@ -201,6 +243,7 @@ function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): Fil
     transactions,
     skippedRows,
     warnings,
+    missingFields: missingFields.length > 0 ? missingFields : undefined,
     detectedParser,
     headers,
     rows,
@@ -223,29 +266,52 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
     // Re-extract without usefulness gate so manual mapping still works on weak CSVs
     const extracted = extractTableFromMatrix(matrix);
     if (extracted.headers.length > 0 && extracted.rows.length > 0) {
-      const matched = PARSERS.find((p) => p.detect(extracted.headers));
+      const ctx = detectSheetContext(matrix, extracted.headerRowIndex);
+      const matched = PARSERS.find((p) => p.detect(extracted.headers, ctx));
       if (matched) {
-        const result = matched.parse(extracted.rows);
-        return {
-          ...result,
-          detectedParser: matched.id,
-          headers: extracted.headers,
-          rows: extracted.rows,
-          sheets: [
+        const result = matched.parse(extracted.rows, ctx);
+        if (result.transactions.length > 0) {
+          return {
+            ...result,
+            detectedParser: matched.id,
+            headers: extracted.headers,
+            rows: extracted.rows,
+            sheets: [
+              {
+                sheetName: file.name || 'CSV',
+                sheetIndex: 0,
+                skipped: false,
+                detectedParser: matched.id,
+                headers: extracted.headers,
+                rows: extracted.rows,
+                transactions: result.transactions,
+                skippedRows: result.skippedRows,
+                warnings: result.warnings,
+                headerScore: extracted.headerScore
+              }
+            ]
+          };
+        }
+        // Parser claimed the sheet but produced no rows — route through the
+        // merge path so missingFields + manual/AI fallback are surfaced.
+        return mergeSheetOutcomes(
+          [
             {
               sheetName: file.name || 'CSV',
               sheetIndex: 0,
               skipped: false,
-              detectedParser: matched.id,
+              detectedParser: null,
               headers: extracted.headers,
               rows: extracted.rows,
-              transactions: result.transactions,
+              transactions: [],
               skippedRows: result.skippedRows,
               warnings: result.warnings,
-              headerScore: extracted.headerScore
+              headerScore: extracted.headerScore,
+              missingFields: result.missingFields
             }
-          ]
-        };
+          ],
+          file.name
+        );
       }
       return mergeSheetOutcomes(
         [

@@ -26,8 +26,10 @@ import {
 } from '@/lib/storage/db';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
-import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
+import { getEffectiveSettings, hasAiAdvisor } from '@/lib/saas/effectiveSettings';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
+import type { MissingField } from '@/lib/parsers/types';
+import { buildFallbackMessages, AI_MAPPING_DISCLOSURE } from './importFallback';
 import { formatCurrency, formatDateTime } from '@/lib/utils';
 import type { Transaction } from '@/types/transaction';
 import { cn } from '@/lib/utils';
@@ -161,6 +163,8 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
   const [savePhase, setSavePhase] = useState<'saving' | 'pricing' | null>(null);
   const [preview, setPreview] = useState<PreviewData | null>(null);
   const [error, setError] = useState<string | null>(null);
+  /** Actionable fix-the-file + AI-last-resort guidance when a file can't be read. */
+  const [fallbackMessages, setFallbackMessages] = useState<string[]>([]);
   const [savedCount, setSavedCount] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
@@ -173,6 +177,7 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
   // (when a key is set) but still show a preview instead of auto-saving.
   const readFile = useCallback(async (file: File) => {
     setError(null);
+    setFallbackMessages([]);
     setSavedCount(null);
     setReading(true);
     try {
@@ -187,6 +192,11 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
 
       const result: FileParseOutcome = await parseImportFile(file);
       const settings = await getSettings();
+      // Gate AI mapping on hasAiAdvisor(effectiveSettings): true in
+      // Hosted:Managed mode (server proxy injects the key) as well as when a
+      // BYOK key is set — closes the hosted-mode gap.
+      const effectiveSettings = await getEffectiveSettings();
+      const aiOn = hasAiAdvisor(effectiveSettings);
 
       let transactions = result.transactions;
       let parserId = result.detectedParser;
@@ -195,10 +205,12 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
 
       // Format not directly recognized — try AI mapping for a preview only.
       if (!result.detectedParser && result.rows.length > 0) {
-        if (settings.aiApiKey) {
+        if (aiOn) {
           try {
             const suggestion = await suggestCsvMappingWithAi(
-              settings.aiApiKey,
+              // Hosted mode: openrouter.ts injects the real key server-side and
+              // ignores this arg; pass '' as a placeholder.
+              settings.aiApiKey ?? '',
               result.headers,
               result.rows,
               settings.aiModel
@@ -238,17 +250,16 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
               'This format was not recognized and AI mapping failed. Use the Import tab to map columns manually.'
             );
           }
-        } else {
-          warnings.push(
-            'This format was not recognized. Use the Import tab to map the columns manually.'
-          );
         }
       }
 
       if (transactions.length === 0) {
-        setError(
-          'No transactions could be read from this file. Check you exported the right report, or map columns on the Import tab.'
-        );
+        // Replace the generic dead-end with actionable fix-the-file guidance
+        // derived from what the deterministic parser found missing, plus the
+        // AI last-resort note (both ways to enable it when unavailable).
+        const missing = result.missingFields as MissingField[] | undefined;
+        setFallbackMessages(buildFallbackMessages(missing, aiOn));
+        setError(null);
         return;
       }
 
@@ -510,6 +521,21 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
                 <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2.5 text-xs text-warn">
                   <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
                   <span>{error}</span>
+                </div>
+              )}
+
+              {fallbackMessages.length > 0 && (
+                <div className="space-y-2 rounded-lg border border-warn/25 bg-warn/[0.06] px-3 py-3">
+                  <p className="text-xs font-bold text-hi">Here's how to fix this file</p>
+                  <ul className="space-y-1.5">
+                    {fallbackMessages.map((m, i) => (
+                      <li key={i} className="flex items-start gap-2 text-xs text-mid">
+                        <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warn" />
+                        <span>{m}</span>
+                      </li>
+                    ))}
+                  </ul>
+                  <p className="pl-5 text-[11px] text-low">{AI_MAPPING_DISCLOSURE}</p>
                 </div>
               )}
 
