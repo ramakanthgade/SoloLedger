@@ -74,3 +74,34 @@ export async function confirmAddressOrientation(txs: Transaction[]): Promise<Tra
     return txs;
   }
 }
+
+/** A parsed sheet as far as orientation cares: its rows + whether they were ambiguous. */
+interface OrientableSheet {
+  skipped: boolean;
+  detectedParser: string | null;
+  transactions: Transaction[];
+  addressColumnAmbiguous?: boolean;
+}
+
+/**
+ * Re-orient a multi-sheet parse result's transactions: run
+ * `confirmAddressOrientation` over ONLY the ambiguous sheets' rows and rebuild
+ * the merged transaction list, leaving clearly-named / non-generic sheets
+ * untouched. When no sheet is ambiguous, returns `fallback` unchanged (avoiding
+ * the rebuild). Shared by the auto-detected import paths in ImportTab and
+ * ConnectionWizard.
+ */
+export async function confirmSheetOrientations(
+  sheets: OrientableSheet[],
+  fallback: Transaction[]
+): Promise<Transaction[]> {
+  if (!sheets.some((s) => s.addressColumnAmbiguous)) return fallback;
+  const rebuilt: Transaction[] = [];
+  for (const s of sheets) {
+    if (s.skipped || !s.detectedParser || s.transactions.length === 0) continue;
+    rebuilt.push(
+      ...(s.addressColumnAmbiguous ? await confirmAddressOrientation(s.transactions) : s.transactions)
+    );
+  }
+  return rebuilt;
+}

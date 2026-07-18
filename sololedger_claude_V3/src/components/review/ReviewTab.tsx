@@ -96,7 +96,7 @@ function FlagSelector({ tx }: { tx: Transaction }) {
         {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
       </button>
       {open && (
-        <div className="absolute right-0 top-7 z-30 min-w-[14rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card border-white/10">
+        <div className="absolute right-0 top-7 z-30 min-w-[14rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
           <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">Flag transaction</p>
           {ALL_FLAGS.map((flag) => {
             const on = storedFlags.has(flag);

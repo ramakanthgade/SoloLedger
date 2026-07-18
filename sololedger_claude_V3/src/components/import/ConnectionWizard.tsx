@@ -15,7 +15,7 @@ import {
   type FileParseOutcome
 } from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
-import { confirmAddressOrientation } from '@/lib/parsers/addressOrientation';
+import { confirmAddressOrientation, confirmSheetOrientations } from '@/lib/parsers/addressOrientation';
 import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
 import {
   db,
@@ -269,19 +269,10 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         // Best-effort orientation confirmation for ambiguous-Address sheets
         // (non-local only). Only ambiguous sheets' rows are re-oriented; other
         // sheets are left untouched. Non-fatal — failures keep the baseline.
-        let orientedTransactions = result.transactions;
-        if (result.sheets.some((s) => s.addressColumnAmbiguous)) {
-          const rebuilt: Transaction[] = [];
-          for (const s of result.sheets) {
-            if (s.skipped || !s.detectedParser || s.transactions.length === 0) continue;
-            rebuilt.push(
-              ...(s.addressColumnAmbiguous
-                ? await confirmAddressOrientation(s.transactions)
-                : s.transactions)
-            );
-          }
-          orientedTransactions = rebuilt;
-        }
+        const orientedTransactions = await confirmSheetOrientations(
+          result.sheets,
+          result.transactions
+        );
 
         showPreview(
           orientedTransactions,

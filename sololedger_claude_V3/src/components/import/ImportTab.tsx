@@ -2,7 +2,7 @@ import { useCallback, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { parseImportFile, isSpreadsheetFile, type FileParseOutcome } from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
-import { confirmAddressOrientation } from '@/lib/parsers/addressOrientation';
+import { confirmAddressOrientation, confirmSheetOrientations } from '@/lib/parsers/addressOrientation';
 import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
 import {
   db,
@@ -190,19 +190,7 @@ export function ImportTab() {
         // Best-effort orientation confirmation for ambiguous-Address sheets
         // (non-local only). Only the ambiguous sheets' rows are re-oriented;
         // clearly-named / non-generic sheets are left untouched. Non-fatal.
-        let toPersist = result.transactions;
-        if (result.sheets.some((s) => s.addressColumnAmbiguous)) {
-          const rebuilt: Transaction[] = [];
-          for (const s of result.sheets) {
-            if (s.skipped || !s.detectedParser || s.transactions.length === 0) continue;
-            rebuilt.push(
-              ...(s.addressColumnAmbiguous
-                ? await confirmAddressOrientation(s.transactions)
-                : s.transactions)
-            );
-          }
-          toPersist = rebuilt;
-        }
+        const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
         await persistTransactions(toPersist, result.detectedParser, hash, file.name);
         setSavedCount(toPersist.length);
         setImportWarnings(result.warnings);
