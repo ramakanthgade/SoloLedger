@@ -339,8 +339,15 @@ export function WalletLookupPanel() {
                 variant="secondary"
                 className="border-loss/40 text-loss hover:bg-loss/10"
                 onClick={async () => {
+                  // Capture whether an import was active BEFORE the await: a job
+                  // could FINISH during deleteLookupAddressAndTransactions, flipping
+                  // active to false — resetting then would erase that just-finished
+                  // import's completion banner. Only reset when the job was idle the
+                  // whole time (idle before AND after the await).
+                  const hadActiveJob = importJob.get().active;
                   await deleteLookupAddressAndTransactions(removeConfirm.id);
                   setRemoveConfirm(null);
+                  if (!hadActiveJob && !importJob.get().active) importJob.reset();
                 }}
               >
                 Remove wallet

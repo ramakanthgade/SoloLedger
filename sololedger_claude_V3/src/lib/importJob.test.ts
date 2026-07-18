@@ -119,3 +119,39 @@ describe('runWalletImport auto-pricing gate', () => {
     expect(importJob.get().result?.pricesUpdated).toBe(3);
   });
 });
+
+describe('wallet-remove reset guard', () => {
+  beforeEach(() => {
+    importJob.reset();
+  });
+
+  // Mirrors the WalletLookupPanel remove handler: `if (!importJob.get().active) importJob.reset();`
+  function clearBannersIfIdle() {
+    if (!importJob.get().active) importJob.reset();
+  }
+
+  it('clears stale result/warnings when the job is idle (finished import)', async () => {
+    // Simulate a finished import that left a success banner + price note behind.
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    expect(importJob.get().result).not.toBeNull();
+    expect(importJob.get().active).toBe(false);
+
+    clearBannersIfIdle();
+
+    expect(importJob.get().result).toBeNull();
+    expect(importJob.get().warnings).toEqual([]);
+  });
+
+  it('leaves an in-progress import untouched (never wipes live progress)', () => {
+    // Simulate an active import in the classifying phase.
+    importJob._setPhase('classifying', { done: 2, total: 5 });
+    expect(importJob.get().active).toBe(true);
+
+    clearBannersIfIdle();
+
+    // Active job state must be preserved — the guard skips reset.
+    expect(importJob.get().active).toBe(true);
+    expect(importJob.get().phase).toBe('classifying');
+    expect(importJob.get().progress).toEqual({ done: 2, total: 5 });
+  });
+});
