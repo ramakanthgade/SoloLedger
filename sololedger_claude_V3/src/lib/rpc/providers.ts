@@ -612,6 +612,29 @@ function blockscoutUrl(path: string): string {
   return `${BLOCKSCOUT_ETHEREUM_API}${path}`;
 }
 
+/**
+ * Best-effort fetch of an Ethereum transaction's from/to parties via Blockscout
+ * (free, no key, CORS-open). Used to confirm address orientation for ambiguous
+ * single-"Address" imports. Ethereum-only (sample data uses EVM `0x` hashes).
+ * Returns `null` on any failure so callers can fall back to their baseline.
+ */
+export async function fetchBlockscoutTxParties(
+  hash: string
+): Promise<{ from?: string; to?: string } | null> {
+  try {
+    recordNetworkActivity(resolveMode(false));
+    const res = await fetch(blockscoutUrl(`/transactions/${hash}`));
+    if (!res.ok) return null;
+    const data = await res.json();
+    const from = data?.from?.hash ? String(data.from.hash).toLowerCase() : undefined;
+    const to = data?.to?.hash ? String(data.to.hash).toLowerCase() : undefined;
+    if (!from && !to) return null;
+    return { from, to };
+  } catch {
+    return null;
+  }
+}
+
 async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
   const addr = address.toLowerCase();
   let txRes: Response;

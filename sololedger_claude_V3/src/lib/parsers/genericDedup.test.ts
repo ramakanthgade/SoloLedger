@@ -56,4 +56,39 @@ describe('Manual/AI mapping — stable content-hash sourceRef (C1)', () => {
     expect(transactionExchangeKey({ source: 'ai_mapping', sourceRef: ref })).toBe(`ex:${ref}`);
     expect(transactionExchangeKey({ source: 'manual_mapping', sourceRef: ref })).toBe(`ex:${ref}`);
   });
+
+  it('withdrawal rows: re-import yields identical sourceRef and txHash does not change the dedup key', () => {
+    const withdrawMapping: ColumnMapping = {
+      timestamp: 'Time',
+      type: 'Side',
+      asset: 'Coin',
+      amount: 'Amount',
+      network: 'Network',
+      txHash: 'TXID',
+      address: 'Address',
+      typeValueMap: { withdrawl: 'transfer_out' },
+      assetIsTradingPair: false
+    };
+    const withdrawRows: Record<string, string>[] = [
+      {
+        Time: '2024-02-25 16:25:22',
+        Coin: 'USDC',
+        Network: 'ETH',
+        Side: 'Withdrawl',
+        Amount: '93',
+        Address: '0x475E5b507a1d028773b60B2b32830b61A6820579',
+        TXID: '0x9d1e233dfffcfbfb45fd034b900a30e2ec8caa0d808a98367b35cfb4a98b3367',
+        Status: 'Completed'
+      }
+    ];
+    const first = parseWithMapping(withdrawRows, withdrawMapping, 'USD').transactions;
+    const second = parseWithMapping(withdrawRows, withdrawMapping, 'USD').transactions;
+    expect(first[0].txHash).toBe(withdrawRows[0].TXID);
+    // sourceRef stays a content hash — NOT the raw TXID — so batched deposits
+    // sharing a hash aren't wrongly deduped.
+    expect(first[0].sourceRef?.startsWith('chash:')).toBe(true);
+    expect(first[0].sourceRef).not.toBe(withdrawRows[0].TXID);
+    expect(first[0].sourceRef).toBe(second[0].sourceRef);
+    expect(transactionExchangeKey(first[0])).toBe(transactionExchangeKey(second[0]));
+  });
 });

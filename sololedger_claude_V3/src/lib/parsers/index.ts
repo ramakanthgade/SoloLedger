@@ -55,6 +55,13 @@ export interface SheetParseOutcome {
   headerScore: number;
   /** Required field(s) a generic parse found missing, for fix-the-file guidance. */
   missingFields?: MissingField[];
+  /**
+   * True when THIS sheet's rows had their addresses resolved from a single
+   * ambiguous "Address" column (assume-To baseline). Kept at sheet granularity
+   * so a non-local caller can confirm/flip orientation for only this sheet's
+   * rows — a multi-sheet workbook may mix ambiguous and clearly-named sheets.
+   */
+  addressColumnAmbiguous?: boolean;
 }
 
 export interface FileParseOutcome extends ParseResult {
@@ -179,7 +186,8 @@ function parseSheetMatrix(
       ...result.warnings.map((w) => (w.includes(sheetName) ? w : `[${sheetName}] ${w}`))
     ],
     headerScore: extracted.headerScore,
-    missingFields: result.missingFields
+    missingFields: result.missingFields,
+    addressColumnAmbiguous: result.addressColumnAmbiguous
   };
 }
 
@@ -251,6 +259,9 @@ function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): Fil
     skippedRows,
     warnings,
     missingFields: missingFields.length > 0 ? missingFields : undefined,
+    // Convenience "any sheet ambiguous" flag for gating; the per-sheet flag on
+    // each SheetParseOutcome is authoritative for WHICH rows to orient.
+    addressColumnAmbiguous: sheets.some((s) => s.addressColumnAmbiguous),
     detectedParser,
     headers,
     rows,
@@ -294,7 +305,8 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
                 transactions: result.transactions,
                 skippedRows: result.skippedRows,
                 warnings: result.warnings,
-                headerScore: extracted.headerScore
+                headerScore: extracted.headerScore,
+                addressColumnAmbiguous: result.addressColumnAmbiguous
               }
             ]
           };

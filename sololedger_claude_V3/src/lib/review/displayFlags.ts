@@ -17,7 +17,12 @@ export function displayFlags(t: Transaction): FlagReason[] {
 }
 
 /** True when a row should be kept for the given Flags filter value. */
-export function matchesFlagFilter(t: Transaction, flagFilter: FlagReason | 'all'): boolean {
+export function matchesFlagFilter(
+  t: Transaction,
+  flagFilter: FlagReason | 'all' | 'spam' | 'internal'
+): boolean {
   if (flagFilter === 'all') return true;
+  if (flagFilter === 'spam') return t.isSpam === true;
+  if (flagFilter === 'internal') return t.isInternalTransfer === true;
   return displayFlags(t).includes(flagFilter);
 }

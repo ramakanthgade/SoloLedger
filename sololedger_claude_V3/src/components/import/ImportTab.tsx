@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { parseImportFile, isSpreadsheetFile, type FileParseOutcome } from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
+import { confirmAddressOrientation, confirmSheetOrientations } from '@/lib/parsers/addressOrientation';
 import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
 import {
   db,
@@ -186,8 +187,12 @@ export function ImportTab() {
       setSaving(true);
       setImportPhase('saving');
       try {
-        await persistTransactions(result.transactions, result.detectedParser, hash, file.name);
-        setSavedCount(result.transactions.length);
+        // Best-effort orientation confirmation for ambiguous-Address sheets
+        // (non-local only). Only the ambiguous sheets' rows are re-oriented;
+        // clearly-named / non-generic sheets are left untouched. Non-fatal.
+        const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
+        await persistTransactions(toPersist, result.detectedParser, hash, file.name);
+        setSavedCount(toPersist.length);
         setImportWarnings(result.warnings);
         setFileName('');
         setFileHash('');
@@ -263,8 +268,11 @@ export function ImportTab() {
       }
 
       setImportPhase('saving');
-      await persistTransactions(autoMapped.transactions, 'ai_mapping', fileHash, fileName);
-      setSavedCount(autoMapped.transactions.length);
+      const aiToPersist = autoMapped.addressColumnAmbiguous
+        ? await confirmAddressOrientation(autoMapped.transactions)
+        : autoMapped.transactions;
+      await persistTransactions(aiToPersist, 'ai_mapping', fileHash, fileName);
+      setSavedCount(aiToPersist.length);
       setImportWarnings([
         `AI mapped the columns (${suggestion.confidence} confidence): ${suggestion.explanation}`,
         ...autoMapped.warnings
@@ -298,8 +306,11 @@ export function ImportTab() {
     setSaving(true);
     setImportPhase('saving');
     try {
-      await persistTransactions(mapped.transactions, 'manual_mapping', fileHash, fileName);
-      setSavedCount(mapped.transactions.length);
+      const toPersist = mapped.addressColumnAmbiguous
+        ? await confirmAddressOrientation(mapped.transactions)
+        : mapped.transactions;
+      await persistTransactions(toPersist, 'manual_mapping', fileHash, fileName);
+      setSavedCount(toPersist.length);
       setImportWarnings(mapped.warnings);
       setOutcome(null);
       setFileName('');
