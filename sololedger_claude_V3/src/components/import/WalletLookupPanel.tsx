@@ -340,6 +340,10 @@ export function WalletLookupPanel() {
                 className="border-loss/40 text-loss hover:bg-loss/10"
                 onClick={async () => {
                   await deleteLookupAddressAndTransactions(removeConfirm.id);
+                  // Clear stale success/price banners from the shared import-job
+                  // singleton — but only when no import is running, so an
+                  // in-progress (unrelated) wallet import is never interrupted.
+                  if (!importJob.get().active) importJob.reset();
                   setRemoveConfirm(null);
                 }}
               >

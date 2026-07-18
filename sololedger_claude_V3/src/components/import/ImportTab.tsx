@@ -312,7 +312,7 @@ export function ImportTab() {
         ))}
       </div>
 
-      {transactionCount === 0 && mode !== 'guided' && (
+      {transactionCount === 0 && mode === 'csv' && (
         <EmptyState
           icon={<Upload className="h-11 w-11" />}
           title="No transactions yet"
