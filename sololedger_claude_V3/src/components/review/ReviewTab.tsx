@@ -28,6 +28,7 @@ import {
   summarizeBulkTypeChange
 } from '@/lib/review/bulkEdit';
 import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
+import { displayFlags, matchesFlagFilter } from '@/lib/review/displayFlags';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -50,12 +51,6 @@ const FLAG_LABELS: Record<FlagReason, string> = {
   unrecognized_asset: 'Unrecognized asset',
   needs_review: 'Needs review'
 };
-
-function displayFlags(t: Transaction): string[] {
-  const flags = new Set(t.flags ?? []);
-  if (t.fiatValue == null && !t.isInternalTransfer) flags.add('missing_cost_basis');
-  return [...flags];
-}
 
 function FlagSelector({ tx }: { tx: Transaction }) {
   const [open, setOpen] = useState(false);
@@ -241,6 +236,7 @@ export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<TxType | 'all'>('all');
+  const [flagFilter, setFlagFilter] = useState<FlagReason | 'all'>('all');
   const [walletFilter, setWalletFilter] = useState<string>('all');
   const [fyFilter, setFyFilter] = useState<number | null>(null);
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
@@ -275,10 +271,8 @@ export function ReviewTab() {
   const [priceErrors, setPriceErrors] = useState<string[]>([]);
   const [editingFiat, setEditingFiat] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
-  const [detectingSwaps, setDetectingSwaps] = useState(false);
   const [swapDetectMsg, setSwapDetectMsg] = useState<string | null>(null);
   const [resolvingSymbols, setResolvingSymbols] = useState(false);
-  const [novesProgress, setNovesProgress] = useState<{ done: number; total: number } | null>(null);
   // Phase 2: DefiLlama reward-income suggestions (user-gated fetch).
   const [llamaSuggesting, setLlamaSuggesting] = useState(false);
   const [llamaMsg, setLlamaMsg] = useState<string | null>(null);
@@ -415,6 +409,25 @@ export function ReviewTab() {
     });
   }, [potentialSwapPairs]);
 
+  // One-time auto DefiLlama reward suggestions for CSV/manual/existing data
+  // viewed in Review without a fresh wallet import. Gated behind
+  // priceApiEnabled — this is the one approved relaxation of the "no background
+  // network in local mode" policy (network egress is already permitted when
+  // Live price lookup is on). Wallet imports run the same pass in importJob.ts.
+  useEffect(() => {
+    if (!settings?.priceApiEnabled || solanaTransferInCount === 0) return;
+    const key = 'sololedger_defillama_auto_v1';
+    if (localStorage.getItem(key)) return;
+    localStorage.setItem(key, '1');
+    void applyDefiLlamaRewardSuggestions()
+      .then((result) => {
+        if (result.suggested > 0) setLlamaMsg(result.message);
+      })
+      .catch(() => {
+        /* network/parse failure is non-fatal — the manual button remains available */
+      });
+  }, [settings?.priceApiEnabled, solanaTransferInCount]);
+
   const fetchMissingPrices = async () => {
     if (!settings?.priceApiEnabled || missingPriceTxs.length === 0) return;
     setFetchingPrices(true);
@@ -436,22 +449,6 @@ export function ReviewTab() {
   const bulkMarkSpam = async () => {
     await Promise.all(Array.from(selected).map((id) => db.transactions.update(id, { isSpam: true })));
     setSelected(new Set());
-  };
-
-  const runSwapDetection = async () => {
-    setDetectingSwaps(true);
-    setSwapDetectMsg(null);
-    setNovesProgress(null);
-    try {
-      const result = await reprocessSwapDetectionInDb(
-        settings?.novesApiKey,
-        (done, total) => setNovesProgress({ done, total })
-      );
-      setSwapDetectMsg(result.message);
-    } finally {
-      setDetectingSwaps(false);
-      setNovesProgress(null);
-    }
   };
 
   const startEditFiat = (txId: string, current?: number) => {
@@ -502,6 +499,7 @@ export function ReviewTab() {
       if (showNeedsReview && !isNeedsReview(t)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
       if (typeFilter !== 'all' && t.type !== typeFilter) return false;
+      if (flagFilter !== 'all' && !matchesFlagFilter(t, flagFilter)) return false;
       if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
       if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;
       if (instrumentFilter === 'derivative' && !isDerivativeTransaction(t)) return false;
@@ -525,7 +523,7 @@ export function ReviewTab() {
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, typeFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
+  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -537,7 +535,7 @@ export function ReviewTab() {
   // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [assetFilter, typeFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
+  }, [assetFilter, typeFilter, flagFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -825,17 +823,10 @@ export function ReviewTab() {
               {potentialSwapPairs} possible DEX swap{potentialSwapPairs === 1 ? '' : 's'} waiting to be merged
             </p>
             <p className="text-xs text-low">
-              Wallet imports show as transfer_in/out until merged into trades. Click Detect DEX swaps, then fetch
-              prices — Capital Gains will show matched buy/sell rows.
+              Wallet imports show as transfer_in/out until merged into trades. Swaps are detected automatically
+              and prices are fetched automatically — Capital Gains will show matched buy/sell rows.
             </p>
           </div>
-          <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0">
-            {detectingSwaps
-              ? novesProgress
-                ? `Noves ${novesProgress.done}/${novesProgress.total}…`
-                : 'Detecting swaps…'
-              : settings?.novesApiKey ? 'Detect swaps (Noves)' : 'Detect DEX swaps'}
-          </Button>
         </div>
       )}
 
@@ -853,6 +844,9 @@ export function ReviewTab() {
               <p className="mt-1 text-xs text-low">
                 Check them against DefiLlama&rsquo;s reward-token data (free, no API key). Matches become
                 income flagged <span className="text-warn">needs review</span> so you can confirm each one.
+                {settings?.priceApiEnabled
+                  ? ' This runs automatically when Live price lookup is on — use the button to re-run it.'
+                  : ' Turn on Live price lookup in Settings to run this automatically, or use the button now.'}
               </p>
             </div>
           </div>
@@ -944,6 +938,19 @@ export function ReviewTab() {
           <option value="all">All types</option>
           {ALL_TYPES.map((t) => (
             <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
+          ))}
+        </select>
+
+        {/* Flags filter */}
+        <select
+          value={flagFilter}
+          onChange={(e) => setFlagFilter(e.target.value as FlagReason | 'all')}
+          aria-label="Flags filter"
+          className={`rounded-md border bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20 ${flagFilter !== 'all' ? 'border-violet/50 ring-2 ring-violet/20' : 'border-white/10'}`}
+        >
+          <option value="all">All flags</option>
+          {ALL_FLAGS.map((f) => (
+            <option key={f} value={f}>{FLAG_LABELS[f]}</option>
           ))}
         </select>
 
@@ -1041,15 +1048,6 @@ export function ReviewTab() {
           <Button variant="secondary" onClick={exportFilteredJson} className="text-xs">JSON</Button>
           <Button variant="secondary" onClick={() => setPdfConfirmOpen(true)} className="text-xs">PDF</Button>
         </div>
-
-        {/* Noves: only show for non-Helius users or as an explicit re-run option */}
-        {!settings?.heliusApiKey && (
-          <Button variant="secondary" disabled={detectingSwaps} onClick={runSwapDetection} className="shrink-0 text-xs">
-            {detectingSwaps
-              ? novesProgress ? `Noves ${novesProgress.done}/${novesProgress.total}…` : 'Detecting…'
-              : settings?.novesApiKey ? 'Classify (Noves)' : 'Detect swaps'}
-          </Button>
-        )}
 
         {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
           <Button disabled={fetchingPrices} onClick={fetchMissingPrices} className="ml-auto shrink-0">

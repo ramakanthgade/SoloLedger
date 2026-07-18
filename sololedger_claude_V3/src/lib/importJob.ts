@@ -9,6 +9,7 @@
 import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions, filterAlreadyImported } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
 import { reprocessSwapDetectionInDb, reprocessRewardIncome } from '@/lib/rpc/reprocessSwaps';
+import { applyDefiLlamaRewardSuggestions } from '@/lib/rpc/rewardSuggestions';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -263,6 +264,31 @@ export async function runWalletImport(
   if (txsToStore.length > 0) {
     // Phase 2a: Reclassify reward-token income (GEOD, DBT, …) — always free, no API
     await reprocessRewardIncome();
+
+    // Phase 2a′: DefiLlama reward-income suggestions — gated behind priceApiEnabled.
+    // This reaches out to the free, key-less DefiLlama pools endpoint, so it runs
+    // ONLY when the user has already permitted network egress via "Live price
+    // lookup" (a conscious, approved relaxation of the "no background network in
+    // local mode" policy — see defiLlamaRewards.ts). Matches become income flagged
+    // needs_review so the user can confirm each one in the Review tab.
+    if (settings.priceApiEnabled) {
+      // Wrap ONLY this phase: fetchSolanaRewardHints() can throw on a network
+      // failure with no cache to fall back to. A DefiLlama outage must NOT strand
+      // the import (leaving it stuck 'classifying' and skipping pricing) — treat
+      // it as non-fatal and continue to swap detection + pricing.
+      try {
+        const llamaResult = await applyDefiLlamaRewardSuggestions();
+        if (llamaResult.suggested > 0) {
+          apiWarnings.unshift(llamaResult.message);
+        }
+      } catch (err) {
+        apiWarnings.unshift(
+          `DefiLlama reward suggestions skipped: ${
+            err instanceof Error ? err.message : 'network error'
+          }.`
+        );
+      }
+    }
 
     // Phase 2b: Local swap merge (always) + optional Noves for legacy sources.
     const swapResult = await reprocessSwapDetectionInDb(
