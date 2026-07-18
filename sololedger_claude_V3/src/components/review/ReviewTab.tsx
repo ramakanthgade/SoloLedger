@@ -8,6 +8,7 @@ import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/tran
 import { formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
+import { isRealTxHash, explorerTxUrl } from '@/lib/parsers/explorer';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
@@ -1362,21 +1363,24 @@ export function ReviewTab() {
                       ) : '—'}
                     </td>
                     <td className="px-2 py-2 font-mono text-xs text-low">
-                      {t.sourceRef ? (
-                        <a
-                          href={
-                            t.chain === 'solana'
-                              ? `https://solscan.io/tx/${t.sourceRef}`
-                              : `https://etherscan.io/tx/${t.sourceRef}`
-                          }
-                          target="_blank"
-                          rel="noreferrer"
-                          title={t.sourceRef}
-                          className="hover:text-gain"
-                        >
-                          {t.sourceRef.slice(0, 8)}…
-                        </a>
-                      ) : '—'}
+                      {(() => {
+                        const hash = t.txHash ?? t.sourceRef;
+                        const url = isRealTxHash(hash) ? explorerTxUrl(t.chain, hash!) : null;
+                        if (url) {
+                          return (
+                            <a
+                              href={url}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={hash}
+                              className="hover:text-gain"
+                            >
+                              {hash!.slice(0, 8)}…
+                            </a>
+                          );
+                        }
+                        return hash ? <span title={hash}>{hash.slice(0, 8)}…</span> : '—';
+                      })()}
                     </td>
                     <td className="px-2 py-2 align-top">
                       <FlagSelector tx={t} />
