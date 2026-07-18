@@ -29,7 +29,8 @@ import {
   summarizeBulkTypeChange
 } from '@/lib/review/bulkEdit';
 import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
-import { displayFlags, matchesFlagFilter } from '@/lib/review/displayFlags';
+import { displayFlags } from '@/lib/review/displayFlags';
+import { filterRows, paginate } from '@/lib/review/reviewTableView';
 import { LotPicker } from './LotPicker';
 import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
@@ -95,7 +96,7 @@ function FlagSelector({ tx }: { tx: Transaction }) {
         {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-7 z-30 min-w-[14rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card border-white/10">
+        <div className="absolute right-0 top-7 z-30 min-w-[14rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card border-white/10">
           <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">Flag transaction</p>
           {ALL_FLAGS.map((flag) => {
             const on = storedFlags.has(flag);
@@ -237,7 +238,7 @@ export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<TxType | 'all'>('all');
-  const [flagFilter, setFlagFilter] = useState<FlagReason | 'all'>('all');
+  const [flagFilter, setFlagFilter] = useState<FlagReason | 'all' | 'spam' | 'internal'>('all');
   const [walletFilter, setWalletFilter] = useState<string>('all');
   const [fyFilter, setFyFilter] = useState<number | null>(null);
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
@@ -493,21 +494,19 @@ export function ReviewTab() {
 
   const filtered = useMemo(() => {
     const fyBounds = fyFilter != null ? getFyBoundaries(fyFilter, jurisdiction) : null;
-    const base = transactions.filter((t) => {
-      if (!showSpam && t.isSpam) return false;
-      if (showSpam && !t.isSpam) return false;
-      if (showNeedsPrice && !(t.fiatValue == null && !t.isSpam)) return false;
-      if (showNeedsReview && !isNeedsReview(t)) return false;
-      if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
-      if (typeFilter !== 'all' && t.type !== typeFilter) return false;
-      if (flagFilter !== 'all' && !matchesFlagFilter(t, flagFilter)) return false;
-      if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
-      if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;
-      if (instrumentFilter === 'derivative' && !isDerivativeTransaction(t)) return false;
-      if (instrumentFilter === 'spot' && isDerivativeTransaction(t)) return false;
-      if (query && !`${t.asset} ${t.type} ${t.source} ${t.walletAddress ?? ''} ${t.notes ?? ''}`.toLowerCase().includes(query.toLowerCase()))
-        return false;
-      return true;
+    const base = filterRows(transactions, {
+      showSpam,
+      showNeedsPrice,
+      showNeedsReview,
+      assetFilter,
+      typeFilter,
+      flagFilter,
+      walletFilter,
+      fyBounds,
+      instrumentFilter,
+      query,
+      isNeedsReview,
+      isDerivative: isDerivativeTransaction
     });
 
     return [...base].sort((a, b) => {
@@ -526,17 +525,51 @@ export function ReviewTab() {
     });
   }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pageRows = useMemo(() => {
-    const start = (safePage - 1) * PAGE_SIZE;
-    return filtered.slice(start, start + PAGE_SIZE);
-  }, [filtered, safePage, PAGE_SIZE]);
+  const { pageRows, totalPages, safePage } = useMemo(
+    () => paginate(filtered, page, PAGE_SIZE),
+    [filtered, page, PAGE_SIZE]
+  );
 
   // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
   }, [assetFilter, typeFilter, flagFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
+
+  // Shared pagination bar — rendered both above and below the table so long
+  // lists can be paged from either end. Both instances read the same
+  // page/safePage/totalPages state, so there is no duplicated pagination state.
+  const renderPagination = (wrapperClassName: string) => {
+    if (filtered.length <= PAGE_SIZE) return null;
+    return (
+      <div className={`flex flex-wrap items-center justify-between gap-3 ${wrapperClassName}`}>
+        <p className="text-xs text-low">
+          Showing {(safePage - 1) * PAGE_SIZE + 1}–
+          {Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
+        </p>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="secondary"
+            className="text-xs"
+            disabled={safePage <= 1}
+            onClick={() => setPage((p) => Math.max(1, p - 1))}
+          >
+            Previous
+          </Button>
+          <span className="text-xs text-low">
+            Page {safePage} of {totalPages}
+          </span>
+          <Button
+            variant="secondary"
+            className="text-xs"
+            disabled={safePage >= totalPages}
+            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+          >
+            Next
+          </Button>
+        </div>
+      </div>
+    );
+  };
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -945,7 +978,7 @@ export function ReviewTab() {
         {/* Flags filter */}
         <select
           value={flagFilter}
-          onChange={(e) => setFlagFilter(e.target.value as FlagReason | 'all')}
+          onChange={(e) => setFlagFilter(e.target.value as FlagReason | 'all' | 'spam' | 'internal')}
           aria-label="Flags filter"
           className={`rounded-md border bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20 ${flagFilter !== 'all' ? 'border-violet/50 ring-2 ring-violet/20' : 'border-white/10'}`}
         >
@@ -953,6 +986,8 @@ export function ReviewTab() {
           {ALL_FLAGS.map((f) => (
             <option key={f} value={f}>{FLAG_LABELS[f]}</option>
           ))}
+          <option value="spam">Spam</option>
+          <option value="internal">Internal</option>
         </select>
 
         {/* Wallet filter */}
@@ -1255,6 +1290,7 @@ export function ReviewTab() {
         onCancel={() => setPendingBulkType(null)}
       />
 
+      {renderPagination('pb-0.5')}
       <div className="overflow-x-auto rounded-lg border border-white/10">
         <table className="w-full min-w-[920px] text-sm">
           <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
@@ -1413,35 +1449,7 @@ export function ReviewTab() {
           </tbody>
         </table>
       </div>
-      {filtered.length > PAGE_SIZE && (
-        <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
-          <p className="text-xs text-low">
-            Showing {(safePage - 1) * PAGE_SIZE + 1}–
-            {Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
-          </p>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              className="text-xs"
-              disabled={safePage <= 1}
-              onClick={() => setPage((p) => Math.max(1, p - 1))}
-            >
-              Previous
-            </Button>
-            <span className="text-xs text-low">
-              Page {safePage} of {totalPages}
-            </span>
-            <Button
-              variant="secondary"
-              className="text-xs"
-              disabled={safePage >= totalPages}
-              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-            >
-              Next
-            </Button>
-          </div>
-        </div>
-      )}
+      {renderPagination('pt-2')}
     </div>
   );
 }
