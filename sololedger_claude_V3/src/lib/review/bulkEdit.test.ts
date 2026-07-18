@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import type { FlagReason, Transaction } from '@/types/transaction';
 import {
+  ALL_FLAGS,
+  BULK_FLAG_CHECKBOXES,
+  DISPOSAL_TYPES,
   bulkFlagsPatch,
   bulkTypeImpactLines,
   bulkTypePatch,
@@ -74,6 +77,43 @@ describe('summarizeBulkTypeChange', () => {
     expect(impact.incomeCreated).toBe(1); // the existing income row is excluded
     expect(impact.alreadyOfType).toBe(1);
   });
+
+  it('excludes internal-transfer / spam rows from taxable impact counts (engine skips them)', () => {
+    const sel = [
+      tx({ type: 'transfer_in' }),
+      tx({ type: 'transfer_in', isInternalTransfer: true }),
+      tx({ type: 'transfer_in', isSpam: true })
+    ];
+    const disposal = summarizeBulkTypeChange(sel, 'sell');
+    // Only the plain transfer_in becomes a taxable disposal.
+    expect(disposal.disposalsCreated).toBe(1);
+    expect(disposal.total).toBe(3);
+
+    const income = summarizeBulkTypeChange(sel, 'income');
+    expect(income.incomeCreated).toBe(1);
+  });
+
+  it('counts disposalsRemoved only for taxable (non-internal/spam) rows', () => {
+    const sel = [
+      tx({ type: 'sell', fiatValue: 5 }),
+      tx({ type: 'sell', fiatValue: 5, isSpam: true })
+    ];
+    const impact = summarizeBulkTypeChange(sel, 'transfer_out');
+    expect(impact.disposalsRemoved).toBe(1);
+    expect(impact.transfersCreated).toBe(2); // display-level: both rows change type
+  });
+});
+
+describe('DISPOSAL_TYPES', () => {
+  it('contains the disposal types and excludes acquisitions/transfers', () => {
+    expect(DISPOSAL_TYPES.has('sell')).toBe(true);
+    expect(DISPOSAL_TYPES.has('trade')).toBe(true);
+    expect(DISPOSAL_TYPES.has('gift_sent')).toBe(true);
+    expect(DISPOSAL_TYPES.has('nft_sell')).toBe(true);
+    expect(DISPOSAL_TYPES.has('buy')).toBe(false);
+    expect(DISPOSAL_TYPES.has('transfer_in')).toBe(false);
+    expect(DISPOSAL_TYPES.has('income')).toBe(false);
+  });
 });
 
 describe('bulkTypeImpactLines', () => {
@@ -93,6 +133,18 @@ describe('bulkTypeImpactLines', () => {
     const impact = summarizeBulkTypeChange([tx({ type: 'transfer_in' })], 'income');
     const lines = bulkTypeImpactLines(impact);
     expect(lines.some((l) => l.includes('taxable at fair-market value'))).toBe(true);
+  });
+
+  it('warns that a trade is two-sided when setting trade', () => {
+    const impact = summarizeBulkTypeChange([tx({ type: 'transfer_out' })], 'trade');
+    const lines = bulkTypeImpactLines(impact);
+    expect(lines.some((l) => l.includes('two-sided'))).toBe(true);
+  });
+
+  it('omits the two-sided-trade warning when every selected row is already a trade', () => {
+    const impact = summarizeBulkTypeChange([tx({ type: 'trade', fiatValue: 1 })], 'trade');
+    const lines = bulkTypeImpactLines(impact);
+    expect(lines.some((l) => l.includes('two-sided'))).toBe(false);
   });
 });
 
@@ -123,18 +175,32 @@ describe('bulkFlagsPatch', () => {
     expect(patch.flags).toContain('possible_internal_transfer');
   });
 
-  it('unmarking internal removes possible_internal_transfer but keeps other flags', () => {
+  it('leaving "internal" unchecked NEVER strips a stored possible_internal_transfer (no bulk data loss)', () => {
+    // Typical RPC import: heuristic flag stored, but not marked internal.
     const t = tx({
-      flags: ['possible_internal_transfer', 'needs_review'],
-      isInternalTransfer: true
+      flags: ['possible_internal_transfer', 'missing_cost_basis'],
+      isInternalTransfer: false
     });
+    // User bulk-adds needs_review; "Internal transfer" box left unchecked
+    // (its initial state because the rows aren't uniformly internal). The
+    // realistic 5-entry map excludes possible_internal_transfer (governed by
+    // the internal control, not a checkbox).
     const patch = bulkFlagsPatch(t, {
-      flags: new Map<FlagReason, boolean>([['needs_review', true]]),
+      flags: new Map<FlagReason, boolean>([
+        ['missing_cost_basis', true],
+        ['duplicate_suspected', false],
+        ['unrecognized_asset', false],
+        ['needs_review', true]
+      ]),
       internal: false,
       spam: false
     });
     expect(patch.isInternalTransfer).toBe(false);
-    expect(patch.flags).toEqual(['needs_review']);
+    // possible_internal_transfer + missing_cost_basis preserved, needs_review added
+    expect(patch.flags).toEqual(
+      expect.arrayContaining(['possible_internal_transfer', 'missing_cost_basis', 'needs_review'])
+    );
+    expect(patch.flags).toHaveLength(3);
   });
 
   it('sets the spam boolean independently of stored flags', () => {
@@ -149,6 +215,16 @@ describe('bulkFlagsPatch', () => {
   });
 });
 
+describe('BULK_FLAG_CHECKBOXES', () => {
+  it('excludes possible_internal_transfer (governed by the Internal control instead)', () => {
+    expect(BULK_FLAG_CHECKBOXES).not.toContain('possible_internal_transfer');
+    // every other stored flag is still offered
+    for (const f of ALL_FLAGS) {
+      if (f !== 'possible_internal_transfer') expect(BULK_FLAG_CHECKBOXES).toContain(f);
+    }
+  });
+});
+
 describe('initialBulkFlagsSelection', () => {
   it('checks a box only when EVERY selected row has it', () => {
     const sel = [
@@ -160,6 +236,12 @@ describe('initialBulkFlagsSelection', () => {
     expect(init.flags.get('missing_cost_basis')).toBe(false);
     expect(init.internal).toBe(false);
     expect(init.spam).toBe(false);
+  });
+
+  it('does not include possible_internal_transfer in the checkbox map', () => {
+    const sel = [tx({ flags: ['possible_internal_transfer'] })];
+    const init = initialBulkFlagsSelection(sel);
+    expect(init.flags.has('possible_internal_transfer')).toBe(false);
   });
 
   it('checks internal/spam only when all rows share them', () => {

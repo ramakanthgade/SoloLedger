@@ -18,6 +18,7 @@ import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import {
   ALL_FLAGS,
+  BULK_FLAG_CHECKBOXES,
   DISPOSAL_TYPES,
   bulkFlagsPatch,
   bulkTypeImpactLines,
@@ -537,7 +538,7 @@ export function ReviewTab() {
   );
 
   const applyBulkType = async () => {
-    if (!pendingBulkType) return;
+    if (!pendingBulkType || applyingBulk) return;
     const newType = pendingBulkType;
     setApplyingBulk(true);
     try {
@@ -575,7 +576,7 @@ export function ReviewTab() {
   };
 
   const applyBulkFlags = async () => {
-    if (!bulkFlagsSel) return;
+    if (!bulkFlagsSel || applyingBulk) return;
     const sel = bulkFlagsSel;
     setApplyingBulk(true);
     try {
@@ -1029,7 +1030,7 @@ export function ReviewTab() {
                   <p className="px-3 pb-1 text-[10px] text-low">
                     Checked = set on all · unchecked = remove from all
                   </p>
-                  {ALL_FLAGS.map((flag) => (
+                  {BULK_FLAG_CHECKBOXES.map((flag) => (
                     <label
                       key={flag}
                       className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1"
