@@ -2,7 +2,9 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 import {
   GEOD_TOKEN_MINT_SOLANA,
-  GEOD_REWARDS_WALLET_SOLANA
+  GEOD_REWARDS_WALLET_SOLANA,
+  GEOD_TOKEN_POLYGON,
+  GEOD_REWARDS_WALLET_POLYGON
 } from '@/lib/assets/rewardRegistry';
 import { DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 
@@ -163,5 +165,131 @@ describe('reprocessRewardIncome', () => {
     const n = await reprocessRewardIncome();
     expect(n).toBe(0);
     expect(store[0].type).toBe('transfer_in');
+  });
+
+  it('classifies only official rewards in a mixed dataset and is idempotent', async () => {
+    const polygonMixedCase = '0xAc0F66379A6D7801D7726D5A943356A172549AdB';
+    const polygonDistributorUpper = `0x${GEOD_REWARDS_WALLET_POLYGON.slice(2).toUpperCase()}`;
+    const unknownMint = 'So11111111111111111111111111111111111111112';
+
+    store = [
+      tx({
+        id: 'valid-solana',
+        timestamp: 1_700_000_000_000,
+        amount: 12.5,
+        fiatValue: 34.5,
+        chain: 'solana',
+        sourceRef: 'solana-hash',
+        flags: ['needs_review'],
+        contractAddress: GEOD_TOKEN_MINT_SOLANA,
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA,
+        walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'valid-polygon',
+        timestamp: 1_700_000_100_000,
+        amount: 7.25,
+        fiatValue: 19.75,
+        chain: 'polygon',
+        source: 'rpc:alchemy',
+        sourceRef: 'polygon-hash',
+        flags: ['needs_review'],
+        contractAddress: polygonMixedCase,
+        counterpartyAddress: polygonDistributorUpper,
+        walletAddress: '0x1111111111111111111111111111111111111111'
+      }),
+      tx({
+        id: 'valid-dbt', asset: 'DBT', contractAddress: DBT_TOKEN_MINT,
+        counterpartyAddress: NON_REWARDS_SENDER, walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'solana-mint-case', contractAddress: GEOD_TOKEN_MINT_SOLANA.toLowerCase(),
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA, walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'solana-wallet-case', contractAddress: GEOD_TOKEN_MINT_SOLANA,
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA.toLowerCase(), walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'cross-solana', contractAddress: GEOD_TOKEN_MINT_SOLANA,
+        counterpartyAddress: GEOD_REWARDS_WALLET_POLYGON, walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'cross-polygon', contractAddress: GEOD_TOKEN_POLYGON,
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA,
+        walletAddress: '0x1111111111111111111111111111111111111111'
+      }),
+      tx({
+        id: 'unrelated', contractAddress: GEOD_TOKEN_POLYGON,
+        counterpartyAddress: '0x2222222222222222222222222222222222222222',
+        walletAddress: '0x1111111111111111111111111111111111111111'
+      }),
+      tx({
+        id: 'missing-counterparty', contractAddress: GEOD_TOKEN_POLYGON,
+        counterpartyAddress: undefined,
+        walletAddress: '0x1111111111111111111111111111111111111111'
+      }),
+      tx({
+        id: 'unknown-token', asset: 'SOL', contractAddress: unknownMint,
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA, walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'own-wallet-dbt', asset: 'DBT', contractAddress: DBT_TOKEN_MINT,
+        counterpartyAddress: 'UserSecondWallet333333333333333333333333333',
+        walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'wallet-marker', type: 'transfer_out', asset: 'SOL',
+        walletAddress: 'UserSecondWallet333333333333333333333333333'
+      }),
+      tx({
+        id: 'internal', isInternalTransfer: true, contractAddress: GEOD_TOKEN_MINT_SOLANA,
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA, walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'spam', isSpam: true, contractAddress: GEOD_TOKEN_MINT_SOLANA,
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA, walletAddress: USER_WALLET
+      }),
+      tx({
+        id: 'already-classified', type: 'income', category: 'airdrop', notes: 'user choice',
+        contractAddress: GEOD_TOKEN_MINT_SOLANA,
+        counterpartyAddress: GEOD_REWARDS_WALLET_SOLANA, walletAddress: USER_WALLET
+      })
+    ];
+
+    const originalSolanaDetails = { ...store[0] };
+    const originalPolygonDetails = { ...store[1] };
+    const untouchedBefore = new Map(
+      store.slice(3).map((row) => [row.id, JSON.stringify(row)])
+    );
+
+    expect(await reprocessRewardIncome()).toBe(3);
+
+    expect(store[0]).toEqual({
+      ...originalSolanaDetails,
+      type: 'income',
+      category: 'mining_reward',
+      notes: 'Geodnet GEOD mining reward on Solana — auto-classified as income',
+      flags: [],
+      isInternalTransfer: false
+    });
+    expect(store[1]).toEqual({
+      ...originalPolygonDetails,
+      type: 'income',
+      category: 'mining_reward',
+      notes: 'Geodnet GEOD mining reward on Polygon — auto-classified as income',
+      flags: [],
+      isInternalTransfer: false
+    });
+    expect(store[2].type).toBe('income');
+    expect(store[2].category).toBe('genesis_reward');
+
+    for (const row of store.slice(3)) {
+      expect(JSON.stringify(row), row.id).toBe(untouchedBefore.get(row.id));
+    }
+
+    const afterFirstPass = JSON.stringify(store);
+    expect(await reprocessRewardIncome()).toBe(0);
+    expect(JSON.stringify(store)).toBe(afterFirstPass);
   });
 });

@@ -50,17 +50,33 @@ describe('classifyRewardIncome — GEOD (distributor allowlist)', () => {
     expect(r!.label).toBe('Geodnet GEOD mining reward (Polygon)');
   });
 
-  it('matches checksummed/mixed-case Polygon contract and distributor addresses', () => {
-    const mixedCaseContract = '0xAc0F66379A6D7801D7726D5A943356A172549AdB';
-    const mixedCaseDistributor = '0x8Fb9Dd00B9A3D893Da96D444817D0B77330D5478';
-    const r = classifyRewardIncome(mixedCaseContract, mixedCaseDistributor);
-    expect(r).not.toBeNull();
-    expect(r!.kind).toBe('mining_reward');
-    expect(isKnownRewardToken(mixedCaseContract)).toBe(true);
+  it.each([
+    ['lowercase', GEOD_TOKEN_POLYGON, GEOD_REWARDS_WALLET_POLYGON],
+    [
+      'uppercase hex',
+      `0x${GEOD_TOKEN_POLYGON.slice(2).toUpperCase()}`,
+      `0x${GEOD_REWARDS_WALLET_POLYGON.slice(2).toUpperCase()}`
+    ],
+    [
+      'checksummed/mixed case',
+      '0xAc0F66379A6D7801D7726D5A943356A172549AdB',
+      '0x8Fb9Dd00B9A3D893Da96D444817D0B77330D5478'
+    ]
+  ])('matches %s Polygon contract and distributor addresses', (_label, contract, distributor) => {
+    const r = classifyRewardIncome(contract, distributor);
+    expect(r).toEqual({
+      kind: 'mining_reward',
+      label: 'Geodnet GEOD mining reward (Polygon)',
+      notes: 'Geodnet GEOD mining reward on Polygon — auto-classified as income'
+    });
+    expect(isKnownRewardToken(contract)).toBe(true);
   });
 
   it('keeps Solana mint and wallet matching case-sensitive', () => {
     expect(isKnownRewardToken(GEOD_TOKEN_MINT_SOLANA.toLowerCase())).toBe(false);
+    expect(
+      classifyRewardIncome(GEOD_TOKEN_MINT_SOLANA.toLowerCase(), GEOD_REWARDS_WALLET_SOLANA)
+    ).toBeNull();
     expect(
       classifyRewardIncome(GEOD_TOKEN_MINT_SOLANA, GEOD_REWARDS_WALLET_SOLANA.toLowerCase())
     ).toBeNull();
