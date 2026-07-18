@@ -31,7 +31,8 @@ const INCOME_KIND_LABEL: Record<string, string> = {
   staking_reward: 'Dabba Staking Reward',
   mainnet_reward: 'Dabba Mainnet Reward',
   airdrop: 'Dabba Campaign / Airdrop',
-  staking_suspected: 'Suspected staking'
+  staking_suspected: 'Suspected staking',
+  defi_reward: 'DeFi reward (suggested)'
 };
 
 export function CapitalGainsTab() {

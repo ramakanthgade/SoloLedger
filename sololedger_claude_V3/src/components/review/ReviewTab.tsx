@@ -11,6 +11,7 @@ import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
+import { applyDefiLlamaRewardSuggestions, countNeedsReview, isNeedsReview, isUnclassifiedSolanaTransferIn, reclassifyTypePatch } from '@/lib/rpc/rewardSuggestions';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -28,7 +29,7 @@ import {
 } from '@/lib/review/bulkEdit';
 import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2, ListChecks, Tags, Flag } from 'lucide-react';
+import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useTabNav } from '@/lib/tabNav';
 import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
@@ -157,7 +158,11 @@ function TypeSelector({ tx }: { tx: Transaction }) {
   const reclassify = async (next: TxType) => {
     if (next === current) { setOpen(false); return; }
     setSaving(true);
-    await db.transactions.update(tx.id, bulkTypePatch(tx, next));
+    // reclassifyTypePatch strips auto-derived + needs_review flags and, crucially,
+    // does NOT clear a `defi_reward` category — that category persists as the
+    // "already reviewed this suggestion" marker so a rejected row is never
+    // re-flipped to income by applyDefiLlamaRewardSuggestions. See that helper.
+    await db.transactions.update(tx.id, reclassifyTypePatch(tx.flags, next));
     setSaving(false);
     setOpen(false);
   };
@@ -239,6 +244,7 @@ export function ReviewTab() {
   const [walletFilter, setWalletFilter] = useState<string>('all');
   const [fyFilter, setFyFilter] = useState<number | null>(null);
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
+  const [showNeedsReview, setShowNeedsReview] = useState(false);
   const [showSpam, setShowSpam] = useState(false);
   const [sortBy, setSortBy] = useState<'date_desc' | 'date_asc' | 'wallet' | 'asset' | 'type' | 'fy'>('date_desc');
   const [instrumentFilter, setInstrumentFilter] = useState<'all' | 'spot' | 'derivative'>('all');
@@ -273,6 +279,9 @@ export function ReviewTab() {
   const [swapDetectMsg, setSwapDetectMsg] = useState<string | null>(null);
   const [resolvingSymbols, setResolvingSymbols] = useState(false);
   const [novesProgress, setNovesProgress] = useState<{ done: number; total: number } | null>(null);
+  // Phase 2: DefiLlama reward-income suggestions (user-gated fetch).
+  const [llamaSuggesting, setLlamaSuggesting] = useState(false);
+  const [llamaMsg, setLlamaMsg] = useState<string | null>(null);
 
   const { goToImport } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
@@ -357,6 +366,41 @@ export function ReviewTab() {
   );
 
   const potentialSwapPairs = useMemo(() => countPotentialSwapPairs(transactions), [transactions]);
+
+  /** Unclassified Solana transfer_ins that could be reward income (no network). */
+  const solanaTransferInCount = useMemo(
+    () => transactions.filter(isUnclassifiedSolanaTransferIn).length,
+    [transactions]
+  );
+
+  /** The review queue: rows flagged needs_review (e.g. DefiLlama suggestions). */
+  const needsReviewCount = useMemo(() => countNeedsReview(transactions), [transactions]);
+
+  const suggestRewardIncome = async () => {
+    if (llamaSuggesting) return;
+    setLlamaSuggesting(true);
+    setLlamaMsg(null);
+    try {
+      const result = await applyDefiLlamaRewardSuggestions();
+      setLlamaMsg(result.message);
+      if (result.suggested > 0) {
+        // Open the review queue and clear the other quick filters — they are
+        // mutually exclusive, and leaving "Needs price"/"Spam" active would
+        // hide the freshly-suggested rows (or empty the table for Spam).
+        setShowNeedsReview(true);
+        setShowNeedsPrice(false);
+        setShowSpam(false);
+      }
+    } catch (err) {
+      setLlamaMsg(
+        err instanceof Error
+          ? `DefiLlama suggestion failed: ${err.message}`
+          : 'DefiLlama suggestion failed unexpectedly.'
+      );
+    } finally {
+      setLlamaSuggesting(false);
+    }
+  };
 
   // One-time auto-detect for wallet imports stored before swap detection shipped.
   useEffect(() => {
@@ -455,6 +499,7 @@ export function ReviewTab() {
       if (!showSpam && t.isSpam) return false;
       if (showSpam && !t.isSpam) return false;
       if (showNeedsPrice && !(t.fiatValue == null && !t.isSpam)) return false;
+      if (showNeedsReview && !isNeedsReview(t)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
       if (typeFilter !== 'all' && t.type !== typeFilter) return false;
       if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
@@ -480,7 +525,7 @@ export function ReviewTab() {
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, typeFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
+  }, [transactions, assetFilter, typeFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
 
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const safePage = Math.min(page, totalPages);
@@ -492,7 +537,7 @@ export function ReviewTab() {
   // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [assetFilter, typeFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showSpam, sortBy]);
+  }, [assetFilter, typeFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
 
   const toggle = (id: string) => {
     setSelected((prev) => {
@@ -794,6 +839,40 @@ export function ReviewTab() {
         </div>
       )}
 
+      {/* Phase 2: DefiLlama reward-income suggestions — user-gated fetch (AC-A1). */}
+      {solanaTransferInCount > 0 && (
+        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-center gap-3">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet/20 text-violet">
+              <Sparkles className="h-5 w-5" />
+            </span>
+            <div>
+              <p className="text-sm font-semibold text-mid">
+                {solanaTransferInCount} unclassified Solana transfer{solanaTransferInCount === 1 ? '' : 's'}-in
+              </p>
+              <p className="mt-1 text-xs text-low">
+                Check them against DefiLlama&rsquo;s reward-token data (free, no API key). Matches become
+                income flagged <span className="text-warn">needs review</span> so you can confirm each one.
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="secondary"
+            disabled={llamaSuggesting}
+            onClick={() => void suggestRewardIncome()}
+            className="shrink-0"
+          >
+            {llamaSuggesting ? 'Checking DefiLlama…' : 'Suggest reward income (DefiLlama)'}
+          </Button>
+        </div>
+      )}
+
+      {llamaMsg && (
+        <div className={`rounded-sm border px-3 py-2 text-xs ${llamaMsg.startsWith('DefiLlama:') ? 'border-violet/30 bg-violet/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+          {llamaMsg}
+        </div>
+      )}
+
       {missingPriceTxs.length > 0 && (
         <div className="flex flex-col gap-3 rounded-lg border-2 border-warn/30 bg-warn/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
@@ -912,14 +991,22 @@ export function ReviewTab() {
 
         {/* Quick-filter toggles */}
         <button
-          onClick={() => { setShowNeedsPrice((v) => !v); setShowSpam(false); }}
+          onClick={() => { setShowNeedsPrice((v) => !v); setShowSpam(false); setShowNeedsReview(false); }}
           className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsPrice ? 'border-warn/30 bg-warn/20 text-warn' : 'border-white/10 text-low hover:text-mid'}`}
         >
           {showNeedsPrice ? `Needs price (${missingPriceTxs.length})` : `Needs price: ${missingPriceTxs.length}`}
         </button>
+        {needsReviewCount > 0 && (
+          <button
+            onClick={() => { setShowNeedsReview((v) => !v); setShowSpam(false); setShowNeedsPrice(false); }}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsReview ? 'border-warn/30 bg-warn/20 text-warn' : 'border-white/10 text-low hover:text-mid'}`}
+          >
+            {showNeedsReview ? `Needs review (${needsReviewCount}) ← back` : `Needs review: ${needsReviewCount}`}
+          </button>
+        )}
         {spamTxCount > 0 && (
           <button
-            onClick={() => { setShowSpam((v) => !v); setShowNeedsPrice(false); }}
+            onClick={() => { setShowSpam((v) => !v); setShowNeedsPrice(false); setShowNeedsReview(false); }}
             className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showSpam ? 'border-loss bg-loss/20 text-loss' : 'border-white/10 text-low hover:text-mid'}`}
           >
             {showSpam ? `Spam (${spamTxCount}) ← back` : `Spam: ${spamTxCount}`}

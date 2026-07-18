@@ -31,6 +31,7 @@ export const GEOD_REWARDS_WALLET = '8eznVreusXAyh4HZirLWNjMxgoQdxzqfTi9Uw8gEL2RE
  */
 export type RewardIncomeKind =
   | 'mining_reward'
+  | 'defi_reward' // DefiLlama-hinted yield/farm reward — SUGGESTED, user confirms via review queue
   | DabbaIncomeKind; // 'genesis_reward' | 'staking_reward' | 'airdrop' | 'mainnet_reward'
 
 export interface RewardClassification {
@@ -87,7 +88,8 @@ export const REWARD_TOKENS: RewardTokenEntry[] = [
 
 /** Product-neutral labels for generic (non-Dabba) reward kinds. */
 export const REWARD_KIND_LABEL: Partial<Record<RewardIncomeKind, string>> = {
-  mining_reward: 'Mining reward'
+  mining_reward: 'Mining reward',
+  defi_reward: 'DeFi reward (suggested)'
 };
 
 /** True if the mint belongs to a known reward token. NOTE: this alone does NOT
