@@ -44,8 +44,16 @@ describe('isValidTxHashForChain (chain-aware shape)', () => {
     expect(isValidTxHashForChain('solana', SOL_SIG)).toBe(true);
     expect(isValidTxHashForChain('solana', 'short')).toBe(false);
   });
+  it('accepts a 64-hex cardano txid (no 0x) — same shape as bitcoin', () => {
+    // Cardano has no explorer entry (see explorerTxUrl test below), but the
+    // hash SHAPE is still validatable so a real TXID isn't discarded and
+    // Review doesn't fall back to displaying the synthetic sourceRef.
+    expect(isValidTxHashForChain('cardano', BTC_TXID)).toBe(true);
+    expect(isValidTxHashForChain('cardano', '0x' + BTC_TXID)).toBe(false);
+    expect(isValidTxHashForChain('cardano', 'ada_tx_ref_that_is_not_a_hash')).toBe(false);
+  });
   it('rejects unknown chains and missing values', () => {
-    expect(isValidTxHashForChain('cardano', BTC_TXID)).toBe(false);
+    expect(isValidTxHashForChain('mysterychain', BTC_TXID)).toBe(false);
     expect(isValidTxHashForChain(undefined, ETH_HASH)).toBe(false);
     expect(isValidTxHashForChain('ethereum', undefined)).toBe(false);
   });

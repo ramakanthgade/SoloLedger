@@ -86,6 +86,8 @@ const EVM_HASH_RE = /^0x[0-9a-fA-F]{64}$/;
 const BTC_HASH_RE = /^[0-9a-fA-F]{64}$/;
 /** Solana signature: base58, typically 87-88 chars. Range kept generous. */
 const SOL_SIG_RE = /^[1-9A-HJ-NP-Za-km-z]{43,90}$/;
+/** Cardano txid: Blake2b-256, 64 hex, no 0x prefix — same shape as Bitcoin. */
+const CARDANO_HASH_RE = /^[0-9a-fA-F]{64}$/;
 
 const EVM_CHAINS = new Set([
   'ethereum',
@@ -109,6 +111,11 @@ export function isValidTxHashForChain(chain: string | undefined, hash?: string):
   if (EVM_CHAINS.has(chain)) return EVM_HASH_RE.test(s);
   if (chain === 'bitcoin') return BTC_HASH_RE.test(s);
   if (chain === 'solana') return SOL_SIG_RE.test(s);
+  // Cardano has the right hash shape (64 hex, no 0x) but no explorer entry
+  // below — explorerTxUrl still returns null for it (no linkable base URL),
+  // but generic.ts can now store the real hash so Review shows it as plain
+  // text instead of falling back to the synthetic chash:/sourceRef value.
+  if (chain === 'cardano') return CARDANO_HASH_RE.test(s);
   return false;
 }
 

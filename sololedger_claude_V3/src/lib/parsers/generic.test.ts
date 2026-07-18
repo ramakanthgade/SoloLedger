@@ -133,6 +133,30 @@ describe('parseWithMapping — withdrawal robustness + chain/txHash/address (Iss
     expect(transactions[0].txHash).toBeUndefined();
   });
 
+  it('stores a real 64-hex ADA txid as txHash (unlinkable but still shown as plain text)', () => {
+    const adaTxid = '908a367e192d9fb46e65a813c9ac34f13c09131d08588da62506d5affed010d1'.slice(0, 64);
+    const rows = [
+      {
+        Time: '2023-11-22 22:53:58',
+        Coin: 'ADA',
+        Network: 'ADA',
+        Side: 'Withdrawl',
+        Amount: '1282.5736',
+        Fee: '0.8',
+        Address: 'addr1qx078n2l286rp0df74jf2jpgemy6g56hhvtd880779c5uz2us3y0wtmpgz4c4k77eq7zp6gn6asdz26elpen293zemms29llpq',
+        TXID: adaTxid,
+        Status: 'Completed'
+      }
+    ];
+    const { transactions } = parseWithMapping(rows, WITHDRAW_MAPPING, 'USD');
+    expect(transactions[0].chain).toBe('cardano');
+    // A real, well-formed 64-hex Cardano txid IS stored as txHash now — Review
+    // shows it as plain text (explorerTxUrl still returns null for cardano,
+    // so it never becomes a link), instead of falling back to the synthetic
+    // chash: sourceRef.
+    expect(transactions[0].txHash).toBe(adaTxid);
+  });
+
   it('does NOT store a truncated/invalid ETH TXID as txHash (no broken link)', () => {
     const rows = [
       {
