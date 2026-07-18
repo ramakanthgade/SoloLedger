@@ -39,11 +39,26 @@ export interface RewardSuggestionResult {
 }
 
 function suggestionNotes(asset: string, hint: LlamaRewardHint): string {
-  const projects = hint.projects.slice(0, 3).join(', ');
-  const moreProjects = hint.projects.length > 3 ? ` +${hint.projects.length - 3} more` : '';
+  // `hint.projects` is already capped at MAX_HINT_PROJECTS when parsed.
   return (
     `Suggested DeFi reward: ${asset} is a reward token in DefiLlama Solana pools ` +
-    `(${projects}${moreProjects}). Confirm (remove the needs-review flag) or reclassify.`
+    `(${hint.projects.join(', ')}). Confirm (remove the needs-review flag) or reclassify.`
+  );
+}
+
+/**
+ * A row eligible for a reward-income suggestion: an unclassified Solana token
+ * transfer_in the user hasn't made internal or marked spam. The suggestion
+ * pass additionally requires the mint to be in the DefiLlama hint set; the
+ * Review tab uses this predicate alone to count "checkable" transfers.
+ */
+export function isUnclassifiedSolanaTransferIn(t: Transaction): boolean {
+  return (
+    t.type === 'transfer_in' &&
+    t.chain === 'solana' &&
+    !!t.contractAddress &&
+    !t.isInternalTransfer &&
+    !t.isSpam
   );
 }
 
@@ -73,13 +88,7 @@ export async function applyDefiLlamaRewardSuggestions(opts?: {
   );
 
   const candidates = all.filter(
-    (t) =>
-      t.type === 'transfer_in' &&
-      t.chain === 'solana' &&
-      !!t.contractAddress &&
-      hints.has(t.contractAddress) &&
-      !t.isInternalTransfer &&
-      !t.isSpam
+    (t) => isUnclassifiedSolanaTransferIn(t) && hints.has(t.contractAddress!)
   );
 
   let suggested = 0;
@@ -105,14 +114,10 @@ export async function applyDefiLlamaRewardSuggestions(opts?: {
     suggested++;
   }
 
-  const parts: string[] = [];
-  if (suggested > 0) {
-    parts.push(
-      `${suggested} suggested reward income${suggested === 1 ? '' : 's'} flagged for review`
-    );
-  } else {
-    parts.push('no new reward suggestions');
-  }
+  const summary =
+    suggested > 0
+      ? `${suggested} suggested reward income${suggested === 1 ? '' : 's'} flagged for review`
+      : 'no new reward suggestions';
 
   return {
     hintsCount: hints.size,
@@ -121,14 +126,17 @@ export async function applyDefiLlamaRewardSuggestions(opts?: {
     fromCache,
     message:
       `DefiLlama: ${hints.size} Solana reward mint${hints.size === 1 ? '' : 's'} checked — ` +
-      `${parts.join(', ')}.` +
+      `${summary}.` +
       (suggested > 0 ? ' Open the "Needs review" filter to confirm them.' : '')
   };
 }
 
+/** True when a row sits in the needs_review queue (flagged, not spam). */
+export function isNeedsReview(t: Transaction): boolean {
+  return !t.isSpam && (t.flags ?? []).includes('needs_review');
+}
+
 /** Count of transactions currently sitting in the needs_review queue. */
 export function countNeedsReview(transactions: Transaction[]): number {
-  return transactions.filter(
-    (t) => !t.isSpam && (t.flags ?? []).includes('needs_review')
-  ).length;
+  return transactions.filter(isNeedsReview).length;
 }

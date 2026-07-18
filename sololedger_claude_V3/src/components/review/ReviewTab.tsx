@@ -11,7 +11,7 @@ import { CHAINS } from '@/lib/rpc/providers';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
 import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
-import { applyDefiLlamaRewardSuggestions, countNeedsReview } from '@/lib/rpc/rewardSuggestions';
+import { applyDefiLlamaRewardSuggestions, countNeedsReview, isNeedsReview, isUnclassifiedSolanaTransferIn } from '@/lib/rpc/rewardSuggestions';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -367,15 +367,7 @@ export function ReviewTab() {
 
   /** Unclassified Solana transfer_ins that could be reward income (no network). */
   const solanaTransferInCount = useMemo(
-    () =>
-      transactions.filter(
-        (t) =>
-          t.type === 'transfer_in' &&
-          t.chain === 'solana' &&
-          !!t.contractAddress &&
-          !t.isInternalTransfer &&
-          !t.isSpam
-      ).length,
+    () => transactions.filter(isUnclassifiedSolanaTransferIn).length,
     [transactions]
   );
 
@@ -498,7 +490,7 @@ export function ReviewTab() {
       if (!showSpam && t.isSpam) return false;
       if (showSpam && !t.isSpam) return false;
       if (showNeedsPrice && !(t.fiatValue == null && !t.isSpam)) return false;
-      if (showNeedsReview && !(!t.isSpam && (t.flags ?? []).includes('needs_review'))) return false;
+      if (showNeedsReview && !isNeedsReview(t)) return false;
       if (assetFilter !== 'all' && t.asset !== assetFilter) return false;
       if (walletFilter !== 'all' && t.walletAddress?.toLowerCase() !== walletFilter.toLowerCase()) return false;
       if (fyBounds && (t.timestamp < fyBounds.start || t.timestamp > fyBounds.end)) return false;

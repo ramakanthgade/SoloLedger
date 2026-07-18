@@ -42,6 +42,12 @@ interface HintsCacheShape {
   hints: LlamaRewardHint[];
 }
 
+/** A cache layer's decoded contents (mint → hint map + when it was fetched). */
+interface CachedHints {
+  fetchedAt: number;
+  hints: Map<string, LlamaRewardHint>;
+}
+
 /**
  * Mints excluded from suggestions even when DefiLlama lists them as rewards.
  * Wrapped SOL and the major stablecoins constantly arrive as ORDINARY
@@ -123,10 +129,10 @@ export function parseSolanaRewardHints(payload: unknown): Map<string, LlamaRewar
 
 // ---- Caching layer (module memory → localStorage → network) ----
 
-let memoryCache: { fetchedAt: number; hints: Map<string, LlamaRewardHint> } | null = null;
+let memoryCache: CachedHints | null = null;
 let inFlight: Promise<FetchHintsResult> | null = null;
 
-function readStorageCache(): { fetchedAt: number; hints: Map<string, LlamaRewardHint> } | null {
+function readStorageCache(): CachedHints | null {
   try {
     const raw = localStorage.getItem(DEFILLAMA_HINTS_CACHE_KEY);
     if (!raw) return null;
