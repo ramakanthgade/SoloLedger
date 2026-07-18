@@ -119,6 +119,35 @@ describe('applyDefiLlamaRewardSuggestions', () => {
     expect(second.candidates).toBe(0);
   });
 
+  it('does not re-suggest a row the user rejected back to transfer_in', async () => {
+    store = [tx({ id: 'cand', contractAddress: REWARD_MINT, counterpartyAddress: SENDER })];
+    const first = await applyDefiLlamaRewardSuggestions({ hints: HINTS });
+    expect(first.suggested).toBe(1);
+    expect(store[0].category).toBe('defi_reward');
+
+    // Faithfully reproduce ReviewTab's TypeSelector.reclassify patch when the
+    // user rejects the suggestion (transfer_in): strip auto-derived + needs_review
+    // flags, keep the defi_reward category as the persistent rejection marker.
+    const rejected = store[0];
+    store[0] = {
+      ...rejected,
+      type: 'transfer_in',
+      flags: (rejected.flags ?? []).filter(
+        (f) =>
+          f !== 'possible_internal_transfer' &&
+          f !== 'missing_cost_basis' &&
+          f !== 'needs_review'
+      )
+    };
+    expect(store[0].flags).not.toContain('needs_review'); // left the review queue
+    expect(store[0].category).toBe('defi_reward'); // marker persists
+
+    const second = await applyDefiLlamaRewardSuggestions({ hints: HINTS });
+    expect(second.suggested).toBe(0);
+    expect(second.candidates).toBe(0);
+    expect(store[0].type).toBe('transfer_in'); // not flipped back to income
+  });
+
   it('reports a useful message', async () => {
     store = [tx({ id: 'cand', contractAddress: REWARD_MINT, counterpartyAddress: SENDER })];
     const r = await applyDefiLlamaRewardSuggestions({ hints: HINTS });

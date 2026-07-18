@@ -88,7 +88,14 @@ export async function applyDefiLlamaRewardSuggestions(opts?: {
   );
 
   const candidates = all.filter(
-    (t) => isUnclassifiedSolanaTransferIn(t) && hints.has(t.contractAddress!)
+    (t) =>
+      isUnclassifiedSolanaTransferIn(t) &&
+      hints.has(t.contractAddress!) &&
+      // Skip rows the user already reviewed/rejected: a fresh transfer_in never
+      // carries the defi_reward category (only a prior suggestion sets it), so a
+      // row that is back to transfer_in with category 'defi_reward' was rejected
+      // by the user — don't flip it to income again.
+      t.category !== 'defi_reward'
   );
 
   let suggested = 0;

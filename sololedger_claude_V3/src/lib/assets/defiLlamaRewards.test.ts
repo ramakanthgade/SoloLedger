@@ -163,6 +163,28 @@ describe('fetchSolanaRewardHints (caching)', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('drops malformed cached entries and refreshes when none survive', async () => {
+    localStorage.setItem(
+      DEFILLAMA_HINTS_CACHE_KEY,
+      JSON.stringify({
+        fetchedAt: Date.now(), // fresh, but every entry is corrupt
+        hints: [
+          { mint: MINT_A }, // missing arrays / poolCount
+          { mint: MINT_B, projects: 'nope', poolSymbols: ['s'], poolCount: 1 },
+          { mint: MINT_B, projects: ['p'], poolSymbols: ['s'], poolCount: 'x' }
+        ]
+      })
+    );
+    fetchMock.mockResolvedValue(okResponse(poolsPayload([
+      { chain: 'Solana', rewardTokens: [MINT_A], project: 'p', symbol: 's' }
+    ])));
+    const res = await fetchSolanaRewardHints();
+    // Cache treated as missing → network refresh.
+    expect(res.fromCache).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(res.hints.has(MINT_A)).toBe(true);
+  });
+
   it('forceRefresh bypasses caches', async () => {
     fetchMock.mockResolvedValue(okResponse(poolsPayload([
       { chain: 'Solana', rewardTokens: [MINT_A], project: 'p', symbol: 's' }

@@ -164,9 +164,19 @@ function TypeSelector({
   const reclassify = async (next: TxType) => {
     if (next === current) { setOpen(false); return; }
     setSaving(true);
+    // Strip auto-derived flags. Also clear needs_review: reclassifying is the
+    // user acting on the row, so it should leave the "Needs review" queue.
     const newFlags = (flags ?? []).filter(
-      (f) => f !== 'possible_internal_transfer' && f !== 'missing_cost_basis'
+      (f) =>
+        f !== 'possible_internal_transfer' &&
+        f !== 'missing_cost_basis' &&
+        f !== 'needs_review'
     ) as import('@/types/transaction').FlagReason[];
+    // NOTE: we deliberately DO NOT clear a `defi_reward` category here. On a
+    // non-income row it is invisible in the UI (only `nft` renders a badge) and
+    // serves as the persistent "already reviewed this suggestion" marker that
+    // `applyDefiLlamaRewardSuggestions` checks so a rejected row is never
+    // re-flipped back to income on the next suggestion run.
     await db.transactions.update(txId, { type: next, flags: newFlags });
     setSaving(false);
     setOpen(false);
@@ -381,7 +391,14 @@ export function ReviewTab() {
     try {
       const result = await applyDefiLlamaRewardSuggestions();
       setLlamaMsg(result.message);
-      if (result.suggested > 0) setShowNeedsReview(true);
+      if (result.suggested > 0) {
+        // Open the review queue and clear the other quick filters — they are
+        // mutually exclusive, and leaving "Needs price"/"Spam" active would
+        // hide the freshly-suggested rows (or empty the table for Spam).
+        setShowNeedsReview(true);
+        setShowNeedsPrice(false);
+        setShowSpam(false);
+      }
     } catch (err) {
       setLlamaMsg(
         err instanceof Error

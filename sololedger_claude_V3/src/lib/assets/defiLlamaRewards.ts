@@ -142,12 +142,27 @@ function readStorageCache(): CachedHints | null {
     }
     const hints = new Map<string, LlamaRewardHint>();
     for (const h of parsed.hints) {
-      if (!h || typeof h.mint !== 'string') continue;
+      // Validate the full shape, not just `mint`: a corrupted/partial entry
+      // with a fresh fetchedAt would otherwise bypass the network and blow up
+      // later when consumers assume `projects`/`poolSymbols` are arrays.
+      if (
+        !h ||
+        typeof h.mint !== 'string' ||
+        !Array.isArray(h.projects) ||
+        !Array.isArray(h.poolSymbols) ||
+        typeof h.poolCount !== 'number' ||
+        !Number.isFinite(h.poolCount)
+      ) {
+        continue;
+      }
       // Re-apply the exclusion list on restore: a mint excluded AFTER it was
       // cached must not survive for the rest of the TTL.
       if (EXCLUDED_REWARD_MINTS.has(h.mint)) continue;
       hints.set(h.mint, h);
     }
+    // If the payload had entries but every one was invalid, treat the cache as
+    // missing so the caller refreshes from the network instead of trusting it.
+    if (parsed.hints.length > 0 && hints.size === 0) return null;
     return { fetchedAt: parsed.fetchedAt, hints };
   } catch {
     return null;
