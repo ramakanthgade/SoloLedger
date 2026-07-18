@@ -13,6 +13,12 @@ export interface ParseResult {
    * of a generic dead-end error.
    */
   missingFields?: MissingField[];
+  /**
+   * True when the parse resolved addresses from a single ambiguous "Address"
+   * column (no clearly-named To/From), so orientation is a best-effort
+   * "assume To" guess. Lets a non-local caller optionally confirm/flip it.
+   */
+  addressColumnAmbiguous?: boolean;
 }
 
 /**

@@ -47,6 +47,13 @@ export interface Transaction {
   counterpartyAddress?: string; // the other side of a transfer, when derivable
   contractAddress?: string;     // token contract (EVM) or mint address (Solana), for price lookups
   chain?: string;               // originating chain id for RPC-sourced rows, e.g. "ethereum", "solana"
+  /**
+   * Real on-chain transaction hash when a source column carried one (e.g. a
+   * Binance withdrawal "TXID" / deposit "TX ID"). Kept SEPARATE from
+   * `sourceRef` (which stays a content-hash for manual/AI imports) so it can
+   * drive an explorer link without breaking sourceRef-keyed dedup.
+   */
+  txHash?: string;
   notes?: string;
   flags: FlagReason[];
   isInternalTransfer: boolean;  // user-confirmed non-taxable transfer between own wallets
