@@ -38,6 +38,18 @@ vi.mock('@/lib/rpc/reprocessSwaps', () => ({
   }))
 }));
 
+const applyDefiLlamaRewardSuggestions = vi.fn(async () => ({
+  hintsCount: 1,
+  candidates: 0,
+  suggested: 0,
+  fromCache: true,
+  message: 'DefiLlama: 1 Solana reward mint checked — no new reward suggestions.'
+}));
+vi.mock('@/lib/rpc/rewardSuggestions', () => ({
+  applyDefiLlamaRewardSuggestions: (...args: unknown[]) =>
+    applyDefiLlamaRewardSuggestions(...(args as [])),
+}));
+
 vi.mock('@/lib/rpc/swapDetection', () => ({
   isAbsorbedTradeLeg: vi.fn(() => false)
 }));
@@ -104,6 +116,7 @@ describe('runWalletImport auto-pricing gate', () => {
   beforeEach(() => {
     store.clear();
     fetchMissingPricesForAllTransactions.mockClear();
+    applyDefiLlamaRewardSuggestions.mockClear();
     importJob.reset();
   });
 
@@ -117,5 +130,36 @@ describe('runWalletImport auto-pricing gate', () => {
     await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
     expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
     expect(importJob.get().result?.pricesUpdated).toBe(3);
+  });
+});
+
+describe('runWalletImport DefiLlama reward-suggestion gate', () => {
+  beforeEach(() => {
+    store.clear();
+    fetchMissingPricesForAllTransactions.mockClear();
+    applyDefiLlamaRewardSuggestions.mockClear();
+    importJob.reset();
+  });
+
+  it('does NOT run DefiLlama suggestions when priceApiEnabled is false', async () => {
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: false }), CONFIG);
+    expect(applyDefiLlamaRewardSuggestions).not.toHaveBeenCalled();
+  });
+
+  it('runs DefiLlama suggestions when priceApiEnabled is true', async () => {
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    expect(applyDefiLlamaRewardSuggestions).toHaveBeenCalledTimes(1);
+  });
+
+  it('surfaces the suggestion message as a warning when rows were suggested', async () => {
+    applyDefiLlamaRewardSuggestions.mockResolvedValueOnce({
+      hintsCount: 1,
+      candidates: 1,
+      suggested: 1,
+      fromCache: true,
+      message: 'DefiLlama: 1 Solana reward mint checked — 1 suggested reward income flagged for review.'
+    });
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    expect(importJob.get().warnings.some((w) => w.includes('suggested reward income'))).toBe(true);
   });
 });
