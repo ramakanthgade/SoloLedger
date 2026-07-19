@@ -13,6 +13,7 @@ import { runWalletImport, useImportJob, importJob } from '@/lib/importJob';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
 import { AlertTriangle, RefreshCw, Trash2, Pencil, Check, X } from 'lucide-react';
+import { syncCoinGeckoRewardRegistryInBackground } from '@/lib/assets/coingeckoRewardRegistry';
 
 const inputCls =
   'mt-1 block w-full rounded border border-white/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-violet focus:outline-none';
@@ -89,6 +90,9 @@ export function WalletLookupPanel() {
   const startImport = (addressesOverride?: string[]) => {
     const addrs = addressesOverride ?? freshAddresses;
     if (addrs.length === 0 || job.active) return;
+    // Generic registry refresh only: no wallet address is included in these
+    // CoinGecko requests. Seven-day cache + single-flight keep this best effort.
+    syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
     importJob.reset();
     void runWalletImport(addrs, chain, settings, buildLookupConfig(chain, settings, {
       customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,

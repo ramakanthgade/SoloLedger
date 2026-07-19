@@ -11,6 +11,7 @@ import { SubscriptionCard } from './SubscriptionCard';
 import { isSaasMode } from '@/lib/saas/config';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { useAuth } from '@/lib/saas/authContext';
+import { AddressRegistrySettingsSection } from './AddressRegistrySettings';
 
 export function SettingsTab() {
   const saas = isSaasMode();
@@ -215,6 +216,7 @@ export function SettingsTab() {
                   />
                 </div>
               )}
+              <AddressRegistrySettingsSection coingeckoApiKey={settings.coingeckoApiKey} />
             </CardContent>
           </Card>
 

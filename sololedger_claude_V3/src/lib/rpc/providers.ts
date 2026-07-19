@@ -12,9 +12,17 @@
  */
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { classifyRewardIncome } from '@/lib/assets/rewardRegistry';
+import { classifyIncomingTransfer } from '@/lib/assets/unifiedAddressRegistry';
+import { getAllocationContracts } from '@/lib/assets/coingeckoAllocations';
+import { getBlockworksContracts } from '@/lib/assets/blockworksRegistry';
 import { makeId } from '@/lib/parsers/types';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
-import type { Transaction } from '@/types/transaction';
+import {
+  decodeEvmReceiptForTransfer,
+  fetchEvmTransactionReceipt,
+  type EvmTxReceipt
+} from '@/lib/rpc/evmDecoder';
+import type { FlagReason, Transaction } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
@@ -188,7 +196,7 @@ function alchemyHeaders(apiKey: string): HeadersInit {
 }
 
 // ---- EVM chains via Alchemy's alchemy_getAssetTransfers (native + ERC20 + NFTs) ----
-async function fetchAlchemyEvmInner(
+export async function fetchAlchemyEvmInner(
   address: string,
   network: string,
   apiKey: string,
@@ -212,6 +220,7 @@ async function fetchAlchemyEvmInner(
   });
 
   const headers = alchemyHeaders(apiKey);
+  const loadReceipt = createReceiptLoader((hash) => fetchEvmTransactionReceipt(url, hash, headers));
   const [outgoingRes, incomingRes] = await Promise.all([
     alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('from')) }),
     alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
@@ -227,12 +236,41 @@ async function fetchAlchemyEvmInner(
     throw new Error(alchemyErrorMessage(err?.code ?? 0, { error: err }));
   }
 
-  const toTx = (t: any, direction: 'transfer_out' | 'transfer_in'): Transaction => {
+  const toTx = async (t: any, direction: 'transfer_out' | 'transfer_in'): Promise<Transaction> => {
     const isNft = t.category === 'erc721' || t.category === 'erc1155';
+    const ercContractAddress = t.category === 'erc20' && typeof t.rawContract?.address === 'string'
+      ? t.rawContract.address
+      : undefined;
+    const unified = direction === 'transfer_in' && !isNft
+      ? classifyIncomingTransfer({
+          contractAddress: ercContractAddress,
+          counterpartyAddress: t.from,
+          chain: chainId,
+          amount: Number(t.value) || undefined
+        })
+      : null;
+    // Last resort when Moralis is unavailable: inspect the verified standard
+    // receipt logs before accepting Alchemy's generic transfer classification.
+    const receipt = ercContractAddress && t.hash ? await loadReceipt(t.hash) : null;
+    const decoded = receipt
+      ? decodeEvmReceiptForTransfer(
+          receipt,
+          address,
+          {
+            contractAddress: ercContractAddress,
+            direction,
+            from: t.from,
+            to: t.to
+          },
+          { ...getAllocationContracts(), ...getBlockworksContracts() }
+        )
+      : null;
+    const decodedIsSpecific = decoded && decoded.type !== 'transfer_in' && decoded.type !== 'transfer_out';
+    const unifiedIsIncome = unified?.type === 'income';
     return {
       id: makeId('rpc'),
       timestamp: t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).getTime() : Date.now(),
-      type: direction,
+      type: unifiedIsIncome ? unified.type : decodedIsSpecific ? decoded.type : unified?.type ?? direction,
       asset: t.asset || (isNft ? (t.rawContract?.address ? `NFT ${String(t.rawContract.address).slice(0, 6)}` : 'NFT') : asset),
       amount: isNft ? (t.erc1155Metadata?.[0]?.value ? Number(t.erc1155Metadata[0].value) : 1) : Number(t.value) || 0,
       fiatCurrency: 'USD',
@@ -243,18 +281,40 @@ async function fetchAlchemyEvmInner(
       counterpartyAddress: direction === 'transfer_in' ? t.from : t.to,
       contractAddress: t.rawContract?.address || undefined,
       chain: chainId,
-      flags: ['possible_internal_transfer', 'missing_cost_basis'],
+      category: unified?.kind,
+      notes: unifiedIsIncome ? unified.label : decodedIsSpecific ? decoded.notes : unified?.label,
+      flags: unified?.source === 'reward_registry_static'
+        ? []
+        : unified || decodedIsSpecific
+          ? (['needs_review'] as FlagReason[])
+        : ['possible_internal_transfer', 'missing_cost_basis'],
       isInternalTransfer: false,
       raw: t
     };
   };
 
-  const transactions = [
+  const transactions = await Promise.all([
     ...(outgoing.result?.transfers ?? []).map((t: any) => toTx(t, 'transfer_out')),
     ...(incoming.result?.transfers ?? []).map((t: any) => toTx(t, 'transfer_in'))
-  ];
+  ]);
 
   return { transactions, warnings: [] };
+}
+
+/** Promise cache guarantees one receipt request per transaction hash. */
+export function createReceiptLoader(
+  load: (hash: string) => Promise<EvmTxReceipt | null>
+): (hash: string) => Promise<EvmTxReceipt | null> {
+  const cache = new Map<string, Promise<EvmTxReceipt | null>>();
+  return (hash) => {
+    const key = hash.toLowerCase();
+    let pending = cache.get(key);
+    if (!pending) {
+      pending = load(hash);
+      cache.set(key, pending);
+    }
+    return pending;
+  };
 }
 
 function isNetworkFetchError(err: unknown): boolean {
@@ -793,6 +853,27 @@ function withDexSwapDetection(result: LookupResult): LookupResult {
   return { ...result, transactions };
 }
 
+/** Conservative fallback applied only after richer provider classification. */
+export function applyUnifiedIncomingClassifications(transactions: Transaction[]): Transaction[] {
+  return transactions.map((transaction) => {
+    if (transaction.type !== 'transfer_in') return transaction;
+    const match = classifyIncomingTransfer({
+      contractAddress: transaction.contractAddress,
+      counterpartyAddress: transaction.counterpartyAddress,
+      chain: transaction.chain,
+      amount: transaction.amount
+    });
+    if (!match) return transaction;
+    return {
+      ...transaction,
+      type: match.type,
+      category: match.kind,
+      notes: match.label,
+      flags: match.source === 'reward_registry_static' ? [] : ['needs_review']
+    };
+  });
+}
+
 async function lookupOneAddress(address: string, config: LookupConfig): Promise<LookupResult & { newestSignature?: string }> {
   const { chain } = config;
   if (chain.provider === 'blockstream') {
@@ -808,7 +889,7 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
           const result = await fetchMoralisEvm(address, chain.id, chain.asset, rpcCredential(config.moralisApiKey));
           if (result.transactions.length > 0 || !hasRpcCredential(config.alchemyApiKey)) {
             return withDexSwapDetection({
-              transactions: result.transactions,
+              transactions: applyUnifiedIncomingClassifications(result.transactions),
               warnings: result.warnings.map((msg) => ({ address, message: msg }))
             });
           }

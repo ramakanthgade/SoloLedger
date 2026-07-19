@@ -15,6 +15,7 @@
 import { makeId } from '@/lib/parsers/types';
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { classifyRewardIncome } from '@/lib/assets/rewardRegistry';
+import { classifyIncomingTransfer } from '@/lib/assets/unifiedAddressRegistry';
 import { classifyFromHelius } from '@/lib/rpc/classificationEngine';
 import type { Transaction, FlagReason, TxType } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
@@ -179,11 +180,15 @@ function pushSplBalanceRow(
     inbound && counterparty !== walletAddress
       ? classifyRewardIncome(mint, counterparty)
       : null;
+  const unified =
+    inbound && !reward && counterparty !== walletAddress
+      ? classifyIncomingTransfer({ contractAddress: mint, counterpartyAddress: counterparty, chain: 'solana', amount })
+      : null;
 
   rows.push({
     id: makeId('rpc'),
     timestamp: htx.timestamp * 1000,
-    type: reward ? 'income' : inbound ? 'transfer_in' : 'transfer_out',
+    type: reward ? 'income' : unified?.type ?? (inbound ? 'transfer_in' : 'transfer_out'),
     asset,
     amount,
     contractAddress: mint,
@@ -194,9 +199,9 @@ function pushSplBalanceRow(
     walletAddress,
     counterpartyAddress: counterparty,
     chain: 'solana',
-    category: reward?.kind,
-    notes: reward?.notes,
-    flags: reward ? [] : (['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[]),
+    category: reward?.kind ?? unified?.kind,
+    notes: reward?.notes ?? unified?.label,
+    flags: reward ? [] : unified ? ['needs_review'] : (['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[]),
     isInternalTransfer: false
   });
 }
