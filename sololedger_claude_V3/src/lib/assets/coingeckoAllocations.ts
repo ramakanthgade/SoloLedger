@@ -20,7 +20,7 @@ export interface AllocationsResult {
 
 export const COINGECKO_ALLOCATION_CACHE_KEY = 'sololedger_coingecko_allocations_v1';
 export const COINGECKO_ALLOCATION_DISCOVERY_LIMIT = 20;
-const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const COINGECKO_PRO_BASE = 'https://pro-api.coingecko.com/api/v3';
 interface CacheShape { fetchedAt: number; addresses: Record<string, AllocationWallet> }
 let memoryCache: CacheShape | null = null;
@@ -143,7 +143,7 @@ export async function syncCoinGeckoAllocations(apiKey: string, options: { force?
   if (breakdownCandidates > 0 && breakdownSchemasRead === 0) {
     throw new Error('CoinGecko supply breakdown responses could not be read');
   }
-  // Never turn an empty or inconclusive discovery into a fresh seven-day cache.
+  // Never turn an empty or inconclusive discovery into a fresh 24-hour cache.
   if (Object.keys(addresses).length > 0) writeCache(addresses);
   return { addresses, totalWallets: Object.keys(addresses).length, totalCoins: coins.size, message: `Synced ${Object.keys(addresses).length} allocation wallets from ${coins.size} coins`, fromCache: false };
 }

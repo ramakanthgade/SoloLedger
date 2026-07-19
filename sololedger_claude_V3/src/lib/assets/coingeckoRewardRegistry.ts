@@ -22,7 +22,7 @@ export interface SyncResult {
 }
 
 export const COINGECKO_REWARD_CACHE_KEY = 'sololedger_coingecko_reward_registry_v1';
-export const COINGECKO_REWARD_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+export const COINGECKO_REWARD_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 export const COINGECKO_PUBLIC_BASE = 'https://api.coingecko.com/api/v3';
 export const COINGECKO_PRO_BASE = 'https://pro-api.coingecko.com/api/v3';
 export const COINGECKO_REWARD_DISCOVERY_LIMIT = 25;
@@ -200,7 +200,7 @@ export async function syncCoinGeckoRewardRegistry(
     if (candidates.length > 0 && metadataSucceeded === 0) {
       throw new Error('CoinGecko coin metadata could not be read');
     }
-    // A valid empty scan is deliberately not persisted for seven days; a later
+    // A valid empty scan is deliberately not persisted for 24 hours; a later
     // lookup can retry as CoinGecko metadata evolves.
     if (entries.length > 0) writeCache(entries);
     return summary(entries, false, candidates.length, new Set(entries.map((entry) => entry.coinId)).size);

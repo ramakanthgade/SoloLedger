@@ -69,7 +69,7 @@ describe('CoinGecko reward registry', () => {
     await expect(syncCoinGeckoRewardRegistry()).resolves.toMatchObject({ entriesCount: 2, coinsChecked: 2 });
   });
 
-  it('uses a seven-day cache, manual force bypasses it, and shares concurrent work', async () => {
+  it('uses a 24-hour cache, manual force bypasses it, and shares concurrent work', async () => {
     const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
       String(input).includes('/coins/markets?') ? response([marketCoin]) : response(rewardMetadata)
     );

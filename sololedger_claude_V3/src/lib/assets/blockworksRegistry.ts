@@ -29,18 +29,23 @@ export const BLOCKWORKS_ENTRIES: readonly BlockworksEntry[] = [
 ];
 
 const CACHE_KEY = 'sololedger_blockworks_registry_v1';
+const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 interface CacheShape { fetchedAt: number; entries: BlockworksEntry[] }
 let memoryCache: CacheShape | null = null;
 function storage(): Storage | null {
   try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
 }
 function readEntries(): BlockworksEntry[] {
-  if (memoryCache) return memoryCache.entries;
+  if (memoryCache && Date.now() - memoryCache.fetchedAt < CACHE_TTL_MS) return memoryCache.entries;
+  memoryCache = null;
   try {
     const raw = storage()?.getItem(CACHE_KEY);
     if (!raw) return [...BLOCKWORKS_ENTRIES];
     const parsed = JSON.parse(raw) as CacheShape;
-    if (!Array.isArray(parsed.entries)) return [...BLOCKWORKS_ENTRIES];
+    if (!Array.isArray(parsed.entries) || Date.now() - parsed.fetchedAt >= CACHE_TTL_MS) {
+      storage()?.removeItem(CACHE_KEY);
+      return [...BLOCKWORKS_ENTRIES];
+    }
     memoryCache = parsed;
     return parsed.entries;
   } catch { return [...BLOCKWORKS_ENTRIES]; }
