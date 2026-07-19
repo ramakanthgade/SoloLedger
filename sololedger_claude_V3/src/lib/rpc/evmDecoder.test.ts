@@ -76,4 +76,21 @@ describe('EVM receipt decoder', () => {
       }]
     }, wallet)).toBeNull();
   });
+
+  it('ignores malformed logs and classifies outgoing router legs without contaminating direction', () => {
+    const router = '0x7a250d5630b4cf539739df2c5dacb4c659f2488d';
+    const receipt = {
+      transactionHash: '0xhash',
+      logs: [
+        { address: '0x9999999999999999999999999999999999999999', topics: [ERC_TRANSFER_TOPIC, '0xbad', topicAddress(wallet)], data: '0xzz' },
+        { address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', topics: [ERC_TRANSFER_TOPIC, topicAddress(wallet), topicAddress(router)], data: data(2_000_000n) }
+      ]
+    };
+    expect(decodeEvmReceiptForTransfer(receipt, wallet, {
+      contractAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', direction: 'transfer_out', from: wallet, to: router
+    })).toMatchObject({ type: 'trade', amount: 2, counterpartyAddress: router, rawAmount: '2000000' });
+    expect(decodeEvmReceiptForTransfer(receipt, wallet, {
+      contractAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', direction: 'transfer_in', from: router, to: wallet
+    })).toBeNull();
+  });
 });

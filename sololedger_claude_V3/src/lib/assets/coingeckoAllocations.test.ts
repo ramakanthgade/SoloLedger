@@ -84,4 +84,66 @@ describe('CoinGecko allocations discovery', () => {
     await expect(syncCoinGeckoAllocations('pro-key')).rejects.toThrow('breakdown responses could not be read');
     expect(localStorage.getItem(COINGECKO_ALLOCATION_CACHE_KEY)).toBeNull();
   });
+
+  it('uses the Pro header, reuses cache until exactly 24 hours, then refreshes', async () => {
+    vi.useFakeTimers();
+    const start = new Date('2026-07-19T00:00:00.000Z');
+    vi.setSystemTime(start);
+    const wallet = '0xABCDEF0000000000000000000000000000000003';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      expect(new Headers(init?.headers).get('x-cg-pro-api-key')).toBe('secret-pro-key');
+      const url = String(input);
+      if (url.includes('/coins/markets?')) return response([{ id: 'project', symbol: 'prj' }]);
+      if (url.includes('/coins/project?')) return response({ has_supply_breakdown: true });
+      return response({ non_circulating_wallets: [{ address: wallet, label: 'Treasury' }] });
+    });
+
+    await syncCoinGeckoAllocations('secret-pro-key');
+    vi.setSystemTime(start.getTime() + 24 * 60 * 60 * 1000 - 1);
+    await expect(syncCoinGeckoAllocations('secret-pro-key')).resolves.toMatchObject({ fromCache: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    vi.setSystemTime(start.getTime() + 24 * 60 * 60 * 1000);
+    await expect(syncCoinGeckoAllocations('secret-pro-key')).resolves.toMatchObject({ fromCache: false });
+    expect(fetchMock).toHaveBeenCalledTimes(6);
+    vi.useRealTimers();
+  });
+
+  it('single-flights concurrent refreshes and falls back to a stale cache on outage', async () => {
+    const wallet = '0xABCDEF0000000000000000000000000000000004';
+    localStorage.setItem(COINGECKO_ALLOCATION_CACHE_KEY, JSON.stringify({
+      fetchedAt: Date.now() - 25 * 60 * 60 * 1000,
+      addresses: {
+        [wallet.toLowerCase()]: { address: wallet.toLowerCase(), label: 'Prior treasury', coinId: 'old', chain: 'ethereum', balance: 1, percentageOfTotalSupply: 1, symbol: 'OLD', anomaly: false, fetchedAt: Date.now() }
+      }
+    }));
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => {
+      await gate;
+      throw new Error('provider unavailable');
+    });
+
+    const first = syncCoinGeckoAllocations('pro-key');
+    const second = syncCoinGeckoAllocations('pro-key');
+    release();
+    await expect(Promise.all([first, second])).resolves.toEqual([
+      expect.objectContaining({ fromCache: true, totalWallets: 1 }),
+      expect.objectContaining({ fromCache: true, totalWallets: 1 })
+    ]);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('recovers from malformed cache data by fetching a fresh result', async () => {
+    localStorage.setItem(COINGECKO_ALLOCATION_CACHE_KEY, '{not-json');
+    const wallet = '0xABCDEF0000000000000000000000000000000005';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/coins/markets?')) return response([{ id: 'project', symbol: 'prj' }]);
+      if (url.includes('/coins/project?')) return response({ has_supply_breakdown: true });
+      return response({ non_circulating_wallets: [{ address: wallet }] });
+    });
+    await expect(syncCoinGeckoAllocations('pro-key')).resolves.toMatchObject({ fromCache: false, totalWallets: 1 });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
 });

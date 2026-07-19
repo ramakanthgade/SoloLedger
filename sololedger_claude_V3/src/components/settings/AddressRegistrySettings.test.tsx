@@ -43,5 +43,28 @@ describe('AddressRegistrySettingsSection', () => {
     expect(buttons[0]).toBeEnabled();
     expect(buttons[1]).toBeDisabled();
     expect(buttons[2]).toBeEnabled();
+    expect(screen.getByText(/CoinGecko Pro key is required only for allocation-wallet data/i)).toBeInTheDocument();
+  });
+
+  it('keeps each sync independent, prevents duplicate clicks, and preserves counts on failure', async () => {
+    let release!: () => void;
+    syncRewards.mockReturnValue(new Promise((resolve) => { release = () => resolve({ entriesCount: 7, message: 'rewards synced' }); }));
+    syncAllocations.mockRejectedValue(new Error('malformed provider response'));
+    render(<AddressRegistrySettingsSection coingeckoApiKey="pro-key" />);
+    const buttons = screen.getAllByRole('button', { name: 'Sync' });
+
+    fireEvent.click(buttons[0]);
+    expect(await screen.findByRole('button', { name: 'Syncing…' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Syncing…' }));
+    expect(syncRewards).toHaveBeenCalledTimes(1);
+    expect(buttons[1]).toBeEnabled();
+    expect(buttons[2]).toBeEnabled();
+
+    fireEvent.click(buttons[1]);
+    expect(await screen.findByRole('alert')).toHaveTextContent('malformed provider response');
+    expect(screen.getByText('3 wallets')).toBeInTheDocument();
+    release();
+    expect(await screen.findByText('7 tokens')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toHaveTextContent('rewards synced');
   });
 });

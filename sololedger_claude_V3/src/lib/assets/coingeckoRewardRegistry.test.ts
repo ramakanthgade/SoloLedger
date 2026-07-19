@@ -92,4 +92,41 @@ describe('CoinGecko reward registry', () => {
     await Promise.all([first, second]);
     expect(fetchMock).toHaveBeenCalledTimes(6);
   });
+
+  it('refreshes at the exact 24-hour boundary and uses stale data during an outage', async () => {
+    vi.useFakeTimers();
+    const start = new Date('2026-07-19T00:00:00.000Z');
+    vi.setSystemTime(start);
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
+      String(input).includes('/coins/markets?') ? response([marketCoin]) : response(rewardMetadata)
+    );
+    await syncCoinGeckoRewardRegistry();
+    vi.setSystemTime(start.getTime() + 24 * 60 * 60 * 1000 - 1);
+    await expect(syncCoinGeckoRewardRegistry()).resolves.toMatchObject({ fromCache: true });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    vi.setSystemTime(start.getTime() + 24 * 60 * 60 * 1000);
+    fetchMock.mockRejectedValue(new Error('offline'));
+    await expect(syncCoinGeckoRewardRegistry()).resolves.toMatchObject({
+      fromCache: true,
+      entriesCount: 2,
+      message: 'CoinGecko unavailable; using cached reward registry'
+    });
+    vi.useRealTimers();
+  });
+
+  it('does not cache a valid empty scan and sends no private wallet data', async () => {
+    const privateWallet = '0x1111111111111111111111111111111111111111';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      expect(String(input)).not.toContain(privateWallet);
+      expect(JSON.stringify(init ?? {})).not.toContain(privateWallet);
+      return String(input).includes('/coins/markets?')
+        ? response([{ id: 'ordinary', symbol: 'ord', name: 'Ordinary' }])
+        : response({ categories: ['DeFi'], description: { en: 'Trading protocol' }, platforms: {} });
+    });
+    await expect(syncCoinGeckoRewardRegistry()).resolves.toMatchObject({ entriesCount: 0, fromCache: false });
+    expect(localStorage.getItem('sololedger_coingecko_reward_registry_v1')).toBeNull();
+    await syncCoinGeckoRewardRegistry();
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
 });
