@@ -40,6 +40,28 @@ describe('CoinGecko allocations discovery', () => {
       .toMatchObject({ label: 'Project Team' });
   });
 
+  it('invalidates a prior empty v1 cache and runs corrected discovery', async () => {
+    localStorage.setItem(COINGECKO_ALLOCATION_CACHE_KEY, JSON.stringify({
+      fetchedAt: Date.now(),
+      addresses: {}
+    }));
+    const wallet = '0xABCDEF0000000000000000000000000000000002';
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = String(input);
+      if (url.includes('/coins/markets?')) return response([{ id: 'project', symbol: 'prj' }]);
+      if (url.includes('/coins/project?')) return response({ has_supply_breakdown: true });
+      return response({
+        non_circulating_wallets: [{ address: wallet, label: 'Treasury', balance: 5, percentage_of_total_supply: 0.5 }]
+      });
+    });
+
+    await expect(syncCoinGeckoAllocations('pro-key')).resolves.toMatchObject({
+      fromCache: false,
+      totalWallets: 1
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
   it('does not persist an empty cache after metadata discovery failure', async () => {
     vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) =>
       String(input).includes('/coins/markets?')

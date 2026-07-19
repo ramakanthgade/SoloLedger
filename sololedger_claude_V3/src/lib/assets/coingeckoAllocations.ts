@@ -29,12 +29,17 @@ function storage(): Storage | null {
   try { return typeof localStorage === 'undefined' ? null : localStorage; } catch { return null; }
 }
 function readCache(): CacheShape | null {
-  if (memoryCache) return memoryCache;
+  if (memoryCache && Object.keys(memoryCache.addresses).length > 0) return memoryCache;
+  memoryCache = null;
   try {
     const raw = storage()?.getItem(COINGECKO_ALLOCATION_CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CacheShape;
     if (!Number.isFinite(parsed?.fetchedAt) || !parsed.addresses || typeof parsed.addresses !== 'object') return null;
+    if (Object.keys(parsed.addresses).length === 0) {
+      storage()?.removeItem(COINGECKO_ALLOCATION_CACHE_KEY);
+      return null;
+    }
     memoryCache = parsed;
     return parsed;
   } catch { return null; }

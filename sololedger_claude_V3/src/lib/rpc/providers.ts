@@ -196,7 +196,7 @@ function alchemyHeaders(apiKey: string): HeadersInit {
 }
 
 // ---- EVM chains via Alchemy's alchemy_getAssetTransfers (native + ERC20 + NFTs) ----
-async function fetchAlchemyEvmInner(
+export async function fetchAlchemyEvmInner(
   address: string,
   network: string,
   apiKey: string,
@@ -238,9 +238,12 @@ async function fetchAlchemyEvmInner(
 
   const toTx = async (t: any, direction: 'transfer_out' | 'transfer_in'): Promise<Transaction> => {
     const isNft = t.category === 'erc721' || t.category === 'erc1155';
+    const ercContractAddress = t.category === 'erc20' && typeof t.rawContract?.address === 'string'
+      ? t.rawContract.address
+      : undefined;
     const unified = direction === 'transfer_in' && !isNft
       ? classifyIncomingTransfer({
-          contractAddress: t.rawContract?.address,
+          contractAddress: ercContractAddress,
           counterpartyAddress: t.from,
           chain: chainId,
           amount: Number(t.value) || undefined
@@ -248,13 +251,13 @@ async function fetchAlchemyEvmInner(
       : null;
     // Last resort when Moralis is unavailable: inspect the verified standard
     // receipt logs before accepting Alchemy's generic transfer classification.
-    const receipt = !isNft && t.hash ? await loadReceipt(t.hash) : null;
+    const receipt = ercContractAddress && t.hash ? await loadReceipt(t.hash) : null;
     const decoded = receipt
       ? decodeEvmReceiptForTransfer(
           receipt,
           address,
           {
-            contractAddress: t.rawContract?.address,
+            contractAddress: ercContractAddress,
             direction,
             from: t.from,
             to: t.to
