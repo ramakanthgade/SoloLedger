@@ -25,6 +25,7 @@ export const COINGECKO_REWARD_CACHE_KEY = 'sololedger_coingecko_reward_registry_
 export const COINGECKO_REWARD_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const COINGECKO_PUBLIC_BASE = 'https://api.coingecko.com/api/v3';
 export const COINGECKO_PRO_BASE = 'https://pro-api.coingecko.com/api/v3';
+export const COINGECKO_REWARD_DISCOVERY_LIMIT = 25;
 
 const CHAIN_MAP: Record<string, string> = {
   ethereum: 'ethereum',
@@ -37,15 +38,13 @@ const CHAIN_MAP: Record<string, string> = {
   solana: 'solana'
 };
 
-const CATEGORY_SIGNALS: Record<string, RewardIncomeKind> = {
-  staking: 'staking_reward',
-  'liquid-staking-tokens': 'staking_reward',
-  depin: 'mining_reward',
-  'proof-of-work-pow': 'mining_reward',
-  'yield-farming': 'defi_reward',
-  'yield-aggregator': 'defi_reward'
-};
-const REWARD_WORDS = /\b(reward|staking|staked|mine|mining|yield|airdrop|incentive|farming)\b/i;
+const EXPLICIT_CATEGORY_SIGNALS: Array<{ pattern: RegExp; kind: RewardIncomeKind }> = [
+  { pattern: /liquid staking|staking pool/i, kind: 'staking_reward' },
+  { pattern: /proof of work|depin/i, kind: 'mining_reward' },
+  { pattern: /yield farming|yield aggregator/i, kind: 'defi_reward' },
+  { pattern: /airdrop/i, kind: 'airdrop' }
+];
+const DIRECT_REWARD_EVIDENCE = /\b(distribut(?:e[sd]?|ion)|paid|payouts?|claim(?:ed|able)?)\b.{0,80}\b(rewards?|incentives?|airdrop|yield)\b|\b(rewards?|incentives?|airdrop|yield)\b.{0,80}\b(distribut(?:e[sd]?|ion)|paid|payouts?|claim(?:ed|able)?)\b/i;
 
 interface CacheShape { fetchedAt: number; entries: CoinGeckoRewardEntry[] }
 let memoryCache: CacheShape | null = null;
@@ -89,14 +88,14 @@ export function clearCoinGeckoRewardCache(): void {
   try { storage()?.removeItem(COINGECKO_REWARD_CACHE_KEY); } catch { /* non-fatal */ }
 }
 
-/** Broad "DeFi" membership is intentionally not a reward signal. */
+/** A category narrows candidates, but direct distribution language is required. */
 export function deriveRewardSignal(categories: string[], description = ''):
   { kind: RewardIncomeKind; confidence: 'high' | 'medium' } | null {
-  for (const category of categories) {
-    const kind = CATEGORY_SIGNALS[category.toLowerCase()];
-    if (kind) return { kind, confidence: 'high' };
-  }
-  return REWARD_WORDS.test(description) ? { kind: 'defi_reward', confidence: 'medium' } : null;
+  const categorySignal = EXPLICIT_CATEGORY_SIGNALS.find(({ pattern }) =>
+    categories.some((category) => pattern.test(category))
+  );
+  if (!categorySignal || !DIRECT_REWARD_EVIDENCE.test(description)) return null;
+  return { kind: categorySignal.kind, confidence: 'high' };
 }
 
 function normalizeAddress(address: string, chain: string): string {
@@ -105,9 +104,7 @@ function normalizeAddress(address: string, chain: string): string {
 
 export function classifyCoinGeckoReward(contractAddress?: string, chain?: string) {
   if (!contractAddress || !chain) return null;
-  const cache = readCache();
-  if (!cache) return null;
-  const match = cache.entries.find((entry) =>
+  const match = readCache()?.entries.find((entry) =>
     CHAIN_MAP[entry.chain] === chain &&
     entry.contractAddress === normalizeAddress(contractAddress, chain)
   );
@@ -152,29 +149,32 @@ export async function syncCoinGeckoRewardRegistry(
 
   inFlight = (async () => {
     const base = apiKey?.trim() ? COINGECKO_PRO_BASE : COINGECKO_PUBLIC_BASE;
-    const candidates = new Map<string, { id: string; symbol: string; name: string; categories: string[] }>();
-    for (const category of Object.keys(CATEGORY_SIGNALS)) {
-      const url = `${base}/coins/markets?vs_currency=usd&category=${encodeURIComponent(category)}&order=market_cap_desc&per_page=25&page=1`;
-      const rows = await fetchJson(url, apiKey);
-      if (!Array.isArray(rows)) continue;
-      for (const row of rows as Array<Record<string, unknown>>) {
-        if (typeof row.id !== 'string') continue;
-        const existing = candidates.get(row.id);
-        candidates.set(row.id, {
-          id: row.id,
-          symbol: typeof row.symbol === 'string' ? row.symbol : '',
-          name: typeof row.name === 'string' ? row.name : row.id,
-          categories: [...(existing?.categories ?? []), category]
-        });
-      }
-    }
+    // /coins/markets and /coins/{id} are documented public endpoints. We avoid
+    // hard-coded category query values because CoinGecko category IDs change.
+    const marketPayload = await fetchJson(
+      `${base}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page=${COINGECKO_REWARD_DISCOVERY_LIMIT}&page=1`,
+      apiKey
+    );
+    if (!Array.isArray(marketPayload)) throw new Error('CoinGecko markets response had an unexpected schema');
 
+    const candidates = marketPayload
+      .filter((row): row is Record<string, unknown> => Boolean(row && typeof row === 'object' && typeof (row as Record<string, unknown>).id === 'string'))
+      .slice(0, COINGECKO_REWARD_DISCOVERY_LIMIT);
     const entries: CoinGeckoRewardEntry[] = [];
     const seen = new Set<string>();
-    for (const candidate of candidates.values()) {
+    let metadataSucceeded = 0;
+
+    for (const candidate of candidates) {
       try {
-        const full = await fetchJson(`${base}/coins/${encodeURIComponent(candidate.id)}?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false`, apiKey) as Record<string, unknown>;
-        const signal = deriveRewardSignal(candidate.categories, String((full.description as Record<string, unknown> | undefined)?.en ?? ''));
+        const id = String(candidate.id);
+        const full = await fetchJson(
+          `${base}/coins/${encodeURIComponent(id)}?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false`,
+          apiKey
+        ) as Record<string, unknown>;
+        if (!full || typeof full !== 'object' || !Array.isArray(full.categories)) continue;
+        metadataSucceeded++;
+        const description = String((full.description as Record<string, unknown> | undefined)?.en ?? '');
+        const signal = deriveRewardSignal(full.categories.filter((value): value is string => typeof value === 'string'), description);
         const platforms = full.platforms;
         if (!signal || !platforms || typeof platforms !== 'object') continue;
         for (const [platform, rawAddress] of Object.entries(platforms as Record<string, unknown>)) {
@@ -186,18 +186,24 @@ export async function syncCoinGeckoRewardRegistry(
           entries.push({
             contractAddress: address,
             chain: platform,
-            coinId: candidate.id,
-            symbol: candidate.symbol.toUpperCase(),
+            coinId: id,
+            symbol: String(candidate.symbol ?? '').toUpperCase(),
             kind: signal.kind,
             confidence: signal.confidence,
-            label: `${candidate.name} possible reward`,
+            label: `${String(candidate.name ?? id)} possible reward token`,
             createdAt: Date.now()
           });
         }
-      } catch { /* individual coin failures are non-fatal */ }
+      } catch { /* one coin must not abort the registry sync */ }
     }
-    writeCache(entries);
-    return summary(entries, false, candidates.size, new Set(entries.map((entry) => entry.coinId)).size);
+
+    if (candidates.length > 0 && metadataSucceeded === 0) {
+      throw new Error('CoinGecko coin metadata could not be read');
+    }
+    // A valid empty scan is deliberately not persisted for seven days; a later
+    // lookup can retry as CoinGecko metadata evolves.
+    if (entries.length > 0) writeCache(entries);
+    return summary(entries, false, candidates.length, new Set(entries.map((entry) => entry.coinId)).size);
   })().catch((error) => {
     if (cached) return { ...summary(cached.entries, true), message: 'CoinGecko unavailable; using cached reward registry' };
     throw error;

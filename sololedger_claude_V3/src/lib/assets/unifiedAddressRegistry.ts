@@ -19,13 +19,35 @@ export function classifyIncomingTransfer(input: ClassifyInput): TransferClassifi
   if (staticMatch) return { type: 'income', kind: staticMatch.kind, label: staticMatch.label, source: 'reward_registry_static', confidence: 'high' };
 
   const blockworks = lookupBlockworksAddress(input.counterpartyAddress, input.chain);
-  if (blockworks) return { type: 'income', kind: blockworks.role, label: `${blockworks.label} payout`, source: 'blockworks', confidence: 'high' };
+  if (blockworks) {
+    const isExplicitDistribution = blockworks.role === 'mining_distribution';
+    return {
+      type: isExplicitDistribution ? 'income' : 'transfer_in',
+      kind: isExplicitDistribution ? 'mining_reward' : blockworks.role,
+      label: isExplicitDistribution
+        ? `${blockworks.label} payout`
+        : `Known ${blockworks.label} address — review transfer purpose`,
+      source: 'blockworks',
+      confidence: isExplicitDistribution ? 'high' : 'medium'
+    };
+  }
 
   const allocation = input.chain === 'solana' ? null : lookupAllocationWallet(input.counterpartyAddress);
-  if (allocation) return { type: 'income', kind: 'defi_reward', label: `${allocation.label} — ${allocation.symbol}`, source: 'supply_breakdown', confidence: 'high' };
+  if (allocation) return {
+    type: 'transfer_in',
+    label: `Known non-circulating wallet: ${allocation.label} (${allocation.symbol}) — review transfer purpose`,
+    source: 'supply_breakdown',
+    confidence: 'medium'
+  };
 
   const reward = classifyCoinGeckoReward(input.contractAddress, input.chain);
-  if (reward) return { type: 'income', kind: reward.kind, label: reward.label, source: 'reward_registry_coingecko', confidence: reward.confidence };
+  if (reward) return {
+    type: 'transfer_in',
+    kind: reward.kind,
+    label: `${reward.label} — token metadata alone does not prove income`,
+    source: 'reward_registry_coingecko',
+    confidence: 'medium'
+  };
 
   if (input.chain !== 'solana') {
     const protocol = isKnownProtocolContract(input.counterpartyAddress ?? '', { ...getAllocationContracts(), ...getBlockworksContracts() });

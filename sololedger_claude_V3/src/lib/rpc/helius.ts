@@ -188,7 +188,7 @@ function pushSplBalanceRow(
   rows.push({
     id: makeId('rpc'),
     timestamp: htx.timestamp * 1000,
-    type: reward || unified ? 'income' : inbound ? 'transfer_in' : 'transfer_out',
+    type: reward ? 'income' : unified?.type ?? (inbound ? 'transfer_in' : 'transfer_out'),
     asset,
     amount,
     contractAddress: mint,

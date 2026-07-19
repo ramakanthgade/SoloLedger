@@ -57,7 +57,10 @@ export function lookupBlockworksAddress(address?: string, chain?: string) {
 }
 export function getBlockworksContracts(): Record<string, { label: string; role: string }> {
   return Object.fromEntries(readEntries().filter((entry) => entry.chain !== 'solana').map((entry) =>
-    [entry.address.toLowerCase(), { label: entry.label, role: 'rewards_source' }]
+    [entry.address.toLowerCase(), {
+      label: entry.label,
+      role: entry.role === 'mining_distribution' ? 'rewards_source' : 'allocation_source'
+    }]
   ));
 }
 export function getBlockworksCount(): number { return readEntries().length; }

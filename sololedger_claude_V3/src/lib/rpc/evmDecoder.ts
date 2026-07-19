@@ -16,6 +16,12 @@ export interface EvmDecodeResult {
   confidence: 'high' | 'medium';
 }
 type KnownContract = { label: string; role: string };
+export interface EvmTransferMatch {
+  contractAddress?: string;
+  direction: 'transfer_in' | 'transfer_out';
+  from?: string;
+  to?: string;
+}
 
 export const KNOWN_PROTOCOL_CONTRACTS: Record<string, KnownContract> = {
   '0x7d2768de32b0b80b7a3454c06bdac94a69ddc7a9': { label: 'Aave V2 Lending Pool', role: 'deposit_target' },
@@ -52,9 +58,10 @@ function amountFor(raw: string, contract: string): number | undefined {
   return Number.isFinite(amount) ? amount : undefined;
 }
 
-export function decodeEvmReceipt(receipt: EvmTxReceipt, walletAddress: string, extraContracts: Record<string, KnownContract> = {}): EvmDecodeResult | null {
+function decodeTransferLogs(receipt: EvmTxReceipt, walletAddress: string, extraContracts: Record<string, KnownContract>): EvmDecodeResult[] {
   const wallet = walletAddress.toLowerCase();
   const known = { ...KNOWN_PROTOCOL_CONTRACTS, ...Object.fromEntries(Object.entries(extraContracts).map(([k, v]) => [k.toLowerCase(), v])) };
+  const results: EvmDecodeResult[] = [];
   for (const log of receipt.logs ?? []) {
     const topic = log.topics?.[0]?.toLowerCase();
     // ERC-20 has 3 topics. ERC-721 shares topic0 but has 4; avoid decoding tokenId as fungible amount.
@@ -74,17 +81,60 @@ export function decodeEvmReceipt(receipt: EvmTxReceipt, walletAddress: string, e
       confidence: 'high' as const
     };
     if (to === wallet && known[from]?.role === 'rewards_source') {
-      return { ...base, type: 'income', notes: `${known[from].label} — possible rewards distribution` };
+      results.push({ ...base, type: 'income', notes: `${known[from].label} — possible rewards distribution` });
+      continue;
     }
     if (from === wallet && known[to]?.role === 'deposit_target') {
-      return { ...base, type: 'defi_deposit', notes: `Deposit to ${known[to].label}` };
+      results.push({ ...base, type: 'defi_deposit', notes: `Deposit to ${known[to].label}` });
+      continue;
     }
     if (from === wallet && known[to]?.role === 'router') {
-      return { ...base, type: 'trade', notes: `Swap via ${known[to].label}`, confidence: 'medium' };
+      results.push({ ...base, type: 'trade', notes: `Swap via ${known[to].label}`, confidence: 'medium' });
+      continue;
     }
-    return { ...base, type: to === wallet ? 'transfer_in' : 'transfer_out' };
+    results.push({ ...base, type: to === wallet ? 'transfer_in' : 'transfer_out' });
   }
-  return null;
+  return results;
+}
+
+export function decodeEvmReceipt(receipt: EvmTxReceipt, walletAddress: string, extraContracts: Record<string, KnownContract> = {}): EvmDecodeResult | null {
+  return decodeTransferLogs(receipt, walletAddress, extraContracts)[0] ?? null;
+}
+
+/** Decode only the receipt leg represented by one Alchemy transfer row. */
+export function decodeEvmReceiptForTransfer(
+  receipt: EvmTxReceipt,
+  walletAddress: string,
+  match: EvmTransferMatch,
+  extraContracts: Record<string, KnownContract> = {}
+): EvmDecodeResult | null {
+  const contract = match.contractAddress?.toLowerCase();
+  const from = match.from?.toLowerCase();
+  const to = match.to?.toLowerCase();
+  return decodeTransferLogs(receipt, walletAddress, extraContracts).find((decoded) => {
+    if (contract && decoded.contractAddress !== contract) return false;
+    if (decoded.type === 'transfer_in' || decoded.type === 'income') {
+      if (match.direction !== 'transfer_in') return false;
+      return (!from || decoded.counterpartyAddress === from) && (!to || to === walletAddress.toLowerCase());
+    }
+    if (match.direction !== 'transfer_out') return false;
+    return (!to || decoded.counterpartyAddress === to) && (!from || from === walletAddress.toLowerCase());
+  }) ?? null;
+}
+
+export async function fetchEvmTransactionReceipt(
+  rpcUrl: string,
+  txHash: string,
+  headers: HeadersInit = { 'Content-Type': 'application/json' }
+): Promise<EvmTxReceipt | null> {
+  try {
+    const response = await fetch(rpcUrl, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] }) });
+    if (!response.ok) return null;
+    const json = await response.json();
+    const result = json?.result;
+    if (!result || !Array.isArray(result.logs)) return null;
+    return { transactionHash: result.transactionHash, from: result.from, to: result.to, logs: result.logs };
+  } catch { return null; }
 }
 
 export async function decodeEvmTxByHash(
@@ -94,14 +144,8 @@ export async function decodeEvmTxByHash(
   extraContracts?: Record<string, KnownContract>,
   headers: HeadersInit = { 'Content-Type': 'application/json' }
 ): Promise<EvmDecodeResult | null> {
-  try {
-    const response = await fetch(rpcUrl, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] }) });
-    if (!response.ok) return null;
-    const json = await response.json();
-    const result = json?.result;
-    if (!result || !Array.isArray(result.logs)) return null;
-    return decodeEvmReceipt({ transactionHash: result.transactionHash, from: result.from, to: result.to, logs: result.logs }, walletAddress, extraContracts);
-  } catch { return null; }
+  const receipt = await fetchEvmTransactionReceipt(rpcUrl, txHash, headers);
+  return receipt ? decodeEvmReceipt(receipt, walletAddress, extraContracts) : null;
 }
 
 export function isKnownProtocolContract(address: string, extraContracts: Record<string, KnownContract> = {}): KnownContract | null {

@@ -17,7 +17,11 @@ import { getAllocationContracts } from '@/lib/assets/coingeckoAllocations';
 import { getBlockworksContracts } from '@/lib/assets/blockworksRegistry';
 import { makeId } from '@/lib/parsers/types';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
-import { decodeEvmTxByHash } from '@/lib/rpc/evmDecoder';
+import {
+  decodeEvmReceiptForTransfer,
+  fetchEvmTransactionReceipt,
+  type EvmTxReceipt
+} from '@/lib/rpc/evmDecoder';
 import type { FlagReason, Transaction } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
@@ -216,6 +220,7 @@ async function fetchAlchemyEvmInner(
   });
 
   const headers = alchemyHeaders(apiKey);
+  const loadReceipt = createReceiptLoader((hash) => fetchEvmTransactionReceipt(url, hash, headers));
   const [outgoingRes, incomingRes] = await Promise.all([
     alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('from')) }),
     alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
@@ -243,32 +248,38 @@ async function fetchAlchemyEvmInner(
       : null;
     // Last resort when Moralis is unavailable: inspect the verified standard
     // receipt logs before accepting Alchemy's generic transfer classification.
-    const decoded = !unified && !isNft && t.hash
-      ? await decodeEvmTxByHash(
-          url,
-          t.hash,
+    const receipt = !isNft && t.hash ? await loadReceipt(t.hash) : null;
+    const decoded = receipt
+      ? decodeEvmReceiptForTransfer(
+          receipt,
           address,
-          { ...getAllocationContracts(), ...getBlockworksContracts() },
-          headers
+          {
+            contractAddress: t.rawContract?.address,
+            direction,
+            from: t.from,
+            to: t.to
+          },
+          { ...getAllocationContracts(), ...getBlockworksContracts() }
         )
       : null;
     const decodedIsSpecific = decoded && decoded.type !== 'transfer_in' && decoded.type !== 'transfer_out';
+    const unifiedIsIncome = unified?.type === 'income';
     return {
       id: makeId('rpc'),
       timestamp: t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).getTime() : Date.now(),
-      type: unified?.type ?? (decodedIsSpecific ? decoded.type : direction),
-      asset: decoded?.asset || t.asset || (isNft ? (t.rawContract?.address ? `NFT ${String(t.rawContract.address).slice(0, 6)}` : 'NFT') : asset),
-      amount: isNft ? (t.erc1155Metadata?.[0]?.value ? Number(t.erc1155Metadata[0].value) : 1) : Number(t.value) || decoded?.amount || 0,
+      type: unifiedIsIncome ? unified.type : decodedIsSpecific ? decoded.type : unified?.type ?? direction,
+      asset: t.asset || (isNft ? (t.rawContract?.address ? `NFT ${String(t.rawContract.address).slice(0, 6)}` : 'NFT') : asset),
+      amount: isNft ? (t.erc1155Metadata?.[0]?.value ? Number(t.erc1155Metadata[0].value) : 1) : Number(t.value) || 0,
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:alchemy',
       sourceRef: t.hash,
       walletAddress: address,
-      counterpartyAddress: decoded?.counterpartyAddress ?? (direction === 'transfer_in' ? t.from : t.to),
+      counterpartyAddress: direction === 'transfer_in' ? t.from : t.to,
       contractAddress: t.rawContract?.address || undefined,
       chain: chainId,
       category: unified?.kind,
-      notes: unified?.label ?? (decodedIsSpecific ? decoded.notes : undefined),
+      notes: unifiedIsIncome ? unified.label : decodedIsSpecific ? decoded.notes : unified?.label,
       flags: unified?.source === 'reward_registry_static'
         ? []
         : unified || decodedIsSpecific
@@ -285,6 +296,22 @@ async function fetchAlchemyEvmInner(
   ]);
 
   return { transactions, warnings: [] };
+}
+
+/** Promise cache guarantees one receipt request per transaction hash. */
+export function createReceiptLoader(
+  load: (hash: string) => Promise<EvmTxReceipt | null>
+): (hash: string) => Promise<EvmTxReceipt | null> {
+  const cache = new Map<string, Promise<EvmTxReceipt | null>>();
+  return (hash) => {
+    const key = hash.toLowerCase();
+    let pending = cache.get(key);
+    if (!pending) {
+      pending = load(hash);
+      cache.set(key, pending);
+    }
+    return pending;
+  };
 }
 
 function isNetworkFetchError(err: unknown): boolean {

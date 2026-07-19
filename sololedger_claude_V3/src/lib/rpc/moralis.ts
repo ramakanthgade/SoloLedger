@@ -52,15 +52,15 @@ interface MoralisErc20Transfer {
   verified_contract?: boolean;
 }
 
-interface MoralisNativeTransfer {
-  from_address: string;
-  to_address: string;
+export interface MoralisNativeTransfer {
+  from_address?: string;
+  to_address?: string;
   value_formatted: string;
   direction: 'send' | 'receive';
   token_symbol: string;
 }
 
-interface MoralisTransaction {
+export interface MoralisTransaction {
   hash: string;
   block_timestamp: string;
   from_address: string;
@@ -77,7 +77,7 @@ interface MoralisTransaction {
   to_address_label?: string;
 }
 
-function moralisTxToRows(
+export function moralisTxToRows(
   mtx: MoralisTransaction,
   walletAddress: string,
   nativeAsset: string,
@@ -166,7 +166,9 @@ function moralisTxToRows(
     const amount = parseFloat(t.value_formatted);
     if (amount < 1e-9) continue; // dust
 
-    const isSend = t.from_address?.toLowerCase() === walletLower || t.direction === 'send';
+    const from = t.from_address || mtx.from_address;
+    const to = t.to_address || mtx.to_address;
+    const isSend = from?.toLowerCase() === walletLower || t.direction === 'send';
     rows.push({
       id: makeId('rpc'),
       timestamp: ts,
@@ -178,7 +180,7 @@ function moralisTxToRows(
       source: 'rpc:moralis',
       sourceRef: mtx.hash,
       walletAddress,
-      counterpartyAddress: isSend ? mtx.to_address : mtx.from_address,
+      counterpartyAddress: isSend ? to : from,
       chain: chainId,
       notes: mtx.summary,
       flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],

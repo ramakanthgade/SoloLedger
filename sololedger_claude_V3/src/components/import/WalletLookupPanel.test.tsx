@@ -2,6 +2,11 @@ import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
+const mocks = vi.hoisted(() => ({
+  runWalletImport: vi.fn(async () => {}),
+  syncRegistry: vi.fn()
+}));
+
 /**
  * Item 2 — removing a wallet must clear the shared import-job singleton's stale
  * success/price banners, but MUST NOT wipe an import that was active before the
@@ -59,14 +64,17 @@ vi.mock('@/lib/saas/config', () => ({ isSaasMode: vi.fn(() => false) }));
 vi.mock('@/lib/rpc/providers', () => ({
   CHAINS: [
     { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true }
-  ],
-  runWalletImport: vi.fn()
+  ]
+}));
+
+vi.mock('@/lib/assets/coingeckoRewardRegistry', () => ({
+  syncCoinGeckoRewardRegistryInBackground: mocks.syncRegistry
 }));
 
 // Real importJob singleton — this is exactly what the component mutates.
 vi.mock('@/lib/importJob', async () => {
   const actual = await vi.importActual<typeof import('@/lib/importJob')>('@/lib/importJob');
-  return actual;
+  return { ...actual, runWalletImport: mocks.runWalletImport };
 });
 
 import { WalletLookupPanel } from './WalletLookupPanel';
@@ -85,6 +93,8 @@ describe('WalletLookupPanel — wallet removal clears stale banners (Item 2)', (
     deleteLookupAddressAndTransactions.mockClear();
     importJob.reset();
     effectiveSettings = { rpcLookupEnabled: true, priceApiEnabled: false };
+    mocks.runWalletImport.mockClear();
+    mocks.syncRegistry.mockClear();
   });
 
   it('clears a finished job’s result/warnings when removal confirms while idle', async () => {
@@ -136,5 +146,23 @@ describe('WalletLookupPanel — wallet removal clears stale banners (Item 2)', (
     expect(importJob.get().result).not.toBeNull();
     expect(importJob.get().result?.imported).toBe(4);
     expect(importJob.get().warnings).toEqual(['Imported 4 transactions.']);
+  });
+
+  it('starts background registry sync from the import action, not on mount', async () => {
+    effectiveSettings = {
+      rpcLookupEnabled: true,
+      priceApiEnabled: false,
+      coingeckoApiKey: 'cg-key'
+    };
+    render(<WalletLookupPanel />);
+    const input = await screen.findByRole('textbox', { name: /wallet addresses/i });
+    expect(mocks.syncRegistry).not.toHaveBeenCalled();
+
+    fireEvent.change(input, { target: { value: '8eznVreusXAyh4HZirLWNjMxgoQdxzqfTi9Uw8gEL2RE' } });
+    fireEvent.click(await screen.findByRole('button', { name: /import 1 wallet/i }));
+
+    expect(mocks.syncRegistry).toHaveBeenCalledOnce();
+    expect(mocks.syncRegistry).toHaveBeenCalledWith('cg-key');
+    expect(mocks.runWalletImport).toHaveBeenCalledOnce();
   });
 });
