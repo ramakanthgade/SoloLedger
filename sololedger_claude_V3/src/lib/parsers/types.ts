@@ -170,3 +170,20 @@ export function safeTimestampUtc(v: string | undefined): number {
   if (m) return Date.parse(`${m[1]}T${m[2]}Z`);
   return Date.parse(s);
 }
+
+/**
+ * Parse an exchange timestamp that may be a numeric epoch or a date string.
+ * Numeric epochs are timezone-independent (< 1e12 → seconds → ×1000, else ms);
+ * anything else falls back to the UTC-safe string parser so a bare
+ * "YYYY-MM-DD HH:mm:ss" is anchored to UTC, not the machine's local zone.
+ */
+export function safeEpochTimestamp(v: string | undefined): number {
+  if (!v) return NaN;
+  const s = String(v).trim();
+  if (!s) return NaN;
+  const n = Number(s);
+  if (Number.isFinite(n)) {
+    return n < 1e12 ? n * 1000 : n;
+  }
+  return safeTimestampUtc(s);
+}

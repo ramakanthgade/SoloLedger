@@ -222,11 +222,31 @@ export async function setCachedPrice(key: string, price: number): Promise<void> 
 // ---- Wallet addresses ----
 
 /**
+ * The newer exchange CSV parsers (src/lib/parsers — kraken, kucoin, etc.).
+ * Each emits a stable `sourceRef` (the exchange's own row id, or an
+ * `exchangeSourceRef` content hash when the export has no id column), so a
+ * re-import of the same file dedups instead of duplicating.
+ */
+const EXCHANGE_CSV_SOURCES = new Set([
+  'kraken',
+  'kucoin',
+  'cryptocom',
+  'bybit',
+  'okx',
+  'gateio',
+  'bitfinex',
+  'gemini',
+  'htx',
+  'coinspot'
+]);
+
+/**
  * Sources whose `sourceRef` is a stable, content-addressed dedup key.
- * Includes CEX CSV exports (Binance/Coinbase/WazirX/Hyperliquid) AND
- * manual / AI-mapped imports — the latter now carry a `contentHashRef`
- * (hash of timestamp+type+asset+amount+counter) so a re-import of the same
- * file yields the same ref and therefore the same key.
+ * Includes CEX CSV exports (Binance/Coinbase/WazirX/Hyperliquid + the
+ * EXCHANGE_CSV_SOURCES batch) AND manual / AI-mapped imports — the latter
+ * now carry a `contentHashRef` (hash of timestamp+type+asset+amount+counter)
+ * so a re-import of the same file yields the same ref and therefore the same
+ * key.
  */
 function isStableRefSource(source: string): boolean {
   return (
@@ -234,6 +254,7 @@ function isStableRefSource(source: string): boolean {
     source === 'coinbase' ||
     source.startsWith('wazirx') ||
     source.startsWith('hyperliquid') ||
+    EXCHANGE_CSV_SOURCES.has(source) ||
     source === 'manual_mapping' ||
     source === 'ai_mapping'
   );

@@ -1,5 +1,7 @@
 /** Shared header lookup helpers for exchange parsers. */
 
+import { normalizeHeader } from './tableExtract';
+
 export function headerMap(headers: string[]): Record<string, string> {
   const map: Record<string, string> = {};
   for (const h of headers) {
@@ -26,4 +28,20 @@ export function colIncludes(map: Record<string, string>, ...needles: string[]): 
     }
   }
   return undefined;
+}
+
+/**
+ * First non-empty cell of `row` among the given column names, matched on
+ * normalized headers (same normalization as `headerMap`). First match wins;
+ * empty/missing cells are skipped. Returns '' when nothing matches.
+ */
+export function rowCol(row: Record<string, string>, ...names: string[]): string {
+  const normalized = Object.fromEntries(
+    Object.entries(row).map(([k, v]) => [normalizeHeader(k), v])
+  );
+  for (const name of names) {
+    const hit = normalized[normalizeHeader(name)];
+    if (hit != null && hit !== '') return hit;
+  }
+  return '';
 }

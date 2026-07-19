@@ -31,12 +31,22 @@ export interface WalletBalancesConfig {
 
 export const MORALIS_CHAIN_SLUG: Record<string, string> = {
   ethereum: 'eth', polygon: 'polygon', arbitrum: 'arbitrum', base: 'base',
-  bsc: 'bsc', optimism: 'optimism', avalanche: 'avalanche'
+  bsc: 'bsc', optimism: 'optimism', avalanche: 'avalanche',
+  // Newer EVM chains — mirrors MORALIS_CHAIN in moralis.ts (StarkNet is
+  // intentionally absent: it is not an EVM chain and Moralis is EVM-only).
+  fantom: 'fantom', celo: 'celo', zksync: 'zksync', linea: 'linea',
+  scroll: 'scroll', blast: 'blast', mantle: 'mantle', aurora: 'aurora',
+  cronos: 'cronos', gnosis: 'gnosis', moonbeam: 'moonbeam',
+  moonriver: 'moonriver', metis: 'metis', opbnb: 'opbnb'
 };
 
 const MORALIS_CHAIN_NATIVE: Record<string, string> = {
   eth: 'ETH', polygon: 'MATIC', arbitrum: 'ETH', base: 'ETH',
-  bsc: 'BNB', optimism: 'ETH', avalanche: 'AVAX'
+  bsc: 'BNB', optimism: 'ETH', avalanche: 'AVAX',
+  fantom: 'FTM', celo: 'CELO', zksync: 'ETH', linea: 'ETH',
+  scroll: 'ETH', blast: 'ETH', mantle: 'MNT', aurora: 'ETH',
+  cronos: 'CRO', gnosis: 'xDAI', moonbeam: 'GLMR',
+  moonriver: 'MOVR', metis: 'METIS', opbnb: 'BNB'
 };
 
 // ─── Helius / Alchemy Solana ────────────────────────────────────────────────

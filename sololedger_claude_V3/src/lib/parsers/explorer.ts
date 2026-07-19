@@ -44,6 +44,47 @@ export function normalizeChain(network?: string): string | undefined {
     case 'AVAX':
     case 'AVALANCHE':
       return 'avalanche';
+    case 'FTM':
+    case 'FANTOM':
+      return 'fantom';
+    case 'CELO':
+      return 'celo';
+    case 'ZKSYNC':
+    case 'ZKSYNC ERA':
+    case 'ZKSYNCERA':
+      return 'zksync';
+    case 'LINEA':
+      return 'linea';
+    case 'SCROLL':
+      return 'scroll';
+    case 'BLAST':
+      return 'blast';
+    case 'MNT':
+    case 'MANTLE':
+      return 'mantle';
+    case 'STARKNET':
+    case 'STARKNET MAINNET':
+      return 'starknet';
+    case 'AURORA':
+      return 'aurora';
+    case 'CRO':
+    case 'CRONOS':
+      return 'cronos';
+    case 'XDAI':
+    case 'GNOSIS':
+    case 'GNOSIS CHAIN':
+      return 'gnosis';
+    case 'GLMR':
+    case 'MOONBEAM':
+      return 'moonbeam';
+    case 'MOVR':
+    case 'MOONRIVER':
+      return 'moonriver';
+    case 'METIS':
+      return 'metis';
+    case 'OPBNB':
+    case 'OPBNB MAINNET':
+      return 'opbnb';
     case 'BTC':
     case 'BITCOIN':
       return 'bitcoin';
@@ -96,7 +137,21 @@ const EVM_CHAINS = new Set([
   'arbitrum',
   'optimism',
   'base',
-  'avalanche'
+  'avalanche',
+  'fantom',
+  'celo',
+  'zksync',
+  'linea',
+  'scroll',
+  'blast',
+  'mantle',
+  'aurora',
+  'cronos',
+  'gnosis',
+  'moonbeam',
+  'moonriver',
+  'metis',
+  'opbnb'
 ]);
 
 /**
@@ -128,6 +183,22 @@ const EXPLORER_TX_BASE: Record<string, string> = {
   optimism: 'https://optimistic.etherscan.io/tx/',
   base: 'https://basescan.org/tx/',
   avalanche: 'https://snowtrace.io/tx/',
+  fantom: 'https://ftmscan.com/tx/',
+  celo: 'https://celoscan.io/tx/',
+  zksync: 'https://era.zksync.network/tx/',
+  linea: 'https://lineascan.build/tx/',
+  scroll: 'https://scrollscan.com/tx/',
+  blast: 'https://blastscan.io/tx/',
+  mantle: 'https://mantlescan.xyz/tx/',
+  aurora: 'https://aurorascan.dev/tx/',
+  cronos: 'https://cronoscan.com/tx/',
+  gnosis: 'https://gnosisscan.io/tx/',
+  moonbeam: 'https://moonscan.io/tx/',
+  moonriver: 'https://moonriver.moonscan.io/tx/',
+  metis: 'https://andromeda-explorer.metis.io/tx/',
+  opbnb: 'https://opbnbscan.com/tx/',
+  // StarkNet is intentionally absent: it is not EVM-shaped (its tx hash is a
+  // felt252, not 0x + 32 bytes), so no link is built rather than a broken one.
   solana: 'https://solscan.io/tx/',
   bitcoin: 'https://mempool.space/tx/'
 };

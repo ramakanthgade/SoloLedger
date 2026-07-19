@@ -11,6 +11,16 @@ import { coindcxParser } from './coindcx';
 import { coinswitchParser } from './coinswitch';
 import { zebpayParser } from './zebpay';
 import { mudrexParser } from './mudrex';
+import { krakenParser } from './kraken';
+import { kucoinParser } from './kucoin';
+import { cryptocomParser } from './cryptocom';
+import { bybitParser } from './bybit';
+import { okxParser } from './okx';
+import { gateioParser } from './gateio';
+import { bitfinexParser } from './bitfinex';
+import { geminiParser } from './gemini';
+import { htxParser } from './htx';
+import { coinspotParser } from './coinspot';
 import { genericHistoryParser, detectMissingFields } from './genericHistory';
 import type { ExchangeParser, MissingField, ParseResult, SheetContext } from './types';
 import type { TxType } from '@/types/transaction';
@@ -28,6 +38,20 @@ export const PARSERS: ExchangeParser[] = [
   wazirxTradesParser,
   wazirxDepositsParser,
   wazirxLedgerParser,
+  // Strict multi-column exchange formats. These must sit ahead of the looser
+  // heuristic parsers below: zebpay's symbol+type+quantity check would
+  // otherwise claim Gemini/HTX exports, and binance_spot's pair/side/price
+  // check would claim KuCoin exports, before their own parsers see them.
+  krakenParser,
+  kucoinParser,
+  cryptocomParser,
+  bybitParser,
+  okxParser,
+  gateioParser,
+  bitfinexParser,
+  geminiParser,
+  htxParser,
+  coinspotParser,
   // India CEX parsers — specific enough to win over the generic spot heuristic.
   coindcxParser,
   coinswitchParser,
@@ -392,6 +416,8 @@ export { coinbaseParser, binanceParser, binanceSpotParser };
 export { wazirxTradesParser, wazirxDepositsParser, wazirxLedgerParser };
 export { hyperliquidTradesParser, hyperliquidDepositsParser };
 export { coindcxParser, coinswitchParser, zebpayParser, mudrexParser };
+export { krakenParser, kucoinParser, cryptocomParser, bybitParser, okxParser };
+export { gateioParser, bitfinexParser, geminiParser, htxParser, coinspotParser };
 export { isSpreadsheetFile, isCsvLikeFile } from './workbook';
 export * from './types';
 export * from './generic';

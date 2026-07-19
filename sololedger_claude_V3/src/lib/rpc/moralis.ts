@@ -33,7 +33,21 @@ const MORALIS_CHAIN: Partial<Record<ChainId, string>> = {
   base: 'base',
   bsc: 'bsc',
   optimism: 'optimism',
-  avalanche: 'avalanche'
+  avalanche: 'avalanche',
+  fantom: 'fantom',
+  celo: 'celo',
+  zksync: 'zksync',
+  linea: 'linea',
+  scroll: 'scroll',
+  blast: 'blast',
+  mantle: 'mantle',
+  aurora: 'aurora',
+  cronos: 'cronos',
+  gnosis: 'gnosis',
+  moonbeam: 'moonbeam',
+  moonriver: 'moonriver',
+  metis: 'metis',
+  opbnb: 'opbnb'
 };
 
 export function getMoralisChain(chainId: ChainId): string | null {

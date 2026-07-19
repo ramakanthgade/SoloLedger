@@ -45,6 +45,24 @@ describe('resolveTxType', () => {
     expect(resolveTxType('foobar', DEFAULT_TYPE_VALUE_MAP)).toBeUndefined();
     expect(resolveTxType('', DEFAULT_TYPE_VALUE_MAP)).toBeUndefined();
   });
+  it('matches across space/underscore/dash/case variants', () => {
+    expect(resolveTxType('Crypto Purchase', DEFAULT_TYPE_VALUE_MAP)).toBe('buy');
+    expect(resolveTxType('crypto_purchase', DEFAULT_TYPE_VALUE_MAP)).toBe('buy');
+    expect(resolveTxType('crypto-purchase', DEFAULT_TYPE_VALUE_MAP)).toBe('buy');
+    expect(resolveTxType('CRYPTO PURCHASE', DEFAULT_TYPE_VALUE_MAP)).toBe('buy');
+    expect(resolveTxType('ACH Deposit', DEFAULT_TYPE_VALUE_MAP)).toBe('transfer_in');
+    expect(resolveTxType('ach_withdrawal', DEFAULT_TYPE_VALUE_MAP)).toBe('transfer_out');
+    expect(resolveTxType('Bitcoin Deposit', DEFAULT_TYPE_VALUE_MAP)).toBe('transfer_in');
+    expect(resolveTxType('bitcoin-withdrawal', DEFAULT_TYPE_VALUE_MAP)).toBe('transfer_out');
+    expect(resolveTxType('Market Buy', DEFAULT_TYPE_VALUE_MAP)).toBe('buy');
+  });
+  it('keeps the ach/bitcoin/reward mappings required by UI pre-seeding', () => {
+    expect(DEFAULT_TYPE_VALUE_MAP['ach deposit']).toBe('transfer_in');
+    expect(DEFAULT_TYPE_VALUE_MAP['ach withdrawal']).toBe('transfer_out');
+    expect(DEFAULT_TYPE_VALUE_MAP['bitcoin deposit']).toBe('transfer_in');
+    expect(DEFAULT_TYPE_VALUE_MAP['bitcoin withdrawal']).toBe('transfer_out');
+    expect(DEFAULT_TYPE_VALUE_MAP['reward']).toBe('income');
+  });
 });
 
 describe('inferOptionalColumns', () => {
