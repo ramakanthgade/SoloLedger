@@ -111,7 +111,9 @@ describe('parseImportFile — full extract→detect→parse on a Binance deposit
     const file = new File([csv], 'binance-deposit.csv', { type: 'text/csv' });
     const outcome = await parseImportFile(file);
 
-    expect(outcome.detectedParser).toBe('generic_history');
+    // The dedicated binance_transfers parser now claims this Coin+Network+TXID
+    // layout ahead of the generic fallback (same transfer_in rows, richer fields).
+    expect(outcome.detectedParser).toBe('binance_transfers');
     expect(outcome.transactions.length).toBeGreaterThan(0);
     for (const t of outcome.transactions) expect(t.type).toBe('transfer_in');
 

@@ -105,16 +105,15 @@ export const IMPORT_SOURCES: ImportSource[] = [
     id: 'binance',
     label: 'Binance',
     monogram: 'BN',
-    formatHint: 'CSV export',
+    formatHint: 'CSV · multiple files OK',
     region: 'global',
     steps: [
-      'Open Binance on the web and go to Wallet → Transaction History.',
-      'Use Export Transaction History for the full ledger (recommended).',
-      'Choose the CSV format and generate the report.',
-      'Download the CSV and drop it into the next step.'
+      'Open Binance on the web and go to Orders → Spot Orders → Trade History, and export that report as CSV.',
+      'Then open Wallet → Transaction History and export the Deposit & Withdrawal History report as CSV.',
+      'Download the CSV files and drop them together into the next step — each file is detected automatically.'
     ],
-    path: ['Wallet', 'Transaction History', 'Export', 'CSV'],
-    note: 'The full ledger export covers trades, deposits and withdrawals in one file.'
+    path: ['Orders / Wallet', 'Trade History', 'Deposit & Withdrawal History', 'CSV'],
+    note: 'Trade History plus Deposit & Withdrawal History covers everything. Prefer one file? The full-ledger "Transaction History" export still works on its own.'
   },
   {
     id: 'coinbase',

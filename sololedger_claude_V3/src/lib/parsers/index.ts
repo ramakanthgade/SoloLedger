@@ -2,6 +2,7 @@ import Papa from 'papaparse';
 import { coinbaseParser } from './coinbase';
 import { binanceParser } from './binance';
 import { binanceSpotParser } from './binanceSpot';
+import { binanceTransfersParser } from './binanceTransfers';
 import { wazirxTradesParser } from './wazirxTrades';
 import { wazirxDepositsParser } from './wazirxDeposits';
 import { wazirxLedgerParser } from './wazirxLedger';
@@ -60,6 +61,9 @@ export const PARSERS: ExchangeParser[] = [
   binanceSpotParser,
   coinbaseParser,
   binanceParser,
+  // Binance standalone Deposit/Withdrawal History exports (Coin+Network+TXID
+  // shape) — ahead of the generic fallback, which cannot type these files.
+  binanceTransfersParser,
   // Deterministic loose fallback — MUST be last so specific parsers win.
   genericHistoryParser
 ];
@@ -412,7 +416,7 @@ export async function parseImportFile(file: File): Promise<FileParseOutcome> {
   return parseCsvFile(file);
 }
 
-export { coinbaseParser, binanceParser, binanceSpotParser };
+export { coinbaseParser, binanceParser, binanceSpotParser, binanceTransfersParser };
 export { wazirxTradesParser, wazirxDepositsParser, wazirxLedgerParser };
 export { hyperliquidTradesParser, hyperliquidDepositsParser };
 export { coindcxParser, coinswitchParser, zebpayParser, mudrexParser };

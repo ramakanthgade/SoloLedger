@@ -9,6 +9,15 @@ import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveS
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import { isSaasMode } from '@/lib/saas/config';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { fetchWalletActiveChains } from '@/lib/rpc/moralis';
+import {
+  allChainsChecked,
+  reconcileCheckedChains,
+  runSequentialChainImport,
+  setAllChains,
+  toggleChain,
+  type ChainImportOutcome
+} from '@/lib/rpc/multiChainImport';
 import { runWalletImport, useImportJob, importJob } from '@/lib/importJob';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/card';
@@ -31,7 +40,26 @@ function detectChainFromAddress(address: string): ChainId | null {
   return null;
 }
 
+/** True for an EVM-format address (0x + 40 hex). */
+function isEvmAddress(address: string): boolean {
+  return /^0x[a-fA-F0-9]{40}$/.test(address.trim());
+}
+
 const EVM_CHAIN_IDS: ChainId[] = ['ethereum', 'polygon', 'arbitrum', 'base', 'bsc', 'optimism', 'avalanche'];
+
+/** Debounce between the last keystroke and the Moralis active-chains call. */
+const CHAIN_DETECT_DEBOUNCE_MS = 500;
+/** Cap detection calls per paste burst; extra addresses still import on the detected chains. */
+const MAX_DETECTION_ADDRESSES = 10;
+
+/** Chain-detection lifecycle for EVM addresses. */
+type ChainDetection =
+  | { status: 'idle' }
+  | { status: 'detecting' }
+  | { status: 'done'; chains: ChainId[] }
+  | { status: 'none' }
+  | { status: 'failed' }
+  | { status: 'unavailable' };
 
 export function WalletLookupPanel() {
   const [settings, setSettings] = useState<Awaited<ReturnType<typeof getEffectiveSettings>> | null>(null);
@@ -44,6 +72,18 @@ export function WalletLookupPanel() {
   const [labelDraft, setLabelDraft] = useState('');
   const [removeConfirm, setRemoveConfirm] = useState<{ id: string; address: string; txCount: number } | null>(null);
   const labelInputRef = useRef<HTMLInputElement>(null);
+  /** Active-chain detection lifecycle for pasted EVM addresses. */
+  const [detection, setDetection] = useState<ChainDetection>({ status: 'idle' });
+  /** Checked chains in the detected-chain picker (defaults to all detected). */
+  const [checkedChains, setCheckedChains] = useState<Set<ChainId>>(new Set());
+  /** Escape hatch: force the classic single-chain dropdown for EVM addresses. */
+  const [manualChainMode, setManualChainMode] = useState(false);
+  /** Aggregated per-chain results after a multi-chain import. */
+  const [chainSummary, setChainSummary] = useState<ChainImportOutcome[] | null>(null);
+  /** Chain currently importing (multi-chain progress line). */
+  const [importingChain, setImportingChain] = useState<ChainId | null>(null);
+  /** Previous detected chain set — preserves checkbox choices across re-detects. */
+  const detectedRef = useRef<ChainId[]>([]);
 
   // Global import job state — persists across tab navigation
   const job = useImportJob();
@@ -60,6 +100,70 @@ export function WalletLookupPanel() {
     const detected = detectChainFromAddress(first);
     if (detected && detected !== chainId) setChainId(detected);
   }, [addressText]);
+
+  const parsedAddresses = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean);
+  const evmAddresses = parsedAddresses.filter(isEvmAddress);
+  const hasEvm = evmAddresses.length > 0;
+  // Moralis active-chain detection is possible in hosted (relay) mode with no
+  // user key, or in BYOK when a Moralis key was pasted.
+  const canDetectChains = isSaasMode() || Boolean(settings?.moralisApiKey?.trim());
+
+  // Debounced active-chain detection for EVM addresses. Every failure mode
+  // falls back softly to the manual single-chain dropdown.
+  useEffect(() => {
+    if (!hasEvm || manualChainMode) {
+      detectedRef.current = [];
+      setDetection({ status: 'idle' });
+      return;
+    }
+    if (!canDetectChains) {
+      detectedRef.current = [];
+      setDetection({ status: 'unavailable' });
+      return;
+    }
+    setDetection({ status: 'detecting' });
+    let cancelled = false;
+    const targets = evmAddresses.slice(0, MAX_DETECTION_ADDRESSES);
+    const timer = setTimeout(() => {
+      void (async () => {
+        try {
+          const found = new Set<ChainId>();
+          for (const addr of targets) {
+            // eslint-disable-next-line no-await-in-loop
+            const result = await fetchWalletActiveChains(addr, settings?.moralisApiKey ?? '');
+            result.chains.forEach((c) => found.add(c));
+          }
+          if (cancelled) return;
+          const chains = CHAINS.filter((c) => found.has(c.id)).map((c) => c.id);
+          if (chains.length === 0) {
+            detectedRef.current = [];
+            setDetection({ status: 'none' });
+            return;
+          }
+          // Capture the previous detection BEFORE updating the ref: React may
+          // invoke the state updater lazily, after the ref already points at
+          // the new chains — reading the ref inside the updater would treat
+          // every chain as "previously detected but unchecked" and clear all
+          // checkboxes.
+          const prevDetected = detectedRef.current;
+          setCheckedChains((prev) => reconcileCheckedChains(prev, prevDetected, chains));
+          detectedRef.current = chains;
+          setDetection({ status: 'done', chains });
+        } catch {
+          if (!cancelled) setDetection({ status: 'failed' });
+        }
+      })();
+    }, CHAIN_DETECT_DEBOUNCE_MS);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+    };
+    // evmAddresses/hasEvm derive from addressText; settings identity is stable after load.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [addressText, manualChainMode, canDetectChains, settings]);
+
+  // A new paste invalidates the previous multi-chain summary.
+  useEffect(() => { setChainSummary(null); }, [addressText]);
 
   if (settings === null) return <p className="text-sm text-low">Loading wallet lookup…</p>;
 
@@ -79,12 +183,25 @@ export function WalletLookupPanel() {
     (chain.provider === 'alchemy_evm' && chain.id !== 'ethereum') || chain.provider === 'alchemy_solana';
   const missingAlchemyKey = needsAlchemyKey && !hasWalletLookupKeys(settings);
 
-  const parsedAddresses = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean);
   const alreadyImported = parsedAddresses.filter((a) =>
     lookedUp.some((r) => r.chain === chainId && r.address.toLowerCase() === a.toLowerCase())
   );
   const freshAddresses = parsedAddresses.filter((a) =>
     !lookedUp.some((r) => r.chain === chainId && r.address.toLowerCase() === a.toLowerCase())
+  );
+
+  // Multi-chain picker flow (EVM addresses with successful detection).
+  const showChainPicker = hasEvm && !manualChainMode && detection.status === 'done';
+  const showDetecting = hasEvm && !manualChainMode && detection.status === 'detecting';
+  const pickerChains = detection.status === 'done' ? detection.chains : [];
+  const selectedChains = pickerChains.filter((c) => checkedChains.has(c));
+  const multiFreshTotal = selectedChains.reduce(
+    (total, cid) =>
+      total +
+      evmAddresses.filter(
+        (a) => !lookedUp.some((r) => r.chain === cid && r.address.toLowerCase() === a.toLowerCase())
+      ).length,
+    0
   );
 
   const startImport = (addressesOverride?: string[]) => {
@@ -94,11 +211,34 @@ export function WalletLookupPanel() {
     // CoinGecko requests. Seven-day cache + single-flight keep this best effort.
     syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
     importJob.reset();
+    setChainSummary(null);
     void runWalletImport(addrs, chain, settings, buildLookupConfig(chain, settings, {
       customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
       customApiKey: customApiKey || settings.customExplorerApiKey,
       customAsset
     }));
+  };
+
+  /**
+   * Multi-chain import: run the existing single-chain path once per selected
+   * chain, sequentially, then show an aggregated per-chain summary.
+   */
+  const startMultiChainImport = async () => {
+    if (evmAddresses.length === 0 || selectedChains.length === 0 || job.active) return;
+    syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
+    importJob.reset();
+    setChainSummary(null);
+    const outcomes = await runSequentialChainImport(evmAddresses, selectedChains, {
+      settings,
+      lookupExtras: {
+        customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
+        customApiKey: customApiKey || settings.customExplorerApiKey,
+        customAsset
+      },
+      onChainStart: (cid) => setImportingChain(cid)
+    });
+    setImportingChain(null);
+    setChainSummary(outcomes);
   };
 
   const saveLabel = async (id: string) => {
@@ -125,46 +265,118 @@ export function WalletLookupPanel() {
             value={addressText}
             onChange={(e) => setAddressText(e.target.value)}
             placeholder={
-              'Paste any wallet addresses here.\nThe app auto-detects BTC, Solana, and Ethereum.\nFor other EVM chains, select below.'
+              'Paste any wallet addresses here.\nThe app auto-detects BTC, Solana, and the active chains of EVM wallets.\nYou can always pick a chain manually below.'
             }
           />
         </label>
 
-        {/* Chain selector — shown for EVM (needed) or custom; hidden for auto-detected BTC/Solana */}
-        {parsedAddresses.length === 0 || isEvm || chainId === 'custom_evm' ? (
-          <label className="text-xs text-low">
-            Chain
-            {(isBitcoin || isSolana) && <span className="ml-1 text-gain">(auto-detected)</span>}
-            <select className={inputCls} value={chainId} onChange={(e) => setChainId(e.target.value as ChainId)}>
-              {CHAINS.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label} {c.needsKey ? '' : '(no key needed)'}
-                </option>
+        {/* EVM active-chain detection: progress line, chain picker, or notes above the manual dropdown */}
+        {showDetecting && (
+          <p className="flex items-center gap-2 text-xs text-low">
+            <RefreshCw className="h-3 w-3 animate-spin" /> Detecting the chains this wallet is active on…
+          </p>
+        )}
+
+        {showChainPicker && (
+          <div className="space-y-2 rounded-lg border border-white/10 bg-elev-3/30 px-3 py-2.5" data-testid="chain-picker">
+            <label className="flex items-center gap-2 text-xs font-medium text-mid">
+              <input
+                type="checkbox"
+                className="accent-violet"
+                checked={allChainsChecked(pickerChains, checkedChains)}
+                onChange={(e) => setCheckedChains(setAllChains(pickerChains, e.target.checked))}
+              />
+              All active chains
+            </label>
+            <div className="grid gap-1.5 pl-5 sm:grid-cols-2">
+              {pickerChains.map((cid) => (
+                <label key={cid} className="flex items-center gap-2 text-xs text-mid">
+                  <input
+                    type="checkbox"
+                    className="accent-violet"
+                    checked={checkedChains.has(cid)}
+                    onChange={(e) => setCheckedChains((prev) => toggleChain(prev, cid, e.target.checked))}
+                  />
+                  {CHAINS.find((c) => c.id === cid)?.label ?? cid}
+                </label>
               ))}
-            </select>
-          </label>
-        ) : (
-          <div className="flex items-center gap-2 text-xs text-gain">
-            <Check className="h-3.5 w-3.5" />
-            Auto-detected: <strong>{chain.label}</strong>
-            <button
-              className="text-low underline hover:text-mid"
-              onClick={() => {/* show full selector */}}
-            >
-              change
-            </button>
-            <select
-              className="rounded border border-white/10 bg-elev-2 px-2 py-0.5 text-xs text-mid"
-              value={chainId}
-              onChange={(e) => setChainId(e.target.value as ChainId)}
-            >
-              {CHAINS.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.label}
-                </option>
-              ))}
-            </select>
+            </div>
+            <p className="text-[11px] text-low">
+              Chains with no detected activity are hidden.{' '}
+              <button
+                type="button"
+                className="underline hover:text-mid"
+                onClick={() => setManualChainMode(true)}
+              >
+                choose a chain manually instead
+              </button>
+            </p>
           </div>
+        )}
+
+        {hasEvm && !manualChainMode && detection.status === 'failed' && (
+          <p className="text-xs text-low">
+            Couldn't detect active chains automatically — pick a chain manually below.
+          </p>
+        )}
+        {hasEvm && !manualChainMode && detection.status === 'unavailable' && (
+          <p className="text-xs text-low">
+            Paste a free Moralis API key in Settings to auto-detect the chains a wallet is active on.
+          </p>
+        )}
+        {hasEvm && !manualChainMode && detection.status === 'none' && (
+          <p className="text-xs text-low">
+            No activity found on supported chains for this address — pick a chain manually below.
+          </p>
+        )}
+
+        {/* Chain selector — manual fallback (or default when nothing pasted); hidden for auto-detected BTC/Solana and while the chain picker is up */}
+        {!showChainPicker && !showDetecting && (
+          parsedAddresses.length === 0 || isEvm || chainId === 'custom_evm' || hasEvm ? (
+            <label className="text-xs text-low">
+              Chain
+              {(isBitcoin || isSolana) && <span className="ml-1 text-gain">(auto-detected)</span>}
+              <select className={inputCls} value={chainId} onChange={(e) => setChainId(e.target.value as ChainId)}>
+                {CHAINS.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label} {c.needsKey ? '' : '(no key needed)'}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <div className="flex items-center gap-2 text-xs text-gain">
+              <Check className="h-3.5 w-3.5" />
+              Auto-detected: <strong>{chain.label}</strong>
+              <button
+                className="text-low underline hover:text-mid"
+                onClick={() => {/* show full selector */}}
+              >
+                change
+              </button>
+              <select
+                className="rounded border border-white/10 bg-elev-2 px-2 py-0.5 text-xs text-mid"
+                value={chainId}
+                onChange={(e) => setChainId(e.target.value as ChainId)}
+              >
+                {CHAINS.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )
+        )}
+
+        {manualChainMode && hasEvm && canDetectChains && (
+          <button
+            type="button"
+            className="text-xs text-low underline hover:text-mid"
+            onClick={() => setManualChainMode(false)}
+          >
+            auto-detect chains instead
+          </button>
         )}
 
         {missingAlchemyKey && (
@@ -190,7 +402,13 @@ export function WalletLookupPanel() {
           </div>
         )}
 
-        {alreadyImported.length > 0 && freshAddresses.length === 0 && (
+        {showChainPicker && evmAddresses.length > 0 && selectedChains.length > 0 && multiFreshTotal === 0 && (
+          <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+            {evmAddresses.length === 1 ? 'This wallet is' : 'These wallets are'} already imported on the
+            selected chains. Use <strong>Sync</strong> in the list below to refresh.
+          </div>
+        )}
+        {!showChainPicker && alreadyImported.length > 0 && freshAddresses.length === 0 && (
           <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             {alreadyImported.length === 1
               ? 'This wallet is already imported.'
@@ -198,7 +416,7 @@ export function WalletLookupPanel() {
             Use <strong>Sync</strong> in the list below to refresh.
           </div>
         )}
-        {alreadyImported.length > 0 && freshAddresses.length > 0 && (
+        {!showChainPicker && alreadyImported.length > 0 && freshAddresses.length > 0 && (
           <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             {alreadyImported.length} already imported (will be skipped). {freshAddresses.length} new will be imported.
           </div>
@@ -206,25 +424,63 @@ export function WalletLookupPanel() {
 
         <div className="flex flex-wrap items-center gap-3">
           <Button
-            disabled={freshAddresses.length === 0 || job.active || (needsAlchemyKey && missingAlchemyKey)}
-            onClick={() => startImport()}
+            disabled={
+              job.active ||
+              (showChainPicker
+                ? selectedChains.length === 0 || multiFreshTotal === 0
+                : freshAddresses.length === 0 || (needsAlchemyKey && missingAlchemyKey))
+            }
+            onClick={() => (showChainPicker ? void startMultiChainImport() : startImport())}
           >
-            Import {freshAddresses.length || ''} wallet{freshAddresses.length === 1 ? '' : 's'}
+            {showChainPicker
+              ? `Import ${evmAddresses.length || ''} wallet${evmAddresses.length === 1 ? '' : 's'} on ${selectedChains.length} chain${selectedChains.length === 1 ? '' : 's'}`
+              : `Import ${freshAddresses.length || ''} wallet${freshAddresses.length === 1 ? '' : 's'}`}
           </Button>
-          {settings.priceApiEnabled && !job.active && freshAddresses.length > 0 && (
+          {settings.priceApiEnabled && !job.active && (showChainPicker ? multiFreshTotal > 0 : freshAddresses.length > 0) && (
             <span className="text-xs text-gain">✓ Swap detection + price fetch runs automatically</span>
           )}
         </div>
 
-        {/* Job result (shown after job completes) */}
-        {!job.active && job.result && (
+        {importingChain && job.active && (
+          <p className="flex items-center gap-2 text-xs text-low">
+            <RefreshCw className="h-3 w-3 animate-spin" />
+            Importing {CHAINS.find((c) => c.id === importingChain)?.label ?? importingChain}…
+          </p>
+        )}
+
+        {/* Aggregated per-chain summary after a multi-chain import */}
+        {!job.active && chainSummary && (
+          <div className="space-y-1 rounded-lg border border-violet/30 bg-violet/10 px-3 py-2 text-xs" data-testid="chain-summary">
+            <p className="font-medium text-mid">Import summary</p>
+            {chainSummary.map((o) => (
+              <p key={o.chainId} className={o.status === 'failed' ? 'text-loss' : 'text-gain'}>
+                {o.status === 'failed' ? '✗' : '✓'} {o.chainLabel}:{' '}
+                {o.status === 'skipped'
+                  ? 'already imported — skipped'
+                  : o.status === 'failed'
+                    ? `failed — ${o.error ?? 'import failed'}`
+                    : [
+                        `${o.imported} transaction${o.imported === 1 ? '' : 's'} imported`,
+                        o.skippedAddresses > 0 ? `${o.skippedAddresses} already imported — skipped` : null,
+                        o.failures.length > 0 ? `${o.failures.length} wallet${o.failures.length === 1 ? '' : 's'} failed` : null,
+                        o.warnings.length > 0 ? `${o.warnings.length} warning${o.warnings.length === 1 ? '' : 's'}` : null
+                      ]
+                        .filter(Boolean)
+                        .join(', ')}
+              </p>
+            ))}
+          </div>
+        )}
+
+        {/* Job result (shown after job completes) — hidden when the per-chain summary is up */}
+        {!job.active && job.result && !chainSummary && (
           <div className="rounded-lg border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-gain">
             <strong>{job.result.imported}</strong> transactions imported
             {job.result.swapsDetected > 0 ? `, ${job.result.swapsDetected} swaps detected` : ''}
             {job.result.pricesUpdated > 0 ? `, ${job.result.pricesUpdated} prices fetched` : ''}.
           </div>
         )}
-        {job.error && (
+        {job.error && !chainSummary && (
           <div className="rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-xs text-loss">
             {job.error}
           </div>

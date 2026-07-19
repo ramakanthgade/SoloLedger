@@ -1,0 +1,36 @@
+[
+  {
+    "timestamp": 1743501600000,
+    "type": "transfer_out",
+    "asset": "BTC",
+    "amount": 0.25,
+    "feeAmount": 0.0005,
+    "feeAsset": "BTC",
+    "fiatCurrency": "USD",
+    "source": "binance_transfers",
+    "sourceRef": "binance:1743501600000:transfer_out:BTC:0.250000",
+    "txHash": "3333333333333333333333333333333333333333333333333333333333333333",
+    "counterpartyAddress": "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh",
+    "chain": "bitcoin",
+    "notes": "Withdrawal via BTC",
+    "flags": ["possible_internal_transfer"],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1743593400000,
+    "type": "transfer_out",
+    "asset": "USDT",
+    "amount": 1000,
+    "feeAmount": 2,
+    "feeAsset": "USDT",
+    "fiatCurrency": "USD",
+    "source": "binance_transfers",
+    "sourceRef": "binance:1743593400000:transfer_out:USDT:1000.0000",
+    "txHash": "0x4444444444444444444444444444444444444444444444444444444444444444",
+    "counterpartyAddress": "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+    "chain": "ethereum",
+    "notes": "Withdrawal via ETH",
+    "flags": ["possible_internal_transfer"],
+    "isInternalTransfer": false
+  }
+]

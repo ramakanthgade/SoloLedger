@@ -1,0 +1,273 @@
+import 'fake-indexeddb/auto';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { render, screen, fireEvent } from '@testing-library/react';
+
+/**
+ * Item 2 — EVM active-chain auto-detection + multi-chain import UI.
+ *
+ * Renders the real WalletLookupPanel with storage/settings/RPC deps mocked.
+ * `fetchWalletActiveChains` (Moralis) and `runSequentialChainImport` (the
+ * orchestrator) are controllable mocks; the checkbox helpers and importJob
+ * singleton are the real modules.
+ */
+
+const mocks = vi.hoisted(() => ({
+  fetchActiveChains: vi.fn(),
+  runSequential: vi.fn(),
+  runWalletImport: vi.fn(async () => {}),
+  syncRegistry: vi.fn()
+}));
+
+const EVM_ADDR = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+
+let effectiveSettings: Record<string, unknown> = {
+  rpcLookupEnabled: true,
+  priceApiEnabled: false,
+  moralisApiKey: 'mk'
+};
+
+let lookupRows: { id: string; chain: string; address: string; txCount: number; lastSyncedAt: number }[] = [];
+
+vi.mock('dexie-react-hooks', () => ({
+  useLiveQuery: () => lookupRows
+}));
+
+vi.mock('@/lib/storage/db', () => ({
+  getLookupAddresses: vi.fn(async () => lookupRows),
+  deleteLookupAddressAndTransactions: vi.fn(async () => {}),
+  updateWalletLabel: vi.fn(async () => {})
+}));
+
+vi.mock('@/lib/saas/effectiveSettings', () => ({
+  getEffectiveSettings: vi.fn(async () => effectiveSettings),
+  hasWalletLookupKeys: vi.fn(() => true)
+}));
+
+vi.mock('@/lib/saas/lookupConfig', () => ({
+  buildLookupConfig: vi.fn(() => ({})),
+  SAAS_PROXY_KEY: 'proxy-key'
+}));
+
+vi.mock('@/lib/saas/config', () => ({ isSaasMode: vi.fn(() => false) }));
+
+vi.mock('@/lib/rpc/providers', () => ({
+  CHAINS: [
+    { id: 'ethereum', label: 'Ethereum', asset: 'ETH', provider: 'alchemy_evm', needsKey: true },
+    { id: 'polygon', label: 'Polygon', asset: 'POL', provider: 'alchemy_evm', needsKey: true },
+    { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true }
+  ]
+}));
+
+vi.mock('@/lib/rpc/moralis', () => ({
+  fetchWalletActiveChains: mocks.fetchActiveChains
+}));
+
+// Real checkbox helpers + real types; only the orchestrator is stubbed.
+vi.mock('@/lib/rpc/multiChainImport', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/rpc/multiChainImport')>(
+    '@/lib/rpc/multiChainImport'
+  );
+  return { ...actual, runSequentialChainImport: mocks.runSequential };
+});
+
+vi.mock('@/lib/assets/coingeckoRewardRegistry', () => ({
+  syncCoinGeckoRewardRegistryInBackground: mocks.syncRegistry
+}));
+
+vi.mock('@/lib/importJob', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/importJob')>('@/lib/importJob');
+  return { ...actual, runWalletImport: mocks.runWalletImport };
+});
+
+import { WalletLookupPanel } from './WalletLookupPanel';
+import { importJob } from '@/lib/importJob';
+
+/** Render the panel, paste the EVM address, and return once settings loaded. */
+async function renderWithEvmAddress() {
+  render(<WalletLookupPanel />);
+  const input = await screen.findByRole('textbox', { name: /wallet addresses/i });
+  fireEvent.change(input, { target: { value: EVM_ADDR } });
+  return input;
+}
+
+/** Detection is debounced 500ms — give waitFor room. */
+const DETECT_TIMEOUT = { timeout: 3000 };
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  importJob.reset();
+  lookupRows = [];
+  effectiveSettings = {
+    rpcLookupEnabled: true,
+    priceApiEnabled: false,
+    moralisApiKey: 'mk'
+  };
+  mocks.fetchActiveChains.mockResolvedValue({
+    chains: ['polygon', 'ethereum'], // deliberately unordered — UI must use CHAINS registry order
+    activeSlugs: ['polygon', 'eth']
+  });
+  mocks.runSequential.mockResolvedValue([]);
+});
+
+describe('WalletLookupPanel — EVM active-chain detection', () => {
+  it('detects active chains and shows the picker with every chain checked, in registry order', async () => {
+    await renderWithEvmAddress();
+
+    const picker = await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    expect(mocks.fetchActiveChains).toHaveBeenCalledWith(EVM_ADDR, 'mk');
+
+    // Master + per-chain checkboxes all start checked.
+    const master = screen.getByRole('checkbox', { name: /all active chains/i });
+    const eth = screen.getByRole('checkbox', { name: /ethereum/i });
+    const polygon = screen.getByRole('checkbox', { name: /polygon/i });
+    expect(master).toBeChecked();
+    expect(eth).toBeChecked();
+    expect(polygon).toBeChecked();
+
+    // Registry order (Ethereum before Polygon) despite the mock returning Polygon first.
+    const labels = Array.from(picker.querySelectorAll('.grid label')).map((l) => l.textContent);
+    expect(labels).toEqual(['Ethereum', 'Polygon']);
+
+    // The manual dropdown is hidden while the picker is up.
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' })).toBeEnabled();
+  });
+
+  it('per-chain and master toggles drive the Import button label and disabled state', async () => {
+    await renderWithEvmAddress();
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+
+    // Uncheck one chain → label/count follows.
+    fireEvent.click(screen.getByRole('checkbox', { name: /polygon/i }));
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 1 chain' })).toBeEnabled();
+    expect(screen.getByRole('checkbox', { name: /all active chains/i })).not.toBeChecked();
+
+    // Master off → nothing selected → button disabled.
+    fireEvent.click(screen.getByRole('checkbox', { name: /ethereum/i }));
+    const emptyBtn = screen.getByRole('button', { name: 'Import 1 wallet on 0 chains' });
+    expect(emptyBtn).toBeDisabled();
+
+    // Master back on → both chains checked again.
+    fireEvent.click(screen.getByRole('checkbox', { name: /all active chains/i }));
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' })).toBeEnabled();
+  });
+
+  it('runs the sequential orchestrator over the selected chains and renders the per-chain summary', async () => {
+    mocks.runSequential.mockResolvedValue([
+      {
+        chainId: 'ethereum',
+        chainLabel: 'Ethereum',
+        status: 'imported',
+        imported: 3,
+        skippedAddresses: 0,
+        warnings: [],
+        failures: []
+      },
+      {
+        chainId: 'polygon',
+        chainLabel: 'Polygon',
+        status: 'failed',
+        imported: 0,
+        skippedAddresses: 0,
+        warnings: [],
+        failures: [],
+        error: 'boom'
+      },
+      {
+        chainId: 'base',
+        chainLabel: 'Base',
+        status: 'skipped',
+        imported: 0,
+        skippedAddresses: 1,
+        warnings: [],
+        failures: []
+      }
+    ]);
+
+    await renderWithEvmAddress();
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' }));
+
+    expect(mocks.runSequential).toHaveBeenCalledTimes(1);
+    const [addresses, chainIds, config] = mocks.runSequential.mock.calls[0];
+    expect(addresses).toEqual([EVM_ADDR]);
+    expect(chainIds).toEqual(['ethereum', 'polygon']);
+    expect(config).toMatchObject({ settings: effectiveSettings });
+    expect(typeof config.onChainStart).toBe('function');
+
+    const summary = await screen.findByTestId('chain-summary');
+    expect(summary).toHaveTextContent('Ethereum: 3 transactions imported');
+    expect(summary).toHaveTextContent('Polygon: failed — boom');
+    expect(summary).toHaveTextContent('Base: already imported — skipped');
+  });
+
+  it('falls back to the manual dropdown with a note when detection fails', async () => {
+    mocks.fetchActiveChains.mockRejectedValue(new Error('401 unauthorized'));
+    await renderWithEvmAddress();
+
+    await screen.findByText(
+      /Couldn't detect active chains automatically — pick a chain manually below\./,
+      undefined,
+      DETECT_TIMEOUT
+    );
+    expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+  });
+
+  it('reports zero-activity wallets and keeps the manual dropdown', async () => {
+    mocks.fetchActiveChains.mockResolvedValue({ chains: [], activeSlugs: [] });
+    await renderWithEvmAddress();
+
+    await screen.findByText(
+      /No activity found on supported chains for this address — pick a chain manually below\./,
+      undefined,
+      DETECT_TIMEOUT
+    );
+    expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+  });
+
+  it('BYOK without a Moralis key shows the key hint instead of detecting', async () => {
+    effectiveSettings = { rpcLookupEnabled: true, priceApiEnabled: false }; // no moralisApiKey
+    await renderWithEvmAddress();
+
+    await screen.findByText(
+      /Paste a free Moralis API key in Settings to auto-detect the chains a wallet is active on\./
+    );
+    expect(mocks.fetchActiveChains).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+  });
+
+  it('manual escape hatch: dropdown replaces the picker and auto-detect can be restored', async () => {
+    await renderWithEvmAddress();
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+
+    // Escape to the classic dropdown.
+    fireEvent.click(screen.getByRole('button', { name: /choose a chain manually instead/i }));
+    expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+
+    // …and back to auto-detect (re-runs detection after the debounce).
+    fireEvent.click(screen.getByRole('button', { name: /auto-detect chains instead/i }));
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    expect(screen.getByRole('checkbox', { name: /ethereum/i })).toBeChecked();
+  });
+
+  it('warns and disables Import when the wallet is already imported on every selected chain', async () => {
+    lookupRows = [
+      { id: `ethereum:${EVM_ADDR}`, chain: 'ethereum', address: EVM_ADDR, txCount: 5, lastSyncedAt: 1_700_000_000_000 },
+      { id: `polygon:${EVM_ADDR}`, chain: 'polygon', address: EVM_ADDR, txCount: 2, lastSyncedAt: 1_700_000_000_000 }
+    ];
+    await renderWithEvmAddress();
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+
+    await screen.findByText(/already imported on the\s+selected chains/);
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' })).toBeDisabled();
+
+    // Unchecking one chain does not help — still zero fresh (chain, address) pairs.
+    fireEvent.click(screen.getByRole('checkbox', { name: /polygon/i }));
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 1 chain' })).toBeDisabled();
+  });
+});

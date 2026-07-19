@@ -63,6 +63,8 @@ export function ImportTab() {
   const [extractionNote, setExtractionNote] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [importPhase, setImportPhase] = useState<'saving' | 'pricing' | 'mapping' | null>(null);
+  /** Summary line shown after a multi-file drop (per-file states are last-wins). */
+  const [batchNote, setBatchNote] = useState<string | null>(null);
   /** Actionable fix-the-file + AI-last-resort guidance when a file can't be read. */
   const [fallbackMessages, setFallbackMessages] = useState<string[]>([]);
   /** Whether AI column-mapping is actually available (own key, or hosted with server AI enabled). */
@@ -141,8 +143,12 @@ export function ImportTab() {
     };
   };
 
-  const handleFile = useCallback(async (file: File) => {
-    setSavedCount(null);
+  /**
+   * Parse (and, when recognized, auto-save) ONE file. Returns how the file
+   * was handled so a multi-file wrapper can aggregate a batch summary.
+   */
+  const handleFile = useCallback(
+    async (file: File): Promise<{ kind: 'saved'; count: number } | { kind: 'duplicate' } | { kind: 'manual' }> => {
     setDuplicateBlocked(false);
     setImportWarnings([]);
     setConversionNote(null);
@@ -159,7 +165,7 @@ export function ImportTab() {
     const existing = await db.csvImports.get(hash);
     if (existing) {
       setDuplicateBlocked(true);
-      return;
+      return { kind: 'duplicate' };
     }
 
     const result = await parseImportFile(file);
@@ -192,15 +198,14 @@ export function ImportTab() {
         // clearly-named / non-generic sheets are left untouched. Non-fatal.
         const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
         await persistTransactions(toPersist, result.detectedParser, hash, file.name);
-        setSavedCount(toPersist.length);
         setImportWarnings(result.warnings);
         setFileName('');
         setFileHash('');
+        return { kind: 'saved', count: toPersist.length };
       } finally {
         setSaving(false);
         setImportPhase(null);
       }
-      return;
     }
 
     // Format not recognized (or recognized but produced no rows). Do NOT fire
@@ -218,7 +223,55 @@ export function ImportTab() {
     }
 
     setOutcome(result);
-  }, []);
+    return { kind: 'manual' };
+    },
+    []
+  );
+
+  /**
+   * Process one or many files SEQUENTIALLY. Each recognized file auto-saves
+   * as today; the saved-count banner accumulates across the batch and a
+   * one-line summary reports per-file outcomes. Files needing manual mapping
+   * (or duplicates) surface via the existing per-file UI — last one wins.
+   */
+  const handleFiles = useCallback(
+    async (files: File[]) => {
+      if (files.length === 0) return;
+      setSavedCount(null);
+      setBatchNote(null);
+      let savedFiles = 0;
+      let totalSaved = 0;
+      let duplicates = 0;
+      let manual = 0;
+      for (const file of files) {
+        // eslint-disable-next-line no-await-in-loop
+        const outcome = await handleFile(file);
+        if (outcome.kind === 'saved') {
+          savedFiles += 1;
+          totalSaved += outcome.count;
+        } else if (outcome.kind === 'duplicate') {
+          duplicates += 1;
+        } else {
+          manual += 1;
+        }
+      }
+      if (totalSaved > 0) setSavedCount(totalSaved);
+      if (files.length > 1) {
+        // The batch summary replaces the single-file duplicate banner.
+        setDuplicateBlocked(false);
+        setBatchNote(
+          `${[
+            `${savedFiles} of ${files.length} files imported (${totalSaved} transaction${totalSaved === 1 ? '' : 's'})`,
+            duplicates > 0 ? `${duplicates} already imported — skipped` : null,
+            manual > 0 ? `${manual} need${manual === 1 ? 's' : ''} column mapping — shown below` : null
+          ]
+            .filter(Boolean)
+            .join(' · ')}.`
+        );
+      }
+    },
+    [handleFile]
+  );
 
   /**
    * Explicit, user-triggered AI column-mapping. Only reachable via the
@@ -295,10 +348,10 @@ export function ImportTab() {
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
-      const file = e.dataTransfer.files?.[0];
-      if (file) void handleFile(file);
+      const files = Array.from(e.dataTransfer.files ?? []);
+      if (files.length > 0) void handleFiles(files);
     },
-    [handleFile]
+    [handleFiles]
   );
 
   const saveMapped = async (mapped: ReturnType<typeof parseWithMapping>) => {
@@ -423,6 +476,12 @@ export function ImportTab() {
             <div className="rounded-lg border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">
               <strong>{fileName}</strong> was already imported. Remove it from{' '}
               <strong>Files already imported</strong> below to upload it again with different mapping.
+            </div>
+          )}
+
+          {batchNote && (
+            <div className="rounded-lg border border-violet/30 bg-violet/10 px-4 py-3 text-sm text-low">
+              {batchNote}
             </div>
           )}
 

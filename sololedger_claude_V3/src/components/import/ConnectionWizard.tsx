@@ -179,6 +179,14 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
   const [aiMapping, setAiMapping] = useState(false);
   const [savedCount, setSavedCount] = useState<number | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  /** Files queued after the one currently being read (multi-file drops). */
+  const [fileQueue, setFileQueue] = useState<File[]>([]);
+  /** Total files in the current batch — drives the "file N of M" progress copy. */
+  const [queueTotal, setQueueTotal] = useState(0);
+  /** Non-blocking note about batch files that were skipped (e.g. duplicates). */
+  const [queueNote, setQueueNote] = useState<string | null>(null);
+  /** Transactions confirmed so far across a multi-file batch. */
+  const [batchSaved, setBatchSaved] = useState(0);
 
   const source = useMemo(() => getImportSource(state.source), [state.source]);
   const india = IMPORT_SOURCES.filter((s) => s.region === 'india');
@@ -230,12 +238,25 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
       setPendingUnrecognized(null);
       setSavedCount(null);
       setReading(true);
+      // True when this file chained into the next queued one — the chained
+      // read keeps `reading` on, so the finally must not switch it off.
+      let chained = false;
       try {
         const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
         const hash = await hashFileContent(hashInput);
 
         const existing = await db.csvImports.get(hash);
         if (existing) {
+          if (fileQueue.length > 0) {
+            // Batch mode: skip an already-imported file instead of stranding
+            // the queue — note it and chain straight into the next file.
+            const [next, ...rest] = fileQueue;
+            setFileQueue(rest);
+            setQueueNote((prev) => `${prev ? `${prev} ` : ''}Skipped already-imported file: ${file.name}.`);
+            chained = true;
+            void readFile(next);
+            return;
+          }
           setError(`"${file.name}" was already imported. Remove it from the Import tab to re-import.`);
           return;
         }
@@ -283,10 +304,10 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
           false
         );
       } finally {
-        setReading(false);
+        if (!chained) setReading(false);
       }
     },
-    [showPreview]
+    [showPreview, fileQueue]
   );
 
   /**
@@ -368,10 +389,22 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
     }
   }, [pendingUnrecognized, showPreview]);
 
+  /**
+   * Accept one or many files. Multi-file batches are processed SEQUENTIALLY —
+   * each file gets its own preview + explicit confirm; confirming file N reads
+   * file N+1, and the success banner appears (with the batch total) only after
+   * the last file is confirmed.
+   */
   const handleFiles = useCallback(
     (fileList: FileList | null) => {
-      const file = fileList?.[0];
-      if (file) void readFile(file);
+      const files = Array.from(fileList ?? []);
+      if (files.length === 0) return;
+      const [first, ...rest] = files;
+      setFileQueue(rest);
+      setQueueTotal(files.length);
+      setQueueNote(null);
+      setBatchSaved(0);
+      void readFile(first);
     },
     [readFile]
   );
@@ -409,13 +442,27 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         await fetchMissingPricesForAllTransactions(settings);
       }
 
-      setSavedCount(preview.transactions.length);
-      onComplete?.(preview.transactions.length);
+      const savedNow = preview.transactions.length;
+      onComplete?.(savedNow);
+      if (fileQueue.length > 0) {
+        // Batch mode: keep the wizard open and read the next queued file. The
+        // success banner (with the running total) is deferred to the last file.
+        const [next, ...rest] = fileQueue;
+        setFileQueue(rest);
+        setBatchSaved((b) => b + savedNow);
+        setPreview(null);
+        dispatch({ type: 'clearFile' });
+        void readFile(next);
+      } else {
+        setSavedCount(batchSaved + savedNow);
+        setBatchSaved(0);
+        setQueueTotal(0);
+      }
     } finally {
       setSaving(false);
       setSavePhase(null);
     }
-  }, [preview, onComplete]);
+  }, [preview, onComplete, fileQueue, batchSaved, readFile]);
 
   const previewRows = preview?.transactions.slice(0, 5) ?? [];
 
@@ -569,7 +616,10 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
                 {reading ? (
                   <>
                     <Loader2 className="mb-3 h-6 w-6 animate-spin text-violet" />
-                    <p className="text-sm text-mid">Reading and previewing your file…</p>
+                    <p className="text-sm text-mid">
+                      Reading and previewing your file…
+                      {queueTotal > 1 && ` (file ${queueTotal - fileQueue.length} of ${queueTotal})`}
+                    </p>
                   </>
                 ) : (
                   <>
@@ -577,12 +627,13 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
                       <Upload className="h-6 w-6" />
                     </div>
                     <h4 className="text-sm font-bold text-hi">
-                      Drag &amp; drop your {source.label} file
+                      Drag &amp; drop your {source.label} file{queueTotal > 1 ? 's' : ''}
                     </h4>
-                    <p className="mt-1 text-xs text-low">CSV or XLSX</p>
+                    <p className="mt-1 text-xs text-low">CSV or XLSX · several files at once works too</p>
                     <label className="mt-4">
                       <input
                         type="file"
+                        multiple
                         accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                         className="hidden"
                         onChange={(e) => {
@@ -597,6 +648,13 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
                   </>
                 )}
               </div>
+
+              {queueNote && (
+                <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2.5 text-xs text-warn">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{queueNote}</span>
+                </div>
+              )}
 
               {error && (
                 <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2.5 text-xs text-warn">
@@ -745,7 +803,12 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
                   variant="ghost"
                   disabled={saving}
                   onClick={() => {
+                    // Backing out of a preview cancels any queued batch files.
                     setPreview(null);
+                    setFileQueue([]);
+                    setQueueTotal(0);
+                    setBatchSaved(0);
+                    setQueueNote(null);
                     dispatch({ type: 'clearFile' });
                   }}
                 >

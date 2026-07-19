@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
@@ -17,7 +17,9 @@ import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { isSaasMode } from '@/lib/saas/config';
+import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+import { llamaBannerHint, markLlamaAutoRun, shouldAutoRunLlamaSuggestions } from '@/lib/review/llamaAutoSuggest';
 import {
   ALL_FLAGS,
   BULK_FLAG_CHECKBOXES,
@@ -32,7 +34,7 @@ import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
 import { displayFlags } from '@/lib/review/displayFlags';
 import { filterRows, paginate } from '@/lib/review/reviewTableView';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle, Ban, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles } from 'lucide-react';
+import { Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useTabNav } from '@/lib/tabNav';
 import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
@@ -278,6 +280,12 @@ export function ReviewTab() {
   // Phase 2: DefiLlama reward-income suggestions (user-gated fetch).
   const [llamaSuggesting, setLlamaSuggesting] = useState(false);
   const [llamaMsg, setLlamaMsg] = useState<string | null>(null);
+  // EFFECTIVE "Live price lookup" flag. In SaaS mode the SERVER public config
+  // decides — the local settings singleton reports priceApiEnabled=false for
+  // the hosted admin even though the relay has it on — so resolve via
+  // getEffectiveSettings(), the same way WalletLookupPanel does. `null` while
+  // resolving; treated as OFF by the banner variant + the auto-run guard.
+  const [priceLookupEnabled, setPriceLookupEnabled] = useState<boolean | null>(null);
 
   const { goToImport } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
@@ -372,7 +380,7 @@ export function ReviewTab() {
   /** The review queue: rows flagged needs_review (e.g. DefiLlama suggestions). */
   const needsReviewCount = useMemo(() => countNeedsReview(transactions), [transactions]);
 
-  const suggestRewardIncome = async () => {
+  const suggestRewardIncome = useCallback(async () => {
     if (llamaSuggesting) return;
     setLlamaSuggesting(true);
     setLlamaMsg(null);
@@ -396,7 +404,7 @@ export function ReviewTab() {
     } finally {
       setLlamaSuggesting(false);
     }
-  };
+  }, [llamaSuggesting]);
 
   // One-time auto-detect for wallet imports stored before swap detection shipped.
   useEffect(() => {
@@ -411,24 +419,44 @@ export function ReviewTab() {
     });
   }, [potentialSwapPairs]);
 
-  // One-time auto DefiLlama reward suggestions for CSV/manual/existing data
-  // viewed in Review without a fresh wallet import. Gated behind
-  // priceApiEnabled — this is the one approved relaxation of the "no background
-  // network in local mode" policy (network egress is already permitted when
-  // Live price lookup is on). Wallet imports run the same pass in importJob.ts.
+  // Resolve the effective price-lookup flag once on mount (server public
+  // config in SaaS mode, local setting otherwise).
   useEffect(() => {
-    if (!settings?.priceApiEnabled || solanaTransferInCount === 0) return;
-    const key = 'sololedger_defillama_auto_v1';
-    if (localStorage.getItem(key)) return;
-    localStorage.setItem(key, '1');
-    void applyDefiLlamaRewardSuggestions()
-      .then((result) => {
-        if (result.suggested > 0) setLlamaMsg(result.message);
+    let cancelled = false;
+    getEffectiveSettings()
+      .then((s) => {
+        if (!cancelled) setPriceLookupEnabled(s.priceApiEnabled);
       })
       .catch(() => {
-        /* network/parse failure is non-fatal — the manual button remains available */
+        /* keep null → treated as OFF; the manual button remains available */
       });
-  }, [settings?.priceApiEnabled, solanaTransferInCount]);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Once-per-session auto DefiLlama reward suggestions for CSV/manual/existing
+  // data viewed in Review without a fresh wallet import. Gated behind the
+  // EFFECTIVE priceApiEnabled — this is the one approved relaxation of the "no
+  // background network in local mode" policy (network egress is already
+  // permitted when Live price lookup is on). Wallet imports run the same pass
+  // in importJob.ts. suggestRewardIncome wraps any failure into llamaMsg, so a
+  // DefiLlama outage never breaks the tab (same non-fatal treatment as
+  // importJob.ts). All guards (enabled / candidates / not-run-this-session /
+  // none in flight) live in the pure, unit-tested shouldAutoRunLlamaSuggestions.
+  useEffect(() => {
+    if (
+      !shouldAutoRunLlamaSuggestions({
+        priceLookupEnabled,
+        candidateCount: solanaTransferInCount,
+        inFlight: llamaSuggesting
+      })
+    ) {
+      return;
+    }
+    markLlamaAutoRun();
+    void suggestRewardIncome();
+  }, [priceLookupEnabled, solanaTransferInCount, llamaSuggesting, suggestRewardIncome]);
 
   const fetchMissingPrices = async () => {
     if (!settings?.priceApiEnabled || missingPriceTxs.length === 0) return;
@@ -446,11 +474,6 @@ export function ReviewTab() {
       setFetchingPrices(false);
       setPriceProgress(null);
     }
-  };
-
-  const bulkMarkSpam = async () => {
-    await Promise.all(Array.from(selected).map((id) => db.transactions.update(id, { isSpam: true })));
-    setSelected(new Set());
   };
 
   const startEditFiat = (txId: string, current?: number) => {
@@ -593,13 +616,6 @@ export function ReviewTab() {
     } else {
       setSelected((prev) => new Set([...prev, ...visibleIds]));
     }
-  };
-
-  const bulkMarkInternal = async () => {
-    await Promise.all(
-      Array.from(selected).map((id) => db.transactions.update(id, { isInternalTransfer: true, flags: [] }))
-    );
-    setSelected(new Set());
   };
 
   // ---- Bulk "Set type" + "Set flags" ----
@@ -878,9 +894,7 @@ export function ReviewTab() {
               <p className="mt-1 text-xs text-low">
                 Check them against DefiLlama&rsquo;s reward-token data (free, no API key). Matches become
                 income flagged <span className="text-warn">needs review</span> so you can confirm each one.
-                {settings?.priceApiEnabled
-                  ? ' This runs automatically when Live price lookup is on — use the button to re-run it.'
-                  : ' Turn on Live price lookup in Settings to run this automatically, or use the button now.'}
+                {llamaBannerHint(priceLookupEnabled === true)}
               </p>
             </div>
           </div>
@@ -1187,6 +1201,9 @@ export function ReviewTab() {
                     />
                     Spam (excluded everywhere)
                   </label>
+                  <p className="px-3 pb-1 text-[10px] text-low">
+                    Confirming “Internal transfer” clears the “Possible internal transfer” hint.
+                  </p>
                   <div className="mt-1 flex justify-end gap-2 border-t border-white/10 px-3 py-2">
                     <button
                       type="button"
@@ -1211,18 +1228,6 @@ export function ReviewTab() {
               )}
             </div>
 
-            <Button variant="secondary" disabled={applyingBulk} onClick={bulkMarkInternal}>
-              Mark {selected.size} as internal
-            </Button>
-            <Button
-              variant="secondary"
-              onClick={bulkMarkSpam}
-              disabled={applyingBulk}
-              className="border-loss/40 text-loss hover:bg-loss/10"
-            >
-              <Ban className="mr-1 h-3 w-3" />
-              Mark {selected.size} as spam
-            </Button>
             <Button
               variant="secondary"
               onClick={() => setDeleteConfirmOpen(true)}
