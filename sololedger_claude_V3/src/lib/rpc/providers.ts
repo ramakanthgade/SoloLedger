@@ -37,7 +37,32 @@ function rpcCredential(key?: string): string {
   return key?.trim() || (isSaasMode() ? SAAS_PROXY_KEY : '');
 }
 
-export type ChainId = 'bitcoin' | 'ethereum' | 'polygon' | 'arbitrum' | 'base' | 'bsc' | 'optimism' | 'avalanche' | 'solana' | 'custom_evm';
+export type ChainId =
+  | 'bitcoin'
+  | 'ethereum'
+  | 'polygon'
+  | 'arbitrum'
+  | 'base'
+  | 'bsc'
+  | 'optimism'
+  | 'avalanche'
+  | 'fantom'
+  | 'celo'
+  | 'zksync'
+  | 'linea'
+  | 'scroll'
+  | 'blast'
+  | 'mantle'
+  | 'starknet'
+  | 'aurora'
+  | 'cronos'
+  | 'gnosis'
+  | 'moonbeam'
+  | 'moonriver'
+  | 'metis'
+  | 'opbnb'
+  | 'solana'
+  | 'custom_evm';
 
 export interface ChainDef {
   id: ChainId;
@@ -57,6 +82,21 @@ export const CHAINS: ChainDef[] = [
   { id: 'optimism', label: 'Optimism', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'opt-mainnet', needsKey: true },
   { id: 'bsc', label: 'BNB Smart Chain', asset: 'BNB', provider: 'alchemy_evm', alchemyNetwork: 'bnb-mainnet', needsKey: true },
   { id: 'avalanche', label: 'Avalanche C-Chain', asset: 'AVAX', provider: 'alchemy_evm', alchemyNetwork: 'avax-mainnet', needsKey: true },
+  { id: 'fantom', label: 'Fantom', asset: 'FTM', provider: 'alchemy_evm', alchemyNetwork: 'fantom-mainnet', needsKey: true },
+  { id: 'celo', label: 'Celo', asset: 'CELO', provider: 'alchemy_evm', alchemyNetwork: 'celo-mainnet', needsKey: true },
+  { id: 'zksync', label: 'zkSync Era', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'zksync-mainnet', needsKey: true },
+  { id: 'linea', label: 'Linea', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'linea-mainnet', needsKey: true },
+  { id: 'scroll', label: 'Scroll', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'scroll-mainnet', needsKey: true },
+  { id: 'blast', label: 'Blast', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'blast-mainnet', needsKey: true },
+  { id: 'mantle', label: 'Mantle', asset: 'MNT', provider: 'alchemy_evm', alchemyNetwork: 'mantle-mainnet', needsKey: true },
+  { id: 'starknet', label: 'StarkNet', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'starknet-mainnet', needsKey: true },
+  { id: 'aurora', label: 'Aurora', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'aurora-mainnet', needsKey: true },
+  { id: 'cronos', label: 'Cronos', asset: 'CRO', provider: 'alchemy_evm', alchemyNetwork: 'cronos-mainnet', needsKey: true },
+  { id: 'gnosis', label: 'Gnosis', asset: 'xDAI', provider: 'alchemy_evm', alchemyNetwork: 'gnosis-mainnet', needsKey: true },
+  { id: 'moonbeam', label: 'Moonbeam', asset: 'GLMR', provider: 'alchemy_evm', alchemyNetwork: 'moonbeam-mainnet', needsKey: true },
+  { id: 'moonriver', label: 'Moonriver', asset: 'MOVR', provider: 'alchemy_evm', alchemyNetwork: 'moonriver-mainnet', needsKey: true },
+  { id: 'metis', label: 'Metis', asset: 'METIS', provider: 'alchemy_evm', alchemyNetwork: 'metis-mainnet', needsKey: true },
+  { id: 'opbnb', label: 'opBNB', asset: 'BNB', provider: 'alchemy_evm', alchemyNetwork: 'opbnb-mainnet', needsKey: true },
   { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', alchemyNetwork: 'solana-mainnet', needsKey: true },
   { id: 'custom_evm', label: 'Other EVM chain (Etherscan-compatible)', asset: '', provider: 'etherscan_compatible', needsKey: true }
 ];
@@ -70,6 +110,21 @@ export const COINGECKO_PLATFORM: Partial<Record<ChainId, string>> = {
   optimism: 'optimistic-ethereum',
   bsc: 'binance-smart-chain',
   avalanche: 'avalanche',
+  fantom: 'fantom',
+  celo: 'celo',
+  zksync: 'zksync',
+  linea: 'linea',
+  scroll: 'scroll',
+  blast: 'blast',
+  mantle: 'mantle',
+  starknet: 'starknet',
+  aurora: 'aurora',
+  cronos: 'cronos',
+  gnosis: 'xdai',
+  moonbeam: 'moonbeam',
+  moonriver: 'moonriver',
+  metis: 'metis-andromeda',
+  opbnb: 'opbnb',
   solana: 'solana'
 };
 

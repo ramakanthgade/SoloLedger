@@ -44,6 +44,47 @@ export function normalizeChain(network?: string): string | undefined {
     case 'AVAX':
     case 'AVALANCHE':
       return 'avalanche';
+    case 'FTM':
+    case 'FANTOM':
+      return 'fantom';
+    case 'CELO':
+      return 'celo';
+    case 'ZKSYNC':
+    case 'ZKSYNC ERA':
+    case 'ZKSYNCERA':
+      return 'zksync';
+    case 'LINEA':
+      return 'linea';
+    case 'SCROLL':
+      return 'scroll';
+    case 'BLAST':
+      return 'blast';
+    case 'MNT':
+    case 'MANTLE':
+      return 'mantle';
+    case 'STARKNET':
+    case 'STARKNET MAINNET':
+      return 'starknet';
+    case 'AURORA':
+      return 'aurora';
+    case 'CRO':
+    case 'CRONOS':
+      return 'cronos';
+    case 'XDAI':
+    case 'GNOSIS':
+    case 'GNOSIS CHAIN':
+      return 'gnosis';
+    case 'GLMR':
+    case 'MOONBEAM':
+      return 'moonbeam';
+    case 'MOVR':
+    case 'MOONRIVER':
+      return 'moonriver';
+    case 'METIS':
+      return 'metis';
+    case 'OPBNB':
+    case 'OPBNB MAINNET':
+      return 'opbnb';
     case 'BTC':
     case 'BITCOIN':
       return 'bitcoin';
@@ -96,7 +137,22 @@ const EVM_CHAINS = new Set([
   'arbitrum',
   'optimism',
   'base',
-  'avalanche'
+  'avalanche',
+  'fantom',
+  'celo',
+  'zksync',
+  'linea',
+  'scroll',
+  'blast',
+  'mantle',
+  'starknet',
+  'aurora',
+  'cronos',
+  'gnosis',
+  'moonbeam',
+  'moonriver',
+  'metis',
+  'opbnb'
 ]);
 
 /**

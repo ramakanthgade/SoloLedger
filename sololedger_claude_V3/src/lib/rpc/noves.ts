@@ -28,7 +28,22 @@ const NOVES_EVM_CHAIN: Record<string, string> = {
   base: 'base',
   bsc: 'bsc',
   optimism: 'optimism',
-  avalanche: 'avalanche'
+  avalanche: 'avalanche',
+  fantom: 'fantom',
+  celo: 'celo',
+  zksync: 'zksync',
+  linea: 'linea',
+  scroll: 'scroll',
+  blast: 'blast',
+  mantle: 'mantle',
+  starknet: 'starknet',
+  aurora: 'aurora',
+  cronos: 'cronos',
+  gnosis: 'gnosis',
+  moonbeam: 'moonbeam',
+  moonriver: 'moonriver',
+  metis: 'metis',
+  opbnb: 'opbnb'
 };
 
 export interface NovesToken {

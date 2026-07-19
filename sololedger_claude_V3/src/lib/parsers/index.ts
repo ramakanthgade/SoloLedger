@@ -11,6 +11,16 @@ import { coindcxParser } from './coindcx';
 import { coinswitchParser } from './coinswitch';
 import { zebpayParser } from './zebpay';
 import { mudrexParser } from './mudrex';
+import { krakenParser } from './kraken';
+import { kucoinParser } from './kucoin';
+import { cryptocomParser } from './cryptocom';
+import { bybitParser } from './bybit';
+import { okxParser } from './okx';
+import { gateioParser } from './gateio';
+import { bitfinexParser } from './bitfinex';
+import { geminiParser } from './gemini';
+import { htxParser } from './htx';
+import { coinspotParser } from './coinspot';
 import { genericHistoryParser, detectMissingFields } from './genericHistory';
 import type { ExchangeParser, MissingField, ParseResult, SheetContext } from './types';
 import type { TxType } from '@/types/transaction';
@@ -36,6 +46,16 @@ export const PARSERS: ExchangeParser[] = [
   binanceSpotParser,
   coinbaseParser,
   binanceParser,
+  krakenParser,
+  kucoinParser,
+  cryptocomParser,
+  bybitParser,
+  okxParser,
+  gateioParser,
+  bitfinexParser,
+  geminiParser,
+  htxParser,
+  coinspotParser,
   // Deterministic loose fallback — MUST be last so specific parsers win.
   genericHistoryParser
 ];
@@ -392,6 +412,8 @@ export { coinbaseParser, binanceParser, binanceSpotParser };
 export { wazirxTradesParser, wazirxDepositsParser, wazirxLedgerParser };
 export { hyperliquidTradesParser, hyperliquidDepositsParser };
 export { coindcxParser, coinswitchParser, zebpayParser, mudrexParser };
+export { krakenParser, kucoinParser, cryptocomParser, bybitParser, okxParser };
+export { gateioParser, bitfinexParser, geminiParser, htxParser, coinspotParser };
 export { isSpreadsheetFile, isCsvLikeFile } from './workbook';
 export * from './types';
 export * from './generic';
