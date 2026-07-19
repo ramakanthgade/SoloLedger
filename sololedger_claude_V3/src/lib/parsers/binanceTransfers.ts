@@ -87,17 +87,17 @@ function explicitRowType(raw: string | undefined): TxType | null {
 
 /**
  * Binance export timestamps are UTC-documented (`Date(UTC)`), so anchor bare
- * strings to UTC. Some regional exports use `DD-MM-YYYY HH:mm:ss`, which
- * `Date.parse` reads unreliably — normalize that shape explicitly.
+ * strings to UTC. Some regional exports use `DD-MM-YYYY HH:mm:ss` — normalize
+ * that shape explicitly BEFORE the generic parse: V8 `Date.parse` accepts
+ * `DD-MM-YYYY` as MM-DD-YYYY LOCAL time, which would swap day/month (for days
+ * 1–12) and anchor to the local timezone instead of UTC.
  */
 function parseBinanceTime(v: string | undefined): number {
-  const t = safeTimestampUtc(v);
-  if (Number.isFinite(t)) return t;
   const m = String(v ?? '')
     .trim()
     .match(/^(\d{2})-(\d{2})-(\d{4})[ T](\d{2}:\d{2}(?::\d{2})?(?:\.\d+)?)/);
   if (m) return Date.parse(`${m[3]}-${m[2]}-${m[1]}T${m[4]}Z`);
-  return NaN;
+  return safeTimestampUtc(v);
 }
 
 export const binanceTransfersParser: ExchangeParser = {

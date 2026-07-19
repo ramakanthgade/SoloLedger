@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import type { TaxSettings } from '@/types/transaction';
 import {
-  defaultCheckedChains,
   toggleChain,
   setAllChains,
   allChainsChecked,
@@ -71,11 +70,6 @@ beforeEach(() => {
 // ---- Checkbox helpers ----
 
 describe('chain-picker checkbox helpers', () => {
-  it('defaultCheckedChains checks every detected chain', () => {
-    const checked = defaultCheckedChains(['ethereum', 'polygon']);
-    expect(checked).toEqual(new Set(['ethereum', 'polygon']));
-  });
-
   it('toggleChain adds and removes without mutating the input set', () => {
     const initial = new Set<ChainId>(['ethereum', 'polygon']);
     const off = toggleChain(initial, 'polygon', false);
@@ -248,17 +242,30 @@ describe('runSequentialChainImport', () => {
     expect(outcomes.map((o) => o.status)).toEqual(['imported', 'skipped']);
   });
 
-  it('marks a chain failed when the job state carries an error', async () => {
+  it('marks a chain failed when the job state carries an error, without inheriting stale results', async () => {
     mocks.runWalletImport.mockResolvedValue(undefined);
+    // importJob._error leaves the previous chain's result/warnings/failed in
+    // place — the failed outcome must NOT inherit them.
     mocks.importJobGet.mockReturnValue(
-      jobState({ error: 'provider exploded', result: null })
+      jobState({
+        error: 'provider exploded',
+        result: { imported: 9, pricesUpdated: 9, swapsDetected: 2 },
+        warnings: ['stale warning from the previous chain'],
+        failed: [{ address: ADDR_B, message: 'stale failure' }]
+      })
     );
 
     const [outcome] = await runSequentialChainImport([ADDR_A], ['ethereum'], {
       settings: SETTINGS,
       lookupExtras: {}
     });
-    expect(outcome).toMatchObject({ status: 'failed', imported: 0, error: 'provider exploded' });
+    expect(outcome).toMatchObject({
+      status: 'failed',
+      imported: 0,
+      warnings: [],
+      failures: [],
+      error: 'provider exploded'
+    });
   });
 
   it('fails soft: a throwing chain is recorded and the remaining chains still run', async () => {

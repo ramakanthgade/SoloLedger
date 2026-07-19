@@ -1170,17 +1170,40 @@ export function ReviewTab() {
                       key={flag}
                       className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1"
                     >
-                      <input
-                        type="checkbox"
-                        checked={bulkFlagsSel.flags.get(flag) ?? false}
-                        onChange={(e) => setBulkFlag(flag, e.target.checked)}
-                        className="accent-violet"
-                      />
+                      {flag === 'possible_internal_transfer' ? (
+                        <input
+                          type="checkbox"
+                          checked={bulkFlagsSel.hint === 'checked'}
+                          ref={(el) => {
+                            // Native dash for a mixed selection: 'mixed' is not
+                            // expressible via the `checked` prop, so set the
+                            // DOM-only `indeterminate` property.
+                            if (el) el.indeterminate = bulkFlagsSel.hint === 'mixed';
+                          }}
+                          onChange={(e) =>
+                            // First click from the dash CHECKS (set on all);
+                            // the next click unchecks (remove from all).
+                            // 'mixed' itself is an initial state only.
+                            patchBulkFlagsSel({ hint: e.target.checked ? 'checked' : 'unchecked' })
+                          }
+                          className="accent-violet"
+                        />
+                      ) : (
+                        <input
+                          type="checkbox"
+                          checked={bulkFlagsSel.flags.get(flag) ?? false}
+                          onChange={(e) => setBulkFlag(flag, e.target.checked)}
+                          className="accent-violet"
+                        />
+                      )}
                       {FLAG_LABELS[flag]}
                     </label>
                   ))}
                   <p className="px-3 pb-1 text-[10px] text-low">
                     “Missing cost basis” also appears automatically while a row has no fiat value.
+                  </p>
+                  <p className="px-3 pb-1 text-[10px] text-low">
+                    A dash on “Possible internal transfer” means only some selected rows have it — those rows are left as-is unless you check or uncheck the box.
                   </p>
                   <div className="my-1 border-t border-white/10" />
                   <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1">

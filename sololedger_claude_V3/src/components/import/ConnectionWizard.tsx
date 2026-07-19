@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useReducer, useState } from 'react';
+import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
 import {
   Upload,
   FileText,
@@ -185,8 +185,10 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
   const [queueTotal, setQueueTotal] = useState(0);
   /** Non-blocking note about batch files that were skipped (e.g. duplicates). */
   const [queueNote, setQueueNote] = useState<string | null>(null);
-  /** Transactions confirmed so far across a multi-file batch. */
-  const [batchSaved, setBatchSaved] = useState(0);
+  /** Transactions confirmed so far across a multi-file batch. A ref, not
+   *  state: it accumulates inside async file chaining where render closures
+   *  go stale, and it is never rendered directly. */
+  const batchSavedRef = useRef(0);
 
   const source = useMemo(() => getImportSource(state.source), [state.source]);
   const india = IMPORT_SOURCES.filter((s) => s.region === 'india');
@@ -231,8 +233,14 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
     []
   );
 
+  /**
+   * Read and preview ONE file. `queue` holds the files still waiting after
+   * this one — threaded as a parameter (NOT read from state) because this
+   * function chains into itself asynchronously, where a render closure would
+   * go stale and re-dequeue the file already being processed.
+   */
   const readFile = useCallback(
-    async (file: File) => {
+    async (file: File, queue: File[]) => {
       setError(null);
       setFallbackMessages([]);
       setPendingUnrecognized(null);
@@ -247,14 +255,25 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
 
         const existing = await db.csvImports.get(hash);
         if (existing) {
-          if (fileQueue.length > 0) {
+          if (queue.length > 0) {
             // Batch mode: skip an already-imported file instead of stranding
             // the queue — note it and chain straight into the next file.
-            const [next, ...rest] = fileQueue;
+            const [next, ...rest] = queue;
             setFileQueue(rest);
             setQueueNote((prev) => `${prev ? `${prev} ` : ''}Skipped already-imported file: ${file.name}.`);
             chained = true;
-            void readFile(next);
+            void readFile(next, rest);
+            return;
+          }
+          if (batchSavedRef.current > 0) {
+            // Duplicate as the LAST file of a batch: end with the aggregated
+            // batch outcome (banner + skip note), not the single-file error.
+            const total = batchSavedRef.current;
+            batchSavedRef.current = 0;
+            setQueueTotal(0);
+            setQueueNote((prev) => `${prev ? `${prev} ` : ''}Skipped already-imported file: ${file.name}.`);
+            setSavedCount(total);
+            onComplete?.(total);
             return;
           }
           setError(`"${file.name}" was already imported. Remove it from the Import tab to re-import.`);
@@ -307,7 +326,7 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         if (!chained) setReading(false);
       }
     },
-    [showPreview, fileQueue]
+    [showPreview, onComplete]
   );
 
   /**
@@ -403,8 +422,8 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
       setFileQueue(rest);
       setQueueTotal(files.length);
       setQueueNote(null);
-      setBatchSaved(0);
-      void readFile(first);
+      batchSavedRef.current = 0;
+      void readFile(first, rest);
     },
     [readFile]
   );
@@ -443,26 +462,29 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
       }
 
       const savedNow = preview.transactions.length;
-      onComplete?.(savedNow);
       if (fileQueue.length > 0) {
         // Batch mode: keep the wizard open and read the next queued file. The
-        // success banner (with the running total) is deferred to the last file.
+        // success banner (with the running total) — and the onComplete signal
+        // — are deferred to the last file, so consumers like onboarding don't
+        // unmount the wizard mid-batch.
         const [next, ...rest] = fileQueue;
         setFileQueue(rest);
-        setBatchSaved((b) => b + savedNow);
+        batchSavedRef.current += savedNow;
         setPreview(null);
         dispatch({ type: 'clearFile' });
-        void readFile(next);
+        void readFile(next, rest);
       } else {
-        setSavedCount(batchSaved + savedNow);
-        setBatchSaved(0);
+        const total = batchSavedRef.current + savedNow;
+        batchSavedRef.current = 0;
+        setSavedCount(total);
         setQueueTotal(0);
+        onComplete?.(total);
       }
     } finally {
       setSaving(false);
       setSavePhase(null);
     }
-  }, [preview, onComplete, fileQueue, batchSaved, readFile]);
+  }, [preview, onComplete, fileQueue, readFile]);
 
   const previewRows = preview?.transactions.slice(0, 5) ?? [];
 
@@ -480,10 +502,19 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
       <Stepper current={state.step} />
 
       {savedCount !== null ? (
-        <div className="flex items-center gap-2 rounded-xl border border-gain/30 bg-gain/10 px-4 py-3 text-sm text-gain">
-          <Check className="h-4 w-4 shrink-0" />
-          Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local ledger. Head to
-          Review to categorize them.
+        <div className="space-y-3">
+          <div className="flex items-center gap-2 rounded-xl border border-gain/30 bg-gain/10 px-4 py-3 text-sm text-gain">
+            <Check className="h-4 w-4 shrink-0" />
+            Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local ledger. Head to
+            Review to categorize them.
+          </div>
+          {/* Batch files skipped along the way (e.g. duplicates) stay visible next to the final banner. */}
+          {queueNote && (
+            <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2.5 text-xs text-warn">
+              <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+              <span>{queueNote}</span>
+            </div>
+          )}
         </div>
       ) : (
         <div className="rounded-2xl border border-violet/30 bg-elev-2 p-5 shadow-card">
@@ -807,7 +838,7 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
                     setPreview(null);
                     setFileQueue([]);
                     setQueueTotal(0);
-                    setBatchSaved(0);
+                    batchSavedRef.current = 0;
                     setQueueNote(null);
                     dispatch({ type: 'clearFile' });
                   }}

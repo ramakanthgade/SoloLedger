@@ -35,6 +35,10 @@ import { cn } from '@/lib/utils';
 
 type Mode = 'guided' | 'csv' | 'manual' | 'wallet';
 
+/** How one dropped file was handled — the multi-file wrapper (handleFiles)
+ *  aggregates these into the batch summary. */
+type FileHandleOutcome = { kind: 'saved'; count: number } | { kind: 'duplicate' } | { kind: 'manual' };
+
 const SUPPORTED = [
   { id: 'coinbase', label: 'Coinbase', guide: 'Settings → Reports → Generate custom report → Transaction history CSV' },
   { id: 'binance', label: 'Binance', guide: 'Recommended: Wallet → Transaction History → Export (full ledger). Also: Orders → Spot → Trade History for spot trades only.' },
@@ -148,82 +152,82 @@ export function ImportTab() {
    * was handled so a multi-file wrapper can aggregate a batch summary.
    */
   const handleFile = useCallback(
-    async (file: File): Promise<{ kind: 'saved'; count: number } | { kind: 'duplicate' } | { kind: 'manual' }> => {
-    setDuplicateBlocked(false);
-    setImportWarnings([]);
-    setConversionNote(null);
-    setPriceFetchNote(null);
-    setExtractionNote(null);
-    setOutcome(null);
-    setFallbackMessages([]);
-    setFileName(file.name);
+    async (file: File): Promise<FileHandleOutcome> => {
+      setDuplicateBlocked(false);
+      setImportWarnings([]);
+      setConversionNote(null);
+      setPriceFetchNote(null);
+      setExtractionNote(null);
+      setOutcome(null);
+      setFallbackMessages([]);
+      setFileName(file.name);
 
-    const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
-    const hash = await hashFileContent(hashInput);
-    setFileHash(hash);
+      const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
+      const hash = await hashFileContent(hashInput);
+      setFileHash(hash);
 
-    const existing = await db.csvImports.get(hash);
-    if (existing) {
-      setDuplicateBlocked(true);
-      return { kind: 'duplicate' };
-    }
-
-    const result = await parseImportFile(file);
-    const sheetSummary = result.sheets
-      .filter((s) => !s.skipped && s.detectedParser && s.transactions.length > 0)
-      .map((s) => `“${s.sheetName}”: ${s.transactions.length} via ${s.detectedParser}`)
-      .join(' · ');
-    const skippedSummary = result.sheets
-      .filter((s) => s.skipped)
-      .map((s) => s.sheetName)
-      .join(', ');
-    if (sheetSummary || skippedSummary) {
-      setExtractionNote(
-        [
-          sheetSummary ? `Imported from sheets: ${sheetSummary}.` : null,
-          skippedSummary ? `Skipped non-data sheets: ${skippedSummary}.` : null
-        ]
-          .filter(Boolean)
-          .join(' ')
-      );
-    }
-
-    // Auto-save when format is recognized and rows were parsed
-    if (result.detectedParser && result.transactions.length > 0) {
-      setSaving(true);
-      setImportPhase('saving');
-      try {
-        // Best-effort orientation confirmation for ambiguous-Address sheets
-        // (non-local only). Only the ambiguous sheets' rows are re-oriented;
-        // clearly-named / non-generic sheets are left untouched. Non-fatal.
-        const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
-        await persistTransactions(toPersist, result.detectedParser, hash, file.name);
-        setImportWarnings(result.warnings);
-        setFileName('');
-        setFileHash('');
-        return { kind: 'saved', count: toPersist.length };
-      } finally {
-        setSaving(false);
-        setImportPhase(null);
+      const existing = await db.csvImports.get(hash);
+      if (existing) {
+        setDuplicateBlocked(true);
+        return { kind: 'duplicate' };
       }
-    }
 
-    // Format not recognized (or recognized but produced no rows). Do NOT fire
-    // AI mapping automatically — it would relay column headers + sample rows to
-    // the AI provider (via SoloLedger's server in hosted mode) without the user
-    // seeing the data-sharing disclosure first. Instead surface actionable
-    // fix-the-file guidance and, when AI mapping is actually available, an
-    // explicit "Try AI mapping" button (which shows the disclosure). The
-    // default path stays fully local.
-    const aiOn = await isAiMappingAvailable();
-    setAiAvailable(aiOn);
-    if (result.transactions.length === 0) {
-      const missing = result.missingFields;
-      setFallbackMessages(buildFallbackMessages(missing, aiOn));
-    }
+      const result = await parseImportFile(file);
+      const sheetSummary = result.sheets
+        .filter((s) => !s.skipped && s.detectedParser && s.transactions.length > 0)
+        .map((s) => `“${s.sheetName}”: ${s.transactions.length} via ${s.detectedParser}`)
+        .join(' · ');
+      const skippedSummary = result.sheets
+        .filter((s) => s.skipped)
+        .map((s) => s.sheetName)
+        .join(', ');
+      if (sheetSummary || skippedSummary) {
+        setExtractionNote(
+          [
+            sheetSummary ? `Imported from sheets: ${sheetSummary}.` : null,
+            skippedSummary ? `Skipped non-data sheets: ${skippedSummary}.` : null
+          ]
+            .filter(Boolean)
+            .join(' ')
+        );
+      }
 
-    setOutcome(result);
-    return { kind: 'manual' };
+      // Auto-save when format is recognized and rows were parsed
+      if (result.detectedParser && result.transactions.length > 0) {
+        setSaving(true);
+        setImportPhase('saving');
+        try {
+          // Best-effort orientation confirmation for ambiguous-Address sheets
+          // (non-local only). Only the ambiguous sheets' rows are re-oriented;
+          // clearly-named / non-generic sheets are left untouched. Non-fatal.
+          const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
+          await persistTransactions(toPersist, result.detectedParser, hash, file.name);
+          setImportWarnings(result.warnings);
+          setFileName('');
+          setFileHash('');
+          return { kind: 'saved', count: toPersist.length };
+        } finally {
+          setSaving(false);
+          setImportPhase(null);
+        }
+      }
+
+      // Format not recognized (or recognized but produced no rows). Do NOT fire
+      // AI mapping automatically — it would relay column headers + sample rows to
+      // the AI provider (via SoloLedger's server in hosted mode) without the user
+      // seeing the data-sharing disclosure first. Instead surface actionable
+      // fix-the-file guidance and, when AI mapping is actually available, an
+      // explicit "Try AI mapping" button (which shows the disclosure). The
+      // default path stays fully local.
+      const aiOn = await isAiMappingAvailable();
+      setAiAvailable(aiOn);
+      if (result.transactions.length === 0) {
+        const missing = result.missingFields;
+        setFallbackMessages(buildFallbackMessages(missing, aiOn));
+      }
+
+      setOutcome(result);
+      return { kind: 'manual' };
     },
     []
   );
@@ -231,8 +235,10 @@ export function ImportTab() {
   /**
    * Process one or many files SEQUENTIALLY. Each recognized file auto-saves
    * as today; the saved-count banner accumulates across the batch and a
-   * one-line summary reports per-file outcomes. Files needing manual mapping
-   * (or duplicates) surface via the existing per-file UI — last one wins.
+   * one-line summary reports per-file outcomes. A file that throws (e.g. a
+   * corrupt workbook) is counted and skipped so the rest of the batch still
+   * runs. Files needing manual mapping (or duplicates) surface via the
+   * existing per-file UI — last one wins.
    */
   const handleFiles = useCallback(
     async (files: File[]) => {
@@ -243,9 +249,22 @@ export function ImportTab() {
       let totalSaved = 0;
       let duplicates = 0;
       let manual = 0;
+      let failed = 0;
+      /** Outcome of the last file that didn't throw — the per-file UI below
+       *  (duplicate banner, column-mapping form) only reflects THIS file. */
+      let lastOutcome: FileHandleOutcome | null = null;
       for (const file of files) {
-        // eslint-disable-next-line no-await-in-loop
-        const outcome = await handleFile(file);
+        let outcome: FileHandleOutcome;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          outcome = await handleFile(file);
+        } catch {
+          // A corrupt/unreadable file must not strand the rest of the batch.
+          failed += 1;
+          lastOutcome = null;
+          continue;
+        }
+        lastOutcome = outcome;
         if (outcome.kind === 'saved') {
           savedFiles += 1;
           totalSaved += outcome.count;
@@ -259,14 +278,27 @@ export function ImportTab() {
       if (files.length > 1) {
         // The batch summary replaces the single-file duplicate banner.
         setDuplicateBlocked(false);
+        // The column-mapping form only survives when the LAST processed file
+        // is the one needing mapping — a later file's handleFile reset it.
+        const mappingShown = lastOutcome?.kind === 'manual';
         setBatchNote(
           `${[
             `${savedFiles} of ${files.length} files imported (${totalSaved} transaction${totalSaved === 1 ? '' : 's'})`,
             duplicates > 0 ? `${duplicates} already imported — skipped` : null,
-            manual > 0 ? `${manual} need${manual === 1 ? 's' : ''} column mapping — shown below` : null
+            manual > 0
+              ? `${manual} need${manual === 1 ? 's' : ''} column mapping${
+                  mappingShown ? ' — shown below' : ' — re-drop that file on its own to map it'
+                }`
+              : null,
+            failed > 0 ? `${failed} could not be read — skipped` : null
           ]
             .filter(Boolean)
             .join(' · ')}.`
+        );
+      } else if (failed > 0) {
+        // Single-file drop that threw: nothing else surfaced, so say so.
+        setBatchNote(
+          `"${files[0].name}" could not be read — the file may be corrupt or in an unexpected format.`
         );
       }
     },
@@ -452,12 +484,13 @@ export function ImportTab() {
                 <label className="mt-3">
                   <input
                     type="file"
+                    multiple
                     accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                     className="hidden"
                     disabled={saving}
                     onChange={(e) => {
-                      const file = e.target.files?.[0];
-                      if (file) void handleFile(file);
+                      const selected = Array.from(e.target.files ?? []);
+                      if (selected.length > 0) void handleFiles(selected);
                       e.target.value = '';
                     }}
                   />

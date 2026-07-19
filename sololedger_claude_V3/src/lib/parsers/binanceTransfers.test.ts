@@ -37,6 +37,24 @@ describe('Binance Deposit & Withdrawal History parser', () => {
     expect(eth.timestamp).toBe(Date.UTC(2025, 2, 12, 14, 30, 0));
   });
 
+  it('reads DD-MM-YYYY exports as day-first UTC, not V8’s MM-DD-YYYY local parse', () => {
+    // Regression: `Date.parse('01-02-2026 10:00:00')` succeeds in V8 as
+    // MM-DD-YYYY LOCAL time — the DD-MM-YYYY branch must win first, or
+    // day/month swap (days 1–12) and the anchor leaves UTC.
+    const { transactions } = binanceTransfersParser.parse([
+      {
+        'Date(UTC)': '01-02-2026 10:00:00',
+        Coin: 'USDT',
+        Network: 'TRX',
+        Amount: '500',
+        TXID: 'abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890',
+        Status: 'Completed'
+      }
+    ]);
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0].timestamp).toBe(Date.UTC(2026, 1, 1, 10, 0, 0));
+  });
+
   it('detects the deposit-only and withdrawal-only header shapes', () => {
     expect(
       binanceTransfersParser.detect(['Date(UTC)', 'Coin', 'Network', 'Amount', 'TXID', 'Status'])

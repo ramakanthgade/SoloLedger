@@ -228,17 +228,25 @@ export function WalletLookupPanel() {
     syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
     importJob.reset();
     setChainSummary(null);
-    const outcomes = await runSequentialChainImport(evmAddresses, selectedChains, {
-      settings,
-      lookupExtras: {
-        customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
-        customApiKey: customApiKey || settings.customExplorerApiKey,
-        customAsset
-      },
-      onChainStart: (cid) => setImportingChain(cid)
-    });
-    setImportingChain(null);
-    setChainSummary(outcomes);
+    try {
+      const outcomes = await runSequentialChainImport(evmAddresses, selectedChains, {
+        settings,
+        lookupExtras: {
+          customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
+          customApiKey: customApiKey || settings.customExplorerApiKey,
+          customAsset
+        },
+        onChainStart: (cid) => setImportingChain(cid)
+      });
+      setChainSummary(outcomes);
+    } catch (err) {
+      // The orchestrator itself failed outside a per-chain import (e.g. the
+      // lookup-registry read rejected) — surface it like a single-chain error
+      // instead of letting the void call reject unhandled.
+      importJob._error(err instanceof Error ? err.message : 'Import failed.');
+    } finally {
+      setImportingChain(null);
+    }
   };
 
   const saveLabel = async (id: string) => {
@@ -472,8 +480,9 @@ export function WalletLookupPanel() {
           </div>
         )}
 
-        {/* Job result (shown after job completes) — hidden when the per-chain summary is up */}
-        {!job.active && job.result && !chainSummary && (
+        {/* Job result (shown after job completes) — hidden when the per-chain summary is up,
+            and suppressed mid-batch (importingChain set) so chain N's result doesn't flash between chains */}
+        {!job.active && job.result && !chainSummary && !importingChain && (
           <div className="rounded-lg border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-gain">
             <strong>{job.result.imported}</strong> transactions imported
             {job.result.swapsDetected > 0 ? `, ${job.result.swapsDetected} swaps detected` : ''}

@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 
 /**
  * Item 2 — EVM active-chain auto-detection + multi-chain import UI.
@@ -253,6 +253,71 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
     fireEvent.click(screen.getByRole('button', { name: /auto-detect chains instead/i }));
     await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
     expect(screen.getByRole('checkbox', { name: /ethereum/i })).toBeChecked();
+  });
+
+  it('F7: an orchestrator-level failure surfaces as an error instead of an unhandled rejection', async () => {
+    // e.g. the lookup-registry read rejects before/between chains — the
+    // progress line must clear and the error must reach the banner.
+    mocks.runSequential.mockRejectedValue(new Error('registry gone'));
+    await renderWithEvmAddress();
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' }));
+
+    await screen.findByText('registry gone');
+    expect(screen.queryByTestId('chain-summary')).not.toBeInTheDocument();
+  });
+
+  it('F8: chain N’s single-chain result banner does not flash while chain N+1 is still running', async () => {
+    let proceed!: () => void;
+    const gate = new Promise<void>((res) => {
+      proceed = res;
+    });
+    mocks.runSequential.mockImplementation(
+      async (_addresses: string[], _chains: string[], config: { onChainStart?: (c: string, i: number, t: number) => void }) => {
+        config.onChainStart?.('ethereum', 0, 2);
+        // Chain 1 done: the job store now holds a finished result while the
+        // multi-chain import is still active (importingChain set).
+        act(() => {
+          importJob._finish({ imported: 2, pricesUpdated: 0, swapsDetected: 0 }, [], []);
+        });
+        await gate; // hold mid-batch while the test asserts
+        return [
+          {
+            chainId: 'ethereum',
+            chainLabel: 'Ethereum',
+            status: 'imported',
+            imported: 2,
+            skippedAddresses: 0,
+            warnings: [],
+            failures: []
+          },
+          {
+            chainId: 'polygon',
+            chainLabel: 'Polygon',
+            status: 'imported',
+            imported: 1,
+            skippedAddresses: 0,
+            warnings: [],
+            failures: []
+          }
+        ];
+      }
+    );
+    await renderWithEvmAddress();
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' }));
+
+    // Mid-batch: job.result is set but the single-chain banner stays hidden.
+    await waitFor(() => expect(importJob.get().result?.imported).toBe(2));
+    expect(screen.queryByText(/transactions imported/)).not.toBeInTheDocument();
+
+    // Batch end: the aggregated summary takes over.
+    proceed();
+    const summary = await screen.findByTestId('chain-summary');
+    expect(summary).toHaveTextContent('Ethereum: 2 transactions imported');
+    expect(summary).toHaveTextContent('Polygon: 1 transaction imported');
   });
 
   it('warns and disables Import when the wallet is already imported on every selected chain', async () => {

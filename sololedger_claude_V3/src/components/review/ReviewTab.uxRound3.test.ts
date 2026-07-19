@@ -60,3 +60,21 @@ describe('ReviewTab — Item 4: duplicate bulk Mark buttons removed', () => {
     expect(source).toContain('Confirming “Internal transfer” clears the “Possible internal transfer” hint.');
   });
 });
+
+describe('ReviewTab — F1: hint checkbox is tri-state in bulk Set flags', () => {
+  it('renders the dash for a mixed selection via the DOM-only indeterminate property', () => {
+    expect(source).toContain("el.indeterminate = bulkFlagsSel.hint === 'mixed'");
+  });
+
+  it('cycles the hint on click: mixed → checked (set on all) → unchecked (remove from all)', () => {
+    expect(source).toContain("patchBulkFlagsSel({ hint: e.target.checked ? 'checked' : 'unchecked' })");
+  });
+
+  it('drives the box from the tri-state hint field, not the absolute-flags map', () => {
+    expect(source).toContain("bulkFlagsSel.hint === 'checked'");
+  });
+
+  it('explains the dash state in the dropdown copy', () => {
+    expect(source).toContain('A dash on “Possible internal transfer”');
+  });
+});

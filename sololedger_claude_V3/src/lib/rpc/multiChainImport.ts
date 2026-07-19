@@ -18,11 +18,6 @@ import type { TaxSettings } from '@/types/transaction';
 
 // ---- Chain-picker checkbox state ----
 
-/** Every detected chain starts checked. */
-export function defaultCheckedChains(detected: ChainId[]): Set<ChainId> {
-  return new Set(detected);
-}
-
 /** Toggle one chain; returns a NEW set (state updates stay immutable). */
 export function toggleChain(checked: Set<ChainId>, chainId: ChainId, on: boolean): Set<ChainId> {
   const next = new Set(checked);
@@ -53,11 +48,7 @@ export function reconcileCheckedChains(
   nextDetected: ChainId[]
 ): Set<ChainId> {
   const prev = new Set(prevDetected);
-  const next = new Set<ChainId>();
-  for (const chainId of nextDetected) {
-    if (!prev.has(chainId) || prevChecked.has(chainId)) next.add(chainId);
-  }
-  return next;
+  return new Set(nextDetected.filter((c) => !prev.has(c) || prevChecked.has(c)));
 }
 
 // ---- Sequential multi-chain import ----
@@ -141,28 +132,19 @@ export async function runSequentialChainImport(
         buildLookupConfig(chain, config.settings, config.lookupExtras)
       );
       const state = importJob.get();
-      if (state.error) {
-        outcomes.push({
-          chainId,
-          chainLabel: chain.label,
-          status: 'failed',
-          imported: state.result?.imported ?? 0,
-          skippedAddresses,
-          warnings: state.warnings,
-          failures: state.failed,
-          error: state.error
-        });
-      } else {
-        outcomes.push({
-          chainId,
-          chainLabel: chain.label,
-          status: 'imported',
-          imported: state.result?.imported ?? 0,
-          skippedAddresses,
-          warnings: state.warnings,
-          failures: state.failed
-        });
-      }
+      // importJob._error leaves the PREVIOUS chain's result/warnings/failed in
+      // place — attach them only when this chain actually succeeded.
+      outcomes.push({
+        chainId,
+        chainLabel: chain.label,
+        status: state.error ? 'failed' : 'imported',
+        imported: state.error ? 0 : (state.result?.imported ?? 0),
+        skippedAddresses,
+        warnings: state.error ? [] : state.warnings,
+        failures: state.error ? [] : state.failed,
+        // `error` is present only on failure (the summary reads it via ??).
+        ...(state.error ? { error: state.error } : {})
+      });
     } catch (err) {
       outcomes.push({
         chainId,
