@@ -145,7 +145,6 @@ const EVM_CHAINS = new Set([
   'scroll',
   'blast',
   'mantle',
-  'starknet',
   'aurora',
   'cronos',
   'gnosis',
@@ -184,6 +183,22 @@ const EXPLORER_TX_BASE: Record<string, string> = {
   optimism: 'https://optimistic.etherscan.io/tx/',
   base: 'https://basescan.org/tx/',
   avalanche: 'https://snowtrace.io/tx/',
+  fantom: 'https://ftmscan.com/tx/',
+  celo: 'https://celoscan.io/tx/',
+  zksync: 'https://era.zksync.network/tx/',
+  linea: 'https://lineascan.build/tx/',
+  scroll: 'https://scrollscan.com/tx/',
+  blast: 'https://blastscan.io/tx/',
+  mantle: 'https://mantlescan.xyz/tx/',
+  aurora: 'https://aurorascan.dev/tx/',
+  cronos: 'https://cronoscan.com/tx/',
+  gnosis: 'https://gnosisscan.io/tx/',
+  moonbeam: 'https://moonscan.io/tx/',
+  moonriver: 'https://moonriver.moonscan.io/tx/',
+  metis: 'https://andromeda-explorer.metis.io/tx/',
+  opbnb: 'https://opbnbscan.com/tx/',
+  // StarkNet is intentionally absent: it is not EVM-shaped (its tx hash is a
+  // felt252, not 0x + 32 bytes), so no link is built rather than a broken one.
   solana: 'https://solscan.io/tx/',
   bitcoin: 'https://mempool.space/tx/'
 };

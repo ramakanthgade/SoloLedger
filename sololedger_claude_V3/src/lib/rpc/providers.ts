@@ -68,7 +68,7 @@ export interface ChainDef {
   id: ChainId;
   label: string;
   asset: string;
-  provider: 'blockstream' | 'alchemy_evm' | 'alchemy_solana' | 'etherscan_compatible';
+  provider: 'blockstream' | 'alchemy_evm' | 'alchemy_solana' | 'etherscan_compatible' | 'unsupported';
   alchemyNetwork?: string; // Alchemy's network slug, e.g. "eth-mainnet"
   needsKey: boolean;
 }
@@ -89,12 +89,21 @@ export const CHAINS: ChainDef[] = [
   { id: 'scroll', label: 'Scroll', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'scroll-mainnet', needsKey: true },
   { id: 'blast', label: 'Blast', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'blast-mainnet', needsKey: true },
   { id: 'mantle', label: 'Mantle', asset: 'MNT', provider: 'alchemy_evm', alchemyNetwork: 'mantle-mainnet', needsKey: true },
-  { id: 'starknet', label: 'StarkNet', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'starknet-mainnet', needsKey: true },
-  { id: 'aurora', label: 'Aurora', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'aurora-mainnet', needsKey: true },
+  // StarkNet is NOT an EVM chain, so there is no EVM sync wiring for it (no
+  // alchemy_evm / Moralis / Noves path). It stays in the registry for display
+  // + CoinGecko pricing; wallet sync is marked unsupported until a non-EVM
+  // provider exists (the codebase has no non-EVM provider pattern beyond
+  // Bitcoin blockstream and Solana).
+  { id: 'starknet', label: 'StarkNet', asset: 'STRK', provider: 'unsupported', needsKey: false },
+  // Aurora has no Alchemy network — fall back to the Etherscan-compatible
+  // custom-explorer path (same pattern as custom_evm).
+  { id: 'aurora', label: 'Aurora', asset: 'ETH', provider: 'etherscan_compatible', needsKey: true },
   { id: 'cronos', label: 'Cronos', asset: 'CRO', provider: 'alchemy_evm', alchemyNetwork: 'cronos-mainnet', needsKey: true },
   { id: 'gnosis', label: 'Gnosis', asset: 'xDAI', provider: 'alchemy_evm', alchemyNetwork: 'gnosis-mainnet', needsKey: true },
   { id: 'moonbeam', label: 'Moonbeam', asset: 'GLMR', provider: 'alchemy_evm', alchemyNetwork: 'moonbeam-mainnet', needsKey: true },
-  { id: 'moonriver', label: 'Moonriver', asset: 'MOVR', provider: 'alchemy_evm', alchemyNetwork: 'moonriver-mainnet', needsKey: true },
+  // Moonriver has no Alchemy network (Moonbeam is supported; Moonriver is
+  // not) — fall back to the Etherscan-compatible custom-explorer path.
+  { id: 'moonriver', label: 'Moonriver', asset: 'MOVR', provider: 'etherscan_compatible', needsKey: true },
   { id: 'metis', label: 'Metis', asset: 'METIS', provider: 'alchemy_evm', alchemyNetwork: 'metis-mainnet', needsKey: true },
   { id: 'opbnb', label: 'opBNB', asset: 'BNB', provider: 'alchemy_evm', alchemyNetwork: 'opbnb-mainnet', needsKey: true },
   { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', alchemyNetwork: 'solana-mainnet', needsKey: true },
@@ -931,6 +940,9 @@ export function applyUnifiedIncomingClassifications(transactions: Transaction[])
 
 async function lookupOneAddress(address: string, config: LookupConfig): Promise<LookupResult & { newestSignature?: string }> {
   const { chain } = config;
+  if (chain.provider === 'unsupported') {
+    throw new Error(`${chain.label} wallet sync is not supported yet — import a CSV export instead.`);
+  }
   if (chain.provider === 'blockstream') {
     return fetchBitcoin(address, 'https://blockstream.info/api', chain.asset);
   }

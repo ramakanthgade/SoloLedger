@@ -12,4 +12,10 @@ describe('coinspotParser', () => {
     expect(result.transactions[0]).toMatchObject({ asset: 'BTC', amount: 0.1, counterAsset: 'AUD', fiatCurrency: 'AUD', fiatValue: 10000, feeAmount: 10, feeAsset: 'AUD' });
     expect(result.transactions[2].flags).toContain('possible_internal_transfer');
   });
+  it('maps wallet send/receive actions instead of skipping them', () => {
+    const result = coinspotParser.parse(['Send', 'Receive'].map(row));
+    expect(result.transactions.map((t) => t.type)).toEqual(['transfer_out', 'transfer_in']);
+    expect(result.skippedRows).toBe(0);
+    expect(result.transactions[0].flags).toContain('possible_internal_transfer');
+  });
 });

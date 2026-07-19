@@ -108,7 +108,17 @@ const SYMBOL_TO_ID: Record<string, string> = {
   ZRX: '0x',
   PUNDIX: 'pundi-x-2',
   KNC: 'kyber-network-crystal',
-  NPXS: 'pundi-x'
+  NPXS: 'pundi-x',
+  // Native assets of the newer supported chains (see rpc/providers CHAINS).
+  FTM: 'fantom',
+  CELO: 'celo',
+  GLMR: 'moonbeam',
+  MOVR: 'moonriver',
+  METIS: 'metis-token',
+  CRO: 'crypto-com-chain',
+  XDAI: 'xdai',
+  MNT: 'mantle',
+  STRK: 'starknet'
 };
 
 const COIN_ID_CACHE_KEY = 'sololedger_gecko_coin_ids';

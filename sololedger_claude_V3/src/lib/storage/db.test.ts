@@ -12,6 +12,13 @@ describe('transactionExchangeKey', () => {
     expect(transactionExchangeKey({ source: 'wazirx-spot', sourceRef: 'w1' })).toBe('ex:w1');
   });
 
+  it('builds an exchange key for the newer exchange CSV parser sources', () => {
+    const sources = ['kraken', 'kucoin', 'cryptocom', 'bybit', 'okx', 'gateio', 'bitfinex', 'gemini', 'htx', 'coinspot'];
+    for (const source of sources) {
+      expect(transactionExchangeKey({ source, sourceRef: 'row-1' })).toBe('ex:row-1');
+    }
+  });
+
   it('returns null when there is no sourceRef', () => {
     expect(transactionExchangeKey({ source: 'binance', sourceRef: undefined })).toBeNull();
   });

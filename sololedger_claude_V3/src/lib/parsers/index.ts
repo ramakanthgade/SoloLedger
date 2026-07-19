@@ -38,14 +38,10 @@ export const PARSERS: ExchangeParser[] = [
   wazirxTradesParser,
   wazirxDepositsParser,
   wazirxLedgerParser,
-  // India CEX parsers — specific enough to win over the generic spot heuristic.
-  coindcxParser,
-  coinswitchParser,
-  zebpayParser,
-  mudrexParser,
-  binanceSpotParser,
-  coinbaseParser,
-  binanceParser,
+  // Strict multi-column exchange formats. These must sit ahead of the looser
+  // heuristic parsers below: zebpay's symbol+type+quantity check would
+  // otherwise claim Gemini/HTX exports, and binance_spot's pair/side/price
+  // check would claim KuCoin exports, before their own parsers see them.
   krakenParser,
   kucoinParser,
   cryptocomParser,
@@ -56,6 +52,14 @@ export const PARSERS: ExchangeParser[] = [
   geminiParser,
   htxParser,
   coinspotParser,
+  // India CEX parsers — specific enough to win over the generic spot heuristic.
+  coindcxParser,
+  coinswitchParser,
+  zebpayParser,
+  mudrexParser,
+  binanceSpotParser,
+  coinbaseParser,
+  binanceParser,
   // Deterministic loose fallback — MUST be last so specific parsers win.
   genericHistoryParser
 ];

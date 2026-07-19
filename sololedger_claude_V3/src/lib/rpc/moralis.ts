@@ -41,7 +41,6 @@ const MORALIS_CHAIN: Partial<Record<ChainId, string>> = {
   scroll: 'scroll',
   blast: 'blast',
   mantle: 'mantle',
-  starknet: 'starknet',
   aurora: 'aurora',
   cronos: 'cronos',
   gnosis: 'gnosis',

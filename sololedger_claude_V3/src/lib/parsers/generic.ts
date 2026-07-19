@@ -87,19 +87,29 @@ export const DEFAULT_TYPE_VALUE_MAP: Record<string, TxType> = {
 };
 
 /**
- * Resolve a raw type cell to a `TxType`. Exact map lookup first, then a
- * conservative substring fallback for transfer variants only (so future
- * misspellings like "Withdrawl" / "Withdrew" are non-fatal). No broad buy/sell
- * substring rules — those are too ambiguous to guess.
+ * Normalize a type cell/map key so separator and case variants compare equal:
+ * 'Crypto Purchase', 'crypto_purchase' and 'crypto-purchase' all collapse to
+ * 'crypto purchase'.
+ */
+function normalizeTypeKey(value: string): string {
+  return value.trim().toLowerCase().replace(/[\s_-]+/g, ' ');
+}
+
+/**
+ * Resolve a raw type cell to a `TxType`. Separator-insensitive map lookup
+ * first, then a conservative substring fallback for transfer variants only
+ * (so future misspellings like "Withdrawl" / "Withdrew" are non-fatal). No
+ * broad buy/sell substring rules — those are too ambiguous to guess.
  */
 export function resolveTxType(
   rawType: string,
   map: Record<string, TxType>
 ): TxType | undefined {
-  const key = (rawType || '').trim().toLowerCase();
+  const key = normalizeTypeKey(rawType || '');
   if (!key) return undefined;
-  const exact = map[key];
-  if (exact) return exact;
+  for (const [mapKey, mapped] of Object.entries(map)) {
+    if (normalizeTypeKey(mapKey) === key) return mapped;
+  }
   if (key.includes('withdraw')) return 'transfer_out';
   if (key.includes('deposit')) return 'transfer_in';
   return undefined;
