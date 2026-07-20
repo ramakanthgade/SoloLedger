@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, act } from '@testing-library/react';
 
 /**
  * Item 1 — OnboardingFlow must thread `onSkip` into the ConnectionWizard
@@ -20,7 +20,9 @@ vi.mock('./Onboarding', () => ({
   )
 }));
 
-const wizardProps = vi.hoisted(() => ({ current: {} as Record<string, unknown> }));
+const wizardProps = vi.hoisted(() => ({
+  current: {} as { onSkip?: () => void; onComplete?: () => void }
+}));
 
 vi.mock('@/components/import/ConnectionWizard', () => ({
   ConnectionWizard: (props: { onSkip?: () => void; onComplete?: () => void }) => {
@@ -53,5 +55,28 @@ describe('OnboardingFlow — onSkip threading (Item 1)', () => {
     render(<OnboardingFlow />);
     fireEvent.click(screen.getByRole('button', { name: /start import/i }));
     expect(wizardProps.current.onSkip).toBeUndefined();
+  });
+});
+
+describe('OnboardingFlow — completion gate (Item 2 batch banner)', () => {
+  it('holds on the wizard after onComplete so the aggregated banner paints; Continue fires onDone', () => {
+    const onDone = vi.fn();
+    const onSkip = vi.fn();
+    render(<OnboardingFlow onDone={onDone} onSkip={onSkip} />);
+    fireEvent.click(screen.getByRole('button', { name: /start import/i }));
+
+    // The wizard finishing (single file OR the last file of a batch) must NOT
+    // immediately unmount the flow — the user first sees the saved-count banner.
+    act(() => {
+      wizardProps.current.onComplete?.();
+    });
+    expect(onDone).not.toHaveBeenCalled();
+
+    // The skip link is withdrawn post-completion (setup is done — nothing to skip)
+    // and the explicit Continue action advances instead.
+    expect(wizardProps.current.onSkip).toBeUndefined();
+    fireEvent.click(screen.getByRole('button', { name: /continue to your ledger/i }));
+    expect(onDone).toHaveBeenCalledTimes(1);
+    expect(onSkip).not.toHaveBeenCalled();
   });
 });

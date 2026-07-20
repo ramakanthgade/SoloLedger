@@ -68,6 +68,16 @@ function MainApp() {
   // who exits the flow without importing reach the main app for this session.
   const txCount = useLiveQuery(() => db.transactions.count(), []);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  // Latch: once the empty-ledger gate opens onboarding, keep it mounted until
+  // the user finishes or skips. The guided wizard's multi-file batch saves the
+  // FIRST file before the last — flipping txCount 0→N — and a reactive gate
+  // would unmount the wizard mid-batch, silently stranding the queued files
+  // (only the first file landed in the ledger). The wizard defers its
+  // onComplete to the end of the batch precisely so this latch can hold.
+  const [onboardingActive, setOnboardingActive] = useState(false);
+  useEffect(() => {
+    if (shouldShowOnboarding(txCount)) setOnboardingActive(true);
+  }, [txCount]);
 
   useEffect(() => {
     const key = `sololedger_dedup_session_${user?.id ?? 'local'}`;
@@ -96,12 +106,16 @@ function MainApp() {
     return <LoadingScreen message="Loading your workspace…" />;
   }
 
-  if (!onboardingDismissed && shouldShowOnboarding(txCount)) {
+  if (!onboardingDismissed && onboardingActive) {
     return (
       <OnboardingFlow
-        onDone={() => setOnboardingDismissed(true)}
+        onDone={() => {
+          setOnboardingActive(false);
+          setOnboardingDismissed(true);
+        }}
         onSkip={() => {
           setActive('import');
+          setOnboardingActive(false);
           setOnboardingDismissed(true);
         }}
       />
