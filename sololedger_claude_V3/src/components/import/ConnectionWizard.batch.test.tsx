@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   csvImportsGet: vi.fn(),
   bulkPut: vi.fn(async () => undefined),
   upsertCsvImport: vi.fn(async () => undefined),
-  countCsvImportTransactions: vi.fn(async () => 1),
+  countCsvImportTransactions: vi.fn(async (_hash: string) => 1),
   deduplicateTransactions: vi.fn(async () => 0),
   getSettings: vi.fn(async () => ({ reportingCurrency: 'USD' })),
   convertOrNormalizeForImport: vi.fn(async (txs: Transaction[]) => ({ transactions: txs })),
@@ -82,6 +82,8 @@ import { ConnectionWizard } from './ConnectionWizard';
 let txCounts: Record<string, number> = {};
 /** Content hashes already present in csvImports (i.e. duplicate files). */
 let duplicateHashes: Set<string> = new Set();
+/** Post-dedup rows surviving per import hash — mirrors countCsvImportTransactions. */
+let savedCounts: Record<string, number> = {};
 
 function makeTx(id: string): Transaction {
   return {
@@ -116,7 +118,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   txCounts = {};
   duplicateHashes = new Set();
+  savedCounts = {};
   mocks.hashFileContent.mockImplementation(async (input: unknown) => `hash:${String(input)}`);
+  mocks.countCsvImportTransactions.mockImplementation(
+    async (hash: string) => savedCounts[hash] ?? 1
+  );
   mocks.csvImportsGet.mockImplementation(async (hash: string) =>
     duplicateHashes.has(hash) ? { hash, fileName: 'older import' } : undefined
   );
@@ -138,6 +144,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
   it('skips a duplicate in the MIDDLE of a batch and finishes with the aggregated banner', async () => {
     // a.csv: 1 tx · b.csv: already imported · c.csv: 2 txs
     txCounts = { 'a.csv': 1, 'c.csv': 2 };
+    savedCounts = { 'hash:aaa': 1, 'hash:ccc': 2 };
     duplicateHashes = new Set(['hash:bbb']);
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb'), makeFile('c.csv', 'ccc')]);
 
@@ -163,6 +170,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
   it('keeps the batch running when the FIRST file is a duplicate', async () => {
     // a.csv: already imported · b.csv: 1 tx · c.csv: 2 txs
     txCounts = { 'b.csv': 1, 'c.csv': 2 };
+    savedCounts = { 'hash:bbb': 1, 'hash:ccc': 2 };
     duplicateHashes = new Set(['hash:aaa']);
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb'), makeFile('c.csv', 'ccc')]);
 
@@ -208,6 +216,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
 
   it('single file: confirms and fires onComplete once with the saved count', async () => {
     txCounts = { 'a.csv': 2 };
+    savedCounts = { 'hash:aaa': 2 };
     await dropFiles([makeFile('a.csv', 'aaa')]);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
@@ -215,5 +224,19 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     await screen.findByText(/Saved 2 transactions to your local ledger/);
     expect(mocks.onComplete).toHaveBeenCalledTimes(1);
     expect(mocks.onComplete).toHaveBeenCalledWith(2);
+  });
+
+  it('dedup: a confirm whose rows all dedupe away shows no-new copy, not a fake saved count', async () => {
+    // Overlapping re-export: new file hash, but every row already in the ledger.
+    txCounts = { 'a.csv': 2 };
+    savedCounts = { 'hash:aaa': 0 };
+    await dropFiles([makeFile('a.csv', 'aaa')]);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+
+    await screen.findByText(/No new transactions — everything you imported was already in your ledger/);
+    expect(screen.queryByText(/Saved \d+ transaction/)).not.toBeInTheDocument();
+    expect(mocks.onComplete).toHaveBeenCalledTimes(1);
+    expect(mocks.onComplete).toHaveBeenCalledWith(0);
   });
 });

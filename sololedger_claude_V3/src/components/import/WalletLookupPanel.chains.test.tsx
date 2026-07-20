@@ -335,4 +335,21 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
     fireEvent.click(screen.getByRole('checkbox', { name: /polygon/i }));
     expect(screen.getByRole('button', { name: 'Import 1 wallet on 1 chain' })).toBeDisabled();
   });
+
+  it('mixed paste — button counts only fresh wallets and notes the already-imported skip', async () => {
+    const KNOWN = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    lookupRows = [
+      { id: `ethereum:${KNOWN}`, chain: 'ethereum', address: KNOWN, txCount: 5, lastSyncedAt: 1_700_000_000_000 },
+      { id: `polygon:${KNOWN}`, chain: 'polygon', address: KNOWN, txCount: 2, lastSyncedAt: 1_700_000_000_000 }
+    ];
+    render(<WalletLookupPanel />);
+    const input = await screen.findByRole('textbox', { name: /wallet addresses/i });
+    fireEvent.change(input, { target: { value: `${KNOWN}\n${EVM_ADDR}` } });
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+
+    // KNOWN is imported on both selected chains; only EVM_ADDR will actually be
+    // fetched — the label must not count the already-imported wallet.
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' })).toBeEnabled();
+    await screen.findByText(/already imported on the selected chains \(will be\s+skipped\)\. 1 new will be imported/);
+  });
 });

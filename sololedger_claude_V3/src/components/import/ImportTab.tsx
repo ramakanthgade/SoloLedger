@@ -81,7 +81,7 @@ export function ImportTab() {
     parserId: string | null,
     hash: string,
     name: string
-  ): Promise<{ converted: number; failed: number; pricesUpdated: number; pricesFailed: number; warnings: string[] }> => {
+  ): Promise<{ converted: number; failed: number; pricesUpdated: number; pricesFailed: number; warnings: string[]; saved: number }> => {
     setConversionNote(null);
     setPriceFetchNote(null);
     // Raw local settings carry BYOK API keys for the actual fetch; the effective
@@ -143,7 +143,10 @@ export function ImportTab() {
       failed: nFailed,
       pricesUpdated,
       pricesFailed,
-      warnings: []
+      warnings: [],
+      // Post-dedup rows attributable to this import — the honest "saved" count.
+      // Parsed-but-deduped rows (overlapping re-exports) must not inflate it.
+      saved: count
     };
   };
 
@@ -201,11 +204,11 @@ export function ImportTab() {
           // (non-local only). Only the ambiguous sheets' rows are re-oriented;
           // clearly-named / non-generic sheets are left untouched. Non-fatal.
           const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
-          await persistTransactions(toPersist, result.detectedParser, hash, file.name);
+          const persisted = await persistTransactions(toPersist, result.detectedParser, hash, file.name);
           setImportWarnings(result.warnings);
           setFileName('');
           setFileHash('');
-          return { kind: 'saved', count: toPersist.length };
+          return { kind: 'saved', count: persisted.saved };
         } finally {
           setSaving(false);
           setImportPhase(null);
@@ -250,6 +253,7 @@ export function ImportTab() {
       let duplicates = 0;
       let manual = 0;
       let failed = 0;
+      let noNew = 0;
       /** Outcome of the last file that didn't throw — the per-file UI below
        *  (duplicate banner, column-mapping form) only reflects THIS file. */
       let lastOutcome: FileHandleOutcome | null = null;
@@ -266,8 +270,15 @@ export function ImportTab() {
         }
         lastOutcome = outcome;
         if (outcome.kind === 'saved') {
-          savedFiles += 1;
-          totalSaved += outcome.count;
+          if (outcome.count > 0) {
+            savedFiles += 1;
+            totalSaved += outcome.count;
+          } else {
+            // Parsed fine but every row was already in the ledger (row-level
+            // dedup, e.g. an overlapping re-export) — must not inflate the
+            // saved total or the "N of M files imported" count.
+            noNew += 1;
+          }
         } else if (outcome.kind === 'duplicate') {
           duplicates += 1;
         } else {
@@ -290,7 +301,10 @@ export function ImportTab() {
                   mappingShown ? ' — shown below' : ' — re-drop that file on its own to map it'
                 }`
               : null,
-            failed > 0 ? `${failed} could not be read — skipped` : null
+            failed > 0 ? `${failed} could not be read — skipped` : null,
+            noNew > 0
+              ? `${noNew} had no new rows — everything already in your ledger`
+              : null
           ]
             .filter(Boolean)
             .join(' · ')}.`
@@ -299,6 +313,11 @@ export function ImportTab() {
         // Single-file drop that threw: nothing else surfaced, so say so.
         setBatchNote(
           `"${files[0].name}" could not be read — the file may be corrupt or in an unexpected format.`
+        );
+      } else if (noNew > 0) {
+        // Single file parsed fine but row-level dedup dropped every row.
+        setBatchNote(
+          'No new transactions — everything in that file was already in your ledger.'
         );
       }
     },
@@ -356,8 +375,8 @@ export function ImportTab() {
       const aiToPersist = autoMapped.addressColumnAmbiguous
         ? await confirmAddressOrientation(autoMapped.transactions)
         : autoMapped.transactions;
-      await persistTransactions(aiToPersist, 'ai_mapping', fileHash, fileName);
-      setSavedCount(aiToPersist.length);
+      const aiPersisted = await persistTransactions(aiToPersist, 'ai_mapping', fileHash, fileName);
+      setSavedCount(aiPersisted.saved);
       setImportWarnings([
         `AI mapped the columns (${suggestion.confidence} confidence): ${suggestion.explanation}`,
         ...autoMapped.warnings
@@ -394,8 +413,8 @@ export function ImportTab() {
       const toPersist = mapped.addressColumnAmbiguous
         ? await confirmAddressOrientation(mapped.transactions)
         : mapped.transactions;
-      await persistTransactions(toPersist, 'manual_mapping', fileHash, fileName);
-      setSavedCount(toPersist.length);
+      const mappedPersisted = await persistTransactions(toPersist, 'manual_mapping', fileHash, fileName);
+      setSavedCount(mappedPersisted.saved);
       setImportWarnings(mapped.warnings);
       setOutcome(null);
       setFileName('');
@@ -627,11 +646,18 @@ export function ImportTab() {
 
       {savedCount !== null && (
         <div className="space-y-2">
-          <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/15 px-4 py-2.5 text-sm text-gain">
-            <CheckCircle2 className="h-4 w-4" />
-            Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local database. Head to Review to
-            categorize them.
-          </div>
+          {savedCount > 0 ? (
+            <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/15 px-4 py-2.5 text-sm text-gain">
+              <CheckCircle2 className="h-4 w-4" />
+              Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local database. Head to
+              Review to categorize them.
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-lg border border-warn/30 bg-warn/10 px-4 py-2.5 text-sm text-warn">
+              <AlertTriangle className="h-4 w-4" />
+              No new transactions — everything in that file was already in your ledger.
+            </div>
+          )}
           {importWarnings.map((w, i) => (
             <div key={i} className="flex items-start gap-2 rounded-sm bg-warn/5 px-3 py-2 text-xs text-warn">
               <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />

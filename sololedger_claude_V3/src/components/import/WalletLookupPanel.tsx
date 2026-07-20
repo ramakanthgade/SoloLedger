@@ -203,6 +203,18 @@ export function WalletLookupPanel() {
       ).length,
     0
   );
+  // Wallets fresh on at least one selected chain — the wallets the import will
+  // actually fetch. The button label counts these so a mixed paste (some
+  // addresses already imported on every selected chain) does not over-promise.
+  // Falls back to the pasted count when nothing is fresh so the disabled
+  // button still reads sensibly next to the "already imported" note.
+  const multiFreshWallets = evmAddresses.filter((a) =>
+    selectedChains.some(
+      (cid) => !lookedUp.some((r) => r.chain === cid && r.address.toLowerCase() === a.toLowerCase())
+    )
+  );
+  const multiImportWalletCount =
+    multiFreshWallets.length > 0 ? multiFreshWallets.length : evmAddresses.length;
 
   const startImport = (addressesOverride?: string[]) => {
     const addrs = addressesOverride ?? freshAddresses;
@@ -416,6 +428,15 @@ export function WalletLookupPanel() {
             selected chains. Use <strong>Sync</strong> in the list below to refresh.
           </div>
         )}
+        {showChainPicker &&
+          evmAddresses.length > 1 &&
+          multiFreshTotal > 0 &&
+          multiFreshWallets.length < evmAddresses.length && (
+            <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
+              {evmAddresses.length - multiFreshWallets.length} already imported on the selected chains (will be
+              skipped). {multiFreshWallets.length} new will be imported.
+            </div>
+          )}
         {!showChainPicker && alreadyImported.length > 0 && freshAddresses.length === 0 && (
           <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
             {alreadyImported.length === 1
@@ -441,7 +462,7 @@ export function WalletLookupPanel() {
             onClick={() => (showChainPicker ? void startMultiChainImport() : startImport())}
           >
             {showChainPicker
-              ? `Import ${evmAddresses.length || ''} wallet${evmAddresses.length === 1 ? '' : 's'} on ${selectedChains.length} chain${selectedChains.length === 1 ? '' : 's'}`
+              ? `Import ${multiImportWalletCount || ''} wallet${multiImportWalletCount === 1 ? '' : 's'} on ${selectedChains.length} chain${selectedChains.length === 1 ? '' : 's'}`
               : `Import ${freshAddresses.length || ''} wallet${freshAddresses.length === 1 ? '' : 's'}`}
           </Button>
           {settings.priceApiEnabled && !job.active && (showChainPicker ? multiFreshTotal > 0 : freshAddresses.length > 0) && (

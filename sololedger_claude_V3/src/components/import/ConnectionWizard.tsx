@@ -461,7 +461,10 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         await fetchMissingPricesForAllTransactions(settings);
       }
 
-      const savedNow = preview.transactions.length;
+      // Post-dedup rows attributable to this file — NOT the parsed preview
+      // count. Overlapping re-exports (new hash, same rows) dedupe away, and
+      // the banner must not claim those rows were saved.
+      const savedNow = count;
       if (fileQueue.length > 0) {
         // Batch mode: keep the wizard open and read the next queued file. The
         // success banner (with the running total) — and the onComplete signal
@@ -503,11 +506,18 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
 
       {savedCount !== null ? (
         <div className="space-y-3">
-          <div className="flex items-center gap-2 rounded-xl border border-gain/30 bg-gain/10 px-4 py-3 text-sm text-gain">
-            <Check className="h-4 w-4 shrink-0" />
-            Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local ledger. Head to
-            Review to categorize them.
-          </div>
+          {savedCount > 0 ? (
+            <div className="flex items-center gap-2 rounded-xl border border-gain/30 bg-gain/10 px-4 py-3 text-sm text-gain">
+              <Check className="h-4 w-4 shrink-0" />
+              Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local ledger. Head to
+              Review to categorize them.
+            </div>
+          ) : (
+            <div className="flex items-center gap-2 rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              No new transactions — everything you imported was already in your ledger.
+            </div>
+          )}
           {/* Batch files skipped along the way (e.g. duplicates) stay visible next to the final banner. */}
           {queueNote && (
             <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2.5 text-xs text-warn">

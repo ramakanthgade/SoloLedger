@@ -22,7 +22,7 @@ const mocks = vi.hoisted(() => ({
   getCsvImports: vi.fn(async () => []),
   bulkPut: vi.fn(async () => undefined),
   upsertCsvImport: vi.fn(async () => undefined),
-  countCsvImportTransactions: vi.fn(async () => 1),
+  countCsvImportTransactions: vi.fn(async (_hash: string) => 1),
   deduplicateTransactions: vi.fn(async () => 0),
   getSettings: vi.fn(async () => ({ reportingCurrency: 'USD' })),
   convertOrNormalizeForImport: vi.fn(async (txs: Transaction[]) => ({
@@ -148,9 +148,16 @@ function getDropzone() {
   return screen.getByText(/Drop a CSV or Excel/).closest('div')!;
 }
 
+/** Post-dedup rows surviving per import hash — mirrors countCsvImportTransactions. */
+let savedCounts: Record<string, number> = {};
+
 beforeEach(() => {
   vi.clearAllMocks();
+  savedCounts = {};
   mocks.hashFileContent.mockImplementation(async (input: unknown) => `hash:${String(input)}`);
+  mocks.countCsvImportTransactions.mockImplementation(
+    async (hash: string) => savedCounts[hash] ?? 1
+  );
 });
 
 describe('ImportTab — multi-file batch handling', () => {
@@ -158,6 +165,7 @@ describe('ImportTab — multi-file batch handling', () => {
     mocks.parseImportFile.mockImplementation(async (file: File) =>
       recognized(file.name === 'one.csv' ? 1 : 2, file.name)
     );
+    savedCounts = { 'hash:aaa': 1, 'hash:bbb': 2 };
     const { container } = render(<ImportTab />);
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
@@ -178,6 +186,7 @@ describe('ImportTab — multi-file batch handling', () => {
       if (file.name === 'corrupt.csv') throw new Error('not a workbook');
       return recognized(2, file.name);
     });
+    savedCounts = { 'hash:aaa': 2 };
     render(<ImportTab />);
 
     fireEvent.drop(getDropzone(), {
@@ -228,5 +237,33 @@ describe('ImportTab — multi-file batch handling', () => {
     });
     await screen.findByText(/1 needs column mapping — re-drop that file on its own to map it/);
     expect(screen.queryByTestId('panel-mapping')).not.toBeInTheDocument();
+  });
+
+  it('dedup: a single file whose rows all dedupe away must NOT claim them saved', async () => {
+    // Overlapping re-export: different bytes (new hash) but every row already
+    // in the ledger. The banner must tell the truth: nothing new was saved.
+    mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
+    savedCounts = { 'hash:aaa': 0 };
+    render(<ImportTab />);
+
+    fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('reexport.csv', 'aaa')] } });
+
+    await screen.findByText(/No new transactions — everything in that file was already in your ledger/);
+    expect(screen.queryByText(/Saved \d+ transaction/)).not.toBeInTheDocument();
+  });
+
+  it('dedup: a fully-deduped file in a batch is bucketed as no-new-rows, not imported', async () => {
+    mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
+    savedCounts = { 'hash:aaa': 2, 'hash:bbb': 0 };
+    render(<ImportTab />);
+
+    fireEvent.drop(getDropzone(), {
+      dataTransfer: { files: [makeFile('new.csv', 'aaa'), makeFile('reexport.csv', 'bbb')] }
+    });
+
+    await screen.findByText(
+      /1 of 2 files imported \(2 transactions\) · 1 had no new rows — everything already in your ledger/
+    );
+    await screen.findByText(/Saved 2 transactions to your local database/);
   });
 });
