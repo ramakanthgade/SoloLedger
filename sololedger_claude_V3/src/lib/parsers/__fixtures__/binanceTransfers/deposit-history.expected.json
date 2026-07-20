@@ -1,0 +1,28 @@
+[
+  {
+    "timestamp": 1741594500000,
+    "type": "transfer_in",
+    "asset": "USDT",
+    "amount": 500,
+    "fiatCurrency": "USD",
+    "source": "binance_transfers",
+    "sourceRef": "binance:1741594500000:transfer_in:USDT:500.0000",
+    "notes": "Deposit via TRX",
+    "flags": ["possible_internal_transfer"],
+    "isInternalTransfer": false
+  },
+  {
+    "timestamp": 1741789800000,
+    "type": "transfer_in",
+    "asset": "ETH",
+    "amount": 0.5,
+    "fiatCurrency": "USD",
+    "source": "binance_transfers",
+    "sourceRef": "binance:1741789800000:transfer_in:ETH:0.500000",
+    "txHash": "0x1111111111111111111111111111111111111111111111111111111111111111",
+    "chain": "ethereum",
+    "notes": "Deposit via ETH",
+    "flags": ["possible_internal_transfer"],
+    "isInternalTransfer": false
+  }
+]

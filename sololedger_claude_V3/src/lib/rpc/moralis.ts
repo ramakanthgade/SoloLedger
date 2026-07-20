@@ -20,7 +20,7 @@ import type { Transaction, TxType, FlagReason } from '@/types/transaction';
 import { classifyFromMoralis } from '@/lib/rpc/classificationEngine';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
-import type { ChainId } from '@/lib/rpc/providers';
+import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const MORALIS_BASE = 'https://deep-index.moralis.io/api/v2.2';
@@ -52,6 +52,93 @@ const MORALIS_CHAIN: Partial<Record<ChainId, string>> = {
 
 export function getMoralisChain(chainId: ChainId): string | null {
   return MORALIS_CHAIN[chainId] ?? null;
+}
+
+/** Moralis chain slug → SoloLedger ChainId (exact inverse of MORALIS_CHAIN). */
+export const MORALIS_SLUG_TO_CHAIN: Readonly<Record<string, ChainId>> = Object.freeze(
+  Object.fromEntries(
+    Object.entries(MORALIS_CHAIN).map(([chainId, slug]) => [slug, chainId as ChainId])
+  )
+);
+
+/**
+ * Chains the app can actually IMPORT for an EVM address out of the box:
+ * CHAINS registry entries with a working EVM provider path (`alchemy_evm`,
+ * which routes Moralis-first). Excludes `starknet` (provider `unsupported`),
+ * `custom_evm`, and chains that only work via the manual etherscan-compatible
+ * path (aurora/moonriver) — those stay reachable through the manual dropdown.
+ */
+const IMPORTABLE_EVM_CHAINS: ReadonlySet<ChainId> = new Set(
+  CHAINS.filter((c) => c.provider === 'alchemy_evm').map((c) => c.id)
+);
+
+/**
+ * Resolve a Moralis chain slug (e.g. "eth", "polygon") to an app ChainId the
+ * wallet-import pipeline can handle, or null when the chain is unknown to us
+ * or not importable (starknet/custom_evm/etherscan-only chains).
+ */
+export function chainIdFromMoralisSlug(slug: string): ChainId | null {
+  const chainId = MORALIS_SLUG_TO_CHAIN[slug.trim().toLowerCase()];
+  return chainId && IMPORTABLE_EVM_CHAINS.has(chainId) ? chainId : null;
+}
+
+/** One entry of the Moralis /wallets/{address}/chains response. */
+interface MoralisActiveChainEntry {
+  chain?: string;
+  chain_id?: string;
+  /** Empty string when the wallet has no activity on this chain. */
+  first_transaction?: string | { block_timestamp?: string } | null;
+  /** Empty string when the wallet has no activity on this chain. */
+  last_transaction?: string | { block_timestamp?: string } | null;
+}
+
+export interface WalletActiveChains {
+  /** Importable app chains with real activity, in CHAINS registry order. */
+  chains: ChainId[];
+  /** Raw Moralis slugs that reported activity (before importable filtering). */
+  activeSlugs: string[];
+}
+
+/**
+ * Detect which EVM chains a wallet has real activity on, in ONE Moralis call:
+ * GET /api/v2.2/wallets/{address}/chains. Entries whose first/last transaction
+ * fields are empty strings are inactive and filtered out. Same routing pattern
+ * as fetchMoralisEvm: the SaaS proxy in hosted mode (no user key needed),
+ * direct-with-key otherwise.
+ *
+ * Throws on HTTP/network failure — callers treat that as "detection
+ * unavailable" and fall back to the manual chain dropdown.
+ */
+export async function fetchWalletActiveChains(
+  address: string,
+  apiKey: string
+): Promise<WalletActiveChains> {
+  const url = isSaasMode()
+    ? `${getApiBase()}/api/proxy/moralis/api/v2.2/wallets/${address}/chains`
+    : `${MORALIS_BASE}/wallets/${address}/chains`;
+
+  recordNetworkActivity(resolveMode(isSaasMode()));
+  const res = isSaasMode()
+    ? await saasProxyFetch(url.replace(getApiBase(), ''))
+    : await fetch(url, { headers: { 'X-API-Key': apiKey, accept: 'application/json' } });
+
+  if (!res.ok) throw new Error(`Moralis chain detection returned ${res.status}`);
+
+  const data = await res.json();
+  const entries: MoralisActiveChainEntry[] = data?.active_chains ?? [];
+  const activeSlugs = entries
+    .filter((e) => Boolean(e.first_transaction) && Boolean(e.last_transaction))
+    .map((e) => String(e.chain ?? '').trim().toLowerCase())
+    .filter(Boolean);
+
+  const resolved = new Set<ChainId>();
+  for (const slug of activeSlugs) {
+    const chainId = chainIdFromMoralisSlug(slug);
+    if (chainId) resolved.add(chainId);
+  }
+  // Stable display order = CHAINS registry order.
+  const chains = CHAINS.filter((c) => resolved.has(c.id)).map((c) => c.id);
+  return { chains, activeSlugs };
 }
 
 interface MoralisErc20Transfer {

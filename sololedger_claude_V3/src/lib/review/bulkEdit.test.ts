@@ -156,6 +156,7 @@ describe('bulkFlagsPatch', () => {
         ['needs_review', false],
         ['unrecognized_asset', true]
       ]),
+      hint: 'unchecked',
       internal: t.isInternalTransfer,
       spam: !!t.isSpam
     });
@@ -164,15 +165,43 @@ describe('bulkFlagsPatch', () => {
     expect(patch.isSpam).toBe(false);
   });
 
-  it('marking internal also records possible_internal_transfer (mirrors FlagSelector)', () => {
-    const t = tx({ flags: [] });
+  it('confirming internal REMOVES the possible_internal_transfer hint (mutually exclusive end states)', () => {
+    // User screenshot flow: a row carrying the yellow hint is confirmed
+    // internal via Set flags — the hint must disappear, not sit alongside the
+    // blue "internal" badge. Hint box indeterminate ('mixed') — internal wins.
+    const t = tx({ flags: ['possible_internal_transfer', 'needs_review'] });
     const patch = bulkFlagsPatch(t, {
       flags: new Map(),
+      hint: 'mixed',
       internal: true,
       spam: false
     });
     expect(patch.isInternalTransfer).toBe(true);
-    expect(patch.flags).toContain('possible_internal_transfer');
+    expect(patch.flags).toEqual(['needs_review']);
+  });
+
+  it('internal wins: hint checkbox checked but internal checked ⇒ hint still removed', () => {
+    const t = tx({ flags: ['possible_internal_transfer'] });
+    const patch = bulkFlagsPatch(t, {
+      flags: new Map(),
+      hint: 'checked',
+      internal: true,
+      spam: false
+    });
+    expect(patch.isInternalTransfer).toBe(true);
+    expect(patch.flags).not.toContain('possible_internal_transfer');
+  });
+
+  it('confirming internal never ADDS a phantom hint to rows that never had one', () => {
+    const t = tx({ flags: [], isInternalTransfer: true });
+    const patch = bulkFlagsPatch(t, {
+      flags: new Map<FlagReason, boolean>([['needs_review', true]]),
+      hint: 'unchecked',
+      internal: true,
+      spam: false
+    });
+    expect(patch.isInternalTransfer).toBe(true);
+    expect(patch.flags).toEqual(['needs_review']);
   });
 
   it('leaving "internal" unchecked NEVER strips a stored possible_internal_transfer (no bulk data loss)', () => {
@@ -182,9 +211,9 @@ describe('bulkFlagsPatch', () => {
       isInternalTransfer: false
     });
     // User bulk-adds needs_review; "Internal transfer" box left unchecked
-    // (its initial state because the rows aren't uniformly internal). The
-    // realistic 5-entry map excludes possible_internal_transfer (governed by
-    // the internal control, not a checkbox).
+    // (its initial state because the rows aren't uniformly internal). A
+    // uniform hinted selection starts the hint box CHECKED, so a default
+    // apply preserves it.
     const patch = bulkFlagsPatch(t, {
       flags: new Map<FlagReason, boolean>([
         ['missing_cost_basis', true],
@@ -192,6 +221,7 @@ describe('bulkFlagsPatch', () => {
         ['unrecognized_asset', false],
         ['needs_review', true]
       ]),
+      hint: 'checked',
       internal: false,
       spam: false
     });
@@ -203,10 +233,57 @@ describe('bulkFlagsPatch', () => {
     expect(patch.flags).toHaveLength(3);
   });
 
+  it('hint checkbox round-trip: checked sets the hint, unchecked removes it (deliberate bulk set/remove)', () => {
+    const t = tx({ flags: [] });
+    const added = bulkFlagsPatch(t, {
+      flags: new Map(),
+      hint: 'checked',
+      internal: false,
+      spam: false
+    });
+    expect(added.flags).toEqual(['possible_internal_transfer']);
+    const removed = bulkFlagsPatch({ ...t, flags: added.flags } as Transaction, {
+      flags: new Map(),
+      hint: 'unchecked',
+      internal: false,
+      spam: false
+    });
+    expect(removed.flags).toEqual([]);
+  });
+
+  it('internal UNCHECKED + hint box explicitly unchecked removes the hint (absolute apply)', () => {
+    const t = tx({ flags: ['possible_internal_transfer'], isInternalTransfer: false });
+    const patch = bulkFlagsPatch(t, {
+      flags: new Map(),
+      hint: 'unchecked',
+      internal: false,
+      spam: false
+    });
+    expect(patch.isInternalTransfer).toBe(false);
+    expect(patch.flags).toEqual([]);
+  });
+
+  it("hint 'mixed' (indeterminate) leaves each row's stored hint exactly as it was", () => {
+    const hinted = tx({ flags: ['possible_internal_transfer', 'needs_review'] });
+    const plain = tx({ flags: ['duplicate_suspected'] });
+    const sel = {
+      flags: new Map<FlagReason, boolean>([['unrecognized_asset', true]]),
+      hint: 'mixed' as const,
+      internal: false,
+      spam: false
+    };
+    // Hinted row keeps the hint; non-hinted row gains nothing.
+    expect(bulkFlagsPatch(hinted, sel).flags).toEqual(
+      expect.arrayContaining(['possible_internal_transfer', 'needs_review', 'unrecognized_asset'])
+    );
+    expect(bulkFlagsPatch(plain, sel).flags).toEqual(['duplicate_suspected', 'unrecognized_asset']);
+  });
+
   it('sets the spam boolean independently of stored flags', () => {
     const t = tx({ flags: ['needs_review'] });
     const patch = bulkFlagsPatch(t, {
       flags: new Map<FlagReason, boolean>([['needs_review', true]]),
+      hint: 'unchecked',
       internal: false,
       spam: true
     });
@@ -215,13 +292,129 @@ describe('bulkFlagsPatch', () => {
   });
 });
 
-describe('BULK_FLAG_CHECKBOXES', () => {
-  it('excludes possible_internal_transfer (governed by the Internal control instead)', () => {
-    expect(BULK_FLAG_CHECKBOXES).not.toContain('possible_internal_transfer');
-    // every other stored flag is still offered
-    for (const f of ALL_FLAGS) {
-      if (f !== 'possible_internal_transfer') expect(BULK_FLAG_CHECKBOXES).toContain(f);
+describe('bulkFlagsPatch — full Set-flags flows (initial selection → apply)', () => {
+  it('Item 4 flow: rows with the hint + internal checked ⇒ only internal set, hint gone, other flags preserved', () => {
+    // Both rows carry the hint AND needs_review, so both boxes start checked;
+    // the user checks "Internal transfer" and applies.
+    const rows = [
+      tx({ flags: ['possible_internal_transfer', 'needs_review'] }),
+      tx({ flags: ['possible_internal_transfer', 'needs_review'] })
+    ];
+    const init = initialBulkFlagsSelection(rows);
+    expect(init.hint).toBe('checked');
+    expect(init.flags.get('needs_review')).toBe(true);
+    const sel = { ...init, internal: true };
+    for (const t of rows) {
+      const patch = bulkFlagsPatch(t, sel);
+      expect(patch.isInternalTransfer).toBe(true);
+      // Hint gone (confirming internal wins), unrelated stored flag kept —
+      // unlike the removed "Mark N as internal" button, which wiped flags: [].
+      expect(patch.flags).toEqual(['needs_review']);
     }
+  });
+
+  it('Item 5 flow: applying needs_review to 14 already-internal rows adds no phantom hint', () => {
+    const rows = Array.from({ length: 14 }, (_, i) =>
+      tx({ id: `int${i}`, flags: [], isInternalTransfer: true })
+    );
+    const init = initialBulkFlagsSelection(rows);
+    expect(init.internal).toBe(true); // box pre-checked: every row is internal
+    expect(init.hint).toBe('unchecked'); // no row carries the hint
+    const sel = { ...init, flags: new Map(init.flags) };
+    sel.flags.set('needs_review', true);
+    for (const t of rows) {
+      const patch = bulkFlagsPatch(t, sel);
+      // Exactly { isInternalTransfer: true, flags: [needs_review] } — the old
+      // contract resurrected a phantom possible_internal_transfer here.
+      expect(patch.isInternalTransfer).toBe(true);
+      expect(patch.flags).toEqual(['needs_review']);
+    }
+  });
+
+  it('OFF-side protection: internal unchecked + default hint box leaves RPC hints intact on all rows', () => {
+    const rows = [
+      tx({ flags: ['possible_internal_transfer'], isInternalTransfer: false }),
+      tx({ flags: ['possible_internal_transfer', 'missing_cost_basis'], isInternalTransfer: false })
+    ];
+    const init = initialBulkFlagsSelection(rows);
+    expect(init.internal).toBe(false);
+    expect(init.hint).toBe('checked'); // uniform hinted selection
+    const sel = { ...init, flags: new Map(init.flags) };
+    sel.flags.set('needs_review', true);
+    for (const t of rows) {
+      const patch = bulkFlagsPatch(t, sel);
+      expect(patch.isInternalTransfer).toBe(false);
+      expect(patch.flags).toContain('possible_internal_transfer');
+      expect(patch.flags).toContain('needs_review');
+    }
+  });
+
+  it('F1 regression: MIXED selection + default apply (hint box never touched) leaves every hint untouched', () => {
+    // Some rows hinted, some not → the hint box starts INDETERMINATE; the user
+    // bulk-applies needs_review without touching it.
+    const rows = [
+      tx({ flags: ['possible_internal_transfer'], isInternalTransfer: false }),
+      tx({ flags: [], isInternalTransfer: false }),
+      tx({ flags: ['possible_internal_transfer'], isInternalTransfer: false })
+    ];
+    const init = initialBulkFlagsSelection(rows);
+    expect(init.hint).toBe('mixed');
+    const sel = { ...init, flags: new Map(init.flags) };
+    sel.flags.set('needs_review', true);
+    const [p0, p1, p2] = rows.map((t) => bulkFlagsPatch(t, sel));
+    // Hinted rows KEEP their RPC-imported hint (the F1 bug stripped it)…
+    expect(p0.flags).toEqual(['possible_internal_transfer', 'needs_review']);
+    expect(p2.flags).toEqual(['possible_internal_transfer', 'needs_review']);
+    // …and the non-hinted row does NOT gain one.
+    expect(p1.flags).toEqual(['needs_review']);
+    for (const p of [p0, p1, p2]) expect(p.isInternalTransfer).toBe(false);
+  });
+
+  it('mixed selection + user deliberately CHECKS the hint box ⇒ hint set on all rows', () => {
+    const rows = [tx({ flags: ['possible_internal_transfer'] }), tx({ flags: [] })];
+    const init = initialBulkFlagsSelection(rows);
+    expect(init.hint).toBe('mixed');
+    // First click from the dash checks the box.
+    const sel = { ...init, hint: 'checked' as const };
+    for (const t of rows) {
+      expect(bulkFlagsPatch(t, sel).flags).toContain('possible_internal_transfer');
+    }
+  });
+
+  it('mixed selection + user deliberately UNCHECKES the hint box ⇒ hint removed from all rows', () => {
+    // Both rows share needs_review (box stays checked); only the hint is mixed.
+    const rows = [
+      tx({ flags: ['possible_internal_transfer', 'needs_review'] }),
+      tx({ flags: ['needs_review'] })
+    ];
+    const init = initialBulkFlagsSelection(rows);
+    expect(init.hint).toBe('mixed');
+    // Clicking a checked box unchecks it (click-through from the dash: mixed
+    // → checked → unchecked).
+    const sel = { ...init, hint: 'unchecked' as const };
+    const [p0, p1] = rows.map((t) => bulkFlagsPatch(t, sel));
+    expect(p0.flags).toEqual(['needs_review']);
+    expect(p1.flags).toEqual(['needs_review']);
+  });
+
+  it('uniform hinted selection + uncheck ⇒ hint removed from all rows (deliberate removal preserved)', () => {
+    const rows = [
+      tx({ flags: ['possible_internal_transfer'] }),
+      tx({ flags: ['possible_internal_transfer'] })
+    ];
+    const init = initialBulkFlagsSelection(rows);
+    expect(init.hint).toBe('checked');
+    const sel = { ...init, hint: 'unchecked' as const };
+    for (const t of rows) {
+      expect(bulkFlagsPatch(t, sel).flags).toEqual([]);
+    }
+  });
+});
+
+describe('BULK_FLAG_CHECKBOXES', () => {
+  it('offers every stored flag as a checkbox, including possible_internal_transfer', () => {
+    expect(BULK_FLAG_CHECKBOXES).toEqual(ALL_FLAGS);
+    expect(BULK_FLAG_CHECKBOXES).toContain('possible_internal_transfer');
   });
 });
 
@@ -238,9 +431,25 @@ describe('initialBulkFlagsSelection', () => {
     expect(init.spam).toBe(false);
   });
 
-  it('does not include possible_internal_transfer in the checkbox map', () => {
-    const sel = [tx({ flags: ['possible_internal_transfer'] })];
-    const init = initialBulkFlagsSelection(sel);
+  it('hint box is tri-state: checked when ALL rows hinted, mixed when some are, unchecked when none are', () => {
+    const allHinted = initialBulkFlagsSelection([
+      tx({ flags: ['possible_internal_transfer'] }),
+      tx({ flags: ['possible_internal_transfer', 'needs_review'] })
+    ]);
+    expect(allHinted.hint).toBe('checked');
+
+    const mixed = initialBulkFlagsSelection([
+      tx({ flags: ['possible_internal_transfer'] }),
+      tx({ flags: [] })
+    ]);
+    expect(mixed.hint).toBe('mixed');
+
+    const noneHinted = initialBulkFlagsSelection([tx({ flags: ['needs_review'] })]);
+    expect(noneHinted.hint).toBe('unchecked');
+  });
+
+  it('keeps the hint out of the absolute-flags map (it lives in the tri-state field)', () => {
+    const init = initialBulkFlagsSelection([tx({ flags: ['possible_internal_transfer'] })]);
     expect(init.flags.has('possible_internal_transfer')).toBe(false);
   });
 
@@ -258,5 +467,6 @@ describe('initialBulkFlagsSelection', () => {
     const init = initialBulkFlagsSelection([]);
     expect(init.internal).toBe(false);
     expect(init.flags.get('needs_review')).toBe(false);
+    expect(init.hint).toBe('unchecked');
   });
 });

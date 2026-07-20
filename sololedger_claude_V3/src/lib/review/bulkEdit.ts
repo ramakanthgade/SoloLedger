@@ -2,25 +2,20 @@
  * Bulk-edit helpers for the Review tab — pure, unit-testable logic behind the
  * "Set type" (with impact summary) and "Set flags" bulk actions.
  *
- * Semantics deliberately mirror the per-row controls in ReviewTab.tsx so bulk
- * and per-row edits can never diverge:
+ * Semantics deliberately mirror the per-row controls in ReviewTab.tsx:
  *  - Type change: sets `type` and strips the auto-derived flags
  *    (`possible_internal_transfer`, `missing_cost_basis`). `bulkTypePatch` is
  *    the single implementation — the per-row `TypeSelector` calls it too, so
  *    bulk and per-row edits can never diverge.
  *  - Flag change: absolute apply — a checked flag is added to every selected
  *    row, an unchecked one is removed. `isInternalTransfer` / `isSpam` are real
- *    booleans (not stored flags), so they are patched as booleans; marking
- *    internal also records the `possible_internal_transfer` stored flag.
- *    INTENTIONAL DIVERGENCE from per-row `FlagSelector`: per-row "mark
- *    internal" REPLACES the whole flags array with `['possible_internal_
- *    transfer']`. In bulk that would silently wipe unrelated stored flags
- *    (e.g. `needs_review`) on dozens of rows — data loss at scale — so here
- *    we only toggle membership of `possible_internal_transfer` and leave
- *    every other stored flag intact. `possible_internal_transfer` is governed
- *    ONLY by the "Internal transfer" control (see `BULK_FLAG_CHECKBOXES`); it
- *    is not offered as its own checkbox, so the two controls can never fight
- *    over it and strip it from non-internal rows.
+ *    booleans (not stored flags), so they are patched as booleans. The
+ *    `possible_internal_transfer` hint is a real checkbox too, but TRI-STATE
+ *    (mixed = leave each row's hint untouched), with ONE precedence rule —
+ *    confirming internal wins (mirrors the per-row `FlagSelector`, where
+ *    marking internal clears the hint). The full contract lives on
+ *    `bulkFlagsPatch`; the initial checkbox state rules on
+ *    `initialBulkFlagsSelection`.
  *  - `missing_cost_basis` is partly DERIVED (see `displayFlags`: shown whenever
  *    a row has no fiat value and isn't internal). Storing/removing it here only
  *    affects the stored flag; the derived badge still appears on unpriced rows.
@@ -47,15 +42,10 @@ export const ALL_FLAGS: readonly FlagReason[] = [
   'needs_review'
 ];
 
-/** Stored flags offered as checkboxes in the bulk "Set flags" dropdown.
- *  `possible_internal_transfer` is deliberately EXCLUDED here: it is governed
- *  solely by the dropdown's "Internal transfer" control (see `bulkFlagsPatch`).
- *  Offering it as its own checkbox too created a two-source conflict where the
- *  "Internal transfer" box always won and could silently strip a stored
- *  `possible_internal_transfer` flag from rows that are not internal. */
-export const BULK_FLAG_CHECKBOXES: readonly FlagReason[] = ALL_FLAGS.filter(
-  (f) => f !== 'possible_internal_transfer'
-);
+/** Stored flags offered as checkboxes in the bulk "Set flags" dropdown — ALL
+ *  of them, including `possible_internal_transfer` (explicit user request).
+ *  Apply semantics: see `bulkFlagsPatch`. */
+export const BULK_FLAG_CHECKBOXES: readonly FlagReason[] = ALL_FLAGS;
 
 /** Flags stripped whenever a row's type changes (they are re-derived from the
  *  new type / fiat state by the rest of the app). */
@@ -186,12 +176,18 @@ export function bulkTypeImpactLines(impact: BulkTypeImpact): string[] {
   return lines;
 }
 
-/** What the user picked in the bulk "Set flags" dropdown (absolute apply). */
+/** The three states of the bulk "Possible internal transfer" hint checkbox —
+ *  the dropdown's only non-absolute control. 'mixed' renders as an
+ *  indeterminate dash and means "leave every row's stored hint untouched". */
+export type BulkHintState = 'checked' | 'unchecked' | 'mixed';
+
+/** What the user picked in the bulk "Set flags" dropdown. */
 export interface BulkFlagsSelection {
-  /** Checked state for each stored flag offered as a checkbox
-   *  (BULK_FLAG_CHECKBOXES — `possible_internal_transfer` is NOT included, it
-   *  is governed by `internal`). */
+  /** Checked state for each ABSOLUTE flag checkbox (BULK_FLAG_CHECKBOXES minus
+   *  `possible_internal_transfer`, which is tri-state — see `hint`). */
   flags: ReadonlyMap<FlagReason, boolean>;
+  /** Tri-state for the `possible_internal_transfer` hint checkbox. */
+  hint: BulkHintState;
   /** Checked state for the isInternalTransfer boolean. */
   internal: boolean;
   /** Checked state for the isSpam boolean. */
@@ -199,20 +195,25 @@ export interface BulkFlagsSelection {
 }
 
 /**
- * The patch applied to one row for a bulk "Set flags" — mirrors FlagSelector:
- * stored flags are set absolutely (checked → present, unchecked → absent).
+ * The patch applied to one row for a bulk "Set flags": stored flags are set
+ * absolutely (checked → present, unchecked → absent), with TWO special cases.
  *
- * `possible_internal_transfer` is special: it is NOT one of the bulk checkboxes
- * (BULK_FLAG_CHECKBOXES excludes it). It is governed only by the "Internal
- * transfer" control, which additionally sets the `isInternalTransfer` boolean.
- * Marking internal FORCE-ADDS the `possible_internal_transfer` stored flag, but
- * leaving internal unchecked NEVER removes it. This is deliberate: the checkbox
- * initializes to "all selected rows are internal", so an unchecked box is
- * ambiguous (rows that were never internal look the same as rows the user
- * actively unmarked). RPC imports routinely store `possible_internal_transfer`
- * as a hint on rows with `isInternalTransfer: false`; deleting it on every bulk
- * "Set flags" would silently wipe that hint across dozens of rows. Bulk edits
- * therefore only ever ADD this flag — removal is left to the per-row selector.
+ * 1. The `possible_internal_transfer` hint checkbox is TRI-STATE (the only
+ *    non-absolute control): 'checked' sets the hint on every selected row,
+ *    'unchecked' removes it from every row, and 'mixed' — shown as an
+ *    indeterminate dash when only some selected rows carry the hint — leaves
+ *    each row's stored hint UNTOUCHED. 'mixed' is what makes a default apply
+ *    on a mixed selection safe: RPC imports store the hint on rows with
+ *    `isInternalTransfer: false` as review evidence, and stripping it from
+ *    hinted rows the user never asked to change would be silent data loss.
+ *    Deliberate bulk set/remove stays possible via an explicit click.
+ *
+ * 2. "Internal transfer" CHECKED confirms the row as internal: it sets the
+ *    `isInternalTransfer` boolean AND removes the hint regardless of the hint
+ *    checkbox (confirming internal wins — a row cannot be both a "possible"
+ *    and a confirmed internal transfer, and the user expects the yellow hint
+ *    to disappear on confirm). UNCHECKED clears only the boolean and NEVER
+ *    touches the hint itself.
  */
 export function bulkFlagsPatch(
   t: Transaction,
@@ -223,7 +224,12 @@ export function bulkFlagsPatch(
     if (on) next.add(flag);
     else next.delete(flag);
   }
-  if (sel.internal) next.add('possible_internal_transfer');
+  // Hint tri-state: 'mixed' leaves this row's stored hint exactly as it was.
+  if (sel.hint === 'checked') next.add('possible_internal_transfer');
+  else if (sel.hint === 'unchecked') next.delete('possible_internal_transfer');
+  // Confirming internal wins over the hint checkbox: "possible" and
+  // "confirmed" internal are mutually exclusive end states.
+  if (sel.internal) next.delete('possible_internal_transfer');
 
   return {
     flags: [...next] as FlagReason[],
@@ -232,17 +238,27 @@ export function bulkFlagsPatch(
   };
 }
 
-/** Initial checkbox state for the bulk "Set flags" dropdown: a box starts
- *  checked only when EVERY selected row has it. Only the flags offered as
- *  checkboxes (BULK_FLAG_CHECKBOXES) are included; `possible_internal_transfer`
- *  is represented by the `internal` control instead. */
+/** Initial checkbox state for the bulk "Set flags" dropdown: an absolute
+ *  flag box starts checked only when EVERY selected row has it. The
+ *  `possible_internal_transfer` hint is the one TRI-STATE box: 'checked' when
+ *  every selected row carries the hint, 'unchecked' when none do, and 'mixed'
+ *  (indeterminate dash) when only some do — so a default apply on a mixed
+ *  selection leaves RPC-imported hints intact (`bulkFlagsPatch` skips the
+ *  hint for 'mixed'; bulk set/remove requires an explicit click). */
 export function initialBulkFlagsSelection(selectedTxs: Transaction[]): BulkFlagsSelection {
   const flags = new Map<FlagReason, boolean>();
   for (const f of BULK_FLAG_CHECKBOXES) {
+    if (f === 'possible_internal_transfer') continue; // tri-state — see `hint`
     flags.set(f, selectedTxs.length > 0 && selectedTxs.every((t) => (t.flags ?? []).includes(f)));
   }
+  const hinted = selectedTxs.filter((t) =>
+    (t.flags ?? []).includes('possible_internal_transfer')
+  ).length;
+  const hint: BulkHintState =
+    hinted === 0 ? 'unchecked' : hinted === selectedTxs.length ? 'checked' : 'mixed';
   return {
     flags,
+    hint,
     internal: selectedTxs.length > 0 && selectedTxs.every((t) => t.isInternalTransfer),
     spam: selectedTxs.length > 0 && selectedTxs.every((t) => !!t.isSpam)
   };
