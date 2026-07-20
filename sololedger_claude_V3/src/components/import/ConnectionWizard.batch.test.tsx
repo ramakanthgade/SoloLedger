@@ -84,6 +84,8 @@ let txCounts: Record<string, number> = {};
 let duplicateHashes: Set<string> = new Set();
 /** Post-dedup rows surviving per import hash — mirrors countCsvImportTransactions. */
 let savedCounts: Record<string, number> = {};
+/** When set, parseImportFile throws for this filename (Item 2 failure tests). */
+let throwingFile: string | null = null;
 
 function makeTx(id: string): Transaction {
   return {
@@ -119,6 +121,7 @@ beforeEach(() => {
   txCounts = {};
   duplicateHashes = new Set();
   savedCounts = {};
+  throwingFile = null;
   mocks.hashFileContent.mockImplementation(async (input: unknown) => `hash:${String(input)}`);
   mocks.countCsvImportTransactions.mockImplementation(
     async (hash: string) => savedCounts[hash] ?? 1
@@ -132,6 +135,7 @@ beforeEach(() => {
   mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: false });
   mocks.fetchMissingPrices.mockResolvedValue({ updated: 0, failed: 0 });
   mocks.parseImportFile.mockImplementation(async (file: File) => {
+    if (file.name === throwingFile) throw new Error('corrupt');
     const count = txCounts[file.name] ?? 1;
     return {
       transactions: Array.from({ length: count }, (_, i) => makeTx(`${file.name}#${i}`)),
@@ -249,19 +253,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     // a.csv: 1 tx · b.xlsx: parse throws · c.csv: 2 txs (mixed CSV + XLSX).
     txCounts = { 'a.csv': 1, 'c.csv': 2 };
     savedCounts = { 'hash:aaa': 1, 'hash:ccc': 2 };
-    mocks.parseImportFile.mockImplementation(async (file: File) => {
-      if (file.name === 'b.xlsx') throw new Error('not a workbook');
-      const count = txCounts[file.name] ?? 1;
-      return {
-        transactions: Array.from({ length: count }, (_, i) => makeTx(`${file.name}#${i}`)),
-        detectedParser: 'test_parser',
-        warnings: [],
-        sheets: [],
-        rows: [],
-        headers: [],
-        missingFields: []
-      };
-    });
+    throwingFile = 'b.xlsx';
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.xlsx', 'bbb'), makeFile('c.csv', 'ccc')]);
 
     // File 1 confirms → the chain hits b.xlsx, which throws — the batch must
@@ -279,18 +271,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
   it('Item 2: a failing LAST file still ends the batch with the aggregated banner', async () => {
     txCounts = { 'a.csv': 1 };
     savedCounts = { 'hash:aaa': 1 };
-    mocks.parseImportFile.mockImplementation(async (file: File) => {
-      if (file.name === 'b.xlsx') throw new Error('corrupt');
-      return {
-        transactions: [makeTx('a#0')],
-        detectedParser: 'test_parser',
-        warnings: [],
-        sheets: [],
-        rows: [],
-        headers: [],
-        missingFields: []
-      };
-    });
+    throwingFile = 'b.xlsx';
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.xlsx', 'bbb')]);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
@@ -341,7 +322,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
 
     // Error banner on the preview; the preview stays open (confirm button
     // still there); nothing chained and onComplete never fired.
-    await screen.findByText(/couldn't be saved — nothing was written/);
+    await screen.findByText(/couldn't be saved — Confirm again to retry/);
     expect(screen.getByRole('button', { name: 'Confirm & save 1 transaction' })).toBeInTheDocument();
     expect(mocks.onComplete).not.toHaveBeenCalled();
     expect(mocks.parseImportFile).toHaveBeenCalledTimes(1);

@@ -58,9 +58,23 @@ type ChainDetection =
   | { status: 'detecting' }
   /** `chains` = outgoing-verified; `incomingOnly` = spam-airdrop pattern, note-only. */
   | { status: 'done'; chains: ChainId[]; incomingOnly: ChainId[] }
-  | { status: 'none' }
+  /** No outgoing activity anywhere — still surfaces incoming-only (spam) finds. */
+  | { status: 'none'; incomingOnly: ChainId[] }
   | { status: 'failed' }
   | { status: 'unavailable' };
+
+/** One-line note about chains with incoming-only (usually spam) activity.
+ *  Shared by the chain picker and the "no outgoing activity" state. */
+function IncomingOnlyNote({ chains }: { chains: ChainId[] }) {
+  if (chains.length === 0) return null;
+  return (
+    <p className="text-[11px] text-low" data-testid="incoming-only-note">
+      Incoming-only activity (usually spam airdrops) found on:{' '}
+      {chains.map((cid) => CHAINS.find((c) => c.id === cid)?.label ?? cid).join(', ')}. Not
+      auto-listed — pick a chain manually if you actually need one.
+    </p>
+  );
+}
 
 export function WalletLookupPanel() {
   const [settings, setSettings] = useState<Awaited<ReturnType<typeof getEffectiveSettings>> | null>(null);
@@ -131,6 +145,9 @@ export function WalletLookupPanel() {
           const found = new Set<ChainId>();
           const incoming = new Set<ChainId>();
           for (const addr of targets) {
+            // Stop burning relay quota when the run was superseded (the user
+            // kept typing past the debounce).
+            if (cancelled) return;
             // eslint-disable-next-line no-await-in-loop
             const result = await fetchWalletActiveChains(addr, settings?.moralisApiKey ?? '');
             result.active.forEach((c) => found.add(c));
@@ -146,7 +163,7 @@ export function WalletLookupPanel() {
           );
           if (chains.length === 0) {
             detectedRef.current = [];
-            setDetection({ status: 'none' });
+            setDetection({ status: 'none', incomingOnly });
             return;
           }
           // Capture the previous detection BEFORE updating the ref: React may
@@ -341,15 +358,7 @@ export function WalletLookupPanel() {
                 choose a chain manually instead
               </button>
             </p>
-            {incomingOnlyChains.length > 0 && (
-              <p className="text-[11px] text-low" data-testid="incoming-only-note">
-                Incoming-only activity (usually spam airdrops) also found on:{' '}
-                {incomingOnlyChains
-                  .map((cid) => CHAINS.find((c) => c.id === cid)?.label ?? cid)
-                  .join(', ')}
-                . Not listed above — pick a chain manually if you actually need one.
-              </p>
-            )}
+            <IncomingOnlyNote chains={incomingOnlyChains} />
           </div>
         )}
 
@@ -364,9 +373,13 @@ export function WalletLookupPanel() {
           </p>
         )}
         {hasEvm && !manualChainMode && detection.status === 'none' && (
-          <p className="text-xs text-low">
-            No activity found on supported chains for this address — pick a chain manually below.
-          </p>
+          <div className="space-y-1">
+            <p className="text-xs text-low">
+              No outgoing activity found on supported chains for this address — pick a chain
+              manually below.
+            </p>
+            <IncomingOnlyNote chains={detection.incomingOnly} />
+          </div>
         )}
 
         {/* Chain selector — manual fallback (or default when nothing pasted); hidden for auto-detected BTC/Solana and while the chain picker is up */}

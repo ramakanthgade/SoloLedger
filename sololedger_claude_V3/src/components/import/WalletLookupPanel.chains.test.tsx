@@ -215,7 +215,7 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
 
     const note = await screen.findByTestId('incoming-only-note');
     expect(note).toHaveTextContent(
-      'Incoming-only activity (usually spam airdrops) also found on: Polygon. Not listed above — pick a chain manually if you actually need one.'
+      'Incoming-only activity (usually spam airdrops) found on: Polygon. Not auto-listed — pick a chain manually if you actually need one.'
     );
     expect(picker).toContainElement(note);
   });
@@ -244,9 +244,26 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
     await renderWithEvmAddress();
 
     await screen.findByText(
-      /No activity found on supported chains for this address — pick a chain manually below\./,
+      /No outgoing activity found on supported chains for this address — pick a chain manually below\./,
       undefined,
       DETECT_TIMEOUT
+    );
+    expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('incoming-only-note')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+  });
+
+  it('names incoming-only (spam) chains even when NO chain is outgoing-verified', async () => {
+    // All-spam wallet: activity WAS found, just never outgoing — the note
+    // must survive the "no outgoing activity" state instead of vanishing.
+    // (Polygon: the mocked CHAINS registry in this file is eth/polygon/solana.)
+    mocks.fetchActiveChains.mockResolvedValue({ active: [], incomingOnly: ['polygon'] });
+    await renderWithEvmAddress();
+
+    await screen.findByText(/No outgoing activity found on supported chains/, undefined, DETECT_TIMEOUT);
+    const note = await screen.findByTestId('incoming-only-note');
+    expect(note).toHaveTextContent(
+      'Incoming-only activity (usually spam airdrops) found on: Polygon.'
     );
     expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
     expect(screen.getByRole('combobox')).toBeInTheDocument();

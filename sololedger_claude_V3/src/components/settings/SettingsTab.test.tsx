@@ -2,6 +2,7 @@ import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { db, getSettings, DEFAULT_SETTINGS } from '@/lib/storage/db';
+import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
 import { invalidateServerConfigCache } from '@/lib/saas/effectiveSettings';
 import { setMode } from '@/lib/saas/mode';
 import type { PublicUser } from '@/lib/saas/api';
@@ -101,6 +102,26 @@ describe('SettingsTab — AI Advisor consent (hosted, opt-out)', () => {
     fireEvent.click(checkbox);
     expect(checkbox).toBeChecked();
     await waitFor(async () => expect((await getSettings()).aiConsentGranted).toBe(true));
+  });
+
+  it('update() merges into the raw row — a hosted change preserves local-only fields', async () => {
+    setMode('hosted');
+    mocks.user.current = SUBSCRIBER;
+    // Pre-seed a local-only field the effective view omits (a BYOK AI key) —
+    // before the raw-row merge, ANY hosted settings write full-row-put the
+    // effective view and silently deleted it.
+    await seedSettings({ aiApiKey: 'sk-or-local-key' });
+    render(<SettingsTab />);
+
+    // Two selects mention "jurisdiction" (the tax-jurisdiction picker and the
+    // derivatives-treatment helper) — the first is the settings one.
+    const selects = await screen.findAllByRole('combobox', { name: /Jurisdiction/i });
+    fireEvent.change(selects[0], { target: { value: 'US' } });
+
+    await waitFor(async () => expect((await getSettings()).jurisdiction).toBe('US'));
+    const row = await getSettings();
+    expect(row.aiApiKey).toBe('sk-or-local-key'); // local-only field survived
+    expect(row.reportingCurrency).toBe(JURISDICTIONS.US.currency); // side-patch landed
   });
 });
 

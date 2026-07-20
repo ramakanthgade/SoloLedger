@@ -51,6 +51,33 @@ type FileHandleOutcome =
   | { kind: 'duplicate' }
   | { kind: 'manual' };
 
+/**
+ * Shared note builders — the single-file path (persistTransactions) and the
+ * batch aggregation (handleFiles) MUST emit identical strings, so both call
+ * these. Returns null when there is nothing to report.
+ */
+function priceFetchNoteText(updated: number, failed: number): string | null {
+  if (updated <= 0 && failed <= 0) return null;
+  return updated > 0
+    ? `Fetched prices for ${updated} transaction${updated === 1 ? '' : 's'}.` +
+        (failed > 0 ? ` ${failed} could not be priced — edit in Review.` : '')
+    : `${failed} transaction${failed === 1 ? '' : 's'} could not be priced — edit in Review.`;
+}
+
+function conversionNoteText(converted: number, failed: number, currency: string): string | null {
+  if (converted <= 0 && failed <= 0) return null;
+  return [
+    converted > 0
+      ? `Converted ${converted} value${converted === 1 ? '' : 's'} to ${currency} using historical exchange rates.`
+      : null,
+    failed > 0
+      ? `${failed} value${failed === 1 ? '' : 's'} could not be converted to ${currency} — edit in Review if needed.`
+      : null
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
 const SUPPORTED = [
   { id: 'coinbase', label: 'Coinbase', guide: 'Settings → Reports → Generate custom report → Transaction history CSV' },
   { id: 'binance', label: 'Binance', guide: 'Recommended: Wallet → Transaction History → Export (full ledger). Also: Orders → Spot → Trade History for spot trades only.' },
@@ -118,16 +145,8 @@ export function ImportTab() {
       converted: nConverted,
       failed: nFailed
     } = await convertOrNormalizeForImport(stamped, settings, priceApiEnabled);
-    if (nConverted > 0) {
-      setConversionNote(
-        `Converted ${nConverted} value${nConverted === 1 ? '' : 's'} to ${settings.reportingCurrency} using historical exchange rates.`
-      );
-    }
-    if (nFailed > 0) {
-      setConversionNote(
-        (prev) =>
-          `${prev ? `${prev} ` : ''}${nFailed} value${nFailed === 1 ? '' : 's'} could not be converted to ${settings.reportingCurrency} — edit in Review if needed.`
-      );
+    if (nConverted > 0 || nFailed > 0) {
+      setConversionNote(conversionNoteText(nConverted, nFailed, settings.reportingCurrency));
     }
 
     await db.transactions.bulkPut(converted);
@@ -144,12 +163,7 @@ export function ImportTab() {
       pricesUpdated = priceResult.updated;
       pricesFailed = priceResult.failed;
       if (priceResult.updated > 0 || priceResult.failed > 0) {
-        setPriceFetchNote(
-          priceResult.updated > 0
-            ? `Fetched prices for ${priceResult.updated} transaction${priceResult.updated === 1 ? '' : 's'}.` +
-                (priceResult.failed > 0 ? ` ${priceResult.failed} could not be priced — edit in Review.` : '')
-            : `${priceResult.failed} transaction${priceResult.failed === 1 ? '' : 's'} could not be priced — edit in Review.`
-        );
+        setPriceFetchNote(priceFetchNoteText(priceResult.updated, priceResult.failed));
       }
     }
 
@@ -327,28 +341,10 @@ export function ImportTab() {
         // aggregated note each, mirroring the single-file strings, so a
         // 3-file import reports "Fetched prices for 123 transactions."
         // instead of only the last file's count.
-        setPriceFetchNote(
-          pricesUpdated > 0 || pricesFailed > 0
-            ? pricesUpdated > 0
-              ? `Fetched prices for ${pricesUpdated} transaction${pricesUpdated === 1 ? '' : 's'}.` +
-                (pricesFailed > 0 ? ` ${pricesFailed} could not be priced — edit in Review.` : '')
-              : `${pricesFailed} transaction${pricesFailed === 1 ? '' : 's'} could not be priced — edit in Review.`
-            : null
-        );
+        setPriceFetchNote(priceFetchNoteText(pricesUpdated, pricesFailed));
         if (valuesConverted > 0 || valuesConvertFailed > 0) {
           const { reportingCurrency } = await getSettings();
-          setConversionNote(
-            [
-              valuesConverted > 0
-                ? `Converted ${valuesConverted} value${valuesConverted === 1 ? '' : 's'} to ${reportingCurrency} using historical exchange rates.`
-                : null,
-              valuesConvertFailed > 0
-                ? `${valuesConvertFailed} value${valuesConvertFailed === 1 ? '' : 's'} could not be converted to ${reportingCurrency} — edit in Review if needed.`
-                : null
-            ]
-              .filter(Boolean)
-              .join(' ')
-          );
+          setConversionNote(conversionNoteText(valuesConverted, valuesConvertFailed, reportingCurrency));
         } else {
           setConversionNote(null);
         }

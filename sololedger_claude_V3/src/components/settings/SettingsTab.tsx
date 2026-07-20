@@ -13,6 +13,17 @@ import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { useAuth } from '@/lib/saas/authContext';
 import { AddressRegistrySettingsSection } from './AddressRegistrySettings';
 
+/**
+ * Load the settings driving this page. In hosted mode getEffectiveSettings
+ * intentionally omits local-only fields, but `aiConsentGranted` IS a local
+ * per-device setting (the AI Advisor reads the raw settings row) — graft it
+ * on so the AI checkbox below reflects and round-trips the persisted value.
+ */
+async function loadSettings(): Promise<TaxSettings> {
+  const [effective, local] = await Promise.all([getEffectiveSettings(), getSettings()]);
+  return { ...effective, aiConsentGranted: local.aiConsentGranted };
+}
+
 export function SettingsTab() {
   const saas = isSaasMode();
   const { user } = useAuth();
@@ -22,17 +33,6 @@ export function SettingsTab() {
   const [restoreStatus, setRestoreStatus] = useState<
     { kind: 'success' | 'error'; message: string } | null
   >(null);
-
-  /**
-   * Load the settings driving this page. In hosted mode getEffectiveSettings
-   * intentionally omits local-only fields, but `aiConsentGranted` IS a local
-   * per-device setting (the AI Advisor reads the raw settings row) — graft it
-   * on so the AI checkbox below reflects and round-trips the persisted value.
-   */
-  const loadSettings = async (): Promise<TaxSettings> => {
-    const [effective, local] = await Promise.all([getEffectiveSettings(), getSettings()]);
-    return { ...effective, aiConsentGranted: local.aiConsentGranted };
-  };
 
   const runRestore = async (file: File) => {
     try {
@@ -53,15 +53,20 @@ export function SettingsTab() {
 
   useEffect(() => {
     loadSettings().then((s) => setSettings(s));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (!settings) return null;
 
   const update = async (patch: Partial<TaxSettings>) => {
-    const next = { ...settings, ...patch };
-    setSettings(next);
-    await saveSettings(next);
+    // Optimistic UI first (toggles feel instant), then merge into the RAW
+    // local row — persisting the effective (server-merged) view would
+    // clobber local-only fields (BYOK API keys, manualEvmChain) and stamp
+    // server-derived flags into the local row. The UI state finally re-loads
+    // via loadSettings so it keeps reflecting the effective view.
+    setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
+    const local = await getSettings();
+    await saveSettings({ ...local, ...patch });
+    setSettings(await loadSettings());
   };
 
   const isAdmin = saas && user?.role === 'admin';

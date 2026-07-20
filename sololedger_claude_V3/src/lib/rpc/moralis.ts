@@ -248,6 +248,11 @@ async function hasOutgoingTransaction(
     const data = await res.json().catch(() => null);
     if (!data) return null;
     const result: { from_address?: string }[] = data?.result ?? [];
+    // An EMPTY first page is anomalous: /chains just reported activity, and a
+    // genuine spam-only chain always HAS history rows (that's how it got
+    // counted). Treat it as inconclusive (keep the chain listed), not as
+    // proof of incoming-only.
+    if (result.length === 0 && page === 0) return null;
     if (result.some((tx) => tx.from_address?.toLowerCase() === walletLower)) return true;
 
     cursor = data?.cursor || undefined;

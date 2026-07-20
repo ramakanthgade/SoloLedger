@@ -271,6 +271,23 @@ describe('fetchWalletActiveChains', () => {
     expect(callsTo('chain=eth')).toHaveLength(3);
   });
 
+  it('keeps a chain listed when its first history page comes back empty (inconclusive, not incoming-only)', async () => {
+    // /chains just reported activity, so an EMPTY first history page is
+    // anomalous (a genuine spam-only chain always has rows — that's how it
+    // got counted). The verdict must be "inconclusive → stay listed", never
+    // "incoming-only → hidden".
+    mockMoralis({
+      chainsBody: { active_chains: [activeEntry('eth'), activeEntry('polygon')] },
+      history: {
+        eth: [{ txs: [] }], // anomalous empty page → stays active
+        polygon: [incomingPage(3)] // real incoming-only
+      }
+    });
+    const result = await fetchWalletActiveChains(ADDRESS, 'moralis-key');
+    expect(result.active).toEqual(['ethereum']);
+    expect(result.incomingOnly).toEqual(['polygon']);
+  });
+
   it('throws on HTTP errors of the chains call so the caller can fall back to manual selection', async () => {
     mockMoralis({ chainsOk: false, chainsStatus: 401 });
     await expect(fetchWalletActiveChains(ADDRESS, 'bad-key')).rejects.toThrow(/401/);

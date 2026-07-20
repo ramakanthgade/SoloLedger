@@ -192,6 +192,10 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
   const [queueTotal, setQueueTotal] = useState(0);
   /** Non-blocking note about batch files that were skipped (e.g. duplicates). */
   const [queueNote, setQueueNote] = useState<string | null>(null);
+  /** Appends one sentence to the batch note (space-separated accumulation). */
+  const appendQueueNote = useCallback((note: string) => {
+    setQueueNote((prev) => (prev ? `${prev} ${note}` : note));
+  }, []);
   /** Transactions confirmed so far across a multi-file batch. A ref, not
    *  state: it accumulates inside async file chaining where render closures
    *  go stale, and it is never rendered directly. */
@@ -335,10 +339,11 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         // rejection (`void readFile(...)` swallows nothing). Note the failed
         // file and continue the chain — the same pattern as the
         // duplicate-skip path above.
+        const skippedNote = `${file.name} couldn't be read — skipped.`;
         if (queue.length > 0) {
           const [next, ...rest] = queue;
           setFileQueue(rest);
-          setQueueNote((prev) => `${prev ? `${prev} ` : ''}${file.name} couldn't be read — skipped.`);
+          appendQueueNote(skippedNote);
           chained = true;
           void readFile(next, rest);
         } else if (batchSavedRef.current > 0) {
@@ -348,7 +353,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           const total = batchSavedRef.current;
           batchSavedRef.current = 0;
           setQueueTotal(0);
-          setQueueNote((prev) => `${prev ? `${prev} ` : ''}${file.name} couldn't be read — skipped.`);
+          appendQueueNote(skippedNote);
           setSavedCount(total);
           onComplete?.(total);
         } else {
@@ -362,7 +367,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         if (!chained) setReading(false);
       }
     },
-    [showPreview, onComplete]
+    [showPreview, onComplete, appendQueueNote]
   );
 
   /**
@@ -503,9 +508,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         savedNow = await countCsvImportTransactions(preview.hash);
         await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, savedNow);
       } catch {
-        setError(
-          `"${preview.fileName}" couldn't be saved — nothing was written to your ledger. Confirm again to retry.`
-        );
+        setError(`"${preview.fileName}" couldn't be saved — Confirm again to retry.`);
         return;
       }
 
@@ -518,9 +521,8 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           // multi-file batch (the file itself is already safely saved, and a
           // throw here previously killed the chain AFTER file 1). Degrade to
           // a warning note and let the chain continue.
-          setQueueNote(
-            (prev) =>
-              `${prev ? `${prev} ` : ''}Saved, but live prices couldn't be fetched right now — they'll be retried on your next import.`
+          appendQueueNote(
+            "Saved, but live prices couldn't be fetched right now — they'll be retried on your next import."
           );
         }
       }
@@ -547,7 +549,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
       setSaving(false);
       setSavePhase(null);
     }
-  }, [preview, onComplete, fileQueue, readFile]);
+  }, [preview, onComplete, fileQueue, readFile, appendQueueNote]);
 
   const previewRows = preview?.transactions.slice(0, 5) ?? [];
 
