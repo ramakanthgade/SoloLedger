@@ -56,7 +56,8 @@ const MAX_DETECTION_ADDRESSES = 10;
 type ChainDetection =
   | { status: 'idle' }
   | { status: 'detecting' }
-  | { status: 'done'; chains: ChainId[] }
+  /** `chains` = outgoing-verified; `incomingOnly` = spam-airdrop pattern, note-only. */
+  | { status: 'done'; chains: ChainId[]; incomingOnly: ChainId[] }
   | { status: 'none' }
   | { status: 'failed' }
   | { status: 'unavailable' };
@@ -128,13 +129,21 @@ export function WalletLookupPanel() {
       void (async () => {
         try {
           const found = new Set<ChainId>();
+          const incoming = new Set<ChainId>();
           for (const addr of targets) {
             // eslint-disable-next-line no-await-in-loop
             const result = await fetchWalletActiveChains(addr, settings?.moralisApiKey ?? '');
-            result.chains.forEach((c) => found.add(c));
+            result.active.forEach((c) => found.add(c));
+            result.incomingOnly.forEach((c) => incoming.add(c));
           }
           if (cancelled) return;
           const chains = CHAINS.filter((c) => found.has(c.id)).map((c) => c.id);
+          // A chain with outgoing activity on ANY pasted wallet is active —
+          // never note it as incoming-only because another wallet only
+          // received (spam) there.
+          const incomingOnly = CHAINS.filter((c) => incoming.has(c.id) && !found.has(c.id)).map(
+            (c) => c.id
+          );
           if (chains.length === 0) {
             detectedRef.current = [];
             setDetection({ status: 'none' });
@@ -148,7 +157,7 @@ export function WalletLookupPanel() {
           const prevDetected = detectedRef.current;
           setCheckedChains((prev) => reconcileCheckedChains(prev, prevDetected, chains));
           detectedRef.current = chains;
-          setDetection({ status: 'done', chains });
+          setDetection({ status: 'done', chains, incomingOnly });
         } catch {
           if (!cancelled) setDetection({ status: 'failed' });
         }
@@ -194,6 +203,7 @@ export function WalletLookupPanel() {
   const showChainPicker = hasEvm && !manualChainMode && detection.status === 'done';
   const showDetecting = hasEvm && !manualChainMode && detection.status === 'detecting';
   const pickerChains = detection.status === 'done' ? detection.chains : [];
+  const incomingOnlyChains = detection.status === 'done' ? detection.incomingOnly : [];
   const selectedChains = pickerChains.filter((c) => checkedChains.has(c));
   const multiFreshTotal = selectedChains.reduce(
     (total, cid) =>
@@ -331,6 +341,15 @@ export function WalletLookupPanel() {
                 choose a chain manually instead
               </button>
             </p>
+            {incomingOnlyChains.length > 0 && (
+              <p className="text-[11px] text-low" data-testid="incoming-only-note">
+                Incoming-only activity (usually spam airdrops) also found on:{' '}
+                {incomingOnlyChains
+                  .map((cid) => CHAINS.find((c) => c.id === cid)?.label ?? cid)
+                  .join(', ')}
+                . Not listed above — pick a chain manually if you actually need one.
+              </p>
+            )}
           </div>
         )}
 

@@ -33,7 +33,11 @@ export function OnboardingFlow({ onDone, onSkip }: OnboardingFlowProps) {
   return (
     <div className="min-h-screen bg-canvas px-6 py-10 lg:px-8">
       <div className="mx-auto max-w-3xl">
-        <ConnectionWizard onComplete={() => onDone?.()} onExit={() => setPhase('intro')} />
+        <ConnectionWizard
+          onComplete={() => onDone?.()}
+          onExit={() => setPhase('intro')}
+          onSkip={onSkip}
+        />
       </div>
     </div>
   );

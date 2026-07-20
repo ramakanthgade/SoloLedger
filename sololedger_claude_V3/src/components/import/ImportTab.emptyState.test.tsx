@@ -61,3 +61,34 @@ describe('ImportTab empty-state guard (Item 1)', () => {
     expect(screen.queryByText(EMPTY_STATE)).not.toBeInTheDocument();
   });
 });
+
+describe('ImportTab empty-state actions (Item 3)', () => {
+  it('primary action is "Choose file" and clicks the REAL hidden file input', () => {
+    const clickSpy = vi.spyOn(HTMLInputElement.prototype, 'click');
+    try {
+      const { container } = render(<ImportTab />);
+      const input = container.querySelector('input[type="file"]') as HTMLInputElement;
+      expect(input).toBeTruthy();
+
+      fireEvent.click(screen.getByRole('button', { name: /choose file/i }));
+
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+      // The CTA must open the real picker — the input it clicked is the one
+      // in the File Upload dropzone, not a mode switch.
+      expect(clickSpy.mock.instances[0]).toBe(input);
+      expect(screen.queryByTestId('panel-guided')).not.toBeInTheDocument();
+    } finally {
+      clickSpy.mockRestore();
+    }
+  });
+
+  it('guided setup is demoted to a secondary text link under the action', () => {
+    render(<ImportTab />);
+    // The old primary CTA ("Import your first file" → guided) is gone.
+    expect(screen.queryByRole('button', { name: /import your first file/i })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /use the guided setup/i }));
+    expect(screen.getByTestId('panel-guided')).toBeInTheDocument();
+    expect(screen.queryByText(EMPTY_STATE)).not.toBeInTheDocument();
+  });
+});

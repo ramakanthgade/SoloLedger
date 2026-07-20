@@ -126,6 +126,11 @@ beforeEach(() => {
   mocks.csvImportsGet.mockImplementation(async (hash: string) =>
     duplicateHashes.has(hash) ? { hash, fileName: 'older import' } : undefined
   );
+  // Pricing defaults: disabled, and a no-op when enabled — individual tests
+  // opt into pricing (and its failure modes) explicitly. clearAllMocks keeps
+  // implementations, so these must be reset here to stay test-independent.
+  mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: false });
+  mocks.fetchMissingPrices.mockResolvedValue({ updated: 0, failed: 0 });
   mocks.parseImportFile.mockImplementation(async (file: File) => {
     const count = txCounts[file.name] ?? 1;
     return {
@@ -238,5 +243,136 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     expect(screen.queryByText(/Saved \d+ transaction/)).not.toBeInTheDocument();
     expect(mocks.onComplete).toHaveBeenCalledTimes(1);
     expect(mocks.onComplete).toHaveBeenCalledWith(0);
+  });
+
+  it('Item 2: a file whose parse throws mid-batch is skipped and the rest still import', async () => {
+    // a.csv: 1 tx · b.xlsx: parse throws · c.csv: 2 txs (mixed CSV + XLSX).
+    txCounts = { 'a.csv': 1, 'c.csv': 2 };
+    savedCounts = { 'hash:aaa': 1, 'hash:ccc': 2 };
+    mocks.parseImportFile.mockImplementation(async (file: File) => {
+      if (file.name === 'b.xlsx') throw new Error('not a workbook');
+      const count = txCounts[file.name] ?? 1;
+      return {
+        transactions: Array.from({ length: count }, (_, i) => makeTx(`${file.name}#${i}`)),
+        detectedParser: 'test_parser',
+        warnings: [],
+        sheets: [],
+        rows: [],
+        headers: [],
+        missingFields: []
+      };
+    });
+    await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.xlsx', 'bbb'), makeFile('c.csv', 'ccc')]);
+
+    // File 1 confirms → the chain hits b.xlsx, which throws — the batch must
+    // continue to file 3 instead of stranding the queue silently.
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+
+    // Aggregated banner: 1 + 2 transactions, and the note names the failed file.
+    await screen.findByText(/Saved 3 transactions to your local ledger/);
+    expect(mocks.onComplete).toHaveBeenCalledTimes(1);
+    expect(mocks.onComplete).toHaveBeenCalledWith(3);
+    expect(screen.getByText(/b\.xlsx couldn't be read — skipped/)).toBeInTheDocument();
+  });
+
+  it('Item 2: a failing LAST file still ends the batch with the aggregated banner', async () => {
+    txCounts = { 'a.csv': 1 };
+    savedCounts = { 'hash:aaa': 1 };
+    mocks.parseImportFile.mockImplementation(async (file: File) => {
+      if (file.name === 'b.xlsx') throw new Error('corrupt');
+      return {
+        transactions: [makeTx('a#0')],
+        detectedParser: 'test_parser',
+        warnings: [],
+        sheets: [],
+        rows: [],
+        headers: [],
+        missingFields: []
+      };
+    });
+    await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.xlsx', 'bbb')]);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+
+    // File 1's save is reported even though file 2 could not be read.
+    await screen.findByText(/Saved 1 transaction to your local ledger/);
+    expect(mocks.onComplete).toHaveBeenCalledTimes(1);
+    expect(mocks.onComplete).toHaveBeenCalledWith(1);
+    expect(screen.getByText(/b\.xlsx couldn't be read — skipped/)).toBeInTheDocument();
+  });
+
+  it('Item 2: a single file that throws shows a blocking error, not an unhandled rejection', async () => {
+    mocks.parseImportFile.mockRejectedValue(new Error('corrupt'));
+    await dropFiles([makeFile('a.csv', 'aaa')]);
+
+    await screen.findByText(/"a\.csv" couldn't be read — the file may be corrupt/);
+    expect(mocks.onComplete).not.toHaveBeenCalled();
+    expect(screen.queryByText(/Saved \d+ transaction/)).not.toBeInTheDocument();
+  });
+
+  it('Item 2: a pricing failure after a save degrades to a warning and the chain continues', async () => {
+    // Hosted pricing is on; the relay fails after file 1's save. The file is
+    // already persisted, so the batch must continue with a warning note.
+    mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: true });
+    mocks.fetchMissingPrices.mockRejectedValueOnce(new Error('relay down'));
+    txCounts = { 'a.csv': 1, 'b.csv': 2 };
+    savedCounts = { 'hash:aaa': 1, 'hash:bbb': 2 };
+    await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')]);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+
+    // Pricing threw for file 1 — but the chain still reaches file 2.
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+
+    await screen.findByText(/Saved 3 transactions to your local ledger/);
+    expect(mocks.onComplete).toHaveBeenCalledTimes(1);
+    expect(mocks.onComplete).toHaveBeenCalledWith(3);
+    expect(screen.getByText(/live prices couldn't be fetched right now/)).toBeInTheDocument();
+  });
+
+  it('Item 2: a pre-pricing save failure keeps the preview open and the queue for retry', async () => {
+    txCounts = { 'a.csv': 1, 'b.csv': 2 };
+    savedCounts = { 'hash:aaa': 1, 'hash:bbb': 2 };
+    mocks.bulkPut.mockRejectedValueOnce(new Error('db full'));
+    await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')]);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+
+    // Error banner on the preview; the preview stays open (confirm button
+    // still there); nothing chained and onComplete never fired.
+    await screen.findByText(/couldn't be saved — nothing was written/);
+    expect(screen.getByRole('button', { name: 'Confirm & save 1 transaction' })).toBeInTheDocument();
+    expect(mocks.onComplete).not.toHaveBeenCalled();
+    expect(mocks.parseImportFile).toHaveBeenCalledTimes(1);
+
+    // Retry: the save now succeeds and the batch chains into file 2.
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm & save 1 transaction' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await screen.findByText(/Saved 3 transactions to your local ledger/);
+    expect(mocks.onComplete).toHaveBeenCalledWith(3);
+  });
+
+  it('Items 2+4: a 3-XLSX batch aggregates into ONE banner — the reported 123-tx scenario', async () => {
+    // The user's exact scenario: Deposits (15) + Spot (79) + Withdrawals (29).
+    txCounts = { 'deposits.xlsx': 15, 'spot.xlsx': 79, 'withdrawals.xlsx': 29 };
+    savedCounts = { 'hash:aaa': 15, 'hash:bbb': 79, 'hash:ccc': 29 };
+    await dropFiles([
+      makeFile('deposits.xlsx', 'aaa'),
+      makeFile('spot.xlsx', 'bbb'),
+      makeFile('withdrawals.xlsx', 'ccc')
+    ]);
+
+    // Every queued file gets its own preview + confirm, in order.
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 15 transactions' }));
+    expect(mocks.onComplete).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 79 transactions' }));
+    expect(mocks.onComplete).not.toHaveBeenCalled();
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 29 transactions' }));
+
+    await screen.findByText(/Saved 123 transactions to your local ledger/);
+    expect(mocks.parseImportFile).toHaveBeenCalledTimes(3);
+    expect(mocks.onComplete).toHaveBeenCalledTimes(1);
+    expect(mocks.onComplete).toHaveBeenCalledWith(123);
   });
 });

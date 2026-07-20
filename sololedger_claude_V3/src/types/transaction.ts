@@ -144,11 +144,19 @@ export interface TaxSettings {
   /** OpenRouter model id, e.g. anthropic/claude-opus-4-5 */
   aiModel?: string;
   /**
-   * First-use consent for the AI Tax Advisor (A2). Off by default — the AI
-   * Advisor is the one feature that sends data off-device (an aggregated
-   * summary + the typed question), so no AI request runs until the user
-   * explicitly opts in. Stored via the existing settings persistence — no
-   * Dexie schema bump. Revocable any time from Settings → AI Advisor.
+   * Consent for the AI Tax Advisor (A2) — dual semantics by mode:
+   *
+   * - Hosted SaaS (subscribers): OPT-OUT. Treated as granted unless this is
+   *   explicitly `false` — the advisor is ON by default, like automatic price
+   *   fetching and wallet lookup, and the user unchecks the Settings → AI
+   *   Advisor checkbox to opt out.
+   * - Local / BYOK: OPT-IN. Treated as granted only when explicitly `true` —
+   *   privacy-first default-off; no AI request runs until the user opts in.
+   *
+   * Either way the AI Advisor is the one feature that sends data off-device
+   * (an aggregated summary + the typed question). Stored via the existing
+   * settings persistence — no Dexie schema bump. Changeable any time from
+   * Settings → AI Advisor or the advisor's own panel.
    */
   aiConsentGranted?: boolean;
   /** For the "other EVM chain" manual fallback in wallet lookup. */
