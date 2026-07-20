@@ -224,7 +224,8 @@ export async function runWalletImport(
 
   // --- Protect trades + skip rows already in DB ---
   let txsToStore = transactions;
-  let newlyStored = 0;
+  let stagedCount = 0;
+  let stagedIds: string[] = [];
   if (transactions.length > 0) {
     const existingTrades = await db.transactions
       .filter((t) => t.type === 'trade' && !!t.sourceRef)
@@ -247,14 +248,15 @@ export async function runWalletImport(
       return true;
     });
     txsToStore = await filterAlreadyImported(txsToStore);
-    newlyStored = txsToStore.length;
+    stagedCount = txsToStore.length;
+    stagedIds = txsToStore.map((transaction) => transaction.id);
     if (txsToStore.length > 0) {
       await db.transactions.bulkPut(txsToStore);
     }
   }
 
   await Promise.all(
-    fresh.map((addr) => upsertLookupAddress(chain.id, addr, newlyStored))
+    fresh.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount))
   );
 
   // --- Phase 2: Classification + DCA auto-detection ---
@@ -349,16 +351,19 @@ export async function runWalletImport(
   if (dupsRemoved > 0) {
     apiWarnings.unshift(`Removed ${dupsRemoved} duplicate transaction${dupsRemoved === 1 ? '' : 's'} (re-sync detected).`);
   }
+  const imported = (await db.transactions.bulkGet(stagedIds)).filter(
+    (transaction) => transaction != null
+  ).length;
 
   // Refresh wallet tx counts + sync cursor after dedup
-  await Promise.all(fresh.map((addr) => upsertLookupAddress(chain.id, addr, newlyStored)));
+  await Promise.all(fresh.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount)));
 
-  if (isSync && newlyStored === 0) {
+  if (isSync && imported === 0) {
     apiWarnings.unshift('No new transactions found since last sync.');
   }
 
   importJob._finish(
-    { imported: newlyStored, pricesUpdated, swapsDetected },
+    { imported, pricesUpdated, swapsDetected },
     apiWarnings,
     failed
   );

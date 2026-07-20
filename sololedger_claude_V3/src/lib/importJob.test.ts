@@ -1,7 +1,8 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { TaxSettings, Transaction } from '@/types/transaction';
-import type { ChainDef, LookupConfig } from '@/lib/rpc/providers';
+import { lookupManyAddresses, type ChainDef, type LookupConfig } from '@/lib/rpc/providers';
+import { deduplicateTransactions } from '@/lib/storage/db';
 
 // --- Mock the RPC + classification transports so no real network happens ---
 const importedTx: Transaction = {
@@ -73,8 +74,12 @@ vi.mock('@/lib/pricing/autoFetch', () => ({
 const store = new Map<string, Transaction>();
 vi.mock('@/lib/storage/db', () => ({
   db: {
+    lookupAddresses: {
+      get: async () => undefined
+    },
     transactions: {
       toArray: async () => Array.from(store.values()),
+      bulkGet: async (ids: string[]) => ids.map((id) => store.get(id)),
       bulkPut: async (txs: Transaction[]) => {
         for (const t of txs) store.set(t.id, t);
       },
@@ -176,6 +181,69 @@ describe('runWalletImport DefiLlama reward-suggestion gate', () => {
     // Pricing still ran despite the DefiLlama outage.
     expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
     expect(state.result?.pricesUpdated).toBe(3);
+  });
+});
+
+describe('runWalletImport post-dedup imported count', () => {
+  const secondImportedTx: Transaction = {
+    ...importedTx,
+    id: 'tx-2',
+    sourceRef: 'sig-2'
+  };
+  const unrelatedTx: Transaction = {
+    ...importedTx,
+    id: 'existing-unrelated',
+    sourceRef: 'existing-sig'
+  };
+
+  beforeEach(() => {
+    store.clear();
+    importJob.reset();
+  });
+
+  it('counts only staged rows that survive dedup while preserving the duplicate warning', async () => {
+    store.set(unrelatedTx.id, unrelatedTx);
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [importedTx, secondImportedTx],
+      warnings: [],
+      failed: [],
+      perAddress: [{ address: '0xabc', count: 2 }]
+    });
+    vi.mocked(deduplicateTransactions).mockImplementationOnce(async () => {
+      store.delete(importedTx.id);
+      store.delete(unrelatedTx.id);
+      return 2;
+    });
+
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG);
+
+    const state = importJob.get();
+    expect(state.result?.imported).toBe(1);
+    expect(store.has(secondImportedTx.id)).toBe(true);
+    expect(state.warnings).toContain('Removed 2 duplicate transactions (re-sync detected).');
+  });
+
+  it('reports no new transactions when sync dedup removes every staged row', async () => {
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [importedTx, secondImportedTx],
+      warnings: [],
+      failed: [],
+      perAddress: [{ address: '0xabc', count: 2 }]
+    });
+    vi.mocked(deduplicateTransactions).mockImplementationOnce(async () => {
+      store.delete(importedTx.id);
+      store.delete(secondImportedTx.id);
+      return 2;
+    });
+
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
+
+    const state = importJob.get();
+    expect(state.result?.imported).toBe(0);
+    expect(state.warnings).toContain('No new transactions found since last sync.');
+    expect(state.active).toBe(false);
+    expect(state.phase).toBe('idle');
+    expect(state.error).toBeNull();
   });
 });
 

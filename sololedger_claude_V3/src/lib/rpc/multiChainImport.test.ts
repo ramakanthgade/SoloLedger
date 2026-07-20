@@ -189,6 +189,36 @@ describe('runSequentialChainImport', () => {
     });
   });
 
+  it('snapshots each completed chain result before the next chain overwrites the job state', async () => {
+    let completedState = jobState();
+    const ethereumWarnings = ['ethereum existing warning'];
+    const polygonWarnings = ['polygon existing warning'];
+    mocks.importJobGet.mockImplementation(() => completedState);
+    mocks.runWalletImport
+      .mockImplementationOnce(async () => {
+        completedState = jobState({
+          result: { imported: 2, pricesUpdated: 0, swapsDetected: 0 },
+          warnings: ethereumWarnings
+        });
+      })
+      .mockImplementationOnce(async () => {
+        completedState = jobState({
+          result: { imported: 5, pricesUpdated: 0, swapsDetected: 0 },
+          warnings: polygonWarnings
+        });
+      });
+
+    const outcomes = await runSequentialChainImport([ADDR_A], ['ethereum', 'polygon'], {
+      settings: SETTINGS,
+      lookupExtras: {}
+    });
+
+    expect(outcomes.map(({ chainId, imported, warnings }) => ({ chainId, imported, warnings }))).toEqual([
+      { chainId: 'ethereum', imported: 2, warnings: ethereumWarnings },
+      { chainId: 'polygon', imported: 5, warnings: polygonWarnings }
+    ]);
+  });
+
   it('skips a chain whose addresses are all already imported without calling runWalletImport', async () => {
     mocks.getLookupAddresses.mockResolvedValue([
       { chain: 'ethereum', address: ADDR_A },
