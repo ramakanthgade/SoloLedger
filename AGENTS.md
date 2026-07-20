@@ -19,8 +19,8 @@ For Cursor Cloud port forwarding, Vite is configured with `server.allowedHosts` 
 Wallet lookup on `npm run dev` routes Alchemy calls through a same-origin Vite proxy (`/alchemy-rpc/*`) because direct browser → Alchemy requests are blocked by CORS for some RPC methods.
 
 ### Non-obvious caveats
-- `npm run build` (`tsc -b && vite build`) currently fails on pre-existing `TS6133` "declared but never read" errors (`ColumnMappingForm.tsx`, `costBasis/fifo.ts`, `costBasis/specId.ts`). The dev server does not type-check and runs fine.
-- `npm run lint` fails because `eslint` is not in `devDependencies` and there is no eslint config committed.
+- `npm run build` runs `tsc -b && vite build` and currently succeeds.
+- `npm run lint` uses the committed ESLint configuration and currently exits 0 with no errors; it may emit accepted warn-level warnings.
 - Wallet lookup requires enabling **Settings → Wallet address lookup** and an Alchemy API key for EVM/Solana chains. Bitcoin uses Blockstream (no key).
 - Browser IndexedDB data (settings, transactions) is per-browser and per-origin — it does not sync between Cloud preview and your local Chrome.
 
