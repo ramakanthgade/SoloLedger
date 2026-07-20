@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { saveSettings, clearAllData } from '@/lib/storage/db';
+import { getSettings, saveSettings, clearAllData } from '@/lib/storage/db';
 import { exportFullBackup, importFullBackup } from '@/lib/storage/backup';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
 import type { TaxSettings, Jurisdiction } from '@/types/transaction';
@@ -12,6 +12,17 @@ import { isSaasMode } from '@/lib/saas/config';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { useAuth } from '@/lib/saas/authContext';
 import { AddressRegistrySettingsSection } from './AddressRegistrySettings';
+
+/**
+ * Load the settings driving this page. In hosted mode getEffectiveSettings
+ * intentionally omits local-only fields, but `aiConsentGranted` IS a local
+ * per-device setting (the AI Advisor reads the raw settings row) — graft it
+ * on so the AI checkbox below reflects and round-trips the persisted value.
+ */
+async function loadSettings(): Promise<TaxSettings> {
+  const [effective, local] = await Promise.all([getEffectiveSettings(), getSettings()]);
+  return { ...effective, aiConsentGranted: local.aiConsentGranted };
+}
 
 export function SettingsTab() {
   const saas = isSaasMode();
@@ -28,7 +39,7 @@ export function SettingsTab() {
       const { imported } = await importFullBackup(file);
       // Restore replaced the settings row in IndexedDB — refresh the mounted UI
       // state so a later toggle doesn't overwrite the just-restored settings.
-      setSettings(await getEffectiveSettings());
+      setSettings(await loadSettings());
       setRestoreStatus({ kind: 'success', message: `Restored ${imported} transactions.` });
     } catch (err) {
       setRestoreStatus({
@@ -41,15 +52,21 @@ export function SettingsTab() {
   };
 
   useEffect(() => {
-    getEffectiveSettings().then((s) => setSettings(s));
+    loadSettings().then((s) => setSettings(s));
   }, []);
 
   if (!settings) return null;
 
   const update = async (patch: Partial<TaxSettings>) => {
-    const next = { ...settings, ...patch };
-    setSettings(next);
-    await saveSettings(next);
+    // Optimistic UI first (toggles feel instant), then merge into the RAW
+    // local row — persisting the effective (server-merged) view would
+    // clobber local-only fields (BYOK API keys, manualEvmChain) and stamp
+    // server-derived flags into the local row. The UI state finally re-loads
+    // via loadSettings so it keeps reflecting the effective view.
+    setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
+    const local = await getSettings();
+    await saveSettings({ ...local, ...patch });
+    setSettings(await loadSettings());
   };
 
   const isAdmin = saas && user?.role === 'admin';
@@ -232,6 +249,18 @@ export function SettingsTab() {
                 onDelete={() => update({ aiApiKey: undefined })}
                 placeholder="sk-or-v1-…"
               />
+              <label className="flex items-start gap-3 text-sm text-low">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={Boolean(settings.aiConsentGranted)}
+                  onChange={(e) => update({ aiConsentGranted: e.target.checked })}
+                />
+                <span>
+                  <strong className="text-mid">AI Tax Advisor.</strong> Off by default — check to opt in. The
+                  advisor stays off until you explicitly enable it here or from its panel.
+                </span>
+              </label>
               <div className="rounded-lg border border-white/10 bg-elev-2 p-3 text-xs leading-relaxed text-low">
                 <p className="font-semibold text-mid">How your AI data travels</p>
                 <p className="mt-1">
@@ -245,7 +274,7 @@ export function SettingsTab() {
                 <p className="mt-1">
                   Either way, only an aggregated summary (holdings, cost basis, realized gains, jurisdiction) and your
                   typed question leave the device — never raw wallet addresses or transaction hashes. The advisor is
-                  off until you opt in, and you can revoke consent any time from its panel.
+                  off until you opt in, and you can revoke consent any time from its panel or here.
                 </p>
               </div>
             </CardContent>
@@ -258,15 +287,27 @@ export function SettingsTab() {
           <CardHeader>
             <CardTitle>AI Tax Advisor</CardTitle>
           </CardHeader>
-          <CardContent>
+          <CardContent className="space-y-4">
+            <label className="flex items-start gap-3 text-sm text-low">
+              <input
+                type="checkbox"
+                className="mt-0.5"
+                checked={settings.aiConsentGranted !== false}
+                onChange={(e) => update({ aiConsentGranted: e.target.checked })}
+              />
+              <span>
+                <strong className="text-mid">AI Tax Advisor.</strong> On by default for subscribers — uncheck
+                anytime to opt out.
+              </span>
+            </label>
             <div className="rounded-lg border border-white/10 bg-elev-2 p-3 text-xs leading-relaxed text-low">
               <p className="font-semibold text-mid">How your AI data travels</p>
               <p className="mt-1">
                 On the hosted app you don't add an OpenRouter key. When you ask the AI Advisor a question, an
                 aggregated summary (holdings, cost basis, realized gains, jurisdiction) plus your typed question is{' '}
                 <strong className="text-violet">relayed</strong> through SoloLedger's server to OpenRouter — never raw
-                wallet addresses or transaction hashes. The advisor is off until you opt in, and you can revoke consent
-                any time from its panel.
+                wallet addresses or transaction hashes. The advisor is on by default for subscribers, and you can
+                turn it off any time from its panel or the checkbox above.
               </p>
             </div>
           </CardContent>
@@ -336,7 +377,7 @@ export function SettingsTab() {
                     await clearAllData();
                     // clearAllData resets settings to defaults in IndexedDB —
                     // refresh the mounted UI state to match.
-                    setSettings(await getEffectiveSettings());
+                    setSettings(await loadSettings());
                     setConfirmDelete(false);
                   }}
                 >

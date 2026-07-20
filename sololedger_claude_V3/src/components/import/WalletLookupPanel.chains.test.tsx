@@ -103,8 +103,8 @@ beforeEach(() => {
     moralisApiKey: 'mk'
   };
   mocks.fetchActiveChains.mockResolvedValue({
-    chains: ['polygon', 'ethereum'], // deliberately unordered — UI must use CHAINS registry order
-    activeSlugs: ['polygon', 'eth']
+    active: ['polygon', 'ethereum'], // deliberately unordered — UI must use CHAINS registry order
+    incomingOnly: []
   });
   mocks.runSequential.mockResolvedValue([]);
 });
@@ -202,6 +202,30 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
     expect(summary).toHaveTextContent('Base: already imported — skipped');
   });
 
+  it('lists only outgoing-verified chains and notes incoming-only (spam airdrop) ones', async () => {
+    // The live-verified pattern: Moralis counts incoming spam airdrops as
+    // "activity" — those chains must NOT reach the picker, only the note.
+    mocks.fetchActiveChains.mockResolvedValue({ active: ['ethereum'], incomingOnly: ['polygon'] });
+    await renderWithEvmAddress();
+
+    const picker = await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    expect(screen.getByRole('checkbox', { name: /ethereum/i })).toBeChecked();
+    expect(screen.queryByRole('checkbox', { name: /polygon/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 1 chain' })).toBeEnabled();
+
+    const note = await screen.findByTestId('incoming-only-note');
+    expect(note).toHaveTextContent(
+      'Incoming-only activity (usually spam airdrops) found on: Polygon. Not auto-listed — pick a chain manually if you actually need one.'
+    );
+    expect(picker).toContainElement(note);
+  });
+
+  it('hides the incoming-only note when every detected chain is outgoing-verified', async () => {
+    await renderWithEvmAddress();
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    expect(screen.queryByTestId('incoming-only-note')).not.toBeInTheDocument();
+  });
+
   it('falls back to the manual dropdown with a note when detection fails', async () => {
     mocks.fetchActiveChains.mockRejectedValue(new Error('401 unauthorized'));
     await renderWithEvmAddress();
@@ -216,13 +240,30 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
   });
 
   it('reports zero-activity wallets and keeps the manual dropdown', async () => {
-    mocks.fetchActiveChains.mockResolvedValue({ chains: [], activeSlugs: [] });
+    mocks.fetchActiveChains.mockResolvedValue({ active: [], incomingOnly: [] });
     await renderWithEvmAddress();
 
     await screen.findByText(
-      /No activity found on supported chains for this address — pick a chain manually below\./,
+      /No outgoing activity found on supported chains for this address — pick a chain manually below\./,
       undefined,
       DETECT_TIMEOUT
+    );
+    expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('incoming-only-note')).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+  });
+
+  it('names incoming-only (spam) chains even when NO chain is outgoing-verified', async () => {
+    // All-spam wallet: activity WAS found, just never outgoing — the note
+    // must survive the "no outgoing activity" state instead of vanishing.
+    // (Polygon: the mocked CHAINS registry in this file is eth/polygon/solana.)
+    mocks.fetchActiveChains.mockResolvedValue({ active: [], incomingOnly: ['polygon'] });
+    await renderWithEvmAddress();
+
+    await screen.findByText(/No outgoing activity found on supported chains/, undefined, DETECT_TIMEOUT);
+    const note = await screen.findByTestId('incoming-only-note');
+    expect(note).toHaveTextContent(
+      'Incoming-only activity (usually spam airdrops) found on: Polygon.'
     );
     expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
     expect(screen.getByRole('combobox')).toBeInTheDocument();

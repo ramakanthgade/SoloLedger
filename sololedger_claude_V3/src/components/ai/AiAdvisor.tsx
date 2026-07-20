@@ -62,8 +62,14 @@ export function AiAdvisor() {
   const aiAvailable = saas ? serverAiEnabled : Boolean(localAiApiKey);
   const aiApiKey = saas ? 'saas-proxy' : (localAiApiKey ?? '');
 
-  // First-use consent (A2). No AI request runs until the user explicitly opts in.
-  const consentGranted = Boolean(settingsRow?.aiConsentGranted);
+  // AI consent (A2) — dual semantics by mode:
+  // - Hosted SaaS: ON by default for subscribers (like automatic price
+  //   fetching and wallet lookup); only an explicit `false` opts out.
+  // - Local/BYOK: privacy-first opt-in — OFF until explicitly granted.
+  // Either way, no AI request runs while consent is not granted.
+  const consentGranted = saas
+    ? settingsRow?.aiConsentGranted !== false
+    : Boolean(settingsRow?.aiConsentGranted);
 
   // Transport disclosure (A1): BYO key talks directly to OpenRouter; a hosted
   // SaaS build with no user key is relayed through SoloLedger. `networkMode`

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { parseImportFile, isSpreadsheetFile, type FileParseOutcome } from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
@@ -36,8 +36,47 @@ import { cn } from '@/lib/utils';
 type Mode = 'guided' | 'csv' | 'manual' | 'wallet';
 
 /** How one dropped file was handled — the multi-file wrapper (handleFiles)
- *  aggregates these into the batch summary. */
-type FileHandleOutcome = { kind: 'saved'; count: number } | { kind: 'duplicate' } | { kind: 'manual' };
+ *  aggregates these into the batch summary. The saved variant also carries
+ *  the per-file pricing/conversion tallies so a batch can report ONE
+ *  aggregated note instead of only the last file's (Item 5). */
+type FileHandleOutcome =
+  | {
+      kind: 'saved';
+      count: number;
+      pricesUpdated: number;
+      pricesFailed: number;
+      converted: number;
+      convertFailed: number;
+    }
+  | { kind: 'duplicate' }
+  | { kind: 'manual' };
+
+/**
+ * Shared note builders — the single-file path (persistTransactions) and the
+ * batch aggregation (handleFiles) MUST emit identical strings, so both call
+ * these. Returns null when there is nothing to report.
+ */
+function priceFetchNoteText(updated: number, failed: number): string | null {
+  if (updated <= 0 && failed <= 0) return null;
+  return updated > 0
+    ? `Fetched prices for ${updated} transaction${updated === 1 ? '' : 's'}.` +
+        (failed > 0 ? ` ${failed} could not be priced — edit in Review.` : '')
+    : `${failed} transaction${failed === 1 ? '' : 's'} could not be priced — edit in Review.`;
+}
+
+function conversionNoteText(converted: number, failed: number, currency: string): string | null {
+  if (converted <= 0 && failed <= 0) return null;
+  return [
+    converted > 0
+      ? `Converted ${converted} value${converted === 1 ? '' : 's'} to ${currency} using historical exchange rates.`
+      : null,
+    failed > 0
+      ? `${failed} value${failed === 1 ? '' : 's'} could not be converted to ${currency} — edit in Review if needed.`
+      : null
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
 
 const SUPPORTED = [
   { id: 'coinbase', label: 'Coinbase', guide: 'Settings → Reports → Generate custom report → Transaction history CSV' },
@@ -73,6 +112,9 @@ export function ImportTab() {
   const [fallbackMessages, setFallbackMessages] = useState<string[]>([]);
   /** Whether AI column-mapping is actually available (own key, or hosted with server AI enabled). */
   const [aiAvailable, setAiAvailable] = useState(false);
+  /** The hidden CSV/XLSX input — the empty state's "Choose file" CTA clicks it
+   *  directly, so post-skip users get the real file picker in one click. */
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const csvImports = useLiveQuery(() => getCsvImports(), []) ?? [];
 
@@ -103,16 +145,8 @@ export function ImportTab() {
       converted: nConverted,
       failed: nFailed
     } = await convertOrNormalizeForImport(stamped, settings, priceApiEnabled);
-    if (nConverted > 0) {
-      setConversionNote(
-        `Converted ${nConverted} value${nConverted === 1 ? '' : 's'} to ${settings.reportingCurrency} using historical exchange rates.`
-      );
-    }
-    if (nFailed > 0) {
-      setConversionNote(
-        (prev) =>
-          `${prev ? `${prev} ` : ''}${nFailed} value${nFailed === 1 ? '' : 's'} could not be converted to ${settings.reportingCurrency} — edit in Review if needed.`
-      );
+    if (nConverted > 0 || nFailed > 0) {
+      setConversionNote(conversionNoteText(nConverted, nFailed, settings.reportingCurrency));
     }
 
     await db.transactions.bulkPut(converted);
@@ -129,12 +163,7 @@ export function ImportTab() {
       pricesUpdated = priceResult.updated;
       pricesFailed = priceResult.failed;
       if (priceResult.updated > 0 || priceResult.failed > 0) {
-        setPriceFetchNote(
-          priceResult.updated > 0
-            ? `Fetched prices for ${priceResult.updated} transaction${priceResult.updated === 1 ? '' : 's'}.` +
-                (priceResult.failed > 0 ? ` ${priceResult.failed} could not be priced — edit in Review.` : '')
-            : `${priceResult.failed} transaction${priceResult.failed === 1 ? '' : 's'} could not be priced — edit in Review.`
-        );
+        setPriceFetchNote(priceFetchNoteText(priceResult.updated, priceResult.failed));
       }
     }
 
@@ -208,7 +237,14 @@ export function ImportTab() {
           setImportWarnings(result.warnings);
           setFileName('');
           setFileHash('');
-          return { kind: 'saved', count: persisted.saved };
+          return {
+            kind: 'saved',
+            count: persisted.saved,
+            pricesUpdated: persisted.pricesUpdated,
+            pricesFailed: persisted.pricesFailed,
+            converted: persisted.converted,
+            convertFailed: persisted.failed
+          };
         } finally {
           setSaving(false);
           setImportPhase(null);
@@ -254,6 +290,13 @@ export function ImportTab() {
       let manual = 0;
       let failed = 0;
       let noNew = 0;
+      // Pricing/conversion tallies accumulated across the whole batch — the
+      // per-file notes are last-wins, so a multi-file drop replaces them with
+      // ONE aggregated note after the loop (Item 5).
+      let pricesUpdated = 0;
+      let pricesFailed = 0;
+      let valuesConverted = 0;
+      let valuesConvertFailed = 0;
       /** Outcome of the last file that didn't throw — the per-file UI below
        *  (duplicate banner, column-mapping form) only reflects THIS file. */
       let lastOutcome: FileHandleOutcome | null = null;
@@ -270,6 +313,10 @@ export function ImportTab() {
         }
         lastOutcome = outcome;
         if (outcome.kind === 'saved') {
+          pricesUpdated += outcome.pricesUpdated;
+          pricesFailed += outcome.pricesFailed;
+          valuesConverted += outcome.converted;
+          valuesConvertFailed += outcome.convertFailed;
           if (outcome.count > 0) {
             savedFiles += 1;
             totalSaved += outcome.count;
@@ -289,6 +336,18 @@ export function ImportTab() {
       if (files.length > 1) {
         // The batch summary replaces the single-file duplicate banner.
         setDuplicateBlocked(false);
+        // Item 5: per-file price/conversion notes are last-wins across a
+        // batch (each handleFile resets them) — replace them with ONE
+        // aggregated note each, mirroring the single-file strings, so a
+        // 3-file import reports "Fetched prices for 123 transactions."
+        // instead of only the last file's count.
+        setPriceFetchNote(priceFetchNoteText(pricesUpdated, pricesFailed));
+        if (valuesConverted > 0 || valuesConvertFailed > 0) {
+          const { reportingCurrency } = await getSettings();
+          setConversionNote(conversionNoteText(valuesConverted, valuesConvertFailed, reportingCurrency));
+        } else {
+          setConversionNote(null);
+        }
         // The column-mapping form only survives when the LAST processed file
         // is the one needing mapping — a later file's handleFile reset it.
         const mappingShown = lastOutcome?.kind === 'manual';
@@ -462,10 +521,21 @@ export function ImportTab() {
         <EmptyState
           icon={<Upload className="h-11 w-11" />}
           title="No transactions yet"
-          description="Bring your trades in once and Portfolio, Capital Gains and Reports all fill themselves in. The guided import walks you through exporting from your exchange."
-          actionLabel="Import your first file"
-          onAction={() => setMode('guided')}
-          hint="Nothing has left your device."
+          description="Bring your trades in once and Portfolio, Capital Gains and Reports all fill themselves in — drop in a CSV or Excel export from your exchange to get started."
+          actionLabel="Choose file"
+          onAction={() => fileInputRef.current?.click()}
+          hint={
+            <>
+              New to exchange exports?{' '}
+              <button
+                type="button"
+                onClick={() => setMode('guided')}
+                className="font-medium text-mid underline-offset-2 transition-colors hover:text-hi hover:underline"
+              >
+                Use the guided setup
+              </button>
+            </>
+          }
         />
       )}
 
@@ -502,6 +572,7 @@ export function ImportTab() {
                 </p>
                 <label className="mt-3">
                   <input
+                    ref={fileInputRef}
                     type="file"
                     multiple
                     accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"

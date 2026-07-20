@@ -51,6 +51,13 @@ interface ConnectionWizardProps {
   onComplete?: (savedCount: number) => void;
   /** Called if the user backs out of the wizard entirely (from step 1). */
   onExit?: () => void;
+  /**
+   * Called when the user abandons the guided setup for the plain Import tab.
+   * When provided, a subtle "Skip setup" footer link stays visible on EVERY
+   * wizard step (the onboarding flow passes it; the Import tab's embedded
+   * wizard does not — that user is already on Import).
+   */
+  onSkip?: () => void;
 }
 
 /** A parsed, not-yet-persisted preview of a dropped file. */
@@ -156,7 +163,7 @@ function SourceTile({
   );
 }
 
-export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) {
+export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizardProps) {
   const [state, dispatch] = useReducer(wizardReducer, initialWizardState);
   const [reading, setReading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -185,6 +192,10 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
   const [queueTotal, setQueueTotal] = useState(0);
   /** Non-blocking note about batch files that were skipped (e.g. duplicates). */
   const [queueNote, setQueueNote] = useState<string | null>(null);
+  /** Appends one sentence to the batch note (space-separated accumulation). */
+  const appendQueueNote = useCallback((note: string) => {
+    setQueueNote((prev) => (prev ? `${prev} ${note}` : note));
+  }, []);
   /** Transactions confirmed so far across a multi-file batch. A ref, not
    *  state: it accumulates inside async file chaining where render closures
    *  go stale, and it is never rendered directly. */
@@ -322,11 +333,41 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
           [...result.warnings],
           false
         );
+      } catch {
+        // A file that throws mid-read (corrupt workbook, parser failure, hash
+        // error) must NOT strand the rest of a batch with an unhandled
+        // rejection (`void readFile(...)` swallows nothing). Note the failed
+        // file and continue the chain — the same pattern as the
+        // duplicate-skip path above.
+        const skippedNote = `${file.name} couldn't be read — skipped.`;
+        if (queue.length > 0) {
+          const [next, ...rest] = queue;
+          setFileQueue(rest);
+          appendQueueNote(skippedNote);
+          chained = true;
+          void readFile(next, rest);
+        } else if (batchSavedRef.current > 0) {
+          // The LAST file of a batch failed: still end with the aggregated
+          // batch outcome (banner + failure note) so the files that saved
+          // are reported and onboarding can advance.
+          const total = batchSavedRef.current;
+          batchSavedRef.current = 0;
+          setQueueTotal(0);
+          appendQueueNote(skippedNote);
+          setSavedCount(total);
+          onComplete?.(total);
+        } else {
+          // Single-file failure: surface a blocking error instead of letting
+          // the rejection escape silently.
+          setError(
+            `"${file.name}" couldn't be read — the file may be corrupt or in an unexpected format.`
+          );
+        }
       } finally {
         if (!chained) setReading(false);
       }
     },
-    [showPreview, onComplete]
+    [showPreview, onComplete, appendQueueNote]
   );
 
   /**
@@ -434,6 +475,7 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
     dispatch({ type: 'confirm' });
     setSaving(true);
     setSavePhase('saving');
+    setError(null);
     try {
       // Raw local settings carry BYOK API keys; effective settings decide
       // whether Live price lookup is on (server-driven ON in hosted, OFF locally).
@@ -446,25 +488,45 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
         fiatValue: normalizeFiatMagnitude(t.fiatValue),
         feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
       }));
-      const { transactions: converted } = await convertOrNormalizeForImport(
-        stamped,
-        settings,
-        priceApiEnabled
-      );
-      await db.transactions.bulkPut(converted);
-      await deduplicateTransactions();
-      const count = await countCsvImportTransactions(preview.hash);
-      await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, count);
+
+      // The pre-pricing save pipeline is isolated from pricing. A failure
+      // HERE means nothing was durably written, so the error banner shows,
+      // the preview stays open, and the queued files are preserved — the
+      // user can confirm again to retry the whole batch.
+      let savedNow = 0;
+      try {
+        const { transactions: converted } = await convertOrNormalizeForImport(
+          stamped,
+          settings,
+          priceApiEnabled
+        );
+        await db.transactions.bulkPut(converted);
+        await deduplicateTransactions();
+        // Post-dedup rows attributable to this file — NOT the parsed preview
+        // count. Overlapping re-exports (new hash, same rows) dedupe away, and
+        // the banner must not claim those rows were saved.
+        savedNow = await countCsvImportTransactions(preview.hash);
+        await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, savedNow);
+      } catch {
+        setError(`"${preview.fileName}" couldn't be saved — Confirm again to retry.`);
+        return;
+      }
 
       if (priceApiEnabled) {
         setSavePhase('pricing');
-        await fetchMissingPricesForAllTransactions(settings);
+        try {
+          await fetchMissingPricesForAllTransactions(settings);
+        } catch {
+          // Pricing is network/hosted dependent — a failure must NOT strand a
+          // multi-file batch (the file itself is already safely saved, and a
+          // throw here previously killed the chain AFTER file 1). Degrade to
+          // a warning note and let the chain continue.
+          appendQueueNote(
+            "Saved, but live prices couldn't be fetched right now — they'll be retried on your next import."
+          );
+        }
       }
 
-      // Post-dedup rows attributable to this file — NOT the parsed preview
-      // count. Overlapping re-exports (new hash, same rows) dedupe away, and
-      // the banner must not claim those rows were saved.
-      const savedNow = count;
       if (fileQueue.length > 0) {
         // Batch mode: keep the wizard open and read the next queued file. The
         // success banner (with the running total) — and the onComplete signal
@@ -487,7 +549,7 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
       setSaving(false);
       setSavePhase(null);
     }
-  }, [preview, onComplete, fileQueue, readFile]);
+  }, [preview, onComplete, fileQueue, readFile, appendQueueNote]);
 
   const previewRows = preview?.transactions.slice(0, 5) ?? [];
 
@@ -839,6 +901,15 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
                 </div>
               ))}
 
+              {/* A pre-pricing save failure keeps the preview open for retry —
+                  the banner must be visible HERE, not only on the upload step. */}
+              {error && (
+                <div className="flex items-start gap-2 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2.5 text-xs text-warn">
+                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                  <span>{error}</span>
+                </div>
+              )}
+
               <div className="flex gap-3 pt-1">
                 <Button
                   variant="ghost"
@@ -872,6 +943,22 @@ export function ConnectionWizard({ onComplete, onExit }: ConnectionWizardProps) 
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Item 1: a subtle skip link that persists across ALL wizard steps —
+          rendered only when the caller passes onSkip (onboarding). The Import
+          tab's embedded wizard omits it: that user is already on Import.
+          Styling mirrors Onboarding's skipLink. */}
+      {onSkip && (
+        <div className="text-center">
+          <button
+            type="button"
+            onClick={onSkip}
+            className="text-center text-xs font-medium text-low transition-colors hover:text-mid focus:outline-none focus-visible:underline"
+          >
+            Skip setup — go straight to Import
+          </button>
         </div>
       )}
 

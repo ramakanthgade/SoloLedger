@@ -158,6 +158,15 @@ beforeEach(() => {
   mocks.countCsvImportTransactions.mockImplementation(
     async (hash: string) => savedCounts[hash] ?? 1
   );
+  // Pricing defaults: disabled, and a no-op when enabled — individual tests
+  // opt in explicitly. clearAllMocks keeps implementations, so reset here.
+  mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: false });
+  mocks.fetchMissingPrices.mockResolvedValue({ updated: 0, failed: 0 });
+  mocks.convertOrNormalizeForImport.mockImplementation(async (txs: Transaction[]) => ({
+    transactions: txs,
+    converted: 0,
+    failed: 0
+  }));
 });
 
 describe('ImportTab — multi-file batch handling', () => {
@@ -265,5 +274,77 @@ describe('ImportTab — multi-file batch handling', () => {
       /1 of 2 files imported \(2 transactions\) · 1 had no new rows — everything already in your ledger/
     );
     await screen.findByText(/Saved 2 transactions to your local database/);
+  });
+
+  it('Item 4: a mixed CSV + XLSX batch imports every file', async () => {
+    mocks.parseImportFile.mockImplementation(async (file: File) =>
+      recognized(file.name === 'trades.xlsx' ? 3 : 2, file.name)
+    );
+    savedCounts = { 'hash:aaa': 2, 'hash:bbb': 3 };
+    render(<ImportTab />);
+
+    fireEvent.drop(getDropzone(), {
+      dataTransfer: { files: [makeFile('deposits.csv', 'aaa'), makeFile('trades.xlsx', 'bbb')] }
+    });
+
+    await screen.findByText(/2 of 2 files imported \(5 transactions\)/);
+    expect(mocks.parseImportFile).toHaveBeenCalledTimes(2);
+    expect(mocks.bulkPut).toHaveBeenCalledTimes(2);
+    await screen.findByText(/Saved 5 transactions to your local database/);
+  });
+
+  it('Item 5: a multi-file batch shows ONE aggregated price message with the summed count', async () => {
+    // Live pricing on; each file's persist pass prices its rows. Without
+    // aggregation only the LAST file's note (73) would survive.
+    mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: true });
+    mocks.fetchMissingPrices
+      .mockResolvedValueOnce({ updated: 50, failed: 0 })
+      .mockResolvedValueOnce({ updated: 73, failed: 0 });
+    mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
+    savedCounts = { 'hash:aaa': 2, 'hash:bbb': 2 };
+    render(<ImportTab />);
+
+    fireEvent.drop(getDropzone(), {
+      dataTransfer: { files: [makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')] }
+    });
+
+    await screen.findByText(/Fetched prices for 123 transactions\./);
+    // Exactly one price note — the aggregated one, never a per-file one.
+    expect(screen.getAllByText(/Fetched prices for \d+ transactions?\./)).toHaveLength(1);
+    expect(screen.queryByText(/Fetched prices for 73 transactions\./)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Fetched prices for 50 transactions\./)).not.toBeInTheDocument();
+  });
+
+  it('Item 5: a multi-file batch aggregates conversion notes too', async () => {
+    mocks.convertOrNormalizeForImport.mockImplementation(async (txs: Transaction[]) => ({
+      transactions: txs,
+      converted: 2,
+      failed: 0
+    }));
+    mocks.parseImportFile.mockImplementation(async (file: File) => recognized(1, file.name));
+    savedCounts = { 'hash:aaa': 1, 'hash:bbb': 1 };
+    render(<ImportTab />);
+
+    fireEvent.drop(getDropzone(), {
+      dataTransfer: { files: [makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')] }
+    });
+
+    await screen.findByText(/Converted 4 values to USD using historical exchange rates\./);
+    expect(screen.getAllByText(/Converted \d+ values? to USD/)).toHaveLength(1);
+  });
+
+  it('Item 5: single-file price message is unchanged (no aggregation wrapper)', async () => {
+    mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: true });
+    mocks.fetchMissingPrices.mockResolvedValue({ updated: 29, failed: 0 });
+    mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
+    savedCounts = { 'hash:aaa': 2 };
+    render(<ImportTab />);
+
+    fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('a.csv', 'aaa')] } });
+
+    await screen.findByText(/Fetched prices for 29 transactions\./);
+    expect(screen.getAllByText(/Fetched prices for \d+ transactions?\./)).toHaveLength(1);
+    // Single file: no batch summary line.
+    expect(screen.queryByText(/of 1 files imported/)).not.toBeInTheDocument();
   });
 });

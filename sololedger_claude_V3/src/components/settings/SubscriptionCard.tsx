@@ -3,6 +3,7 @@ import { useAuth } from '@/lib/saas/authContext';
 import { startCheckout } from '@/lib/saas/api';
 import { formatPlanLabel, formatUnitLimit } from '@/lib/saas/plans';
 import { PLAN_CATALOG, SELECTED_PLAN_KEY } from '@/lib/saas/planCatalog';
+import { Button } from '@/components/ui/button';
 
 export function SubscriptionCard() {
   const { user } = useAuth();
@@ -37,9 +38,9 @@ export function SubscriptionCard() {
   };
 
   return (
-    <div className="rounded-2xl border border-violet/30 bg-white shadow-sm">
-      <div className="border-b border-violet/20 px-6 py-5">
-        <p className="text-xs font-semibold uppercase tracking-wider text-blue">Subscription</p>
+    <div className="rounded-2xl border border-white/10 bg-elev-2 shadow-card">
+      <div className="border-b border-white/5 px-6 py-5">
+        <p className="font-mono text-xs font-semibold uppercase tracking-wider text-violet">Subscription</p>
         <div className="mt-2 flex flex-wrap items-baseline justify-between gap-3">
           <div>
             <h3 className="font-display text-2xl font-bold capitalize text-hi">
@@ -51,20 +52,20 @@ export function SubscriptionCard() {
             </p>
           </div>
           {user.plan === 'local' && (
-            <span className="rounded-full bg-violet/15 px-3 py-1 text-xs font-semibold text-blue">
+            <span className="rounded-full bg-violet/15 px-3 py-1 text-xs font-semibold text-violet">
               Free tier
             </span>
           )}
         </div>
         {selectedFromLanding && selectedFromLanding !== user.plan && (
-          <p className="mt-3 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          <p className="mt-3 rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-sm text-warn">
             You selected <strong>{formatPlanLabel(selectedFromLanding)}</strong> on the landing page — choose it
             below to upgrade.
           </p>
         )}
       </div>
 
-      <div className="divide-y divide-slate-100">
+      <div className="divide-y divide-white/5">
         {PLAN_CATALOG.map((p) => {
           const isCurrent = user.plan === p.id;
           const highlight = selectedFromLanding === p.id;
@@ -82,7 +83,7 @@ export function SubscriptionCard() {
                     </span>
                   )}
                   {isCurrent && (
-                    <span className="ml-2 rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-bold uppercase text-slate-600">
+                    <span className="ml-2 rounded bg-elev-3 px-1.5 py-0.5 text-[10px] font-bold uppercase text-mid">
                       Current
                     </span>
                   )}
@@ -101,7 +102,7 @@ export function SubscriptionCard() {
                       value={extraPacks}
                       aria-label="Enterprise extra 1,000-event packs"
                       onChange={(e) => setExtraPacks(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
-                      className="h-8 w-20 rounded-lg border border-violet/40 bg-white px-2 text-right font-mono text-sm text-hi"
+                      className="h-8 w-20 rounded-lg border border-white/10 bg-elev-3 px-2 text-right font-mono text-sm text-hi"
                     />
                     <span className="text-low">
                       → {formatUnitLimit(10_000 + extraPacks * 1_000)} events
@@ -110,14 +111,13 @@ export function SubscriptionCard() {
                 )}
               </div>
               {!isCurrent && (
-                <button
-                  type="button"
+                <Button
+                  variant="secondary"
                   disabled={busy === p.id}
                   onClick={() => upgrade(p.id)}
-                  className="rounded-lg border border-violet/40 bg-white px-4 py-2 text-sm font-semibold text-blue transition hover:bg-violet/10 disabled:opacity-50"
                 >
                   {busy === p.id ? '…' : p.contactOnly ? 'Contact' : 'Select'}
-                </button>
+                </Button>
               )}
             </div>
           );

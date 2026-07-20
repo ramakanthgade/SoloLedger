@@ -54,6 +54,45 @@ export function getMoralisChain(chainId: ChainId): string | null {
   return MORALIS_CHAIN[chainId] ?? null;
 }
 
+/**
+ * Chain slugs the Moralis `/wallets/{address}/chains` endpoint ACCEPTS in its
+ * `chains` query param — live-verified 2026-07: the endpoint HTTP-400s
+ * ("only supports mainnet chains") on the other MORALIS_CHAIN slugs (fantom,
+ * celo, zksync, scroll, blast, mantle, aurora, moonriver, metis, opbnb), and
+ * called with NO param it under-reports (returned only `eth` for a wallet
+ * active on 7 chains). The rejected slugs stay valid for the /history import
+ * endpoint — only active-chain detection is pinned to this list.
+ */
+export const CHAINS_ENDPOINT_SLUGS = [
+  'eth',
+  'polygon',
+  'arbitrum',
+  'base',
+  'bsc',
+  'optimism',
+  'avalanche',
+  'linea',
+  'cronos',
+  'gnosis',
+  'moonbeam'
+] as const;
+
+/**
+ * Shared transport for Moralis REST calls: the SaaS proxy in hosted mode (no
+ * user key needed), direct-with-key otherwise. Records network activity once
+ * per request. `path` starts AFTER the API version segment (e.g.
+ * `/wallets/{address}/chains`) — identical routing to fetchMoralisEvm so
+ * proxy/direct behavior stays consistent across endpoints.
+ */
+async function moralisFetch(path: string, apiKey: string): Promise<Response> {
+  const saas = isSaasMode();
+  recordNetworkActivity(resolveMode(saas));
+  if (saas) return saasProxyFetch(`/api/proxy/moralis/api/v2.2${path}`);
+  return fetch(`${MORALIS_BASE}${path}`, {
+    headers: { 'X-API-Key': apiKey, accept: 'application/json' }
+  });
+}
+
 /** Moralis chain slug → SoloLedger ChainId (exact inverse of MORALIS_CHAIN). */
 export const MORALIS_SLUG_TO_CHAIN: Readonly<Record<string, ChainId>> = Object.freeze(
   Object.fromEntries(
@@ -93,52 +132,133 @@ interface MoralisActiveChainEntry {
 }
 
 export interface WalletActiveChains {
-  /** Importable app chains with real activity, in CHAINS registry order. */
-  chains: ChainId[];
-  /** Raw Moralis slugs that reported activity (before importable filtering). */
-  activeSlugs: string[];
+  /**
+   * Importable app chains where the wallet has SENT ≥1 transaction (outgoing
+   * verified against wallet history), in CHAINS registry order. A chain whose
+   * history check FAILED transiently is kept here — never hide a
+   * possibly-real chain on a transient error.
+   */
+  active: ChainId[];
+  /**
+   * Importable app chains where the wallet only ever RECEIVED transactions —
+   * typically spam airdrops, which Moralis counts as "activity". Excluded
+   * from the picker; surfaced as a note instead. CHAINS registry order.
+   */
+  incomingOnly: ChainId[];
 }
 
 /**
- * Detect which EVM chains a wallet has real activity on, in ONE Moralis call:
- * GET /api/v2.2/wallets/{address}/chains. Entries whose first/last transaction
- * fields are empty strings are inactive and filtered out. Same routing pattern
- * as fetchMoralisEvm: the SaaS proxy in hosted mode (no user key needed),
- * direct-with-key otherwise.
+ * Detect which EVM chains a wallet REALLY uses, in two steps:
  *
- * Throws on HTTP/network failure — callers treat that as "detection
- * unavailable" and fall back to the manual chain dropdown.
+ * 1. GET /api/v2.2/wallets/{address}/chains with an explicit `chains` param
+ *    (CHAINS_ENDPOINT_SLUGS — see its comment for the live-verified why).
+ *    Entries whose first AND last transaction fields are both empty strings
+ *    are inactive and filtered out; a partially-populated entry still counts
+ *    (defensive — docs show object-when-active / ""-when-inactive, but a
+ *    partial shape shouldn't drop a real chain).
+ * 2. Moralis counts ANY on-chain touch as activity — including unsolicited
+ *    spam airdrops TO the wallet — so each candidate is verified against
+ *    wallet history (hasOutgoingTransaction): only chains the address has
+ *    SENT ≥1 transaction from land in `active`; incoming-only candidates go
+ *    to `incomingOnly`.
+ *
+ * Throws on HTTP/network failure of the CHAINS call — callers treat that as
+ * "detection unavailable" and fall back to the manual chain dropdown. A
+ * failed HISTORY check never throws; that chain stays in `active`.
  */
 export async function fetchWalletActiveChains(
   address: string,
   apiKey: string
 ): Promise<WalletActiveChains> {
-  const url = isSaasMode()
-    ? `${getApiBase()}/api/proxy/moralis/api/v2.2/wallets/${address}/chains`
-    : `${MORALIS_BASE}/wallets/${address}/chains`;
-
-  recordNetworkActivity(resolveMode(isSaasMode()));
-  const res = isSaasMode()
-    ? await saasProxyFetch(url.replace(getApiBase(), ''))
-    : await fetch(url, { headers: { 'X-API-Key': apiKey, accept: 'application/json' } });
+  const chainsParams = CHAINS_ENDPOINT_SLUGS.map((slug) => `chains=${slug}`).join('&');
+  const res = await moralisFetch(`/wallets/${address}/chains?${chainsParams}`, apiKey);
 
   if (!res.ok) throw new Error(`Moralis chain detection returned ${res.status}`);
 
   const data = await res.json();
   const entries: MoralisActiveChainEntry[] = data?.active_chains ?? [];
   const activeSlugs = entries
-    .filter((e) => Boolean(e.first_transaction) && Boolean(e.last_transaction))
+    .filter((e) => Boolean(e.first_transaction) || Boolean(e.last_transaction))
     .map((e) => String(e.chain ?? '').trim().toLowerCase())
     .filter(Boolean);
 
-  const resolved = new Set<ChainId>();
+  // Candidates: slugs the app can both detect and import, pinned to the
+  // endpoint-verified list so a slug the /chains endpoint rejects can never
+  // reach the history check either.
+  const candidates: { slug: string; chainId: ChainId }[] = [];
   for (const slug of activeSlugs) {
+    if (!(CHAINS_ENDPOINT_SLUGS as readonly string[]).includes(slug)) continue;
     const chainId = chainIdFromMoralisSlug(slug);
-    if (chainId) resolved.add(chainId);
+    if (chainId) candidates.push({ slug, chainId });
   }
+
+  const outgoing = new Set<ChainId>();
+  const incoming = new Set<ChainId>();
+  for (const { slug, chainId } of candidates) {
+    // eslint-disable-next-line no-await-in-loop
+    const sent = await hasOutgoingTransaction(address, slug, apiKey);
+    // `null` = history check failed transiently → keep the chain listed.
+    if (sent === false) incoming.add(chainId);
+    else outgoing.add(chainId);
+  }
+
   // Stable display order = CHAINS registry order.
-  const chains = CHAINS.filter((c) => resolved.has(c.id)).map((c) => c.id);
-  return { chains, activeSlugs };
+  const active = CHAINS.filter((c) => outgoing.has(c.id)).map((c) => c.id);
+  const incomingOnly = CHAINS.filter((c) => incoming.has(c.id)).map((c) => c.id);
+  return { active, incomingOnly };
+}
+
+/** Max wallet-history pages scanned per candidate chain during the outgoing check. */
+const OUTGOING_CHECK_MAX_PAGES = 3;
+
+/**
+ * Outgoing-activity check for one candidate chain: page the wallet's Moralis
+ * history (newest first) until a transaction SENT BY the address appears.
+ *
+ * Returns:
+ * - `true`  — an outgoing tx was found (the chain is really the user's);
+ * - `false` — history exhausted with no outgoing tx (the spam-airdrop /
+ *             incoming-only pattern);
+ * - `null`  — the history call failed (network/HTTP) — inconclusive, so the
+ *             caller keeps the chain listed rather than hide a possibly-real
+ *             chain on a transient error.
+ */
+async function hasOutgoingTransaction(
+  address: string,
+  slug: string,
+  apiKey: string
+): Promise<boolean | null> {
+  const walletLower = address.toLowerCase();
+  let cursor: string | undefined;
+
+  for (let page = 0; page < OUTGOING_CHECK_MAX_PAGES; page++) {
+    let path = `/wallets/${address}/history?chain=${slug}&limit=100&order=DESC`;
+    if (cursor) path += `&cursor=${encodeURIComponent(cursor)}`;
+
+    let res: Response;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      res = await moralisFetch(path, apiKey);
+    } catch {
+      return null;
+    }
+    if (!res.ok) return null;
+
+    // eslint-disable-next-line no-await-in-loop
+    const data = await res.json().catch(() => null);
+    if (!data) return null;
+    const result: { from_address?: string }[] = data?.result ?? [];
+    // An EMPTY first page is anomalous: /chains just reported activity, and a
+    // genuine spam-only chain always HAS history rows (that's how it got
+    // counted). Treat it as inconclusive (keep the chain listed), not as
+    // proof of incoming-only.
+    if (result.length === 0 && page === 0) return null;
+    if (result.some((tx) => tx.from_address?.toLowerCase() === walletLower)) return true;
+
+    cursor = data?.cursor || undefined;
+    if (!cursor || result.length < 100) return false;
+  }
+  return false;
 }
 
 interface MoralisErc20Transfer {
