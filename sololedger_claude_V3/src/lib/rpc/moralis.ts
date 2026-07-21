@@ -20,7 +20,13 @@ import type { Transaction, TxType, FlagReason } from '@/types/transaction';
 import { classifyFromMoralis } from '@/lib/rpc/classificationEngine';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
-import { CHAINS, type ChainId } from '@/lib/rpc/providers';
+import {
+  CHAINS,
+  alchemyHasActivity,
+  etherscanV2HasActivity,
+  type ChainDef,
+  type ChainId
+} from '@/lib/rpc/providers';
 import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
 const MORALIS_BASE = 'https://deep-index.moralis.io/api/v2.2';
@@ -55,13 +61,34 @@ export function getMoralisChain(chainId: ChainId): string | null {
 }
 
 /**
+ * Chains Moralis DROPPED product-wide — live-verified 2026-07-21: EVERY
+ * Moralis endpoint (both `/wallets/{address}/chains` and `/history`)
+ * HTTP-400s `chain must be a valid enum value` for these slugs. Imports for
+ * them must skip Moralis entirely (providers.ts does, via this set) and go
+ * straight to the Alchemy/Etherscan path; active-chain detection covers the
+ * importable ones with Alchemy/Etherscan probes (fetchWalletActiveChains).
+ */
+export const MORALIS_DROPPED_CHAINS: ReadonlySet<ChainId> = new Set([
+  'fantom',
+  'celo',
+  'zksync',
+  'scroll',
+  'blast',
+  'mantle',
+  'aurora'
+]);
+
+/**
  * Chain slugs the Moralis `/wallets/{address}/chains` endpoint ACCEPTS in its
  * `chains` query param — live-verified 2026-07: the endpoint HTTP-400s
  * ("only supports mainnet chains") on the other MORALIS_CHAIN slugs (fantom,
  * celo, zksync, scroll, blast, mantle, aurora, moonriver, metis, opbnb), and
  * called with NO param it under-reports (returned only `eth` for a wallet
- * active on 7 chains). The rejected slugs stay valid for the /history import
- * endpoint — only active-chain detection is pinned to this list.
+ * active on 7 chains). As of 2026-07-21 the dropped slugs are gone from
+ * Moralis PRODUCT-WIDE — /history HTTP-400s `chain must be a valid enum
+ * value` for them too (see MORALIS_DROPPED_CHAINS) — so this list only pins
+ * the /chains + /history detection steps; the importable dropped chains are
+ * probed directly via Alchemy/Etherscan in fetchWalletActiveChains.
  */
 export const CHAINS_ENDPOINT_SLUGS = [
   'eth',
@@ -147,8 +174,83 @@ export interface WalletActiveChains {
   incomingOnly: ChainId[];
 }
 
+/** Max concurrent provider probes during the Moralis-dropped-chain scan. */
+const PROBE_CONCURRENCY = 3;
+
 /**
- * Detect which EVM chains a wallet REALLY uses, in two steps:
+ * Importable Moralis-dropped chains that auto-detect probes directly (step 3
+ * below). NOT fantom (removed from the app — no provider serves it) and NOT
+ * aurora (its etherscan_compatible path has a dead V2 chainid — nothing to
+ * probe).
+ */
+const DIRECT_PROBE_CHAINS: ReadonlySet<ChainId> = new Set(['celo', 'zksync', 'scroll', 'blast', 'mantle']);
+
+export interface ActiveChainProbeKeys {
+  /** User's own Alchemy key (BYOK/local); hosted mode probes via the relay. */
+  alchemyApiKey?: string;
+  /** User's own Etherscan key (BYOK/local); hosted mode probes via the relay. */
+  etherscanApiKey?: string;
+}
+
+/** Run `fn` over `items` with at most `limit` promises in flight. */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (next < items.length) {
+      const i = next++;
+      // eslint-disable-next-line no-await-in-loop
+      results[i] = await fn(items[i]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+/**
+ * Activity probe for one Moralis-dropped chain. Alchemy first
+ * (`alchemy_getAssetTransfers`, maxCount 0x1 — the cheapest possible call):
+ * an outgoing (`from`) hit wins, otherwise a `to`-direction hit means
+ * incoming-only. When the Alchemy probe FAILS and the chain has an Etherscan
+ * V2 id, one V2 `txlist` probe (newest 100) decides. Every failure is SILENT
+ * (`none`) — a chain that can't be probed is simply not listed.
+ */
+async function probeChainActivity(
+  chain: ChainDef,
+  address: string,
+  keys: ActiveChainProbeKeys
+): Promise<'outgoing' | 'incoming' | 'none'> {
+  const saas = isSaasMode();
+  if ((saas || Boolean(keys.alchemyApiKey?.trim())) && chain.alchemyNetwork) {
+    try {
+      if (await alchemyHasActivity(chain.alchemyNetwork, address, 'from', keys.alchemyApiKey ?? '')) {
+        return 'outgoing';
+      }
+      if (await alchemyHasActivity(chain.alchemyNetwork, address, 'to', keys.alchemyApiKey ?? '')) {
+        return 'incoming';
+      }
+      return 'none';
+    } catch {
+      /* Alchemy failed — fall through to the Etherscan V2 probe */
+    }
+  }
+  if (saas || Boolean(keys.etherscanApiKey?.trim())) {
+    try {
+      const verdict = await etherscanV2HasActivity(chain.id, address, keys.etherscanApiKey ?? '');
+      if (verdict) return verdict;
+    } catch {
+      /* silent — the chain is simply not listed */
+    }
+  }
+  return 'none';
+}
+
+/**
+ * Detect which EVM chains a wallet REALLY uses, in three steps:
  *
  * 1. GET /api/v2.2/wallets/{address}/chains with an explicit `chains` param
  *    (CHAINS_ENDPOINT_SLUGS — see its comment for the live-verified why).
@@ -161,6 +263,13 @@ export interface WalletActiveChains {
  *    wallet history (hasOutgoingTransaction): only chains the address has
  *    SENT ≥1 transaction from land in `active`; incoming-only candidates go
  *    to `incomingOnly`.
+ * 3. Chains Moralis dropped product-wide (celo, zksync, scroll, blast,
+ *    mantle) can never surface from steps 1–2 — they are probed directly
+ *    with their working providers (Alchemy first, Etherscan V2 fallback;
+ *    parallel with a small concurrency cap). All probes fail silently, and
+ *    probing is skipped entirely when neither provider has a usable key
+ *    (hosted mode always has the relay's keys). Verdicts merge into the same
+ *    active/incoming-only lists, so the UI wording works unchanged.
  *
  * Throws on HTTP/network failure of the CHAINS call — callers treat that as
  * "detection unavailable" and fall back to the manual chain dropdown. A
@@ -168,7 +277,8 @@ export interface WalletActiveChains {
  */
 export async function fetchWalletActiveChains(
   address: string,
-  apiKey: string
+  apiKey: string,
+  probeKeys: ActiveChainProbeKeys = {}
 ): Promise<WalletActiveChains> {
   const chainsParams = CHAINS_ENDPOINT_SLUGS.map((slug) => `chains=${slug}`).join('&');
   const res = await moralisFetch(`/wallets/${address}/chains?${chainsParams}`, apiKey);
@@ -200,6 +310,23 @@ export async function fetchWalletActiveChains(
     // `null` = history check failed transiently → keep the chain listed.
     if (sent === false) incoming.add(chainId);
     else outgoing.add(chainId);
+  }
+
+  // Step 3: probe the importable Moralis-dropped chains directly (see the
+  // function docstring). Skipped when neither provider has a usable key.
+  const probeChains = CHAINS.filter((c) => DIRECT_PROBE_CHAINS.has(c.id));
+  const canProbe =
+    isSaasMode() ||
+    Boolean(probeKeys.alchemyApiKey?.trim()) ||
+    Boolean(probeKeys.etherscanApiKey?.trim());
+  if (canProbe && probeChains.length > 0) {
+    const verdicts = await mapWithConcurrency(probeChains, PROBE_CONCURRENCY, (chain) =>
+      probeChainActivity(chain, address, probeKeys)
+    );
+    probeChains.forEach((chain, i) => {
+      if (verdicts[i] === 'outgoing') outgoing.add(chain.id);
+      else if (verdicts[i] === 'incoming') incoming.add(chain.id);
+    });
   }
 
   // Stable display order = CHAINS registry order.

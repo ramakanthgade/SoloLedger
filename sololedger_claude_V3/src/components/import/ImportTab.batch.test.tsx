@@ -37,8 +37,9 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('dexie-react-hooks', () => ({
-  // undefined → transactionCount 0, csvImports [] (empty ledger is fine here).
-  useLiveQuery: () => undefined
+  // transactionCount 1 (dropzone rendered — these tests drop files on it), csvImports [].
+  useLiveQuery: (query: () => unknown) =>
+    String(query).includes('transactions.count') ? 1 : []
 }));
 
 vi.mock('@/lib/parsers', () => ({

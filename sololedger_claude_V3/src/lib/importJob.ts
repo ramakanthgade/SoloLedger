@@ -255,8 +255,15 @@ export async function runWalletImport(
     }
   }
 
+  // Only wallets whose lookup SUCCEEDED may land in the "Your wallets"
+  // registry — a failed first import must stay retryable instead of getting
+  // stuck behind "already imported — use Sync". (Sync of an existing wallet
+  // keeps its row either way; a failed sync simply doesn't refresh it.)
+  const failedAddrs = new Set(failed.map((f) => f.address.trim().toLowerCase()));
+  const succeeded = fresh.filter((addr) => !failedAddrs.has(addr.trim().toLowerCase()));
+
   await Promise.all(
-    fresh.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount))
+    succeeded.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount))
   );
 
   // --- Phase 2: Classification + DCA auto-detection ---
@@ -368,8 +375,8 @@ export async function runWalletImport(
     (transaction) => transaction != null
   ).length;
 
-  // Refresh wallet tx counts + sync cursor after dedup
-  await Promise.all(fresh.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount)));
+  // Refresh wallet tx counts + sync cursor after dedup (succeeded wallets only)
+  await Promise.all(succeeded.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount)));
 
   if (isSync && imported === 0) {
     apiWarnings.unshift('No new transactions found since last sync.');

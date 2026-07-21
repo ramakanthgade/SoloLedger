@@ -47,6 +47,16 @@ function isEvmAddress(address: string): boolean {
 
 const EVM_CHAIN_IDS: ChainId[] = ['ethereum', 'polygon', 'arbitrum', 'base', 'bsc', 'optimism', 'avalanche'];
 
+/**
+ * Chains hidden from the import chain dropdown. Fantom is removed
+ * (2026-07-21, user decision): no wallet-data provider serves it — Moralis
+ * dropped it product-wide, Alchemy never offered fantom-mainnet, Etherscan
+ * V2 has no chainid 250. The CHAINS registry entry STAYS so legacy Fantom
+ * data still classifies/prices, and a legacy Fantom wallet hitting Sync gets
+ * a calm "not available yet" message (see lookupOneAddress in providers.ts).
+ */
+const DROPDOWN_HIDDEN_CHAINS: ReadonlySet<ChainId> = new Set(['fantom']);
+
 /** Debounce between the last keystroke and the Moralis active-chains call. */
 const CHAIN_DETECT_DEBOUNCE_MS = 500;
 /** Cap detection calls per paste burst; extra addresses still import on the detected chains. */
@@ -149,7 +159,10 @@ export function WalletLookupPanel() {
             // kept typing past the debounce).
             if (cancelled) return;
             // eslint-disable-next-line no-await-in-loop
-            const result = await fetchWalletActiveChains(addr, settings?.moralisApiKey ?? '');
+            const result = await fetchWalletActiveChains(addr, settings?.moralisApiKey ?? '', {
+              alchemyApiKey: settings?.alchemyApiKey,
+              etherscanApiKey: settings?.customExplorerApiKey
+            });
             result.active.forEach((c) => found.add(c));
             result.incomingOnly.forEach((c) => incoming.add(c));
           }
@@ -389,7 +402,7 @@ export function WalletLookupPanel() {
               Chain
               {(isBitcoin || isSolana) && <span className="ml-1 text-gain">(auto-detected)</span>}
               <select className={inputCls} value={chainId} onChange={(e) => setChainId(e.target.value as ChainId)}>
-                {CHAINS.map((c) => (
+                {CHAINS.filter((c) => !DROPDOWN_HIDDEN_CHAINS.has(c.id)).map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.label} {c.needsKey ? '' : '(no key needed)'}
                   </option>
@@ -411,7 +424,7 @@ export function WalletLookupPanel() {
                 value={chainId}
                 onChange={(e) => setChainId(e.target.value as ChainId)}
               >
-                {CHAINS.map((c) => (
+                {CHAINS.filter((c) => !DROPDOWN_HIDDEN_CHAINS.has(c.id)).map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.label}
                   </option>

@@ -54,6 +54,8 @@ vi.mock('@/lib/rpc/providers', () => ({
   CHAINS: [
     { id: 'ethereum', label: 'Ethereum', asset: 'ETH', provider: 'alchemy_evm', needsKey: true },
     { id: 'polygon', label: 'Polygon', asset: 'POL', provider: 'alchemy_evm', needsKey: true },
+    // Fantom stays in the registry (legacy data) but must never reach the dropdown.
+    { id: 'fantom', label: 'Fantom', asset: 'FTM', provider: 'alchemy_evm', needsKey: true },
     { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true }
   ]
 }));
@@ -114,7 +116,12 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
     await renderWithEvmAddress();
 
     const picker = await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
-    expect(mocks.fetchActiveChains).toHaveBeenCalledWith(EVM_ADDR, 'mk');
+    // Detection gets the user's Alchemy/Etherscan keys for the
+    // Moralis-dropped-chain probes (undefined here — none configured).
+    expect(mocks.fetchActiveChains).toHaveBeenCalledWith(EVM_ADDR, 'mk', {
+      alchemyApiKey: undefined,
+      etherscanApiKey: undefined
+    });
 
     // Master + per-chain checkboxes all start checked.
     const master = screen.getByRole('checkbox', { name: /all active chains/i });
@@ -392,5 +399,17 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
     // fetched — the label must not count the already-imported wallet.
     expect(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' })).toBeEnabled();
     await screen.findByText(/already imported on the selected chains \(will be\s+skipped\)\. 1 new will be imported/);
+  });
+
+  it('excludes Fantom from the manual chain dropdown (Item 5h)', async () => {
+    // No address pasted → the manual chain dropdown renders immediately.
+    // The mocked CHAINS registry DOES contain Fantom (legacy data must keep
+    // classifying) — the dropdown must filter it out.
+    render(<WalletLookupPanel />);
+    const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
+    const labels = Array.from(select.querySelectorAll('option')).map((o) => o.textContent ?? '');
+    expect(labels.some((l) => /fantom/i.test(l))).toBe(false);
+    expect(labels.some((l) => /ethereum/i.test(l))).toBe(true);
+    expect(labels.some((l) => /polygon/i.test(l))).toBe(true);
   });
 });

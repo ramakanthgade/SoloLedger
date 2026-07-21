@@ -292,4 +292,193 @@ describe('fetchWalletActiveChains', () => {
     mockMoralis({ chainsOk: false, chainsStatus: 401 });
     await expect(fetchWalletActiveChains(ADDRESS, 'bad-key')).rejects.toThrow(/401/);
   });
+
+  // ---- Item 5e: direct probes for the chains Moralis dropped product-wide ----
+  describe('Moralis-dropped chain probes (Alchemy first, Etherscan V2 fallback)', () => {
+    const PROBE_NETWORKS = ['celo-mainnet', 'zksync-mainnet', 'scroll-mainnet', 'blast-mainnet', 'mantle-mainnet'];
+
+    /**
+     * Fetch routing for the probe tests: Moralis /chains + /history behave
+     * like mockMoralis (empty by default — the dropped chains can never
+     * appear there); Alchemy probes are keyed by network slug
+     * ('outgoing' | 'incoming' | 'none' | 'error'); Etherscan V2 probes are
+     * keyed by chainid string. Unconfigured endpoints throw, so a test proves
+     * exactly which probes ran.
+     */
+    function mockProbes(
+      opts: {
+        chainsBody?: unknown;
+        history?: Record<string, HistoryPage[] | 'error'>;
+        alchemy?: Record<string, 'outgoing' | 'incoming' | 'none' | 'error'>;
+        etherscan?: Record<string, { rows: { from?: string }[] } | 'error'>;
+      } = {}
+    ) {
+      const { chainsBody = { active_chains: [] }, history = {}, alchemy = {}, etherscan = {} } = opts;
+      const served: Record<string, number> = {};
+      fetchMock().mockImplementation(async (rawUrl: string, init?: { body?: string }) => {
+        const url = String(rawUrl);
+        if (url.includes('deep-index.moralis.io')) {
+          const u = new URL(url);
+          if (u.pathname.endsWith('/chains')) return jsonResponse(chainsBody);
+          if (u.pathname.endsWith('/history')) {
+            const slug = u.searchParams.get('chain') ?? '';
+            const cfg = history[slug];
+            if (!cfg) throw new Error(`unexpected history call for ${slug}`);
+            if (cfg === 'error') return jsonResponse({}, false, 500);
+            const n = (served[slug] = (served[slug] ?? 0) + 1);
+            const page = cfg[Math.min(n - 1, cfg.length - 1)];
+            return jsonResponse({ cursor: page.cursor ?? null, page: n - 1, page_size: 100, result: page.txs });
+          }
+          throw new Error(`unexpected moralis url ${url}`);
+        }
+        if (url.includes('/alchemy-rpc/')) {
+          const network = url.split('/alchemy-rpc/')[1].split('?')[0];
+          const cfg = alchemy[network];
+          if (!cfg) throw new Error(`unexpected alchemy probe for ${network}`);
+          if (cfg === 'error') return jsonResponse({ error: { message: 'network disabled' } }, false, 403);
+          const body = JSON.parse(String(init?.body ?? '{}'));
+          const direction = body.params?.[0]?.fromAddress ? 'from' : 'to';
+          const hit =
+            cfg === 'outgoing' ? direction === 'from' : cfg === 'incoming' ? direction === 'to' : false;
+          return jsonResponse({ result: { transfers: hit ? [{ hash: '0xprobe' }] : [] } });
+        }
+        if (url.includes('etherscan')) {
+          const chainid = new URL(url, 'http://localhost').searchParams.get('chainid') ?? '';
+          const cfg = etherscan[chainid];
+          if (!cfg) throw new Error(`unexpected etherscan probe for chainid ${chainid}`);
+          if (cfg === 'error') return jsonResponse({}, false, 500);
+          return jsonResponse({ status: '1', result: cfg.rows });
+        }
+        throw new Error(`unexpected url ${url}`);
+      });
+    }
+
+    /** Alchemy config answering `celoVerdict` for celo and 'none' for the other probe chains. */
+    const alchemyOnly = (celoVerdict: 'outgoing' | 'incoming' | 'none' | 'error') => ({
+      'celo-mainnet': celoVerdict,
+      'zksync-mainnet': 'none' as const,
+      'scroll-mainnet': 'none' as const,
+      'blast-mainnet': 'none' as const,
+      'mantle-mainnet': 'none' as const
+    });
+
+    it('detects a wallet with only celo outgoing activity via the Alchemy probe', async () => {
+      mockProbes({ alchemy: alchemyOnly('outgoing') });
+      const result = await fetchWalletActiveChains(ADDRESS, 'moralis-key', { alchemyApiKey: 'ak' });
+      expect(result.active).toEqual(['celo']);
+      expect(result.incomingOnly).toEqual([]);
+      // The winning probe is a single maxCount 0x1 fromAddress call.
+      expect(callsTo('/alchemy-rpc/celo-mainnet')).toHaveLength(1);
+      const call = fetchMock().mock.calls.find(([u]) => String(u).includes('/alchemy-rpc/celo-mainnet'))!;
+      const body = JSON.parse(String(call[1].body));
+      expect(body.method).toBe('alchemy_getAssetTransfers');
+      expect(body.params[0].fromAddress).toBe(ADDRESS);
+      expect(body.params[0].maxCount).toBe('0x1');
+      // The dropped chains never touch Moralis /history.
+      expect(callsTo('/history')).toHaveLength(0);
+    });
+
+    it('marks a chain incoming-only when only the to-direction probe hits', async () => {
+      mockProbes({ alchemy: alchemyOnly('incoming') });
+      const result = await fetchWalletActiveChains(ADDRESS, 'moralis-key', { alchemyApiKey: 'ak' });
+      expect(result.active).toEqual([]);
+      expect(result.incomingOnly).toEqual(['celo']);
+      expect(callsTo('/alchemy-rpc/celo-mainnet')).toHaveLength(2); // from (miss) + to (hit)
+    });
+
+    it('falls back to an Etherscan V2 txlist probe when the Alchemy probe fails', async () => {
+      mockProbes({
+        alchemy: alchemyOnly('error'),
+        etherscan: { '42220': { rows: [{ from: ADDRESS }] } }
+      });
+      const result = await fetchWalletActiveChains(ADDRESS, 'moralis-key', {
+        alchemyApiKey: 'ak',
+        etherscanApiKey: 'ek'
+      });
+      expect(result.active).toEqual(['celo']);
+      const v2Calls = callsTo('etherscan');
+      expect(v2Calls).toHaveLength(1);
+      expect(v2Calls[0]).toContain('chainid=42220');
+      expect(v2Calls[0]).toContain('action=txlist');
+      expect(v2Calls[0]).toContain('offset=100');
+      expect(v2Calls[0]).toContain('sort=desc');
+      expect(v2Calls[0]).toContain('apikey=ek'); // BYOK: the user's own key
+    });
+
+    it('treats V2 results without an outgoing tx as incoming-only', async () => {
+      mockProbes({
+        alchemy: alchemyOnly('error'),
+        etherscan: { '42220': { rows: [{ from: OTHER }] } }
+      });
+      const result = await fetchWalletActiveChains(ADDRESS, 'k', { alchemyApiKey: 'ak', etherscanApiKey: 'ek' });
+      expect(result.active).toEqual([]);
+      expect(result.incomingOnly).toEqual(['celo']);
+    });
+
+    it('treats an empty V2 page as no activity', async () => {
+      mockProbes({
+        alchemy: alchemyOnly('error'),
+        etherscan: { '42220': { rows: [] } }
+      });
+      const result = await fetchWalletActiveChains(ADDRESS, 'k', { alchemyApiKey: 'ak', etherscanApiKey: 'ek' });
+      expect(result).toEqual({ active: [], incomingOnly: [] });
+    });
+
+    it('silently drops the chain when both the Alchemy and the V2 probe fail', async () => {
+      mockProbes({
+        alchemy: alchemyOnly('error'),
+        etherscan: { '42220': 'error' }
+      });
+      const result = await fetchWalletActiveChains(ADDRESS, 'k', { alchemyApiKey: 'ak', etherscanApiKey: 'ek' });
+      expect(result).toEqual({ active: [], incomingOnly: [] });
+    });
+
+    it('probes all five importable dropped chains — but NEVER fantom or aurora', async () => {
+      mockProbes({ alchemy: alchemyOnly('none') });
+      await fetchWalletActiveChains(ADDRESS, 'moralis-key', { alchemyApiKey: 'ak', etherscanApiKey: 'ek' });
+      for (const net of PROBE_NETWORKS) {
+        expect(callsTo(`/alchemy-rpc/${net}`).length).toBeGreaterThan(0);
+      }
+      expect(callsTo('fantom')).toHaveLength(0);
+      expect(callsTo('aurora')).toHaveLength(0);
+      expect(callsTo('etherscan')).toHaveLength(0); // no Alchemy failure → no V2 fallback
+    });
+
+    it('skips probing entirely in local/BYOK mode when neither provider has a key', async () => {
+      mockProbes();
+      const result = await fetchWalletActiveChains(ADDRESS, 'moralis-key');
+      expect(result).toEqual({ active: [], incomingOnly: [] });
+      expect(callsTo('/alchemy-rpc/')).toHaveLength(0);
+      expect(callsTo('etherscan')).toHaveLength(0);
+    });
+
+    it('merges probe verdicts with Moralis-detected chains in CHAINS registry order', async () => {
+      mockProbes({
+        chainsBody: { active_chains: [activeEntry('eth')] },
+        history: { eth: [{ txs: [{ from_address: ADDRESS }] }] },
+        alchemy: alchemyOnly('outgoing')
+      });
+      const result = await fetchWalletActiveChains(ADDRESS, 'moralis-key', { alchemyApiKey: 'ak' });
+      expect(result.active).toEqual(['ethereum', 'celo']); // registry order, not discovery order
+    });
+
+    it('routes the probes through the relay in hosted mode (no user keys needed)', async () => {
+      setMode('hosted');
+      mocks.proxyFetch.mockImplementation(async (rawPath: string, init?: { body?: string }) => {
+        const path = String(rawPath);
+        if (path.includes('/api/proxy/moralis/')) return jsonResponse({ active_chains: [] });
+        if (path.includes('/api/proxy/alchemy/')) {
+          const network = path.split('/api/proxy/alchemy/')[1].split('?')[0];
+          if (!PROBE_NETWORKS.includes(network)) throw new Error(`unexpected alchemy relay probe for ${network}`);
+          const body = JSON.parse(String(init?.body ?? '{}'));
+          const hit = network === 'celo-mainnet' && Boolean(body.params?.[0]?.fromAddress);
+          return jsonResponse({ result: { transfers: hit ? [{ hash: '0xprobe' }] : [] } });
+        }
+        throw new Error(`unexpected relay path ${path}`);
+      });
+      const result = await fetchWalletActiveChains(ADDRESS, '');
+      expect(result.active).toEqual(['celo']);
+      expect(fetchMock()).not.toHaveBeenCalled();
+    });
+  });
 });

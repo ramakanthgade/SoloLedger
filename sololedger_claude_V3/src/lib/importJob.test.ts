@@ -104,6 +104,7 @@ vi.mock('@/lib/saas/lookupConfig', () => ({ SAAS_PROXY_KEY: 'proxy-key' }));
 import { runWalletImport, importJob } from '@/lib/importJob';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { isSaasMode } from '@/lib/saas/config';
+import { upsertLookupAddress } from '@/lib/storage/db';
 
 const CHAIN: ChainDef = {
   id: 'ethereum',
@@ -310,6 +311,65 @@ describe('runWalletImport post-dedup imported count', () => {
     expect(state.active).toBe(false);
     expect(state.phase).toBe('idle');
     expect(state.error).toBeNull();
+  });
+});
+
+describe('runWalletImport wallet-registry gating (Item 5g — never persist failed wallets)', () => {
+  beforeEach(() => {
+    store.clear();
+    importJob.reset();
+    vi.mocked(upsertLookupAddress).mockClear();
+  });
+
+  it('does NOT upsert a wallet whose first import failed — it stays retryable', async () => {
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [],
+      warnings: [],
+      failed: [{ address: '0xabc', message: 'Alchemy API returned 403 — check your API key' }],
+      perAddress: []
+    });
+
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG);
+
+    expect(upsertLookupAddress).not.toHaveBeenCalled();
+    // The failure still surfaces in the job state (the user sees why).
+    expect(importJob.get().failed).toEqual([
+      { address: '0xabc', message: 'Alchemy API returned 403 — check your API key' }
+    ]);
+    expect(importJob.get().active).toBe(false);
+  });
+
+  it('persists only the succeeded addresses of a mixed batch', async () => {
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [importedTx],
+      warnings: [],
+      failed: [{ address: '0xdef', message: 'boom' }],
+      perAddress: [{ address: '0xabc', count: 1 }]
+    });
+
+    await runWalletImport(['0xabc', '0xdef'], CHAIN, settings(), CONFIG);
+
+    const upsertedAddresses = vi.mocked(upsertLookupAddress).mock.calls.map((c) => c[1]);
+    expect(upsertedAddresses.length).toBeGreaterThan(0);
+    expect(new Set(upsertedAddresses)).toEqual(new Set(['0xabc']));
+    expect(upsertedAddresses).not.toContain('0xdef');
+  });
+
+  it('does NOT touch the registry when the lookup itself throws', async () => {
+    vi.mocked(lookupManyAddresses).mockRejectedValueOnce(new Error('relay down'));
+
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG);
+
+    expect(upsertLookupAddress).not.toHaveBeenCalled();
+    expect(importJob.get().error).toBe('relay down');
+  });
+
+  it('still refreshes the registry row after a successful Sync (existing-wallet path intact)', async () => {
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
+
+    expect(upsertLookupAddress).toHaveBeenCalled();
+    const upsertedAddresses = vi.mocked(upsertLookupAddress).mock.calls.map((c) => c[1]);
+    expect(new Set(upsertedAddresses)).toEqual(new Set(['0xabc']));
   });
 });
 
