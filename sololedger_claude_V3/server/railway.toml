@@ -5,8 +5,11 @@
 builder = "NIXPACKS"
 # NODE_ENV=production makes nixpacks' install phase skip devDependencies, so
 # typescript is missing when the build phase runs `tsc` (deploy for b5a34e58
-# failed with "sh: 1: tsc: not found"). Top up dev deps before building.
-buildCommand = "npm ci --include=dev && npm run build"
+# failed with "sh: 1: tsc: not found"). The install phase is overridden in
+# nixpacks.toml to `npm ci --include=dev` (doing it here in buildCommand fails:
+# nixpacks mounts a cache at /app/node_modules/.cache during the build phase and
+# npm ci's rmdir of that mount dies with EBUSY).
+buildCommand = "npm run build"
 # Only redeploy when API/server files change so frontend-only pushes don't restart
 # this service. watchPatterns are evaluated relative to the REPO ROOT (not the
 # service Root Directory), so the path must include the full monorepo prefix.
