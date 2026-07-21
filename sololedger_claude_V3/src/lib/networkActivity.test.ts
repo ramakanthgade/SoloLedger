@@ -105,10 +105,14 @@ describe('networkActivity — transport instrumentation (A1)', () => {
     }) as unknown as typeof fetch;
 
     const { fetchJupiterRecurringHistory } = await import('@/lib/rpc/jupiterDca');
-    await fetchJupiterRecurringHistory('SoLwallet_direct');
+    const result = await fetchJupiterRecurringHistory('SoLwallet_direct');
 
-    expect(globalThis.fetch).toHaveBeenCalledTimes(1);
+    // Completed + active orders are fetched (both direct, badge stays direct).
+    expect(globalThis.fetch).toHaveBeenCalledTimes(2);
     expect(getNetworkMode()).toBe('direct');
+    // Both buckets answered → a genuinely CONFIRMED "no DCA orders".
+    expect(result.reachable).toBe(true);
+    expect(result.orders).toHaveLength(0);
   });
 
   it('a relay transport (SaaS apiFetch) flips the badge to relay', async () => {
