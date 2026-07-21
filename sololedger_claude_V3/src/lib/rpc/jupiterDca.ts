@@ -75,9 +75,11 @@ export async function fetchJupiterRecurringHistory(
 
   for (const orderStatus of ['history', 'active'] as const) {
     try {
+      // `includeFailedTx` is REQUIRED by the API (400 without it); failed
+      // fills never produced a wallet transfer, so exclude them.
       const url =
         `${JUPITER_RECURRING}/getRecurringOrders` +
-        `?user=${walletAddress}&orderStatus=${orderStatus}&recurringType=time&page=1`;
+        `?user=${walletAddress}&orderStatus=${orderStatus}&recurringType=time&page=1&includeFailedTx=false`;
       // Jupiter's free API is called directly — no key, no SaaS proxy.
       recordNetworkActivity(resolveMode(false));
       // eslint-disable-next-line no-await-in-loop
@@ -86,13 +88,17 @@ export async function fetchJupiterRecurringHistory(
       reachable = true;
       // eslint-disable-next-line no-await-in-loop
       const data = await res.json();
+      // Current shape: {"user","orderStatus","time":[<orders>],"totalPages",…}
+      // (orders under the recurring-type key); older shapes used `orders`/`data`.
       const list: any[] = Array.isArray(data)
         ? data
         : Array.isArray(data?.orders)
           ? data.orders
-          : Array.isArray(data?.data)
-            ? data.data
-            : [];
+          : Array.isArray(data?.time)
+            ? data.time
+            : Array.isArray(data?.data)
+              ? data.data
+              : [];
       rawOrders.push(...list);
     } catch {
       // This status bucket failed — the other one may still succeed.
