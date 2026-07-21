@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { TaxSettings, Transaction } from '@/types/transaction';
 import { lookupManyAddresses, type ChainDef, type LookupConfig } from '@/lib/rpc/providers';
 import { deduplicateTransactions } from '@/lib/storage/db';
@@ -57,7 +57,13 @@ vi.mock('@/lib/rpc/swapDetection', () => ({
 
 vi.mock('@/lib/rpc/dcaDetection', () => ({
   detectDcaGroups: vi.fn(() => []),
-  applyDcaClassification: vi.fn(async () => 0)
+  applyDcaClassification: vi.fn(async () => ({
+    applied: 0,
+    fillsClassified: 0,
+    estimated: 0,
+    skipped: 0,
+    skipReasons: []
+  }))
 }));
 
 const fetchMissingPricesForAllTransactions = vi.fn(async (..._args: unknown[]) => ({
@@ -96,6 +102,8 @@ vi.mock('@/lib/saas/config', () => ({ isSaasMode: vi.fn(() => false) }));
 vi.mock('@/lib/saas/lookupConfig', () => ({ SAAS_PROXY_KEY: 'proxy-key' }));
 
 import { runWalletImport, importJob } from '@/lib/importJob';
+import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
+import { isSaasMode } from '@/lib/saas/config';
 
 const CHAIN: ChainDef = {
   id: 'ethereum',
@@ -181,6 +189,64 @@ describe('runWalletImport DefiLlama reward-suggestion gate', () => {
     // Pricing still ran despite the DefiLlama outage.
     expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
     expect(state.result?.pricesUpdated).toBe(3);
+  });
+});
+
+describe('runWalletImport DCA auto-classification gate', () => {
+  const fakeGroup = {
+    vaultAddress: 'vault111',
+    depositTx: importedTx,
+    fillTxs: [],
+    unclassifiedFillTxs: [],
+    inputAsset: 'DBT',
+    outputAsset: 'USDC',
+    totalInput: 100,
+    totalOutput: 50
+  };
+
+  beforeEach(() => {
+    store.clear();
+    importJob.reset();
+    vi.mocked(isSaasMode).mockReturnValue(false);
+    vi.mocked(detectDcaGroups).mockClear();
+    vi.mocked(applyDcaClassification).mockClear();
+    fetchMissingPricesForAllTransactions.mockClear();
+  });
+
+  afterEach(() => {
+    vi.mocked(isSaasMode).mockReturnValue(false);
+  });
+
+  it('skips DCA auto-classification in local/BYOK mode (Review banner stays manual)', async () => {
+    vi.mocked(detectDcaGroups).mockReturnValueOnce([fakeGroup] as never);
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    expect(applyDcaClassification).not.toHaveBeenCalled();
+  });
+
+  it('auto-classifies detected DCA groups in hosted mode and surfaces the warning', async () => {
+    vi.mocked(isSaasMode).mockReturnValue(true);
+    vi.mocked(detectDcaGroups).mockReturnValueOnce([fakeGroup] as never);
+    vi.mocked(applyDcaClassification).mockResolvedValueOnce({
+      applied: 1,
+      fillsClassified: 2,
+      estimated: 0,
+      skipped: 0,
+      skipReasons: []
+    });
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    expect(applyDcaClassification).toHaveBeenCalledTimes(1);
+    expect(importJob.get().warnings.some((w) => w.includes('Auto-classified 1 DCA order'))).toBe(true);
+  });
+
+  it('treats a DCA classification failure as non-fatal: import completes, prices still fetched', async () => {
+    vi.mocked(isSaasMode).mockReturnValue(true);
+    vi.mocked(detectDcaGroups).mockReturnValueOnce([fakeGroup] as never);
+    vi.mocked(applyDcaClassification).mockRejectedValueOnce(new Error('boom'));
+    await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    const state = importJob.get();
+    expect(state.active).toBe(false);
+    expect(state.error).toBeNull();
+    expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
   });
 });
 

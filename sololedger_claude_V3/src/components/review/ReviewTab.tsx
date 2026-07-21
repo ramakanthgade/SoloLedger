@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
@@ -15,6 +15,19 @@ import { reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 import { applyDefiLlamaRewardSuggestions, countNeedsReview, isNeedsReview, isUnclassifiedSolanaTransferIn, reclassifyTypePatch } from '@/lib/rpc/rewardSuggestions';
 import { countPotentialSwapPairs } from '@/lib/rpc/swapDetection';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
+import { repairDcaMisclassifications } from '@/lib/rpc/dcaRepair';
+import {
+  shouldAutoResolveTokenNames,
+  markTokenResolveAutoRun,
+  showTokenResolveBanner,
+  showLlamaBanner,
+  showLlamaResultMessage,
+  shouldAutoApplyDca,
+  dcaGroupSignature,
+  showDcaBanner,
+  shouldRunDcaRepair,
+  markDcaRepairDone
+} from '@/lib/review/hostedAuto';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { isSaasMode } from '@/lib/saas/config';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
@@ -280,6 +293,15 @@ export function ReviewTab() {
   // Phase 2: DefiLlama reward-income suggestions (user-gated fetch).
   const [llamaSuggesting, setLlamaSuggesting] = useState(false);
   const [llamaMsg, setLlamaMsg] = useState<string | null>(null);
+  const [llamaSuggested, setLlamaSuggested] = useState(0);
+  // Hosted mode: every Review-tab check runs automatically — the three action
+  // banners (token names, DefiLlama, DCA) are for local/BYOK users only.
+  const hosted = isSaasMode();
+  // Feedback line for the manual (local/BYOK) DCA classify button.
+  const [dcaMsg, setDcaMsg] = useState<string | null>(null);
+  // Hosted one-time repair of pre-hardening DCA mis-classifications.
+  const [repairingDca, setRepairingDca] = useState(false);
+  const repairAttemptedRef = useRef(false);
   // EFFECTIVE "Live price lookup" flag. In SaaS mode the SERVER public config
   // decides — the local settings singleton reports priceApiEnabled=false for
   // the hosted admin even though the relay has it on — so resolve via
@@ -326,7 +348,7 @@ export function ReviewTab() {
     [transactions]
   );
 
-  const resolveTokenSymbols = async () => {
+  const resolveTokenSymbols = useCallback(async () => {
     if (resolvingSymbols || unresolvedSymbolTxs.length === 0) return;
     setResolvingSymbols(true);
     try {
@@ -343,7 +365,25 @@ export function ReviewTab() {
     } finally {
       setResolvingSymbols(false);
     }
-  };
+  }, [resolvingSymbols, unresolvedSymbolTxs]);
+
+  // Hosted: resolve contract-address tokens to real tickers AUTOMATICALLY
+  // (once per session, via the relay's CoinGecko key) — no banner, no button.
+  // Local/BYOK keep the manual banner below so the network call stays
+  // user-triggered.
+  useEffect(() => {
+    if (
+      !shouldAutoResolveTokenNames({
+        hosted,
+        unresolvedCount: unresolvedSymbolTxs.length,
+        inFlight: resolvingSymbols
+      })
+    ) {
+      return;
+    }
+    markTokenResolveAutoRun();
+    void resolveTokenSymbols();
+  }, [hosted, unresolvedSymbolTxs.length, resolvingSymbols, resolveTokenSymbols]);
 
   const engineResult = useMemo(() => {
     if (!settings) return null;
@@ -387,6 +427,7 @@ export function ReviewTab() {
     try {
       const result = await applyDefiLlamaRewardSuggestions();
       setLlamaMsg(result.message);
+      setLlamaSuggested(result.suggested);
       if (result.suggested > 0) {
         // Open the review queue and clear the other quick filters — they are
         // mutually exclusive, and leaving "Needs price"/"Spam" active would
@@ -493,27 +534,68 @@ export function ReviewTab() {
 
   const assets = useMemo(() => Array.from(new Set(transactions.map((t) => t.asset))).sort(), [transactions]);
 
-  // Detect DCA groups whenever transactions change (only unclassified deposits).
-  // Auto-classify real groups so users don't need the manual button.
+  // Detect DCA groups whenever transactions change. Detection is pure/offline;
+  // spam/internal handling lives INSIDE detectDcaGroups so this caller and
+  // importJob see identical results (the old pre-filter here hid classified
+  // deposits from the recurrence count and diverged from importJob).
   useEffect(() => {
-    const groups = detectDcaGroups(transactions.filter((t) => !t.isInternalTransfer && !t.isSpam));
-    setDcaGroups(groups);
-    if (groups.length === 0) return;
-    const key = 'sololedger_review_dca_auto_v1';
-    if (sessionStorage.getItem(key)) return;
-    sessionStorage.setItem(key, '1');
+    setDcaGroups(detectDcaGroups(transactions));
+  }, [transactions]);
+
+  // Hosted: one-time repair of pre-hardening DCA mis-classifications (undo
+  // every auto-grouping, redo with the hardened Jupiter-verified rules). Runs
+  // before the auto-apply below; a Jupiter-unreachable abort does NOT consume
+  // the one-time key so it retries next session.
+  useEffect(() => {
+    if (!hosted || repairAttemptedRef.current || !shouldRunDcaRepair(hosted)) return;
+    repairAttemptedRef.current = true;
+    setRepairingDca(true);
+    void (async () => {
+      try {
+        const res = await repairDcaMisclassifications(settings?.alchemyApiKey ?? SAAS_PROXY_KEY);
+        if (res.status !== 'aborted-unreachable') markDcaRepairDone();
+      } catch {
+        // Non-fatal — retried on the next visit.
+      } finally {
+        setRepairingDca(false);
+      }
+    })();
+    // settings?.alchemyApiKey is stable for the session; the repair is one-time.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hosted]);
+
+  // Hosted: classify every detected group automatically (no banner, no
+  // once-per-session cap — a second import in the same session must classify
+  // too). The signature guard breaks the skip-path loop: a skipped run writes
+  // nothing, so without it the effect would refire forever on the same rows.
+  // Local/BYOK: no auto-apply — the banner + button below stay manual.
+  const lastDcaAttemptRef = useRef<string | null>(null);
+  useEffect(() => {
+    const currentSignature = dcaGroupSignature(dcaGroups);
+    if (
+      !shouldAutoApplyDca({
+        hosted,
+        groupCount: dcaGroups.length,
+        inFlight: applyingDca,
+        repairActive: repairingDca,
+        lastAttemptedSignature: lastDcaAttemptRef.current,
+        currentSignature
+      })
+    ) {
+      return;
+    }
+    lastDcaAttemptRef.current = currentSignature;
     void (async () => {
       setApplyingDca(true);
       try {
-        await applyDcaClassification(
-          groups,
-          settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
-        );
+        await applyDcaClassification(dcaGroups, settings?.alchemyApiKey ?? SAAS_PROXY_KEY);
+      } catch {
+        // Non-fatal — the next NEW detection round retries.
       } finally {
         setApplyingDca(false);
       }
     })();
-  }, [transactions, settings?.alchemyApiKey]);
+  }, [hosted, dcaGroups, applyingDca, repairingDca, settings?.alchemyApiKey]);
 
   const filtered = useMemo(() => {
     const fyBounds = fyFilter != null ? getFyBoundaries(fyFilter, jurisdiction) : null;
@@ -807,8 +889,8 @@ export function ReviewTab() {
         <h2 className="page-title">Review</h2>
         <p className="mt-1 text-sm text-low">Give each transaction a quick once-over before you file.</p>
       </div>
-      {/* Token-name resolution — user-gated so no background CoinGecko calls fire on mount. */}
-      {unresolvedSymbolTxs.length > 0 && (
+      {/* Token-name resolution — local/BYOK only; hosted resolves automatically. */}
+      {showTokenResolveBanner(hosted, unresolvedSymbolTxs.length) && (
         <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold text-mid">
@@ -829,8 +911,8 @@ export function ReviewTab() {
         </div>
       )}
 
-      {/* DCA / Recurring order banner */}
-      {dcaGroups.length > 0 && (
+      {/* DCA / Recurring order banner — local/BYOK only; hosted classifies automatically. */}
+      {showDcaBanner(hosted, dcaGroups.length) && (
         <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold text-mid">
@@ -844,7 +926,7 @@ export function ReviewTab() {
               ))}
             </div>
             <p className="mt-1 text-xs text-low">
-              Koinly approach: mark the deposit as internal (non-taxable escrow), classify each fill as a buy.
+              Recommended approach: mark the deposit as internal (non-taxable escrow), classify each fill as a buy.
               Fetch prices after classifying.
             </p>
           </div>
@@ -853,16 +935,39 @@ export function ReviewTab() {
             disabled={applyingDca}
             onClick={async () => {
               setApplyingDca(true);
-              await applyDcaClassification(
-                dcaGroups,
-                settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
-              );
-              setApplyingDca(false);
+              setDcaMsg(null);
+              try {
+                const r = await applyDcaClassification(
+                  dcaGroups,
+                  settings?.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
+                );
+                if (r.applied > 0) {
+                  setDcaMsg(
+                    `Classified ${r.applied} recurring order${r.applied === 1 ? '' : 's'} — ` +
+                      `deposit${r.applied === 1 ? '' : 's'} marked non-taxable, fills became trades.` +
+                      (r.estimated > 0
+                        ? ` ${r.estimated} fill${r.estimated === 1 ? '' : 's'} use estimated amounts — flagged needs review.`
+                        : '')
+                  );
+                } else if (r.skipReasons.length > 0) {
+                  setDcaMsg(r.skipReasons.join(' '));
+                }
+              } catch {
+                setDcaMsg('Classification failed — please try again in a moment.');
+              } finally {
+                setApplyingDca(false);
+              }
             }}
             className="shrink-0 border-violet/40 text-gain"
           >
             {applyingDca ? 'Classifying…' : 'Classify DCA fills'}
           </Button>
+        </div>
+      )}
+
+      {dcaMsg && (
+        <div className="rounded-sm border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-mid">
+          {dcaMsg}
         </div>
       )}
 
@@ -880,8 +985,8 @@ export function ReviewTab() {
         </div>
       )}
 
-      {/* Phase 2: DefiLlama reward-income suggestions — user-gated fetch (AC-A1). */}
-      {solanaTransferInCount > 0 && (
+      {/* DefiLlama reward-income suggestions — local/BYOK only; hosted auto-runs. */}
+      {showLlamaBanner(hosted, solanaTransferInCount) && (
         <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
             <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet/20 text-violet">
@@ -909,8 +1014,10 @@ export function ReviewTab() {
         </div>
       )}
 
-      {llamaMsg && (
-        <div className={`rounded-sm border px-3 py-2 text-xs ${llamaMsg.startsWith('DefiLlama:') ? 'border-violet/30 bg-violet/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+      {/* Result line: in hosted mode only shown when rows were actually flagged,
+          so the user can tell why transactions entered the Needs-review queue. */}
+      {showLlamaResultMessage(hosted, llamaMsg, llamaSuggested) && (
+        <div className={`rounded-sm border px-3 py-2 text-xs ${llamaMsg!.startsWith('DefiLlama:') ? 'border-violet/30 bg-violet/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
           {llamaMsg}
         </div>
       )}

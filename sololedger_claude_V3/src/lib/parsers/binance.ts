@@ -6,7 +6,7 @@ import { stitchBinanceTransactionHistory } from './binanceStitch';
  * Wallet → Transaction History → Export (or Orders → Export Transaction Records).
  *
  * Each spot trade appears as 3+ ledger rows (Buy + Spend + Fee, or Sold + Revenue + Fee).
- * We stitch those into single buy/sell rows with fiat cost/proceeds — same approach as Koinly/CoinTracker.
+ * We stitch those into single buy/sell rows with fiat cost/proceeds — standard crypto-tax practice.
  */
 export const binanceParser: ExchangeParser = {
   id: 'binance',

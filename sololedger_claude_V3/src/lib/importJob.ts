@@ -302,23 +302,36 @@ export async function runWalletImport(
       apiWarnings.unshift(swapResult.message);
     }
 
-    // Phase 2c: DCA auto-classification (always run — works for Helius/Moralis AND legacy sources)
-    // Re-reads the DB after Phase 2a/2b so newly classified income rows are available.
+    // Phase 2c: DCA auto-classification — HOSTED mode only. Hosted users get
+    // recurring orders classified silently (detection is hardened: ≥2 fills,
+    // deposit-before-fill ordering, Jupiter-verified on Solana). Local/BYOK
+    // users see the Review-tab banner and trigger classification manually, so
+    // no background network (Jupiter) fires without a user gesture.
     importJob._setProgress({ done: 0, total: 1 });
-    const allAfterClassification = await db.transactions.toArray();
-    const dcaGroups = detectDcaGroups(allAfterClassification);
-    if (dcaGroups.length > 0) {
-      // Pass Alchemy key so exact DBT amounts are fetched on-chain per fill tx
-      const dcaApplied = await applyDcaClassification(
-        dcaGroups,
-        settings.alchemyApiKey ?? (isSaasMode() ? SAAS_PROXY_KEY : undefined)
-      );
-      swapsDetected += dcaApplied;
-      if (dcaApplied > 0) {
-        apiWarnings.unshift(
-          `Auto-classified ${dcaApplied} DCA order${dcaApplied === 1 ? '' : 's'}: ` +
-            `deposit marked non-taxable, fills classified as trades. Fetch prices to calculate P&L.`
-        );
+    if (isSaasMode()) {
+      try {
+        const allAfterClassification = await db.transactions.toArray();
+        const dcaGroups = detectDcaGroups(allAfterClassification);
+        if (dcaGroups.length > 0) {
+          // Pass Alchemy key so exact DBT amounts are fetched on-chain per fill tx
+          const dcaResult = await applyDcaClassification(
+            dcaGroups,
+            settings.alchemyApiKey ?? SAAS_PROXY_KEY
+          );
+          swapsDetected += dcaResult.applied;
+          if (dcaResult.applied > 0) {
+            apiWarnings.unshift(
+              `Auto-classified ${dcaResult.applied} DCA order${dcaResult.applied === 1 ? '' : 's'}: ` +
+                `deposit marked non-taxable, fills classified as trades.` +
+                (dcaResult.estimated > 0
+                  ? ` ${dcaResult.estimated} fill${dcaResult.estimated === 1 ? '' : 's'} use estimated amounts — flagged needs review.`
+                  : '') +
+                ` Fetch prices to calculate P&L.`
+            );
+          }
+        }
+      } catch {
+        // Non-fatal: a DCA classification failure must never strand an import.
       }
     }
     importJob._setProgress(null);

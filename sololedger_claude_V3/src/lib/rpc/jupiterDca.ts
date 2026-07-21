@@ -51,36 +51,68 @@ export interface JupiterRecurringResult {
   orders: JupiterRecurringOrder[];
   /** txId → fill mapping for fast lookup by transaction signature. */
   fillsByTxId: Map<string, { order: JupiterRecurringOrder; fill: JupiterFill }>;
+  /**
+   * True when Jupiter's API answered at least one request (HTTP ok), so an
+   * empty `orders` list is a CONFIRMED "this wallet has no DCA orders".
+   * False means network/5xx — the empty result says nothing and callers must
+   * NOT treat it as confirmation (fail open: skip and retry later).
+   */
+  reachable: boolean;
 }
 
 /**
- * Fetch all completed DCA order fills for a wallet from Jupiter's free API.
- * Returns an empty result on network failures (fails gracefully).
+ * Fetch all DCA order fills for a wallet from Jupiter's free API — both
+ * completed (`history`) and in-progress (`active`) orders, so an ongoing
+ * order dripping new fills still verifies. On network failure returns an
+ * empty result with `reachable: false` (never a fake "confirmed empty").
  */
 export async function fetchJupiterRecurringHistory(
   walletAddress: string
 ): Promise<JupiterRecurringResult> {
-  const empty: JupiterRecurringResult = { orders: [], fillsByTxId: new Map() };
+  const empty: JupiterRecurringResult = { orders: [], fillsByTxId: new Map(), reachable: false };
+  const rawOrders: any[] = [];
+  let reachable = false;
+
+  for (const orderStatus of ['history', 'active'] as const) {
+    try {
+      const url =
+        `${JUPITER_RECURRING}/getRecurringOrders` +
+        `?user=${walletAddress}&orderStatus=${orderStatus}&recurringType=time&page=1`;
+      // Jupiter's free API is called directly — no key, no SaaS proxy.
+      recordNetworkActivity(resolveMode(false));
+      // eslint-disable-next-line no-await-in-loop
+      const res = await fetch(url, { headers: { accept: 'application/json' } });
+      if (!res.ok) continue;
+      reachable = true;
+      // eslint-disable-next-line no-await-in-loop
+      const data = await res.json();
+      const list: any[] = Array.isArray(data)
+        ? data
+        : Array.isArray(data?.orders)
+          ? data.orders
+          : Array.isArray(data?.data)
+            ? data.data
+            : [];
+      rawOrders.push(...list);
+    } catch {
+      // This status bucket failed — the other one may still succeed.
+    }
+  }
+
+  if (!reachable) return empty;
+
   try {
-    const url =
-      `${JUPITER_RECURRING}/getRecurringOrders` +
-      `?user=${walletAddress}&orderStatus=history&recurringType=time&page=1`;
-    // Jupiter's free API is called directly — no key, no SaaS proxy.
-    recordNetworkActivity(resolveMode(false));
-    const res = await fetch(url, { headers: { accept: 'application/json' } });
-    if (!res.ok) return empty;
-    const data = await res.json();
-
-    // The API may return orders in different shapes — handle both flat and nested.
-    const rawOrders: any[] = Array.isArray(data)
-      ? data
-      : Array.isArray(data?.orders)
-        ? data.orders
-        : Array.isArray(data?.data)
-          ? data.data
-          : [];
-
-    const orders: JupiterRecurringOrder[] = rawOrders.map((o: any) => {
+    // Deduplicate orders seen in both buckets (an order closing between the
+    // two calls could appear twice) before mapping.
+    const seen = new Set<string>();
+    const uniqueOrders = rawOrders.filter((o: any) => {
+      const key = String(o?.orderKey ?? o?.id ?? o?.dcaKey ?? '');
+      if (!key) return true;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+    const orders: JupiterRecurringOrder[] = uniqueOrders.map((o: any) => {
       // Fills may be nested or returned as top-level trades array
       const rawFills: any[] = o.fills ?? o.trades ?? o.tradeHistory ?? [];
       const fills: JupiterFill[] = rawFills.map((f: any) => ({
@@ -109,8 +141,10 @@ export async function fetchJupiterRecurringHistory(
       }
     }
 
-    return { orders, fillsByTxId };
+    return { orders, fillsByTxId, reachable: true };
   } catch {
+    // Malformed payload — the API WAS reached, but we can't trust the parse.
+    // Report unreachable so callers fail open instead of acting on garbage.
     return empty;
   }
 }
