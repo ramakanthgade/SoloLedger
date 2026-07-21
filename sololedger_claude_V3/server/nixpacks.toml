@@ -1,0 +1,12 @@
+# Nixpacks overrides for the SoloLedger API service (Root Directory:
+# sololedger_claude_V3/server). See railway.toml for the rest of the config.
+#
+# The service sets NODE_ENV=production, which makes the default install phase
+# (`npm ci`) skip devDependencies — so `typescript` is missing and the build
+# phase fails with "sh: 1: tsc: not found". Force dev deps to install here in
+# the install phase instead of in buildCommand: the build phase mounts a cache
+# at /app/node_modules/.cache and a second `npm ci` there dies with
+# EBUSY rmdir on that mount.
+
+[phases.install]
+cmds = ["npm ci --include=dev"]
