@@ -129,7 +129,9 @@ describe('Item 5b/c — Etherscan V2 fallback on ANY Alchemy failure', () => {
     });
     expect(result.failed).toEqual([]);
     expect(result.transactions).toHaveLength(1);
-    expect(result.transactions[0]).toMatchObject({ type: 'transfer_in', sourceRef: '0xdeadbeef' });
+    // BUG-3 regression: fallback-imported rows must carry their chain —
+    // chain-less rows vanish from "Your wallets" counts and chain filters.
+    expect(result.transactions[0]).toMatchObject({ type: 'transfer_in', sourceRef: '0xdeadbeef', chain: id });
     const v2Calls = callsTo('etherscan');
     expect(v2Calls.length).toBeGreaterThan(0);
     expect(v2Calls[0]).toContain(`chainid=${chainid}`);
@@ -256,6 +258,33 @@ describe('Item 5d — hosted relay routing', () => {
     );
     expect(result.failed[0].message).not.toMatch(/API key/i);
     expect(proxyCallsTo('/api/proxy/etherscan')).toHaveLength(0);
+  });
+
+  it('scrubs raw upstream explorer error bodies in hosted mode (FINDING-2)', async () => {
+    setMode('hosted');
+    mocks.proxyFetch.mockImplementation(async (rawPath: string) => {
+      const path = String(rawPath);
+      if (path.startsWith('/api/proxy/alchemy/')) {
+        return jsonResponse({ error: { message: 'network not enabled' } }, false, 403);
+      }
+      if (path.startsWith('/api/proxy/etherscan')) {
+        // Old-relay style failure: a raw V1 deprecation body forwarded upstream.
+        return jsonResponse(
+          { message: 'NOTOK', result: 'You are using a deprecated V1 endpoint, switch to the v2 api' },
+          false,
+          400
+        );
+      }
+      throw new Error(`unexpected relay path ${path}`);
+    });
+
+    const result = await lookupManyAddresses([WALLET], { chain: chainDef('celo') });
+
+    expect(result.failed).toHaveLength(1);
+    expect(result.failed[0].message).toBe(
+      'This chain is temporarily unavailable on the hosted service — please try again later.'
+    );
+    expect(result.failed[0].message).not.toMatch(/deprecated|V1 endpoint|API key/i);
   });
 });
 

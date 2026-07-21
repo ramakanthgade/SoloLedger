@@ -460,7 +460,7 @@ async function fetchAlchemyEvm(
     const baseUrl = etherscanV2BaseUrl(chainId);
     if (baseUrl && hasRpcCredential(etherscanApiKey)) {
       try {
-        const result = await fetchEtherscanCompatible(address, baseUrl, rpcCredential(etherscanApiKey), asset);
+        const result = await fetchEtherscanCompatible(address, baseUrl, rpcCredential(etherscanApiKey), asset, chainId);
         return {
           transactions: result.transactions,
           warnings: [
@@ -704,12 +704,17 @@ function etherscanFetch(url: string): Promise<Response> {
   return isSaasMode() ? saasProxyFetch(url) : fetch(url);
 }
 
-async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey: string, asset: string): Promise<LookupResult> {
+async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey: string, asset: string, chainId?: ChainId): Promise<LookupResult> {
   // Hosted mode needs no user key — the relay injects the server-side
   // Etherscan key (see etherscanRequestUrl).
   if (!apiKey?.trim() && !isSaasMode()) {
     throw new Error('Add a free Etherscan API key in Settings (etherscan.io/apis).');
   }
+
+  // Hosted users must never see raw upstream explorer bodies (they can leak
+  // key references or deprecated-endpoint noise) — scrub to the calm message.
+  const explorerError = (detail: string | undefined, fallback: string): Error =>
+    new Error(isSaasMode() ? HOSTED_CHAIN_TEMPORARILY_UNAVAILABLE : detail || fallback);
 
   const commonParams = {
     module: 'account',
@@ -739,6 +744,7 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
       source: 'rpc:etherscan_compatible',
       sourceRef: row.hash,
       walletAddress: addr,
+      chain: chainId,
       counterpartyAddress: isOutgoing ? row.to : row.from,
       contractAddress: isToken ? row.contractAddress : undefined,
       flags: ['possible_internal_transfer', 'missing_cost_basis'] as const,
@@ -760,7 +766,7 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
   // BYOK explorers are called directly with the user's key; hosted mode goes
   // through the relay (etherscanFetch handles both).
   const nativeRes = await etherscanFetch(nativeUrl);
-  if (!nativeRes.ok) throw new Error(await parseExplorerError(nativeRes));
+  if (!nativeRes.ok) throw explorerError(await parseExplorerError(nativeRes), `Explorer API returned ${nativeRes.status}`);
   const nativeData = await nativeRes.json();
 
   const tokenRes = await etherscanFetch(tokenUrl);
@@ -768,7 +774,12 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
   if (!tokenRes.ok) {
     // Token history is optional — native txs are still useful.
     const tokenErr = await parseExplorerError(tokenRes);
-    const warnings: LookupWarning[] = [{ address, message: `Token transfer fetch failed: ${tokenErr}` }];
+    const warnings: LookupWarning[] = [{
+      address,
+      message: isSaasMode()
+        ? 'Token transfer history is temporarily unavailable on the hosted service — native transactions were still imported.'
+        : `Token transfer fetch failed: ${tokenErr}`
+    }];
     const transactions: Transaction[] = Array.isArray(nativeData.result)
       ? nativeData.result.map((r: any) => toEtherscanTx(r, address, asset, false))
       : [];
@@ -778,7 +789,7 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
   const warnings: LookupWarning[] = [];
   if (nativeData.status !== '1' || !Array.isArray(nativeData.result)) {
     const detail = typeof nativeData.result === 'string' ? nativeData.result : nativeData.message;
-    throw new Error(detail || 'Etherscan returned no native transactions for this address.');
+    throw explorerError(detail, 'Etherscan returned no native transactions for this address.');
   }
 
   const transactions: Transaction[] = [
@@ -1193,7 +1204,7 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
   }
   if (!config.customBaseUrl) throw new Error('Enter an explorer base URL.');
   return withDexSwapDetection(
-    await fetchEtherscanCompatible(address, config.customBaseUrl, config.customApiKey ?? '', config.customAsset || 'TOKEN')
+    await fetchEtherscanCompatible(address, config.customBaseUrl, config.customApiKey ?? '', config.customAsset || 'TOKEN', chain.id)
   );
 }
 
