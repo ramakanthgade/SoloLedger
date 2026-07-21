@@ -543,57 +543,65 @@ export function ImportTab() {
 
       {mode === 'csv' && (
         <>
-          <div
-            onDragOver={(e) => {
-              e.preventDefault();
-              setDragOver(true);
+          {/* The hidden file input stays mounted for the whole CSV mode (outside the
+              dropzone) so the empty-state "Choose file" CTA can open the picker via
+              the ref even when the dropzone itself is not rendered. */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+            className="hidden"
+            disabled={saving}
+            onChange={(e) => {
+              const selected = Array.from(e.target.files ?? []);
+              if (selected.length > 0) void handleFiles(selected);
+              e.target.value = '';
             }}
-            onDragLeave={() => setDragOver(false)}
-            onDrop={onDrop}
-            className={
-              'flex flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-14 text-center transition-colors ' +
-              (dragOver ? 'border-violet bg-gain/15' : 'border-white/10 bg-elev-2')
-            }
-          >
-            {saving ? (
-              <>
-                <Loader2 className="mb-3 h-6 w-6 animate-spin text-gain" />
-                <p className="text-sm text-low">
-                  {importPhase === 'pricing'
-                    ? 'Fetching missing market prices…'
-                    : 'Importing and saving transactions…'}
-                </p>
-              </>
-            ) : (
-              <>
-                <Upload className="mb-3 h-6 w-6 text-gain" />
-                <p className="text-sm text-low">
-                  Drop a CSV or Excel (.xlsx) file — multi-sheet workbooks are scanned automatically, or
-                </p>
-                <label className="mt-3">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
-                    className="hidden"
-                    disabled={saving}
-                    onChange={(e) => {
-                      const selected = Array.from(e.target.files ?? []);
-                      if (selected.length > 0) void handleFiles(selected);
-                      e.target.value = '';
-                    }}
-                  />
-                  <span className="cursor-pointer rounded-full bg-violet px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-violet active:scale-95">
+          />
+
+          {transactionCount > 0 && (
+            <div
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={onDrop}
+              className={
+                'flex flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-14 text-center transition-colors ' +
+                (dragOver ? 'border-violet bg-gain/15' : 'border-white/10 bg-elev-2')
+              }
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="mb-3 h-6 w-6 animate-spin text-gain" />
+                  <p className="text-sm text-low">
+                    {importPhase === 'pricing'
+                      ? 'Fetching missing market prices…'
+                      : 'Importing and saving transactions…'}
+                  </p>
+                </>
+              ) : (
+                <>
+                  <Upload className="mb-3 h-6 w-6 text-gain" />
+                  <p className="text-sm text-low">
+                    Drop a CSV or Excel (.xlsx) file — multi-sheet workbooks are scanned automatically, or
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="mt-3 cursor-pointer rounded-full bg-violet px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-violet active:scale-95"
+                  >
                     Choose file
-                  </span>
-                </label>
-              </>
-            )}
-            {fileName && !duplicateBlocked && !saving && outcome && (
-              <p className="mt-3 font-mono text-xs text-low">{fileName}</p>
-            )}
-          </div>
+                  </button>
+                </>
+              )}
+              {fileName && !duplicateBlocked && !saving && outcome && (
+                <p className="mt-3 font-mono text-xs text-low">{fileName}</p>
+              )}
+            </div>
+          )}
 
           {duplicateBlocked && (
             <div className="rounded-lg border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">

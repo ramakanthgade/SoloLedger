@@ -206,8 +206,16 @@ proxyRouter.all('/openrouter/*', async (req: AuthedRequest, res) => {
   });
 });
 
-/** Etherscan family — GET /api/proxy/etherscan */
-proxyRouter.get('/etherscan', async (req: AuthedRequest, res) => {
+/**
+ * Etherscan family — GET /api/proxy/etherscan
+ *
+ * Forwards to the Etherscan multichain API V2 (`/v2/api`) — V1
+ * (`api.etherscan.io/api`) is deprecated. ALL client query params (chainid,
+ * module, action, address, page, offset, sort, …) pass through unchanged;
+ * the server-side key is injected (overriding any client-sent `apikey`).
+ * Exported for direct unit testing.
+ */
+export async function etherscanProxyHandler(req: AuthedRequest, res: Response): Promise<void> {
   if (!requireActiveSubscription(req, res)) return;
   const key = resolveApiKey('etherscanApiKey');
   if (!key) {
@@ -216,7 +224,11 @@ proxyRouter.get('/etherscan', async (req: AuthedRequest, res) => {
   }
   const qs = new URLSearchParams(req.query as Record<string, string>);
   qs.set('apikey', key);
-  await forward(`https://api.etherscan.io/api?${qs}`, req, res);
+  await forward(`https://api.etherscan.io/v2/api?${qs}`, req, res);
+}
+
+proxyRouter.get('/etherscan', async (req: AuthedRequest, res) => {
+  await etherscanProxyHandler(req, res);
 });
 
 /** Blockstream — free, no key; still auth-gated for metering */

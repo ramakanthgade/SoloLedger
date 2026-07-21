@@ -216,7 +216,29 @@ function alchemyFetch(url: string, init: RequestInit): Promise<Response> {
   return fetch(url, init);
 }
 
+/**
+ * Calm hosted-mode provider wording. Hosted users have no API key to fix —
+ * provider failures (rate limits, disabled networks, upstream 403s) must
+ * NEVER surface "check your API key" or raw upstream bodies (which can
+ * mention keys) to them.
+ */
+const HOSTED_CHAIN_TEMPORARILY_UNAVAILABLE =
+  'This chain is temporarily unavailable on the hosted service — please try again later.';
+
+/**
+ * Message for chains NO wallet-data provider serves at all (live-verified
+ * 2026-07-21): fantom (dropped by Moralis product-wide, not offered by
+ * Alchemy, chainid 250 unsupported on Etherscan V2) and aurora (dropped by
+ * Moralis, no Alchemy network exists, chainid 1313161554 unsupported on V2).
+ */
+export function chainNotAvailableMessage(): string {
+  return isSaasMode()
+    ? 'This chain is not available on the hosted service yet — please use a CSV export instead.'
+    : 'This chain is not available from any wallet-data provider right now — please use a CSV export instead.';
+}
+
 function alchemyErrorMessage(status: number, body?: { error?: { code?: number; message?: string } }): string {
+  if (isSaasMode()) return HOSTED_CHAIN_TEMPORARILY_UNAVAILABLE;
   if (status === 429 || body?.error?.code === 429) {
     return (
       'Alchemy transfer lookup is rate-limited on the free plan (this can last hours during high traffic). ' +
@@ -228,15 +250,25 @@ function alchemyErrorMessage(status: number, body?: { error?: { code?: number; m
   return `Alchemy API returned ${status} — check your API key`;
 }
 
-/** Etherscan multichain API v2 chain ids (one key covers all). */
+/**
+ * Etherscan multichain API v2 chain ids (one key covers all) — FALLBACK
+ * coverage when a chain's primary providers fail. Live-verified 2026-07-21
+ * on the relay key's free tier: celo/gnosis/linea/blast/mantle answer (celo
+ * is daily-quota-limited). base/avalanche are PAID-plan-gated on V2 and
+ * already covered by Moralis + Alchemy — deliberately NOT listed. No V2 ids
+ * exist for fantom/zksync/scroll/aurora (unsupported chainid on V2).
+ */
 const ETHERSCAN_V2_CHAIN_IDS: Partial<Record<ChainId, number>> = {
   ethereum: 1,
   polygon: 137,
   arbitrum: 42161,
-  base: 8453,
   optimism: 10,
   bsc: 56,
-  avalanche: 43114
+  celo: 42220,
+  gnosis: 100,
+  linea: 59144,
+  blast: 81457,
+  mantle: 5000
 };
 
 function etherscanV2BaseUrl(chainId: ChainId): string | null {
@@ -404,8 +436,8 @@ async function fetchAlchemyEvm(
   try {
     return await fetchAlchemyEvmInner(address, network, apiKey, asset, chainId);
   } catch (err) {
-    if (!isAlchemyRateLimitError(err)) throw err;
-    if (chainId === 'ethereum') {
+    // Ethereum keeps its free, key-less Blockscout fallback on rate-limit.
+    if (chainId === 'ethereum' && isAlchemyRateLimitError(err)) {
       const result = await fetchBlockscoutEthereum(address);
       return {
         transactions: result.transactions,
@@ -419,17 +451,24 @@ async function fetchAlchemyEvm(
         ]
       };
     }
+    // Broadened 2026-07-21: ANY Alchemy failure (403 "network not enabled",
+    // network/DNS error, rate limit on a non-Ethereum chain) falls back to
+    // Etherscan V2 when the chain has a V2 id and an Etherscan key is
+    // available — in hosted mode the relay supplies the key
+    // (hasRpcCredential is always true there). The Moralis-dropped chains
+    // (celo/blast/mantle/gnosis/linea) depend on this path.
     const baseUrl = etherscanV2BaseUrl(chainId);
-    if (etherscanApiKey && baseUrl) {
+    if (baseUrl && hasRpcCredential(etherscanApiKey)) {
       try {
-        const result = await fetchEtherscanCompatible(address, baseUrl, etherscanApiKey, asset);
+        const result = await fetchEtherscanCompatible(address, baseUrl, rpcCredential(etherscanApiKey), asset, chainId);
         return {
           transactions: result.transactions,
           warnings: [
             {
               address,
-              message:
-                'Alchemy transfer lookup was rate-limited; fetched via Etherscan instead (native + ERC-20 transfers).'
+              message: isAlchemyRateLimitError(err)
+                ? 'Alchemy transfer lookup was rate-limited; fetched via Etherscan instead (native + ERC-20 transfers).'
+                : 'Alchemy transfer lookup failed; fetched via Etherscan instead (native + ERC-20 transfers).'
             },
             ...result.warnings
           ]
@@ -437,7 +476,7 @@ async function fetchAlchemyEvm(
       } catch (etherscanErr) {
         if (isNetworkFetchError(etherscanErr)) {
           throw new Error(
-            'Alchemy transfer lookup is rate-limited and Etherscan could not be reached from your network. ' +
+            'Alchemy transfer lookup failed and Etherscan could not be reached from your network. ' +
               'Check your internet/DNS or try again later.'
           );
         }
@@ -630,6 +669,19 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
 
 // ---- Generic Etherscan-compatible fallback (BYO key/endpoint) ----
 function etherscanRequestUrl(baseUrl: string, params: Record<string, string>, apiKey: string): string {
+  // Hosted: route through the SoloLedger relay, which injects the server-side
+  // key and forwards to the Etherscan multichain V2 endpoint. The FULL query
+  // must survive — including the `chainid` embedded in a V2 base URL — while
+  // no key material ever leaves the client.
+  if (isSaasMode()) {
+    const merged = new URLSearchParams();
+    const qIndex = baseUrl.indexOf('?');
+    if (qIndex >= 0) {
+      for (const [k, v] of new URLSearchParams(baseUrl.slice(qIndex + 1))) merged.append(k, v);
+    }
+    for (const [k, v] of Object.entries(params)) merged.set(k, v);
+    return `/api/proxy/etherscan?${merged.toString()}`;
+  }
   const qs = new URLSearchParams({ ...params, apikey: apiKey });
   const sep = baseUrl.includes('?') ? '&' : '?';
   let url = `${baseUrl}${sep}${qs.toString()}`;
@@ -643,10 +695,26 @@ function etherscanRequestUrl(baseUrl: string, params: Record<string, string>, ap
   return url;
 }
 
-async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey: string, asset: string): Promise<LookupResult> {
-  if (!apiKey?.trim()) {
+/**
+ * Etherscan-family transport: the SaaS relay in hosted mode (the server
+ * injects the key), a direct browser call with the user's key otherwise.
+ */
+function etherscanFetch(url: string): Promise<Response> {
+  recordNetworkActivity(resolveMode(isSaasMode()));
+  return isSaasMode() ? saasProxyFetch(url) : fetch(url);
+}
+
+async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey: string, asset: string, chainId?: ChainId): Promise<LookupResult> {
+  // Hosted mode needs no user key — the relay injects the server-side
+  // Etherscan key (see etherscanRequestUrl).
+  if (!apiKey?.trim() && !isSaasMode()) {
     throw new Error('Add a free Etherscan API key in Settings (etherscan.io/apis).');
   }
+
+  // Hosted users must never see raw upstream explorer bodies (they can leak
+  // key references or deprecated-endpoint noise) — scrub to the calm message.
+  const explorerError = (detail: string | undefined, fallback: string): Error =>
+    new Error(isSaasMode() ? HOSTED_CHAIN_TEMPORARILY_UNAVAILABLE : detail || fallback);
 
   const commonParams = {
     module: 'account',
@@ -676,6 +744,7 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
       source: 'rpc:etherscan_compatible',
       sourceRef: row.hash,
       walletAddress: addr,
+      chain: chainId,
       counterpartyAddress: isOutgoing ? row.to : row.from,
       contractAddress: isToken ? row.contractAddress : undefined,
       flags: ['possible_internal_transfer', 'missing_cost_basis'] as const,
@@ -694,18 +763,23 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
     }
   };
 
-  // Etherscan-compatible explorers are called directly with the user's key.
-  recordNetworkActivity(resolveMode(false));
-  const nativeRes = await fetch(nativeUrl);
-  if (!nativeRes.ok) throw new Error(await parseExplorerError(nativeRes));
+  // BYOK explorers are called directly with the user's key; hosted mode goes
+  // through the relay (etherscanFetch handles both).
+  const nativeRes = await etherscanFetch(nativeUrl);
+  if (!nativeRes.ok) throw explorerError(await parseExplorerError(nativeRes), `Explorer API returned ${nativeRes.status}`);
   const nativeData = await nativeRes.json();
 
-  const tokenRes = await fetch(tokenUrl);
+  const tokenRes = await etherscanFetch(tokenUrl);
   const tokenData = tokenRes.ok ? await tokenRes.json() : { status: '0', result: [] };
   if (!tokenRes.ok) {
     // Token history is optional — native txs are still useful.
     const tokenErr = await parseExplorerError(tokenRes);
-    const warnings: LookupWarning[] = [{ address, message: `Token transfer fetch failed: ${tokenErr}` }];
+    const warnings: LookupWarning[] = [{
+      address,
+      message: isSaasMode()
+        ? 'Token transfer history is temporarily unavailable on the hosted service — native transactions were still imported.'
+        : `Token transfer fetch failed: ${tokenErr}`
+    }];
     const transactions: Transaction[] = Array.isArray(nativeData.result)
       ? nativeData.result.map((r: any) => toEtherscanTx(r, address, asset, false))
       : [];
@@ -715,7 +789,7 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
   const warnings: LookupWarning[] = [];
   if (nativeData.status !== '1' || !Array.isArray(nativeData.result)) {
     const detail = typeof nativeData.result === 'string' ? nativeData.result : nativeData.message;
-    throw new Error(detail || 'Etherscan returned no native transactions for this address.');
+    throw explorerError(detail, 'Etherscan returned no native transactions for this address.');
   }
 
   const transactions: Transaction[] = [
@@ -724,6 +798,78 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
   ];
 
   return { transactions, warnings };
+}
+
+// ---- Activity probes for chain auto-detect (Moralis-dropped chains) ----
+
+/**
+ * Single-call Alchemy activity probe: has the wallet ≥1 asset transfer in
+ * `direction` on `network`? Uses alchemy_getAssetTransfers with maxCount 0x1
+ * — the cheapest possible call. Throws on HTTP/API failure so the caller can
+ * fall back to the Etherscan V2 probe (or drop the chain silently).
+ */
+export async function alchemyHasActivity(
+  network: string,
+  address: string,
+  direction: 'from' | 'to',
+  apiKey: string
+): Promise<boolean> {
+  const url = alchemyRpcUrl(network);
+  const res = await alchemyFetch(url, {
+    method: 'POST',
+    headers: alchemyHeaders(apiKey),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'alchemy_getAssetTransfers',
+      params: [
+        {
+          [direction === 'from' ? 'fromAddress' : 'toAddress']: address,
+          category: ['external', 'erc20', 'erc721', 'erc1155'],
+          maxCount: '0x1'
+        }
+      ]
+    })
+  });
+  const data = await res.json().catch(() => null);
+  if (!res.ok) throw new Error(alchemyErrorMessage(res.status, data ?? undefined));
+  if (data?.error) throw new Error(alchemyErrorMessage(data.error.code ?? 0, data));
+  return (data?.result?.transfers ?? []).length > 0;
+}
+
+export type ActivityProbeVerdict = 'outgoing' | 'incoming' | 'none';
+
+/**
+ * Etherscan V2 `txlist` activity probe (newest page only, offset 100):
+ * 'outgoing' when the wallet SENT ≥1 listed tx, 'incoming' when it only
+ * received, 'none' on an empty page. Returns null when the chain has no V2
+ * id; throws on HTTP/network failure so auto-detect can fail the chain
+ * silently.
+ */
+export async function etherscanV2HasActivity(
+  chainId: ChainId,
+  address: string,
+  apiKey: string
+): Promise<ActivityProbeVerdict | null> {
+  const baseUrl = etherscanV2BaseUrl(chainId);
+  if (!baseUrl) return null;
+  const url = etherscanRequestUrl(baseUrl, {
+    module: 'account',
+    action: 'txlist',
+    address,
+    startblock: '0',
+    endblock: '99999999',
+    page: '1',
+    offset: '100',
+    sort: 'desc'
+  }, apiKey);
+  const res = await etherscanFetch(url);
+  if (!res.ok) throw new Error(`Explorer API returned ${res.status}`);
+  const data = await res.json().catch(() => null);
+  const rows: { from?: string }[] = Array.isArray(data?.result) ? data.result : [];
+  if (rows.length === 0) return 'none';
+  const walletLower = address.toLowerCase();
+  return rows.some((r) => r.from?.toLowerCase() === walletLower) ? 'outgoing' : 'incoming';
 }
 
 // ---- Ethereum via Blockscout (free, no API key — primary source for Ethereum) ----
@@ -943,14 +1089,29 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
   if (chain.provider === 'unsupported') {
     throw new Error(`${chain.label} wallet sync is not supported yet — import a CSV export instead.`);
   }
+  // Chains no wallet-data provider serves (live-verified 2026-07-21) — fail
+  // with the calm "not available yet" message, never an API-key error:
+  // - fantom: dropped by Moralis product-wide, not offered by Alchemy
+  //   (fantom-mainnet does not exist), chainid 250 unsupported on Etherscan
+  //   V2. Removed from the import dropdown — only legacy saved wallets still
+  //   reach this path via Sync.
+  // - aurora: dropped by Moralis, no Alchemy network exists, chainid
+  //   1313161554 unsupported on Etherscan V2. Hosted mode only — in BYOK a
+  //   user-pasted custom explorer URL can still serve it.
+  if (chain.id === 'fantom' || (chain.id === 'aurora' && isSaasMode())) {
+    throw new Error(chainNotAvailableMessage());
+  }
   if (chain.provider === 'blockstream') {
     return fetchBitcoin(address, 'https://blockstream.info/api', chain.asset);
   }
   if (chain.provider === 'alchemy_evm') {
     // Moralis is the primary EVM source when key is provided — returns decoded + spam-flagged data
     if (hasRpcCredential(config.moralisApiKey)) {
-      const { getMoralisChain, fetchMoralisEvm } = await import('@/lib/rpc/moralis');
-      const moralisChain = getMoralisChain(chain.id);
+      const { getMoralisChain, fetchMoralisEvm, MORALIS_DROPPED_CHAINS } = await import('@/lib/rpc/moralis');
+      // Moralis dropped these chains product-wide (2026-07): /history
+      // HTTP-400s `chain must be a valid enum value` for them, so skip the
+      // wasted round-trip and go straight to the Alchemy/Etherscan path.
+      const moralisChain = MORALIS_DROPPED_CHAINS.has(chain.id) ? null : getMoralisChain(chain.id);
       if (moralisChain) {
         try {
           const result = await fetchMoralisEvm(address, chain.id, chain.asset, rpcCredential(config.moralisApiKey));
@@ -1043,7 +1204,7 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
   }
   if (!config.customBaseUrl) throw new Error('Enter an explorer base URL.');
   return withDexSwapDetection(
-    await fetchEtherscanCompatible(address, config.customBaseUrl, config.customApiKey ?? '', config.customAsset || 'TOKEN')
+    await fetchEtherscanCompatible(address, config.customBaseUrl, config.customApiKey ?? '', config.customAsset || 'TOKEN', chain.id)
   );
 }
 
