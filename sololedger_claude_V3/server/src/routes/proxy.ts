@@ -7,12 +7,13 @@ import {
 } from '../auth.js';
 import { getServerConfig } from '../store.js';
 import { resolveApiKey } from '../apiKeys.js';
+import { redactForLog } from '../logRedact.js';
 
 export const proxyRouter = Router();
 
 proxyRouter.use(authMiddleware);
 
-function requireActiveSubscription(req: AuthedRequest, res: Response): boolean {
+export function requireActiveSubscription(req: AuthedRequest, res: Response): boolean {
   const user = getUserFromRequest(req);
   if (!user) {
     res.status(401).json({ error: 'User not found' });
@@ -49,9 +50,10 @@ export async function forward(
   try {
     upstream = await fetch(targetUrl, init);
   } catch (err) {
-    // Network-level failure. Log the real detail (incl. target URL) server-side only;
-    // never leak the upstream URL / API key to the client.
-    console.error(`[proxy] upstream request failed [${method} ${req.path}]:`, err);
+    // Network-level failure. Log the real detail server-side only (redacted —
+    // the error can embed the keyed provider URL); never leak the upstream
+    // URL / API key to the client.
+    console.error(`[proxy] upstream request failed [${method} ${req.path}]: ${redactForLog(err)}`);
     res.status(502).json({ error: 'Upstream request failed' });
     return;
   }
@@ -62,9 +64,10 @@ export async function forward(
   if (!upstream.ok) {
     // Do not echo upstream error bodies — they can reflect the proxied URL
     // (which embeds the provider API key) or other internal details.
-    // Log the real detail server-side and return a generic message to the client.
+    // Log the real detail server-side (redacted) and return a generic message
+    // to the client.
     console.error(
-      `[proxy] upstream error ${upstream.status} [${method} ${req.path}]: ${text.slice(0, 500)}`
+      `[proxy] upstream error ${upstream.status} [${method} ${req.path}]: ${redactForLog(text)}`
     );
     res.status(upstream.status).json({ error: 'Upstream request failed' });
     return;
