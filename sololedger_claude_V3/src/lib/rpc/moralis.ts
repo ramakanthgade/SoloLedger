@@ -67,6 +67,11 @@ export function getMoralisChain(chainId: ChainId): string | null {
  * them must skip Moralis entirely (providers.ts does, via this set) and go
  * straight to the Alchemy/Etherscan path; active-chain detection covers the
  * importable ones with Alchemy/Etherscan probes (fetchWalletActiveChains).
+ *
+ * Distinction: the 27 plan-v7.1 chains (abstract…katana) are NOT here —
+ * they were never Moralis chains at all, so they are skipped automatically
+ * via their absent MORALIS_CHAIN entry (getMoralisChain returns null);
+ * this set means "Moralis 400s on a slug it once served".
  */
 export const MORALIS_DROPPED_CHAINS: ReadonlySet<ChainId> = new Set([
   'fantom',
@@ -178,12 +183,48 @@ export interface WalletActiveChains {
 const PROBE_CONCURRENCY = 3;
 
 /**
- * Importable Moralis-dropped chains that auto-detect probes directly (step 3
- * below). NOT fantom (removed from the app — no provider serves it) and NOT
- * aurora (its etherscan_compatible path has a dead V2 chainid — nothing to
- * probe).
+ * Importable chains auto-detect probes directly (step 3 below): the
+ * Moralis-dropped chains plus provider-less (never on Moralis) chains — the
+ * 27 plan-v7.1 additions have no MORALIS_CHAIN entry, so Moralis detection
+ * can never see them and they are probed here instead. NOT fantom (removed
+ * from the app — no provider serves it) and NOT aurora (its
+ * etherscan_compatible path has a dead V2 chainid — nothing to probe).
  */
-const DIRECT_PROBE_CHAINS: ReadonlySet<ChainId> = new Set(['celo', 'zksync', 'scroll', 'blast', 'mantle']);
+export const DIRECT_PROBE_CHAINS: ReadonlySet<ChainId> = new Set([
+  'celo',
+  'zksync',
+  'scroll',
+  'blast',
+  'mantle',
+  // Plan v7.1 (2026-07-21) — provider-less chains (never served by Moralis):
+  'abstract',
+  'apechain',
+  'anime',
+  'berachain',
+  'hyperevm',
+  'ink',
+  'lens',
+  'monad',
+  'mythos',
+  'robinhood',
+  'rootstock',
+  'ronin',
+  'shape',
+  'settlus',
+  'soneium',
+  'story',
+  'unichain',
+  'worldchain',
+  'zora',
+  'zetachain',
+  'fraxtal',
+  'sei',
+  'sonic',
+  'plasma',
+  'stable',
+  'megaeth',
+  'katana'
+]);
 
 export interface ActiveChainProbeKeys {
   /** User's own Alchemy key (BYOK/local); hosted mode probes via the relay. */
@@ -212,7 +253,8 @@ async function mapWithConcurrency<T, R>(
 }
 
 /**
- * Activity probe for one Moralis-dropped chain. Alchemy first
+ * Activity probe for one Moralis-dropped or provider-less (never on
+ * Moralis) chain. Alchemy first
  * (`alchemy_getAssetTransfers`, maxCount 0x1 — the cheapest possible call):
  * an outgoing (`from`) hit wins, otherwise a `to`-direction hit means
  * incoming-only. When the Alchemy probe FAILS and the chain has an Etherscan
@@ -264,7 +306,9 @@ async function probeChainActivity(
  *    SENT ≥1 transaction from land in `active`; incoming-only candidates go
  *    to `incomingOnly`.
  * 3. Chains Moralis dropped product-wide (celo, zksync, scroll, blast,
- *    mantle) can never surface from steps 1–2 — they are probed directly
+ *    mantle) and provider-less chains that were never on Moralis (the 27
+ *    plan-v7.1 additions: abstract…katana — see DIRECT_PROBE_CHAINS) can
+ *    never surface from steps 1–2 — they are probed directly
  *    with their working providers (Alchemy first, Etherscan V2 fallback;
  *    parallel with a small concurrency cap). All probes fail silently, and
  *    probing is skipped entirely when neither provider has a usable key
@@ -312,8 +356,9 @@ export async function fetchWalletActiveChains(
     else outgoing.add(chainId);
   }
 
-  // Step 3: probe the importable Moralis-dropped chains directly (see the
-  // function docstring). Skipped when neither provider has a usable key.
+  // Step 3: probe the importable Moralis-dropped + provider-less (never on
+  // Moralis) chains directly (see the function docstring). Skipped when
+  // neither provider has a usable key.
   const probeChains = CHAINS.filter((c) => DIRECT_PROBE_CHAINS.has(c.id));
   const canProbe =
     isSaasMode() ||

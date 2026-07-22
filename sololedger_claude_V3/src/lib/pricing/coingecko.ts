@@ -118,7 +118,27 @@ const SYMBOL_TO_ID: Record<string, string> = {
   CRO: 'crypto-com-chain',
   XDAI: 'xdai',
   MNT: 'mantle',
-  STRK: 'starknet'
+  STRK: 'starknet',
+  // Plan v7.1 chains (ids verified against CoinGecko 2026-07-21). SEI is
+  // already mapped above; ETH-native chains resolve via ETH.
+  BERA: 'berachain-bera',
+  HYPE: 'hyperliquid',
+  MON: 'monad',
+  APE: 'apecoin',
+  ANIME: 'anime',
+  GHO: 'gho',
+  RON: 'ronin',
+  ZETA: 'zetachain',
+  MYTH: 'mythos',
+  // Story (IP) rebranded to Data Network (DATA) on CoinGecko — same asset,
+  // id 'story-2'; the on-chain native symbol stays IP.
+  IP: 'story-2',
+  RBTC: 'rootstock',
+  // Fraxtal gas token: Frax (prev. FXS) after the North Star rebrand.
+  FRAX: 'frax-share',
+  S: 'sonic-3',
+  XPL: 'plasma',
+  USDT0: 'usdt0'
 };
 
 const COIN_ID_CACHE_KEY = 'sololedger_gecko_coin_ids';
