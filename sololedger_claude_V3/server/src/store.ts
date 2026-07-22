@@ -33,6 +33,7 @@ export interface ServerConfig {
   priceApiEnabled: boolean;
   rpcLookupEnabled: boolean;
   aiAdvisorEnabled: boolean;
+  exchangeSyncEnabled: boolean;
 }
 
 export interface ServerApiKeys {
@@ -60,7 +61,8 @@ export const STORE_SCHEMA_VERSION = 1;
 const DEFAULT_CONFIG: ServerConfig = {
   priceApiEnabled: process.env.PRICE_API_ENABLED !== 'false',
   rpcLookupEnabled: process.env.RPC_LOOKUP_ENABLED !== 'false',
-  aiAdvisorEnabled: process.env.AI_ADVISOR_ENABLED !== 'false'
+  aiAdvisorEnabled: process.env.AI_ADVISOR_ENABLED !== 'false',
+  exchangeSyncEnabled: process.env.EXCHANGE_SYNC_ENABLED !== 'false'
 };
 
 /* ------------------------------------------------------------------ *
@@ -190,6 +192,10 @@ function ensureStore(): StoreData {
 
 function migrateStore(data: StoreData): StoreData {
   if (!data.apiKeys) data.apiKeys = {};
+  // Backfill serverConfig keys missing from stores written before those flags
+  // existed (e.g. exchangeSyncEnabled on the production store.json) — without
+  // this they read as undefined → falsy → silently OFF.
+  data.serverConfig = { ...DEFAULT_CONFIG, ...data.serverConfig };
   return normalizeLegacyPlans(data);
 }
 

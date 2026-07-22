@@ -11,6 +11,7 @@ configRouter.get('/public', (_req, res) => {
   res.json({
     priceApiEnabled: config.priceApiEnabled,
     rpcLookupEnabled: config.rpcLookupEnabled,
-    aiAdvisorEnabled: config.aiAdvisorEnabled && openrouterConfigured
+    aiAdvisorEnabled: config.aiAdvisorEnabled && openrouterConfigured,
+    exchangeSyncEnabled: config.exchangeSyncEnabled ?? false
   });
 });
