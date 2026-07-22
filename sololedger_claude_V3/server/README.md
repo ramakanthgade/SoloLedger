@@ -58,3 +58,27 @@ Smoke test after deploy: open `https://YOUR-APP.up.railway.app/health` — shoul
 
 - **Local:** CSV, calculations, reports — 100% in browser IndexedDB
 - **Server:** login, subscription status, proxied price/RPC/AI calls (no transaction storage)
+- **Exchange tunnel:** byte-pipe only — no storage, no body logging (see below)
+
+## Exchange auto-sync tunnel
+
+`ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (binance, coinbase, kraken, okx, kucoin — spot only).
+
+For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each request locally — the exchange API secret never leaves the user's device. This route receives the fully-signed request and replays it **byte-verbatim** to the exchange:
+
+- Mounted before `express.json()` with `express.raw()` (like the Stripe webhook); the upstream URL is taken from the raw `req.url` so `%2B`/`%2F` in signatures are never corrupted by decoding.
+- **Stateless:** nothing is stored; request/response bodies are never logged (only `[exchange-tunnel] upstream <status> [<METHOD> <exchangeId>]`).
+- Upstream host comes from a server-side map (the client can never steer it); only allowlisted `x-exchange-*` headers are forwarded — cookies/origin/user-agent never leak upstream.
+- Exchange responses are piped back verbatim (status + raw body; only `content-type`/`retry-after` forwarded). Relay-origin errors are JSON stamped `x-sololedger-error: auth | subscription | disabled | unknown_exchange | bad_path | payload_too_large | upstream_timeout | upstream_failed` — the client distinguishes relay errors from native exchange errors by that header alone.
+- Gated by JWT + active subscription + the `exchangeSyncEnabled` admin flag (`EXCHANGE_SYNC_ENABLED`, default on; admin `PUT /api/admin/config`).
+
+**Live verification (post-deploy):**
+
+```bash
+# against production (default) or RELAY=https://your-relay
+SL_EMAIL=you@example.com SL_PASSWORD=secret node scripts/live-verify-exchange-tunnel.mjs
+# or reuse an existing token:
+SL_TOKEN=<jwt> node scripts/live-verify-exchange-tunnel.mjs
+```
+
+Probes all five exchanges through the tunnel — tier 2: public endpoints (no exchange auth, HTTP 200 + shape); tier 3: dummy-key signed requests asserting each exchange's distinctive auth error (Binance `-2015`, Kraken `EAPI:Invalid key`, Coinbase 401, OKX `50111`, KuCoin `400003`), proving signed requests survive the relay byte-intact. Exits non-zero on any failure.
