@@ -1,0 +1,44 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to GET /sapi/v1/capital/withdraw/history (see myTrades.json note). Destination addresses masked. The status:5 entry is failed and must be excluded by the normalizer.",
+  "response": [
+    {
+      "id": "wd-fixture-001",
+      "amount": "0.20000000",
+      "transactionFee": "0.00050000",
+      "coin": "BTC",
+      "status": 6,
+      "address": "bc1qmaskedwithdrawdest00000000000000000",
+      "addressTag": "",
+      "txId": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+      "applyTime": "2023-11-10 12:00:00",
+      "network": "BTC",
+      "transferType": 0,
+      "withdrawOrderId": "WITHDRAWtest123",
+      "info": "withdrawal to external wallet",
+      "confirmNo": 3,
+      "walletType": 0,
+      "txKey": "",
+      "completeTime": "2023-11-10 12:04:11"
+    },
+    {
+      "id": "wd-fixture-002",
+      "amount": "100.00000000",
+      "transactionFee": "1.00000000",
+      "coin": "USDT",
+      "status": 5,
+      "address": "0xmaskedwithdrawdest000000000000000000000",
+      "addressTag": "",
+      "txId": "",
+      "applyTime": "2023-11-12 09:30:00",
+      "network": "ETH",
+      "transferType": 0,
+      "withdrawOrderId": "WITHDRAWtest456",
+      "info": "",
+      "confirmNo": 0,
+      "walletType": 0,
+      "txKey": "",
+      "completeTime": ""
+    }
+  ]
+}

@@ -1,0 +1,63 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the data.items array of GET /api/v1/fills. The third fill is a crypto-quoted pair (ETH-BTC).",
+  "response": [
+    {
+      "symbol": "BTC-USDT",
+      "tradeId": "kc-trade-0001",
+      "orderId": "kc-order-0001",
+      "counterOrderId": "kc-counter-0001",
+      "side": "buy",
+      "liquidity": "taker",
+      "forceTaker": true,
+      "price": "43500.12",
+      "size": "0.01",
+      "funds": "435.0012",
+      "fee": "0.4350012",
+      "feeRate": "0.001",
+      "feeCurrency": "USDT",
+      "stop": "",
+      "type": "limit",
+      "createdAt": 1700000000123,
+      "tradeType": "TRADE"
+    },
+    {
+      "symbol": "BTC-USDT",
+      "tradeId": "kc-trade-0002",
+      "orderId": "kc-order-0002",
+      "counterOrderId": "kc-counter-0002",
+      "side": "sell",
+      "liquidity": "maker",
+      "forceTaker": false,
+      "price": "44100.50",
+      "size": "0.005",
+      "funds": "220.5025",
+      "fee": "0.2205025",
+      "feeRate": "0.001",
+      "feeCurrency": "USDT",
+      "stop": "",
+      "type": "limit",
+      "createdAt": 1700086400456,
+      "tradeType": "TRADE"
+    },
+    {
+      "symbol": "ETH-BTC",
+      "tradeId": "kc-trade-0003",
+      "orderId": "kc-order-0003",
+      "counterOrderId": "kc-counter-0003",
+      "side": "buy",
+      "liquidity": "taker",
+      "forceTaker": true,
+      "price": "0.05225",
+      "size": "0.5",
+      "funds": "0.026125",
+      "fee": "0.0000261",
+      "feeRate": "0.001",
+      "feeCurrency": "BTC",
+      "stop": "",
+      "type": "limit",
+      "createdAt": 1700172800789,
+      "tradeType": "TRADE"
+    }
+  ]
+}

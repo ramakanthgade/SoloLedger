@@ -103,6 +103,20 @@ describe('classifySyncError', () => {
     expect(classifySyncError(await ccxtError(className))).toBe(kind);
   });
 
+  it('ExchangeNotAvailable with a geo-block message → region_blocked (not network)', async () => {
+    const ccxt = await loadCcxt();
+    const ExchangeNotAvailable = ccxt['ExchangeNotAvailable'] as new (message: string) => Error;
+    const geoBlocked = new ExchangeNotAvailable(
+      'binance GET https://api.binance.com/api/v3/account 451 {"code":0,"msg":"Service unavailable from a restricted location. One or more of your API keys may be associated with an ineligible account."}'
+    );
+    expect(classifySyncError(geoBlocked)).toBe('region_blocked');
+    // Case-insensitive, and checked before the generic network mapping.
+    const upper = new ExchangeNotAvailable('Service unavailable from a RESTRICTED LOCATION');
+    expect(classifySyncError(upper)).toBe('region_blocked');
+    // An ordinary ExchangeNotAvailable still maps to network.
+    expect(classifySyncError(new ExchangeNotAvailable('boom'))).toBe('network');
+  });
+
   it.each([
     'not_hosted',
     'relay_auth',
@@ -127,5 +141,11 @@ describe('syncErrorMessage', () => {
     expect(syncErrorMessage('permission', 'okx')).toContain('OKX');
     expect(syncErrorMessage('network', 'kucoin')).toContain('KuCoin');
     expect(syncErrorMessage('relay_auth', 'kraken')).toContain('sign in');
+  });
+
+  it('region_blocked copy points users at CSV import', () => {
+    const msg = syncErrorMessage('region_blocked', 'binance');
+    expect(msg).toContain('CSV import');
+    expect(msg).toContain('blocks our hosting region');
   });
 });

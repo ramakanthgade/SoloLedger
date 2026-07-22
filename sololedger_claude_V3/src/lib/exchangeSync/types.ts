@@ -49,6 +49,7 @@ export type SyncErrorKind =
   | 'permission'
   | 'rate_limit'
   | 'network'
+  | 'region_blocked'
   | 'unknown';
 
 /** Result of a completed sync run (commit mode). */

@@ -1,0 +1,9 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the data array of GET /api/v1/accounts (spot/trade account).",
+  "response": [
+    { "id": "masked-kc-acct-1", "currency": "BTC", "type": "trade", "balance": "0.01", "available": "0.01", "holds": "0" },
+    { "id": "masked-kc-acct-2", "currency": "ETH", "type": "trade", "balance": "0.5", "available": "0.5", "holds": "0" },
+    { "id": "masked-kc-acct-3", "currency": "USDT", "type": "trade", "balance": "120.5", "available": "120.5", "holds": "0" }
+  ]
+}

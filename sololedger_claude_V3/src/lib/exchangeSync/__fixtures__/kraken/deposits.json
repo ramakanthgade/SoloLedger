@@ -1,0 +1,30 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the result array of POST /0/private/DepositStatus. Deposit addresses (info) masked. The 'Settled' entry parses as pending in ccxt and must be excluded by the normalizer.",
+  "response": [
+    {
+      "method": "Bitcoin",
+      "aclass": "currency",
+      "asset": "XXBT",
+      "refid": "KRDEP-00001",
+      "txid": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "info": "bc1qmaskeddepositaddress000000000000000",
+      "amount": "0.05",
+      "fee": "0.0",
+      "time": 1699900000,
+      "status": "Success"
+    },
+    {
+      "method": "Ethereum (ERC20)",
+      "aclass": "currency",
+      "asset": "XETH",
+      "refid": "KRDEP-00002",
+      "txid": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+      "info": "0xmaskeddepositaddress0000000000000000000000",
+      "amount": "0.30",
+      "fee": "0.0",
+      "time": 1700000000,
+      "status": "Settled"
+    }
+  ]
+}

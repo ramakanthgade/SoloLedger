@@ -1,0 +1,38 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to GET /sapi/v1/capital/deposit/hisrec (see myTrades.json note). Deposit addresses masked. The status:0 entry is pending and must be excluded by the normalizer.",
+  "response": [
+    {
+      "id": "dep-fixture-001",
+      "amount": "0.05000000",
+      "coin": "BTC",
+      "network": "BTC",
+      "status": 1,
+      "address": "bc1qmaskeddepositaddress000000000000000",
+      "addressTag": "",
+      "txId": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "insertTime": 1699900000000,
+      "transferType": 0,
+      "confirmTimes": "2/6",
+      "unlockConfirm": 0,
+      "walletType": 0,
+      "travelRuleStatus": 0
+    },
+    {
+      "id": "dep-fixture-002",
+      "amount": "0.30000000",
+      "coin": "ETH",
+      "network": "ETH",
+      "status": 0,
+      "address": "0xmaskeddepositaddress0000000000000000000000",
+      "addressTag": "",
+      "txId": "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1",
+      "insertTime": 1700000000000,
+      "transferType": 0,
+      "confirmTimes": "1/12",
+      "unlockConfirm": 0,
+      "walletType": 0,
+      "travelRuleStatus": 0
+    }
+  ]
+}

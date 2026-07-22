@@ -34,6 +34,8 @@ export function loadCcxt(): Promise<CcxtModule> {
 
 export interface UnifiedMarket {
   symbol: string;
+  /** Exchange-native market id (e.g. 'BTCUSDT', 'BTC-USDT', 'XXBTZUSD'). */
+  id?: string;
   base: string;
   quote: string;
   spot?: boolean;
@@ -181,6 +183,12 @@ export function classifySyncError(err: unknown): SyncErrorKind {
   if (hasErrorName(err, 'AccountNotEnabled', 'PermissionDenied')) return 'permission';
   if (hasErrorName(err, 'AuthenticationError')) return 'invalid_key';
   if (hasErrorName(err, 'RateLimitExceeded', 'DDoSProtection')) return 'rate_limit';
+  // Geo-block (Binance HTTP 451 'Service unavailable from a restricted
+  // location') surfaces as ExchangeNotAvailable — a NetworkError — but it is
+  // NOT a transient network issue: it is non-retryable and needs its own
+  // copy, so check for it before the generic network mapping.
+  const message = err instanceof Error ? err.message : String(err ?? '');
+  if (/restricted location/i.test(message)) return 'region_blocked';
   if (hasErrorName(err, 'NetworkError', 'ExchangeNotAvailable', 'RequestTimeout')) return 'network';
   return 'unknown';
 }
@@ -209,6 +217,8 @@ export function syncErrorMessage(kind: SyncErrorKind, exchange: ExchangeId): str
       return `${label} rate-limited the sync — it will pick up where it left off on the next try.`;
     case 'network':
       return `Network error talking to ${label} — check your connection and try again.`;
+    case 'region_blocked':
+      return "Binance currently can't be reached from SoloLedger's servers — Binance blocks our hosting region. We're fixing this. Please use CSV import for Binance for now.";
     case 'unknown':
       return `Something went wrong while syncing ${label} — please try again.`;
   }

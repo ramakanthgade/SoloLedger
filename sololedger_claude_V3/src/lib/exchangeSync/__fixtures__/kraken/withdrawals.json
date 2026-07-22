@@ -1,0 +1,30 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the result array of POST /0/private/WithdrawStatus. Destination addresses (info) masked. The 'Pending' entry must be excluded by the normalizer.",
+  "response": [
+    {
+      "method": "Bitcoin",
+      "aclass": "currency",
+      "asset": "XXBT",
+      "refid": "KRWD-00001",
+      "txid": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+      "info": "bc1qmaskedwithdrawdest00000000000000000",
+      "amount": "0.2",
+      "fee": "0.0005",
+      "time": 1699617600,
+      "status": "Success"
+    },
+    {
+      "method": "Tether USD (ERC20)",
+      "aclass": "currency",
+      "asset": "USDT",
+      "refid": "KRWD-00002",
+      "txid": "",
+      "info": "0xmaskedwithdrawdest000000000000000000000",
+      "amount": "100.0",
+      "fee": "1.0",
+      "time": 1699783200,
+      "status": "Pending"
+    }
+  ]
+}

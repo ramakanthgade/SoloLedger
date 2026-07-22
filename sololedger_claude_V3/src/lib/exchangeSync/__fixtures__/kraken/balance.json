@@ -1,0 +1,10 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the result object of POST /0/private/Balance (asset-code -> balance-string map).",
+  "response": {
+    "XXBT": "0.0100000000",
+    "XETH": "0.5000000000",
+    "ZUSD": "120.5000",
+    "USDT": "0.00000000"
+  }
+}

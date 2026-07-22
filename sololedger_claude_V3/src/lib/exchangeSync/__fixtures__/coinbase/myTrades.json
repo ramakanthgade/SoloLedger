@@ -1,0 +1,54 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the fills array of GET /api/v3/brokerage/orders/historical/fills (Advanced Trade). user_id masked.",
+  "response": [
+    {
+      "entry_id": "cbfill-0001",
+      "trade_id": "cb-trade-0001",
+      "order_id": "cb-order-0001",
+      "trade_time": "2023-11-14T22:13:20.123456Z",
+      "trade_type": "FILL",
+      "price": "43500.12",
+      "size": "0.01",
+      "commission": "0.4350012",
+      "product_id": "BTC-USD",
+      "sequence_timestamp": "2023-11-14T22:13:20.123456Z",
+      "liquidity_indicator": "TAKER",
+      "size_in_quote": false,
+      "user_id": "masked-user-0001",
+      "side": "BUY"
+    },
+    {
+      "entry_id": "cbfill-0002",
+      "trade_id": "cb-trade-0002",
+      "order_id": "cb-order-0002",
+      "trade_time": "2023-11-15T22:13:20.456789Z",
+      "trade_type": "FILL",
+      "price": "44100.50",
+      "size": "0.005",
+      "commission": "0.2205025",
+      "product_id": "BTC-USD",
+      "sequence_timestamp": "2023-11-15T22:13:20.456789Z",
+      "liquidity_indicator": "MAKER",
+      "size_in_quote": false,
+      "user_id": "masked-user-0001",
+      "side": "SELL"
+    },
+    {
+      "entry_id": "cbfill-0003",
+      "trade_id": "cb-trade-0003",
+      "order_id": "cb-order-0003",
+      "trade_time": "2023-11-16T22:13:20.789012Z",
+      "trade_type": "FILL",
+      "price": "0.05225",
+      "size": "0.5",
+      "commission": "0.000026125",
+      "product_id": "ETH-BTC",
+      "sequence_timestamp": "2023-11-16T22:13:20.789012Z",
+      "liquidity_indicator": "TAKER",
+      "size_in_quote": false,
+      "user_id": "masked-user-0001",
+      "side": "BUY"
+    }
+  ]
+}

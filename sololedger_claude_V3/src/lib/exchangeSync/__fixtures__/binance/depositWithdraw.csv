@@ -1,0 +1,3 @@
+Date(UTC),Coin,Network,Amount,Fee,Address,TXID,Status,Type
+2023-11-13 18:26:40,BTC,BTC,0.05,,bc1qmaskeddepositaddress000000000000000,a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90,Completed,Deposit
+2023-11-10 12:00:00,BTC,BTC,0.2,0.0005,bc1qmaskedwithdrawdest00000000000000000,c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2,Completed,Withdrawal
