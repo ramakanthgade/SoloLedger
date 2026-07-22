@@ -146,7 +146,21 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
   };
   if (row.passphrase) config.password = row.passphrase;
   if (exchangeId === 'binance' || exchangeId === 'okx') {
-    config.options = { defaultType: 'spot' };
+    // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
+    // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
+    // the relay's spot-only host map would reject; okx: 4x the instrument
+    // calls). Restrict the markets fetch to spot explicitly.
+    config.options = { defaultType: 'spot', fetchMarkets: ['spot'] };
+  }
+  if (exchangeId === 'binance') {
+    // ccxt's binance fetchCurrencies (default on when credentials exist)
+    // hits signed SAPI endpoints incl. /sapi/v1/margin/allPairs — extra
+    // relay traffic we never use (the engine discovers assets from the
+    // balance + transfers, not currencies). Disable it. Likewise binance
+    // defaults options.fetchMargins = true, which makes fetchMarkets pull
+    // cross/isolated margin pair lists from SAPI when credentials exist.
+    (config.options as Record<string, unknown>).fetchCurrencies = false;
+    (config.options as Record<string, unknown>).fetchMargins = false;
   }
   const exchange = new Ctor(config) as ExchangeClient;
   installTunnelFetch(exchange, exchangeId);

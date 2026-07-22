@@ -23,6 +23,7 @@ export interface PublicServerConfig {
   priceApiEnabled: boolean;
   rpcLookupEnabled: boolean;
   aiAdvisorEnabled: boolean;
+  exchangeSyncEnabled: boolean;
 }
 
 export function getAuthToken(): string | null {

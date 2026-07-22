@@ -57,6 +57,15 @@ describe('createExchangeClient', () => {
     expect(raw.apiKey).toBe('key');
     expect(raw.secret).toBe('secret');
     expect((raw.options as Record<string, unknown>).defaultType).toBe('spot');
+    // Spot-only markets fetch: without this ccxt's loadMarkets also hits the
+    // futures hosts (fapi/dapi), which the relay's spot-only host map rejects.
+    expect((raw.options as Record<string, unknown>).fetchMarkets).toEqual(['spot']);
+    // fetchCurrencies disabled: ccxt's binance fetchCurrencies would otherwise
+    // hit signed SAPI endpoints (incl. /sapi/v1/margin/allPairs) we never use.
+    expect((raw.options as Record<string, unknown>).fetchCurrencies).toBe(false);
+    // fetchMargins disabled: binance defaults it to true, which makes
+    // fetchMarkets pull margin pair lists from signed SAPI endpoints.
+    expect((raw.options as Record<string, unknown>).fetchMargins).toBe(false);
     // Tunnel transport installed (fetch overridden from the prototype default).
     const fresh = new ((await loadCcxt()).binance as new (c: Record<string, unknown>) => Record<string, unknown>)({});
     expect(client.fetch).not.toBe(fresh.fetch);
