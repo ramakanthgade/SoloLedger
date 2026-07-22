@@ -7,6 +7,7 @@ import { authRouter } from './routes/auth.js';
 import { adminRouter } from './routes/admin.js';
 import { configRouter } from './routes/config.js';
 import { proxyRouter } from './routes/proxy.js';
+import { exchangeTunnelRouter, tunnelBodyErrorHandler } from './routes/exchangeTunnel.js';
 import { billingRouter, handleStripeWebhook } from './routes/billing.js';
 
 const app = express();
@@ -56,11 +57,25 @@ app.use(
       }
       cb(new Error(`CORS blocked origin: ${origin ?? 'unknown'}`));
     },
-    credentials: true
+    credentials: true,
+    // Browsers can't read non-exposed headers — the exchange tunnel stamps
+    // relay-origin errors with this header and the client branches on it.
+    exposedHeaders: ['x-sololedger-error']
   })
 );
 
 app.post('/api/billing/webhook', express.raw({ type: 'application/json' }), handleStripeWebhook);
+
+// Exchange auto-sync tunnel: mounted BEFORE express.json (like the Stripe
+// webhook) so signed bodies/queries reach the exchange byte-verbatim.
+// type: () => true captures bodies regardless of content-type; GET/HEAD
+// without a body pass through untouched.
+app.use(
+  '/api/proxy/exchange',
+  express.raw({ type: () => true, limit: '1mb' }),
+  exchangeTunnelRouter,
+  tunnelBodyErrorHandler
+);
 
 app.use(express.json({ limit: '2mb' }));
 
