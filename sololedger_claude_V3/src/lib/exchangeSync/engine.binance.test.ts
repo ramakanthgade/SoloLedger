@@ -11,9 +11,6 @@
  */
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
 vi.mock('@/lib/saas/config', () => ({
   isSaasMode: vi.fn(() => true)
@@ -34,119 +31,16 @@ import { db } from '@/lib/storage/db';
 import { exchangeSourceRef } from '@/lib/parsers/types';
 import { addConnection } from './connections';
 import { commitInitialSync, discardInitialSync, exchangeSyncJob, runInitialSync, syncNow } from './syncJob';
-import { createExchangeClient, type ExchangeClient } from './ccxtLoader';
-import type { SyncEngineDeps } from './engine';
-import type { ExchangeConnectionRow } from '@/lib/storage/db';
+import {
+  REPLAY_EXCHANGE_INFO,
+  REPLAY_NOW,
+  binanceReplayDeps,
+  fakeResponse,
+  installBinanceFixtureServer
+} from './__fixtures__/binanceReplay';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
-const NOW = 1_700_350_000_000; // shortly after the newest fixture row
-
-function fixture<T>(file: string): T {
-  const parsed = JSON.parse(readFileSync(join(HERE, '__fixtures__', 'binance', file), 'utf8')) as {
-    response: T;
-  };
-  return parsed.response;
-}
-
+const NOW = REPLAY_NOW;
 const apiFetchMock = vi.mocked(apiFetch);
-
-/** Minimal Response stand-in (same shape tunnel.test.ts uses). */
-function fakeResponse(status: number, body: string, headers: Record<string, string> = {}) {
-  const lower = Object.fromEntries(Object.entries(headers).map(([k, v]) => [k.toLowerCase(), v]));
-  return {
-    status,
-    statusText: `Status ${status}`,
-    headers: {
-      get: (k: string) => lower[k.toLowerCase()] ?? null,
-      forEach: (cb: (value: string, key: string) => void) => {
-        for (const [k, v] of Object.entries(headers)) cb(v, k);
-      }
-    },
-    text: async () => body
-  } as unknown as Response;
-}
-
-/** Spot exchangeInfo for exactly the fixture markets. */
-const EXCHANGE_INFO = {
-  timezone: 'UTC',
-  serverTime: NOW,
-  rateLimits: [],
-  exchangeFilters: [],
-  symbols: [
-    { symbol: 'BTCUSDT', status: 'TRADING', baseAsset: 'BTC', quoteAsset: 'USDT', filters: [] },
-    { symbol: 'ETHUSDT', status: 'TRADING', baseAsset: 'ETH', quoteAsset: 'USDT', filters: [] },
-    { symbol: 'ETHBTC', status: 'TRADING', baseAsset: 'ETH', quoteAsset: 'BTC', filters: [] }
-  ]
-};
-
-function queryOf(path: string): URLSearchParams {
-  const q = path.split('?')[1] ?? '';
-  return new URLSearchParams(q);
-}
-
-/** Serve the recorded fixtures by tunnel URL path (+ time-window filtering). */
-function installFixtureServer() {
-  const myTrades = fixture<Record<string, { time: number }[]>>('myTrades.json');
-  const deposits = fixture<{ insertTime: number }[]>('deposits.json');
-  const withdrawals = fixture<{ applyTime: string }[]>('withdrawals.json');
-  const balance = fixture<unknown>('balance.json');
-
-  apiFetchMock.mockImplementation(async (path) => {
-    const p = String(path);
-    if (!p.startsWith('/api/proxy/exchange/binance/')) {
-      throw new Error(`unexpected non-tunnel path: ${p}`);
-    }
-    if (p.includes('/api/v3/exchangeInfo')) {
-      return fakeResponse(200, JSON.stringify(EXCHANGE_INFO));
-    }
-    if (p.includes('/api/v3/account')) {
-      return fakeResponse(200, JSON.stringify(balance));
-    }
-    if (p.includes('/api/v3/myTrades')) {
-      const q = queryOf(p);
-      const symbol = q.get('symbol') ?? '';
-      const start = Number(q.get('startTime') ?? 0);
-      const end = Number(q.get('endTime') ?? Number.MAX_SAFE_INTEGER);
-      const rows = (myTrades[symbol] ?? []).filter((r) => r.time >= start && r.time <= end);
-      return fakeResponse(200, JSON.stringify(rows));
-    }
-    if (p.includes('/sapi/v1/capital/deposit/hisrec')) {
-      const q = queryOf(p);
-      const start = Number(q.get('startTime') ?? 0);
-      const end = Number(q.get('endTime') ?? Number.MAX_SAFE_INTEGER);
-      return fakeResponse(
-        200,
-        JSON.stringify(deposits.filter((r) => r.insertTime >= start && r.insertTime <= end))
-      );
-    }
-    if (p.includes('/sapi/v1/capital/withdraw/history')) {
-      const q = queryOf(p);
-      const start = Number(q.get('startTime') ?? 0);
-      const end = Number(q.get('endTime') ?? Number.MAX_SAFE_INTEGER);
-      // ccxt parses applyTime ('2023-11-10 12:00:00') via parse8601.
-      const ts = (r: { applyTime: string }) => Date.parse(r.applyTime.replace(' ', 'T') + 'Z');
-      return fakeResponse(
-        200,
-        JSON.stringify(withdrawals.filter((r) => ts(r) >= start && ts(r) <= end))
-      );
-    }
-    throw new Error(`unexpected tunnel path: ${p}`);
-  });
-}
-
-/** Real client, rate limiter neutralized, deterministic clock. */
-function replayDeps(): SyncEngineDeps {
-  return {
-    createClient: async (row: ExchangeConnectionRow): Promise<ExchangeClient> => {
-      const client = await createExchangeClient(row);
-      (client as unknown as { throttler: { throttle: () => Promise<void> } }).throttler = {
-        throttle: async () => {}
-      };
-      return client;
-    },
-    now: () => NOW
-  };
-}
 
 async function seedConnection(): Promise<string> {
   const view = await addConnection({
@@ -163,13 +57,13 @@ beforeEach(async () => {
   await db.exchangeConnections.clear();
   exchangeSyncJob.reset();
   apiFetchMock.mockReset();
-  installFixtureServer();
+  installBinanceFixtureServer(apiFetchMock);
 });
 
 describe('Binance full replay through the tunnel', () => {
   it('runInitialSync stages a preview without persisting anything', async () => {
     const id = await seedConnection();
-    const preview = await runInitialSync(id, replayDeps());
+    const preview = await runInitialSync(id, binanceReplayDeps());
 
     expect(preview.connectionId).toBe(id);
     expect(preview.exchange).toBe('binance');
@@ -203,8 +97,8 @@ describe('Binance full replay through the tunnel', () => {
 
   it('commitInitialSync persists staged rows with importBatchId=connectionId and writes cursors post-save', async () => {
     const id = await seedConnection();
-    await runInitialSync(id, replayDeps());
-    const { saved } = await commitInitialSync(id, replayDeps());
+    await runInitialSync(id, binanceReplayDeps());
+    const { saved } = await commitInitialSync(id, binanceReplayDeps());
     expect(saved).toBe(6);
 
     const rows = await db.transactions.toArray();
@@ -248,10 +142,10 @@ describe('Binance full replay through the tunnel', () => {
 
   it('syncNow right after imports 0 new rows', async () => {
     const id = await seedConnection();
-    await runInitialSync(id, replayDeps());
-    await commitInitialSync(id, replayDeps());
+    await runInitialSync(id, binanceReplayDeps());
+    await commitInitialSync(id, binanceReplayDeps());
 
-    await syncNow(id, replayDeps());
+    await syncNow(id, binanceReplayDeps());
     const state = exchangeSyncJob.get();
     expect(state.error).toBeNull();
     expect(state.result).toEqual({ imported: 0, pricesUpdated: 0, isFirstSync: false });
@@ -261,7 +155,7 @@ describe('Binance full replay through the tunnel', () => {
 
   it('discardInitialSync drops the staged preview and persists nothing', async () => {
     const id = await seedConnection();
-    await runInitialSync(id, replayDeps());
+    await runInitialSync(id, binanceReplayDeps());
     expect(exchangeSyncJob.get().preview).not.toBeNull();
 
     discardInitialSync(id);
@@ -274,8 +168,8 @@ describe('Binance full replay through the tunnel', () => {
 
   it('a second runInitialSync discards the previous staged preview (single-slot rule)', async () => {
     const id = await seedConnection();
-    await runInitialSync(id, replayDeps());
-    await runInitialSync(id, replayDeps());
+    await runInitialSync(id, binanceReplayDeps());
+    await runInitialSync(id, binanceReplayDeps());
     const state = exchangeSyncJob.get();
     expect(state.warnings.some((w) => w.includes('Discarded the previous staged'))).toBe(true);
     expect(state.preview?.transactions).toHaveLength(6);
@@ -288,9 +182,9 @@ describe('Binance full replay through the tunnel', () => {
     const gate = new Promise<void>((r) => (release = r));
     apiFetchMock.mockImplementationOnce(async () => {
       await gate;
-      return fakeResponse(200, JSON.stringify(EXCHANGE_INFO));
+      return fakeResponse(200, JSON.stringify(REPLAY_EXCHANGE_INFO));
     });
-    const pending = runInitialSync(id, replayDeps());
+    const pending = runInitialSync(id, binanceReplayDeps());
     await expect(syncNow(id)).resolves.toBeUndefined();
     expect(exchangeSyncJob.get().warnings.some((w) => w.includes('already running'))).toBe(true);
     release();
@@ -300,7 +194,7 @@ describe('Binance full replay through the tunnel', () => {
 
   it('the spot-only markets fetch never touches futures hosts', async () => {
     const id = await seedConnection();
-    await runInitialSync(id, replayDeps());
+    await runInitialSync(id, binanceReplayDeps());
     const paths = apiFetchMock.mock.calls.map((c) => String(c[0]));
     expect(paths.some((p) => p.includes('fapi') || p.includes('dapi'))).toBe(false);
     expect(paths.some((p) => p.includes('/api/v3/exchangeInfo'))).toBe(true);

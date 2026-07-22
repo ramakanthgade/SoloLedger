@@ -9,23 +9,55 @@
  * fake-indexeddb (bulkPut → deduplicateTransactions → filterAlreadyImported).
  */
 import 'fake-indexeddb/auto';
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+vi.mock('@/lib/saas/config', () => ({
+  isSaasMode: vi.fn(() => true)
+}));
+vi.mock('@/lib/saas/api', () => ({
+  apiFetch: vi.fn(),
+  getAuthToken: vi.fn(() => 'test-jwt'),
+  fetchPublicConfig: vi.fn(async () => ({
+    priceApiEnabled: false,
+    rpcLookupEnabled: true,
+    aiAdvisorEnabled: false,
+    exchangeSyncEnabled: true
+  }))
+}));
+
+import { apiFetch } from '@/lib/saas/api';
 import type { Transaction } from '@/types/transaction';
 import { binanceSpotParser } from '@/lib/parsers/binanceSpot';
 import { binanceTransfersParser } from '@/lib/parsers/binanceTransfers';
 import { loadFixtureRows } from '@/lib/parsers/__fixtures__/fixtureUtils';
+import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import {
   db,
   deduplicateTransactions,
   filterAlreadyImported,
+  getSettings,
   isStableRefSource,
   transactionExchangeKey
 } from '@/lib/storage/db';
+import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
+import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
+import { addConnection } from './connections';
+import {
+  commitInitialSync,
+  exchangeSyncJob,
+  runInitialSync,
+  syncNow
+} from './syncJob';
 import { normalizeTrade, normalizeTransfer, resolveMarket } from './normalize';
 import type { UnifiedMarket, UnifiedTrade, UnifiedTransfer } from './ccxtLoader';
+import {
+  REPLAY_NOW,
+  binanceReplayDeps,
+  installBinanceFixtureServer
+} from './__fixtures__/binanceReplay';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -200,5 +232,98 @@ describe('dedup contract — end to end through fake-indexeddb', () => {
     }
     const netNew = await filterAlreadyImported(replay);
     expect(netNew).toEqual([]);
+  });
+});
+
+/**
+ * Full pipeline (plan §B-5): REAL CSV parsers → the REAL ImportTab persist
+ * pipeline → a REAL replay sync (ccxt binance + tunnel + engine) → the sync
+ * must contribute ZERO net-new rows and the CSV twins must survive.
+ */
+describe('dedup contract — full pipeline: CSV import → replay sync → zero net-new', () => {
+  const apiFetchMock = vi.mocked(apiFetch);
+
+  /** Mirrors ImportTab.persistTransactions exactly (minus csvImports bookkeeping). */
+  async function persistCsvBatch(txs: Transaction[], hash: string): Promise<void> {
+    const settings = await getSettings();
+    const { priceApiEnabled } = await getEffectiveSettings();
+    const stamped = txs.map((t) => ({
+      ...t,
+      importBatchId: hash,
+      fiatValue: normalizeFiatMagnitude(t.fiatValue),
+      feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
+    }));
+    const { transactions: converted } = await convertOrNormalizeForImport(
+      stamped,
+      settings,
+      priceApiEnabled
+    );
+    await db.transactions.bulkPut(converted);
+    await deduplicateTransactions();
+  }
+
+  async function seedBinanceConnection(): Promise<string> {
+    const view = await addConnection({
+      exchange: 'binance',
+      label: 'Dedup Replay Binance',
+      apiKey: 'replay-key',
+      secret: 'replay-secret'
+    });
+    return view.id;
+  }
+
+  beforeEach(async () => {
+    await db.transactions.clear();
+    await db.exchangeConnections.clear();
+    exchangeSyncJob.reset();
+    apiFetchMock.mockReset();
+    installBinanceFixtureServer(apiFetchMock);
+  });
+
+  it('first sync stages everything as duplicates; commit saves 0 and keeps the CSV twins', async () => {
+    const csvRows = [...csvTradeRows(), ...csvTransferRows()];
+    expect(csvRows).toHaveLength(6);
+    await persistCsvBatch(csvRows, 'csv-batch-full-pipeline');
+    expect(await db.transactions.count()).toBe(6);
+
+    const id = await seedBinanceConnection();
+    const preview = await runInitialSync(id, binanceReplayDeps());
+    expect(preview.transactions).toHaveLength(6); // fetched rows are shown…
+    expect(preview.duplicatesSkipped).toBe(6); // …but ALL are already imported
+
+    const { saved } = await commitInitialSync(id, binanceReplayDeps());
+    expect(saved).toBe(0);
+
+    // The CSV twins survive — the API sync contributed nothing.
+    const rows = await db.transactions.toArray();
+    expect(rows).toHaveLength(6);
+    expect(rows.every((t) => t.importBatchId === 'csv-batch-full-pipeline')).toBe(true);
+    expect(
+      rows.every((t) => t.source === 'binance_spot' || t.source === 'binance_transfers')
+    ).toBe(true);
+
+    // Cursors/lastSyncAt still advance post-save: the sync SUCCEEDED, there
+    // was simply nothing new — the next sync must not re-fetch from zero.
+    const row = (await db.exchangeConnections.get(id))!;
+    expect(row.status).toBe('ok');
+    expect(row.lastSyncAt).toBe(REPLAY_NOW);
+    expect(row.cursors.trades).toBe(1700259200111);
+  });
+
+  it('syncNow after a CSV import reports 0 imported and leaves the table untouched', async () => {
+    await persistCsvBatch(
+      [...csvTradeRows(), ...csvTransferRows()],
+      'csv-batch-full-pipeline'
+    );
+    const id = await seedBinanceConnection();
+
+    await syncNow(id, binanceReplayDeps());
+    const state = exchangeSyncJob.get();
+    expect(state.error).toBeNull();
+    expect(state.result?.imported).toBe(0);
+
+    const rows = await db.transactions.toArray();
+    expect(rows).toHaveLength(6);
+    expect(rows.every((t) => t.importBatchId === 'csv-batch-full-pipeline')).toBe(true);
   });
 });
