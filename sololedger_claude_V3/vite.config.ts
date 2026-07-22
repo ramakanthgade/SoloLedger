@@ -55,7 +55,13 @@ export default defineConfig({
         ]
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,png,woff2}']
+        globPatterns: ['**/*.{js,css,html,svg,png,woff2}'],
+        // The lazy vendor-ccxt chunk (~5 MB) far exceeds workbox's 2 MiB
+        // precache limit and would fail generateSW. It's only ever fetched
+        // on demand by exchange auto-sync (a hosted/online-only feature), so
+        // excluding it from the precache manifest keeps the PWA offline-first
+        // for everything else.
+        globIgnores: ['**/vendor-ccxt-*.js']
       }
     })
   ],
@@ -124,7 +130,10 @@ export default defineConfig({
           'vendor-xlsx': ['xlsx'],
           'vendor-pdf': ['jspdf', 'jspdf-autotable'],
           'vendor-papaparse': ['papaparse'],
-          'vendor-dexie': ['dexie', 'dexie-react-hooks']
+          'vendor-dexie': ['dexie', 'dexie-react-hooks'],
+          // Exchange auto-sync: ccxt is huge and only loaded lazily via
+          // `await import('ccxt')` in lib/exchangeSync/ccxtLoader.ts.
+          'vendor-ccxt': ['ccxt']
         }
       }
     }
