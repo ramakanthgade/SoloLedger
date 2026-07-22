@@ -34,6 +34,29 @@ export interface CsvImportRow {
   parserId: string | null;
 }
 
+/**
+ * A saved exchange API connection (Exchange Auto-Sync). LOCAL-ONLY: the
+ * credentials are stored in this browser's IndexedDB and are used on-device
+ * by ccxt to sign each request — the relay only ever sees the fully-signed
+ * request. Rows are cleared by `clearAllData()`.
+ */
+export interface ExchangeConnectionRow {
+  id: string;           // makeId('exc')
+  exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin')
+  label?: string;       // user-assigned friendly name, e.g. "My Binance"
+  apiKey: string;
+  secret: string;
+  passphrase?: string;  // OKX / KuCoin only (ccxt `password`)
+  createdAt: number;
+  /** Per-kind ms cursors — written ONLY after a successful save (see exchangeSync/engine). */
+  cursors: { trades?: number; deposits?: number; withdrawals?: number };
+  knownAssets?: string[];   // assets seen in balance/deposits/withdrawals (Binance symbol discovery)
+  knownSymbols?: string[];  // spot symbols that returned >= 1 trade (Binance symbol discovery)
+  lastSyncAt?: number;
+  status: 'idle' | 'syncing' | 'ok' | 'error';
+  lastError?: string;
+}
+
 export interface PriceCacheRow {
   /** `sym:${ASSET}:${dd-mm-yyyy}:${CURRENCY}` or `ctr:${platform}:${address}:${dd-mm-yyyy}:${CURRENCY}` */
   key: string;
@@ -50,6 +73,7 @@ class SoloLedgerDB extends Dexie {
   lookupAddresses!: Table<LookupAddressRow, string>;
   priceCache!: Table<PriceCacheRow, string>;
   csvImports!: Table<CsvImportRow, string>;
+  exchangeConnections!: Table<ExchangeConnectionRow, string>;
 
   constructor(name: string) {
     super(name);
@@ -115,6 +139,19 @@ class SoloLedgerDB extends Dexie {
       priceCache: 'key, fetchedAt',
       csvImports: 'id, importedAt, fileName'
     });
+    // v8: Exchange Auto-Sync — saved exchange API connections (credentials +
+    // per-connection sync cursors). All v7 tables carried over unchanged.
+    this.version(8).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName',
+      exchangeConnections: 'id, exchange, lastSyncAt'
+    });
   }
 }
 
@@ -169,7 +206,7 @@ export async function saveSettings(settings: TaxSettings): Promise<void> {
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.settings],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -178,6 +215,7 @@ export async function clearAllData(): Promise<void> {
       await db.lookupAddresses.clear();
       await db.priceCache.clear();
       await db.csvImports.clear();
+      await db.exchangeConnections.clear();
       // "Delete all data" promises to remove everything — reset settings to defaults too.
       await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
     }
@@ -241,20 +279,36 @@ const EXCHANGE_CSV_SOURCES = new Set([
 ]);
 
 /**
+ * The five Exchange Auto-Sync sources (`<exchange>_api`). API-synced rows set
+ * `source` to one of these and build `sourceRef` to collide with the CSV
+ * parsers' refs, so the existing dedup machinery dedups API-vs-API and
+ * API-vs-CSV. Keep in sync with `SYNC_EXCHANGES` in lib/exchangeSync/types.ts.
+ */
+export const EXCHANGE_API_SOURCES = new Set([
+  'binance_api',
+  'coinbase_api',
+  'kraken_api',
+  'okx_api',
+  'kucoin_api'
+]);
+
+/**
  * Sources whose `sourceRef` is a stable, content-addressed dedup key.
  * Includes CEX CSV exports (Binance/Coinbase/WazirX/Hyperliquid + the
- * EXCHANGE_CSV_SOURCES batch) AND manual / AI-mapped imports — the latter
+ * EXCHANGE_CSV_SOURCES batch), the Exchange Auto-Sync API sources
+ * (EXCHANGE_API_SOURCES), AND manual / AI-mapped imports — the latter
  * now carry a `contentHashRef` (hash of timestamp+type+asset+amount+counter)
  * so a re-import of the same file yields the same ref and therefore the same
  * key.
  */
-function isStableRefSource(source: string): boolean {
+export function isStableRefSource(source: string): boolean {
   return (
     source.startsWith('binance') ||
     source === 'coinbase' ||
     source.startsWith('wazirx') ||
     source.startsWith('hyperliquid') ||
     EXCHANGE_CSV_SOURCES.has(source) ||
+    EXCHANGE_API_SOURCES.has(source) ||
     source === 'manual_mapping' ||
     source === 'ai_mapping'
   );
