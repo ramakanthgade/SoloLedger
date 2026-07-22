@@ -17,7 +17,12 @@ afterEach(() => {
 
 type LegacyStore = {
   users: (UserRecord & { customTxLimit?: number | null })[];
-  serverConfig: { priceApiEnabled: boolean; rpcLookupEnabled: boolean; aiAdvisorEnabled: boolean };
+  serverConfig: {
+    priceApiEnabled: boolean;
+    rpcLookupEnabled: boolean;
+    aiAdvisorEnabled: boolean;
+    exchangeSyncEnabled?: boolean;
+  };
   apiKeys: Record<string, unknown>;
   schemaVersion?: number;
 };
@@ -108,6 +113,55 @@ describe('store load applies and persists the migration', () => {
     expect(onDisk.schemaVersion).toBe(store.STORE_SCHEMA_VERSION);
     expect(onDisk.users.find((u: UserRecord) => u.email === 'free@b.co').plan).toBe('local');
 
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+describe('serverConfig flag backfill', () => {
+  async function loadStoreWith(config: LegacyStore['serverConfig'], env: Record<string, string> = {}) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sl-store-cfg-'));
+    const storeFile = path.join(dir, 'store.json');
+    const data = { ...legacyStore(), serverConfig: config };
+    fs.writeFileSync(storeFile, JSON.stringify(data, null, 2));
+
+    process.env.NODE_ENV = 'development';
+    delete process.env.DATA_ENCRYPTION_KEY;
+    process.env.DATA_DIR = dir;
+    for (const [k, v] of Object.entries(env)) process.env[k] = v;
+
+    vi.resetModules();
+    const store = await import('./store.js');
+    return { store, dir };
+  }
+
+  it('backfills exchangeSyncEnabled (default ON) on a store written before the flag existed', async () => {
+    const { store, dir } = await loadStoreWith({
+      priceApiEnabled: true,
+      rpcLookupEnabled: true,
+      aiAdvisorEnabled: true
+    });
+    // Without the migrateStore() backfill this reads undefined → falsy → OFF.
+    expect(store.getServerConfig().exchangeSyncEnabled).toBe(true);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('preserves an explicit exchangeSyncEnabled: false from the store', async () => {
+    const { store, dir } = await loadStoreWith({
+      priceApiEnabled: true,
+      rpcLookupEnabled: true,
+      aiAdvisorEnabled: true,
+      exchangeSyncEnabled: false
+    });
+    expect(store.getServerConfig().exchangeSyncEnabled).toBe(false);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('honours EXCHANGE_SYNC_ENABLED=false as the default for stores missing the flag', async () => {
+    const { store, dir } = await loadStoreWith(
+      { priceApiEnabled: true, rpcLookupEnabled: true, aiAdvisorEnabled: true },
+      { EXCHANGE_SYNC_ENABLED: 'false' }
+    );
+    expect(store.getServerConfig().exchangeSyncEnabled).toBe(false);
     fs.rmSync(dir, { recursive: true, force: true });
   });
 });

@@ -31,7 +31,8 @@ adminRouter.put('/config', (req, res) => {
   const config = updateServerConfig({
     priceApiEnabled: patch.priceApiEnabled ?? getServerConfig().priceApiEnabled,
     rpcLookupEnabled: patch.rpcLookupEnabled ?? getServerConfig().rpcLookupEnabled,
-    aiAdvisorEnabled: patch.aiAdvisorEnabled ?? getServerConfig().aiAdvisorEnabled
+    aiAdvisorEnabled: patch.aiAdvisorEnabled ?? getServerConfig().aiAdvisorEnabled,
+    exchangeSyncEnabled: patch.exchangeSyncEnabled ?? getServerConfig().exchangeSyncEnabled
   });
   res.json({ config });
 });
