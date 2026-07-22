@@ -62,6 +62,35 @@ export type ChainId =
   | 'metis'
   | 'opbnb'
   | 'solana'
+  // Wave 1 — Alchemy Enhanced API verified 2026-07-21 (plan v7.1).
+  | 'abstract'
+  | 'apechain'
+  | 'anime'
+  | 'berachain'
+  | 'hyperevm'
+  | 'ink'
+  | 'lens'
+  | 'monad'
+  | 'mythos'
+  | 'robinhood'
+  | 'rootstock'
+  | 'ronin'
+  | 'shape'
+  | 'settlus'
+  | 'soneium'
+  | 'story'
+  | 'unichain'
+  | 'worldchain'
+  | 'zora'
+  | 'zetachain'
+  // Wave 2 — Alchemy RPC-only; Etherscan V2 fallback (plan v7.1).
+  | 'fraxtal'
+  | 'sei'
+  | 'sonic'
+  | 'plasma'
+  | 'stable'
+  | 'megaeth'
+  | 'katana'
   | 'custom_evm';
 
 export interface ChainDef {
@@ -72,6 +101,16 @@ export interface ChainDef {
   alchemyNetwork?: string; // Alchemy's network slug, e.g. "eth-mainnet"
   needsKey: boolean;
 }
+
+/**
+ * Chains hidden from the import chain dropdown. Fantom is removed
+ * (2026-07-21, user decision): no wallet-data provider serves it — Moralis
+ * dropped it product-wide, Alchemy never offered fantom-mainnet, Etherscan
+ * V2 has no chainid 250. The CHAINS registry entry STAYS so legacy Fantom
+ * data still classifies/prices, and a legacy Fantom wallet hitting Sync gets
+ * a calm "not available yet" message (see lookupOneAddress in providers.ts).
+ */
+export const DROPDOWN_HIDDEN_CHAINS: ReadonlySet<ChainId> = new Set(['fantom']);
 
 export const CHAINS: ChainDef[] = [
   { id: 'bitcoin', label: 'Bitcoin', asset: 'BTC', provider: 'blockstream', needsKey: false },
@@ -107,6 +146,38 @@ export const CHAINS: ChainDef[] = [
   { id: 'metis', label: 'Metis', asset: 'METIS', provider: 'alchemy_evm', alchemyNetwork: 'metis-mainnet', needsKey: true },
   { id: 'opbnb', label: 'opBNB', asset: 'BNB', provider: 'alchemy_evm', alchemyNetwork: 'opbnb-mainnet', needsKey: true },
   { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', alchemyNetwork: 'solana-mainnet', needsKey: true },
+  // ---- Plan v7.1 (2026-07-21): 27 verified-importable mainnet chains ----
+  // Wave 1 — Alchemy Enhanced API works (primary path, same as current chains).
+  { id: 'abstract', label: 'Abstract', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'abstract-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'apechain', label: 'ApeChain', asset: 'APE', provider: 'alchemy_evm', alchemyNetwork: 'apechain-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'anime', label: 'Animechain', asset: 'ANIME', provider: 'alchemy_evm', alchemyNetwork: 'anime-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'berachain', label: 'Berachain', asset: 'BERA', provider: 'alchemy_evm', alchemyNetwork: 'berachain-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  // Alchemy's slug really is hyperliquid-mainnet (chainid 999).
+  { id: 'hyperevm', label: 'HyperEVM (Hyperliquid)', asset: 'HYPE', provider: 'alchemy_evm', alchemyNetwork: 'hyperliquid-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'ink', label: 'Ink', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'ink-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'lens', label: 'Lens', asset: 'GHO', provider: 'alchemy_evm', alchemyNetwork: 'lens-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'monad', label: 'Monad', asset: 'MON', provider: 'alchemy_evm', alchemyNetwork: 'monad-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'mythos', label: 'Mythos', asset: 'MYTH', provider: 'alchemy_evm', alchemyNetwork: 'mythos-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'robinhood', label: 'Robinhood Chain', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'robinhood-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'rootstock', label: 'Rootstock', asset: 'RBTC', provider: 'alchemy_evm', alchemyNetwork: 'rootstock-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'ronin', label: 'Ronin', asset: 'RON', provider: 'alchemy_evm', alchemyNetwork: 'ronin-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'shape', label: 'Shape', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'shape-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'settlus', label: 'Settlus', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'settlus-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'soneium', label: 'Soneium', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'soneium-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'story', label: 'Story', asset: 'IP', provider: 'alchemy_evm', alchemyNetwork: 'story-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'unichain', label: 'Unichain', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'unichain-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'worldchain', label: 'World Chain', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'worldchain-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'zora', label: 'Zora', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'zora-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  { id: 'zetachain', label: 'ZetaChain', asset: 'ZETA', provider: 'alchemy_evm', alchemyNetwork: 'zetachain-mainnet', needsKey: true }, // Enhanced API verified 2026-07-21
+  // Wave 2 — Alchemy RPC-only; imports work via the any-Alchemy-failure →
+  // Etherscan V2 fallback (same path as mantle).
+  { id: 'fraxtal', label: 'Fraxtal', asset: 'FRAX', provider: 'alchemy_evm', alchemyNetwork: 'frax-mainnet', needsKey: true }, // Alchemy RPC-only; Etherscan V2 fallback (verified 2026-07-21)
+  { id: 'sei', label: 'Sei', asset: 'SEI', provider: 'alchemy_evm', alchemyNetwork: 'sei-mainnet', needsKey: true }, // Alchemy RPC-only; Etherscan V2 fallback (verified 2026-07-21)
+  { id: 'sonic', label: 'Sonic', asset: 'S', provider: 'alchemy_evm', alchemyNetwork: 'sonic-mainnet', needsKey: true }, // Alchemy RPC-only; Etherscan V2 fallback (verified 2026-07-21)
+  { id: 'plasma', label: 'Plasma', asset: 'XPL', provider: 'alchemy_evm', alchemyNetwork: 'plasma-mainnet', needsKey: true }, // Alchemy RPC-only; Etherscan V2 fallback (verified 2026-07-21)
+  { id: 'stable', label: 'Stable', asset: 'USDT0', provider: 'alchemy_evm', alchemyNetwork: 'stable-mainnet', needsKey: true }, // Alchemy RPC-only; Etherscan V2 fallback (verified 2026-07-21)
+  { id: 'megaeth', label: 'MegaETH', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'megaeth-mainnet', needsKey: true }, // Alchemy RPC-only; Etherscan V2 fallback (verified 2026-07-21)
+  { id: 'katana', label: 'Katana', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'katana-mainnet', needsKey: true }, // Alchemy RPC-only; Etherscan V2 fallback (verified 2026-07-21)
   { id: 'custom_evm', label: 'Other EVM chain (Etherscan-compatible)', asset: '', provider: 'etherscan_compatible', needsKey: true }
 ];
 
@@ -134,7 +205,38 @@ export const COINGECKO_PLATFORM: Partial<Record<ChainId, string>> = {
   moonriver: 'moonriver',
   metis: 'metis-andromeda',
   opbnb: 'opbnb',
-  solana: 'solana'
+  solana: 'solana',
+  // Plan v7.1 chains — each slug verified against CoinGecko /asset_platforms
+  // (matched on chain_identifier) 2026-07-21. anime, mythos and settlus have
+  // no CoinGecko asset platform — token-contract pricing does not apply
+  // there (native-coin pricing is unaffected).
+  abstract: 'abstract',
+  apechain: 'apechain',
+  // anime: no CoinGecko asset platform
+  berachain: 'berachain',
+  hyperevm: 'hyperevm',
+  ink: 'ink',
+  lens: 'lens',
+  monad: 'monad',
+  // mythos: no CoinGecko asset platform
+  robinhood: 'robinhood',
+  rootstock: 'rootstock',
+  ronin: 'ronin',
+  shape: 'shape',
+  // settlus: no CoinGecko asset platform
+  soneium: 'soneium',
+  story: 'story',
+  unichain: 'unichain',
+  worldchain: 'world-chain',
+  zora: 'zora-network',
+  zetachain: 'zetachain',
+  fraxtal: 'fraxtal',
+  sei: 'sei-v2',
+  sonic: 'sonic',
+  plasma: 'plasma',
+  stable: 'stable',
+  megaeth: 'megaeth',
+  katana: 'katana'
 };
 
 export interface LookupWarning {
@@ -254,11 +356,15 @@ function alchemyErrorMessage(status: number, body?: { error?: { code?: number; m
  * Etherscan multichain API v2 chain ids (one key covers all) — FALLBACK
  * coverage when a chain's primary providers fail. Live-verified 2026-07-21
  * on the relay key's free tier: celo/gnosis/linea/blast/mantle answer (celo
- * is daily-quota-limited). base/avalanche are PAID-plan-gated on V2 and
- * already covered by Moralis + Alchemy — deliberately NOT listed. No V2 ids
- * exist for fantom/zksync/scroll/aurora (unsupported chainid on V2).
+ * is daily-quota-limited), plus the 14 plan-v7.1 chains below (abstract,
+ * apechain, berachain, hyperevm, monad, unichain, worldchain and all seven
+ * Wave-2 chains — fraxtal/sei/sonic/plasma/stable/megaeth/katana, which are
+ * RPC-only on Alchemy so V2 IS their import path, same as mantle).
+ * base/avalanche are PAID-plan-gated on V2 and already covered by Moralis +
+ * Alchemy — deliberately NOT listed. No V2 ids exist for fantom/zksync/
+ * scroll/aurora (unsupported chainid on V2).
  */
-const ETHERSCAN_V2_CHAIN_IDS: Partial<Record<ChainId, number>> = {
+export const ETHERSCAN_V2_CHAIN_IDS: Partial<Record<ChainId, number>> = {
   ethereum: 1,
   polygon: 137,
   arbitrum: 42161,
@@ -268,7 +374,24 @@ const ETHERSCAN_V2_CHAIN_IDS: Partial<Record<ChainId, number>> = {
   gnosis: 100,
   linea: 59144,
   blast: 81457,
-  mantle: 5000
+  mantle: 5000,
+  // Plan v7.1 additions (verified 2026-07-21) — Wave 1 chains that also
+  // answer on the V2 free tier:
+  abstract: 2741,
+  apechain: 33139,
+  berachain: 80094,
+  hyperevm: 999,
+  monad: 143,
+  unichain: 130,
+  worldchain: 480,
+  // Wave 2 (Alchemy RPC-only — V2 is the import path):
+  fraxtal: 252,
+  sei: 1329,
+  sonic: 146,
+  plasma: 9745,
+  stable: 988,
+  megaeth: 4326,
+  katana: 747474
 };
 
 function etherscanV2BaseUrl(chainId: ChainId): string | null {

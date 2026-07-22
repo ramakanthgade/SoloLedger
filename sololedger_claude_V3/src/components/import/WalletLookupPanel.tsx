@@ -8,7 +8,7 @@ import {
 import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveSettings';
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import { isSaasMode } from '@/lib/saas/config';
-import { CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { CHAINS, DROPDOWN_HIDDEN_CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { fetchWalletActiveChains } from '@/lib/rpc/moralis';
 import {
   allChainsChecked,
@@ -46,16 +46,6 @@ function isEvmAddress(address: string): boolean {
 }
 
 const EVM_CHAIN_IDS: ChainId[] = ['ethereum', 'polygon', 'arbitrum', 'base', 'bsc', 'optimism', 'avalanche'];
-
-/**
- * Chains hidden from the import chain dropdown. Fantom is removed
- * (2026-07-21, user decision): no wallet-data provider serves it — Moralis
- * dropped it product-wide, Alchemy never offered fantom-mainnet, Etherscan
- * V2 has no chainid 250. The CHAINS registry entry STAYS so legacy Fantom
- * data still classifies/prices, and a legacy Fantom wallet hitting Sync gets
- * a calm "not available yet" message (see lookupOneAddress in providers.ts).
- */
-const DROPDOWN_HIDDEN_CHAINS: ReadonlySet<ChainId> = new Set(['fantom']);
 
 /** Debounce between the last keystroke and the Moralis active-chains call. */
 const CHAIN_DETECT_DEBOUNCE_MS = 500;

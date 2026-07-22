@@ -3,6 +3,7 @@ import { CHAINS } from '@/lib/rpc/providers';
 import { setMode } from '@/lib/saas/mode';
 import {
   CHAINS_ENDPOINT_SLUGS,
+  DIRECT_PROBE_CHAINS,
   MORALIS_SLUG_TO_CHAIN,
   chainIdFromMoralisSlug,
   fetchWalletActiveChains,
@@ -293,9 +294,13 @@ describe('fetchWalletActiveChains', () => {
     await expect(fetchWalletActiveChains(ADDRESS, 'bad-key')).rejects.toThrow(/401/);
   });
 
-  // ---- Item 5e: direct probes for the chains Moralis dropped product-wide ----
-  describe('Moralis-dropped chain probes (Alchemy first, Etherscan V2 fallback)', () => {
-    const PROBE_NETWORKS = ['celo-mainnet', 'zksync-mainnet', 'scroll-mainnet', 'blast-mainnet', 'mantle-mainnet'];
+  // ---- Item 5e: direct probes for Moralis-dropped + provider-less chains ----
+  describe('Direct chain probes (Alchemy first, Etherscan V2 fallback)', () => {
+    // Derived from the source of truth so the mock always covers exactly the
+    // chains step 3 will probe (5 Moralis-dropped + 27 plan-v7.1 chains).
+    const PROBE_NETWORKS = CHAINS.filter((c) => DIRECT_PROBE_CHAINS.has(c.id)).map(
+      (c) => c.alchemyNetwork!
+    );
 
     /**
      * Fetch routing for the probe tests: Moralis /chains + /history behave
@@ -353,13 +358,10 @@ describe('fetchWalletActiveChains', () => {
       });
     }
 
-    /** Alchemy config answering `celoVerdict` for celo and 'none' for the other probe chains. */
+    /** Alchemy config answering `celoVerdict` for celo and 'none' for every other probe chain. */
     const alchemyOnly = (celoVerdict: 'outgoing' | 'incoming' | 'none' | 'error') => ({
-      'celo-mainnet': celoVerdict,
-      'zksync-mainnet': 'none' as const,
-      'scroll-mainnet': 'none' as const,
-      'blast-mainnet': 'none' as const,
-      'mantle-mainnet': 'none' as const
+      ...Object.fromEntries(PROBE_NETWORKS.map((n) => [n, 'none' as const])),
+      'celo-mainnet': celoVerdict
     });
 
     it('detects a wallet with only celo outgoing activity via the Alchemy probe', async () => {
@@ -433,9 +435,10 @@ describe('fetchWalletActiveChains', () => {
       expect(result).toEqual({ active: [], incomingOnly: [] });
     });
 
-    it('probes all five importable dropped chains — but NEVER fantom or aurora', async () => {
+    it('probes every importable direct-probe chain — but NEVER fantom or aurora', async () => {
       mockProbes({ alchemy: alchemyOnly('none') });
       await fetchWalletActiveChains(ADDRESS, 'moralis-key', { alchemyApiKey: 'ak', etherscanApiKey: 'ek' });
+      expect(PROBE_NETWORKS.length).toBeGreaterThanOrEqual(32); // 5 Moralis-dropped + 27 plan-v7.1
       for (const net of PROBE_NETWORKS) {
         expect(callsTo(`/alchemy-rpc/${net}`).length).toBeGreaterThan(0);
       }

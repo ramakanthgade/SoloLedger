@@ -64,7 +64,8 @@ vi.mock('@/lib/saas/config', () => ({ isSaasMode: vi.fn(() => false) }));
 vi.mock('@/lib/rpc/providers', () => ({
   CHAINS: [
     { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true }
-  ]
+  ],
+  DROPDOWN_HIDDEN_CHAINS: new Set(['fantom'])
 }));
 
 vi.mock('@/lib/assets/coingeckoRewardRegistry', () => ({

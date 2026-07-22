@@ -57,7 +57,8 @@ vi.mock('@/lib/rpc/providers', () => ({
     // Fantom stays in the registry (legacy data) but must never reach the dropdown.
     { id: 'fantom', label: 'Fantom', asset: 'FTM', provider: 'alchemy_evm', needsKey: true },
     { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true }
-  ]
+  ],
+  DROPDOWN_HIDDEN_CHAINS: new Set(['fantom'])
 }));
 
 vi.mock('@/lib/rpc/moralis', () => ({
