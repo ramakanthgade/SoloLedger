@@ -27,6 +27,9 @@ interface AddConnectionFormProps {
   /** Called with the redacted view right after a connection is saved — the
    *  panel uses it to kick off `runInitialSync` immediately. */
   onSaved: (connection: ExchangeConnectionView) => void;
+  /** True while any sync job is running — Save is disabled because saving
+   *  kicks off the first sync, and only one sync can run at a time. */
+  syncRunning?: boolean;
 }
 
 /** SourceTile-style single-select tile (mirrors ConnectionWizard's picker). */
@@ -71,7 +74,7 @@ function ExchangeTile({
  * for the EXACT current field values (fingerprint of
  * {exchange, apiKey, secret, passphrase}); any edit invalidates it.
  */
-export function AddConnectionForm({ onSaved }: AddConnectionFormProps) {
+export function AddConnectionForm({ onSaved, syncRunning = false }: AddConnectionFormProps) {
   const [exchangeId, setExchangeId] = useState<ExchangeId>('binance');
   const [apiKey, setApiKey] = useState('');
   const [secret, setSecret] = useState('');
@@ -311,7 +314,7 @@ export function AddConnectionForm({ onSaved }: AddConnectionFormProps) {
             </>
           )}
         </Button>
-        <Button disabled={busy || !tested} onClick={() => void runSave()}>
+        <Button disabled={busy || !tested || syncRunning} onClick={() => void runSave()}>
           {saving ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" /> Saving…
@@ -321,6 +324,12 @@ export function AddConnectionForm({ onSaved }: AddConnectionFormProps) {
           )}
         </Button>
       </div>
+
+      {syncRunning && (
+        <p className="mt-2 text-xs text-low">
+          A sync is already running — wait for it to finish before adding a connection.
+        </p>
+      )}
 
       {/* Privacy reassurance (pinned copy, Section C-1 #2) */}
       <div className="flex items-start gap-3 rounded-lg border border-gain/20 bg-gain/[0.06] px-3 py-3">

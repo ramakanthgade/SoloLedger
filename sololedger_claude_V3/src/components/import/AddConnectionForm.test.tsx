@@ -131,6 +131,18 @@ describe('AddConnectionForm — test-gated save', () => {
       expect.objectContaining({ exchange: 'kucoin', passphrase: 'phrase-1' })
     );
   });
+
+  it('Save stays disabled while another sync is running (syncRunning), even after a passed test', async () => {
+    render(<AddConnectionForm onSaved={vi.fn()} syncRunning />);
+
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByText(/Connected — read-only access confirmed/);
+
+    expect(screen.getByRole('button', { name: /save connection/i })).toBeDisabled();
+    expect(screen.getByText(/A sync is already running/)).toBeInTheDocument();
+    expect(mocks.addConnection).not.toHaveBeenCalled();
+  });
 });
 
 describe('AddConnectionForm — save', () => {

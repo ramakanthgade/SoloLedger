@@ -232,7 +232,7 @@ export function AutoSyncPanel({ onUseCsv }: AutoSyncPanelProps) {
             </div>
           )}
 
-          <AddConnectionForm onSaved={handleSaved} />
+          <AddConnectionForm onSaved={handleSaved} syncRunning={job.active} />
           <ExchangeConnectionList connections={connections} job={job} />
         </>
       )}

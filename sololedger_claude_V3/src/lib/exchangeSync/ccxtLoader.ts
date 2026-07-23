@@ -232,7 +232,7 @@ export function syncErrorMessage(kind: SyncErrorKind, exchange: ExchangeId): str
     case 'network':
       return `Network error talking to ${label} — check your connection and try again.`;
     case 'region_blocked':
-      return "Binance currently can't be reached from SoloLedger's servers — Binance blocks our hosting region. We're fixing this. Please use CSV import for Binance for now.";
+      return `${label} currently can't be reached from SoloLedger's servers — ${label} blocks our hosting region. We're fixing this. Please use CSV import for ${label} for now.`;
     case 'unknown':
       return `Something went wrong while syncing ${label} — please try again.`;
   }

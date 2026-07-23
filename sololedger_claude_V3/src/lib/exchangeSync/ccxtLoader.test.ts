@@ -157,4 +157,10 @@ describe('syncErrorMessage', () => {
     expect(msg).toContain('CSV import');
     expect(msg).toContain('blocks our hosting region');
   });
+
+  it('region_blocked copy names the actual exchange, not hardcoded Binance', () => {
+    const msg = syncErrorMessage('region_blocked', 'okx');
+    expect(msg).toContain('OKX');
+    expect(msg).not.toContain('Binance');
+  });
 });

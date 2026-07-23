@@ -587,8 +587,14 @@ export async function syncConnection(
     // ---- normalize (pure) ----
     const transactions: Transaction[] = [];
     if (exchange === 'kraken') {
-      const { transactions: krakenTxs } = normalizeKrakenTradesByOrder(tradeRows, markets);
+      const { transactions: krakenTxs, skipped: krakenSkipped } = normalizeKrakenTradesByOrder(
+        tradeRows,
+        markets
+      );
       transactions.push(...krakenTxs);
+      if (krakenSkipped > 0) {
+        warnings.push(`Skipped ${krakenSkipped} Kraken fill(s) with missing market/amount data.`);
+      }
     } else {
       for (const trade of tradeRows) {
         const market = resolveMarket(markets, trade.symbol);

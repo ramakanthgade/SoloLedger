@@ -61,7 +61,19 @@ export default defineConfig({
         // on demand by exchange auto-sync (a hosted/online-only feature), so
         // excluding it from the precache manifest keeps the PWA offline-first
         // for everything else.
-        globIgnores: ['**/vendor-ccxt-*.js']
+        globIgnores: [
+          '**/vendor-ccxt-*.js',
+          // ccxt's dYdX-v4 static-dep chunks — reachable only from inside the
+          // (already-ignored) lazy vendor-ccxt chunk, so they are online-only
+          // too. Excluding them keeps ~300 kB out of the precache manifest.
+          '**/any-*.js',
+          '**/compiled-*.js',
+          '**/minimal-*.js',
+          '**/multisig-*.js',
+          '**/registry-*.js',
+          '**/signing-*.js',
+          '**/tx-*.js'
+        ]
       }
     })
   ],
