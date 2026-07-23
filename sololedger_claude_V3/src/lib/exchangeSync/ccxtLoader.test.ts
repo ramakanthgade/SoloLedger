@@ -112,6 +112,28 @@ describe('classifySyncError', () => {
     expect(classifySyncError(await ccxtError(className))).toBe(kind);
   });
 
+  it('still classifies when class binding names are minified (BUG-1 regression)', async () => {
+    // Production builds rename class bindings (`class D extends O`) while ccxt
+    // keeps the semantic name only on instances. constructor.name matching
+    // then silently fails — every ccxt error classified as 'unknown' on the
+    // live site. Simulate by renaming the bindings; instanceof matching must
+    // carry both the direct and the subclass→parent mapping.
+    const ccxt = await loadCcxt();
+    const Auth = ccxt['AuthenticationError'] as new (message: string) => Error;
+    const Susp = ccxt['AccountSuspended'] as new (message: string) => Error;
+    const authName = Object.getOwnPropertyDescriptor(Auth, 'name');
+    const suspName = Object.getOwnPropertyDescriptor(Susp, 'name');
+    Object.defineProperty(Auth, 'name', { value: 'D', configurable: true });
+    Object.defineProperty(Susp, 'name', { value: 'be', configurable: true });
+    try {
+      expect(classifySyncError(new Auth('boom'))).toBe('invalid_key');
+      expect(classifySyncError(new Susp('boom'))).toBe('invalid_key'); // subclass → parent
+    } finally {
+      if (authName) Object.defineProperty(Auth, 'name', authName);
+      if (suspName) Object.defineProperty(Susp, 'name', suspName);
+    }
+  });
+
   it('ExchangeNotAvailable with a geo-block message → region_blocked (not network)', async () => {
     const ccxt = await loadCcxt();
     const ExchangeNotAvailable = ccxt['ExchangeNotAvailable'] as new (message: string) => Error;
@@ -162,5 +184,16 @@ describe('syncErrorMessage', () => {
     const msg = syncErrorMessage('region_blocked', 'okx');
     expect(msg).toContain('OKX');
     expect(msg).not.toContain('Binance');
+  });
+
+  it('a malformed secret crashing signing locally (base64 decode) → invalid_key', () => {
+    // Live finding: Kraken secrets that are not valid base64 crash ccxt's
+    // sign() before any request — a plain Error, not a ccxt class.
+    expect(
+      classifySyncError(new Error('padding: invalid, string should have whole number of bytes'))
+    ).toBe('invalid_key');
+    expect(
+      classifySyncError(new Error('The string to be decoded is not correctly encoded'))
+    ).toBe('invalid_key');
   });
 });
