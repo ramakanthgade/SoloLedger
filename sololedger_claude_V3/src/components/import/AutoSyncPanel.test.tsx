@@ -88,7 +88,8 @@ function makeTx(id: string, over: Partial<Transaction> = {}): Transaction {
     amount: 0.5,
     fiatValue: 30000,
     fiatCurrency: 'USD',
-    source: 'binance_api'
+    source: 'binance_api',
+    ...over
   } as Transaction;
 }
 

@@ -7,7 +7,6 @@ import {
   Lock,
   RefreshCw
 } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useAppMode } from '@/lib/saas/modeContext';
 import { isExchangeSyncEnabled } from '@/lib/saas/effectiveSettings';
@@ -51,10 +50,9 @@ export function AutoSyncPanel({ onUseCsv }: AutoSyncPanelProps) {
   const [flagEnabled, setFlagEnabled] = useState<boolean | null>(null);
 
   useEffect(() => {
-    if (!hosted) {
-      setFlagEnabled(null);
-      return;
-    }
+    // Non-hosted never reaches the flag (the explainer short-circuits first);
+    // the async setState keeps this effect free of synchronous state writes.
+    if (!hosted) return;
     let live = true;
     void isExchangeSyncEnabled().then((v) => {
       if (live) setFlagEnabled(v);
