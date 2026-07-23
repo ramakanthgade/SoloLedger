@@ -1,0 +1,72 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to GET /api/v3/myTrades. Real capture was attempted during the build (read-only key) but Binance geo-blocks this sandbox (HTTP 451 'restricted location' on api/api1/api-gcp). Keyed by symbol because the engine fetches per symbol. Times are ms; amounts are strings exactly as Binance returns them.",
+  "response": {
+    "BTCUSDT": [
+      {
+        "symbol": "BTCUSDT",
+        "id": 900001,
+        "orderId": 800001,
+        "orderListId": -1,
+        "price": "43500.12000000",
+        "qty": "0.01000000",
+        "quoteQty": "435.00120000",
+        "commission": "0.00001000",
+        "commissionAsset": "BTC",
+        "time": 1700000000123,
+        "isBuyer": true,
+        "isMaker": false,
+        "isBestMatch": true
+      },
+      {
+        "symbol": "BTCUSDT",
+        "id": 900002,
+        "orderId": 800002,
+        "orderListId": -1,
+        "price": "44100.50000000",
+        "qty": "0.00500000",
+        "quoteQty": "220.50250000",
+        "commission": "0.00020000",
+        "commissionAsset": "BNB",
+        "time": 1700086400456,
+        "isBuyer": false,
+        "isMaker": true,
+        "isBestMatch": true
+      }
+    ],
+    "ETHUSDT": [
+      {
+        "symbol": "ETHUSDT",
+        "id": 900003,
+        "orderId": 800003,
+        "orderListId": -1,
+        "price": "2100.25000000",
+        "qty": "0.75000000",
+        "quoteQty": "1575.18750000",
+        "commission": "1.57518750",
+        "commissionAsset": "USDT",
+        "time": 1700259200111,
+        "isBuyer": true,
+        "isMaker": false,
+        "isBestMatch": true
+      }
+    ],
+    "ETHBTC": [
+      {
+        "symbol": "ETHBTC",
+        "id": 900004,
+        "orderId": 800004,
+        "orderListId": -1,
+        "price": "0.05225000",
+        "qty": "0.50000000",
+        "quoteQty": "0.02612500",
+        "commission": "0.00050000",
+        "commissionAsset": "ETH",
+        "time": 1700172800789,
+        "isBuyer": true,
+        "isMaker": false,
+        "isBestMatch": true
+      }
+    ]
+  }
+}

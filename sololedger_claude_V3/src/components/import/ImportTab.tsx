@@ -30,10 +30,11 @@ import { ColumnMappingForm } from './ColumnMappingForm';
 import { ManualEntryForm } from './ManualEntryForm';
 import { WalletLookupPanel } from './WalletLookupPanel';
 import { ConnectionWizard } from './ConnectionWizard';
+import { AutoSyncPanel } from './AutoSyncPanel';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { cn } from '@/lib/utils';
 
-type Mode = 'guided' | 'csv' | 'manual' | 'wallet';
+type Mode = 'guided' | 'csv' | 'manual' | 'wallet' | 'autosync';
 
 /** How one dropped file was handled — the multi-file wrapper (handleFiles)
  *  aggregates these into the batch summary. The saved variant also carries
@@ -488,7 +489,8 @@ export function ImportTab() {
     { id: 'guided', label: 'Guided import' },
     { id: 'csv', label: 'File upload' },
     { id: 'manual', label: 'Manual entry' },
-    { id: 'wallet', label: 'Wallet lookup' }
+    { id: 'wallet', label: 'Wallet lookup' },
+    { id: 'autosync', label: 'Auto-sync' }
   ];
 
   return (
@@ -722,6 +724,8 @@ export function ImportTab() {
       {mode === 'manual' && <ManualEntryForm onSaved={() => setSavedCount((c) => (c ?? 0) + 1)} />}
 
       {mode === 'wallet' && <WalletLookupPanel />}
+
+      {mode === 'autosync' && <AutoSyncPanel onUseCsv={() => setMode('csv')} />}
 
       {savedCount !== null && (
         <div className="space-y-2">

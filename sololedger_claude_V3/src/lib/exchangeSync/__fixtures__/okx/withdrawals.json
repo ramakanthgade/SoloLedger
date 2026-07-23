@@ -1,0 +1,38 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the data array of GET /api/v5/asset/withdrawal-history. Destination addresses masked. ccxt maps only state '2' to 'ok' — the state '1' (sending) entry must be excluded.",
+  "response": [
+    {
+      "ccy": "BTC",
+      "chain": "BTC-Bitcoin",
+      "amt": "0.2",
+      "clientId": "",
+      "from": "",
+      "areaCodeFrom": "",
+      "to": "bc1qmaskedwithdrawdest00000000000000000",
+      "txId": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+      "ts": "1699617600000",
+      "state": "2",
+      "wdId": "okxwd-0001",
+      "fee": "-0.0005",
+      "feeCcy": "BTC",
+      "nonTradableAsset": false
+    },
+    {
+      "ccy": "USDT",
+      "chain": "USDT-ERC20",
+      "amt": "100.0",
+      "clientId": "",
+      "from": "",
+      "areaCodeFrom": "",
+      "to": "0xmaskedwithdrawdest000000000000000000000",
+      "txId": "",
+      "ts": "1699783200000",
+      "state": "1",
+      "wdId": "okxwd-0002",
+      "fee": "-1.0",
+      "feeCcy": "USDT",
+      "nonTradableAsset": false
+    }
+  ]
+}

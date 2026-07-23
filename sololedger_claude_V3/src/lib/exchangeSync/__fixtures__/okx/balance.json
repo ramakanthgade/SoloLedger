@@ -1,0 +1,16 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the data array of GET /api/v5/account/balance.",
+  "response": [
+    {
+      "uTime": "1700345600000",
+      "totalEq": "3000.00",
+      "adjEq": "3000.00",
+      "details": [
+        { "ccy": "BTC", "eq": "0.01", "cashBal": "0.01", "availBal": "0.01", "frozenBal": "0", "uTime": "1700345600000" },
+        { "ccy": "ETH", "eq": "0.5", "cashBal": "0.5", "availBal": "0.5", "frozenBal": "0", "uTime": "1700345600000" },
+        { "ccy": "USDT", "eq": "120.5", "cashBal": "120.5", "availBal": "120.5", "frozenBal": "0", "uTime": "1700345600000" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,32 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to GET /api/v3/account (see myTrades.json note). uid/commission fields are dummy values; no real account identifiers.",
+  "response": {
+    "makerCommission": 10,
+    "takerCommission": 10,
+    "buyerCommission": 0,
+    "sellerCommission": 0,
+    "commissionRates": {
+      "maker": "0.00100000",
+      "taker": "0.00100000",
+      "buyer": "0.00000000",
+      "seller": "0.00000000"
+    },
+    "canTrade": true,
+    "canWithdraw": false,
+    "canDeposit": false,
+    "brokered": false,
+    "requireSelfTradePrevention": false,
+    "preventSor": false,
+    "updateTime": 1700345600000,
+    "accountType": "SPOT",
+    "balances": [
+      { "asset": "BTC", "free": "0.01000000", "locked": "0.00000000" },
+      { "asset": "ETH", "free": "0.50000000", "locked": "0.00000000" },
+      { "asset": "USDT", "free": "120.50000000", "locked": "0.00000000" },
+      { "asset": "BNB", "free": "0.30000000", "locked": "0.00000000" }
+    ],
+    "permissions": ["SPOT"],
+    "uid": 100000001
+  }
+}

@@ -1,0 +1,34 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the data array of GET /api/v5/asset/deposit-history. Deposit addresses masked. ccxt maps only state '2' (credited/complete) to 'ok' — the state '0' entry must be excluded.",
+  "response": [
+    {
+      "ccy": "BTC",
+      "chain": "BTC-Bitcoin",
+      "amt": "0.05",
+      "from": "",
+      "areaCodeFrom": "",
+      "to": "bc1qmaskeddepositaddress000000000000000",
+      "txId": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "ts": "1699900000000",
+      "state": "2",
+      "depId": "okxdep-0001",
+      "fromWdId": "",
+      "actualDepBlkConfirm": "6"
+    },
+    {
+      "ccy": "ETH",
+      "chain": "ETH-ERC20",
+      "amt": "0.30",
+      "from": "",
+      "areaCodeFrom": "",
+      "to": "0xmaskeddepositaddress0000000000000000000000",
+      "txId": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+      "ts": "1700000000000",
+      "state": "0",
+      "depId": "okxdep-0002",
+      "fromWdId": "",
+      "actualDepBlkConfirm": "1"
+    }
+  ]
+}

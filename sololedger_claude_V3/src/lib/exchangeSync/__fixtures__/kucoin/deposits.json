@@ -1,0 +1,34 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the data.items array of GET /api/v1/deposits (version-2 shape). Deposit addresses masked. The PROCESSING entry must be excluded by the normalizer.",
+  "response": [
+    {
+      "address": "bc1qmaskeddepositaddress000000000000000",
+      "memo": "",
+      "amount": 0.05,
+      "fee": 0,
+      "currency": "BTC",
+      "isInner": false,
+      "walletTxId": "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90",
+      "status": "SUCCESS",
+      "remark": "",
+      "createdAt": 1699900000000,
+      "updatedAt": 1699900001000,
+      "chain": "BTC"
+    },
+    {
+      "address": "0xmaskeddepositaddress0000000000000000000000",
+      "memo": "",
+      "amount": 0.3,
+      "fee": 0,
+      "currency": "ETH",
+      "isInner": false,
+      "walletTxId": "d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3",
+      "status": "PROCESSING",
+      "remark": "",
+      "createdAt": 1700000000000,
+      "updatedAt": 1700000000000,
+      "chain": "ERC20"
+    }
+  ]
+}

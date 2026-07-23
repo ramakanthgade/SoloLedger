@@ -64,7 +64,7 @@ export interface Transaction {
    * Undefined → treated as spot unless source/category heuristics say otherwise.
    */
   instrumentClass?: 'spot' | 'derivative';
-  importBatchId?: string;       // links row to a CSV import batch (file hash)
+  importBatchId?: string;       // links row to a CSV import batch (file hash) OR an exchange-connection id (Exchange Auto-Sync)
   /**
    * India TDS (Section 194S — 1% on VDA transfers) withheld on this transaction.
    * Captured structurally so it can be reconciled FY-by-FY. All optional/additive:

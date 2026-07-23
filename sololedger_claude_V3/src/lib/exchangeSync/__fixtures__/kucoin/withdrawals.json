@@ -1,0 +1,36 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the data.items array of GET /api/v1/withdrawals (version-2 shape; parsed with ccxt's {type:'withdrawal'} override exactly as kucoin.fetchWithdrawals does). Destination addresses masked. The WALLET_PROCESSING entry must be excluded by the normalizer.",
+  "response": [
+    {
+      "id": "kcwd-0001",
+      "address": "bc1qmaskedwithdrawdest00000000000000000",
+      "memo": "",
+      "amount": 0.2,
+      "fee": 0.0005,
+      "currency": "BTC",
+      "isInner": false,
+      "walletTxId": "c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2",
+      "status": "SUCCESS",
+      "remark": "",
+      "createdAt": 1699617600000,
+      "updatedAt": 1699617800000,
+      "chain": "BTC"
+    },
+    {
+      "id": "kcwd-0002",
+      "address": "0xmaskedwithdrawdest000000000000000000000",
+      "memo": "",
+      "amount": 100.0,
+      "fee": 1.0,
+      "currency": "USDT",
+      "isInner": false,
+      "walletTxId": "",
+      "status": "WALLET_PROCESSING",
+      "remark": "",
+      "createdAt": 1699783200000,
+      "updatedAt": 1699783200000,
+      "chain": "ERC20"
+    }
+  ]
+}

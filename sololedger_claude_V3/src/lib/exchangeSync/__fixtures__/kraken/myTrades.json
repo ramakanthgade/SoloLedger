@@ -1,0 +1,62 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful to the result.trades dict of POST /0/private/TradesHistory. Two fills share ordertxid OORDER-000001 (aggregation case); OORDER-000002 is a crypto-quoted pair (XETHXXBT); OORDER-000003 is a fiat-quoted sell.",
+  "response": {
+    "TKRFLT-00001-AAAAA": {
+      "ordertxid": "OORDER-000001-AAAAA",
+      "postxid": "TKH2SE-M7IF5-CFI7LT",
+      "pair": "XXBTZUSD",
+      "time": 1700000000.1234,
+      "type": "buy",
+      "ordertype": "limit",
+      "price": "35000.1",
+      "cost": "350.001",
+      "fee": "0.5600016",
+      "vol": "0.01",
+      "margin": "0.0",
+      "misc": ""
+    },
+    "TKRFLT-00002-BBBBB": {
+      "ordertxid": "OORDER-000001-AAAAA",
+      "postxid": "TKH2SE-M7IF5-CFI7LU",
+      "pair": "XXBTZUSD",
+      "time": 1700000001.5678,
+      "type": "buy",
+      "ordertype": "limit",
+      "price": "35000.1",
+      "cost": "175.0005",
+      "fee": "0.2800008",
+      "vol": "0.005",
+      "margin": "0.0",
+      "misc": ""
+    },
+    "TKRFLT-00003-CCCCC": {
+      "ordertxid": "OORDER-000002-CCCCC",
+      "postxid": "TKH2SE-M7IF5-CFI7LV",
+      "pair": "XETHXXBT",
+      "time": 1700172800.7890,
+      "type": "buy",
+      "ordertype": "limit",
+      "price": "0.05225",
+      "cost": "0.026125",
+      "fee": "0.000026125",
+      "vol": "0.5",
+      "margin": "0.0",
+      "misc": ""
+    },
+    "TKRFLT-00004-DDDDD": {
+      "ordertxid": "OORDER-000003-DDDDD",
+      "postxid": "TKH2SE-M7IF5-CFI7LW",
+      "pair": "XETHZUSD",
+      "time": 1700086400.4567,
+      "type": "sell",
+      "ordertype": "limit",
+      "price": "2100.25",
+      "cost": "1575.1875",
+      "fee": "2.5203000",
+      "vol": "0.75",
+      "margin": "0.0",
+      "misc": ""
+    }
+  }
+}

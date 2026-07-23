@@ -71,3 +71,16 @@ export function invalidateServerConfigCache(): void {
   cachedConfig = null;
   configFetchedAt = 0;
 }
+
+/**
+ * Whether Exchange Auto-Sync is enabled server-side (admin flag). Local/BYOK
+ * modes never auto-sync (the tunnel needs Hosted mode) so this is false
+ * outside SaaS; when the config can't be fetched it defaults to false (the
+ * tunnel itself is also gated server-side, so a stale false just hides the
+ * form until the next config refresh).
+ */
+export async function isExchangeSyncEnabled(): Promise<boolean> {
+  if (!isSaasMode()) return false;
+  const server = await getServerConfig();
+  return Boolean(server?.exchangeSyncEnabled);
+}

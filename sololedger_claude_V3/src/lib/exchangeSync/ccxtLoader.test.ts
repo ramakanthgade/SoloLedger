@@ -1,0 +1,166 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ExchangeConnectionRow } from '@/lib/storage/db';
+
+vi.mock('@/lib/saas/config', () => ({
+  isSaasMode: vi.fn(() => true)
+}));
+
+import { isSaasMode } from '@/lib/saas/config';
+import {
+  loadCcxt,
+  createExchangeClient,
+  classifySyncError,
+  syncErrorMessage
+} from './ccxtLoader';
+import { TunnelError } from './tunnel';
+import type { SyncErrorKind } from './types';
+
+const isSaasModeMock = vi.mocked(isSaasMode);
+
+function row(over: Partial<ExchangeConnectionRow> = {}): ExchangeConnectionRow {
+  return {
+    id: 'exc_1',
+    exchange: 'binance',
+    apiKey: 'key',
+    secret: 'secret',
+    createdAt: 1_700_000_000_000,
+    cursors: {},
+    status: 'idle',
+    ...over
+  };
+}
+
+beforeEach(() => {
+  isSaasModeMock.mockReset();
+  isSaasModeMock.mockReturnValue(true);
+});
+
+describe('loadCcxt', () => {
+  it('resolves the ccxt module under vitest (memoized)', async () => {
+    const a = await loadCcxt();
+    const b = await loadCcxt();
+    expect(a).toBe(b);
+    expect(typeof a.binance).toBe('function');
+    expect(typeof a.coinbase).toBe('function');
+    expect(typeof a.kraken).toBe('function');
+    expect(typeof a.okx).toBe('function');
+    expect(typeof a.kucoin).toBe('function');
+  });
+});
+
+describe('createExchangeClient', () => {
+  it('sets enableRateLimit + timeout, credentials, and spot defaultType (binance/okx)', async () => {
+    const client = await createExchangeClient(row());
+    const raw = client as unknown as Record<string, unknown>;
+    expect(raw.enableRateLimit).toBe(true);
+    expect(raw.timeout).toBe(30_000);
+    expect(raw.apiKey).toBe('key');
+    expect(raw.secret).toBe('secret');
+    expect((raw.options as Record<string, unknown>).defaultType).toBe('spot');
+    // Spot-only markets fetch: without this ccxt's loadMarkets also hits the
+    // futures hosts (fapi/dapi), which the relay's spot-only host map rejects.
+    expect((raw.options as Record<string, unknown>).fetchMarkets).toEqual(['spot']);
+    // fetchCurrencies disabled: ccxt's binance fetchCurrencies would otherwise
+    // hit signed SAPI endpoints (incl. /sapi/v1/margin/allPairs) we never use.
+    expect((raw.options as Record<string, unknown>).fetchCurrencies).toBe(false);
+    // fetchMargins disabled: binance defaults it to true, which makes
+    // fetchMarkets pull margin pair lists from signed SAPI endpoints.
+    expect((raw.options as Record<string, unknown>).fetchMargins).toBe(false);
+    // Tunnel transport installed (fetch overridden from the prototype default).
+    const fresh = new ((await loadCcxt()).binance as new (c: Record<string, unknown>) => Record<string, unknown>)({});
+    expect(client.fetch).not.toBe(fresh.fetch);
+  });
+
+  it('maps passphrase → ccxt password for okx and kucoin', async () => {
+    for (const exchange of ['okx', 'kucoin'] as const) {
+      const client = await createExchangeClient(row({ exchange, passphrase: 'phrase' }));
+      expect((client as unknown as Record<string, unknown>).password).toBe('phrase');
+    }
+  });
+
+  it('does not set password for exchanges without a passphrase', async () => {
+    const client = await createExchangeClient(row({ exchange: 'kraken' }));
+    expect((client as unknown as Record<string, unknown>).password).toBeUndefined();
+  });
+
+  it('throws TunnelError(not_hosted) outside hosted mode', async () => {
+    isSaasModeMock.mockReturnValue(false);
+    const err = await createExchangeClient(row()).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(TunnelError);
+    expect((err as TunnelError).kind).toBe('not_hosted');
+  });
+});
+
+describe('classifySyncError', () => {
+  async function ccxtError(className: string): Promise<Error> {
+    const ccxt = await loadCcxt();
+    const Ctor = ccxt[className] as new (message: string) => Error;
+    return new Ctor('boom');
+  }
+
+  it.each([
+    ['AuthenticationError', 'invalid_key'],
+    ['AccountSuspended', 'invalid_key'], // subclass of AuthenticationError
+    ['PermissionDenied', 'permission'],
+    ['AccountNotEnabled', 'permission'], // subclass of PermissionDenied
+    ['RateLimitExceeded', 'rate_limit'],
+    ['DDoSProtection', 'rate_limit'],
+    ['NetworkError', 'network'],
+    ['ExchangeNotAvailable', 'network'],
+    ['RequestTimeout', 'network']
+  ])('ccxt %s → %s', async (className, kind) => {
+    expect(classifySyncError(await ccxtError(className))).toBe(kind);
+  });
+
+  it('ExchangeNotAvailable with a geo-block message → region_blocked (not network)', async () => {
+    const ccxt = await loadCcxt();
+    const ExchangeNotAvailable = ccxt['ExchangeNotAvailable'] as new (message: string) => Error;
+    const geoBlocked = new ExchangeNotAvailable(
+      'binance GET https://api.binance.com/api/v3/account 451 {"code":0,"msg":"Service unavailable from a restricted location. One or more of your API keys may be associated with an ineligible account."}'
+    );
+    expect(classifySyncError(geoBlocked)).toBe('region_blocked');
+    // Case-insensitive, and checked before the generic network mapping.
+    const upper = new ExchangeNotAvailable('Service unavailable from a RESTRICTED LOCATION');
+    expect(classifySyncError(upper)).toBe('region_blocked');
+    // An ordinary ExchangeNotAvailable still maps to network.
+    expect(classifySyncError(new ExchangeNotAvailable('boom'))).toBe('network');
+  });
+
+  it.each([
+    'not_hosted',
+    'relay_auth',
+    'relay_subscription',
+    'relay_disabled',
+    'relay_payload',
+    'relay_unavailable'
+  ] as SyncErrorKind[])('TunnelError(%s) passes through', (kind) => {
+    expect(classifySyncError(new TunnelError(kind))).toBe(kind);
+  });
+
+  it('generic Error → unknown', () => {
+    expect(classifySyncError(new Error('weird'))).toBe('unknown');
+    expect(classifySyncError('string failure')).toBe('unknown');
+    expect(classifySyncError(undefined)).toBe('unknown');
+  });
+});
+
+describe('syncErrorMessage', () => {
+  it('produces plain-language copy mentioning the exchange label', () => {
+    expect(syncErrorMessage('invalid_key', 'binance')).toContain('Binance');
+    expect(syncErrorMessage('permission', 'okx')).toContain('OKX');
+    expect(syncErrorMessage('network', 'kucoin')).toContain('KuCoin');
+    expect(syncErrorMessage('relay_auth', 'kraken')).toContain('sign in');
+  });
+
+  it('region_blocked copy points users at CSV import', () => {
+    const msg = syncErrorMessage('region_blocked', 'binance');
+    expect(msg).toContain('CSV import');
+    expect(msg).toContain('blocks our hosting region');
+  });
+
+  it('region_blocked copy names the actual exchange, not hardcoded Binance', () => {
+    const msg = syncErrorMessage('region_blocked', 'okx');
+    expect(msg).toContain('OKX');
+    expect(msg).not.toContain('Binance');
+  });
+});
