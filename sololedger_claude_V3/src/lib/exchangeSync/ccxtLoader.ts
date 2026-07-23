@@ -21,11 +21,16 @@ interface CcxtModule {
 }
 
 let ccxtPromise: Promise<CcxtModule> | null = null;
+/** Resolved ccxt module, kept for synchronous instanceof checks (BUG-1). */
+let ccxtModule: CcxtModule | null = null;
 
 /** Lazily load (and memoize) the ccxt ESM bundle. */
 export function loadCcxt(): Promise<CcxtModule> {
   if (!ccxtPromise) {
-    ccxtPromise = import('ccxt') as unknown as Promise<CcxtModule>;
+    ccxtPromise = (import('ccxt') as unknown as Promise<CcxtModule>).then((m) => {
+      ccxtModule = m;
+      return m;
+    });
   }
   return ccxtPromise;
 }
@@ -172,6 +177,11 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
 /** All ccxt error-class names up an error's prototype chain. */
 function errorClassNames(err: unknown): Set<string> {
   const names = new Set<string>();
+  // ccxt error classes assign their semantic name to the INSTANCE
+  // (`this.name = 'AuthenticationError'`), which survives minification —
+  // unlike the class binding name. Collect it at the leaf.
+  const own = (err as { name?: unknown } | null)?.name;
+  if (typeof own === 'string') names.add(own);
   let proto: object | null = err as object;
   while (proto && proto !== Object.prototype) {
     const ctor = (proto as { constructor?: { name?: string } }).constructor;
@@ -181,8 +191,26 @@ function errorClassNames(err: unknown): Set<string> {
   return names;
 }
 
-/** True when the error is (a subclass of) one of the named ccxt error classes. */
+/**
+ * True when the error is (a subclass of) one of the named ccxt error classes.
+ *
+ * Minification-proof (BUG-1): production builds rename class bindings
+ * (`class D extends O`), so `constructor.name` matching silently fails and
+ * every ccxt error classified as 'unknown' on the live site. When the ccxt
+ * module is loaded (always true once a client exists — clients are created
+ * before any error can be classified), match by `instanceof` against the real
+ * error classes, which is name-independent and subclass-aware. The name-based
+ * walk remains as a fallback for errors raised before the module resolves
+ * (e.g. a chunk-load failure).
+ */
 export function hasErrorName(err: unknown, ...names: string[]): boolean {
+  if (ccxtModule && (err as object | null) instanceof Error) {
+    const matched = names.some((n) => {
+      const ctor = (ccxtModule as Record<string, unknown>)[n];
+      return typeof ctor === 'function' && err instanceof (ctor as new () => Error);
+    });
+    if (matched) return true;
+  }
   const all = errorClassNames(err);
   return names.some((n) => all.has(n));
 }
@@ -203,6 +231,11 @@ export function classifySyncError(err: unknown): SyncErrorKind {
   // copy, so check for it before the generic network mapping.
   const message = err instanceof Error ? err.message : String(err ?? '');
   if (/restricted location/i.test(message)) return 'region_blocked';
+  // A malformed secret can crash signing LOCALLY before any request is sent
+  // (e.g. Kraken's base64 HMAC secret decode: "padding: invalid…", or the
+  // browser atob variant "not correctly encoded"). That IS a key problem —
+  // point the user at the key instead of the generic fallback.
+  if (/padding: invalid|not correctly encoded|invalid base64/i.test(message)) return 'invalid_key';
   if (hasErrorName(err, 'NetworkError', 'ExchangeNotAvailable', 'RequestTimeout')) return 'network';
   return 'unknown';
 }
