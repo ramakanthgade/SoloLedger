@@ -5,8 +5,18 @@
  * SoloLedger relay is pinned to a US region. Workers execute at the edge PoP
  * closest to the CALLER, so a browser in a Binance-friendly country (e.g.
  * India) gets friendly egress. This worker is a byte-verbatim pipe to
- * api.binance.com — it never sees the API secret (the browser signs HMAC
+ * api-gcp.binance.com — it never sees the API secret (the browser signs HMAC
  * locally) and only ever forwards the API KEY header.
+ *
+ * Upstream host: api-gcp.binance.com (Binance's official GCP-fronted API
+ * host — same backend, and HMAC signatures are computed over the query
+ * string only, so signed URLs work unchanged). We do NOT pipe to
+ * api.binance.com (CloudFront-fronted): Binance's edge answers Cloudflare
+ * datacenter egress from several PoPs (AMS, SIN, DXB, …) with a 403
+ * CloudFront HTML page, while api-gcp answers 200 from those same PoPs
+ * (verified by geo-probe 2026-07-24). Genuinely geo-blocked countries
+ * (e.g. the US) still get Binance's 451 "restricted location" from api-gcp,
+ * so the client's region_blocked handling is preserved.
  *
  * Abuse protection: callers must present a short-lived gateway ticket minted
  * by the SoloLedger relay (which enforces JWT + active subscription):
@@ -19,7 +29,7 @@
  *   x-exchange-content-type  -> content-type
  */
 
-const BINANCE_HOST = 'https://api.binance.com';
+const BINANCE_HOST = 'https://api-gcp.binance.com'; // see header comment — CloudFront 403s Cloudflare egress from several PoPs
 const MAX_FUTURE_SKEW_S = 660; // ticket must not be minted >11min in the future
 const PAST_LEEWAY_S = 30; // clock-skew grace just past expiry
 

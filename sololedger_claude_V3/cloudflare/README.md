@@ -8,11 +8,23 @@ pinned to a US region: a Worker executes at the edge PoP closest to the
 Binance 200; US → 451, which the client maps to the `region_blocked`
 message) gets working egress.
 
-It is a byte-verbatim pipe to `api.binance.com` gated by a short-lived HMAC
-ticket minted by the relay (`GET /api/exchange-gateway/binance/ticket`,
-JWT + active subscription + `exchangeSyncEnabled` flag). The worker only
-forwards the `x-mbx-apikey` header — the API secret never leaves the user's
-browser (requests are signed client-side by ccxt).
+It is a byte-verbatim pipe gated by a short-lived HMAC ticket minted by the
+relay (`GET /api/exchange-gateway/binance/ticket`, JWT + active subscription
++ `exchangeSyncEnabled` flag). The worker only forwards the `x-mbx-apikey`
+header — the API secret never leaves the user's browser (requests are signed
+client-side by ccxt).
+
+**Upstream host is `api-gcp.binance.com`, NOT `api.binance.com`.** Both are
+official Binance API hosts on the same backend, and HMAC signatures are
+computed over the query string only, so signed URLs work unchanged on either.
+`api.binance.com` is CloudFront-fronted and Binance's edge answers Cloudflare
+datacenter egress from several PoPs (verified 2026-07-24: AMS, SIN, LCA, SOF
+— and the Dubai PoP behind a user-reported failure) with a **403 CloudFront
+HTML page** (ccxt classifies it `ExchangeNotAvailable` → the client's generic
+"network error" copy), while `api-gcp.binance.com` answers 200 from those same
+PoPs. Genuinely geo-blocked countries (e.g. the US) still get Binance's real
+451 "restricted location" JSON from api-gcp, so `region_blocked` handling is
+preserved.
 
 ## Deploy / update (Cloudflare API — no wrangler needed)
 
