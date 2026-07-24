@@ -72,6 +72,10 @@ For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each
 - Exchange responses are piped back verbatim (status + raw body; only `content-type`/`retry-after` forwarded). Relay-origin errors are JSON stamped `x-sololedger-error: auth | subscription | disabled | unknown_exchange | bad_path | payload_too_large | upstream_timeout | upstream_failed` — the client distinguishes relay errors from native exchange errors by that header alone.
 - Gated by JWT + active subscription + the `exchangeSyncEnabled` admin flag (`EXCHANGE_SYNC_ENABLED`, default on; admin `PUT /api/admin/config`).
 
+### Binance gateway (geo unblock)
+
+`api.binance.com` answers HTTP 451 to US egress and the relay is region-pinned, so Binance traffic is routed through a Cloudflare Worker (`cloudflare/binance-gateway-worker.js`, deployed outside this repo's CI) that executes at the edge PoP closest to the caller — a browser in a Binance-friendly country gets friendly egress. The worker is not an open proxy: it requires a short-lived HMAC ticket minted by `GET /api/exchange-gateway/binance/ticket` (same JWT + subscription + flag gates as the tunnel, same `x-sololedger-error` stamping). Ticket = `base64url(HMAC_SHA256($BINANCE_GATEWAY_SECRET, String(exp)))`, 10-minute TTL; the client caches it and calls the worker directly with the usual `x-exchange-` prefixed headers. Env: `BINANCE_GATEWAY_URL` + `BINANCE_GATEWAY_SECRET` (both or neither; unset = relay-tunnel fallback). Rotation: regenerate the secret, update the worker binding and this env together.
+
 **Live verification (post-deploy):**
 
 ```bash
