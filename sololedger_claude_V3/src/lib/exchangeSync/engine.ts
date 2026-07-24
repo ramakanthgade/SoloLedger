@@ -74,13 +74,22 @@ export const RETRY_BACKOFF_MS = [2_000, 5_000, 15_000] as const;
 /** Binance rejects transfer ranges ≥ 90 days — stay just under. */
 const BINANCE_TRANSFER_WINDOW_MS = 89 * 86_400_000;
 /**
- * Trade-window cap for exchanges with a ~1-week range rule: Binance spot
- * myTrades ("startTime/endTime cannot span more than 7 days" — ccxt only
- * auto-caps linear markets) and KuCoin fills ("up to one week after since").
- * Coinbase/OKX share the window so a full page can never strand older rows
- * far behind; it costs a few extra signed calls on big histories.
+ * Trade-window cap for exchanges with a ~1-week range rule: KuCoin fills
+ * ("up to one week after since"). Coinbase/OKX share the window so a full
+ * page can never strand older rows far behind; it costs a few extra
+ * signed calls on big histories. Binance spot is NOT here — see below.
  */
 const TRADE_WINDOW_MS = 6.5 * 86_400_000;
+/**
+ * Binance spot myTrades rejects startTime/endTime spans > 24 hours with
+ * error -1127 ("More than 24 hours between startTime and endTime") —
+ * verified live 2026-07-24 through the gateway flight recorder (the old
+ * "7 days" assumption was wrong / tightened server-side). Incremental
+ * syncs therefore window at 23.5h; the initial cursorless scan can't
+ * window-sweep (~3,200 mostly-empty 23.5h hops per symbol back to 2017)
+ * and paginates by fromId instead — see fetchBinanceTradesById.
+ */
+const BINANCE_TRADE_WINDOW_MS = 23.5 * 3_600_000;
 
 /**
  * Nothing can predate the exchange's own launch — floors the initial
@@ -350,21 +359,64 @@ async function fetchTransferKind(
   });
 }
 
+/**
+ * Binance initial (cursorless) trade scan: fromId pagination — ascending
+ * from the account's first fill with NO time params, the only full-history
+ * mechanism myTrades supports (startTime/endTime spans are capped at 24h,
+ * error -1127). The closure cursor advances past each page's max trade id;
+ * paginatePhase's short/empty-page stop conditions end the scan (a
+ * never-traded symbol costs exactly one empty call). Rows are post-filtered
+ * to >= since (the launch floor) — the raw page length must drive the
+ * full-page detection, so filtering happens AFTER the phase returns.
+ */
+async function fetchBinanceTradesById(
+  client: ExchangeClient,
+  symbol: string,
+  since: number,
+  now: number
+): Promise<FetchPlanOutcome<UnifiedTrade>> {
+  let fromId = 0;
+  const outcome = await paginatePhase<UnifiedTrade>({
+    fetchPage: async () => {
+      const page = await client.fetchMyTrades(symbol, undefined, 1000, { fromId });
+      let maxId = -1;
+      for (const t of page) {
+        const id = Number(t.id);
+        if (Number.isFinite(id) && id > maxId) maxId = id;
+      }
+      // Defensive: always move forward so a pathological page can't loop.
+      fromId = maxId >= 0 ? maxId + 1 : fromId + 1;
+      return page;
+    },
+    since,
+    windowMs: Number.POSITIVE_INFINITY,
+    fullPage: 1000,
+    now,
+    advanceOnFullPage: false
+  });
+  const rows = since > 0 ? outcome.rows.filter((t) => (t.timestamp ?? 0) >= since) : outcome.rows;
+  return { rows, maxTs: maxTimestamp(rows), partial: outcome.partial };
+}
+
 async function fetchTradesForSymbol(
   client: ExchangeClient,
   exchange: Exclude<ExchangeId, 'kraken'>,
   symbol: string | undefined,
   since: number,
-  now: number
+  now: number,
+  opts?: { firstSync?: boolean }
 ): Promise<FetchPlanOutcome<UnifiedTrade>> {
   switch (exchange) {
     case 'binance':
-      // Spot myTrades: startTime/endTime span ≤ 7 days → 6.5d windows with
-      // explicit `until` (ccxt only auto-caps linear markets); page cap 1000.
+      if (opts?.firstSync) {
+        return fetchBinanceTradesById(client, symbol as string, since, now);
+      }
+      // Incremental: 23.5h windows with explicit `until` — Binance rejects
+      // startTime/endTime spans > 24h (error -1127); page cap 1000.
       return paginatePhase<UnifiedTrade>({
         fetchPage: (_i, s, u) => client.fetchMyTrades(symbol, s, 1000, { until: u }),
         since,
-        windowMs: TRADE_WINDOW_MS,
+        windowMs: BINANCE_TRADE_WINDOW_MS,
         fullPage: 1000,
         now
       });
@@ -534,7 +586,12 @@ export async function syncConnection(
         let outcome: FetchPlanOutcome<UnifiedTrade>;
         try {
           outcome = await withRetries(
-            () => fetchTradesForSymbol(client, 'binance', symbol, tradeSince, nowMs),
+            () =>
+              fetchTradesForSymbol(client, 'binance', symbol, tradeSince, nowMs, {
+                // Cursorless (initial) scans can't time-window — Binance
+                // caps the span at 24h — so they paginate by fromId.
+                firstSync: oldCursors.trades == null
+              }),
             sleep
           );
         } catch (err) {
