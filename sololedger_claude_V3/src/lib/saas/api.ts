@@ -24,6 +24,13 @@ export interface PublicServerConfig {
   rpcLookupEnabled: boolean;
   aiAdvisorEnabled: boolean;
   exchangeSyncEnabled: boolean;
+  /**
+   * Binance gateway (Cloudflare Worker) URL when the relay has one
+   * configured; null/absent otherwise. api.binance.com 451s the relay's US
+   * egress, so Binance traffic detours through this worker (edge PoP closest
+   * to the caller) with a relay-minted HMAC ticket. URL only — never a secret.
+   */
+  binanceGatewayUrl?: string | null;
 }
 
 export function getAuthToken(): string | null {

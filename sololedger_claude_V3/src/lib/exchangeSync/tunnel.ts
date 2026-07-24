@@ -16,6 +16,9 @@
  * `handleRestResponse` verbatim so ccxt does its native error mapping.
  */
 import { apiFetch, getAuthToken } from '@/lib/saas/api';
+import { getBinanceGatewayUrl } from '@/lib/saas/effectiveSettings';
+import { recordNetworkActivity } from '@/lib/networkActivity';
+import { getBinanceGatewayTicket, __clearBinanceGatewayTicketCache } from './binanceGateway';
 import type { SyncErrorKind } from './types';
 
 export const EXCHANGE_TUNNEL_BASE = '/api/proxy/exchange';
@@ -32,7 +35,7 @@ export class TunnelError extends Error {
 }
 
 /** `x-sololedger-error` header value → SyncErrorKind (C1 kind map). */
-function tunnelKindFromHeader(header: string): SyncErrorKind {
+export function tunnelKindFromHeader(header: string): SyncErrorKind {
   switch (header) {
     case 'auth':
       return 'relay_auth';
@@ -90,6 +93,18 @@ export function installTunnelFetch(exchange: TunnelFetchTarget, exchangeId: stri
     // Rewrite the fully-signed exchange URL to the relay path: strip the
     // origin only — path + raw query stay byte-verbatim (C1).
     const pathAndQuery = url.replace(/^https?:\/\/[^/]+/, '');
+
+    // Binance detour: api.binance.com 451s the relay's US egress, so when the
+    // server advertises a gateway worker, Binance traffic goes through it
+    // (edge PoP closest to the caller) with a relay-minted ticket. No silent
+    // fallback on ticket failure — that would misreport as region-blocked.
+    if (exchangeId === 'binance') {
+      const gatewayUrl = await getBinanceGatewayUrl();
+      if (gatewayUrl) {
+        return fetchViaBinanceGateway(exchange, pathAndQuery, url, method, headers, body);
+      }
+    }
+
     const relayPath = `${EXCHANGE_TUNNEL_BASE}/${exchangeId}${pathAndQuery}`;
 
     // Exchange-bound headers are prefixed `x-exchange-<lowername>`; the real
@@ -136,4 +151,73 @@ export function installTunnelFetch(exchange: TunnelFetchTarget, exchangeId: stri
     };
     return exchange.handleRestResponse(shim, url, method, headers, body);
   };
+}
+
+/**
+ * Binance-only transport through the gateway worker. The fully-signed request
+ * (path + query byte-verbatim) is piped to api.binance.com from the edge PoP
+ * closest to the user — India egress gets 200 where the relay's US egress
+ * gets 451. A 451 still surfaces as region_blocked for users in genuinely
+ * blocked regions: the worker never stamps `x-sololedger-error`, so exchange
+ * responses reach ccxt untouched (same header-only rule as the relay path).
+ *
+ * Plain `fetch` on purpose: the JWT must NOT be attached to a third-party
+ * origin (apiFetch would). The worker maps only `x-exchange-*` headers
+ * upstream, so the JWT could never reach Binance either way.
+ */
+async function fetchViaBinanceGateway(
+  exchange: TunnelFetchTarget,
+  pathAndQuery: string,
+  originalUrl: string,
+  method: string,
+  headers: Record<string, string>,
+  body?: string
+): Promise<unknown> {
+  // Throws TunnelError (relay_auth / relay_subscription / relay_disabled /
+  // relay_unavailable) when minting fails — deliberately no relay fallback.
+  const ticket = await getBinanceGatewayTicket();
+
+  const gatewayHeaders: Record<string, string> = {
+    'x-gateway-exp': String(ticket.exp),
+    'x-gateway-token': ticket.token
+  };
+  for (const [name, value] of Object.entries(headers ?? {})) {
+    // The worker maps x-exchange-content-type → content-type; every other
+    // header keeps the same x-exchange-<lowername> convention as the relay.
+    gatewayHeaders[`x-exchange-${name.toLowerCase()}`] = value;
+  }
+
+  let res: Response;
+  try {
+    // Worker calls still count as relay traffic for the network indicator.
+    recordNetworkActivity('relay');
+    res = await fetch(`${ticket.url}${pathAndQuery}`, {
+      method,
+      headers: gatewayHeaders,
+      body: body ?? undefined
+    });
+  } catch (err) {
+    throw new TunnelError(
+      'relay_unavailable',
+      err instanceof Error ? err.message : 'Could not reach the Binance gateway.'
+    );
+  }
+
+  // The worker's only self-origin response is 401 {"error":"invalid_gateway_ticket"}
+  // (missing/expired/bad ticket — infra misconfig, since the relay just minted
+  // it). Binance's own 401s (invalid API key) carry a {"code":…} body and MUST
+  // reach ccxt for invalid_key classification — distinguish by the body.
+  const text = await res.text();
+  if (res.status === 401 && text.includes('invalid_gateway_ticket')) {
+    __clearBinanceGatewayTicketCache();
+    throw new TunnelError('relay_unavailable', 'The Binance gateway rejected the relay ticket.');
+  }
+
+  const shim: RestResponseShim = {
+    status: res.status,
+    statusText: res.statusText,
+    headers: res.headers,
+    text: async () => text
+  };
+  return exchange.handleRestResponse(shim, originalUrl, method, headers, body);
 }
