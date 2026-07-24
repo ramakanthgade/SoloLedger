@@ -84,3 +84,15 @@ export async function isExchangeSyncEnabled(): Promise<boolean> {
   const server = await getServerConfig();
   return Boolean(server?.exchangeSyncEnabled);
 }
+
+/**
+ * URL of the Binance gateway worker, or null when the relay has none
+ * configured (older relay, or gateway env vars unset). When non-null, Binance
+ * sync traffic goes through this worker (with a relay-minted ticket) instead
+ * of the region-pinned relay tunnel, because api.binance.com 451s US egress.
+ */
+export async function getBinanceGatewayUrl(): Promise<string | null> {
+  if (!isSaasMode()) return null;
+  const server = await getServerConfig();
+  return server?.binanceGatewayUrl ?? null;
+}
