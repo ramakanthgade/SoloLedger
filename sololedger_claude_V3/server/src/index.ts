@@ -8,6 +8,7 @@ import { adminRouter } from './routes/admin.js';
 import { configRouter } from './routes/config.js';
 import { proxyRouter } from './routes/proxy.js';
 import { exchangeTunnelRouter, tunnelBodyErrorHandler } from './routes/exchangeTunnel.js';
+import { exchangeGatewayRouter } from './routes/exchangeGateway.js';
 import { billingRouter, handleStripeWebhook } from './routes/billing.js';
 
 const app = express();
@@ -133,6 +134,9 @@ app.post('/api/public/solana-rpc', async (req, res) => {
 
 app.use('/api/auth', authRouter);
 app.use('/api/config', configRouter);
+// Binance gateway tickets (JWT + subscription gated minting for the
+// geo-friendly Cloudflare Worker; see routes/exchangeGateway.ts).
+app.use('/api/exchange-gateway', exchangeGatewayRouter);
 app.use('/api/admin', adminRouter);
 app.use('/api/proxy', proxyRouter);
 app.use('/api/billing', billingRouter);
