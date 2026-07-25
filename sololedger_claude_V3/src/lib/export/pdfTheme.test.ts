@@ -154,7 +154,7 @@ describe('createBrandedPdf — Ember header (default)', () => {
     // Wordmark, tagline and report title all rendered.
     const texts = textStrings(d.textCalls);
     expect(texts).toContain('SoloLedger');
-    expect(texts).toContain('PRIVATE · PRECISE · YOURS');
+    expect(texts).toContain('PRIVATE. PRECISE. YOURS.');
     expect(texts).toContain('Schedule VDA — FY 2024–25');
 
     // Header text uses the warm-white on-ember ink, not the dark body ink.
@@ -217,7 +217,7 @@ describe('createBrandedPdf — light header fallback', () => {
 
     const texts = textStrings(d.textCalls);
     expect(texts).toContain('SoloLedger');
-    expect(texts).toContain('PRIVATE · PRECISE · YOURS');
+    expect(texts).toContain('PRIVATE. PRECISE. YOURS.');
     expect(texts).toContain('Schedule VDA — FY 2024–25');
   });
 });

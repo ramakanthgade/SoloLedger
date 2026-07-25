@@ -158,7 +158,7 @@ async function drawEmberHeader(doc: jsPDF, pageW: number, reportTitle: string) {
   doc.setFontSize(6);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(...EMBER.headMuted);
-  doc.text('PRIVATE · PRECISE · YOURS', textX, 14.5, { charSpace: 0.4 });
+  doc.text('PRIVATE. PRECISE. YOURS.', textX, 14.5, { charSpace: 0.4 });
 
   // Right-aligned report title.
   doc.setFontSize(10.5);
@@ -189,7 +189,7 @@ async function drawLightHeader(doc: jsPDF, pageW: number, reportTitle: string) {
   doc.setFontSize(6);
   doc.setFont('helvetica', 'normal');
   doc.setTextColor(...PDF.muted);
-  doc.text('PRIVATE · PRECISE · YOURS', textX, 14.5, { charSpace: 0.4 });
+  doc.text('PRIVATE. PRECISE. YOURS.', textX, 14.5, { charSpace: 0.4 });
 
   doc.setFontSize(10.5);
   doc.setFont('helvetica', 'bold');

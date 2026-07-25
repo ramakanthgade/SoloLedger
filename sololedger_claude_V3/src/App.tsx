@@ -14,6 +14,7 @@ import { ReportsTab } from '@/components/reports/ReportsTab';
 import { SettingsTab } from '@/components/settings/SettingsTab';
 import { AdminPanel } from '@/components/settings/AdminPanel';
 import { AiAdvisor } from '@/components/ai/AiAdvisor';
+import { MobileTabBar } from '@/components/shell/MobileTabBar';
 import { AuthPage } from '@/components/auth/AuthPage';
 import { LandingPage } from '@/components/auth/LandingPage';
 import { UserProfileMenu } from '@/components/auth/UserProfileMenu';
@@ -149,7 +150,7 @@ function MainApp() {
           <nav
             role="tablist"
             aria-label="Sections"
-            className="flex items-center gap-1 overflow-x-auto"
+            className="hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto md:flex"
           >
             {tabs.map((tab, i) => {
               const Icon = tab.icon;
@@ -211,7 +212,8 @@ function MainApp() {
         </div>
       )}
 
-      <main id="main-content" className="mx-auto max-w-7xl px-6 py-10 lg:px-8">
+      {/* pb-28 clears the fixed mobile tab bar + AI FAB on small screens. */}
+      <main id="main-content" className="mx-auto max-w-7xl px-6 pt-10 pb-28 md:pb-10 lg:px-8">
         <div
           role="tabpanel"
           id={`tabpanel-${active}`}
@@ -230,6 +232,7 @@ function MainApp() {
         </div>
       </main>
 
+      <MobileTabBar tabs={tabs} active={active} onSelect={setActive} />
       <AiAdvisor />
     </div>
     </TabNavProvider>
