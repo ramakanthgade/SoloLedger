@@ -33,7 +33,7 @@ describe('LocalOnlyBadge', () => {
     const pill = screen.getByRole('button');
     expect(pill).toHaveTextContent('Local + network on');
     expect(pill).toHaveTextContent('· your keys, direct');
-    expect(pill.querySelector('.bg-blue')).not.toBeNull();
+    expect(pill.querySelector('.bg-accent')).not.toBeNull();
   });
 
   it('renders the relay state with a VIOLET dot and "via SoloLedger" label', () => {
@@ -42,7 +42,7 @@ describe('LocalOnlyBadge', () => {
     const pill = screen.getByRole('button');
     expect(pill).toHaveTextContent('Local + relay');
     expect(pill).toHaveTextContent('· via SoloLedger');
-    expect(pill.querySelector('.bg-violet')).not.toBeNull();
+    expect(pill.querySelector('.bg-primary')).not.toBeNull();
   });
 
   it('reacts to store escalation without re-rendering manually', () => {

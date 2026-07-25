@@ -21,7 +21,9 @@ type PathCard = {
   mode: AppMode;
   num: string;
   icon: LucideIcon;
-  iconGradient: string;
+  /** Tonal icon-tile classes (surface tint + tone glyph) — Ember & Slate keeps
+   * the aurora gradient off the mode cards. */
+  iconTile: string;
   tag: string;
   title: string;
   value: string;
@@ -35,7 +37,7 @@ const CARDS: PathCard[] = [
     mode: 'local',
     num: '01',
     icon: Lock,
-    iconGradient: 'from-teal to-blue',
+    iconTile: 'bg-gain/10 text-gain',
     tag: '100% local',
     title: 'Do it yourself',
     value:
@@ -51,7 +53,7 @@ const CARDS: PathCard[] = [
     mode: 'byok',
     num: '02',
     icon: Key,
-    iconGradient: 'from-violet to-blue',
+    iconTile: 'bg-accent/10 text-accent',
     tag: 'Bring your own keys',
     title: 'BYOK',
     value:
@@ -67,7 +69,7 @@ const CARDS: PathCard[] = [
     mode: 'hosted',
     num: '03',
     icon: CloudUpload,
-    iconGradient: 'from-blue to-teal',
+    iconTile: 'bg-primary/10 text-primary',
     tag: 'Hosted · Managed',
     title: 'Let SoloLedger do it',
     value:
@@ -82,19 +84,15 @@ const CARDS: PathCard[] = [
   }
 ];
 
+const CTA_FOCUS =
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-elev-2';
+
 export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
   return (
-    <section
-      id="choose"
-      className="relative border-y border-white/[0.06] py-20"
-      style={{
-        backgroundImage:
-          'radial-gradient(1200px 460px at 82% -10%, rgba(124,92,255,.12), transparent 60%), radial-gradient(900px 460px at 0% 10%, rgba(34,225,195,.08), transparent 55%)'
-      }}
-    >
+    <section id="choose" className="border-y border-hi/10 bg-elev-1 py-20">
       <div className="mx-auto max-w-6xl px-6 lg:px-8">
         <div className="mx-auto max-w-2xl text-center">
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet/15 px-3 py-1 text-xs font-extrabold uppercase tracking-wide text-blue">
+          <span className="inline-flex items-center gap-1.5 rounded-full border border-primary/20 bg-primary/10 px-3 py-1 text-xs font-extrabold uppercase tracking-wide text-primary">
             Choose your path
           </span>
           <h2 className="mt-4 font-display text-4xl font-extrabold tracking-tight text-hi sm:text-5xl">
@@ -113,7 +111,7 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
             Account-free
             <span className="h-px flex-1 bg-current opacity-30" />
           </div>
-          <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-widest text-violet">
+          <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-widest text-primary">
             <Users className="h-3.5 w-3.5" />
             Hosted
             <span className="h-px flex-1 bg-current opacity-30" />
@@ -130,12 +128,12 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
                 className={cn(
                   'relative flex flex-col rounded-[20px] border p-7 shadow-card transition duration-300 hover:-translate-y-1.5 hover:shadow-card-hover',
                   card.featured
-                    ? 'stat-card-featured border-violet/40'
-                    : 'border-white/10 bg-elev-2 hover:border-violet/40'
+                    ? 'stat-card-featured border-primary/40'
+                    : 'border-hi/10 bg-elev-2 hover:border-primary/30'
                 )}
               >
                 {card.featured && (
-                  <span className="absolute -top-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-gradient-to-r from-violet to-blue px-3.5 py-1 text-[0.66rem] font-extrabold uppercase tracking-wide text-[#0A0B1A] shadow-glow">
+                  <span className="absolute -top-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 whitespace-nowrap rounded-full bg-aurora px-3.5 py-1 text-[0.66rem] font-extrabold uppercase tracking-wide text-on-aurora shadow-glow">
                     <Users className="h-3 w-3" />
                     Sign-in required
                   </span>
@@ -147,26 +145,26 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
                 <div className="flex items-start justify-between gap-3">
                   <div
                     className={cn(
-                      'inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br text-[#0A0B1A] shadow-soft',
-                      card.iconGradient
+                      'inline-flex h-14 w-14 items-center justify-center rounded-2xl shadow-xs',
+                      card.iconTile
                     )}
                   >
                     <Icon className="h-7 w-7" />
                   </div>
                   {card.featured ? (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-warn/[0.18] px-2.5 py-1 text-[0.68rem] font-extrabold uppercase tracking-wide text-warn">
+                    <span className="mr-7 inline-flex items-center gap-1.5 rounded-full bg-warn/10 px-2.5 py-1 text-[0.68rem] font-extrabold uppercase tracking-wide text-warn">
                       <Lock className="h-3 w-3" />
                       Requires an account
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1.5 rounded-full bg-gain/[0.16] px-2.5 py-1 text-[0.68rem] font-extrabold uppercase tracking-wide text-gain">
+                    <span className="mr-7 inline-flex items-center gap-1.5 rounded-full bg-gain/10 px-2.5 py-1 text-[0.68rem] font-extrabold uppercase tracking-wide text-gain">
                       <Check className="h-3 w-3" />
                       No account
                     </span>
                   )}
                 </div>
 
-                <div className="mt-5 text-xs font-extrabold uppercase tracking-wider text-blue">
+                <div className="mt-5 text-xs font-extrabold uppercase tracking-wider text-primary">
                   {card.tag}
                 </div>
                 <h3 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-hi">
@@ -191,10 +189,11 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
                   type="button"
                   onClick={() => onSelectMode(card.mode)}
                   className={cn(
-                    'mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-full text-sm font-bold transition',
+                    'mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg text-sm font-bold transition-all duration-150',
+                    CTA_FOCUS,
                     card.featured
-                      ? 'bg-gradient-to-r from-violet to-blue text-[#0A0B1A] shadow-glow hover:brightness-105'
-                      : 'border border-white/10 bg-white/[0.03] text-hi hover:border-violet/50 hover:bg-violet/[0.08]'
+                      ? 'bg-primary-solid text-white shadow-sm hover:-translate-y-px hover:bg-primary-solid-deep hover:shadow-card-hover'
+                      : 'border border-hi/10 bg-elev-1 text-hi shadow-xs hover:border-primary/40 hover:bg-primary/[0.06] hover:text-primary'
                   )}
                 >
                   {card.cta}

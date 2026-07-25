@@ -10,10 +10,11 @@ import { Button } from '@/components/ui/button';
 import { SkeletonCards, SkeletonTable } from '@/components/ui/Skeleton';
 import { PageHeader } from '@/components/PageHeader';
 import { formatCurrency, formatAmountForExport, getAvailableFys, getCurrentFy, getFyLabel, isInFy, monetaryColumnLabel, downloadBlob } from '@/lib/utils';
-import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, truncatePdfRef } from '@/lib/export/pdfTheme';
+import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, truncatePdfRef, PDF } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { AlertTriangle, FileText } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { ReportPeriodPills } from '@/components/reports/ReportPeriodPills';
 import { useTabNav } from '@/lib/tabNav';
 import {
   buildDerivativeBusinessExpenseRows,
@@ -183,7 +184,7 @@ export function ReportsTab() {
     const fmt = (n: number) => formatAmountForExport(n, rules.currency);
     const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Capital Gains Report',
-      brandHeader: lightHeader ? 'light' : 'aurora',
+      brandHeader: lightHeader ? 'light' : 'ember',
       metaLines: [
         `Jurisdiction: ${rules.label} · Tax year: ${yearLabel} · Method: ${method}`,
         `Currency: ${rules.currency} · ${deidentify ? 'De-identified (pseudonymized refs)' : 'Full detail'}`
@@ -213,12 +214,20 @@ export function ReportsTab() {
       ]
     });
 
+    // Per-asset rollup; gains print in moss, losses in crimson.
+    const byAssetRows = Object.entries(summary.byAsset);
     autoTable(doc, {
       ...tbl,
       head: [['Asset', `Proceeds (${rules.currency})`, `Cost basis (${rules.currency})`, `Gain/Loss (${rules.currency})`]],
-      body: Object.entries(summary.byAsset).map(([asset, v]) => [
+      body: byAssetRows.map(([asset, v]) => [
         asset, fmt(v.proceeds), fmt(v.costBasis), fmt(v.gain)
-      ])
+      ]),
+      didParseCell: (data) => {
+        if (data.section !== 'body' || data.column.index !== 3) return;
+        const entry = byAssetRows[data.row.index];
+        if (!entry) return;
+        data.cell.styles.textColor = entry[1].gain >= 0 ? PDF.gain : PDF.loss;
+      }
     });
 
     autoTable(doc, {
@@ -248,7 +257,14 @@ export function ReportsTab() {
           String(d.holdingPeriodDays),
           truncatePdfRef(ref)
         ];
-      })
+      }),
+      // Gains print in moss, losses in crimson (Ember & Slate print palette).
+      didParseCell: (data) => {
+        if (data.section !== 'body' || data.column.index !== 5) return;
+        const d = yearDisposals[data.row.index];
+        if (!d) return;
+        data.cell.styles.textColor = d.gain >= 0 ? PDF.gain : PDF.loss;
+      }
     });
 
     addPdfDisclaimer(doc, rules.notes);
@@ -363,7 +379,7 @@ export function ReportsTab() {
             ))}
           </select>
         </label>
-        <label className="flex flex-col gap-1">
+        <div className="flex flex-col gap-1">
           <span className="flex items-center gap-1 text-[0.625rem] font-semibold uppercase tracking-wider text-low">
             {isIndia ? 'Financial Year (Apr–Mar)' : 'Tax year'}
             {isIndia && (
@@ -376,12 +392,14 @@ export function ReportsTab() {
               </span>
             )}
           </span>
-          <select value={year} onChange={(e) => setYear(Number(e.target.value))} className="sl-select">
-            {years.map((y) => (
-              <option key={y} value={y}>{getFyLabel(y, jurisdiction)}</option>
-            ))}
-          </select>
-        </label>
+          <ReportPeriodPills
+            options={years.map((y) => ({ value: y, label: getFyLabel(y, jurisdiction) }))}
+            value={year}
+            onChange={setYear}
+            ariaLabel={isIndia ? 'Financial year' : 'Tax year'}
+            data-testid="reports-fy-pills"
+          />
+        </div>
         <label className="flex flex-col gap-1">
           <span className="flex items-center gap-1 text-[0.625rem] font-semibold uppercase tracking-wider text-low">
             Accounting method
@@ -394,22 +412,22 @@ export function ReportsTab() {
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm text-low">
-          <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-violet" />
+          <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-primary" />
           De-identify for sharing
         </label>
         <label
           className="flex items-center gap-2 text-sm text-low"
-          title="Use a white PDF header with a dark logo so branding stays legible on black-and-white printers. Off = dark Aurora header band."
+          title="Use a white PDF header with a dark logo so branding stays legible on black-and-white printers. Off = solid deep-ember header band."
         >
           <input
             type="checkbox"
             checked={lightHeader}
             onChange={(e) => setLightHeader(e.target.checked)}
-            className="accent-violet"
+            className="accent-primary"
           />
           Light header for print
         </label>
-        <div className="ml-auto flex gap-2">
+        <div className="ml-auto flex flex-wrap gap-2">
           <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportCsv)}>CSV</Button>
           <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportJson)}>JSON</Button>
           {isIndia && (
@@ -427,12 +445,12 @@ export function ReportsTab() {
 
       {shortfalls.length > 0 && (
         <div className="alert-warning">
-          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-amber-200 bg-amber-100 text-warn">
+          <div className="flex h-9 w-9 items-center justify-center rounded-lg border border-warn/30 bg-warn/10 text-warn">
             <AlertTriangle className="h-4 w-4" />
           </div>
           <div>
-            <p className="text-sm font-semibold text-amber-900">Cost basis shortfall detected</p>
-            <p className="mt-1 text-sm leading-relaxed text-amber-800">
+            <p className="text-sm font-semibold text-hi">Cost basis shortfall detected</p>
+            <p className="mt-1 text-sm leading-relaxed text-mid">
               {shortfalls.length} disposal(s) reference more of an asset than your import history shows acquired.
               Review flagged transactions to fix.
             </p>
@@ -492,7 +510,7 @@ export function ReportsTab() {
         <div className="hidden overflow-x-auto p-1 sm:block">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
+              <tr className="border-b border-hi/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
                 <th className="px-5 py-3">Date</th>
                 <th className="px-5 py-3">Asset</th>
                 <th className="px-5 py-3 text-right">Amount</th>
@@ -504,9 +522,9 @@ export function ReportsTab() {
             </thead>
             <tbody className="font-mono text-xs tabular-figures">
               {yearDisposals.slice(0, 100).map((d) => (
-                <tr key={d.id} className="border-b border-white/10 transition-colors hover:bg-elev-1/50">
+                <tr key={d.id} className="border-b border-hi/10 transition-colors hover:bg-elev-1/50">
                   <td className="px-5 py-3.5 text-low">{new Date(d.disposedAt).toISOString().slice(0, 10)}</td>
-                  <td className="px-5 py-3.5"><span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span></td>
+                  <td className="px-5 py-3.5"><span className="rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span></td>
                   <td className="px-5 py-3.5 text-right text-low">{d.amount.toFixed(6)}</td>
                   <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(d.proceeds, rules.currency)}</td>
                   <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(d.costBasis, rules.currency)}</td>
@@ -529,9 +547,9 @@ export function ReportsTab() {
         {/* Mobile: stacked cards (below sm) */}
         <div className="space-y-3 p-4 sm:hidden">
           {yearDisposals.slice(0, 100).map((d) => (
-            <div key={d.id} className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+            <div key={d.id} className="rounded-xl border border-hi/10 bg-elev-1/60 p-4">
               <div className="flex items-center justify-between">
-                <span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span>
+                <span className="rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span>
                 <span className="font-mono text-xs text-low">{new Date(d.disposedAt).toISOString().slice(0, 10)}</span>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-xs tabular-figures">

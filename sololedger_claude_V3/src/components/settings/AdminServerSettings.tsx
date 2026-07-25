@@ -3,6 +3,30 @@ import { apiFetch } from '@/lib/saas/api';
 import { invalidateServerConfigCache } from '@/lib/saas/effectiveSettings';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ApiKeyField } from './ApiKeyField';
+import { Toggle } from './Toggle';
+
+/** Admin default row — same `.setrow` layout as the subscriber settings. */
+function AdminToggleRow({
+  title,
+  caption,
+  checked,
+  onChange
+}: {
+  title: string;
+  caption: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <label className="flex cursor-pointer items-center justify-between gap-6 py-1">
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-semibold text-hi">{title}</span>
+        <span className="mt-0.5 block text-xs leading-relaxed text-low">{caption}</span>
+      </span>
+      <Toggle checked={checked} onChange={(e) => onChange(e.target.checked)} />
+    </label>
+  );
+}
 
 interface ServerApiKeys {
   alchemyApiKey?: string;
@@ -79,39 +103,33 @@ export function AdminServerSettings() {
         Admin only — keys are saved on the proxy server and used for all subscribers. Not stored in GitHub.
       </p>
 
-      <Card>
+      <Card id="settings-admin-network" className="scroll-mt-24">
         <CardHeader>
           <CardTitle>Network features (subscriber defaults)</CardTitle>
         </CardHeader>
-        <CardContent className="space-y-3 text-sm text-low">
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={config.priceApiEnabled}
-              onChange={(e) => void saveConfig({ priceApiEnabled: e.target.checked })}
-            />
-            Live price lookup (on by default for subscribers)
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={config.rpcLookupEnabled}
-              onChange={(e) => void saveConfig({ rpcLookupEnabled: e.target.checked })}
-            />
-            Wallet address lookup (on by default for subscribers)
-          </label>
-          <label className="flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={config.aiAdvisorEnabled}
-              onChange={(e) => void saveConfig({ aiAdvisorEnabled: e.target.checked })}
-            />
-            AI Tax Advisor
-          </label>
+        <CardContent className="space-y-3">
+          <AdminToggleRow
+            title="Live price lookup"
+            caption="On by default for subscribers"
+            checked={config.priceApiEnabled}
+            onChange={(v) => void saveConfig({ priceApiEnabled: v })}
+          />
+          <AdminToggleRow
+            title="Wallet address lookup"
+            caption="On by default for subscribers"
+            checked={config.rpcLookupEnabled}
+            onChange={(v) => void saveConfig({ rpcLookupEnabled: v })}
+          />
+          <AdminToggleRow
+            title="AI Tax Advisor"
+            caption="Subscribers can opt out from their own Settings"
+            checked={config.aiAdvisorEnabled}
+            onChange={(v) => void saveConfig({ aiAdvisorEnabled: v })}
+          />
         </CardContent>
       </Card>
 
-      <Card>
+      <Card id="settings-admin-keys" className="scroll-mt-24">
         <CardHeader>
           <CardTitle>API keys (server)</CardTitle>
         </CardHeader>

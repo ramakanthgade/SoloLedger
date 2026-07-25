@@ -62,16 +62,16 @@ export function ImportPreviewCard({
       {headerNote}
 
       <div className="flex flex-wrap gap-2">
-        <div className="min-w-[80px] flex-1 rounded-lg border border-white/10 bg-elev-1 px-3 py-2">
+        <div className="min-w-[80px] flex-1 rounded-lg border border-hi/10 bg-elev-1 px-3 py-2">
           <div className="font-mono text-lg font-bold text-hi">{transactions.length}</div>
           <div className="text-[10px] text-low">transactions</div>
         </div>
-        <div className="min-w-[80px] flex-1 rounded-lg border border-white/10 bg-elev-1 px-3 py-2">
+        <div className="min-w-[80px] flex-1 rounded-lg border border-hi/10 bg-elev-1 px-3 py-2">
           <div className="font-mono text-lg font-bold text-hi">{distinctAssets}</div>
           <div className="text-[10px] text-low">assets</div>
         </div>
         {tdsTotalInr != null && tdsTotalInr > 0 && (
-          <div className="min-w-[80px] flex-1 rounded-lg border border-white/10 bg-elev-1 px-3 py-2">
+          <div className="min-w-[80px] flex-1 rounded-lg border border-hi/10 bg-elev-1 px-3 py-2">
             <div className="font-mono text-lg font-bold text-hi">
               {formatCurrency(tdsTotalInr, 'INR')}
             </div>
@@ -84,10 +84,10 @@ export function ImportPreviewCard({
         <span className="mb-2 block text-[11px] font-bold uppercase tracking-wider text-low">
           First few rows
         </span>
-        <div className="overflow-x-auto rounded-lg border border-white/10">
+        <div className="overflow-x-auto rounded-lg border border-hi/10">
           <table className="w-full border-collapse text-left">
             <thead>
-              <tr className="border-b border-white/10">
+              <tr className="border-b border-hi/10">
                 <th className="px-3 py-2 font-mono text-[9px] font-semibold uppercase tracking-wide text-low">
                   Date
                 </th>

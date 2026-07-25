@@ -112,7 +112,17 @@ export function ScheduleVdaView({
         fmt(totals.incomeGain),
         fmt(totals.tdsInr)
       ]],
-      footStyles: { fillColor: PDF.slateLight, textColor: PDF.navy, fontStyle: 'bold' }
+      footStyles: { fillColor: PDF.paperDeep, textColor: PDF.ink, fontStyle: 'bold' },
+      // Ember print accents: gains in moss, losses in crimson, TDS in amber.
+      didParseCell: (data) => {
+        if (data.section !== 'body') return;
+        if (data.column.index === 5) {
+          const r = rows[data.row.index];
+          if (r) data.cell.styles.textColor = r.incomeGain >= 0 ? PDF.gain : PDF.loss;
+        } else if (data.column.index === 6) {
+          data.cell.styles.textColor = PDF.amber;
+        }
+      }
     });
 
     autoTable(doc, {
@@ -206,7 +216,7 @@ export function ScheduleVdaView({
         <div className="hidden overflow-x-auto p-1 sm:block">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
+              <tr className="border-b border-hi/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
                 <th className="px-5 py-3">Asset</th>
                 <th className="px-5 py-3">Date acquired</th>
                 <th className="px-5 py-3">Date transferred</th>
@@ -218,8 +228,8 @@ export function ScheduleVdaView({
             </thead>
             <tbody className="font-mono text-xs tabular-figures">
               {rows.map((r) => (
-                <tr key={r.id} className="border-b border-white/10 transition-colors hover:bg-elev-1/50">
-                  <td className="px-5 py-3.5"><span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{r.asset}</span></td>
+                <tr key={r.id} className="border-b border-hi/10 transition-colors hover:bg-elev-1/50">
+                  <td className="px-5 py-3.5"><span className="rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{r.asset}</span></td>
                   <td className="px-5 py-3.5 text-low">{r.acquisitionDateKey}</td>
                   <td className="px-5 py-3.5 text-low">{r.transferDateKey}</td>
                   <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(r.costOfAcquisition, currency)}</td>
@@ -236,7 +246,7 @@ export function ScheduleVdaView({
             </tbody>
             {rows.length > 0 && (
               <tfoot>
-                <tr className="border-t-2 border-violet/40 bg-elev-3 font-mono text-xs tabular-figures">
+                <tr className="border-t-2 border-primary/40 bg-elev-3 font-mono text-xs tabular-figures">
                   <td className="px-5 py-3.5 font-semibold uppercase tracking-wider text-low">Totals</td>
                   <td className="px-5 py-3.5"></td>
                   <td className="px-5 py-3.5"></td>
@@ -253,9 +263,9 @@ export function ScheduleVdaView({
         {/* Mobile stacked cards */}
         <div className="space-y-3 p-4 sm:hidden">
           {rows.map((r) => (
-            <div key={r.id} className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+            <div key={r.id} className="rounded-xl border border-hi/10 bg-elev-1/60 p-4">
               <div className="flex items-center justify-between">
-                <span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{r.asset}</span>
+                <span className="rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{r.asset}</span>
                 <span className="font-mono text-xs text-low">{r.transferDateKey}</span>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-xs tabular-figures">

@@ -4,7 +4,12 @@ import App from './App';
 import { AuthProvider } from '@/lib/saas/authContext';
 import { ModeProvider, useAppMode } from '@/lib/saas/modeContext';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
+import { initColorScheme } from '@/lib/theme/colorScheme';
 import './index.css';
+
+// Apply the persisted Light/Dark/System choice (index.html already applied
+// it pre-paint; this wires the system-theme listener for live switching).
+initColorScheme();
 
 /**
  * Part B (mode-transition bootstrap): the AuthProvider derives all of its

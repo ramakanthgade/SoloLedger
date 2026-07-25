@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/card';
 import {
-  formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount,
+  cn, formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount,
   getFyBoundaries, getFyLabel, getAvailableFys, getCurrentFy, isInFy, monetaryColumnLabel, downloadBlob
 } from '@/lib/utils';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
@@ -32,10 +32,10 @@ import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { SkeletonTable } from '@/components/ui/Skeleton';
 import { EmptyState } from '@/components/ui/EmptyState';
+import { AssetIcon } from '@/components/portfolio/AssetIcon';
 import { useTabNav } from '@/lib/tabNav';
-import { PieChart } from 'lucide-react';
+import { AlertCircle, AlertTriangle, PieChart, RefreshCw, ShieldCheck } from 'lucide-react';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
-import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
@@ -63,6 +63,54 @@ async function runPortfolioLedgerRepairs(): Promise<string> {
   return reconcile.message;
 }
 
+type HeroStatTone = 'hi' | 'mid' | 'gain' | 'loss' | 'warn';
+
+const HERO_STAT_TONE_CLASS: Record<HeroStatTone, string> = {
+  hi: 'text-hi',
+  mid: 'text-mid',
+  gain: 'text-gain',
+  loss: 'text-loss',
+  warn: 'text-warn'
+};
+
+/** One summary figure on the hero card's right rail (mockup hero baseline). */
+function HeroStat({
+  label,
+  value,
+  tone = 'hi',
+  note,
+  footnote
+}: {
+  label: string;
+  value: string;
+  tone?: HeroStatTone;
+  note?: string;
+  footnote?: string;
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[0.6875rem] font-bold uppercase tracking-wider text-low">{label}</dt>
+      <dd
+        className={cn(
+          'mt-1.5 text-xl font-bold tabular-figures tracking-tight',
+          HERO_STAT_TONE_CLASS[tone]
+        )}
+      >
+        {value}
+      </dd>
+      {note && <dd className="mt-1 text-[0.6875rem] text-low">{note}</dd>}
+      {footnote && <dd className="mt-0.5 text-[0.625rem] text-faint">{footnote}</dd>}
+    </div>
+  );
+}
+
+/** Format a holding's share of the total cost basis for the Share column. */
+function formatShare(sharePct: number | null): string {
+  if (sharePct == null) return '—';
+  if (sharePct > 0 && sharePct < 0.05) return '<0.1%';
+  return `${sharePct.toFixed(1)}%`;
+}
+
 export function PortfolioTab() {
   const { goToImport } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
@@ -77,6 +125,7 @@ export function PortfolioTab() {
   const [repairMsg, setRepairMsg] = useState<string | null>(null);
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
   const repairInFlight = useRef(false);
+  const periodPillRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -208,6 +257,47 @@ export function PortfolioTab() {
     return Array.from(ws);
   }, [transactions]);
 
+  // Period filter rendered as segmented pills (dashboard hero period-toggle
+  // language): "All time" plus every FY present in the ledger.
+  const periodOptions = useMemo<{ value: number | null; label: string }[]>(
+    () => [
+      { value: null, label: 'All time' },
+      ...availableFys.map((fy) => ({ value: fy as number | null, label: getFyLabel(fy, jurisdiction) }))
+    ],
+    [availableFys, jurisdiction]
+  );
+
+  const onPeriodKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    const count = periodOptions.length;
+    if (count === 0) return;
+    const currentIndex = Math.max(
+      0,
+      periodOptions.findIndex((o) => o.value === selectedFy)
+    );
+    let nextIndex: number;
+    switch (e.key) {
+      case 'ArrowRight':
+      case 'ArrowDown':
+        nextIndex = (currentIndex + 1) % count;
+        break;
+      case 'ArrowLeft':
+      case 'ArrowUp':
+        nextIndex = (currentIndex - 1 + count) % count;
+        break;
+      case 'Home':
+        nextIndex = 0;
+        break;
+      case 'End':
+        nextIndex = count - 1;
+        break;
+      default:
+        return;
+    }
+    e.preventDefault();
+    setSelectedFy(periodOptions[nextIndex].value);
+    periodPillRefs.current[nextIndex]?.focus();
+  };
+
   const filteredTxs = useMemo(() => {
     let txs = transactions.filter((t) => !t.isSpam);
     if (selectedWallet !== ALL_WALLETS)
@@ -247,9 +337,8 @@ export function PortfolioTab() {
       .reduce((s, d) => s + d.gain, 0);
   }, [transactions, currentFy, jurisdiction]);
 
-  // Estimated current-FY VDA tax. NOTE: this is a temporary inline stub — Task
-  // T4 introduces a dedicated <TaxEstimateCard/> that should replace this block.
-  // For India it applies the flat 30% + 4% cess on positive realized gains.
+  // Estimated current-FY VDA tax: flat 30% + 4% cess on positive realized gains
+  // (India Sec 115BBH estimate, no loss set-off).
   const estimatedFyTax = useMemo(
     () => estimateIndiaVDA(realizedFyGain).total,
     [realizedFyGain]
@@ -317,6 +406,12 @@ export function PortfolioTab() {
     (t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer
   ).length;
 
+  // The loss-toned alert is visible while a repair runs or while on-chain
+  // cross-check found variances; the last repair message surfaces there, and
+  // otherwise rests on the Ledger health card below.
+  const ledgerAlertVisible =
+    repairingBalances ||
+    (balanceVariances.length > 0 && selectedFy == null && crossCheckModeUsesLiveRpc(crossCheckMode));
 
   const exportHoldingsCsv = () => {
     const cur = reportingCurrency.toUpperCase();
@@ -397,29 +492,57 @@ export function PortfolioTab() {
         subtitle="What you hold now, in ₹, with the cost basis behind it. Import every wallet and exchange so the picture is complete."
       />
 
-      {/* Filters */}
+      {/* Toolbar: period pills (hero period-toggle language) + wallet scope */}
       <div className="flex flex-wrap items-center gap-3">
-        <div className="flex items-center gap-2">
-          <span className="text-xs text-low">Period:</span>
-          <select
-            value={selectedFy ?? ''}
-            onChange={(e) => setSelectedFy(e.target.value ? Number(e.target.value) : null)}
-            className="sl-select"
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-[0.6875rem] font-bold uppercase tracking-wider text-low">
+            Period
+          </span>
+          <div
+            role="radiogroup"
+            aria-label="Period"
+            data-testid="portfolio-period-pills"
+            onKeyDown={onPeriodKeyDown}
+            className="flex flex-wrap items-center gap-1 rounded-xl border border-hi/10 bg-elev-2 p-1 shadow-xs"
           >
-            <option value="">All time</option>
-            {availableFys.map((fy) => (
-              <option key={fy} value={fy}>{getFyLabel(fy, jurisdiction)}</option>
-            ))}
-          </select>
+            {periodOptions.map((option, i) => {
+              const active = selectedFy === option.value;
+              return (
+                <button
+                  key={option.label}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  tabIndex={active ? 0 : -1}
+                  ref={(el) => {
+                    periodPillRefs.current[i] = el;
+                  }}
+                  onClick={() => setSelectedFy(option.value)}
+                  className={cn(
+                    'min-h-[44px] rounded-[10px] border px-4 text-xs font-bold transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-elev-1',
+                    active
+                      ? 'border-hi/10 bg-elev-1 text-hi shadow-xs'
+                      : 'border-transparent text-low hover:bg-elev-3/60 hover:text-hi'
+                  )}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {availableWallets.length > 1 && (
           <div className="flex items-center gap-2">
-            <span className="text-xs text-low">Wallet:</span>
+            <span className="text-[0.6875rem] font-bold uppercase tracking-wider text-low">
+              Wallet
+            </span>
             <select
+              aria-label="Wallet filter"
               value={selectedWallet}
               onChange={(e) => setSelectedWallet(e.target.value)}
-              className="max-w-[200px] truncate rounded-full border border-white/10 bg-elev-2 px-3 py-1 text-sm text-mid"
+              className="sl-select max-w-[220px] truncate"
             >
               <option value={ALL_WALLETS}>{ALL_WALLETS}</option>
               {availableWallets.map((w) => (
@@ -429,16 +552,354 @@ export function PortfolioTab() {
           </div>
         )}
 
-        <span className="ml-auto text-xs text-low">
+        <span className="ml-auto text-xs tabular-figures text-low">
           {holdings.length} asset{holdings.length === 1 ? '' : 's'} · {filteredTxs.length} tx
         </span>
-        <span className="text-xs text-low">Export: CSV/JSON recommended for detailed CA review</span>
-        <div className="flex gap-2">
-          <Button variant="secondary" onClick={exportHoldingsCsv} className="text-xs">CSV</Button>
-          <Button variant="secondary" onClick={exportHoldingsJson} className="text-xs">JSON</Button>
-          <Button variant="secondary" onClick={() => setPdfConfirmOpen(true)} className="text-xs">PDF</Button>
-        </div>
       </div>
+
+      {/* Hero: total holdings value (cost basis) + summary rail, mirroring the
+       * dashboard net-worth hero. Live market data isn't wired in this phase,
+       * so the big number is honestly labelled as cost basis and unrealized
+       * gain stays a placeholder dash. */}
+      <section
+        aria-label="Portfolio summary"
+        data-testid="portfolio-hero"
+        className="rounded-[20px] border border-primary/40 bg-gradient-to-br from-elev-2 to-elev-3 shadow-card"
+      >
+        <div className="flex flex-wrap items-start gap-x-12 gap-y-6 px-6 py-6 sm:px-8 sm:py-7">
+          <div className="min-w-0 flex-1 basis-72">
+            <p className="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-low">
+              Total holdings value
+            </p>
+            <p className="mt-2 text-4xl font-extrabold tabular-figures tracking-tight text-hi sm:text-[2.625rem] sm:leading-[1.05]">
+              {formatCurrency(totalCostBasis, reportingCurrency)}
+            </p>
+            <p className="mt-2.5 text-xs font-semibold tabular-figures text-mid">
+              {formatCompactCurrency(totalCostBasis, reportingCurrency)}{' '}
+              <span className="font-medium text-low">
+                · cost basis · {holdings.length} asset{holdings.length === 1 ? '' : 's'} ·{' '}
+                {selectedFy == null ? 'all time' : getFyLabel(selectedFy, jurisdiction)}
+              </span>
+            </p>
+          </div>
+          <dl className="flex flex-wrap items-start gap-x-10 gap-y-5">
+            <HeroStat
+              label="Unrealized gain"
+              value="—"
+              tone="mid"
+              note="Enable live prices in Settings"
+            />
+            <HeroStat
+              label={`Realized gain — ${getFyLabel(currentFy, jurisdiction)}`}
+              value={`${realizedFyGain >= 0 ? '+' : ''}${formatCurrency(realizedFyGain, reportingCurrency)}`}
+              tone={realizedFyGain >= 0 ? 'gain' : 'loss'}
+              note="FIFO · current FY"
+            />
+            <HeroStat
+              label={`Est. tax — ${getFyLabel(currentFy, jurisdiction)}`}
+              value={formatCurrency(estimatedFyTax, reportingCurrency)}
+              tone="warn"
+              note={
+                jurisdiction === 'IN'
+                  ? `30% + 4% cess on ${formatCurrency(realizedFyGain, reportingCurrency)} gains`
+                  : '30% + 4% cess estimate'
+              }
+              footnote="Estimate — not tax advice."
+            />
+          </dl>
+        </div>
+      </section>
+
+      {ledgerRepairOffered && !repairingBalances && (
+        <div className="flex flex-col gap-3 rounded-2xl border border-primary/30 bg-primary/[0.06] px-5 py-4 shadow-xs sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <span className="mt-0.5 grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-primary/25 bg-primary/10 text-primary">
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            </span>
+            <p className="text-sm leading-relaxed text-mid">
+              Solana wallets imported. Check your ledger against on-chain history to catch missing
+              swap legs and balance gaps (uses Solana RPC).
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() => void runLedgerRepairNow()}
+            className="shrink-0"
+          >
+            Check ledger against chain
+          </Button>
+        </div>
+      )}
+
+      {ledgerAlertVisible && (
+        <div
+          role="alert"
+          className="rounded-2xl border border-loss/40 bg-loss/10 px-5 py-4 shadow-xs"
+        >
+          <div className="flex items-start gap-3">
+            <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-loss" aria-hidden="true" />
+            <div className="min-w-0 text-sm text-low">
+              {repairingBalances ? (
+                <p>Repairing ledger automatically — scanning on-chain history…</p>
+              ) : balanceVariances.length > 0 ? (
+                <div className="space-y-1">
+                  {balanceVariances.map((v) => (
+                    <p key={`${v.wallet ?? 'all'}-${v.asset}`}>
+                      <strong className="text-loss">{v.asset} differs from chain</strong>
+                      {v.wallet ? ` (${formatWalletShort(v.wallet)})` : ''}: ledger{' '}
+                      {formatCompactAmount(v.ledger)} vs wallet {formatCompactAmount(v.live)}.
+                    </p>
+                  ))}
+                  <p className="text-xs text-low">
+                    Automatic repair already ran this session. Hard-refresh or re-import if gaps remain.
+                  </p>
+                </div>
+              ) : null}
+              {repairMsg && <p className="mt-1 text-xs text-low">{repairMsg}</p>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {selectedFy == null &&
+        integrityIssues.map((issue, i) => (
+          <div
+            key={`${issue.kind}-${i}`}
+            className={cn(
+              'flex items-start gap-3 rounded-2xl border px-5 py-4 text-sm text-low shadow-xs',
+              issue.kind === 'negative_holding'
+                ? 'border-loss/40 bg-loss/10'
+                : 'border-warn/40 bg-warn/10'
+            )}
+          >
+            <AlertTriangle
+              className={cn(
+                'mt-0.5 h-4 w-4 shrink-0',
+                issue.kind === 'negative_holding' ? 'text-loss' : 'text-warn'
+              )}
+              aria-hidden="true"
+            />
+            <p>{issue.message}</p>
+          </div>
+        ))}
+
+      {missingPriceCount > 0 && (
+        <div className="flex items-start gap-3 rounded-2xl border border-warn/40 bg-warn/10 px-5 py-4 text-sm text-low shadow-xs">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warn" aria-hidden="true" />
+          <p>
+            {missingPriceCount === 1
+              ? '1 transaction still lacks a fiat value'
+              : `${missingPriceCount} transactions still lack a fiat value`}{' '}
+            — cost basis may be understated. Go to Review →{' '}
+            <strong className="text-mid">Fetch missing prices</strong>.
+          </p>
+        </div>
+      )}
+
+      {/* Holdings */}
+      {holdingsComputing ? (
+        <SkeletonTable rows={5} columns={4} data-testid="portfolio-skeleton" />
+      ) : (
+        <section aria-label="Holdings" className="data-panel" data-testid="portfolio-holdings">
+          <div className="data-panel-head flex-wrap gap-3">
+            <div className="flex items-center gap-2.5">
+              <h3 className="text-sm font-semibold tracking-tight text-hi">Holdings</h3>
+              <Badge tone="neutral" className="tabular-figures">
+                {holdings.length} asset{holdings.length === 1 ? '' : 's'}
+              </Badge>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="hidden text-xs text-low lg:inline">
+                CSV/JSON recommended for detailed CA review
+              </span>
+              <Button variant="secondary" size="sm" onClick={exportHoldingsCsv} className="min-h-[44px]">
+                CSV
+              </Button>
+              <Button variant="secondary" size="sm" onClick={exportHoldingsJson} className="min-h-[44px]">
+                JSON
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => setPdfConfirmOpen(true)}
+                className="min-h-[44px]"
+              >
+                PDF
+              </Button>
+            </div>
+          </div>
+
+          {/* Desktop / tablet: table (sm and up) */}
+          <div className="hidden overflow-x-auto sm:block">
+            <table className="w-full text-sm">
+              <caption className="sr-only">
+                Holdings with quantity, cost basis and share of the total cost basis
+              </caption>
+              <thead>
+                <tr className="border-b border-hi/10 text-left">
+                  <th
+                    scope="col"
+                    className="px-5 py-3 text-[0.6875rem] font-bold uppercase tracking-wider text-low"
+                  >
+                    Asset
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-5 py-3 text-right text-[0.6875rem] font-bold uppercase tracking-wider text-low"
+                  >
+                    Quantity
+                  </th>
+                  <th
+                    scope="col"
+                    className="px-5 py-3 text-right text-[0.6875rem] font-bold uppercase tracking-wider text-low"
+                  >
+                    Cost basis
+                  </th>
+                  <th
+                    scope="col"
+                    className="w-[16%] px-5 py-3 text-right text-[0.6875rem] font-bold uppercase tracking-wider text-low"
+                  >
+                    Share
+                  </th>
+                </tr>
+              </thead>
+              <tbody className="tabular-figures">
+                {holdings.map((h, i) => {
+                  const label = resolveAssetLabel(h.asset, h.contractAddress, h.chain);
+                  const sharePct = totalCostBasis > 0 ? (h.costBasis / totalCostBasis) * 100 : null;
+                  return (
+                    <tr
+                      key={i}
+                      className="border-b border-hi/10 transition-colors last:border-b-0 hover:bg-elev-3/30"
+                    >
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center gap-3">
+                          <AssetIcon symbol={label} size={36} />
+                          <div className="min-w-0">
+                            <p className="truncate font-semibold text-hi">{label}</p>
+                            {h.chain && (
+                              <p className="text-xs capitalize text-low">{h.chain}</p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-5 py-3.5 text-right text-mid">{h.amount.toFixed(8)}</td>
+                      <td className="px-5 py-3.5 text-right font-semibold text-hi">
+                        {formatCurrency(h.costBasis, reportingCurrency)}
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <div className="flex items-center justify-end gap-2.5">
+                          <span
+                            aria-hidden="true"
+                            className="h-1.5 w-16 overflow-hidden rounded-full bg-elev-3"
+                          >
+                            <span
+                              className="block h-full rounded-full bg-primary/60"
+                              style={{
+                                width:
+                                  sharePct == null
+                                    ? '0%'
+                                    : `${Math.min(100, sharePct > 0 ? Math.max(sharePct, 2) : 0)}%`
+                              }}
+                            />
+                          </span>
+                          <span className="w-12 text-right text-xs text-low">
+                            {formatShare(sharePct)}
+                          </span>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+                {holdings.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-5 py-8 text-center text-low">
+                      No holdings — import transactions or adjust the filter.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Mobile: stacked cards (below sm) */}
+          <div className="space-y-3 p-4 sm:hidden">
+            {holdings.map((h, i) => {
+              const label = resolveAssetLabel(h.asset, h.contractAddress, h.chain);
+              const sharePct = totalCostBasis > 0 ? (h.costBasis / totalCostBasis) * 100 : null;
+              return (
+                <div
+                  key={i}
+                  className="rounded-xl border border-hi/10 bg-elev-1 p-4 shadow-xs"
+                >
+                  <div className="flex items-center gap-3">
+                    <AssetIcon symbol={label} size={32} />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-hi">{label}</p>
+                      {h.chain && <p className="text-xs capitalize text-low">{h.chain}</p>}
+                    </div>
+                    <p className="text-sm font-semibold tabular-figures text-hi">
+                      {formatCurrency(h.costBasis, reportingCurrency)}
+                    </p>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between text-xs tabular-figures text-low">
+                    <span>Qty {h.amount.toFixed(8)}</span>
+                    <span>{formatShare(sharePct)} of portfolio</span>
+                  </div>
+                  <span
+                    aria-hidden="true"
+                    className="mt-2 block h-1.5 overflow-hidden rounded-full bg-elev-3"
+                  >
+                    <span
+                      className="block h-full rounded-full bg-primary/60"
+                      style={{
+                        width:
+                          sharePct == null
+                            ? '0%'
+                            : `${Math.min(100, sharePct > 0 ? Math.max(sharePct, 2) : 0)}%`
+                      }}
+                    />
+                  </span>
+                </div>
+              );
+            })}
+            {holdings.length === 0 && (
+              <div className="rounded-xl border border-hi/10 bg-elev-1 px-3 py-8 text-center text-sm text-low">
+                No holdings — import transactions or adjust the filter.
+              </div>
+            )}
+          </div>
+        </section>
+      )}
+
+      {/* Ledger health: the always-available manual repair entry point */}
+      <section
+        aria-label="Ledger health"
+        className="flex flex-col gap-3 rounded-2xl border border-hi/10 bg-elev-2 p-4 shadow-xs sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div className="flex items-start gap-3">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg border border-hi/10 bg-elev-3 text-low">
+            <ShieldCheck className="h-4 w-4" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-hi">Ledger health</p>
+            <p className="mt-0.5 text-xs leading-relaxed text-low">
+              Re-scans on-chain history to catch missing swap legs and balance gaps (uses Solana RPC).
+            </p>
+            {repairMsg && !ledgerAlertVisible && (
+              <p className="mt-1 text-xs text-low">{repairMsg}</p>
+            )}
+          </div>
+        </div>
+        <Button
+          variant="secondary"
+          onClick={() => void runLedgerRepairNow()}
+          disabled={repairingBalances}
+          className="shrink-0"
+        >
+          {repairingBalances ? 'Repairing…' : 'Re-run ledger repair'}
+        </Button>
+      </section>
 
       <ConfirmDialog
         open={pdfConfirmOpen}
@@ -451,208 +912,6 @@ export function PortfolioTab() {
         }}
         onCancel={() => setPdfConfirmOpen(false)}
       />
-
-      {/* KPI dashboard cards */}
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="stat-card stat-card-featured min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
-            Total holdings value
-          </p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures text-hi sm:text-xl">
-            {formatCurrency(totalCostBasis, reportingCurrency)}
-          </p>
-          <p className="mt-1 text-[0.6875rem] text-low">Cost basis · {holdings.length} asset{holdings.length === 1 ? '' : 's'}</p>
-        </div>
-        <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
-            Unrealized gain
-          </p>
-          <p className="mt-2 font-mono text-lg font-semibold tabular-figures text-mid sm:text-xl">—</p>
-          <p className="mt-1 text-[0.6875rem] text-low">Enable live prices in Settings</p>
-        </div>
-        <div className="stat-card min-w-0">
-          <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
-            Realized gain — {getFyLabel(currentFy, jurisdiction)}
-          </p>
-          <p
-            className={`mt-2 font-mono text-lg font-semibold tabular-figures sm:text-xl ${
-              realizedFyGain >= 0 ? 'text-gain' : 'text-loss'
-            }`}
-          >
-            {realizedFyGain >= 0 ? '+' : ''}
-            {formatCurrency(realizedFyGain, reportingCurrency)}
-          </p>
-          <p className="mt-1 text-[0.6875rem] text-low">FIFO · current FY</p>
-        </div>
-        {jurisdiction === 'IN' ? (
-          <TaxEstimateCard
-            variant="kpi"
-            taxableGains={realizedFyGain}
-            fy={currentFy}
-            currency={reportingCurrency}
-          />
-        ) : (
-          <div className="stat-card min-w-0">
-            <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
-              Est. tax — {getFyLabel(currentFy, jurisdiction)}
-            </p>
-            <p className="mt-2 font-mono text-lg font-semibold tabular-figures text-warn sm:text-xl">
-              {formatCurrency(estimatedFyTax, reportingCurrency)}
-            </p>
-            <p className="mt-1 text-[0.6875rem] text-low">30% + 4% cess estimate</p>
-          </div>
-        )}
-      </div>
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button
-          variant="secondary"
-          onClick={() => void runLedgerRepairNow()}
-          disabled={repairingBalances}
-          className="min-h-[44px] text-xs"
-        >
-          {repairingBalances ? 'Repairing…' : 'Re-run ledger repair'}
-        </Button>
-        <span className="text-xs text-low">
-          Re-scans on-chain history to catch missing swap legs and balance gaps (uses Solana RPC).
-        </span>
-      </div>
-
-      {ledgerRepairOffered && !repairingBalances && (
-        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-4 py-3 text-sm text-low sm:flex-row sm:items-center sm:justify-between">
-          <p>
-            Solana wallets imported. Check your ledger against on-chain history to catch missing
-            swap legs and balance gaps (uses Solana RPC).
-          </p>
-          <Button
-            variant="secondary"
-            onClick={() => void runLedgerRepairNow()}
-            className="shrink-0 text-xs"
-          >
-            Check ledger against chain
-          </Button>
-        </div>
-      )}
-
-      {(repairingBalances ||
-        (balanceVariances.length > 0 && selectedFy == null && crossCheckModeUsesLiveRpc(crossCheckMode))) && (
-        <div className="rounded-lg border border-loss/40 bg-loss/10 px-4 py-3 text-sm text-low">
-          {repairingBalances ? (
-            <p>Repairing ledger automatically — scanning on-chain history…</p>
-          ) : balanceVariances.length > 0 ? (
-            <div className="space-y-1">
-              {balanceVariances.map((v) => (
-                <p key={`${v.wallet ?? 'all'}-${v.asset}`}>
-                  <strong className="text-loss">{v.asset} differs from chain</strong>
-                  {v.wallet ? ` (${formatWalletShort(v.wallet)})` : ''}: ledger{' '}
-                  {formatCompactAmount(v.ledger)} vs wallet {formatCompactAmount(v.live)}.
-                </p>
-              ))}
-              <p className="text-xs text-low">
-                Automatic repair already ran this session. Hard-refresh or re-import if gaps remain.
-              </p>
-            </div>
-          ) : null}
-          {repairMsg && <p className="mt-1 text-xs text-low">{repairMsg}</p>}
-        </div>
-      )}
-
-      {selectedFy == null &&
-        integrityIssues.map((issue, i) => (
-          <div
-            key={`${issue.kind}-${i}`}
-            className={`rounded-lg border px-4 py-3 text-sm ${
-              issue.kind === 'negative_holding'
-                ? 'border-loss/40 bg-loss/10 text-low'
-                : 'border-warn/40 bg-warn/10 text-low'
-            }`}
-          >
-            {issue.message}
-          </div>
-        ))}
-
-      {missingPriceCount > 0 && (
-        <div className="rounded-lg border border-warn/40 bg-warn/10 px-4 py-3 text-sm text-low">
-          {missingPriceCount} transaction{missingPriceCount === 1 ? '' : 's'} still lack a fiat value — cost basis may be understated.
-          Go to Review → <strong className="text-mid">Fetch missing prices</strong>.
-        </div>
-      )}
-
-      <Card>
-        <CardHeader>
-          <CardTitle>
-            Total cost basis{selectedFy != null && ` — ${getFyLabel(selectedFy, jurisdiction)}`}
-          </CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="font-mono text-3xl text-warn">{formatCurrency(totalCostBasis, reportingCurrency)}</p>
-          <p className="mt-1 text-xs text-low">
-            {formatCompactCurrency(totalCostBasis, reportingCurrency)}
-            {selectedFy == null ? ' · all time' : ` · ${getFyLabel(selectedFy, jurisdiction)}`}
-          </p>
-        </CardContent>
-      </Card>
-
-      {holdingsComputing ? (
-        <SkeletonTable rows={5} columns={3} data-testid="portfolio-skeleton" />
-      ) : (
-        <>
-          {/* Desktop / tablet: table (sm and up) */}
-          <div className="hidden overflow-x-auto rounded-lg border border-white/10 sm:block">
-            <table className="w-full text-sm">
-              <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
-                <tr>
-                  <th className="px-3 py-2">Asset</th>
-                  <th className="px-3 py-2 text-right">Quantity</th>
-                  <th className="px-3 py-2 text-right">Cost basis</th>
-                </tr>
-              </thead>
-              <tbody className="font-mono tabular-figures">
-                {holdings.map((h, i) => (
-                  <tr key={i} className="border-t border-white/10 hover:bg-elev-3/20">
-                    <td className="px-3 py-2 text-mid">
-                      {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
-                    </td>
-                    <td className="px-3 py-2 text-right text-low">
-                      {h.amount.toFixed(8)}
-                    </td>
-                    <td className="px-3 py-2 text-right text-warn">
-                      {formatCurrency(h.costBasis, reportingCurrency)}
-                    </td>
-                  </tr>
-                ))}
-                {holdings.length === 0 && (
-                  <tr>
-                    <td colSpan={3} className="px-3 py-8 text-center text-low">
-                      No holdings — import transactions or adjust the filter.
-                    </td>
-                  </tr>
-                )}
-              </tbody>
-            </table>
-          </div>
-
-          {/* Mobile: stacked cards (below sm) */}
-          <div className="space-y-3 sm:hidden">
-            {holdings.map((h, i) => (
-              <div key={i} className="rounded-xl border border-white/10 bg-elev-2 p-4 shadow-card">
-                <p className="text-sm font-semibold text-mid">
-                  {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
-                </p>
-                <div className="mt-2 flex items-center justify-between font-mono text-xs tabular-figures">
-                  <span className="text-low">Qty {h.amount.toFixed(8)}</span>
-                  <span className="text-warn">{formatCurrency(h.costBasis, reportingCurrency)}</span>
-                </div>
-              </div>
-            ))}
-            {holdings.length === 0 && (
-              <div className="rounded-xl border border-white/10 bg-elev-2 px-3 py-8 text-center text-sm text-low">
-                No holdings — import transactions or adjust the filter.
-              </div>
-            )}
-          </div>
-        </>
-      )}
     </div>
   );
 }

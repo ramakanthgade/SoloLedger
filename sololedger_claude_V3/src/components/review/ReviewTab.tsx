@@ -1,11 +1,11 @@
-import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/transaction';
-import { formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
+import { cn, formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
 import { explorerTxUrl } from '@/lib/parsers/explorer';
@@ -47,7 +47,13 @@ import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
 import { displayFlags } from '@/lib/review/displayFlags';
 import { filterRows, paginate } from '@/lib/review/reviewTableView';
 import { LotPicker } from './LotPicker';
-import { Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles } from 'lucide-react';
+import { AssetIcon, SourceIcon } from './brandIcons';
+import { sourceBrandInfo } from './brandIconMap';
+import { groupRowsByDate, formatGroupDateLabel, pageNumberList } from './reviewListUtils';
+import {
+  Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles,
+  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, Search, Link2
+} from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useTabNav } from '@/lib/tabNav';
 import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
@@ -68,6 +74,92 @@ const FLAG_LABELS: Record<FlagReason, string> = {
   unrecognized_asset: 'Unrecognized asset',
   needs_review: 'Needs review'
 };
+
+/** Row-face type labels in the mockup's vocabulary (Buy / Sell / Send / Receive…). */
+const TYPE_LABEL: Record<TxType, string> = {
+  buy: 'Buy',
+  sell: 'Sell',
+  trade: 'Swap',
+  transfer_in: 'Receive',
+  transfer_out: 'Send',
+  income: 'Income',
+  gift_sent: 'Gift sent',
+  gift_received: 'Gift received',
+  fee: 'Fee',
+  nft_mint: 'NFT mint',
+  nft_buy: 'NFT buy',
+  nft_sell: 'NFT sell',
+  defi_deposit: 'DeFi deposit',
+  defi_withdraw: 'DeFi withdraw',
+  other: 'Other'
+};
+
+/** Directional dot color on the row-face type label (mockup: teal buy, rose sell…). */
+const TYPE_DOT: Record<TxType, string> = {
+  buy: 'bg-gain',
+  sell: 'bg-loss',
+  trade: 'bg-primary',
+  transfer_in: 'bg-gain',
+  transfer_out: 'bg-loss',
+  income: 'bg-gain',
+  gift_sent: 'bg-faint',
+  gift_received: 'bg-gain',
+  fee: 'bg-faint',
+  nft_mint: 'bg-accent',
+  nft_buy: 'bg-accent',
+  nft_sell: 'bg-accent',
+  defi_deposit: 'bg-warn',
+  defi_withdraw: 'bg-warn',
+  other: 'bg-faint'
+};
+
+/** Types that move value IN (signed +, moss) vs OUT (signed −, ink). */
+const IN_TYPES: ReadonlySet<TxType> = new Set(['buy', 'transfer_in', 'income', 'gift_received', 'nft_mint', 'nft_buy', 'defi_withdraw']);
+const OUT_TYPES: ReadonlySet<TxType> = new Set(['sell', 'transfer_out', 'gift_sent', 'fee', 'nft_sell', 'defi_deposit']);
+
+/**
+ * Filter-bar dropdown styled as a mockup `.chip` — pill shaped, 44px touch
+ * target, ember highlight while a non-default value is active.
+ */
+function ChipSelect({
+  value,
+  onChange,
+  ariaLabel,
+  active,
+  icon,
+  className,
+  children
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  ariaLabel: string;
+  active?: boolean;
+  icon?: ReactNode;
+  className?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className={cn('relative', className)}>
+      {icon && (
+        <span className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-faint">{icon}</span>
+      )}
+      <select
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        aria-label={ariaLabel}
+        className={cn(
+          'h-11 max-w-full appearance-none text-ellipsis rounded-full border bg-elev-1 pr-8 text-[0.8125rem] font-semibold shadow-xs transition-colors',
+          'hover:border-hi/20 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30',
+          icon ? 'pl-9' : 'pl-4',
+          active ? 'border-primary/50 bg-primary/[0.06] text-primary' : 'border-hi/10 text-mid'
+        )}
+      >
+        {children}
+      </select>
+      <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" aria-hidden="true" />
+    </div>
+  );
+}
 
 function FlagSelector({ tx }: { tx: Transaction }) {
   const [open, setOpen] = useState(false);
@@ -95,24 +187,26 @@ function FlagSelector({ tx }: { tx: Transaction }) {
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="Click to flag this transaction"
-        className="flex max-w-[14rem] flex-wrap items-center gap-1 text-left"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className="flex min-h-[36px] max-w-[16rem] flex-wrap items-center gap-1 rounded-md px-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
       >
         {tx.isInternalTransfer && <Badge tone="neutral" className="text-[10px]">internal</Badge>}
         {tx.isSpam && <Badge tone="loss" className="text-[10px]">spam</Badge>}
-        {tx.category === 'nft' && <Badge tone="pink" className="text-[10px]">nft</Badge>}
+        {tx.category === 'nft' && <Badge tone="accent" className="text-[10px]">nft</Badge>}
         {shownFlags.map((f) => (
-          <Badge key={f} tone="gold" className="text-[10px]">
+          <Badge key={f} tone={f === 'possible_internal_transfer' ? 'primary' : 'warn'} className="text-[10px]">
             {f.replace(/_/g, ' ')}
           </Badge>
         ))}
         {shownFlags.length === 0 && !tx.isInternalTransfer && !tx.isSpam && tx.category !== 'nft' && (
-          <span className="text-[10px] text-low">—</span>
+          <span className="text-[10px] text-faint">—</span>
         )}
-        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
       </button>
       {open && (
-        <div className="absolute right-0 top-7 z-30 min-w-[14rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
-          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">Flag transaction</p>
+        <div className="absolute left-0 top-9 z-30 min-w-[15rem] rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+          <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">Flag transaction</p>
           {ALL_FLAGS.map((flag) => {
             const on = storedFlags.has(flag);
             return (
@@ -120,14 +214,14 @@ function FlagSelector({ tx }: { tx: Transaction }) {
                 key={flag}
                 type="button"
                 onClick={() => void toggleFlag(flag)}
-                className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-1 ${on ? 'text-gain' : 'text-low'}`}
+                className={`flex min-h-[40px] w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-3 ${on ? 'font-semibold text-gain' : 'text-mid'}`}
               >
-                <span className={`h-3 w-3 rounded border ${on ? 'border-violet bg-violet' : 'border-white/10'}`} />
+                <span className={`h-3.5 w-3.5 rounded border ${on ? 'border-primary bg-primary' : 'border-hi/25'}`} aria-hidden="true" />
                 {FLAG_LABELS[flag]}
               </button>
             );
           })}
-          <div className="my-1 border-t border-white/10" />
+          <div className="my-1 border-t border-hi/10" />
           <button
             type="button"
             onClick={() =>
@@ -138,21 +232,21 @@ function FlagSelector({ tx }: { tx: Transaction }) {
                   : ([] as FlagReason[])
               })
             }
-            className="flex w-full px-3 py-1.5 text-left text-xs text-low hover:bg-elev-1"
+            className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3"
           >
             {tx.isInternalTransfer ? '↩ Unmark internal transfer' : '✓ Mark as internal transfer'}
           </button>
           <button
             type="button"
             onClick={() => void patch({ isSpam: !tx.isSpam })}
-            className="flex w-full px-3 py-1.5 text-left text-xs text-low hover:bg-elev-1"
+            className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3"
           >
             {tx.isSpam ? '↩ Unmark spam' : '🚫 Mark as spam'}
           </button>
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
+            className="flex min-h-[36px] w-full items-center gap-1 border-t border-hi/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
           >
             <X className="h-3 w-3" /> Close
           </button>
@@ -184,26 +278,32 @@ function TypeSelector({ tx }: { tx: Transaction }) {
       <button
         onClick={() => setOpen((o) => !o)}
         title="Click to reclassify this transaction"
-        className="inline-flex items-center gap-1"
+        aria-expanded={open}
+        aria-haspopup="menu"
+        className="inline-flex min-h-[32px] items-center gap-1.5 rounded-md px-1 text-[0.8125rem] font-bold text-hi transition-colors hover:bg-elev-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
       >
-        <Badge tone={TYPE_TONE[current]}>{current}</Badge>
-        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
+        <span className={cn('h-1.5 w-1.5 rounded-full', TYPE_DOT[current])} aria-hidden="true" />
+        {TYPE_LABEL[current]}
+        {open
+          ? <ChevronUp className="h-3 w-3 text-faint" aria-hidden="true" />
+          : <ChevronDown className="h-3 w-3 text-faint" aria-hidden="true" />}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card border-white/10">
-          <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">Reclassify as</p>
+        <div className="absolute left-0 top-9 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+          <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">Reclassify as</p>
           {ALL_TYPES.map((t) => (
             <button
               key={t}
               onClick={() => void reclassify(t)}
-              className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-1 ${t === current ? 'text-gain' : 'text-low'}`}
+              className={`flex min-h-[36px] w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-3 ${t === current ? 'bg-primary/[0.06]' : ''}`}
             >
               <Badge tone={TYPE_TONE[t]} className="pointer-events-none text-[10px]">{t}</Badge>
             </button>
           ))}
           <button
             onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
+            className="flex min-h-[36px] w-full items-center gap-1 border-t border-hi/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
           >
             <X className="h-3 w-3" /> Cancel
           </button>
@@ -213,21 +313,21 @@ function TypeSelector({ tx }: { tx: Transaction }) {
   );
 }
 
-const TYPE_TONE: Record<TxType, 'neutral' | 'emerald' | 'gold' | 'loss' | 'violet' | 'pink'> = {
-  buy: 'emerald',
+const TYPE_TONE: Record<TxType, 'neutral' | 'gain' | 'warn' | 'loss' | 'primary' | 'accent'> = {
+  buy: 'gain',
   sell: 'loss',
-  trade: 'violet',
+  trade: 'primary',
   transfer_in: 'neutral',
   transfer_out: 'neutral',
-  income: 'emerald',
+  income: 'gain',
   gift_sent: 'neutral',
   gift_received: 'neutral',
   fee: 'neutral',
-  nft_mint: 'pink',
-  nft_buy: 'pink',
-  nft_sell: 'pink',
-  defi_deposit: 'gold',
-  defi_withdraw: 'gold',
+  nft_mint: 'accent',
+  nft_buy: 'accent',
+  nft_sell: 'accent',
+  defi_deposit: 'warn',
+  defi_withdraw: 'warn',
   other: 'neutral'
 };
 
@@ -249,12 +349,44 @@ function txFromToAddresses(t: Transaction): { fromAddr?: string; toAddr?: string
   return { fromAddr: t.counterpartyAddress, toAddr: t.walletAddress };
 }
 
+/** Copy-to-clipboard icon button with a brief tick confirmation. */
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <button
+      type="button"
+      aria-label={label}
+      title={label}
+      onClick={() => {
+        void navigator.clipboard?.writeText(text).then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 1200);
+        });
+      }}
+      className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-low transition-colors hover:bg-elev-3 hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+    >
+      {copied ? <Check className="h-3.5 w-3.5 text-gain" /> : <Copy className="h-3.5 w-3.5" />}
+    </button>
+  );
+}
+
+/** Label/value row inside the expanded Details panel (mockup `eyebrow` + value). */
+function DetailRow({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="w-20 shrink-0 text-[10px] font-bold uppercase tracking-wide text-low">{label}</span>
+      <span className="flex min-w-0 items-center gap-1 text-xs font-semibold text-mid">{children}</span>
+    </div>
+  );
+}
+
 export function ReviewTab() {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<TxType | 'all'>('all');
   const [flagFilter, setFlagFilter] = useState<FlagReason | 'all' | 'spam' | 'internal'>('all');
   const [walletFilter, setWalletFilter] = useState<string>('all');
+  const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [fyFilter, setFyFilter] = useState<number | null>(null);
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
   const [showNeedsReview, setShowNeedsReview] = useState(false);
@@ -266,6 +398,7 @@ export function ReviewTab() {
   const [walletLabels, setWalletLabels] = useState<Map<string, string>>(new Map());
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
   // Bulk-edit: "Set type" (dropdown → impact-summary confirm) + "Set flags".
@@ -310,8 +443,12 @@ export function ReviewTab() {
   const [priceLookupEnabled, setPriceLookupEnabled] = useState<boolean | null>(null);
 
   const { goToImport } = useTabNav();
-  const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
-  const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
+  const transactionsLive = useLiveQuery(() => db.transactions.toArray(), []);
+  // Stable empty array while the query resolves, so dependent memos don't
+  // recompute on every render (react-hooks/exhaustive-deps).
+  const transactions = useMemo(() => transactionsLive ?? [], [transactionsLive]);
+  const hintsLive = useLiveQuery(() => getSpecIdHints(), []);
+  const hints = useMemo(() => hintsLive ?? {}, [hintsLive]);
 
   // Load wallet labels + jurisdiction on mount
   useEffect(() => {
@@ -333,6 +470,17 @@ export function ReviewTab() {
     const ws = new Set<string>();
     for (const t of transactions) if (t.walletAddress) ws.add(t.walletAddress);
     return Array.from(ws);
+  }, [transactions]);
+
+  /** Distinct import sources present in the ledger, for the "All sources" chip. */
+  const availableSources = useMemo(() => {
+    const seen = new Map<string, string>();
+    for (const t of transactions) {
+      if (seen.has(t.source)) continue;
+      const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? null : null;
+      seen.set(t.source, sourceBrandInfo(t.source, chainLabel).label);
+    }
+    return Array.from(seen, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label));
   }, [transactions]);
 
 
@@ -389,6 +537,16 @@ export function ReviewTab() {
     if (!settings) return null;
     return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
   }, [transactions, settings, hints]);
+
+  /** Matched disposals keyed by their source transaction id (row cost/gain sublines + expanded Analysis). */
+  const disposalByTxId = useMemo(
+    () => new Map((engineResult?.disposals ?? []).map((d) => [d.sourceTxId, d])),
+    [engineResult]
+  );
+  const lotById = useMemo(
+    () => new Map((engineResult?.lots ?? []).map((l) => [l.id, l])),
+    [engineResult]
+  );
 
   /** Non-spam transactions missing a fiat value (includes internal transfers for display). */
   const missingPriceTxs = useMemo(
@@ -469,7 +627,7 @@ export function ReviewTab() {
         if (!cancelled) setPriceLookupEnabled(s.priceApiEnabled);
       })
       .catch(() => {
-        /* keep null → treated as OFF; the manual button remains available */
+        /* keep null → treated as OFF; the banner variant + the auto-run guard */
       });
     return () => {
       cancelled = true;
@@ -614,7 +772,11 @@ export function ReviewTab() {
       isDerivative: isDerivativeTransaction
     });
 
-    return [...base].sort((a, b) => {
+    // Source filter — applied after the shared row filter so the lib contract
+    // (and its tests) stay untouched.
+    const bySource = sourceFilter === 'all' ? base : base.filter((t) => t.source === sourceFilter);
+
+    return [...bySource].sort((a, b) => {
       switch (sortBy) {
         case 'date_asc': return a.timestamp - b.timestamp;
         case 'wallet': {
@@ -628,7 +790,7 @@ export function ReviewTab() {
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
+  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
 
   const { pageRows, totalPages, safePage } = useMemo(
     () => paginate(filtered, page, PAGE_SIZE),
@@ -638,40 +800,100 @@ export function ReviewTab() {
   // Reset to page 1 when filters change
   useEffect(() => {
     setPage(1);
-  }, [assetFilter, typeFilter, flagFilter, walletFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
+  }, [assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
 
-  // Shared pagination bar — rendered both above and below the table so long
-  // lists can be paged from either end. Both instances read the same
+  /** Date-grouped view only makes sense while the list is date-sorted. */
+  const dateSorted = sortBy === 'date_desc' || sortBy === 'date_asc';
+  const groups = useMemo(
+    () => (dateSorted ? groupRowsByDate(pageRows) : [{ key: 'all', rows: pageRows }]),
+    [pageRows, dateSorted]
+  );
+
+  const anyFilterActive =
+    query !== '' ||
+    assetFilter !== 'all' ||
+    typeFilter !== 'all' ||
+    flagFilter !== 'all' ||
+    walletFilter !== 'all' ||
+    sourceFilter !== 'all' ||
+    fyFilter != null ||
+    showNeedsPrice ||
+    showNeedsReview ||
+    showSpam ||
+    instrumentFilter !== 'all';
+
+  const clearFilters = () => {
+    setQuery('');
+    setAssetFilter('all');
+    setTypeFilter('all');
+    setFlagFilter('all');
+    setWalletFilter('all');
+    setSourceFilter('all');
+    setFyFilter(null);
+    setShowNeedsPrice(false);
+    setShowNeedsReview(false);
+    setShowSpam(false);
+    setInstrumentFilter('all');
+  };
+
+  // Shared pagination bar — rendered both above and below the list so long
+  // ledgers can be paged from either end. Both instances read the same
   // page/safePage/totalPages state, so there is no duplicated pagination state.
-  const renderPagination = (wrapperClassName: string) => {
-    if (filtered.length <= PAGE_SIZE) return null;
+  const renderPagination = (wrapperClassName: string, opts?: { utcNote?: boolean }) => {
+    if (filtered.length <= PAGE_SIZE && !opts?.utcNote) return null;
     return (
-      <div className={`flex flex-wrap items-center justify-between gap-3 ${wrapperClassName}`}>
-        <p className="text-xs text-low">
-          Showing {(safePage - 1) * PAGE_SIZE + 1}–
-          {Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
-        </p>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="secondary"
-            className="text-xs"
-            disabled={safePage <= 1}
-            onClick={() => setPage((p) => Math.max(1, p - 1))}
-          >
-            Previous
-          </Button>
-          <span className="text-xs text-low">
-            Page {safePage} of {totalPages}
-          </span>
-          <Button
-            variant="secondary"
-            className="text-xs"
-            disabled={safePage >= totalPages}
-            onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-          >
-            Next
-          </Button>
-        </div>
+      <div className={`flex flex-wrap items-center gap-x-3 gap-y-2 ${wrapperClassName}`}>
+        {filtered.length > PAGE_SIZE ? (
+          <p className="text-xs tabular-figures text-low">
+            Showing {(safePage - 1) * PAGE_SIZE + 1}–
+            {Math.min(safePage * PAGE_SIZE, filtered.length)} of {filtered.length}
+          </p>
+        ) : (
+          <p className="text-xs tabular-figures text-low">{filtered.length} transactions</p>
+        )}
+        {opts?.utcNote && <p className="text-xs text-low">· All date/times are in UTC</p>}
+        {filtered.length > PAGE_SIZE && (
+          <nav aria-label="Pagination" className="ml-auto flex items-center gap-1">
+            <button
+              type="button"
+              aria-label="Previous page"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="grid h-10 w-10 place-items-center rounded-lg border border-hi/10 bg-elev-1 text-mid shadow-xs transition-colors hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:pointer-events-none disabled:opacity-40"
+            >
+              <ChevronLeft className="h-4 w-4" />
+            </button>
+            {pageNumberList(safePage, totalPages).map((p, i) =>
+              p === '…' ? (
+                <span key={`gap-${i}`} className="px-1 text-xs text-faint" aria-hidden="true">…</span>
+              ) : (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => setPage(p)}
+                  aria-current={p === safePage ? 'page' : undefined}
+                  className={cn(
+                    'h-10 w-10 rounded-lg text-xs font-bold tabular-figures transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                    p === safePage
+                      ? 'bg-primary-solid text-white shadow-sm'
+                      : 'border border-hi/10 bg-elev-1 text-mid shadow-xs hover:border-primary/40 hover:text-primary'
+                  )}
+                >
+                  {p}
+                </button>
+              )
+            )}
+            <button
+              type="button"
+              aria-label="Next page"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="grid h-10 w-10 place-items-center rounded-lg border border-hi/10 bg-elev-1 text-mid shadow-xs transition-colors hover:border-primary/40 hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:pointer-events-none disabled:opacity-40"
+            >
+              <ChevronRight className="h-4 w-4" />
+            </button>
+          </nav>
+        )}
       </div>
     );
   };
@@ -865,6 +1087,503 @@ export function ReviewTab() {
     doc.save('sololedger-review-transactions.pdf');
   };
 
+  // ---------- Row rendering (date-grouped ledger, mockup frame 06) ----------
+
+  const CHIP =
+    'inline-flex h-7 max-w-full items-center gap-1.5 rounded-full border border-hi/10 bg-elev-3/50 px-2.5 text-[0.6875rem] font-bold text-mid';
+
+  const chipArrow = <ArrowRight className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden="true" />;
+
+  /** Currency symbol (₹, $, €…) for the fiat-balance chip; falls back to the
+   * currency code's first letter for unrecognized codes. */
+  const fiatSymbol = (currency: string): string => {
+    try {
+      const parts = new Intl.NumberFormat(currency.toUpperCase() === 'INR' ? 'en-IN' : 'en-US', {
+        style: 'currency',
+        currency,
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0
+      }).formatToParts(0);
+      return parts.find((p) => p.type === 'currency')?.value ?? currency.slice(0, 1);
+    } catch {
+      return currency.slice(0, 1);
+    }
+  };
+
+  /** Middle-column from → to chips: token legs for swaps, wallet/address chips
+   * for transfers, asset → fiat-balance chips for exchange buys/sells. */
+  const renderMiddleChips = (t: Transaction, assetLabel: string, counterLabel: string | null, fromAddr?: string, toAddr?: string) => {
+    const fiatChip = (
+      <span className={CHIP}>
+        <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-elev-3 text-[9px] font-extrabold text-low" aria-hidden="true">
+          {fiatSymbol(t.fiatCurrency)}
+        </span>
+        {t.fiatCurrency} balance
+      </span>
+    );
+    const assetChip = (
+      <span className={CHIP}>
+        <AssetIcon symbol={t.asset} size={16} />
+        {assetLabel}
+      </span>
+    );
+    if (t.type === 'trade' && t.counterAsset) {
+      return (
+        <>
+          {assetChip}
+          {chipArrow}
+          <span className={CHIP}>
+            <AssetIcon symbol={t.counterAsset} size={16} />
+            {counterLabel}
+          </span>
+        </>
+      );
+    }
+    const fromLabel = fromAddr ? walletLabels.get(fromAddr.toLowerCase()) ?? truncateAddress(fromAddr) : null;
+    const toLabel = toAddr ? walletLabels.get(toAddr.toLowerCase()) ?? truncateAddress(toAddr) : null;
+    if (!fromLabel && !toLabel) {
+      // No on-chain counterparties recorded. Transfers read as source ↔ asset
+      // (a CoinDCX withdrawal, a wallet receive); buys/sells/income read as a
+      // leg against the fiat balance — into the asset for acquisitions, out
+      // of it for disposals.
+      if (t.type === 'transfer_in' || t.type === 'transfer_out') {
+        const chipChain = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : null;
+        const srcChip = (
+          <span className={CHIP}>
+            <SourceIcon source={t.source} chainLabel={chipChain} size={16} />
+            {sourceBrandInfo(t.source, chipChain).label}
+          </span>
+        );
+        return t.type === 'transfer_in' ? (
+          <>
+            {srcChip}
+            {chipArrow}
+            {assetChip}
+          </>
+        ) : (
+          <>
+            {assetChip}
+            {chipArrow}
+            {srcChip}
+          </>
+        );
+      }
+      return IN_TYPES.has(t.type) ? (
+        <>
+          {fiatChip}
+          {chipArrow}
+          {assetChip}
+        </>
+      ) : (
+        <>
+          {assetChip}
+          {chipArrow}
+          {fiatChip}
+        </>
+      );
+    }
+    return (
+      <>
+        {fromLabel && (
+          <span className={cn(CHIP, 'font-mono font-semibold')} title={fromAddr}>
+            {fromLabel}
+          </span>
+        )}
+        {fromLabel && toLabel && chipArrow}
+        {toLabel && (
+          <span className={cn(CHIP, 'font-mono font-semibold')} title={toAddr}>
+            {toLabel}
+          </span>
+        )}
+      </>
+    );
+  };
+
+  /** Plain-English one-liner for the expanded Details panel. */
+  const txSummary = (t: Transaction, assetLabel: string, counterLabel: string | null, srcLabel: string): string => {
+    const amt = `${formatCompactAmount(t.amount)} ${assetLabel}`;
+    const val = t.fiatValue != null ? ` worth ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : '';
+    const { fromAddr, toAddr } = txFromToAddresses(t);
+    const from = fromAddr ? walletLabels.get(fromAddr.toLowerCase()) ?? truncateAddress(fromAddr) : null;
+    const to = toAddr ? walletLabels.get(toAddr.toLowerCase()) ?? truncateAddress(toAddr) : null;
+    switch (t.type) {
+      case 'buy':
+        return `Bought ${amt}${val} via ${srcLabel}.`;
+      case 'sell':
+        return `Sold ${amt}${val} via ${srcLabel}.`;
+      case 'trade':
+        return `Swapped ${amt} for ${t.counterAmount != null ? `${formatCompactAmount(t.counterAmount)} ` : ''}${counterLabel ?? t.counterAsset ?? '?'} via ${srcLabel}.`;
+      case 'transfer_in':
+        return `Received ${amt}${to ? ` into ${to}` : ''} — imported from ${srcLabel}.`;
+      case 'transfer_out':
+        return `Sent ${amt}${from ? ` from ${from}` : ''}${to ? ` to ${to}` : ''}.`;
+      case 'income':
+        return `Received ${amt} as income${val} — ${srcLabel}.`;
+      case 'fee':
+        return `Paid ${amt} as a network fee${from ? ` from ${from}` : ''}.`;
+      default:
+        return `${TYPE_LABEL[t.type]} ${amt}${val} — ${srcLabel}.`;
+    }
+  };
+
+  const renderRow = (t: Transaction, idx: number) => {
+    const isDisposal = DISPOSAL_TYPES.has(t.type);
+    const candidates = engineResult?.disposalCandidates[t.id] ?? [];
+    const { fromAddr, toAddr } = txFromToAddresses(t);
+    const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : null;
+    const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
+    const counterLabel = t.counterAsset ? resolveAssetLabel(t.counterAsset, undefined, t.chain) : null;
+    const src = sourceBrandInfo(t.source, chainLabel);
+    const disposal = disposalByTxId.get(t.id);
+    const isEditing = editingFiat === t.id;
+    const expanded = expandedId === t.id;
+    const needsPrice = t.fiatValue == null && !t.isSpam;
+    const hash = t.txHash ?? t.sourceRef;
+    // explorerTxUrl is chain-aware and enforces hash shape, so a non-null
+    // result is always safe to link.
+    const hashUrl = hash ? explorerTxUrl(t.chain, hash) : null;
+    const isSelected = selected.has(t.id);
+    const timeUtc = new Date(t.timestamp).toISOString().slice(11, 16);
+    const sign = IN_TYPES.has(t.type) ? '+' : OUT_TYPES.has(t.type) ? '−' : '';
+    return (
+      <div key={t.id} className={cn(idx > 0 && 'border-t border-hi/10')}>
+        <div
+          className={cn(
+            'flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 transition-colors sm:px-5',
+            isSelected && 'bg-primary/[0.05]',
+            t.isSpam && 'opacity-60'
+          )}
+        >
+          {/* Bulk select */}
+          <label className="grid h-11 w-7 shrink-0 cursor-pointer place-items-center">
+            <input
+              type="checkbox"
+              checked={isSelected}
+              onChange={() => toggle(t.id)}
+              aria-label="Select transaction"
+              className="h-[18px] w-[18px] rounded accent-primary"
+            />
+          </label>
+
+          {/* Type block: source mark + directional type + time · source */}
+          <div className="flex min-w-0 items-center gap-3">
+            <SourceIcon source={t.source} chainLabel={chainLabel} size={36} />
+            <div className="min-w-0">
+              <span className={cn(t.isSpam && 'line-through')}>
+                <TypeSelector tx={t} />
+              </span>
+              <p className="mt-0.5 truncate pl-1 text-[11px] text-low">
+                {timeUtc} · {src.label}
+                {chainLabel && chainLabel !== src.label ? ` · ${chainLabel}` : ''}
+              </p>
+            </div>
+          </div>
+
+          {/* Middle: from → to chips + flags (wide screens) */}
+          <div className="hidden min-w-0 flex-1 flex-col gap-1 lg:flex">
+            <div className="flex flex-wrap items-center gap-1.5">
+              {renderMiddleChips(t, assetLabel, counterLabel, fromAddr, toAddr)}
+            </div>
+            <FlagSelector tx={t} />
+          </div>
+
+          {/* Amount block */}
+          <div className="ml-auto text-right lg:ml-0 lg:w-56 lg:shrink-0">
+            <div className="flex items-center justify-end gap-1.5 text-[0.8125rem] font-bold tabular-figures text-hi">
+              {t.type === 'trade' && t.counterAmount != null ? (
+                <>
+                  <span className={cn(t.isSpam && 'line-through')}>−{formatCompactAmount(t.amount)}</span>
+                  <AssetIcon symbol={t.asset} size={18} />
+                  <ArrowRight className="h-3.5 w-3.5 text-faint" aria-hidden="true" />
+                  <span className={cn('text-gain', t.isSpam && 'line-through')}>+{formatCompactAmount(t.counterAmount)}</span>
+                  <AssetIcon symbol={t.counterAsset} size={18} />
+                </>
+              ) : (
+                <>
+                  <span className={cn(IN_TYPES.has(t.type) && 'text-gain', t.isSpam && 'line-through')}>
+                    {sign}
+                    {formatCompactAmount(t.amount)}
+                  </span>
+                  <AssetIcon symbol={t.asset} size={18} />
+                  <span className="font-semibold text-mid">{assetLabel}</span>
+                </>
+              )}
+            </div>
+            {isEditing ? (
+              <span className="mt-1 flex items-center justify-end gap-1">
+                <input
+                  autoFocus
+                  value={editValue}
+                  onChange={(e) => setEditValue(e.target.value)}
+                  inputMode="decimal"
+                  className="h-9 w-24 rounded-md border border-primary/60 bg-elev-1 px-2 text-right text-xs tabular-figures text-hi focus:outline-none focus:ring-2 focus:ring-primary/30"
+                  placeholder="0.00"
+                  aria-label="Fiat value"
+                />
+                <button
+                  onClick={() => saveFiat(t)}
+                  className="grid h-9 w-9 place-items-center rounded-md text-gain transition-colors hover:bg-gain/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                  aria-label="Save"
+                >
+                  <Check className="h-4 w-4" />
+                </button>
+                <button
+                  onClick={() => setEditingFiat(null)}
+                  className="grid h-9 w-9 place-items-center rounded-md text-low transition-colors hover:bg-elev-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                  aria-label="Cancel"
+                >
+                  <X className="h-4 w-4" />
+                </button>
+              </span>
+            ) : (
+              <button
+                onClick={() => startEditFiat(t.id, t.fiatValue)}
+                className="group mt-0.5 inline-flex items-center gap-1 rounded text-xs tabular-figures text-low transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                title="Click to enter a fiat value manually"
+              >
+                {t.fiatValue != null ? `≈ ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : 'Add price'}
+                <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-70" />
+              </button>
+            )}
+            {disposal && t.fiatValue != null && !isEditing && (
+              <p className="mt-0.5 text-[11px] tabular-figures text-low">
+                cost {formatCurrency(disposal.costBasis, t.fiatCurrency)} · {disposal.method} · {disposal.lotConsumption.length} lot
+                {disposal.lotConsumption.length === 1 ? '' : 's'}{' '}
+                <span className={cn('whitespace-nowrap font-bold', disposal.gain >= 0 ? 'text-gain' : 'text-loss')}>
+                  {`${disposal.gain >= 0 ? '+' : '−'}${formatCurrency(Math.abs(disposal.gain), t.fiatCurrency)}`}
+                </span>
+              </p>
+            )}
+          </div>
+
+          {/* Row actions */}
+          <div className="flex shrink-0 items-center gap-1">
+            {hash &&
+              (hashUrl ? (
+                <a
+                  href={hashUrl}
+                  target="_blank"
+                  rel="noreferrer"
+                  title={`View transaction hash on explorer: ${hash}`}
+                  aria-label="View transaction hash on explorer"
+                  className="grid h-9 w-9 place-items-center rounded-lg text-low transition-colors hover:bg-elev-3 hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                >
+                  <Link2 className="h-4 w-4" />
+                </a>
+              ) : (
+                <span title={hash} className="grid h-9 w-9 place-items-center rounded-lg text-faint">
+                  <Link2 className="h-4 w-4" />
+                </span>
+              ))}
+            <button
+              type="button"
+              onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
+              aria-expanded={expanded}
+              aria-label={expanded ? 'Collapse transaction details' : 'Expand transaction details'}
+              className={cn(
+                'grid h-9 w-9 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                expanded ? 'bg-elev-3 text-primary' : 'text-low hover:bg-elev-3 hover:text-hi'
+              )}
+            >
+              {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+          </div>
+
+          {/* Flags (narrow screens — under the type block, full width) */}
+          <div className="w-full pl-10 lg:hidden">
+            <FlagSelector tx={t} />
+          </div>
+        </div>
+
+        {/* Inline warning strip — missing market price (mockup frame 06) */}
+        {needsPrice && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-warn/20 bg-warn/10 px-5 py-2 text-xs font-semibold text-mid sm:pl-[4.5rem]">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warn" aria-hidden="true" />
+            <span>
+              No market price found for <span className="font-bold text-hi">{assetLabel}</span> on{' '}
+              {formatGroupDateLabel(new Date(t.timestamp).toISOString().slice(0, 10))} — value stays unset until priced.
+            </span>
+            <button
+              type="button"
+              onClick={() => startEditFiat(t.id, t.fiatValue)}
+              className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+            >
+              Add manual price
+            </button>
+          </div>
+        )}
+
+        {/* Expanded Details panel */}
+        {expanded && (
+          <div className="border-t border-hi/10 bg-elev-1/40 px-4 py-4 sm:px-6">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_260px]">
+              <div className="min-w-0">
+                <p className="text-[0.8125rem] leading-relaxed text-mid">{txSummary(t, assetLabel, counterLabel, src.label)}</p>
+                <div className="mt-3 space-y-2">
+                  <DetailRow label="Tx hash">
+                    {hash ? (
+                      <>
+                        <span className="rounded-md border border-hi/10 bg-elev-3/60 px-2 py-0.5 font-mono text-[11px]" title={hash}>
+                          {truncateAddress(hash)}
+                        </span>
+                        <CopyButton text={hash} label="Copy transaction hash" />
+                        {hashUrl && (
+                          <a
+                            href={hashUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                          >
+                            Explorer ↗
+                          </a>
+                        )}
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </DetailRow>
+                  <DetailRow label="Source">
+                    <SourceIcon source={t.source} chainLabel={chainLabel} size={18} />
+                    {src.label}
+                  </DetailRow>
+                  <DetailRow label="From">
+                    {fromAddr ? (
+                      <>
+                        <span className="font-mono text-[11px]" title={fromAddr}>
+                          {walletLabels.get(fromAddr.toLowerCase()) ?? truncateAddress(fromAddr)}
+                        </span>
+                        <CopyButton text={fromAddr} label="Copy source address" />
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </DetailRow>
+                  <DetailRow label="To">
+                    {toAddr ? (
+                      <>
+                        <span className="font-mono text-[11px]" title={toAddr}>
+                          {walletLabels.get(toAddr.toLowerCase()) ?? truncateAddress(toAddr)}
+                        </span>
+                        <CopyButton text={toAddr} label="Copy destination address" />
+                      </>
+                    ) : (
+                      '—'
+                    )}
+                  </DetailRow>
+                  {chainLabel && <DetailRow label="Chain">{chainLabel}</DetailRow>}
+                  {t.notes && <DetailRow label="Notes">{t.notes}</DetailRow>}
+                </div>
+                {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
+                  <button
+                    type="button"
+                    className="mt-3 rounded text-xs font-bold text-primary underline decoration-dotted hover:text-primary-deep focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                    onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
+                  >
+                    {openLotPicker === t.id ? 'Hide lot picker' : 'Match lots (Specific ID)'}
+                  </button>
+                )}
+              </div>
+              <aside className="self-start rounded-xl border border-hi/10 bg-elev-3/50 p-4 text-xs">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-semibold text-mid">Market value</span>
+                  <span className="font-bold tabular-figures text-hi">
+                    {t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : '—'}
+                  </span>
+                </div>
+                {t.feeAmount != null && t.feeAsset && (
+                  <div className="mt-2 flex items-center justify-between gap-3">
+                    <span className="font-semibold text-mid">Network fee</span>
+                    <span className="font-bold tabular-figures text-hi">
+                      {formatCompactAmount(t.feeAmount)} {t.feeAsset}
+                    </span>
+                  </div>
+                )}
+                {disposal && (
+                  <>
+                    <div className="my-2.5 border-t border-hi/10" />
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="font-semibold text-mid">Cost basis</span>
+                      <span className="font-bold tabular-figures text-hi">{formatCurrency(disposal.costBasis, t.fiatCurrency)}</span>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-3">
+                      <span className="font-semibold text-mid">Realized gain</span>
+                      <span className={cn('whitespace-nowrap font-bold tabular-figures', disposal.gain >= 0 ? 'text-gain' : 'text-loss')}>
+                        {`${disposal.gain >= 0 ? '+' : '−'}${formatCurrency(Math.abs(disposal.gain), t.fiatCurrency)}`}
+                      </span>
+                    </div>
+                    <div className="mt-2.5">
+                      <Badge tone="primary">Cost basis · {disposal.method}</Badge>
+                    </div>
+                  </>
+                )}
+                {t.isInternalTransfer && (
+                  <div className="mt-2.5">
+                    <Badge tone="neutral">Internal · not taxable</Badge>
+                  </div>
+                )}
+              </aside>
+            </div>
+
+            {/* Matched lots (the cost-basis provenance story) */}
+            {disposal && disposal.lotConsumption.length > 0 && (
+              <div className="mt-4">
+                <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-low">
+                  Matched lots · {disposal.method} · oldest lots first
+                </p>
+                <div className="overflow-x-auto rounded-lg border border-hi/10">
+                  <table className="w-full min-w-[480px] text-xs">
+                    <thead className="bg-elev-3/60 text-left text-[10px] uppercase tracking-wide text-low">
+                      <tr>
+                        <th className="px-3 py-2 font-bold">Acquisition lot</th>
+                        <th className="px-3 py-2 text-right font-bold">Amount</th>
+                        <th className="px-3 py-2 text-right font-bold">Cost basis</th>
+                      </tr>
+                    </thead>
+                    <tbody className="tabular-figures">
+                      {disposal.lotConsumption.map((lc) => {
+                        const lot = lotById.get(lc.lotId);
+                        return (
+                          <tr key={lc.lotId} className="border-t border-hi/10">
+                            <td className="px-3 py-2 font-semibold text-hi">
+                              {lot ? formatGroupDateLabel(new Date(lot.acquiredAt).toISOString().slice(0, 10)) : '—'}
+                              {lot && <span className="ml-2 font-normal text-low">{lot.acquisitionType.replace(/_/g, ' ')}</span>}
+                            </td>
+                            <td className="px-3 py-2 text-right font-semibold text-mid">{formatCompactAmount(lc.amount)}</td>
+                            <td className="px-3 py-2 text-right text-mid">{formatCurrency(lc.costBasis, t.fiatCurrency)}</td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="border-t border-hi/10 bg-gain/[0.07] font-bold">
+                        <td className="rounded-bl-lg px-3 py-2 text-hi">Net disposal</td>
+                        <td className="px-3 py-2 text-right text-hi">{formatCompactAmount(disposal.amount)}</td>
+                        <td className={cn('rounded-br-lg px-3 py-2 text-right', disposal.gain >= 0 ? 'text-gain' : 'text-loss')}>
+                          {disposal.gain >= 0 ? '+' : '−'}
+                          {formatCurrency(Math.abs(disposal.gain), t.fiatCurrency)}
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {openLotPicker === t.id && (
+              <div className="mt-4">
+                <LotPicker
+                  txId={t.id}
+                  candidates={candidates}
+                  currentHint={hints[t.id]}
+                  currency={t.fiatCurrency}
+                  onSaved={() => setOpenLotPicker(null)}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   if (transactions.length === 0) {
     return (
       <div className="space-y-6">
@@ -884,16 +1603,27 @@ export function ReviewTab() {
   }
 
   return (
-    <div className="space-y-4">
-      <div>
+    <div className="space-y-5 pb-28">
+      {/* Page head — mockup frame 06: title + count pill + on-device footnote */}
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <h2 className="page-title">Review</h2>
-        <p className="mt-1 text-sm text-low">Give each transaction a quick once-over before you file.</p>
+        <span className="inline-flex h-[26px] items-center rounded-full border border-hi/10 bg-elev-3 px-2.5 text-xs font-bold tabular-figures text-mid">
+          {transactions.length.toLocaleString('en-IN')}
+        </span>
+        <p className="text-sm text-low">Review, label &amp; reconcile — all on-device.</p>
+        <div className="ml-auto flex items-center gap-2">
+          <span className="hidden text-xs text-low xl:inline">Export: CSV/JSON recommended for detailed CA review</span>
+          <Button variant="secondary" size="sm" onClick={exportFilteredCsv}>CSV</Button>
+          <Button variant="secondary" size="sm" onClick={exportFilteredJson}>JSON</Button>
+          <Button variant="secondary" size="sm" onClick={() => setPdfConfirmOpen(true)}>PDF</Button>
+        </div>
       </div>
+
       {/* Token-name resolution — local/BYOK only; hosted resolves automatically. */}
       {showTokenResolveBanner(hosted, unresolvedSymbolTxs.length) && (
-        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-xl border border-hi/10 bg-elev-2 px-5 py-4 shadow-xs sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-mid">
+            <p className="text-sm font-semibold text-hi">
               {unresolvedSymbolTxs.length} token{unresolvedSymbolTxs.length === 1 ? '' : 's'} shown by contract address
             </p>
             <p className="mt-1 text-xs text-low">
@@ -913,9 +1643,9 @@ export function ReviewTab() {
 
       {/* DCA / Recurring order banner — local/BYOK only; hosted classifies automatically. */}
       {showDcaBanner(hosted, dcaGroups.length) && (
-        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-xl border border-primary/40 bg-primary/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-mid">
+            <p className="text-sm font-semibold text-hi">
               {dcaGroups.length} DCA / Recurring order{dcaGroups.length === 1 ? '' : 's'} detected
             </p>
             <div className="mt-1 space-y-0.5 text-xs text-low">
@@ -958,7 +1688,7 @@ export function ReviewTab() {
                 setApplyingDca(false);
               }
             }}
-            className="shrink-0 border-violet/40 text-gain"
+            className="shrink-0 border-primary/40 text-primary"
           >
             {applyingDca ? 'Classifying…' : 'Classify DCA fills'}
           </Button>
@@ -966,15 +1696,15 @@ export function ReviewTab() {
       )}
 
       {dcaMsg && (
-        <div className="rounded-sm border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-mid">
+        <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-mid">
           {dcaMsg}
         </div>
       )}
 
       {potentialSwapPairs > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-xl border border-primary/40 bg-primary/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <p className="text-sm font-semibold text-mid">
+            <p className="text-sm font-semibold text-hi">
               {potentialSwapPairs} possible DEX swap{potentialSwapPairs === 1 ? '' : 's'} waiting to be merged
             </p>
             <p className="text-xs text-low">
@@ -987,13 +1717,13 @@ export function ReviewTab() {
 
       {/* DefiLlama reward-income suggestions — local/BYOK only; hosted auto-runs. */}
       {showLlamaBanner(hosted, solanaTransferInCount) && (
-        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-xl border border-hi/10 bg-elev-2 px-5 py-4 shadow-xs sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet/20 text-violet">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/15 text-primary">
               <Sparkles className="h-5 w-5" />
             </span>
             <div>
-              <p className="text-sm font-semibold text-mid">
+              <p className="text-sm font-semibold text-hi">
                 {solanaTransferInCount} unclassified Solana transfer{solanaTransferInCount === 1 ? '' : 's'}-in
               </p>
               <p className="mt-1 text-xs text-low">
@@ -1017,19 +1747,19 @@ export function ReviewTab() {
       {/* Result line: in hosted mode only shown when rows were actually flagged,
           so the user can tell why transactions entered the Needs-review queue. */}
       {showLlamaResultMessage(hosted, llamaMsg, llamaSuggested) && (
-        <div className={`rounded-sm border px-3 py-2 text-xs ${llamaMsg!.startsWith('DefiLlama:') ? 'border-violet/30 bg-violet/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+        <div className={`rounded-lg border px-3 py-2 text-xs ${llamaMsg!.startsWith('DefiLlama:') ? 'border-primary/30 bg-primary/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
           {llamaMsg}
         </div>
       )}
 
       {missingPriceTxs.length > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border-2 border-warn/30 bg-warn/20 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-xl border border-warn/30 bg-warn/15 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-warn text-hi">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-warn/20 text-warn">
               <AlertTriangle className="h-5 w-5" />
             </span>
             <div>
-              <p className="text-sm font-semibold text-mid">
+              <p className="text-sm font-semibold text-hi">
                 {missingPriceTxs.length} transaction{missingPriceTxs.length === 1 ? '' : 's'} still need a price
               </p>
               <p className="text-xs text-low">
@@ -1055,320 +1785,436 @@ export function ReviewTab() {
         </div>
       )}
       {priceErrors.length > 0 && (
-        <div className={`rounded-sm border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Finished') ? 'border-violet/30 bg-violet/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+        <div className={`rounded-lg border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Finished') ? 'border-primary/30 bg-primary/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
           {priceErrors.slice(0, 5).join(' · ')}
           {priceErrors.length > 5 ? ` · +${priceErrors.length - 5} more` : ''}
         </div>
       )}
 
       {swapDetectMsg && (
-        <div className="rounded-sm border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-gain">
+        <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-gain">
           {swapDetectMsg}
         </div>
       )}
 
-      <div className="flex flex-wrap items-center gap-3">
-        <input
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search transactions…"
-          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft placeholder:text-low focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
-        />
-        {/* Asset filter */}
-        <select
-          value={assetFilter}
-          onChange={(e) => setAssetFilter(e.target.value)}
-          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
+      {/* Filter bar — one baseline of pill chips (mockup frame 06) */}
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-faint" aria-hidden="true" />
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search transactions…"
+            aria-label="Search transactions"
+            className="h-11 w-52 rounded-full border border-hi/10 bg-elev-1 pl-10 pr-4 text-sm text-hi shadow-xs transition-colors placeholder:text-faint hover:border-hi/20 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30"
+          />
+        </div>
+
+        {/* Source filter — with the brand mark of the active source */}
+        <ChipSelect
+          value={sourceFilter}
+          onChange={setSourceFilter}
+          ariaLabel="Source filter"
+          active={sourceFilter !== 'all'}
+          icon={
+            sourceFilter === 'all' ? (
+              <Link2 className="h-3.5 w-3.5" />
+            ) : (
+              <SourceIcon source={sourceFilter} size={18} />
+            )
+          }
         >
+          <option value="all">All sources</option>
+          {availableSources.map((s) => (
+            <option key={s.id} value={s.id}>{s.label}</option>
+          ))}
+        </ChipSelect>
+
+        {/* Asset filter */}
+        <ChipSelect value={assetFilter} onChange={setAssetFilter} ariaLabel="Asset filter" active={assetFilter !== 'all'}>
           <option value="all">All assets</option>
           {assets.map((a) => (<option key={a} value={a}>{a}</option>))}
-        </select>
+        </ChipSelect>
 
         {/* Type filter */}
-        <select
-          value={typeFilter}
-          onChange={(e) => setTypeFilter(e.target.value as TxType | 'all')}
-          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
-        >
+        <ChipSelect value={typeFilter} onChange={(v) => setTypeFilter(v as TxType | 'all')} ariaLabel="Type filter" active={typeFilter !== 'all'}>
           <option value="all">All types</option>
           {ALL_TYPES.map((t) => (
             <option key={t} value={t}>{t.replace(/_/g, ' ')}</option>
           ))}
-        </select>
+        </ChipSelect>
 
         {/* Flags filter */}
-        <select
-          value={flagFilter}
-          onChange={(e) => setFlagFilter(e.target.value as FlagReason | 'all' | 'spam' | 'internal')}
-          aria-label="Flags filter"
-          className={`rounded-md border bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20 ${flagFilter !== 'all' ? 'border-violet/50 ring-2 ring-violet/20' : 'border-white/10'}`}
-        >
-          <option value="all">All flags</option>
-          {ALL_FLAGS.map((f) => (
-            <option key={f} value={f}>{FLAG_LABELS[f]}</option>
-          ))}
-          <option value="spam">Spam</option>
-          <option value="internal">Internal</option>
-        </select>
+        <div className="relative">
+          <Flag className="pointer-events-none absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" aria-hidden="true" />
+          <select
+            value={flagFilter}
+            onChange={(e) => setFlagFilter(e.target.value as FlagReason | 'all' | 'spam' | 'internal')}
+            aria-label="Flags filter"
+            className={cn(
+              'h-11 appearance-none rounded-full border bg-elev-1 pl-9 pr-8 text-[0.8125rem] font-semibold shadow-xs transition-colors',
+              'hover:border-hi/20 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30',
+              flagFilter !== 'all' ? 'border-primary/50 bg-primary/[0.06] text-primary' : 'border-hi/10 text-mid'
+            )}
+          >
+            <option value="all">All flags</option>
+            {ALL_FLAGS.map((f) => (
+              <option key={f} value={f}>{FLAG_LABELS[f]}</option>
+            ))}
+            <option value="spam">Spam</option>
+            <option value="internal">Internal</option>
+          </select>
+          <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" aria-hidden="true" />
+        </div>
 
         {/* Wallet filter */}
         {availableWallets.length > 1 && (
-          <select
-            value={walletFilter}
-            onChange={(e) => setWalletFilter(e.target.value)}
-            className="max-w-[180px] truncate rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
-          >
+          <ChipSelect value={walletFilter} onChange={setWalletFilter} ariaLabel="Wallet filter" active={walletFilter !== 'all'} className="max-w-[180px]">
             <option value="all">All wallets</option>
             {availableWallets.map((w) => (
               <option key={w} value={w}>{walletLabels.get(w.toLowerCase()) ?? `${w.slice(0, 8)}…`}</option>
             ))}
-          </select>
+          </ChipSelect>
         )}
 
         {/* FY filter */}
-        <select
-          value={fyFilter ?? ''}
-          onChange={(e) => setFyFilter(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
+        <ChipSelect
+          value={fyFilter == null ? '' : String(fyFilter)}
+          onChange={(v) => setFyFilter(v ? Number(v) : null)}
+          ariaLabel="Financial year filter"
+          active={fyFilter != null}
         >
           <option value="">All periods</option>
           {availableFys.map((fy) => (
             <option key={fy} value={fy}>{getFyLabel(fy, jurisdiction)}</option>
           ))}
-        </select>
+        </ChipSelect>
 
-        {/* Sort selector */}
-        <div className="flex items-center gap-1.5 rounded-full border border-white/10 bg-elev-2 px-3 py-1.5">
-          <ArrowUpDown className="h-3.5 w-3.5 text-low" />
-          <select
-            value={sortBy}
-            onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
-            className="bg-transparent text-sm text-mid focus:outline-none"
-          >
-            <option value="date_desc">Date ↓ (newest)</option>
-            <option value="date_asc">Date ↑ (oldest)</option>
-            <option value="wallet">By wallet</option>
-            <option value="asset">By asset</option>
-            <option value="type">By type</option>
-          </select>
-        </div>
-
-        {/* Quick-filter toggles */}
+        {/* Quick-filter toggles (the mockup's "Warnings" vocabulary) */}
         <button
+          type="button"
+          aria-pressed={showNeedsPrice}
           onClick={() => { setShowNeedsPrice((v) => !v); setShowSpam(false); setShowNeedsReview(false); }}
-          className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsPrice ? 'border-warn/30 bg-warn/20 text-warn' : 'border-white/10 text-low hover:text-mid'}`}
+          className={cn(
+            'h-11 rounded-full border px-4 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+            showNeedsPrice ? 'border-warn/40 bg-warn/15 text-warn' : 'border-hi/10 bg-elev-1 text-low shadow-xs hover:text-mid'
+          )}
         >
-          {showNeedsPrice ? `Needs price (${missingPriceTxs.length})` : `Needs price: ${missingPriceTxs.length}`}
+          {showNeedsPrice ? `Needs price (${missingPriceTxs.length}) ✕` : `Needs price: ${missingPriceTxs.length}`}
         </button>
         {needsReviewCount > 0 && (
           <button
+            type="button"
+            aria-pressed={showNeedsReview}
             onClick={() => { setShowNeedsReview((v) => !v); setShowSpam(false); setShowNeedsPrice(false); }}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsReview ? 'border-warn/30 bg-warn/20 text-warn' : 'border-white/10 text-low hover:text-mid'}`}
+            className={cn(
+              'h-11 rounded-full border px-4 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+              showNeedsReview ? 'border-warn/40 bg-warn/15 text-warn' : 'border-hi/10 bg-elev-1 text-low shadow-xs hover:text-mid'
+            )}
           >
-            {showNeedsReview ? `Needs review (${needsReviewCount}) ← back` : `Needs review: ${needsReviewCount}`}
+            {showNeedsReview ? `Needs review (${needsReviewCount}) ✕` : `Needs review: ${needsReviewCount}`}
           </button>
         )}
         {spamTxCount > 0 && (
           <button
+            type="button"
+            aria-pressed={showSpam}
             onClick={() => { setShowSpam((v) => !v); setShowNeedsPrice(false); setShowNeedsReview(false); }}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showSpam ? 'border-loss bg-loss/20 text-loss' : 'border-white/10 text-low hover:text-mid'}`}
+            className={cn(
+              'h-11 rounded-full border px-4 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+              showSpam ? 'border-loss/40 bg-loss/15 text-loss' : 'border-hi/10 bg-elev-1 text-low shadow-xs hover:text-mid'
+            )}
           >
-            {showSpam ? `Spam (${spamTxCount}) ← back` : `Spam: ${spamTxCount}`}
+            {showSpam ? `Spam (${spamTxCount}) ✕` : `Spam: ${spamTxCount}`}
           </button>
         )}
 
-        <span className="text-xs text-low">{filtered.length} shown</span>
-        <div className="flex rounded-full border border-white/10 p-0.5 text-xs">
-          {(
-            [
-              ['all', 'All'],
-              ['spot', 'Spot'],
-              ['derivative', 'Derivatives']
-            ] as const
-          ).map(([id, label]) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setInstrumentFilter(id)}
-              className={`rounded-full px-3 py-1 font-medium transition ${
-                instrumentFilter === id ? 'bg-violet text-white' : 'text-low hover:text-mid'
-              }`}
+        {anyFilterActive && (
+          <button
+            type="button"
+            onClick={clearFilters}
+            className="rounded px-1 text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+          >
+            Clear filters
+          </button>
+        )}
+
+        <div className="ml-auto flex flex-wrap items-center gap-2">
+          {/* Instrument segmented control */}
+          <div className="flex rounded-full border border-hi/10 bg-elev-1 p-1 text-xs shadow-xs" role="group" aria-label="Instrument filter">
+            {(
+              [
+                ['all', 'All'],
+                ['spot', 'Spot'],
+                ['derivative', 'Derivatives']
+              ] as const
+            ).map(([id, label]) => (
+              <button
+                key={id}
+                type="button"
+                aria-pressed={instrumentFilter === id}
+                onClick={() => setInstrumentFilter(id)}
+                className={cn(
+                  'min-h-[36px] rounded-full px-3.5 font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                  instrumentFilter === id ? 'bg-primary-solid text-white shadow-sm' : 'text-low hover:text-mid'
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+
+          {/* Sort selector */}
+          <div className="relative">
+            <ArrowUpDown className="pointer-events-none absolute left-3.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" aria-hidden="true" />
+            <select
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value as typeof sortBy)}
+              aria-label="Sort transactions"
+              className="h-11 appearance-none rounded-full border border-hi/10 bg-elev-1 pl-9 pr-8 text-[0.8125rem] font-semibold text-mid shadow-xs transition-colors hover:border-hi/20 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30"
             >
-              {label}
+              <option value="date_desc">Date ↓ (newest)</option>
+              <option value="date_asc">Date ↑ (oldest)</option>
+              <option value="wallet">By wallet</option>
+              <option value="asset">By asset</option>
+              <option value="type">By type</option>
+            </select>
+            <ChevronDown className="pointer-events-none absolute right-3 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-faint" aria-hidden="true" />
+          </div>
+
+          <span className="text-xs tabular-figures text-low">{filtered.length} shown</span>
+
+          {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
+            <Button size="sm" disabled={fetchingPrices} onClick={fetchMissingPrices} className="shrink-0">
+              {fetchingPrices
+                ? `Fetching ${priceProgress?.done ?? 0}/${priceProgress?.total ?? missingPriceTxs.length}…`
+                : `Fetch ${missingPriceTxs.length} price${missingPriceTxs.length === 1 ? '' : 's'}`}
+            </Button>
+          )}
+        </div>
+      </div>
+
+      {/* Select-page control + top pagination */}
+      {pageRows.length > 0 && (
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <label className="flex min-h-[40px] cursor-pointer items-center gap-2 rounded-md px-1 text-xs font-semibold text-low">
+            <input
+              type="checkbox"
+              checked={allVisibleSelected}
+              onChange={toggleSelectAll}
+              title="Select all shown rows"
+              aria-label="Select all shown rows"
+              className="h-4 w-4 rounded accent-primary"
+            />
+            Select page
+          </label>
+          <div className="ml-auto">{renderPagination('')}</div>
+        </div>
+      )}
+
+      {/* Date-grouped ledger (mockup frame 06) */}
+      {pageRows.length === 0 ? (
+        <div className="rounded-2xl border border-dashed border-hi/15 bg-elev-2 px-6 py-10 text-center shadow-xs">
+          <p className="text-sm font-semibold text-mid">No transactions match these filters.</p>
+          {anyFilterActive && (
+            <button
+              type="button"
+              onClick={clearFilters}
+              className="mt-2 rounded text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+            >
+              Clear filters
             </button>
+          )}
+        </div>
+      ) : (
+        <div className="space-y-6">
+          {groups.map((g) => (
+            <section key={g.key} aria-label={g.key === 'all' ? 'Transactions' : `Transactions on ${formatGroupDateLabel(g.key)}`}>
+              {g.key !== 'all' && (
+                <div className="mb-2.5 flex items-baseline gap-2.5 px-1">
+                  <h3 className="text-[0.8125rem] font-bold text-hi">{formatGroupDateLabel(g.key)}</h3>
+                  <span className="text-xs tabular-figures text-low">
+                    {g.rows.length} transaction{g.rows.length === 1 ? '' : 's'}
+                  </span>
+                </div>
+              )}
+              <div className="rounded-2xl border border-hi/10 bg-elev-2 shadow-card">{g.rows.map((t, i) => renderRow(t, i))}</div>
+            </section>
           ))}
         </div>
-        <span className="text-xs text-low">Export: CSV/JSON recommended for detailed CA review</span>
+      )}
 
-        <div className="flex gap-2">
-          <Button variant="secondary" onClick={exportFilteredCsv} className="text-xs">CSV</Button>
-          <Button variant="secondary" onClick={exportFilteredJson} className="text-xs">JSON</Button>
-          <Button variant="secondary" onClick={() => setPdfConfirmOpen(true)} className="text-xs">PDF</Button>
-        </div>
+      {renderPagination('pt-1', { utcNote: true })}
 
-        {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
-          <Button disabled={fetchingPrices} onClick={fetchMissingPrices} className="ml-auto shrink-0">
-            {fetchingPrices
-              ? `Fetching ${priceProgress?.done ?? 0}/${priceProgress?.total ?? missingPriceTxs.length}…`
-              : `Fetch ${missingPriceTxs.length} price${missingPriceTxs.length === 1 ? '' : 's'}`}
-          </Button>
-        )}
-
-        {selected.size > 0 && (
-          <div className="ml-auto flex flex-wrap items-center gap-2">
-            {/* Bulk: Set type (dropdown → impact-summary confirm) */}
-            <div className="relative">
-              <Button
-                variant="secondary"
-                disabled={applyingBulk}
-                onClick={() => {
-                  setBulkFlagsMenuOpen(false);
-                  setBulkTypeMenuOpen((o) => !o);
-                }}
-              >
-                <Tags className="mr-1 h-3 w-3" />
-                Set type ({selected.size})
-              </Button>
-              {bulkTypeMenuOpen && (
-                <div className="absolute right-0 top-10 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
-                  <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">
-                    Set {selected.size} selected to
-                  </p>
-                  {ALL_TYPES.map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      onClick={() => {
-                        setBulkTypeMenuOpen(false);
-                        setPendingBulkType(t);
-                      }}
-                      className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-1"
-                    >
-                      <Badge tone={TYPE_TONE[t]} className="pointer-events-none text-[10px]">{t}</Badge>
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setBulkTypeMenuOpen(false)}
-                    className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
-                  >
-                    <X className="h-3 w-3" /> Cancel
-                  </button>
-                </div>
-              )}
-            </div>
-
-            {/* Bulk: Set flags (checkbox list → Apply) */}
-            <div className="relative">
-              <Button variant="secondary" disabled={applyingBulk} onClick={openBulkFlags}>
-                <Flag className="mr-1 h-3 w-3" />
-                Set flags ({selected.size})
-              </Button>
-              {bulkFlagsMenuOpen && bulkFlagsSel && (
-                <div className="absolute right-0 top-10 z-30 min-w-[16rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
-                  <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">
-                    Apply to {selected.size} selected
-                  </p>
-                  <p className="px-3 pb-1 text-[10px] text-low">
-                    Checked = set on all · unchecked = remove from all
-                  </p>
-                  {BULK_FLAG_CHECKBOXES.map((flag) => (
-                    <label
-                      key={flag}
-                      className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1"
-                    >
-                      {flag === 'possible_internal_transfer' ? (
-                        <input
-                          type="checkbox"
-                          checked={bulkFlagsSel.hint === 'checked'}
-                          ref={(el) => {
-                            // Native dash for a mixed selection: 'mixed' is not
-                            // expressible via the `checked` prop, so set the
-                            // DOM-only `indeterminate` property.
-                            if (el) el.indeterminate = bulkFlagsSel.hint === 'mixed';
-                          }}
-                          onChange={(e) =>
-                            // First click from the dash CHECKS (set on all);
-                            // the next click unchecks (remove from all).
-                            // 'mixed' itself is an initial state only.
-                            patchBulkFlagsSel({ hint: e.target.checked ? 'checked' : 'unchecked' })
-                          }
-                          className="accent-violet"
-                        />
-                      ) : (
-                        <input
-                          type="checkbox"
-                          checked={bulkFlagsSel.flags.get(flag) ?? false}
-                          onChange={(e) => setBulkFlag(flag, e.target.checked)}
-                          className="accent-violet"
-                        />
-                      )}
-                      {FLAG_LABELS[flag]}
-                    </label>
-                  ))}
-                  <p className="px-3 pb-1 text-[10px] text-low">
-                    “Missing cost basis” also appears automatically while a row has no fiat value.
-                  </p>
-                  <p className="px-3 pb-1 text-[10px] text-low">
-                    A dash on “Possible internal transfer” means only some selected rows have it — those rows are left as-is unless you check or uncheck the box.
-                  </p>
-                  <div className="my-1 border-t border-white/10" />
-                  <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1">
-                    <input
-                      type="checkbox"
-                      checked={bulkFlagsSel.internal}
-                      onChange={(e) => patchBulkFlagsSel({ internal: e.target.checked })}
-                      className="accent-violet"
-                    />
-                    Internal transfer (non-taxable)
-                  </label>
-                  <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1">
-                    <input
-                      type="checkbox"
-                      checked={bulkFlagsSel.spam}
-                      onChange={(e) => patchBulkFlagsSel({ spam: e.target.checked })}
-                      className="accent-violet"
-                    />
-                    Spam (excluded everywhere)
-                  </label>
-                  <p className="px-3 pb-1 text-[10px] text-low">
-                    Confirming “Internal transfer” clears the “Possible internal transfer” hint.
-                  </p>
-                  <div className="mt-1 flex justify-end gap-2 border-t border-white/10 px-3 py-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setBulkFlagsMenuOpen(false);
-                        setBulkFlagsSel(null);
-                      }}
-                      className="rounded-full px-3 py-1 text-xs text-low hover:text-mid"
-                    >
-                      Cancel
-                    </button>
-                    <Button
-                      variant="primary"
-                      disabled={applyingBulk}
-                      onClick={() => void applyBulkFlags()}
-                      className="px-3 py-1 text-xs"
-                    >
-                      {applyingBulk ? 'Applying…' : `Apply to ${selected.size}`}
-                    </Button>
-                  </div>
-                </div>
-              )}
-            </div>
-
+      {/* Floating bulk action bar (mockup frame 08) — menus open upward. */}
+      {selected.size > 0 && (
+        <div className="fixed bottom-5 left-1/2 z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-hi/15 bg-elev-2 px-3 py-2 shadow-pop">
+          <span className="px-2 text-[0.8125rem] font-extrabold tabular-figures text-hi">{selected.size} selected</span>
+          <span className="mx-1 hidden h-6 w-px bg-hi/10 sm:block" aria-hidden="true" />
+          {/* Bulk: Set type (dropdown → impact-summary confirm) */}
+          <div className="relative">
             <Button
               variant="secondary"
-              onClick={() => setDeleteConfirmOpen(true)}
-              className="border-loss/40 text-loss hover:bg-loss/10"
+              size="sm"
+              disabled={applyingBulk}
+              aria-expanded={bulkTypeMenuOpen}
+              aria-haspopup="menu"
+              onClick={() => {
+                setBulkFlagsMenuOpen(false);
+                setBulkTypeMenuOpen((o) => !o);
+              }}
             >
-              <Trash2 className="mr-1 h-3 w-3" />
-              Delete {selected.size}
+              <Tags className="h-3.5 w-3.5" />
+              Set type ({selected.size})
             </Button>
+            {bulkTypeMenuOpen && (
+              <div className="absolute bottom-full right-0 mb-2 max-h-80 min-w-[11rem] overflow-y-auto rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+                <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">
+                  Set {selected.size} selected to
+                </p>
+                {ALL_TYPES.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    onClick={() => {
+                      setBulkTypeMenuOpen(false);
+                      setPendingBulkType(t);
+                    }}
+                    className="flex min-h-[36px] w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-3"
+                  >
+                    <Badge tone={TYPE_TONE[t]} className="pointer-events-none text-[10px]">{t}</Badge>
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={() => setBulkTypeMenuOpen(false)}
+                  className="flex min-h-[36px] w-full items-center gap-1 border-t border-hi/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
+                >
+                  <X className="h-3 w-3" /> Cancel
+                </button>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+
+          {/* Bulk: Set flags (checkbox list → Apply) */}
+          <div className="relative">
+            <Button variant="secondary" size="sm" disabled={applyingBulk} aria-expanded={bulkFlagsMenuOpen} aria-haspopup="menu" onClick={openBulkFlags}>
+              <Flag className="h-3.5 w-3.5" />
+              Set flags ({selected.size})
+            </Button>
+            {bulkFlagsMenuOpen && bulkFlagsSel && (
+              <div className="absolute bottom-full right-0 mb-2 min-w-[16rem] rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+                <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">
+                  Apply to {selected.size} selected
+                </p>
+                <p className="px-3 pb-1 text-[10px] text-low">
+                  Checked = set on all · unchecked = remove from all
+                </p>
+                {BULK_FLAG_CHECKBOXES.map((flag) => (
+                  <label
+                    key={flag}
+                    className="flex min-h-[40px] w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3"
+                  >
+                    {flag === 'possible_internal_transfer' ? (
+                      <input
+                        type="checkbox"
+                        checked={bulkFlagsSel.hint === 'checked'}
+                        ref={(el) => {
+                          // Native dash for a mixed selection: 'mixed' is not
+                          // expressible via the `checked` prop, so set the
+                          // DOM-only `indeterminate` property.
+                          if (el) el.indeterminate = bulkFlagsSel.hint === 'mixed';
+                        }}
+                        onChange={(e) =>
+                          // First click from the dash CHECKS (set on all);
+                          // the next click unchecks (remove from all).
+                          // 'mixed' itself is an initial state only.
+                          patchBulkFlagsSel({ hint: e.target.checked ? 'checked' : 'unchecked' })
+                        }
+                        className="accent-primary"
+                      />
+                    ) : (
+                      <input
+                        type="checkbox"
+                        checked={bulkFlagsSel.flags.get(flag) ?? false}
+                        onChange={(e) => setBulkFlag(flag, e.target.checked)}
+                        className="accent-primary"
+                      />
+                    )}
+                    {FLAG_LABELS[flag]}
+                  </label>
+                ))}
+                <p className="px-3 pb-1 text-[10px] text-low">
+                  “Missing cost basis” also appears automatically while a row has no fiat value.
+                </p>
+                <p className="px-3 pb-1 text-[10px] text-low">
+                  A dash on “Possible internal transfer” means only some selected rows have it — those rows are left as-is unless you check or uncheck the box.
+                </p>
+                <div className="my-1 border-t border-hi/10" />
+                <label className="flex min-h-[40px] w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3">
+                  <input
+                    type="checkbox"
+                    checked={bulkFlagsSel.internal}
+                    onChange={(e) => patchBulkFlagsSel({ internal: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Internal transfer (non-taxable)
+                </label>
+                <label className="flex min-h-[40px] w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3">
+                  <input
+                    type="checkbox"
+                    checked={bulkFlagsSel.spam}
+                    onChange={(e) => patchBulkFlagsSel({ spam: e.target.checked })}
+                    className="accent-primary"
+                  />
+                  Spam (excluded everywhere)
+                </label>
+                <p className="px-3 pb-1 text-[10px] text-low">
+                  Confirming “Internal transfer” clears the “Possible internal transfer” hint.
+                </p>
+                <div className="mt-1 flex justify-end gap-2 border-t border-hi/10 px-3 py-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBulkFlagsMenuOpen(false);
+                      setBulkFlagsSel(null);
+                    }}
+                    className="min-h-[36px] rounded-full px-3 py-1 text-xs text-low hover:text-mid"
+                  >
+                    Cancel
+                  </button>
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={applyingBulk}
+                    onClick={() => void applyBulkFlags()}
+                  >
+                    {applyingBulk ? 'Applying…' : `Apply to ${selected.size}`}
+                  </Button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => setDeleteConfirmOpen(true)}
+            className="border-loss/40 text-loss hover:bg-loss/10"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete {selected.size}
+          </Button>
+          <button
+            type="button"
+            onClick={() => setSelected(new Set())}
+            aria-label="Clear selection"
+            className="grid h-9 w-9 place-items-center rounded-lg text-low transition-colors hover:bg-elev-3 hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      )}
 
       <ConfirmDialog
         open={deleteConfirmOpen}
@@ -1424,169 +2270,7 @@ export function ReviewTab() {
         onConfirm={() => void applyBulkType()}
         onCancel={() => setPendingBulkType(null)}
       />
-
-      {renderPagination('pb-0.5')}
-      <div className="overflow-x-auto rounded-lg border border-white/10">
-        <table className="w-full min-w-[920px] text-sm">
-          <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
-            <tr>
-              <th className="w-8 px-2 py-2">
-                <input
-                  type="checkbox"
-                  checked={allVisibleSelected}
-                  onChange={toggleSelectAll}
-                  title="Select all shown rows"
-                  aria-label="Select all shown rows"
-                />
-              </th>
-              <th className="px-2 py-2">Date</th>
-              <th className="px-2 py-2">Type</th>
-              <th className="px-2 py-2">Chain</th>
-              <th className="px-2 py-2">Asset</th>
-              <th className="px-2 py-2 text-right">Amount</th>
-              <th className="px-2 py-2 text-right">Fiat</th>
-              <th className="px-2 py-2">From</th>
-              <th className="px-2 py-2">To</th>
-              <th className="px-2 py-2">Tx Hash</th>
-              <th className="min-w-[10rem] px-2 py-2">Flags</th>
-            </tr>
-          </thead>
-          <tbody className="font-mono tabular-figures">
-            {pageRows.map((t) => {
-              const isDisposal = DISPOSAL_TYPES.has(t.type);
-              const candidates = engineResult?.disposalCandidates[t.id] ?? [];
-              const { fromAddr, toAddr } = txFromToAddresses(t);
-              const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : '—';
-              const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
-              const isEditing = editingFiat === t.id;
-              return (
-                <Fragment key={t.id}>
-                  <tr className={`border-t border-white/10 hover:bg-elev-1/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
-                    <td className="px-3 py-2">
-                      <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggle(t.id)} />
-                    </td>
-                    <td className="px-3 py-2 text-low">{new Date(t.timestamp).toISOString().slice(0, 10)}</td>
-                    <td className="px-3 py-2">
-                      <TypeSelector tx={t} />
-                    </td>
-                    <td className="px-3 py-2 text-low">{chainLabel}</td>
-                    <td className="px-3 py-2 text-mid" title={t.contractAddress}>
-                      {assetLabel}
-                      {t.type === 'trade' && t.counterAsset && (
-                        <span className="ml-1 text-low">
-                          → {resolveAssetLabel(t.counterAsset, undefined, t.chain)}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-1 py-2 text-right text-mid" title={
-                      t.type === 'trade' && t.counterAmount != null
-                        ? `${t.amount} → ${t.counterAmount}`
-                        : String(t.amount)
-                    }>
-                      {t.type === 'trade' && t.counterAmount != null
-                        ? `${formatCompactAmount(t.amount)} → ${formatCompactAmount(t.counterAmount)}`
-                        : formatCompactAmount(t.amount)}
-                    </td>
-                    <td className="px-3 py-2 text-right text-low">
-                      {isEditing ? (
-                        <span className="flex items-center justify-end gap-1">
-                          <input
-                            autoFocus
-                            value={editValue}
-                            onChange={(e) => setEditValue(e.target.value)}
-                            className="w-24 rounded border border-violet bg-white px-2 py-0.5 text-right text-xs text-mid focus:outline-none"
-                            placeholder="0.00"
-                          />
-                          <button onClick={() => saveFiat(t)} className="text-gain" aria-label="Save">
-                            <Check className="h-3.5 w-3.5" />
-                          </button>
-                          <button onClick={() => setEditingFiat(null)} className="text-low" aria-label="Cancel">
-                            <X className="h-3.5 w-3.5" />
-                          </button>
-                        </span>
-                      ) : (
-                        <button
-                          onClick={() => startEditFiat(t.id, t.fiatValue)}
-                          className="group inline-flex items-center gap-1 hover:text-gain"
-                          title="Click to enter a fiat value manually"
-                        >
-                          {t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : '—'}
-                          <Pencil className="h-3 w-3 opacity-0 group-hover:opacity-60" />
-                        </button>
-                      )}
-                    </td>
-                    <td className="px-2 py-2 text-low" title={fromAddr}>
-                      {fromAddr ? (
-                        <span title={fromAddr}>
-                          {walletLabels.get(fromAddr.toLowerCase())
-                            ? <span className="text-gain">{walletLabels.get(fromAddr.toLowerCase())}</span>
-                            : truncateAddress(fromAddr)}
-                        </span>
-                      ) : '—'}
-                    </td>
-                    <td className="px-2 py-2 text-low" title={toAddr}>
-                      {toAddr ? (
-                        <span title={toAddr}>
-                          {walletLabels.get(toAddr.toLowerCase())
-                            ? <span className="text-gain">{walletLabels.get(toAddr.toLowerCase())}</span>
-                            : truncateAddress(toAddr)}
-                        </span>
-                      ) : '—'}
-                    </td>
-                    <td className="px-2 py-2 font-mono text-xs text-low">
-                      {(() => {
-                        const hash = t.txHash ?? t.sourceRef;
-                        // explorerTxUrl is chain-aware and enforces hash shape,
-                        // so a non-null result is always safe to link.
-                        const url = hash ? explorerTxUrl(t.chain, hash) : null;
-                        if (url) {
-                          return (
-                            <a
-                              href={url}
-                              target="_blank"
-                              rel="noreferrer"
-                              title={hash}
-                              className="hover:text-gain"
-                            >
-                              {hash!.slice(0, 8)}…
-                            </a>
-                          );
-                        }
-                        return hash ? <span title={hash}>{hash.slice(0, 8)}…</span> : '—';
-                      })()}
-                    </td>
-                    <td className="px-2 py-2 align-top">
-                      <FlagSelector tx={t} />
-                      {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
-                        <button
-                          className="mt-1 text-gain underline decoration-dotted"
-                          onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
-                        >
-                          match lots
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                  {openLotPicker === t.id && (
-                    <tr>
-                      <td colSpan={11} className="bg-elev-1/60 px-3 py-3">
-                        <LotPicker
-                          txId={t.id}
-                          candidates={candidates}
-                          currentHint={hints[t.id]}
-                          currency={t.fiatCurrency}
-                          onSaved={() => setOpenLotPicker(null)}
-                        />
-                      </td>
-                    </tr>
-                  )}
-                </Fragment>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      {renderPagination('pt-2')}
     </div>
   );
 }
+

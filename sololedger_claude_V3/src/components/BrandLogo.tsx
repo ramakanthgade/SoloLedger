@@ -4,8 +4,8 @@ import { cn } from '@/lib/utils';
 type BrandLogoProps = {
   /**
    * Aurora placement context:
-   * - `on-glass` (default): the variant-B mark (aurora-gradient shield stroke,
-   *   white ledger lines, teal tick) for use on the dark glass canvas.
+   * - `on-glass` (default): the variant-B mark (ember-gradient shield stroke,
+   *   ink ledger lines, gain tick) for use directly on the app canvas.
    * - `on-gradient`: the variant-C filled chip (dark mark on aurora fill) for
    *   use on top of an aurora-gradient surface.
    */
@@ -33,9 +33,9 @@ function AuroraMarkB({ className, titleId }: { className?: string; titleId: stri
       <title id={titleId}>SoloLedger</title>
       <defs>
         <linearGradient id={gradientId} x1="8" y1="6" x2="40" y2="42" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#7C5CFF" />
-          <stop offset="0.5" stopColor="#4EA8FF" />
-          <stop offset="1" stopColor="#22E1C3" />
+          <stop offset="0" stopColor="var(--aurora-1)" />
+          <stop offset="0.5" stopColor="var(--aurora-2)" />
+          <stop offset="1" stopColor="var(--aurora-3)" />
         </linearGradient>
       </defs>
       <path
@@ -44,24 +44,24 @@ function AuroraMarkB({ className, titleId }: { className?: string; titleId: stri
         strokeWidth="2"
         strokeLinejoin="round"
       />
-      <path d="M24 13v20" stroke="#F5F6FF" strokeWidth="1.35" strokeLinecap="round" opacity="0.5" />
+      <path d="M24 13v20" stroke="var(--text-hi)" strokeWidth="1.35" strokeLinecap="round" opacity="0.5" />
       <path
         d="M13.5 17h8.5M13.5 21h8M13.5 25h7.5M13.5 29h7"
-        stroke="#F5F6FF"
+        stroke="var(--text-hi)"
         strokeWidth="1.25"
         strokeLinecap="round"
         opacity="0.9"
       />
       <path
         d="M26 17h8.5M26.5 21h8M27 25h7.5M27.5 29h7"
-        stroke="#F5F6FF"
+        stroke="var(--text-hi)"
         strokeWidth="1.25"
         strokeLinecap="round"
         opacity="0.9"
       />
       <path
         d="M29.5 35.5 33.5 39.5 41.5 29.5"
-        stroke="#22E1C3"
+        stroke="var(--gain)"
         strokeWidth="2.75"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -86,36 +86,36 @@ function AuroraMarkC({ className, titleId }: { className?: string; titleId: stri
       <title id={titleId}>SoloLedger</title>
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
-          <stop offset="0" stopColor="#7C5CFF" />
-          <stop offset="0.5" stopColor="#4EA8FF" />
-          <stop offset="1" stopColor="#22E1C3" />
+          <stop offset="0" stopColor="var(--aurora-1)" />
+          <stop offset="0.5" stopColor="var(--aurora-2)" />
+          <stop offset="1" stopColor="var(--aurora-3)" />
         </linearGradient>
       </defs>
       <rect x="0" y="0" width="48" height="48" rx="14" fill={`url(#${gradientId})`} />
       <path
         d="M24 4 38 10v13c0 8.5-14 17.5-14 17.5S10 31.5 10 23V10L24 4Z"
-        stroke="#0A0B1A"
+        stroke="var(--on-aurora)"
         strokeWidth="1.9"
         strokeLinejoin="round"
       />
-      <path d="M24 13v20" stroke="#0A0B1A" strokeWidth="1.35" strokeLinecap="round" opacity="0.45" />
+      <path d="M24 13v20" stroke="var(--on-aurora)" strokeWidth="1.35" strokeLinecap="round" opacity="0.45" />
       <path
         d="M13.5 17h8.5M13.5 21h8M13.5 25h7.5M13.5 29h7"
-        stroke="#0A0B1A"
+        stroke="var(--on-aurora)"
         strokeWidth="1.25"
         strokeLinecap="round"
         opacity="0.85"
       />
       <path
         d="M26 17h8.5M26.5 21h8M27 25h7.5M27.5 29h7"
-        stroke="#0A0B1A"
+        stroke="var(--on-aurora)"
         strokeWidth="1.25"
         strokeLinecap="round"
         opacity="0.85"
       />
       <path
         d="M29.5 35.5 33.5 39.5 41.5 29.5"
-        stroke="#0A0B1A"
+        stroke="var(--on-aurora)"
         strokeWidth="2.75"
         strokeLinecap="round"
         strokeLinejoin="round"
@@ -152,14 +152,14 @@ export function BrandLogo({
         <span
           className={cn(
             'text-lg font-bold tracking-tight leading-none',
-            onGradient ? 'text-[#0A0B1A]' : 'text-hi'
+            onGradient ? 'text-on-aurora' : 'text-hi'
           )}
         >
           Solo
           <span
             className={cn(
               onGradient
-                ? 'text-[#0A0B1A]'
+                ? 'text-on-aurora'
                 : 'bg-aurora bg-clip-text text-transparent'
             )}
           >
@@ -170,7 +170,7 @@ export function BrandLogo({
           <span
             className={cn(
               'text-[0.625rem] font-medium uppercase tracking-[0.16em]',
-              onGradient ? 'text-[#0A0B1A]/80' : 'text-low'
+              onGradient ? 'text-on-aurora/80' : 'text-low'
             )}
           >
             Private. Precise. Yours.

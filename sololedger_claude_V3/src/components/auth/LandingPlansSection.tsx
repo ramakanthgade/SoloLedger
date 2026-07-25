@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { PLAN_CATALOG, SELECTED_PLAN_KEY, type PlanId } from '@/lib/saas/planCatalog';
 
@@ -7,17 +6,14 @@ type LandingPlansSectionProps = {
 };
 
 export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) {
-  const [hovered, setHovered] = useState<PlanId | null>(null);
-
   return (
-    <section className="relative py-20">
-      <div className="pointer-events-none absolute inset-0 bg-gradient-to-b from-transparent via-violet/10 to-transparent" />
-      <div className="relative mx-auto max-w-6xl px-6 lg:px-8">
+    <section className="py-20">
+      <div className="mx-auto max-w-6xl px-6 lg:px-8">
         <div className="text-center">
-          <span className="inline-flex rounded-full bg-violet/15 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-blue">
+          <span className="inline-flex rounded-full border border-primary/20 bg-primary/10 px-4 py-1.5 text-xs font-bold uppercase tracking-widest text-primary">
             Simple yearly pricing
           </span>
-          <h2 className="mt-5 font-display text-4xl font-bold text-hi sm:text-5xl">
+          <h2 className="mt-5 font-display text-4xl font-extrabold tracking-tight text-hi sm:text-5xl">
             Pick a plan. Start free.
           </h2>
           <p className="mx-auto mt-3 max-w-xl text-lg text-mid">
@@ -25,7 +21,7 @@ export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) 
           </p>
         </div>
 
-        <div className="mx-auto mt-8 max-w-3xl rounded-2xl border border-violet/20 bg-elev-2/70 p-5 text-center shadow-card">
+        <div className="mx-auto mt-8 max-w-3xl rounded-[20px] border border-hi/10 bg-elev-2 p-5 text-center shadow-card">
           <p className="text-sm leading-relaxed text-mid">
             <strong className="text-hi">Up to ~25× cheaper per underlying transaction.</strong>{' '}
             Other exchanges bill every raw transaction; we only count your{' '}
@@ -39,46 +35,43 @@ export function LandingPlansSection({ onSelectPlan }: LandingPlansSectionProps) 
         <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {PLAN_CATALOG.map((p) => {
             const Icon = p.icon;
-            const active = hovered === p.id || p.featured;
             return (
               <button
                 key={p.id}
                 type="button"
-                onMouseEnter={() => setHovered(p.id)}
-                onMouseLeave={() => setHovered(null)}
                 onClick={() => {
                   sessionStorage.setItem(SELECTED_PLAN_KEY, p.id);
                   onSelectPlan(p.id);
                 }}
                 className={cn(
-                  'group relative flex flex-col rounded-2xl border bg-elev-2 p-5 text-left shadow-card transition duration-300',
+                  'group relative flex flex-col rounded-[20px] border bg-elev-2 p-6 text-left shadow-card transition duration-300',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas',
                   p.featured
-                    ? 'stat-card-featured border-violet/40 lg:-translate-y-2'
-                    : 'border-white/10 hover:-translate-y-1 hover:border-violet/40',
-                  active && 'shadow-glow'
+                    ? 'stat-card-featured border-primary/40 lg:-translate-y-2'
+                    : 'border-hi/10 hover:-translate-y-1 hover:border-primary/30 hover:shadow-card-hover'
                 )}
               >
                 {p.featured && (
-                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 rounded-full bg-gain px-3 py-0.5 text-[10px] font-bold uppercase text-[#0A0B1A]">
+                  <span className="absolute -top-3 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-gain px-3 py-0.5 text-[10px] font-bold uppercase tracking-wide text-on-aurora">
                     Popular
                   </span>
                 )}
                 <div
                   className={cn(
-                    'mb-4 inline-flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br text-[#0A0B1A] shadow-soft',
+                    'mb-4 inline-flex h-12 w-12 items-center justify-center rounded-[13px] bg-gradient-to-br text-on-aurora shadow-xs',
                     p.accent
                   )}
                 >
                   <Icon className="h-6 w-6" />
                 </div>
                 <span className="text-lg font-bold text-hi">{p.name}</span>
-                <span className="mt-1 font-display text-3xl font-bold text-gain">
+                <span className="mt-1 font-display text-3xl font-extrabold tracking-tight text-hi">
                   {p.price}
                   <span className="text-sm font-normal text-faint">{p.period}</span>
                 </span>
-                <span className="mt-2 text-sm font-semibold text-blue">{p.limit}</span>
-                <span className="mt-1 text-xs text-low">{p.tagline}</span>
-                <span className="mt-4 text-sm font-semibold text-hi group-hover:text-blue">
+                <span className="mt-2 text-sm font-semibold text-primary">{p.limit}</span>
+                <span className="mt-1 text-xs leading-relaxed text-low">{p.tagline}</span>
+                <span className="mt-4 text-sm font-semibold text-hi group-hover:text-primary">
                   {p.contactOnly ? 'Contact us →' : p.id === 'local' ? 'Start free →' : 'Get started →'}
                 </span>
               </button>

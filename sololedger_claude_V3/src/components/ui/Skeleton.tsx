@@ -45,7 +45,7 @@ export function SkeletonTable({
     <div
       aria-busy="true"
       aria-live="polite"
-      className={cn('space-y-3 rounded-xl border border-white/10 bg-elev-2 p-4 shadow-card', className)}
+      className={cn('space-y-3 rounded-xl border border-hi/10 bg-elev-2 p-4 shadow-card', className)}
       {...props}
     >
       <span className="sr-only">Loading…</span>

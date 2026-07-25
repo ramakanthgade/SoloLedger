@@ -19,10 +19,9 @@ interface EmptyStateProps {
 }
 
 /**
- * EmptyState (Task T2) — Aurora-styled zero-data state matching
- * `/.plans/designs/aurora-empty-states.html`: an illustrative icon in a
+ * EmptyState (Task T2) — zero-data state: an illustrative icon in a
  * gradient-ringed tile, a headline, a one-line explanation, and ONE primary
- * CTA. Consumed by T3 (which wires it into each tab).
+ * CTA. Ember & Slate: the tile glows with the theme's ember primary.
  */
 export function EmptyState({
   icon,
@@ -36,16 +35,16 @@ export function EmptyState({
   return (
     <div
       className={cn(
-        'flex flex-col items-center justify-center rounded-xl border border-white/10 bg-elev-2 px-8 py-12 text-center shadow-card',
+        'flex flex-col items-center justify-center rounded-xl border border-hi/10 bg-elev-2 px-8 py-12 text-center shadow-card',
         className
       )}
     >
       {icon && (
         <div
-          className="mb-6 grid h-24 w-24 place-items-center rounded-[22px] border border-white/10 text-hi"
+          className="mb-6 grid h-24 w-24 place-items-center rounded-[22px] border border-hi/10 text-hi"
           style={{
             background:
-              'radial-gradient(circle at 50% 35%, rgba(124,92,255,0.20), rgba(26,27,56,0.4))'
+              'radial-gradient(circle at 50% 35%, rgb(var(--primary-rgb) / 0.18), rgb(var(--bg-elev-3-rgb) / 0.45))'
           }}
         >
           {icon}
