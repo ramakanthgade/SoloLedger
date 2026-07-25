@@ -26,12 +26,19 @@ export async function getEffectiveSettings(): Promise<TaxSettings> {
   if (!isSaasMode()) return local;
 
   const server = await getServerConfig();
+  // The server flags are a CAPABILITY gate (an admin can switch a feature
+  // off for everyone); the local row is the user's PREFERENCE. Hosted seeds
+  // both lookups ON on first run (see ./hostedDefaults), so the preference
+  // defaults ON — but it is only honored once the user has actually made a
+  // choice (`lookupPrefsExplicit`, stamped by the Settings toggles). A legacy
+  // hosted row without the marker keeps the old always-on behavior, so
+  // existing hosted users never silently lose lookups.
   return {
     jurisdiction: local.jurisdiction,
     reportingCurrency: local.reportingCurrency,
     defaultCostBasisMethod: local.defaultCostBasisMethod,
-    priceApiEnabled: server?.priceApiEnabled ?? true,
-    rpcLookupEnabled: server?.rpcLookupEnabled ?? true,
+    priceApiEnabled: (server?.priceApiEnabled ?? true) && (local.lookupPrefsExplicit ? local.priceApiEnabled : true),
+    rpcLookupEnabled: (server?.rpcLookupEnabled ?? true) && (local.lookupPrefsExplicit ? local.rpcLookupEnabled : true),
     aiModel: local.aiModel
     // API keys intentionally omitted — server proxy injects them
   };

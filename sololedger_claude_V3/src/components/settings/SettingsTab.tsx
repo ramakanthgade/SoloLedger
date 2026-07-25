@@ -119,9 +119,10 @@ export function SettingsTab() {
     if (isAdmin) {
       list.push({ id: 'settings-admin-network', label: 'Network defaults', icon: Globe });
       list.push({ id: 'settings-admin-keys', label: 'Server API keys', icon: KeyRound });
-    } else if (!saas) {
-      list.push({ id: 'settings-network', label: 'Network features', icon: Globe });
     }
+    // Every mode gets the personal lookup toggles — hosted defaults them ON
+    // (seeded on first sign-in) and the user can turn them off anytime.
+    list.push({ id: 'settings-network', label: 'Network features', icon: Globe });
     if (!isAdmin) list.push({ id: 'settings-ai', label: 'AI advisor', icon: Sparkles });
     list.push({ id: 'settings-data', label: 'Your data', icon: Database });
     if (saas && !isAdmin) list.push({ id: 'settings-subscription', label: 'Subscription', icon: Star });
@@ -185,7 +186,14 @@ export function SettingsTab() {
     // via loadSettings so it keeps reflecting the effective view.
     setSettings((prev) => (prev ? { ...prev, ...patch } : prev));
     const local = await getSettings();
-    await saveSettings({ ...local, ...patch });
+    // Toggling a lookup flag is an explicit user choice — stamp it so hosted
+    // mode's effective settings can tell "user turned this off" apart from a
+    // legacy default-off row (see lookupPrefsExplicit in types/transaction).
+    const stamped =
+      'priceApiEnabled' in patch || 'rpcLookupEnabled' in patch
+        ? { ...patch, lookupPrefsExplicit: true }
+        : patch;
+    await saveSettings({ ...local, ...stamped });
     setSettings(await loadSettings());
     pushToast('gain', 'Settings saved');
   };
@@ -273,107 +281,117 @@ export function SettingsTab() {
 
           {isAdmin && <AdminServerSettings />}
 
-          {!saas && (
-            <div id="settings-network" className="scroll-mt-24">
-              <Card>
-                <CardHeader className="flex items-center gap-3">
-                  <CardTitle>Network features</CardTitle>
+          {/* Network features render in EVERY mode: hosted seeds both
+              lookups ON on first sign-in (lib/saas/hostedDefaults) and the
+              user can opt out here anytime. The BYOK API-key panels stay
+              local/BYOK-only — hosted lookups run through the server proxy,
+              which injects the keys. */}
+          <div id="settings-network" className="scroll-mt-24">
+            <Card>
+              <CardHeader className="flex items-center gap-3">
+                <CardTitle>Network features</CardTitle>
+                {saas ? (
+                  <Badge tone="neutral" className="ml-auto">
+                    <Shield className="h-3 w-3" aria-hidden="true" />
+                    On by default
+                  </Badge>
+                ) : (
                   <Badge tone="gain" className="ml-auto">
                     <Shield className="h-3 w-3" aria-hidden="true" />
                     Off by default
                   </Badge>
-                </CardHeader>
-                <CardContent className="py-2">
-                  <div className="divide-y divide-hi/10">
-                    <div className="py-4">
-                      <ToggleRow
-                        title="Live price lookup"
-                        checked={settings.priceApiEnabled}
-                        onChange={(v) => update({ priceApiEnabled: v })}
-                        caption={
-                          <PrivacyCaption>
-                            <strong className="text-mid">Leaves your device:</strong> asset symbol + date only, to
-                            price APIs to fill in market values — never wallet addresses or amounts.
-                          </PrivacyCaption>
-                        }
-                      />
-                      {settings.priceApiEnabled && (
-                        <div className="mt-3 space-y-4 rounded-xl border border-hi/10 bg-elev-1/70 p-4">
-                          <ApiKeyField
-                            label="CoinGecko Pro API key"
-                            value={settings.coingeckoApiKey}
-                            onSave={(key) => update({ coingeckoApiKey: key })}
-                            onDelete={() => update({ coingeckoApiKey: undefined })}
-                            placeholder="Paste your CoinGecko Pro API key"
-                          />
-                          <ApiKeyField
-                            label="Birdeye API key (Solana pricing)"
-                            value={settings.birdeyeApiKey}
-                            onSave={(key) => update({ birdeyeApiKey: key })}
-                            onDelete={() => update({ birdeyeApiKey: undefined })}
-                            placeholder="Paste your Birdeye API key"
-                          />
-                          <ApiKeyField
-                            label="Noves API key (DeFi classification)"
-                            value={settings.novesApiKey}
-                            onSave={(key) => update({ novesApiKey: key })}
-                            onDelete={() => update({ novesApiKey: undefined })}
-                            placeholder="Paste your Noves API key"
-                          />
-                        </div>
-                      )}
-                    </div>
-                    <div className="py-4">
-                      <ToggleRow
-                        title="Wallet address lookup"
-                        checked={settings.rpcLookupEnabled}
-                        onChange={(v) => update({ rpcLookupEnabled: v })}
-                        caption={
-                          <PrivacyCaption>
-                            <strong className="text-mid">Leaves your device:</strong> the public address you look up,
-                            to public RPC/explorer endpoints — already-public chain data; your keys are never
-                            involved.
-                          </PrivacyCaption>
-                        }
-                      />
-                      {settings.rpcLookupEnabled && (
-                        <div className="mt-3 space-y-4 rounded-xl border border-hi/10 bg-elev-1/70 p-4">
-                          <ApiKeyField
-                            label="Helius API key — PRIMARY for Solana"
-                            value={settings.heliusApiKey}
-                            onSave={(key) => update({ heliusApiKey: key })}
-                            onDelete={() => update({ heliusApiKey: undefined })}
-                            placeholder="Paste your Helius API key"
-                          />
-                          <ApiKeyField
-                            label="Moralis API key — PRIMARY for EVM chains"
-                            value={settings.moralisApiKey}
-                            onSave={(key) => update({ moralisApiKey: key })}
-                            onDelete={() => update({ moralisApiKey: undefined })}
-                            placeholder="Paste your Moralis API key"
-                          />
-                          <ApiKeyField
-                            label="Alchemy API key (fallback)"
-                            value={settings.alchemyApiKey}
-                            onSave={(key) => update({ alchemyApiKey: key })}
-                            onDelete={() => update({ alchemyApiKey: undefined })}
-                            placeholder="Paste your Alchemy API key"
-                          />
-                          <ApiKeyField
-                            label="Etherscan API key (optional fallback)"
-                            value={settings.customExplorerApiKey}
-                            onSave={(key) => update({ customExplorerApiKey: key })}
-                            onDelete={() => update({ customExplorerApiKey: undefined })}
-                            placeholder="Paste an Etherscan-family API key"
-                          />
-                        </div>
-                      )}
-                    </div>
+                )}
+              </CardHeader>
+              <CardContent className="py-2">
+                <div className="divide-y divide-hi/10">
+                  <div className="py-4">
+                    <ToggleRow
+                      title="Live price lookup"
+                      checked={settings.priceApiEnabled}
+                      onChange={(v) => update({ priceApiEnabled: v })}
+                      caption={
+                        <PrivacyCaption>
+                          <strong className="text-mid">Leaves your device:</strong> asset symbol + date only, to
+                          price APIs to fill in market values — never wallet addresses or amounts.
+                        </PrivacyCaption>
+                      }
+                    />
+                    {settings.priceApiEnabled && !saas && (
+                      <div className="mt-3 space-y-4 rounded-xl border border-hi/10 bg-elev-1/70 p-4">
+                        <ApiKeyField
+                          label="CoinGecko Pro API key"
+                          value={settings.coingeckoApiKey}
+                          onSave={(key) => update({ coingeckoApiKey: key })}
+                          onDelete={() => update({ coingeckoApiKey: undefined })}
+                          placeholder="Paste your CoinGecko Pro API key"
+                        />
+                        <ApiKeyField
+                          label="Birdeye API key (Solana pricing)"
+                          value={settings.birdeyeApiKey}
+                          onSave={(key) => update({ birdeyeApiKey: key })}
+                          onDelete={() => update({ birdeyeApiKey: undefined })}
+                          placeholder="Paste your Birdeye API key"
+                        />
+                        <ApiKeyField
+                          label="Noves API key (DeFi classification)"
+                          value={settings.novesApiKey}
+                          onSave={(key) => update({ novesApiKey: key })}
+                          onDelete={() => update({ novesApiKey: undefined })}
+                          placeholder="Paste your Noves API key"
+                        />
+                      </div>
+                    )}
                   </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
+                  <div className="py-4">
+                    <ToggleRow
+                      title="Wallet address lookup"
+                      checked={settings.rpcLookupEnabled}
+                      onChange={(v) => update({ rpcLookupEnabled: v })}
+                      caption={
+                        <PrivacyCaption>
+                          <strong className="text-mid">Leaves your device:</strong> the public address you look up,
+                          to public RPC/explorer endpoints — already-public chain data; your keys are never
+                          involved.
+                        </PrivacyCaption>
+                      }
+                    />
+                    {settings.rpcLookupEnabled && !saas && (
+                      <div className="mt-3 space-y-4 rounded-xl border border-hi/10 bg-elev-1/70 p-4">
+                        <ApiKeyField
+                          label="Helius API key — PRIMARY for Solana"
+                          value={settings.heliusApiKey}
+                          onSave={(key) => update({ heliusApiKey: key })}
+                          onDelete={() => update({ heliusApiKey: undefined })}
+                          placeholder="Paste your Helius API key"
+                        />
+                        <ApiKeyField
+                          label="Moralis API key — PRIMARY for EVM chains"
+                          value={settings.moralisApiKey}
+                          onSave={(key) => update({ moralisApiKey: key })}
+                          onDelete={() => update({ moralisApiKey: undefined })}
+                          placeholder="Paste your Moralis API key"
+                        />
+                        <ApiKeyField
+                          label="Alchemy API key (fallback)"
+                          value={settings.alchemyApiKey}
+                          onSave={(key) => update({ alchemyApiKey: key })}
+                          onDelete={() => update({ alchemyApiKey: undefined })}
+                          placeholder="Paste your Alchemy API key"
+                        />
+                        <ApiKeyField
+                          label="Etherscan API key (optional fallback)"
+                          value={settings.customExplorerApiKey}
+                          onSave={(key) => update({ customExplorerApiKey: key })}
+                          onDelete={() => update({ customExplorerApiKey: undefined })}
+                          placeholder="Paste an Etherscan-family API key"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
 
           {!saas && (
             <div id="settings-ai" className="scroll-mt-24">
