@@ -22,11 +22,11 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-hi/10 pb-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/15 text-gain">
+          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 text-primary">
             <User className="h-5 w-5" />
           </div>
           <div>
-            <p className="font-semibold text-mid">{user.email}</p>
+            <p className="font-semibold text-hi">{user.email}</p>
             <p className="text-xs capitalize text-low">
               {user.role === 'admin' ? 'Administrator · full access' : `${formatPlanLabel(user.plan)} plan`}
             </p>
@@ -59,7 +59,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
             </>
           )}
           {user.role === 'admin' && (
-            <div className="flex items-center gap-2 rounded-lg bg-primary/10 px-3 py-2 text-xs text-gain">
+            <div className="flex items-center gap-2 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">
               <Shield className="h-3.5 w-3.5" />
               Full access — manage API keys in Settings
             </div>

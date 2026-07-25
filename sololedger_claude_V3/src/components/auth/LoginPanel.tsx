@@ -36,17 +36,17 @@ export function LoginPanel() {
         </CardHeader>
         <CardContent>
           <form onSubmit={submit} className="space-y-4">
-            <label className="block text-sm text-low">
+            <label className="block text-sm font-bold text-hi">
               Email
               <input
                 type="email"
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-mid"
+                className="sl-input mt-1.5"
               />
             </label>
-            <label className="block text-sm text-low">
+            <label className="block text-sm font-bold text-hi">
               Password
               <input
                 type="password"
@@ -54,17 +54,21 @@ export function LoginPanel() {
                 minLength={8}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-mid"
+                className="sl-input mt-1.5"
               />
             </label>
-            {error && <p className="text-sm text-loss">{error}</p>}
+            {error && (
+              <p role="alert" className="rounded-xl border border-loss/30 bg-loss/10 px-3.5 py-2.5 text-sm font-medium text-loss">
+                {error}
+              </p>
+            )}
             <Button type="submit" disabled={busy} className="w-full">
               {busy ? 'Please wait…' : mode === 'login' ? 'Sign in' : 'Create free account'}
             </Button>
           </form>
           <button
             type="button"
-            className="mt-4 text-sm text-gain underline"
+            className="mt-4 text-sm font-semibold text-primary underline-offset-2 transition hover:text-primary-deep hover:underline"
             onClick={() => setMode(mode === 'login' ? 'register' : 'login')}
           >
             {mode === 'login' ? 'Need an account? Register' : 'Already have an account? Sign in'}
