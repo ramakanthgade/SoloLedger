@@ -536,7 +536,7 @@ export function SettingsTab() {
                   className="mt-5 rounded-xl border border-loss/30 bg-loss/[0.06] p-4 sm:p-5"
                 >
                   <div className="flex flex-wrap items-start justify-between gap-4">
-                    <div className="min-w-0 max-w-md">
+                    <div className="min-w-0 flex-1 basis-64">
                       <h3 className="text-sm font-bold text-loss">Danger zone</h3>
                       <p className="mt-1.5 text-xs leading-relaxed text-low">
                         Erase every transaction, connection, key and setting stored in this browser. There is no
