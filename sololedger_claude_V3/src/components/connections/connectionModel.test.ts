@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { ExchangeConnectionView } from '@/lib/exchangeSync';
 import type { CsvImportRow, LookupAddressRow } from '@/lib/storage/db';
 import {
@@ -20,6 +20,17 @@ import {
  */
 
 const NOW = Date.UTC(2026, 6, 25, 12, 0, 0);
+
+// buildCards derives relative times from Date.now() — pin the clock to NOW
+// so the suite is deterministic regardless of when it runs.
+beforeEach(() => {
+  vi.useFakeTimers();
+  vi.setSystemTime(NOW);
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 function exchangeConn(over: Partial<ExchangeConnectionView> = {}): ExchangeConnectionView {
   return {

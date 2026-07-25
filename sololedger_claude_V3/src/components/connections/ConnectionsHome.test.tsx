@@ -18,7 +18,7 @@ import type { Transaction } from '@/types/transaction';
  */
 const mocks = vi.hoisted(() => ({
   listConnections: vi.fn(),
-  syncNow: vi.fn(async () => {}),
+  syncNow: vi.fn(async (_id: string) => {}),
   deleteConnectionAndTransactions: vi.fn(async () => {}),
   runInitialSync: vi.fn(),
   commitInitialSync: vi.fn(async () => ({ saved: 3 })),
@@ -28,7 +28,7 @@ const mocks = vi.hoisted(() => ({
   deleteCsvImportAndTransactions: vi.fn(async () => {}),
   updateWalletLabel: vi.fn(async () => {}),
   deleteLookupAddressAndTransactions: vi.fn(async () => {}),
-  runWalletImport: vi.fn(async () => {}),
+  runWalletImport: vi.fn(async (_addresses: string[], _chain: { id: string }, _settings?: unknown, _config?: unknown, _isSync?: boolean) => {}),
   getEffectiveSettings: vi.fn(async () => ({ rpcLookupEnabled: true, priceApiEnabled: false })),
   connections: { current: [] as ExchangeConnectionView[] },
   csvImports: { current: [] as unknown[] },
@@ -96,7 +96,7 @@ vi.mock('@/lib/storage/db', () => ({
 }));
 
 vi.mock('@/lib/importJob', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@/lib/importJob')>('@/lib/importJob');
+  const actual = await importOriginal<typeof import('@/lib/importJob')>();
   return {
     ...actual,
     runWalletImport: mocks.runWalletImport,
@@ -209,7 +209,7 @@ function stagedPreview(over: Partial<InitialSyncPreview> = {}): InitialSyncPrevi
 }
 
 /** Open a card's kebab menu and click an item. */
-function kebab(cardTitle: string, item: string) {
+function kebab(cardTitle: string, item: string | RegExp) {
   fireEvent.click(screen.getByRole('button', { name: `${cardTitle} actions` }));
   fireEvent.click(screen.getByRole('menuitem', { name: item }));
 }
