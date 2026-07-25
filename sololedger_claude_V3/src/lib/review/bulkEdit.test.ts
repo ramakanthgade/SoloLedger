@@ -8,6 +8,7 @@ import {
   bulkTypeImpactLines,
   bulkTypePatch,
   initialBulkFlagsSelection,
+  needsPriceLine,
   summarizeBulkTypeChange
 } from '@/lib/review/bulkEdit';
 
@@ -145,6 +146,25 @@ describe('bulkTypeImpactLines', () => {
     const impact = summarizeBulkTypeChange([tx({ type: 'trade', fiatValue: 1 })], 'trade');
     const lines = bulkTypeImpactLines(impact);
     expect(lines.some((l) => l.includes('two-sided'))).toBe(false);
+  });
+});
+
+describe('needsPriceLine', () => {
+  it('is plural-aware: "1 transaction still needs a price" / "N transactions still need a price"', () => {
+    expect(needsPriceLine(1)).toBe('1 transaction still needs a price');
+    expect(needsPriceLine(2)).toBe('2 transactions still need a price');
+    expect(needsPriceLine(61)).toBe('61 transactions still need a price');
+  });
+});
+
+describe('bulkTypeImpactLines — pluralization', () => {
+  it('says "1 row still has" / "N rows still have" no fiat value', () => {
+    const one = bulkTypeImpactLines(summarizeBulkTypeChange([tx({ type: 'transfer_in' })], 'sell'));
+    expect(one).toContain('1 row still has no fiat value — fetch prices afterwards.');
+    const two = bulkTypeImpactLines(
+      summarizeBulkTypeChange([tx({ type: 'transfer_in' }), tx({ type: 'buy' })], 'sell')
+    );
+    expect(two).toContain('2 rows still have no fiat value — fetch prices afterwards.');
   });
 });
 
