@@ -5,7 +5,7 @@ import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 /**
  * Item 2 — EVM active-chain auto-detection + multi-chain import UI.
  *
- * Renders the real WalletLookupPanel with storage/settings/RPC deps mocked.
+ * Renders the real WalletAddressForm with storage/settings/RPC deps mocked.
  * `fetchWalletActiveChains` (Moralis) and `runSequentialChainImport` (the
  * orchestrator) are controllable mocks; the checkbox helpers and importJob
  * singleton are the real modules.
@@ -82,12 +82,12 @@ vi.mock('@/lib/importJob', async () => {
   return { ...actual, runWalletImport: mocks.runWalletImport };
 });
 
-import { WalletLookupPanel } from './WalletLookupPanel';
+import { WalletAddressForm } from './WalletAddressForm';
 import { importJob } from '@/lib/importJob';
 
 /** Render the panel, paste the EVM address, and return once settings loaded. */
 async function renderWithEvmAddress() {
-  render(<WalletLookupPanel />);
+  render(<WalletAddressForm />);
   const input = await screen.findByRole('textbox', { name: /wallet addresses/i });
   fireEvent.change(input, { target: { value: EVM_ADDR } });
   return input;
@@ -112,7 +112,7 @@ beforeEach(() => {
   mocks.runSequential.mockResolvedValue([]);
 });
 
-describe('WalletLookupPanel — EVM active-chain detection', () => {
+describe('WalletAddressForm — EVM active-chain detection', () => {
   it('detects active chains and shows the picker with every chain checked, in registry order', async () => {
     await renderWithEvmAddress();
 
@@ -391,7 +391,7 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
       { id: `ethereum:${KNOWN}`, chain: 'ethereum', address: KNOWN, txCount: 5, lastSyncedAt: 1_700_000_000_000 },
       { id: `polygon:${KNOWN}`, chain: 'polygon', address: KNOWN, txCount: 2, lastSyncedAt: 1_700_000_000_000 }
     ];
-    render(<WalletLookupPanel />);
+    render(<WalletAddressForm />);
     const input = await screen.findByRole('textbox', { name: /wallet addresses/i });
     fireEvent.change(input, { target: { value: `${KNOWN}\n${EVM_ADDR}` } });
     await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
@@ -406,7 +406,7 @@ describe('WalletLookupPanel — EVM active-chain detection', () => {
     // No address pasted → the manual chain dropdown renders immediately.
     // The mocked CHAINS registry DOES contain Fantom (legacy data must keep
     // classifying) — the dropdown must filter it out.
-    render(<WalletLookupPanel />);
+    render(<WalletAddressForm />);
     const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
     const labels = Array.from(select.querySelectorAll('option')).map((o) => o.textContent ?? '');
     expect(labels.some((l) => /fantom/i.test(l))).toBe(false);

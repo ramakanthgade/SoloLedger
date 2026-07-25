@@ -3,7 +3,9 @@ import { render, screen, fireEvent } from '@testing-library/react';
 import type { Transaction } from '@/types/transaction';
 
 /**
- * F4/F6/F8 — ImportTab multi-file batch handling.
+ * F4/F6/F8 — FileImportFlow multi-file batch handling (ported from the old
+ * ImportTab.batch.test; the engine moved verbatim into the Connections v2
+ * drawer file flow).
  *
  * F4: the browse input must accept MULTIPLE files and route them all through
  *     the sequential batch path (multi-select silently dropped all but the
@@ -34,12 +36,6 @@ const mocks = vi.hoisted(() => ({
   getEffectiveSettings: vi.fn(async () => ({ priceApiEnabled: false })),
   isAiMappingAvailable: vi.fn(async () => false),
   confirmSheetOrientations: vi.fn(async (_sheets: unknown, txs: Transaction[]) => txs)
-}));
-
-vi.mock('dexie-react-hooks', () => ({
-  // transactionCount 1 (dropzone rendered — these tests drop files on it), csvImports [].
-  useLiveQuery: (query: () => unknown) =>
-    String(query).includes('transactions.count') ? 1 : []
 }));
 
 vi.mock('@/lib/parsers', () => ({
@@ -87,15 +83,12 @@ vi.mock('@/lib/parsers/types', () => ({
   normalizeFiatMagnitude: (v: unknown) => v
 }));
 
-// Heavy sub-panels stubbed — this is a focused batch-flow test.
-vi.mock('./ConnectionWizard', () => ({ ConnectionWizard: () => null }));
-vi.mock('./ManualEntryForm', () => ({ ManualEntryForm: () => null }));
-vi.mock('./WalletLookupPanel', () => ({ WalletLookupPanel: () => null }));
-vi.mock('./ColumnMappingForm', () => ({
+// Mapping form stubbed — this is a focused batch-flow test.
+vi.mock('@/components/import/ColumnMappingForm', () => ({
   ColumnMappingForm: () => <div data-testid="panel-mapping">Mapping</div>
 }));
 
-import { ImportTab } from './ImportTab';
+import { FileImportFlow } from './FileImportFlow';
 
 function makeTx(id: string): Transaction {
   return {
@@ -146,7 +139,7 @@ function unrecognized() {
 }
 
 function getDropzone() {
-  return screen.getByText(/Drop a CSV or Excel/).closest('div')!;
+  return screen.getByText(/Drop your export here/).closest('div')!;
 }
 
 /** Post-dedup rows surviving per import hash — mirrors countCsvImportTransactions. */
@@ -170,13 +163,13 @@ beforeEach(() => {
   }));
 });
 
-describe('ImportTab — multi-file batch handling', () => {
+describe('FileImportFlow — multi-file batch handling', () => {
   it('F4: the browse input accepts multiple files and imports them all', async () => {
     mocks.parseImportFile.mockImplementation(async (file: File) =>
       recognized(file.name === 'one.csv' ? 1 : 2, file.name)
     );
     savedCounts = { 'hash:aaa': 1, 'hash:bbb': 2 };
-    const { container } = render(<ImportTab />);
+    const { container } = render(<FileImportFlow />);
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     expect(input.multiple).toBe(true);
@@ -197,7 +190,7 @@ describe('ImportTab — multi-file batch handling', () => {
       return recognized(2, file.name);
     });
     savedCounts = { 'hash:aaa': 2 };
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('corrupt.csv', 'xxx'), makeFile('good.csv', 'aaa')] }
@@ -212,7 +205,7 @@ describe('ImportTab — multi-file batch handling', () => {
 
   it('F6: a single corrupt file reports the failure instead of an unhandled rejection', async () => {
     mocks.parseImportFile.mockRejectedValue(new Error('not a workbook'));
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('corrupt.csv', 'xxx')] } });
 
@@ -224,7 +217,7 @@ describe('ImportTab — multi-file batch handling', () => {
     mocks.parseImportFile.mockImplementation(async (file: File) =>
       file.name === 'mystery.csv' ? unrecognized() : recognized(1, file.name)
     );
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     // Manual file LAST → the mapping form survives; the note points below.
     fireEvent.drop(getDropzone(), {
@@ -238,7 +231,7 @@ describe('ImportTab — multi-file batch handling', () => {
     mocks.parseImportFile.mockImplementation(async (file: File) =>
       file.name === 'mystery.csv' ? unrecognized() : recognized(1, file.name)
     );
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     // Manual file FIRST → the later file's handleFile reset the outcome, so
     // "shown below" would point at nothing.
@@ -254,7 +247,7 @@ describe('ImportTab — multi-file batch handling', () => {
     // in the ledger. The banner must tell the truth: nothing new was saved.
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
     savedCounts = { 'hash:aaa': 0 };
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('reexport.csv', 'aaa')] } });
 
@@ -265,7 +258,7 @@ describe('ImportTab — multi-file batch handling', () => {
   it('dedup: a fully-deduped file in a batch is bucketed as no-new-rows, not imported', async () => {
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
     savedCounts = { 'hash:aaa': 2, 'hash:bbb': 0 };
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('new.csv', 'aaa'), makeFile('reexport.csv', 'bbb')] }
@@ -282,7 +275,7 @@ describe('ImportTab — multi-file batch handling', () => {
       recognized(file.name === 'trades.xlsx' ? 3 : 2, file.name)
     );
     savedCounts = { 'hash:aaa': 2, 'hash:bbb': 3 };
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('deposits.csv', 'aaa'), makeFile('trades.xlsx', 'bbb')] }
@@ -303,7 +296,7 @@ describe('ImportTab — multi-file batch handling', () => {
       .mockResolvedValueOnce({ updated: 73, failed: 0 });
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
     savedCounts = { 'hash:aaa': 2, 'hash:bbb': 2 };
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')] }
@@ -324,7 +317,7 @@ describe('ImportTab — multi-file batch handling', () => {
     }));
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(1, file.name));
     savedCounts = { 'hash:aaa': 1, 'hash:bbb': 1 };
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')] }
@@ -339,7 +332,7 @@ describe('ImportTab — multi-file batch handling', () => {
     mocks.fetchMissingPrices.mockResolvedValue({ updated: 29, failed: 0 });
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
     savedCounts = { 'hash:aaa': 2 };
-    render(<ImportTab />);
+    render(<FileImportFlow />);
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('a.csv', 'aaa')] } });
 
