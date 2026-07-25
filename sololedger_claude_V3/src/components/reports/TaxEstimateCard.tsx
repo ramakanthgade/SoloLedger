@@ -82,7 +82,7 @@ export function TaxEstimateCard({
     <Card className={className} data-testid="tax-estimate-panel">
       <CardHeader className="flex flex-wrap items-center justify-between gap-2">
         <CardTitle>Tax estimate — {getFyLabel(fy, 'IN')}</CardTitle>
-        <Badge tone="gold">≈31.2% effective</Badge>
+        <Badge tone="warn">≈31.2% effective</Badge>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">

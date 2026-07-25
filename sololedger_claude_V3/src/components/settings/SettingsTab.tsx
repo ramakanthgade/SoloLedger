@@ -12,6 +12,7 @@ import { isSaasMode } from '@/lib/saas/config';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { useAuth } from '@/lib/saas/authContext';
 import { AddressRegistrySettingsSection } from './AddressRegistrySettings';
+import { AppearanceSettings } from './AppearanceSettings';
 
 /**
  * Load the settings driving this page. In hosted mode getEffectiveSettings
@@ -391,6 +392,8 @@ export function SettingsTab() {
           </div>
         </CardContent>
       </Card>
+
+      <AppearanceSettings />
     </div>
   );
 }

@@ -16,9 +16,9 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
   if (!open || !user) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-end bg-black/30 p-4 pt-16" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-start justify-end bg-canvas/70 p-4 pt-16 backdrop-blur-sm" onClick={onClose}>
       <div
-        className="w-full max-w-sm rounded-xl border border-hi/10 bg-elev-2 p-5 shadow-xl"
+        className="w-full max-w-sm rounded-[20px] border border-hi/10 bg-elev-1 p-5 shadow-pop"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex items-center gap-3 border-b border-hi/10 pb-4">
@@ -134,8 +134,8 @@ export function UserProfileMenu({ onOpenSettings }: { onOpenSettings?: () => voi
         type="button"
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'flex h-9 w-9 items-center justify-center rounded-full border text-sm font-semibold transition-colors',
-          'border-hi/20 bg-hi/10 text-hi hover:bg-hi/20'
+          'flex h-9 w-9 items-center justify-center rounded-full bg-aurora text-sm font-bold text-on-aurora shadow-sm transition-[filter] hover:brightness-105',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas'
         )}
         title={user.email}
         aria-label="Open profile menu"

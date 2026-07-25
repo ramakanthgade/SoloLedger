@@ -9,10 +9,10 @@ import {
 
 /**
  * Visual config for each of the three network states A1 produces.
- * Colors follow the approved Aurora mockup (aurora-network-badge.html):
- *   local  → mint/teal (gain)   — nothing has left the device
- *   direct → blue               — network on, but your keys talk to the source directly
- *   relay  → violet             — routed through the SoloLedger relay
+ * Ember & Slate semantic tones (foundation mockup `.priv` pill):
+ *   local  → moss (gain)     — nothing has left the device
+ *   direct → amber (accent)  — network on, but your keys talk to the source directly
+ *   relay  → ember (primary) — routed through the SoloLedger relay
  */
 interface StateConfig {
   /** Main pill label. */
@@ -41,7 +41,7 @@ const STATES: Record<NetworkMode, StateConfig> = {
       'Nothing has left this device — every import, calculation and report runs right here in your browser.',
     pill: 'bg-gain/10 border-gain/30 text-gain',
     dot: 'bg-gain',
-    dotGlow: 'shadow-[0_0_8px_rgba(44,229,166,0.9)]',
+    dotGlow: 'shadow-[0_0_8px_rgb(var(--gain-rgb)/0.8)]',
     accent: 'border-t-2 border-t-gain'
   },
   direct: {
@@ -52,8 +52,8 @@ const STATES: Record<NetworkMode, StateConfig> = {
       'Your data still lives on this device — you turned on network features, so only your browser talks to the source directly, and SoloLedger never sees it.',
     pill: 'bg-accent/10 border-accent/30 text-accent',
     dot: 'bg-accent',
-    dotGlow: 'shadow-[0_0_8px_rgba(78,168,255,0.9)]',
-    accent: 'border-t-2 border-t-blue'
+    dotGlow: 'shadow-[0_0_8px_rgb(var(--accent-rgb)/0.8)]',
+    accent: 'border-t-2 border-t-accent'
   },
   relay: {
     label: 'Local + relay',
@@ -63,8 +63,8 @@ const STATES: Record<NetworkMode, StateConfig> = {
       "A network feature you used routed a request through SoloLedger's backend — depending on the feature this may include API/auth requests, AI summary relay, or RPC/pricing proxying. Raw transaction data is only sent where that feature explicitly says so.",
     pill: 'bg-primary/10 border-primary/30 text-primary',
     dot: 'bg-primary',
-    dotGlow: 'shadow-[0_0_8px_rgba(124,92,255,0.9)]',
-    accent: 'border-t-2 border-t-violet'
+    dotGlow: 'shadow-[0_0_8px_rgb(var(--primary-rgb)/0.8)]',
+    accent: 'border-t-2 border-t-primary'
   }
 };
 
@@ -92,8 +92,8 @@ export function LocalOnlyBadge() {
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
         className={cn(
-          'inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 font-mono text-xs font-semibold',
-          'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+          'inline-flex h-9 items-center gap-2 rounded-full border px-3.5 font-mono text-[0.6875rem] font-semibold',
+          'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas',
           state.pill
         )}
       >

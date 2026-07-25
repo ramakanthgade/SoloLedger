@@ -572,7 +572,7 @@ export function WalletLookupPanel() {
               const isEditing = editingLabel === row.id;
               return (
                 <div key={row.id} className="flex flex-wrap items-center gap-2 rounded-lg bg-elev-3/40 px-3 py-2 text-xs">
-                  <Badge tone="violet">{chainLabel}</Badge>
+                  <Badge tone="primary">{chainLabel}</Badge>
 
                   {isEditing ? (
                     <span className="flex items-center gap-1">

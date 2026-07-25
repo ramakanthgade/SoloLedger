@@ -648,9 +648,9 @@ export function ImportTab() {
               <CardContent className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
                   {outcome.detectedParser ? (
-                    <Badge tone="emerald">Detected: {outcome.detectedParser}</Badge>
+                    <Badge tone="gain">Detected: {outcome.detectedParser}</Badge>
                   ) : (
-                    <Badge tone="gold">Format not recognized — auto extraction applied, review mapping below</Badge>
+                    <Badge tone="warn">Format not recognized — auto extraction applied, review mapping below</Badge>
                   )}
                   <Badge tone="neutral">{outcome.transactions.length} transactions parsed</Badge>
                   {outcome.skippedRows > 0 && <Badge tone="loss">{outcome.skippedRows} rows skipped</Badge>}
@@ -701,7 +701,7 @@ export function ImportTab() {
                     key={row.id}
                     className="flex flex-wrap items-center gap-2 rounded-lg bg-elev-3/40 px-3 py-2 text-xs"
                   >
-                    <Badge tone="violet">{row.parserId ?? 'mapped'}</Badge>
+                    <Badge tone="primary">{row.parserId ?? 'mapped'}</Badge>
                     <span className="font-medium text-mid" title={row.fileName}>
                       {row.fileName.length > 40 ? `${row.fileName.slice(0, 28)}…${row.fileName.slice(-10)}` : row.fileName}
                     </span>

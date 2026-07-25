@@ -87,17 +87,17 @@ export function ExchangeConnectionList({ connections, job }: ExchangeConnectionL
                 )}
               </div>
 
-              {/* Status pill — Badge tone PROP (never emerald/gold class names). */}
+              {/* Status pill — Badge tone PROP (semantic tokens: gain/warn/primary). */}
               {syncing ? (
-                <Badge tone="violet" className="ml-auto gap-1">
+                <Badge tone="primary" className="ml-auto gap-1">
                   <Loader2 className="h-3 w-3 animate-spin" /> Syncing
                 </Badge>
               ) : c.lastError == null ? (
-                <Badge tone="emerald" className="ml-auto gap-1.5">
+                <Badge tone="gain" className="ml-auto gap-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-gain" /> Healthy
                 </Badge>
               ) : (
-                <Badge tone="gold" className="ml-auto gap-1.5">
+                <Badge tone="warn" className="ml-auto gap-1.5">
                   <span className="h-1.5 w-1.5 rounded-full bg-warn" /> Needs attention
                 </Badge>
               )}

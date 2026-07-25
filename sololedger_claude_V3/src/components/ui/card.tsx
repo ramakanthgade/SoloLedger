@@ -4,7 +4,7 @@ import { cn } from '@/lib/utils';
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
-      className={cn('rounded-lg border border-hi/10 bg-elev-2 shadow-card', className)}
+      className={cn('rounded-[20px] border border-hi/10 bg-elev-2 shadow-card', className)}
       {...props}
     />
   );
@@ -24,15 +24,20 @@ export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDi
   return <div className={cn('px-5 py-4', className)} {...props} />;
 }
 
-type BadgeTone = 'neutral' | 'emerald' | 'gold' | 'loss' | 'violet' | 'pink';
+/**
+ * Badge tones — semantic Ember & Slate pills (foundation mockup `.pill`).
+ * Names map to the theme's semantic tokens; the retired Aurora names
+ * (emerald/gold/violet/pink) were renamed: gain, warn, primary, accent.
+ */
+type BadgeTone = 'neutral' | 'gain' | 'warn' | 'loss' | 'primary' | 'accent';
 
 const badgeTones: Record<BadgeTone, string> = {
-  neutral: 'bg-elev-3 text-mid border border-hi/10',
-  emerald: 'bg-gain/12 text-gain border border-gain/30',
-  gold: 'bg-warn/12 text-warn border border-warn/30',
-  loss: 'bg-loss/12 text-loss border border-loss/30',
-  violet: 'bg-primary/12 text-primary border border-primary/30',
-  pink: 'bg-accent/12 text-accent border border-accent/30'
+  neutral: 'border-hi/10 bg-elev-3 text-mid',
+  gain: 'border-gain/30 bg-gain/10 text-gain',
+  warn: 'border-warn/30 bg-warn/10 text-warn',
+  loss: 'border-loss/30 bg-loss/10 text-loss',
+  primary: 'border-primary/30 bg-primary/10 text-primary',
+  accent: 'border-accent/30 bg-accent/10 text-accent'
 };
 
 export function Badge({
@@ -43,7 +48,7 @@ export function Badge({
   return (
     <span
       className={cn(
-        'inline-flex items-center rounded-md px-2 py-0.5 text-[0.6875rem] font-semibold',
+        'inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2.5 py-0.5 text-[0.6875rem] font-bold leading-4',
         badgeTones[tone],
         className
       )}

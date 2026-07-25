@@ -128,4 +128,20 @@ describe('App tab navigation (a11y)', () => {
     const panel = screen.getByRole('tabpanel');
     expect(panel).toHaveAttribute('aria-labelledby', 'tab-import');
   });
+
+  it('labels the first tab "Connections" (redesign rename) while keeping the import wiring', async () => {
+    await renderApp();
+    const first = screen.getAllByRole('tab')[0];
+    expect(first).toHaveAccessibleName('Connections');
+    // The tab id / aria wiring is unchanged — only the visible label moved.
+    expect(first).toHaveAttribute('id', 'tab-import');
+    expect(first).toHaveAttribute('aria-controls', 'tabpanel-import');
+  });
+
+  it('offers a skip link to the main content as the first stop', async () => {
+    await renderApp();
+    const skip = screen.getByRole('link', { name: 'Skip to main content' });
+    expect(skip).toHaveAttribute('href', '#main-content');
+    expect(document.getElementById('main-content')).not.toBeNull();
+  });
 });

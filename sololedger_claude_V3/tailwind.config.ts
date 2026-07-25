@@ -61,10 +61,12 @@ export default {
         xl: '16px'
       },
       boxShadow: {
+        xs: 'var(--shadow-xs)',
+        sm: 'var(--shadow-sm)',
         soft: 'var(--shadow)',
         card: 'var(--shadow)',
         'card-hover': 'var(--shadow-hover)',
-        pop: 'var(--glow)',
+        pop: 'var(--shadow-pop)',
         glow: 'var(--glow)'
       }
     }

@@ -577,7 +577,7 @@ export function CapitalGainsTab() {
                   <tr key={r.id} className="border-t border-hi/10">
                     <td className="px-2 py-2 text-low">{formatDateTime(r.date)}</td>
                     <td className="px-2 py-2">
-                      <Badge tone={r.kind.includes('suspected') ? 'gold' : 'emerald'}>
+                      <Badge tone={r.kind.includes('suspected') ? 'warn' : 'gain'}>
                         {r.kindLabel ?? INCOME_KIND_LABEL[r.kind] ?? r.kind}
                       </Badge>
                     </td>
@@ -684,7 +684,7 @@ export function CapitalGainsTab() {
                       <tr key={r.id} className="border-t border-hi/10">
                         <td className="px-2 py-2 text-low">{formatDateTime(r.date)}</td>
                         <td className="px-2 py-2">
-                          <Badge tone={r.kind === 'realized_loss' ? 'loss' : 'gold'}>
+                          <Badge tone={r.kind === 'realized_loss' ? 'loss' : 'warn'}>
                             {r.kind === 'realized_loss' ? 'Realized loss' : 'Trading fee'}
                           </Badge>
                         </td>

@@ -21,13 +21,20 @@ import { useAuth } from '@/lib/saas/authContext';
 import { useAppMode } from '@/lib/saas/modeContext';
 import { useImportJob } from '@/lib/importJob';
 import {
-  Upload, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2, Shield
+  Link, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2, Shield
 } from 'lucide-react';
 import { SwitchModeButton } from '@/components/SwitchModeButton';
+import { ThemeToggle } from '@/components/ThemeToggle';
 import { cn } from '@/lib/utils';
 
+/**
+ * Primary nav — Ember & Slate shell (confirmed Variation A top-nav frame).
+ * "Import" is now labeled "Connections" with a link icon (adding data lives
+ * in Connections in the redesign); ids/components are unchanged so tab
+ * wiring, deep links and the TabNavProvider contract stay exactly as today.
+ */
 const BASE_TABS = [
-  { id: 'import', label: 'Import', icon: Upload, component: ImportTab },
+  { id: 'import', label: 'Connections', icon: Link, component: ImportTab },
   { id: 'review', label: 'Review', icon: ListChecks, component: ReviewTab },
   { id: 'portfolio', label: 'Portfolio', icon: PieChart, component: PortfolioTab },
   { id: 'capital-gains', label: 'Capital Gains', icon: TrendingUp, component: CapitalGainsTab },
@@ -125,62 +132,68 @@ function MainApp() {
   return (
     <TabNavProvider value={{ goToImport: () => setActive('import') }}>
     <div className="min-h-screen bg-canvas" key={user?.id ?? 'guest'}>
-      <header className="relative z-50 border-b border-hi/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
-        <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
-          <BrandLogo variant="on-glass" />
-          <div className="flex items-center gap-3">
+      {/* Skip link — first tab stop, revealed on focus (shell mockup `.skiplink`). */}
+      <a
+        href="#main-content"
+        className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-3 focus:z-[80] focus:rounded-lg focus:bg-hi focus:px-4 focus:py-2.5 focus:text-sm focus:font-bold focus:text-canvas focus:shadow-pop"
+      >
+        Skip to main content
+      </a>
+
+      {/* App shell — confirmed Variation A: one sticky top bar carrying the
+       * brand lockup, the primary tablist, and the privacy/theme/account
+       * cluster. Layering: shell z-40 < advisor z-50 < dialogs z-[60] < toasts z-[70]. */}
+      <header className="sticky top-0 z-40 border-b border-hi/10 bg-canvas/85 backdrop-blur-xl">
+        <div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:px-6 lg:px-8">
+          <BrandLogo variant="on-glass" showTagline={false} />
+          <nav
+            role="tablist"
+            aria-label="Sections"
+            className="flex items-center gap-1 overflow-x-auto"
+          >
+            {tabs.map((tab, i) => {
+              const Icon = tab.icon;
+              const isActive = tab.id === active;
+              return (
+                <button
+                  key={tab.id}
+                  ref={(el) => {
+                    tabRefs.current[i] = el;
+                  }}
+                  role="tab"
+                  id={`tab-${tab.id}`}
+                  aria-selected={isActive}
+                  aria-controls={`tabpanel-${tab.id}`}
+                  tabIndex={isActive ? 0 : -1}
+                  onClick={() => setActive(tab.id)}
+                  onKeyDown={(e) => handleTabKeyDown(e, i)}
+                  className={cn(
+                    'flex min-h-[44px] shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas',
+                    isActive
+                      ? 'bg-primary/10 text-primary'
+                      : 'text-low hover:bg-elev-3 hover:text-hi'
+                  )}
+                >
+                  <Icon className="h-4 w-4" aria-hidden="true" />
+                  {tab.label}
+                </button>
+              );
+            })}
+          </nav>
+          <div className="ml-auto flex shrink-0 items-center gap-2">
             <LocalOnlyBadge />
-            <SwitchModeButton />
+            <ThemeToggle />
+            <SwitchModeButton className="hidden lg:inline-flex" />
             <UserProfileMenu onOpenSettings={() => setActive('settings')} />
           </div>
         </div>
       </header>
 
-      <div className="border-b border-hi/10 bg-elev-1/40 backdrop-blur-md">
-        <nav
-          role="tablist"
-          aria-label="Sections"
-          className="mx-auto flex max-w-5xl gap-0 overflow-x-auto px-4 lg:px-6"
-        >
-          {tabs.map((tab, i) => {
-            const Icon = tab.icon;
-            const isActive = tab.id === active;
-            return (
-              <button
-                key={tab.id}
-                ref={(el) => {
-                  tabRefs.current[i] = el;
-                }}
-                role="tab"
-                id={`tab-${tab.id}`}
-                aria-selected={isActive}
-                aria-controls={`tabpanel-${tab.id}`}
-                tabIndex={isActive ? 0 : -1}
-                onClick={() => setActive(tab.id)}
-                onKeyDown={(e) => handleTabKeyDown(e, i)}
-                className={cn(
-                  'relative flex min-h-[44px] shrink-0 items-center gap-2 px-4 py-3.5 text-sm font-medium transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
-                  isActive
-                    ? 'text-hi'
-                    : 'text-low hover:text-mid'
-                )}
-              >
-                <Icon className={cn('h-4 w-4 transition-colors', isActive ? 'text-accent' : 'text-low')} />
-                {tab.label}
-                {isActive && (
-                  <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-aurora shadow-glow" />
-                )}
-              </button>
-            );
-          })}
-        </nav>
-      </div>
-
       {importState.active && (
-        <div className="sticky top-0 z-40 border-b border-primary/20 bg-primary/10 backdrop-blur-md px-6 py-2.5">
-          <div className="mx-auto flex max-w-5xl items-center gap-3">
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
+        <div className="sticky top-16 z-30 border-b border-primary/20 bg-primary/10 px-6 py-2.5 backdrop-blur-md">
+          <div className="mx-auto flex max-w-7xl items-center gap-3">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
             <span className="text-sm text-mid">
               {PHASE_LABEL[importState.phase] ?? 'Working'}
               {importState.progress
@@ -198,21 +211,23 @@ function MainApp() {
         </div>
       )}
 
-      <main
-        role="tabpanel"
-        id={`tabpanel-${active}`}
-        aria-labelledby={`tab-${active}`}
-        tabIndex={0}
-        className="mx-auto max-w-5xl px-6 py-10 focus:outline-none lg:px-8"
-      >
-        {deduping ? (
-          <div aria-busy="true" className="flex items-center gap-3 text-sm text-low">
-            <Loader2 className="h-4 w-4 animate-spin text-accent" />
-            Tidying up your transactions (removing duplicates)…
-          </div>
-        ) : (
-          <ActiveComponent />
-        )}
+      <main id="main-content" className="mx-auto max-w-7xl px-6 py-10 lg:px-8">
+        <div
+          role="tabpanel"
+          id={`tabpanel-${active}`}
+          aria-labelledby={`tab-${active}`}
+          tabIndex={0}
+          className="focus:outline-none"
+        >
+          {deduping ? (
+            <div aria-busy="true" className="flex items-center gap-3 text-sm text-low">
+              <Loader2 className="h-4 w-4 animate-spin text-primary" />
+              Tidying up your transactions (removing duplicates)…
+            </div>
+          ) : (
+            <ActiveComponent />
+          )}
+        </div>
       </main>
 
       <AiAdvisor />

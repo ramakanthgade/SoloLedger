@@ -43,7 +43,8 @@ const FOCUSABLE_SELECTOR = [
  * - Click on the backdrop (outside the panel) closes
  * - Restores focus to the previously-focused element on close
  *
- * Aurora-styled: glass surface, hairline border, 16px (rounded-xl) radius.
+ * Ember & Slate: surface fill, hairline border, 20px radius, deep pop shadow.
+ * Layers above the shell (overlay z-[60]; shell header is z-40).
  */
 export function Dialog({
   open,
@@ -123,8 +124,8 @@ export function Dialog({
       onKeyDown={handleKeyDown}
       className={cn(
         overlay
-          ? 'w-full max-w-md rounded-xl border border-hi/10 bg-elev-2/95 p-5 shadow-soft backdrop-blur-xl'
-          : 'rounded-xl border border-hi/10 bg-elev-2/95 shadow-soft',
+          ? 'w-full max-w-md rounded-[20px] border border-hi/10 bg-elev-2/95 p-5 shadow-pop backdrop-blur-xl'
+          : 'rounded-[20px] border border-hi/10 bg-elev-2/95 shadow-pop',
         'focus:outline-none',
         className
       )}

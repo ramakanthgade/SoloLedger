@@ -99,9 +99,9 @@ function FlagSelector({ tx }: { tx: Transaction }) {
       >
         {tx.isInternalTransfer && <Badge tone="neutral" className="text-[10px]">internal</Badge>}
         {tx.isSpam && <Badge tone="loss" className="text-[10px]">spam</Badge>}
-        {tx.category === 'nft' && <Badge tone="pink" className="text-[10px]">nft</Badge>}
+        {tx.category === 'nft' && <Badge tone="accent" className="text-[10px]">nft</Badge>}
         {shownFlags.map((f) => (
-          <Badge key={f} tone="gold" className="text-[10px]">
+          <Badge key={f} tone="warn" className="text-[10px]">
             {f.replace(/_/g, ' ')}
           </Badge>
         ))}
@@ -213,21 +213,21 @@ function TypeSelector({ tx }: { tx: Transaction }) {
   );
 }
 
-const TYPE_TONE: Record<TxType, 'neutral' | 'emerald' | 'gold' | 'loss' | 'violet' | 'pink'> = {
-  buy: 'emerald',
+const TYPE_TONE: Record<TxType, 'neutral' | 'gain' | 'warn' | 'loss' | 'primary' | 'accent'> = {
+  buy: 'gain',
   sell: 'loss',
-  trade: 'violet',
+  trade: 'primary',
   transfer_in: 'neutral',
   transfer_out: 'neutral',
-  income: 'emerald',
+  income: 'gain',
   gift_sent: 'neutral',
   gift_received: 'neutral',
   fee: 'neutral',
-  nft_mint: 'pink',
-  nft_buy: 'pink',
-  nft_sell: 'pink',
-  defi_deposit: 'gold',
-  defi_withdraw: 'gold',
+  nft_mint: 'accent',
+  nft_buy: 'accent',
+  nft_sell: 'accent',
+  defi_deposit: 'warn',
+  defi_withdraw: 'warn',
   other: 'neutral'
 };
 

@@ -51,8 +51,14 @@
     --on-aurora: #FFFFFF;
     /* Lines & depth */
     --border: rgba(34, 26, 20, 0.1);
+    /* Elevation ramp (derived in-palette from the foundation mockup's
+     * --sh-xs/--sh-sm/--sh-pop): hairline lift for controls, a soft card
+     * float, and a deep drop for menus/dialogs/toasts floating above. */
+    --shadow-xs: 0 1px 2px rgba(34, 26, 20, 0.06);
+    --shadow-sm: 0 1px 2px rgba(34, 26, 20, 0.05), 0 2px 8px -2px rgba(34, 26, 20, 0.07);
     --shadow: 0 8px 32px rgba(34, 26, 20, 0.08);
     --shadow-hover: 0 12px 40px rgba(34, 26, 20, 0.12);
+    --shadow-pop: 0 32px 72px -20px rgba(34, 26, 20, 0.28);
     --glow: 0 0 40px rgba(194, 65, 12, 0.18);
     --selection: rgba(194, 65, 12, 0.22);
 
@@ -114,8 +120,11 @@
     --on-aurora: #171310;
     /* Lines & depth */
     --border: rgba(244, 237, 228, 0.1);
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.4);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px -2px rgba(0, 0, 0, 0.5);
     --shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
     --shadow-hover: 0 12px 40px rgba(0, 0, 0, 0.55);
+    --shadow-pop: 0 32px 72px -20px rgba(0, 0, 0, 0.65);
     --glow: 0 0 40px rgba(242, 162, 96, 0.25);
     --selection: rgba(242, 162, 96, 0.3);
 
@@ -195,13 +204,26 @@
     @apply mt-2 max-w-2xl text-sm leading-relaxed text-mid;
   }
 
+  /* Form controls — foundation mockup `.input`/`.sel`: 44px touch target,
+   * 12px radius, surface fill, hairline border, ember focus ring. Error and
+   * success states flip the border/ring to loss / gain. */
+  .sl-input {
+    @apply h-11 w-full rounded-lg border border-hi/10 bg-elev-1 px-3.5 text-sm text-hi shadow-xs
+      transition-colors placeholder:text-faint hover:border-hi/20
+      focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30;
+  }
+
+  .sl-input[aria-invalid='true'] {
+    @apply border-loss/60 focus:border-loss/70 focus:ring-loss/25;
+  }
+
   .sl-select {
-    @apply h-9 rounded-[10px] border border-hi/10 bg-elev-3 px-3 text-sm text-hi shadow-soft
-      transition-colors focus:border-primary/50 focus:outline-none focus:ring-2 focus:ring-primary/30;
+    @apply h-11 rounded-lg border border-hi/10 bg-elev-1 px-3.5 text-sm text-hi shadow-xs
+      transition-colors hover:border-hi/20 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30;
   }
 
   .toolbar-card {
-    @apply flex flex-wrap items-center gap-3 rounded-2xl border border-hi/10 bg-elev-2 p-4 shadow-soft;
+    @apply flex flex-wrap items-center gap-3 rounded-2xl border border-hi/10 bg-elev-2 p-4 shadow-xs;
   }
 
   .stat-card {
