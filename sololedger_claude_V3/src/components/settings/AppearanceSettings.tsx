@@ -46,21 +46,24 @@ export function AppearanceSettings() {
         <CardTitle>Appearance</CardTitle>
       </CardHeader>
       <CardContent>
-        <p className="mb-3 text-sm text-low">
-          Choose how SoloLedger looks on this device.
-          {choice === 'system' && (
-            <>
-              {' '}
-              System follows your device setting — currently{' '}
-              <strong className="text-mid">{resolved}</strong>.
-            </>
-          )}
-        </p>
-        <div
-          role="radiogroup"
-          aria-label="Color theme"
-          className="inline-flex gap-1 rounded-lg border border-hi/10 bg-elev-3 p-1"
-        >
+        <div className="flex flex-wrap items-center justify-between gap-4">
+          <div className="min-w-0">
+            <p className="text-sm font-semibold text-hi">Theme</p>
+            <p className="mt-1 max-w-md text-xs leading-relaxed text-low">
+              Light is the default; System follows your OS.
+              {choice === 'system' && (
+                <>
+                  {' '}
+                  Currently <strong className="text-mid">{resolved}</strong>.
+                </>
+              )}
+            </p>
+          </div>
+          <div
+            role="radiogroup"
+            aria-label="Color theme"
+            className="inline-flex gap-1 rounded-lg border border-hi/10 bg-elev-3 p-1"
+          >
           {OPTIONS.map((option, i) => {
             const Icon = option.icon;
             const checked = choice === option.value;
@@ -87,6 +90,7 @@ export function AppearanceSettings() {
               </button>
             );
           })}
+          </div>
         </div>
       </CardContent>
     </Card>

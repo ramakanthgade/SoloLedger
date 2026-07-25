@@ -11,6 +11,7 @@ import {
 } from '@/lib/saas/plans';
 import { PLAN_CATALOG, SELECTED_PLAN_KEY } from '@/lib/saas/planCatalog';
 import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/card';
 
 const inr = (amount: number) => `₹${amount.toLocaleString('en-IN')}`;
 
@@ -57,9 +58,9 @@ export function SubscriptionCard() {
   };
 
   return (
-    <div className="rounded-2xl border border-hi/10 bg-elev-2 shadow-card">
-      <div className="border-b border-hi/5 px-6 py-5">
-        <p className="font-mono text-xs font-semibold uppercase tracking-wider text-primary">Subscription</p>
+    <div className="overflow-hidden rounded-[20px] border border-hi/10 bg-elev-2 shadow-card">
+      <div className="border-b border-hi/10 bg-elev-1/50 px-6 py-4">
+        <p className="text-sm font-semibold tracking-tight text-hi">Subscription</p>
         {!user.subscriptionActive && (
           <p className="mt-2 text-sm text-warn">
             Renewal needed — pick a plan below to reactivate your subscription.
@@ -73,7 +74,7 @@ export function SubscriptionCard() {
         )}
       </div>
 
-      <div className="divide-y divide-hi/5">
+      <div className="divide-y divide-hi/10">
         {PLAN_CATALOG.map((p) => {
           const isCurrent = user.plan === p.id;
           const highlight = selectedFromLanding === p.id;
@@ -86,14 +87,14 @@ export function SubscriptionCard() {
                 <p className="font-semibold text-hi">
                   {p.name}
                   {p.featured && (
-                    <span className="ml-2 rounded bg-gain/15 px-1.5 py-0.5 text-[10px] font-bold uppercase text-gain">
+                    <Badge tone="gain" className="ml-2 uppercase">
                       Popular
-                    </span>
+                    </Badge>
                   )}
                   {isCurrent && (
-                    <span className="ml-2 rounded bg-elev-3 px-1.5 py-0.5 text-[10px] font-bold uppercase text-mid">
+                    <Badge tone="neutral" className="ml-2 uppercase">
                       Current
-                    </span>
+                    </Badge>
                   )}
                 </p>
                 <p className="text-sm text-low">
@@ -111,7 +112,7 @@ export function SubscriptionCard() {
                         value={extraPacks}
                         aria-label="Enterprise extra 1,000-event packs"
                         onChange={(e) => setExtraPacks(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
-                        className="h-8 w-20 rounded-lg border border-hi/10 bg-elev-3 px-2 text-right font-mono text-sm text-hi"
+                        className="sl-input h-9 w-20 px-2.5 text-right font-mono text-sm"
                       />
                       <span className="text-low">
                         → {formatUnitLimit(10_000 + extraPacks * 1_000)} events

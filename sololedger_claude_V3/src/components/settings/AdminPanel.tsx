@@ -172,7 +172,7 @@ function UserRow({
           type="text"
           value={includedUnits}
           onChange={(e) => setIncludedUnits(e.target.value)}
-          className="w-28 rounded border border-hi/10 bg-elev-2 px-2 py-1 text-xs"
+          className="sl-input h-9 w-28 px-2.5 text-xs"
         />
       </td>
       <td className="py-3">

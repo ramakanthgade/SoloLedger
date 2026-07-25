@@ -71,21 +71,21 @@ export function AddressRegistrySettingsSection({ coingeckoApiKey }: { coingeckoA
   return (
     <Card>
       <CardHeader><CardTitle>Address registries</CardTitle></CardHeader>
-      <CardContent className="space-y-4">
+      <CardContent>
         <p className="text-xs leading-relaxed text-low">
           Sync public token and project-wallet metadata used to suggest income classifications. Dynamic matches are always sent to Review; registry requests never include your wallet addresses.
         </p>
-        {!coingeckoApiKey && <p className="text-xs text-warn">A CoinGecko Pro key is required only for allocation-wallet data.</p>}
-        <div className="space-y-3">
+        {!coingeckoApiKey && <p className="mt-2 text-xs text-warn">A CoinGecko Pro key is required only for allocation-wallet data.</p>}
+        <div className="mt-2 divide-y divide-hi/10">
           {rows.map((row) => {
             const status = statuses[row.key];
             return (
-              <div key={row.key} className="flex items-center justify-between gap-3">
-                <div>
-                  <p className="text-sm font-medium text-mid">{row.label}</p>
-                  <p className="text-xs text-low">{status.count} {row.unit}</p>
+              <div key={row.key} className="flex items-center justify-between gap-3 py-3">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-hi">{row.label}</p>
+                  <p className="mt-0.5 text-xs text-low">{status.count} {row.unit}</p>
                 </div>
-                <Button size="sm" variant="secondary" onClick={() => void row.action()} disabled={status.syncing || row.disabled}>
+                <Button size="sm" variant="secondary" className="shrink-0" onClick={() => void row.action()} disabled={status.syncing || row.disabled}>
                   {status.syncing ? 'Syncing…' : 'Sync'}
                 </Button>
               </div>
@@ -93,7 +93,7 @@ export function AddressRegistrySettingsSection({ coingeckoApiKey }: { coingeckoA
           })}
         </div>
         {Object.entries(statuses).filter(([, status]) => status.message).map(([key, status]) => (
-          <p key={key} role={status.error ? 'alert' : 'status'} className={`text-xs ${status.error ? 'text-loss' : 'text-gain'}`}>
+          <p key={key} role={status.error ? 'alert' : 'status'} className={`mt-2 text-xs ${status.error ? 'text-loss' : 'text-gain'}`}>
             {status.message}
           </p>
         ))}
