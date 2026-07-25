@@ -46,20 +46,24 @@ describe('ReviewTab — round 2 UI fixes (Task 1)', () => {
     expect(source).toContain('<option value="internal">Internal</option>');
   });
 
-  it('right-anchors the per-row Flags popover so it is not clipped (Issue 1)', () => {
-    // Right-anchor fix: the flags popover opens inward from the last column.
-    expect(source).toContain('absolute right-0 top-7 z-30 min-w-[14rem]');
-    expect(source).not.toContain('absolute left-0 top-7 z-30 min-w-[14rem]');
+  it('left-anchors the per-row Flags popover so it opens into the row (Issue 1, Ember & Slate layout)', () => {
+    // The redesigned date-grouped row places the FlagSelector in the MIDDLE
+    // column (lg) or under the type block (mobile) — no longer the last
+    // table column — so the popover left-anchors and opens into the row.
+    // Right-anchoring here would clip it against the row's left edge.
+    expect(source).toContain('absolute left-0 top-9 z-30 min-w-[15rem]');
+    expect(source).not.toContain('absolute right-0 top-7 z-30 min-w-[14rem]');
   });
 
-  it('renders the shared pagination bar both above and below the table (Issue 2)', () => {
-    const topOfTable = source.indexOf('overflow-x-auto rounded-lg border border-hi/10');
-    const firstPager = source.indexOf("renderPagination('pb-0.5')");
-    const secondPager = source.indexOf("renderPagination('pt-2')");
+  it('renders the shared pagination bar both above and below the list (Issue 2)', () => {
+    const topOfList = source.indexOf('Date-grouped ledger');
+    const firstPager = source.indexOf("renderPagination('')");
+    const secondPager = source.indexOf("renderPagination('pt-1', { utcNote: true })");
+    expect(topOfList).toBeGreaterThan(-1);
     expect(firstPager).toBeGreaterThan(-1);
     expect(secondPager).toBeGreaterThan(-1);
-    // Top bar precedes the table wrapper; bottom bar follows it.
-    expect(firstPager).toBeLessThan(topOfTable);
-    expect(secondPager).toBeGreaterThan(topOfTable);
+    // Top bar precedes the date-grouped list; bottom bar follows it.
+    expect(firstPager).toBeLessThan(topOfList);
+    expect(secondPager).toBeGreaterThan(topOfList);
   });
 });

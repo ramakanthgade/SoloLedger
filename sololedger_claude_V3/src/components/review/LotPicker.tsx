@@ -2,7 +2,7 @@ import { useState } from 'react';
 import type { DisposalCandidateLot } from '@/lib/costBasis/engine';
 import { saveSpecIdHint } from '@/lib/storage/db';
 import { Button } from '@/components/ui/button';
-import { formatCurrency } from '@/lib/utils';
+import { cn, formatCurrency } from '@/lib/utils';
 
 interface Props {
   txId: string;
@@ -29,24 +29,29 @@ export function LotPicker({ txId, candidates, currentHint, currency, onSaved }: 
   }
 
   return (
-    <div className="space-y-2 rounded-sm border border-hi/10 bg-elev-1/60 p-3">
+    <div className="space-y-3 rounded-xl border border-hi/10 bg-elev-3/40 p-4">
       <p className="text-xs text-low">
         Click lots in the order you want them consumed. Unselected lots fall back to oldest-first for any remainder.
       </p>
-      <div className="space-y-1">
+      <div className="space-y-1.5">
         {candidates.map((c) => {
           const priority = order.indexOf(c.lotId);
+          const active = priority >= 0;
           return (
             <button
               key={c.lotId}
               onClick={() => toggle(c.lotId)}
-              className={
-                'flex w-full items-center justify-between rounded-sm border px-2 py-1.5 text-left text-xs font-mono ' +
-                (priority >= 0 ? 'border-primary/40 bg-primary/10 text-gain' : 'border-hi/10 text-low')
-              }
+              aria-pressed={active}
+              className={cn(
+                'flex min-h-[44px] w-full items-center justify-between gap-3 rounded-lg border px-3 py-2 text-left font-mono text-xs tabular-figures transition-colors',
+                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                active
+                  ? 'border-primary/50 bg-primary/10 text-primary'
+                  : 'border-hi/10 bg-elev-1 text-mid hover:border-primary/30'
+              )}
             >
               <span>
-                {priority >= 0 && <span className="mr-2">#{priority + 1}</span>}
+                {active && <span className="mr-2 inline-flex h-5 min-w-[20px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-extrabold text-on-aurora">#{priority + 1}</span>}
                 {new Date(c.acquiredAt).toISOString().slice(0, 10)} · {c.amountAvailable.toFixed(6)} avail. ·{' '}
                 {formatCurrency(c.costBasisPerUnit, currency)}/unit
               </span>
@@ -54,7 +59,7 @@ export function LotPicker({ txId, candidates, currentHint, currency, onSaved }: 
           );
         })}
       </div>
-      <Button onClick={save} variant="secondary" className="text-xs">
+      <Button onClick={save} variant="secondary" size="sm">
         Save lot order for this disposal
       </Button>
     </div>
