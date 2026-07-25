@@ -3,12 +3,14 @@ import type { ExchangeConnectionView } from '@/lib/exchangeSync';
 import type { CsvImportRow, LookupAddressRow } from '@/lib/storage/db';
 import {
   buildCards,
+  exchangeCoverageChip,
   fileImportTitle,
   groupWallets,
   pillCounts,
   relativeTime,
   shortAddress,
   shortFileName,
+  walletChainChip,
   walletLane,
   type BuildCardsInput
 } from './connectionModel';
@@ -41,6 +43,8 @@ function exchangeConn(over: Partial<ExchangeConnectionView> = {}): ExchangeConne
     lastSyncAt: NOW - 2 * 3_600_000,
     txCount: 1284,
     lastError: null,
+    // Full data-range coverage by default — the coverage chip is opt-out at 100%.
+    cursors: { trades: NOW - 3_600_000, deposits: NOW - 3_600_000, withdrawals: NOW - 3_600_000 },
     ...over
   };
 }
@@ -138,6 +142,16 @@ describe('walletLane', () => {
     expect(walletLane(group(undefined, ['ethereum', 'polygon']))).toBe('wallets');
     expect(walletLane(group(undefined, ['bitcoin']))).toBe('chains');
     expect(walletLane(group('Savings', ['bitcoin']))).toBe('chains');
+  });
+
+  it('matches catalog names and aliases on word boundaries (no substring false positives)', () => {
+    // Short names must not match inside longer words.
+    expect(walletLane(group('PancakeSwap LP', ['bsc']))).toBe('chains');
+    expect(walletLane(group('my Cake Wallet', ['bitcoin']))).toBe('wallets');
+    // Aliases cover what users actually type.
+    expect(walletLane(group('MEW vault', ['ethereum']))).toBe('wallets');
+    expect(walletLane(group('Coinbase Wallet', ['ethereum']))).toBe('wallets');
+    expect(walletLane(group('my xumm', ['xrpl']))).toBe('wallets');
   });
 });
 
@@ -262,5 +276,100 @@ describe('pillCounts', () => {
       })
     );
     expect(pillCounts(cards)).toEqual({ all: 5, exchanges: 2, wallets: 1, chains: 1, manual: 1 });
+  });
+});
+
+/**
+ * Item 8 — "% Synced" chips. Honest sync-completeness derived from ACTUAL
+ * state only: exchange per-kind cursors (written only after a successful
+ * save) and per-chain wallet sync timestamps. 100% → no chip (the green
+ * Synced/Watching state already says it).
+ */
+describe('exchangeCoverageChip', () => {
+  it('is undefined at full coverage (keeps the green Synced state)', () => {
+    expect(exchangeCoverageChip(exchangeConn())).toBeUndefined();
+  });
+
+  it('names covered ✓ and uncovered — ranges from the persisted cursors', () => {
+    expect(
+      exchangeCoverageChip(exchangeConn({ cursors: { trades: NOW, deposits: NOW } }))
+    ).toBe('Trades ✓ · Deposits ✓ · Withdrawals —');
+    expect(exchangeCoverageChip(exchangeConn({ cursors: { trades: NOW } }))).toBe(
+      'Trades ✓ · Deposits — · Withdrawals —'
+    );
+    expect(exchangeCoverageChip(exchangeConn({ cursors: {} }))).toBe(
+      'Trades — · Deposits — · Withdrawals —'
+    );
+    // A missing cursors field (legacy view) reads as "no ranges on record".
+    expect(exchangeCoverageChip(exchangeConn({ cursors: undefined }))).toBe(
+      'Trades — · Deposits — · Withdrawals —'
+    );
+  });
+
+  it('is undefined before the first sync (the meta line already says "Not synced yet")', () => {
+    expect(exchangeCoverageChip(exchangeConn({ lastSyncAt: null, cursors: {} }))).toBeUndefined();
+  });
+});
+
+describe('walletChainChip', () => {
+  const group = (stamps: number[]) => {
+    const rows = stamps.map((lastSyncedAt, i) =>
+      walletRow({ id: `c${i}:0xAAA`, chain: `c${i}`, lastSyncedAt })
+    );
+    const [g] = groupWallets(rows);
+    return g;
+  };
+
+  it('is undefined when every enabled chain has a completed sync', () => {
+    expect(walletChainChip(group([10, 20]))).toBeUndefined();
+    expect(walletChainChip(group([10]))).toBeUndefined();
+  });
+
+  it('reports chains fully synced ÷ chains enabled with a rounded percent', () => {
+    expect(walletChainChip(group([10, 20, 0]))).toBe('2/3 chains · 67%');
+    expect(walletChainChip(group([0, 20]))).toBe('1/2 chains · 50%');
+    expect(walletChainChip(group([0]))).toBe('0/1 chains · 0%');
+  });
+});
+
+describe('buildCards — sync chips', () => {
+  it('attaches the exchange coverage chip only when coverage is partial', () => {
+    const [full] = buildCards(input({ connections: [exchangeConn()] }));
+    expect(full.syncChip).toBeUndefined();
+
+    const [partial] = buildCards(
+      input({ connections: [exchangeConn({ cursors: { trades: NOW, deposits: NOW } })] })
+    );
+    expect(partial.syncChip).toBe('Trades ✓ · Deposits ✓ · Withdrawals —');
+  });
+
+  it('attaches the wallet chain chip only when some enabled chain lacks a sync', () => {
+    const [synced] = buildCards(
+      input({
+        wallets: [
+          walletRow({ id: 'ethereum:0xAAA', chain: 'ethereum', lastSyncedAt: 10 }),
+          walletRow({ id: 'polygon:0xaaa', chain: 'polygon', lastSyncedAt: 20 })
+        ]
+      })
+    );
+    expect(synced.syncChip).toBeUndefined();
+
+    const [partial] = buildCards(
+      input({
+        wallets: [
+          walletRow({ id: 'ethereum:0xAAA', chain: 'ethereum', lastSyncedAt: 10 }),
+          walletRow({ id: 'polygon:0xaaa', chain: 'polygon', lastSyncedAt: 20 }),
+          walletRow({ id: 'bsc:0xAAA', chain: 'bsc', lastSyncedAt: 0 })
+        ]
+      })
+    );
+    expect(partial.syncChip).toBe('2/3 chains · 67%');
+  });
+
+  it('file imports and the manual card never carry a sync chip', () => {
+    const [file] = buildCards(input({ csvImports: [csvRow()] }));
+    expect(file.syncChip).toBeUndefined();
+    const [manual] = buildCards(input({ manualCount: 2 }));
+    expect(manual.syncChip).toBeUndefined();
   });
 });

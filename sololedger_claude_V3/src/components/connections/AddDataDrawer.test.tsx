@@ -108,13 +108,26 @@ describe('AddDataDrawer — step routing', () => {
     expect(screen.getByRole('dialog', { name: 'Import a CoinDCX file' })).toBeInTheDocument();
   });
 
-  it('wallet-app flow passes the app name as the default nickname', () => {
+  it('wallet-app flow passes the app name as the default nickname and preselects its headline chain', () => {
     renderDrawer();
     fireEvent.click(screen.getByRole('button', { name: /wallet app/i }));
     fireEvent.click(screen.getByRole('button', { name: /^metamask/i }));
 
     expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-label', 'MetaMask');
+    expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-chain', 'ethereum');
     expect(screen.getByRole('dialog', { name: 'Watch a MetaMask address' })).toBeInTheDocument();
+  });
+
+  it('wallet-app flow preselects Bitcoin for a hardware wallet and nothing for Cardano', () => {
+    renderDrawer();
+    fireEvent.click(screen.getByRole('button', { name: /wallet app/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^ledger/i }));
+    expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-chain', 'bitcoin');
+
+    // Cardano wallets hint no chain (the lookup layer does not index Cardano).
+    fireEvent.click(screen.getByRole('button', { name: 'Back' }));
+    fireEvent.click(screen.getByRole('button', { name: /^eternl/i }));
+    expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-chain', 'none');
   });
 
   it('chain flow preselects the picked chain; "Another chain" preselects nothing', () => {

@@ -84,11 +84,14 @@ vi.mock('@/lib/importJob', async () => {
 
 import { WalletAddressForm } from './WalletAddressForm';
 import { importJob } from '@/lib/importJob';
+import { updateWalletLabel } from '@/lib/storage/db';
 
 /** Render the panel, paste the EVM address, and return once settings loaded. */
 async function renderWithEvmAddress() {
-  render(<WalletAddressForm />);
-  const input = await screen.findByRole('textbox', { name: /wallet addresses/i });
+  // Wallet name is required (item 4) — the wallet-app flow would prefill it.
+  render(<WalletAddressForm defaultLabel="Test wallet" />);
+  // Single-address box by default (item 4) — its label is "Wallet address".
+  const input = await screen.findByRole('textbox', { name: /wallet address/i });
   fireEvent.change(input, { target: { value: EVM_ADDR } });
   return input;
 }
@@ -392,6 +395,8 @@ describe('WalletAddressForm — EVM active-chain detection', () => {
       { id: `polygon:${KNOWN}`, chain: 'polygon', address: KNOWN, txCount: 2, lastSyncedAt: 1_700_000_000_000 }
     ];
     render(<WalletAddressForm />);
+    // Two addresses → opt into the multi-address box first (item 4).
+    fireEvent.click(await screen.findByRole('checkbox', { name: /add multiple addresses/i }));
     const input = await screen.findByRole('textbox', { name: /wallet addresses/i });
     fireEvent.change(input, { target: { value: `${KNOWN}\n${EVM_ADDR}` } });
     await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
@@ -412,5 +417,82 @@ describe('WalletAddressForm — EVM active-chain detection', () => {
     expect(labels.some((l) => /fantom/i.test(l))).toBe(false);
     expect(labels.some((l) => /ethereum/i.test(l))).toBe(true);
     expect(labels.some((l) => /polygon/i.test(l))).toBe(true);
+  });
+});
+
+/**
+ * Item 4 — wallet naming & one-address default.
+ * The Wallet name is required (transactions stay identifiable by wallet) and
+ * the address box takes a single address unless the user opts into the
+ * multi-address textarea, which carries the Transactions-tab warning.
+ */
+const SOL_A = '4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM';
+const SOL_B = '7UX2vcGey8rZkFHtYjdWxQWcnvzVKFpw3hFTvYzS5pvB';
+
+describe('WalletAddressForm — required wallet name & single-address default', () => {
+  it('prefills the name from the wallet app and applies it to the imported rows', async () => {
+    render(<WalletAddressForm defaultLabel="MetaMask" />);
+    const name = await screen.findByRole('textbox', { name: /wallet name/i });
+    expect(name).toHaveValue('MetaMask');
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'Wallet address' }), {
+      target: { value: SOL_A }
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet' }));
+
+    await waitFor(() => expect(mocks.runWalletImport).toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(vi.mocked(updateWalletLabel)).toHaveBeenCalledWith(`solana:${SOL_A}`, 'MetaMask')
+    );
+  });
+
+  it('blocks Connect with an inline error when the name is emptied, and recovers', async () => {
+    render(<WalletAddressForm defaultLabel="MetaMask" />);
+    const name = await screen.findByRole('textbox', { name: /wallet name/i });
+    fireEvent.change(name, { target: { value: '' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Wallet address' }), {
+      target: { value: SOL_A }
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet' }));
+    expect(
+      screen.getByText(
+        "Name this wallet — it's how its transactions are identified in the Transactions tab."
+      )
+    ).toBeInTheDocument();
+    expect(mocks.runWalletImport).not.toHaveBeenCalled();
+
+    // Typing a name clears the error and the import proceeds.
+    fireEvent.change(name, { target: { value: 'Savings vault' } });
+    expect(screen.queryByText(/Name this wallet/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet' }));
+    await waitFor(() => expect(mocks.runWalletImport).toHaveBeenCalledTimes(1));
+  });
+
+  it('defaults to one address; the checkbox reveals the multi-line box and its warning is next to it', async () => {
+    render(<WalletAddressForm defaultLabel="Ledger" />);
+    // Single-address box by default; multi-line textarea hidden.
+    await screen.findByRole('textbox', { name: 'Wallet address' });
+    expect(screen.queryByRole('textbox', { name: /one per line/i })).not.toBeInTheDocument();
+
+    // The warning copy sits next to the unchecked checkbox, before opting in.
+    const multi = screen.getByRole('checkbox', { name: /add multiple addresses under this name/i });
+    expect(multi).not.toBeChecked();
+    expect(
+      screen.getByText(
+        /Entering multiple addresses under one wallet name can make it harder to tell transactions apart in the Transactions tab\./
+      )
+    ).toBeInTheDocument();
+
+    // Opt in → the existing multi-line box appears and both addresses count.
+    fireEvent.click(multi);
+    const box = screen.getByRole('textbox', { name: /one per line/i });
+    fireEvent.change(box, { target: { value: `${SOL_A}\n${SOL_B}` } });
+    expect(screen.getByRole('button', { name: 'Import 2 wallets' })).toBeEnabled();
+
+    // Opt back out → only the first address survives (no hidden extra import).
+    fireEvent.click(multi);
+    expect(screen.getByRole('textbox', { name: 'Wallet address' })).toHaveValue(SOL_A);
+    expect(screen.getByRole('button', { name: 'Import 1 wallet' })).toBeEnabled();
   });
 });

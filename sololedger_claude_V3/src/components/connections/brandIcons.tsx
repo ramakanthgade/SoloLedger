@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
+import { WALLET_CATALOG } from './walletCatalog';
 
 /**
  * Real brand logos for sources (exchanges, wallet apps, blockchains, assets) —
@@ -12,8 +13,9 @@ import { cn } from '@/lib/utils';
  *   (renders black). They sit on their official brand-color tile — the tile
  *   goes BEHIND the glyph, the glyph is never recolored. Brand hexes are
  *   data (official brand colors), not theme tokens.
- * - `lightChip`: raster marks without alpha (kraken.jpg, trezor.png) sit on
- *   a white chip in BOTH themes so they stay legible on dark surfaces.
+ * - `lightChip`: raster marks without alpha (kraken.jpg, trezor.png) or with
+ *   a near-black mark (bitbox.png) sit on a white chip in BOTH themes so
+ *   they stay legible on dark surfaces.
  */
 export interface BrandIconDef {
   src: string;
@@ -53,17 +55,29 @@ export const BRAND_ICONS: Record<string, BrandIconDef> = {
   usdc: { src: `${ICONS}/usdc.png`, label: 'USDC' }
 };
 
-/** Wallet apps offered in the add-flow picker, in display order. */
-export const WALLET_APPS: { id: string; label: string; hint: string }[] = [
-  { id: 'metamask', label: 'MetaMask', hint: 'Ethereum & EVM chains' },
-  { id: 'trustwallet', label: 'Trust Wallet', hint: 'Multi-chain mobile wallet' },
-  { id: 'ledger', label: 'Ledger', hint: 'BTC & ETH · xPub friendly' },
-  { id: 'phantom', label: 'Phantom', hint: 'Solana & EVM' },
-  { id: 'trezor', label: 'Trezor', hint: 'BTC & ETH · xPub friendly' }
-];
+/**
+ * Wallet-catalog logos join the registry (id → bundled asset). The catalog
+ * is the source of truth for wallet apps; entries without a logo
+ * deliberately fall through to the aurora letter chip.
+ */
+for (const w of WALLET_CATALOG) {
+  if (w.logo) {
+    BRAND_ICONS[w.id] = { src: w.logo, label: w.name, tile: w.tile, lightChip: w.lightChip };
+  }
+}
 
-/** Names that classify a labeled wallet as a "Wallet app" connection. */
-export const WALLET_APP_NAMES = WALLET_APPS.map((w) => w.label.toLowerCase());
+/**
+ * Wallet apps offered in the add-flow picker, in display order.
+ * Legacy shape derived from the catalog — prefer WALLET_CATALOG for new code.
+ */
+export const WALLET_APPS: { id: string; label: string; hint: string }[] = WALLET_CATALOG.map(
+  (w) => ({ id: w.id, label: w.name, hint: w.subtitle })
+);
+
+/** Names (+ user-typical aliases) that classify a labeled wallet as a "Wallet app" connection. */
+export const WALLET_APP_NAMES = WALLET_CATALOG.flatMap((w) =>
+  [w.name, ...(w.aliases ?? [])].map((n) => n.toLowerCase())
+);
 
 /** Map a chain id (lib/rpc/providers) to a brand-icon key, if we have its logo. */
 export function chainIconId(chainId: string): string | undefined {

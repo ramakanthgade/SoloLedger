@@ -68,6 +68,12 @@ export interface ExchangeConnectionView {
   lastSyncAt: number | null;
   txCount: number;
   lastError: string | null;
+  /**
+   * Per-kind ms cursors (trades/deposits/withdrawals) — timestamps only, no
+   * credentials. Drives the honest data-range coverage chip on connection
+   * cards ("Trades ✓ · Deposits ✓ · Withdrawals —").
+   */
+  cursors?: ExchangeSyncCursors;
 }
 
 /**

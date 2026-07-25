@@ -164,7 +164,12 @@ export function AddDataDrawer({
     }
     if (flow === 'exchange' && which?.kind === 'exchange-file') return <FileImportFlow />;
     if (flow === 'wallet-app' && which?.kind === 'wallet-app') {
-      return <WalletAddressForm defaultLabel={which.label} />;
+      return (
+        <WalletAddressForm
+          defaultLabel={which.label}
+          preselectChain={which.preselectChain as ChainId | undefined}
+        />
+      );
     }
     if (flow === 'chain' && which?.kind === 'chain') {
       return (

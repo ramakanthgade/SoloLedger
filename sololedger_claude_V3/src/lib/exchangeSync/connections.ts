@@ -20,7 +20,8 @@ function toView(row: ExchangeConnectionRow, txCount: number): ExchangeConnection
     createdAt: row.createdAt,
     lastSyncAt: row.lastSyncAt ?? null,
     txCount,
-    lastError: row.lastError ?? null
+    lastError: row.lastError ?? null,
+    cursors: { ...(row.cursors ?? {}) }
   };
 }
 

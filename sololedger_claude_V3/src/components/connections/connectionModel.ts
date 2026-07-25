@@ -48,6 +48,14 @@ export interface ConnectionCardData {
   txLine?: string;
   /** Attention line shown under the meta block (exchange lastError). */
   error?: string | null;
+  /**
+   * Honest sync-completeness chip (live-feedback round, item 8), derived from
+   * ACTUAL sync state only — never an invented health score. Wallets: chains
+   * fully synced ÷ chains enabled ("2/3 chains · 67%"). Exchanges: which data
+   * ranges a completed sync covers ("Trades ✓ · Deposits ✓ · Withdrawals —").
+   * Undefined at 100% — the green Synced/Watching state already says it.
+   */
+  syncChip?: string;
   /** Payload references for card actions. */
   exchange?: ExchangeConnectionView;
   csvImport?: CsvImportRow;
@@ -115,15 +123,69 @@ export function groupWallets(rows: LookupAddressRow[]): WalletGroup[] {
   });
 }
 
+/**
+ * Whole-word includes: "cake" matches "my cake wallet" but not
+ * "pancakeswap" — substring matching misclassifies lanes once the catalog
+ * names short tokens like Cake, Leap or Brave.
+ */
+export function containsWord(label: string, name: string): boolean {
+  let i = label.indexOf(name);
+  while (i !== -1) {
+    const before = i === 0 ? '' : label[i - 1];
+    const after = i + name.length >= label.length ? '' : label[i + name.length];
+    if (!/[a-z0-9]/.test(before) && !/[a-z0-9]/.test(after)) return true;
+    i = label.indexOf(name, i + 1);
+  }
+  return false;
+}
+
 /** Wallet-app heuristic: labeled after a known wallet app, or multi-chain. */
 export function walletLane(group: WalletGroup): 'wallets' | 'chains' {
   const label = group.label?.toLowerCase() ?? '';
-  if (label && WALLET_APP_NAMES.some((name) => label.includes(name))) return 'wallets';
+  if (label && WALLET_APP_NAMES.some((name) => containsWord(label, name))) return 'wallets';
   return group.chains.length > 1 ? 'wallets' : 'chains';
 }
 
 function chainLabel(chainId: string): string {
   return CHAINS.find((c) => c.id === chainId)?.label ?? chainId;
+}
+
+/** Exchange data ranges auto-sync covers, in display order (cursor kinds). */
+const EXCHANGE_SYNC_KINDS = [
+  { key: 'trades', label: 'Trades' },
+  { key: 'deposits', label: 'Deposits' },
+  { key: 'withdrawals', label: 'Withdrawals' }
+] as const;
+
+/**
+ * Exchange sync-completeness chip: which data ranges a COMPLETED sync covers,
+ * from the persisted per-kind cursors (written only after a successful save —
+ * so ✓ means "covered through the last sync", never a guess). All three
+ * covered → undefined (100% keeps the green Synced state); never synced →
+ * undefined (the "Not synced yet" meta line already says it).
+ */
+export function exchangeCoverageChip(c: ExchangeConnectionView): string | undefined {
+  if (c.lastSyncAt == null) return undefined;
+  const covered = EXCHANGE_SYNC_KINDS.filter((k) => c.cursors?.[k.key] != null);
+  if (covered.length === EXCHANGE_SYNC_KINDS.length) return undefined;
+  return EXCHANGE_SYNC_KINDS.map((k) =>
+    `${k.label} ${c.cursors?.[k.key] != null ? '✓' : '—'}`
+  ).join(' · ');
+}
+
+/**
+ * Wallet sync-completeness chip: chains fully synced ÷ chains enabled. A
+ * chain counts as fully synced when its row has a completed-sync timestamp
+ * (lastSyncedAt > 0 — stamped by every successful wallet import). All chains
+ * synced → undefined (100% keeps the green Watching state).
+ */
+export function walletChainChip(group: WalletGroup): string | undefined {
+  const total = group.chains.length;
+  if (total === 0) return undefined;
+  const synced = group.rows.filter((r) => r.lastSyncedAt > 0).length;
+  if (synced >= total) return undefined;
+  const pct = Math.round((synced / total) * 100);
+  return `${synced}/${total} chains · ${pct}%`;
 }
 
 /** Display title for a file import: the exchange it came from, else the file name. */
@@ -169,6 +231,7 @@ export function buildCards(input: BuildCardsInput): ConnectionCardData[] {
       metaLine: c.lastSyncAt != null ? `Synced ${relativeTime(c.lastSyncAt)}` : 'Not synced yet',
       txLine: `${c.txCount.toLocaleString()} transaction${c.txCount === 1 ? '' : 's'}`,
       error: c.lastError,
+      syncChip: exchangeCoverageChip(c),
       exchange: c
     });
   }
@@ -211,6 +274,7 @@ export function buildCards(input: BuildCardsInput): ConnectionCardData[] {
       status: { tone: 'gain', label: 'Watching' },
       metaLine: `Synced ${relativeTime(group.lastSyncedAt)}`,
       txLine: `${group.txCount.toLocaleString()} transaction${group.txCount === 1 ? '' : 's'}`,
+      syncChip: walletChainChip(group),
       walletRows: group.rows
     });
   }
