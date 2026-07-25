@@ -6,9 +6,9 @@ import { db, deduplicateTransactions } from '@/lib/storage/db';
 import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow';
 import { shouldShowOnboarding } from '@/components/onboarding/onboardingPredicate';
 import { TabNavProvider } from '@/lib/tabNav';
+import { DashboardTab } from '@/components/dashboard/DashboardTab';
 import { ImportTab } from '@/components/import/ImportTab';
 import { ReviewTab } from '@/components/review/ReviewTab';
-import { PortfolioTab } from '@/components/portfolio/PortfolioTab';
 import { CapitalGainsTab } from '@/components/capitalGains/CapitalGainsTab';
 import { ReportsTab } from '@/components/reports/ReportsTab';
 import { SettingsTab } from '@/components/settings/SettingsTab';
@@ -22,7 +22,7 @@ import { useAuth } from '@/lib/saas/authContext';
 import { useAppMode } from '@/lib/saas/modeContext';
 import { useImportJob } from '@/lib/importJob';
 import {
-  Link, ListChecks, PieChart, TrendingUp, FileText, Settings, Loader2, Shield
+  Link, ListChecks, LayoutDashboard, TrendingUp, FileText, Settings, Loader2, Shield
 } from 'lucide-react';
 import { SwitchModeButton } from '@/components/SwitchModeButton';
 import { ThemeToggle } from '@/components/ThemeToggle';
@@ -30,14 +30,17 @@ import { cn } from '@/lib/utils';
 
 /**
  * Primary nav — Ember & Slate shell (confirmed Variation A top-nav frame).
- * "Import" is now labeled "Connections" with a link icon (adding data lives
- * in Connections in the redesign); ids/components are unchanged so tab
- * wiring, deep links and the TabNavProvider contract stay exactly as today.
+ * Live-feedback round: the Dashboard is the new home screen and absorbs the
+ * Portfolio tab (PortfolioTab stays in the codebase, unrouted); "Review" is
+ * relabeled "Transactions" at the shell level. Order: Dashboard · Connections
+ * · Transactions · Capital Gains · Reports · Settings. The 'import'/'review'
+ * ids stay stable so tab wiring, deep links and the TabNavProvider contract
+ * are unchanged.
  */
 const BASE_TABS = [
+  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, component: DashboardTab },
   { id: 'import', label: 'Connections', icon: Link, component: ImportTab },
-  { id: 'review', label: 'Review', icon: ListChecks, component: ReviewTab },
-  { id: 'portfolio', label: 'Portfolio', icon: PieChart, component: PortfolioTab },
+  { id: 'review', label: 'Transactions', icon: ListChecks, component: ReviewTab },
   { id: 'capital-gains', label: 'Capital Gains', icon: TrendingUp, component: CapitalGainsTab },
   { id: 'reports', label: 'Reports', icon: FileText, component: ReportsTab },
   { id: 'settings', label: 'Settings', icon: Settings, component: SettingsTab }
@@ -64,7 +67,7 @@ function LoadingScreen({ message }: { message: string }) {
 function MainApp() {
   const { user, dbReady } = useAuth();
   const tabs = user?.role === 'admin' ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS;
-  const [active, setActive] = useState<TabId>('import');
+  const [active, setActive] = useState<TabId>('dashboard');
   const ActiveComponent = tabs.find((t) => t.id === active)!.component;
   const importState = useImportJob();
   const [deduping, setDeduping] = useState(false);
@@ -122,7 +125,7 @@ function MainApp() {
           setOnboardingDismissed(true);
         }}
         onSkip={() => {
-          setActive('import');
+          setActive('dashboard');
           setOnboardingActive(false);
           setOnboardingDismissed(true);
         }}
@@ -131,7 +134,14 @@ function MainApp() {
   }
 
   return (
-    <TabNavProvider value={{ goToImport: () => setActive('import') }}>
+    <TabNavProvider
+      value={{
+        goToImport: () => setActive('import'),
+        goTo: (tabId) => {
+          if (tabs.some((t) => t.id === tabId)) setActive(tabId as TabId);
+        }
+      }}
+    >
     <div className="min-h-screen bg-canvas" key={user?.id ?? 'guest'}>
       {/* Skip link — first tab stop, revealed on focus (shell mockup `.skiplink`). */}
       <a
@@ -145,12 +155,19 @@ function MainApp() {
        * brand lockup, the primary tablist, and the privacy/theme/account
        * cluster. Layering: shell z-40 < advisor z-50 < dialogs z-[60] < toasts z-[70]. */}
       <header className="sticky top-0 z-40 border-b border-hi/10 bg-canvas/85 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-7xl items-center gap-3 px-4 sm:px-6 lg:px-8">
-          <BrandLogo variant="on-glass" showTagline={false} />
+        <div className="mx-auto flex h-16 max-w-7xl items-center gap-2 px-4 sm:px-6 lg:px-8">
+          {/* Top-bar overlap fix: the wordmark drops below xl so the six tabs
+           * always fit — the brand mark alone carries the header at mid widths.
+           * The desktop tablist only appears at lg+ (where all six tabs always
+           * fit, pill compact); below lg the mobile bottom bar takes over, so
+           * tabs never clip at any width. */}
+          <div className="shrink-0 [&>div>div]:hidden xl:[&>div>div]:flex">
+            <BrandLogo variant="on-glass" showTagline={false} className="gap-2.5" />
+          </div>
           <nav
             role="tablist"
             aria-label="Sections"
-            className="hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto md:flex"
+            className="hidden min-w-0 flex-1 items-center gap-1 overflow-x-auto lg:flex"
           >
             {tabs.map((tab, i) => {
               const Icon = tab.icon;
@@ -169,14 +186,15 @@ function MainApp() {
                   onClick={() => setActive(tab.id)}
                   onKeyDown={(e) => handleTabKeyDown(e, i)}
                   className={cn(
-                    'flex min-h-[44px] shrink-0 items-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors',
+                    'flex min-h-[44px] shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2.5 text-sm font-bold transition-colors xl:px-3',
                     'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas',
                     isActive
                       ? 'bg-primary/10 text-primary'
                       : 'text-low hover:bg-elev-3 hover:text-hi'
                   )}
                 >
-                  <Icon className="h-4 w-4" aria-hidden="true" />
+                  {/* Icons yield to labels below xl — tabs never clip. */}
+                  <Icon className="hidden h-4 w-4 xl:block" aria-hidden="true" />
                   {tab.label}
                 </button>
               );
@@ -213,7 +231,7 @@ function MainApp() {
       )}
 
       {/* pb-28 clears the fixed mobile tab bar + AI FAB on small screens. */}
-      <main id="main-content" className="mx-auto max-w-7xl px-6 pt-10 pb-28 md:pb-10 lg:px-8">
+      <main id="main-content" className="mx-auto max-w-7xl px-6 pt-10 pb-28 lg:pb-10 lg:px-8">
         <div
           role="tabpanel"
           id={`tabpanel-${active}`}
