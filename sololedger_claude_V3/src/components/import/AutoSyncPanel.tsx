@@ -109,7 +109,7 @@ export function AutoSyncPanel({ onUseCsv }: AutoSyncPanelProps) {
   if (flagEnabled === false) {
     return (
       <div className="space-y-4">
-        <div className="rounded-lg border border-violet/30 bg-violet/10 px-4 py-3 text-sm text-low">
+        <div className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-low">
           Auto-sync is temporarily unavailable — please use CSV import.
         </div>
         <ExchangeConnectionList connections={connections} job={job} />
@@ -131,8 +131,8 @@ export function AutoSyncPanel({ onUseCsv }: AutoSyncPanelProps) {
         <>
           {/* Progress / result / error banners (WalletLookupPanel pattern). */}
           {job.active && (
-            <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-mid">
-              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-violet" />
+            <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-mid">
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
               <span>
                 Syncing {job.connectionLabel}
                 {job.phase !== 'idle' ? ` — ${PHASE_LABELS[job.phase] ?? job.phase}` : ''}
@@ -145,7 +145,7 @@ export function AutoSyncPanel({ onUseCsv }: AutoSyncPanelProps) {
             <div className="space-y-2">
               {job.result.isFirstSync ? (
                 <>
-                  <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/15 px-4 py-2.5 text-sm text-gain">
+                  <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/15 px-4 py-2.5 text-sm text-gain">
                     <CheckCircle2 className="h-4 w-4 shrink-0" />
                     <span>
                       Saved <strong className="font-mono">{job.result.imported}</strong> transaction
@@ -162,7 +162,7 @@ export function AutoSyncPanel({ onUseCsv }: AutoSyncPanelProps) {
                   </div>
                 </>
               ) : job.result.imported > 0 ? (
-                <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/15 px-4 py-2.5 text-sm text-gain">
+                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/15 px-4 py-2.5 text-sm text-gain">
                   <CheckCircle2 className="h-4 w-4 shrink-0" />
                   <span>
                     <strong className="font-mono">{job.result.imported}</strong> new transaction
@@ -170,7 +170,7 @@ export function AutoSyncPanel({ onUseCsv }: AutoSyncPanelProps) {
                   </span>
                 </div>
               ) : (
-                <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-low">
+                <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-low">
                   <CheckCircle2 className="h-4 w-4 shrink-0 text-gain" />
                   <span>No new transactions since last sync.</span>
                 </div>
@@ -193,27 +193,27 @@ export function AutoSyncPanel({ onUseCsv }: AutoSyncPanelProps) {
           )}
 
           {connections.length === 0 && !job.active && (
-            <div className="overflow-hidden rounded-2xl border border-white/10 bg-elev-2 shadow-card">
-              <div className="border-b border-white/10 bg-elev-1/50 px-5 py-4">
+            <div className="overflow-hidden rounded-2xl border border-hi/10 bg-elev-2 shadow-card">
+              <div className="border-b border-hi/10 bg-elev-1/50 px-5 py-4">
                 <h3 className="text-sm font-semibold tracking-tight text-hi">How it works</h3>
               </div>
               <div className="grid gap-6 px-5 py-6 sm:grid-cols-3">
                 {[
                   {
                     n: 1,
-                    color: 'bg-violet/15 text-violet',
+                    color: 'bg-primary/15 text-primary',
                     title: 'Paste your API key',
                     body: "Create a read-only key in your exchange's settings. It takes about two minutes — we show you where to click."
                   },
                   {
                     n: 2,
-                    color: 'bg-blue/15 text-blue',
+                    color: 'bg-accent/15 text-accent',
                     title: 'We sync your history',
                     body: 'SoloLedger pulls in your past trades, deposits and withdrawals — and skips anything already in your ledger.'
                   },
                   {
                     n: 3,
-                    color: 'bg-teal/15 text-teal',
+                    color: 'bg-accent/15 text-accent',
                     title: 'New trades appear automatically',
                     body: 'From then on we check for new activity and add it for you. No files, no exports, nothing to remember.'
                   }

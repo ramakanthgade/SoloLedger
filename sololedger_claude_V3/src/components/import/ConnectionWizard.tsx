@@ -95,8 +95,8 @@ function Stepper({ current }: { current: WizardStep }) {
                 className={cn(
                   'grid h-8 w-8 shrink-0 place-items-center rounded-full text-xs font-bold',
                   state === 'done' && 'border border-gain/40 bg-gain/15 text-gain',
-                  state === 'active' && 'bg-aurora text-[#0A0B1A] shadow-glow',
-                  state === 'todo' && 'border border-white/10 bg-elev-2 text-low'
+                  state === 'active' && 'bg-aurora text-on-aurora shadow-glow',
+                  state === 'todo' && 'border border-hi/10 bg-elev-2 text-low'
                 )}
               >
                 {state === 'done' ? <Check className="h-4 w-4" /> : i + 1}
@@ -119,7 +119,7 @@ function Stepper({ current }: { current: WizardStep }) {
               <div
                 className={cn(
                   'mx-3 h-0.5 flex-1',
-                  i < currentIndex ? 'bg-gradient-to-r from-gain to-violet' : 'bg-white/10'
+                  i < currentIndex ? 'bg-gradient-to-r from-gain to-primary' : 'bg-hi/10'
                 )}
               />
             )}
@@ -147,10 +147,10 @@ function SourceTile({
         'flex w-full items-center gap-3 rounded-[10px] border px-3 py-2.5 text-left transition-colors',
         chosen
           ? 'border-gain/50 bg-gain/[0.06]'
-          : 'border-white/10 bg-elev-3/50 hover:border-white/20'
+          : 'border-hi/10 bg-elev-3/50 hover:border-hi/20'
       )}
     >
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-[11px] font-extrabold text-[#0A0B1A]">
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-[11px] font-extrabold text-on-aurora">
         {source.monogram}
       </span>
       <span className="min-w-0">
@@ -586,7 +586,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           )}
         </div>
       ) : (
-        <div className="rounded-2xl border border-violet/30 bg-elev-2 p-5 shadow-card">
+        <div className="rounded-2xl border border-primary/30 bg-elev-2 p-5 shadow-card">
           {/* ── STEP 1 · pick exchange ── */}
           {state.step === 'pick' && (
             <div className="space-y-4">
@@ -597,9 +597,9 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
                 </p>
               </div>
               <div>
-                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-teal">
+                <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-accent">
                   India
-                  <span className="h-px flex-1 bg-gradient-to-r from-teal/40 to-transparent" />
+                  <span className="h-px flex-1 bg-gradient-to-r from-accent/40 to-transparent" />
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {india.map((s) => (
@@ -615,7 +615,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
               <div>
                 <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase tracking-wider text-low">
                   Global
-                  <span className="h-px flex-1 bg-gradient-to-r from-white/10 to-transparent" />
+                  <span className="h-px flex-1 bg-gradient-to-r from-hi/10 to-transparent" />
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2">
                   {global.map((s) => (
@@ -642,7 +642,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           {state.step === 'instructions' && source && (
             <div className="space-y-4">
               <div className="flex items-center gap-3">
-                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-xs font-extrabold text-[#0A0B1A]">
+                <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-xs font-extrabold text-on-aurora">
                   {source.monogram}
                 </span>
                 <div>
@@ -655,7 +655,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
               <ol className="space-y-2.5">
                 {source.steps.map((step, i) => (
                   <li key={i} className="flex gap-3 text-sm text-mid">
-                    <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-violet/15 font-mono text-[11px] font-bold text-violet">
+                    <span className="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full bg-primary/15 font-mono text-[11px] font-bold text-primary">
                       {i + 1}
                     </span>
                     <span>{step}</span>
@@ -665,7 +665,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
               <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10.5px]">
                 {source.path.map((crumb, i) => (
                   <span key={i} className="flex items-center gap-1.5">
-                    <span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-mid">
+                    <span className="rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 text-mid">
                       {crumb}
                     </span>
                     {i < source.path.length - 1 && <span className="text-faint">›</span>}
@@ -673,7 +673,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
                 ))}
               </div>
               {source.note && (
-                <p className="rounded-lg border border-teal/20 bg-teal/[0.06] px-3 py-2 text-xs text-mid">
+                <p className="rounded-lg border border-accent/20 bg-accent/[0.06] px-3 py-2 text-xs text-mid">
                   {source.note}
                 </p>
               )}
@@ -710,12 +710,12 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
                 }}
                 className={cn(
                   'flex flex-col items-center justify-center rounded-xl border-[1.5px] border-dashed px-6 py-12 text-center transition-colors',
-                  dragOver ? 'border-violet bg-violet/10' : 'border-violet/50 bg-violet/5'
+                  dragOver ? 'border-primary bg-primary/10' : 'border-primary/50 bg-primary/5'
                 )}
               >
                 {reading ? (
                   <>
-                    <Loader2 className="mb-3 h-6 w-6 animate-spin text-violet" />
+                    <Loader2 className="mb-3 h-6 w-6 animate-spin text-primary" />
                     <p className="text-sm text-mid">
                       Reading and previewing your file…
                       {queueTotal > 1 && ` (file ${queueTotal - fileQueue.length} of ${queueTotal})`}
@@ -723,7 +723,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
                   </>
                 ) : (
                   <>
-                    <div className="mb-3 grid h-12 w-12 place-items-center rounded-xl bg-violet/15 text-violet">
+                    <div className="mb-3 grid h-12 w-12 place-items-center rounded-xl bg-primary/15 text-primary">
                       <Upload className="h-6 w-6" />
                     </div>
                     <h4 className="text-sm font-bold text-hi">
@@ -741,7 +741,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
                           e.target.value = '';
                         }}
                       />
-                      <span className="cursor-pointer rounded-[10px] bg-aurora px-4 py-2 text-sm font-bold text-[#0A0B1A] shadow-glow">
+                      <span className="cursor-pointer rounded-[10px] bg-aurora px-4 py-2 text-sm font-bold text-on-aurora shadow-glow">
                         Browse files
                       </span>
                     </label>

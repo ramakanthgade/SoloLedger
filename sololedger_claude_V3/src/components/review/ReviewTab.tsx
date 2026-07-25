@@ -108,10 +108,10 @@ function FlagSelector({ tx }: { tx: Transaction }) {
         {shownFlags.length === 0 && !tx.isInternalTransfer && !tx.isSpam && tx.category !== 'nft' && (
           <span className="text-[10px] text-low">—</span>
         )}
-        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
       </button>
       {open && (
-        <div className="absolute right-0 top-7 z-30 min-w-[14rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
+        <div className="absolute right-0 top-7 z-30 min-w-[14rem] rounded-lg border border-hi/10 bg-elev-2 py-1 shadow-card">
           <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">Flag transaction</p>
           {ALL_FLAGS.map((flag) => {
             const on = storedFlags.has(flag);
@@ -122,12 +122,12 @@ function FlagSelector({ tx }: { tx: Transaction }) {
                 onClick={() => void toggleFlag(flag)}
                 className={`flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-1 ${on ? 'text-gain' : 'text-low'}`}
               >
-                <span className={`h-3 w-3 rounded border ${on ? 'border-violet bg-violet' : 'border-white/10'}`} />
+                <span className={`h-3 w-3 rounded border ${on ? 'border-primary bg-primary' : 'border-hi/10'}`} />
                 {FLAG_LABELS[flag]}
               </button>
             );
           })}
-          <div className="my-1 border-t border-white/10" />
+          <div className="my-1 border-t border-hi/10" />
           <button
             type="button"
             onClick={() =>
@@ -152,7 +152,7 @@ function FlagSelector({ tx }: { tx: Transaction }) {
           <button
             type="button"
             onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
+            className="flex w-full items-center gap-1 border-t border-hi/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
           >
             <X className="h-3 w-3" /> Close
           </button>
@@ -187,10 +187,10 @@ function TypeSelector({ tx }: { tx: Transaction }) {
         className="inline-flex items-center gap-1"
       >
         <Badge tone={TYPE_TONE[current]}>{current}</Badge>
-        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-violet" />}
+        {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card border-white/10">
+        <div className="absolute left-0 top-7 z-30 min-w-[10rem] rounded-lg border border-hi/10 bg-elev-2 py-1 shadow-card border-hi/10">
           <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">Reclassify as</p>
           {ALL_TYPES.map((t) => (
             <button
@@ -203,7 +203,7 @@ function TypeSelector({ tx }: { tx: Transaction }) {
           ))}
           <button
             onClick={() => setOpen(false)}
-            className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
+            className="flex w-full items-center gap-1 border-t border-hi/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
           >
             <X className="h-3 w-3" /> Cancel
           </button>
@@ -891,7 +891,7 @@ export function ReviewTab() {
       </div>
       {/* Token-name resolution — local/BYOK only; hosted resolves automatically. */}
       {showTokenResolveBanner(hosted, unresolvedSymbolTxs.length) && (
-        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-hi/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold text-mid">
               {unresolvedSymbolTxs.length} token{unresolvedSymbolTxs.length === 1 ? '' : 's'} shown by contract address
@@ -913,7 +913,7 @@ export function ReviewTab() {
 
       {/* DCA / Recurring order banner — local/BYOK only; hosted classifies automatically. */}
       {showDcaBanner(hosted, dcaGroups.length) && (
-        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-primary/40 bg-primary/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold text-mid">
               {dcaGroups.length} DCA / Recurring order{dcaGroups.length === 1 ? '' : 's'} detected
@@ -958,7 +958,7 @@ export function ReviewTab() {
                 setApplyingDca(false);
               }
             }}
-            className="shrink-0 border-violet/40 text-gain"
+            className="shrink-0 border-primary/40 text-gain"
           >
             {applyingDca ? 'Classifying…' : 'Classify DCA fills'}
           </Button>
@@ -966,13 +966,13 @@ export function ReviewTab() {
       )}
 
       {dcaMsg && (
-        <div className="rounded-sm border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-mid">
+        <div className="rounded-sm border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-mid">
           {dcaMsg}
         </div>
       )}
 
       {potentialSwapPairs > 0 && (
-        <div className="flex flex-col gap-3 rounded-lg border border-violet/40 bg-violet/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-primary/40 bg-primary/10 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <p className="text-sm font-semibold text-mid">
               {potentialSwapPairs} possible DEX swap{potentialSwapPairs === 1 ? '' : 's'} waiting to be merged
@@ -987,9 +987,9 @@ export function ReviewTab() {
 
       {/* DefiLlama reward-income suggestions — local/BYOK only; hosted auto-runs. */}
       {showLlamaBanner(hosted, solanaTransferInCount) && (
-        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-hi/10 bg-elev-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-center gap-3">
-            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-violet/20 text-violet">
+            <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/20 text-primary">
               <Sparkles className="h-5 w-5" />
             </span>
             <div>
@@ -1017,7 +1017,7 @@ export function ReviewTab() {
       {/* Result line: in hosted mode only shown when rows were actually flagged,
           so the user can tell why transactions entered the Needs-review queue. */}
       {showLlamaResultMessage(hosted, llamaMsg, llamaSuggested) && (
-        <div className={`rounded-sm border px-3 py-2 text-xs ${llamaMsg!.startsWith('DefiLlama:') ? 'border-violet/30 bg-violet/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+        <div className={`rounded-sm border px-3 py-2 text-xs ${llamaMsg!.startsWith('DefiLlama:') ? 'border-primary/30 bg-primary/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
           {llamaMsg}
         </div>
       )}
@@ -1055,14 +1055,14 @@ export function ReviewTab() {
         </div>
       )}
       {priceErrors.length > 0 && (
-        <div className={`rounded-sm border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Finished') ? 'border-violet/30 bg-violet/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
+        <div className={`rounded-sm border px-3 py-2 text-xs ${priceErrors[0]?.startsWith('Finished') ? 'border-primary/30 bg-primary/10 text-gain' : 'border-loss/30 bg-loss/10 text-loss'}`}>
           {priceErrors.slice(0, 5).join(' · ')}
           {priceErrors.length > 5 ? ` · +${priceErrors.length - 5} more` : ''}
         </div>
       )}
 
       {swapDetectMsg && (
-        <div className="rounded-sm border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-gain">
+        <div className="rounded-sm border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-gain">
           {swapDetectMsg}
         </div>
       )}
@@ -1072,13 +1072,13 @@ export function ReviewTab() {
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="Search transactions…"
-          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft placeholder:text-low focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
+          className="rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft placeholder:text-low focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
         />
         {/* Asset filter */}
         <select
           value={assetFilter}
           onChange={(e) => setAssetFilter(e.target.value)}
-          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
+          className="rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
         >
           <option value="all">All assets</option>
           {assets.map((a) => (<option key={a} value={a}>{a}</option>))}
@@ -1088,7 +1088,7 @@ export function ReviewTab() {
         <select
           value={typeFilter}
           onChange={(e) => setTypeFilter(e.target.value as TxType | 'all')}
-          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
+          className="rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
         >
           <option value="all">All types</option>
           {ALL_TYPES.map((t) => (
@@ -1101,7 +1101,7 @@ export function ReviewTab() {
           value={flagFilter}
           onChange={(e) => setFlagFilter(e.target.value as FlagReason | 'all' | 'spam' | 'internal')}
           aria-label="Flags filter"
-          className={`rounded-md border bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20 ${flagFilter !== 'all' ? 'border-violet/50 ring-2 ring-violet/20' : 'border-white/10'}`}
+          className={`rounded-md border bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 ${flagFilter !== 'all' ? 'border-primary/50 ring-2 ring-primary/20' : 'border-hi/10'}`}
         >
           <option value="all">All flags</option>
           {ALL_FLAGS.map((f) => (
@@ -1116,7 +1116,7 @@ export function ReviewTab() {
           <select
             value={walletFilter}
             onChange={(e) => setWalletFilter(e.target.value)}
-            className="max-w-[180px] truncate rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
+            className="max-w-[180px] truncate rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
           >
             <option value="all">All wallets</option>
             {availableWallets.map((w) => (
@@ -1129,7 +1129,7 @@ export function ReviewTab() {
         <select
           value={fyFilter ?? ''}
           onChange={(e) => setFyFilter(e.target.value ? Number(e.target.value) : null)}
-          className="rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-violet focus:outline-none focus:ring-2 focus:ring-violet/20"
+          className="rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-sm text-mid shadow-soft focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20"
         >
           <option value="">All periods</option>
           {availableFys.map((fy) => (
@@ -1138,7 +1138,7 @@ export function ReviewTab() {
         </select>
 
         {/* Sort selector */}
-        <div className="flex items-center gap-1.5 rounded-full border border-white/10 bg-elev-2 px-3 py-1.5">
+        <div className="flex items-center gap-1.5 rounded-full border border-hi/10 bg-elev-2 px-3 py-1.5">
           <ArrowUpDown className="h-3.5 w-3.5 text-low" />
           <select
             value={sortBy}
@@ -1156,14 +1156,14 @@ export function ReviewTab() {
         {/* Quick-filter toggles */}
         <button
           onClick={() => { setShowNeedsPrice((v) => !v); setShowSpam(false); setShowNeedsReview(false); }}
-          className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsPrice ? 'border-warn/30 bg-warn/20 text-warn' : 'border-white/10 text-low hover:text-mid'}`}
+          className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsPrice ? 'border-warn/30 bg-warn/20 text-warn' : 'border-hi/10 text-low hover:text-mid'}`}
         >
           {showNeedsPrice ? `Needs price (${missingPriceTxs.length})` : `Needs price: ${missingPriceTxs.length}`}
         </button>
         {needsReviewCount > 0 && (
           <button
             onClick={() => { setShowNeedsReview((v) => !v); setShowSpam(false); setShowNeedsPrice(false); }}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsReview ? 'border-warn/30 bg-warn/20 text-warn' : 'border-white/10 text-low hover:text-mid'}`}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showNeedsReview ? 'border-warn/30 bg-warn/20 text-warn' : 'border-hi/10 text-low hover:text-mid'}`}
           >
             {showNeedsReview ? `Needs review (${needsReviewCount}) ← back` : `Needs review: ${needsReviewCount}`}
           </button>
@@ -1171,14 +1171,14 @@ export function ReviewTab() {
         {spamTxCount > 0 && (
           <button
             onClick={() => { setShowSpam((v) => !v); setShowNeedsPrice(false); setShowNeedsReview(false); }}
-            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showSpam ? 'border-loss bg-loss/20 text-loss' : 'border-white/10 text-low hover:text-mid'}`}
+            className={`rounded-full border px-3 py-1.5 text-xs font-medium transition ${showSpam ? 'border-loss bg-loss/20 text-loss' : 'border-hi/10 text-low hover:text-mid'}`}
           >
             {showSpam ? `Spam (${spamTxCount}) ← back` : `Spam: ${spamTxCount}`}
           </button>
         )}
 
         <span className="text-xs text-low">{filtered.length} shown</span>
-        <div className="flex rounded-full border border-white/10 p-0.5 text-xs">
+        <div className="flex rounded-full border border-hi/10 p-0.5 text-xs">
           {(
             [
               ['all', 'All'],
@@ -1191,7 +1191,7 @@ export function ReviewTab() {
               type="button"
               onClick={() => setInstrumentFilter(id)}
               className={`rounded-full px-3 py-1 font-medium transition ${
-                instrumentFilter === id ? 'bg-violet text-white' : 'text-low hover:text-mid'
+                instrumentFilter === id ? 'bg-primary-solid text-white' : 'text-low hover:text-mid'
               }`}
             >
               {label}
@@ -1230,7 +1230,7 @@ export function ReviewTab() {
                 Set type ({selected.size})
               </Button>
               {bulkTypeMenuOpen && (
-                <div className="absolute right-0 top-10 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
+                <div className="absolute right-0 top-10 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-lg border border-hi/10 bg-elev-2 py-1 shadow-card">
                   <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">
                     Set {selected.size} selected to
                   </p>
@@ -1250,7 +1250,7 @@ export function ReviewTab() {
                   <button
                     type="button"
                     onClick={() => setBulkTypeMenuOpen(false)}
-                    className="flex w-full items-center gap-1 border-t border-white/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
+                    className="flex w-full items-center gap-1 border-t border-hi/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
                   >
                     <X className="h-3 w-3" /> Cancel
                   </button>
@@ -1265,7 +1265,7 @@ export function ReviewTab() {
                 Set flags ({selected.size})
               </Button>
               {bulkFlagsMenuOpen && bulkFlagsSel && (
-                <div className="absolute right-0 top-10 z-30 min-w-[16rem] rounded-lg border border-white/10 bg-elev-2 py-1 shadow-card">
+                <div className="absolute right-0 top-10 z-30 min-w-[16rem] rounded-lg border border-hi/10 bg-elev-2 py-1 shadow-card">
                   <p className="px-3 py-1 text-[10px] uppercase tracking-wide text-low">
                     Apply to {selected.size} selected
                   </p>
@@ -1293,14 +1293,14 @@ export function ReviewTab() {
                             // 'mixed' itself is an initial state only.
                             patchBulkFlagsSel({ hint: e.target.checked ? 'checked' : 'unchecked' })
                           }
-                          className="accent-violet"
+                          className="accent-primary"
                         />
                       ) : (
                         <input
                           type="checkbox"
                           checked={bulkFlagsSel.flags.get(flag) ?? false}
                           onChange={(e) => setBulkFlag(flag, e.target.checked)}
-                          className="accent-violet"
+                          className="accent-primary"
                         />
                       )}
                       {FLAG_LABELS[flag]}
@@ -1312,13 +1312,13 @@ export function ReviewTab() {
                   <p className="px-3 pb-1 text-[10px] text-low">
                     A dash on “Possible internal transfer” means only some selected rows have it — those rows are left as-is unless you check or uncheck the box.
                   </p>
-                  <div className="my-1 border-t border-white/10" />
+                  <div className="my-1 border-t border-hi/10" />
                   <label className="flex w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-1">
                     <input
                       type="checkbox"
                       checked={bulkFlagsSel.internal}
                       onChange={(e) => patchBulkFlagsSel({ internal: e.target.checked })}
-                      className="accent-violet"
+                      className="accent-primary"
                     />
                     Internal transfer (non-taxable)
                   </label>
@@ -1327,14 +1327,14 @@ export function ReviewTab() {
                       type="checkbox"
                       checked={bulkFlagsSel.spam}
                       onChange={(e) => patchBulkFlagsSel({ spam: e.target.checked })}
-                      className="accent-violet"
+                      className="accent-primary"
                     />
                     Spam (excluded everywhere)
                   </label>
                   <p className="px-3 pb-1 text-[10px] text-low">
                     Confirming “Internal transfer” clears the “Possible internal transfer” hint.
                   </p>
-                  <div className="mt-1 flex justify-end gap-2 border-t border-white/10 px-3 py-2">
+                  <div className="mt-1 flex justify-end gap-2 border-t border-hi/10 px-3 py-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -1426,7 +1426,7 @@ export function ReviewTab() {
       />
 
       {renderPagination('pb-0.5')}
-      <div className="overflow-x-auto rounded-lg border border-white/10">
+      <div className="overflow-x-auto rounded-lg border border-hi/10">
         <table className="w-full min-w-[920px] text-sm">
           <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
             <tr>
@@ -1461,7 +1461,7 @@ export function ReviewTab() {
               const isEditing = editingFiat === t.id;
               return (
                 <Fragment key={t.id}>
-                  <tr className={`border-t border-white/10 hover:bg-elev-1/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
+                  <tr className={`border-t border-hi/10 hover:bg-elev-1/20 ${t.isSpam ? 'opacity-50 line-through' : ''}`}>
                     <td className="px-3 py-2">
                       <input type="checkbox" checked={selected.has(t.id)} onChange={() => toggle(t.id)} />
                     </td>
@@ -1494,7 +1494,7 @@ export function ReviewTab() {
                             autoFocus
                             value={editValue}
                             onChange={(e) => setEditValue(e.target.value)}
-                            className="w-24 rounded border border-violet bg-white px-2 py-0.5 text-right text-xs text-mid focus:outline-none"
+                            className="w-24 rounded border border-primary bg-white px-2 py-0.5 text-right text-xs text-mid focus:outline-none"
                             placeholder="0.00"
                           />
                           <button onClick={() => saveFiat(t)} className="text-gain" aria-label="Save">

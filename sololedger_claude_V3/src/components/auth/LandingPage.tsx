@@ -27,8 +27,8 @@ type LandingPageProps = {
 };
 
 const HERO_PILLS = [
-  { icon: Lock, label: 'Local-first', color: 'bg-violet/15 text-blue' },
-  { icon: Wallet, label: 'Solana-ready', color: 'bg-teal/15 text-teal' },
+  { icon: Lock, label: 'Local-first', color: 'bg-primary/15 text-accent' },
+  { icon: Wallet, label: 'Solana-ready', color: 'bg-accent/15 text-accent' },
   { icon: Shield, label: 'No tx storage', color: 'bg-gain/15 text-gain' }
 ];
 
@@ -37,13 +37,13 @@ const DIFFERENTIATORS = [
     icon: TrendingUp,
     title: 'Precision cost basis',
     line: 'FIFO & specific ID — multi-currency reports.',
-    gradient: 'from-violet to-blue'
+    gradient: 'from-primary to-accent'
   },
   {
     icon: Repeat,
     title: 'Jupiter DCA, decoded',
     line: 'Auto-compute every DCA fill — exact amounts, not guesses.',
-    gradient: 'from-violet to-[#a78bfa]'
+    gradient: 'from-primary to-accent'
   },
   {
     icon: FileSpreadsheet,
@@ -55,7 +55,7 @@ const DIFFERENTIATORS = [
     icon: Bot,
     title: 'AI tax advisor',
     line: 'Opt-in — sends an aggregated summary, never raw wallets or hashes.',
-    gradient: 'from-blue to-teal'
+    gradient: 'from-primary to-accent'
   }
 ];
 
@@ -76,7 +76,7 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
 
   return (
     <div className="min-h-screen bg-canvas text-hi">
-      <header className="sticky top-0 z-30 border-b border-white/10 bg-canvas/70 backdrop-blur-xl">
+      <header className="sticky top-0 z-30 border-b border-hi/10 bg-canvas/70 backdrop-blur-xl">
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
           <BrandLogo variant="on-glass" />
           <div className="flex items-center gap-3">
@@ -89,7 +89,7 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
             </button>
             <Button
               onClick={scrollToChoose}
-              className="h-9 rounded-full bg-aurora px-5 text-[#0A0B1A] hover:brightness-105"
+              className="h-9 rounded-full bg-aurora px-5 text-on-aurora hover:brightness-105"
             >
               Get started free
             </Button>
@@ -100,9 +100,9 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
       {/* Hero */}
       <section className="relative overflow-hidden">
         <div className="pointer-events-none absolute inset-0">
-          <div className="absolute -left-24 top-4 h-80 w-80 rounded-full bg-violet/20 blur-3xl" />
-          <div className="absolute -right-16 top-24 h-96 w-96 rounded-full bg-blue/[0.16] blur-3xl" />
-          <div className="absolute -bottom-16 left-1/3 h-72 w-72 rounded-full bg-teal/[0.14] blur-3xl" />
+          <div className="absolute -left-24 top-4 h-80 w-80 rounded-full bg-primary/20 blur-3xl" />
+          <div className="absolute -right-16 top-24 h-96 w-96 rounded-full bg-accent/[0.16] blur-3xl" />
+          <div className="absolute -bottom-16 left-1/3 h-72 w-72 rounded-full bg-accent/[0.14] blur-3xl" />
         </div>
         <div className="relative mx-auto max-w-6xl px-6 pb-16 pt-14 lg:px-8 lg:pb-24 lg:pt-20">
           <div className="flex flex-wrap gap-2">
@@ -131,14 +131,14 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
           <div className="mt-10 flex flex-wrap gap-4">
             <Button
               onClick={scrollToChoose}
-              className="h-14 rounded-full bg-aurora px-10 text-lg font-semibold text-[#0A0B1A] shadow-glow hover:brightness-105"
+              className="h-14 rounded-full bg-aurora px-10 text-lg font-semibold text-on-aurora shadow-glow hover:brightness-105"
             >
               Start for free (up to 100 transactions)
               <ArrowRight className="ml-2 h-5 w-5" />
             </Button>
             <Button
               onClick={onSignIn}
-              className="h-14 rounded-full border border-white/10 bg-white/[0.03] px-8 text-base text-hi hover:border-violet/50 hover:bg-violet/[0.08]"
+              className="h-14 rounded-full border border-hi/10 bg-white/[0.03] px-8 text-base text-hi hover:border-primary/50 hover:bg-primary/[0.08]"
             >
               Sign in
             </Button>
@@ -150,10 +150,10 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
             {DIFFERENTIATORS.map(({ icon: Icon, title, line, gradient }) => (
               <div
                 key={title}
-                className="group rounded-2xl border border-white/10 bg-elev-2 p-5 shadow-card transition hover:-translate-y-1 hover:border-violet/40 hover:shadow-card-hover"
+                className="group rounded-2xl border border-hi/10 bg-elev-2 p-5 shadow-card transition hover:-translate-y-1 hover:border-primary/40 hover:shadow-card-hover"
               >
                 <div
-                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br text-[#0A0B1A] shadow-soft ${gradient}`}
+                  className={`inline-flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br text-on-aurora shadow-soft ${gradient}`}
                 >
                   <Icon className="h-5 w-5" />
                 </div>
@@ -172,7 +172,7 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
       <section className="border-y border-white/[0.06] bg-gradient-to-br from-elev-1 via-elev-2 to-elev-3 py-20 text-hi">
         <div className="mx-auto grid max-w-6xl items-center gap-12 px-6 lg:grid-cols-2 lg:px-8">
           <div>
-            <div className="inline-flex items-center gap-2 rounded-full bg-blue/[0.14] px-4 py-1.5 text-sm font-semibold text-blue">
+            <div className="inline-flex items-center gap-2 rounded-full bg-accent/[0.14] px-4 py-1.5 text-sm font-semibold text-accent">
               <Sparkles className="h-4 w-4" />
               Built for Solana power users
             </div>
@@ -185,15 +185,15 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
             </p>
             <Button
               onClick={scrollToChoose}
-              className="mt-8 h-12 rounded-full bg-hi px-8 font-semibold text-[#0A0B1A] hover:bg-[#e4e6ff]"
+              className="mt-8 h-12 rounded-full bg-hi px-8 font-semibold text-on-aurora hover:bg-hi/85"
             >
               Try wallet import
               <ArrowRight className="ml-2 h-4 w-4" />
             </Button>
           </div>
           <div className="relative">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.04] p-8 shadow-card backdrop-blur-sm">
-              <Wallet className="h-12 w-12 text-blue" />
+            <div className="rounded-2xl border border-hi/10 bg-white/[0.04] p-8 shadow-card backdrop-blur-sm">
+              <Wallet className="h-12 w-12 text-accent" />
               <ul className="mt-6 space-y-4">
                 {[
                   'One-click import of Solana transactions',
@@ -222,9 +222,9 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
             {PRIVACY_TILES.map(({ icon: Icon, title, line }) => (
               <div
                 key={title}
-                className="rounded-2xl border border-white/10 bg-elev-2 p-6 text-center shadow-card transition hover:border-violet/30 hover:shadow-card-hover"
+                className="rounded-2xl border border-hi/10 bg-elev-2 p-6 text-center shadow-card transition hover:border-primary/30 hover:shadow-card-hover"
               >
-                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-violet/25 to-blue/25 text-blue">
+                <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/25 to-accent/25 text-accent">
                   <Icon className="h-7 w-7" />
                 </div>
                 <h3 className="mt-4 text-lg font-bold text-hi">{title}</h3>
@@ -232,8 +232,8 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
               </div>
             ))}
           </div>
-          <div className="mx-auto mt-10 max-w-3xl rounded-2xl border border-white/10 bg-gradient-to-r from-elev-1 to-elev-3 p-6 text-center shadow-card-hover">
-            <p className="text-xs font-bold uppercase tracking-widest text-teal">Automatic wallet import</p>
+          <div className="mx-auto mt-10 max-w-3xl rounded-2xl border border-hi/10 bg-gradient-to-r from-elev-1 to-elev-3 p-6 text-center shadow-card-hover">
+            <p className="text-xs font-bold uppercase tracking-widest text-accent">Automatic wallet import</p>
             <p className="mt-2 text-base text-mid">
               Requests are forwarded to blockchain providers and discarded immediately.{' '}
               <strong className="text-hi">We never store wallet addresses or transaction data.</strong>
@@ -246,19 +246,19 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
 
       {/* CTA */}
       <section className="bg-aurora py-16">
-        <div className="mx-auto max-w-3xl px-6 text-center text-[#0A0B1A] lg:px-8">
+        <div className="mx-auto max-w-3xl px-6 text-center text-on-aurora lg:px-8">
           <h2 className="font-display text-4xl font-bold">Ready when you are</h2>
-          <p className="mt-3 text-lg text-[#0A0B1A]/70">Local by default. Powerful when you need it.</p>
+          <p className="mt-3 text-lg text-on-aurora/70">Local by default. Powerful when you need it.</p>
           <Button
             onClick={scrollToChoose}
-            className="mt-8 h-12 rounded-full bg-hi px-10 text-base font-semibold text-[#0A0B1A] hover:bg-[#e4e6ff]"
+            className="mt-8 h-12 rounded-full bg-hi px-10 text-base font-semibold text-on-aurora hover:bg-hi/85"
           >
             Get started — free
           </Button>
         </div>
       </section>
 
-      <footer className="border-t border-white/10 py-8 text-center text-xs text-low">
+      <footer className="border-t border-hi/10 py-8 text-center text-xs text-low">
         <p>SoloLedger · Private. Precise. Yours.</p>
       </footer>
     </div>

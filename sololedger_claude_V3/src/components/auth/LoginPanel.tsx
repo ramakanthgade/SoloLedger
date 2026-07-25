@@ -43,7 +43,7 @@ export function LoginPanel() {
                 required
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-mid"
+                className="mt-1 block w-full rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-mid"
               />
             </label>
             <label className="block text-sm text-low">
@@ -54,7 +54,7 @@ export function LoginPanel() {
                 minLength={8}
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-white/10 bg-elev-2 px-3 py-2 text-mid"
+                className="mt-1 block w-full rounded-md border border-hi/10 bg-elev-2 px-3 py-2 text-mid"
               />
             </label>
             {error && <p className="text-sm text-loss">{error}</p>}

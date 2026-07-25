@@ -86,7 +86,7 @@ export function TaxEstimateCard({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <div className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+          <div className="rounded-xl border border-hi/10 bg-elev-1/60 p-4">
             <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
               Capital gains taxed at 30%
             </p>
@@ -97,7 +97,7 @@ export function TaxEstimateCard({
               Winners only — losses aren&apos;t set off (Section 115BBH)
             </p>
           </div>
-          <div className="rounded-xl border border-violet/40 bg-gradient-to-br from-elev-2 to-elev-3 p-4 shadow-glow">
+          <div className="rounded-xl border border-primary/40 bg-gradient-to-br from-elev-2 to-elev-3 p-4 shadow-glow">
             <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-mid">
               Estimated tax you still owe
             </p>
@@ -113,7 +113,7 @@ export function TaxEstimateCard({
                 <dt>+ 4% health &amp; edu cess</dt>
                 <dd className="text-mid">{formatCurrency(cess, currency)}</dd>
               </div>
-              <div className="flex justify-between gap-4 border-t border-white/10 pt-1">
+              <div className="flex justify-between gap-4 border-t border-hi/10 pt-1">
                 <dt>= Total (30% + cess)</dt>
                 <dd className="text-hi">{formatCurrency(total, currency)}</dd>
               </div>
@@ -128,7 +128,7 @@ export function TaxEstimateCard({
         </div>
 
         {hasReceipts && (
-          <div className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+          <div className="rounded-xl border border-hi/10 bg-elev-1/60 p-4">
             <p className="text-[0.6875rem] font-semibold uppercase tracking-wider text-low">
               VDA receipts taxed at slab rate (Section 56(2)(x))
             </p>

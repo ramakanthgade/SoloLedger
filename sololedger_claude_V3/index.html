@@ -3,9 +3,25 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="theme-color" content="#0A0B1A" />
+    <meta name="theme-color" content="#FBF7F1" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="description" content="SoloLedger — Private. Precise. Yours. Fully local, offline-first crypto capital gains and tax reporting." />
+    <script>
+      // Ember & Slate: apply the persisted Light/Dark/System choice before
+      // first paint so returning users never see the wrong theme. Kept in
+      // sync with src/lib/theme/colorScheme.ts (storage key + resolution).
+      (function () {
+        try {
+          var choice = localStorage.getItem('sololedger_color_scheme') || 'system';
+          var dark =
+            choice === 'dark' ||
+            (choice === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches);
+          document.documentElement.dataset.theme = dark ? 'dark' : 'light';
+        } catch (e) {
+          document.documentElement.dataset.theme = 'light';
+        }
+      })();
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet" />

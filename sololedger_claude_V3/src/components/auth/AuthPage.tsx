@@ -34,7 +34,7 @@ function PasswordField({ label, value, onChange, autoComplete, placeholder }: Pa
           autoComplete={autoComplete}
           value={value}
           onChange={(e) => onChange(e.target.value)}
-          className="block w-full rounded-xl border border-white/10 bg-elev-3 px-4 py-3 pr-12 text-hi shadow-soft outline-none transition focus:border-violet/40 focus:ring-2 focus:ring-violet/30"
+          className="block w-full rounded-xl border border-hi/10 bg-elev-3 px-4 py-3 pr-12 text-hi shadow-soft outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/30"
           placeholder={placeholder}
         />
         <button
@@ -95,9 +95,9 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
 
   return (
     <div className="relative min-h-screen overflow-hidden bg-canvas">
-      <div className="pointer-events-none absolute -left-32 top-20 h-72 w-72 rounded-full bg-violet/20 blur-3xl" />
-      <div className="pointer-events-none absolute -right-24 bottom-10 h-80 w-80 rounded-full bg-blue/[0.16] blur-3xl" />
-      <div className="pointer-events-none absolute left-1/2 top-1/3 h-64 w-64 -translate-x-1/2 rounded-full bg-teal/[0.14] blur-3xl" />
+      <div className="pointer-events-none absolute -left-32 top-20 h-72 w-72 rounded-full bg-primary/20 blur-3xl" />
+      <div className="pointer-events-none absolute -right-24 bottom-10 h-80 w-80 rounded-full bg-accent/[0.16] blur-3xl" />
+      <div className="pointer-events-none absolute left-1/2 top-1/3 h-64 w-64 -translate-x-1/2 rounded-full bg-accent/[0.14] blur-3xl" />
 
       <div className="relative mx-auto flex min-h-screen max-w-6xl flex-col px-4 py-8 lg:flex-row lg:items-center lg:gap-16 lg:px-8">
         <div className="mb-10 flex-1 lg:mb-0">
@@ -114,7 +114,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
           <div className="mb-6 lg:hidden">
             <BrandLogo variant="on-glass" />
           </div>
-          <p className="text-xs font-bold uppercase tracking-[0.2em] text-blue">Private crypto tax software</p>
+          <p className="text-xs font-bold uppercase tracking-[0.2em] text-accent">Private crypto tax software</p>
           <h1 className="mt-3 font-display text-4xl font-bold leading-tight text-hi lg:text-5xl">
             {isRegister ? 'Start for free' : 'Welcome back'}
           </h1>
@@ -124,22 +124,22 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
           </p>
           <ul className="mt-8 space-y-3 text-sm text-mid">
             <li className="flex items-center gap-2">
-              <Shield className="h-4 w-4 text-blue" />
+              <Shield className="h-4 w-4 text-accent" />
               Local-first — CSV import is 100% on-device
             </li>
             <li className="flex items-center gap-2">
-              <Lock className="h-4 w-4 text-blue" />
+              <Lock className="h-4 w-4 text-accent" />
               Encrypted in transit · no wallet logging on our servers
             </li>
             <li className="flex items-center gap-2">
-              <Mail className="h-4 w-4 text-blue" />
+              <Mail className="h-4 w-4 text-accent" />
               Free Starter tier — up to 100 transactions
             </li>
           </ul>
         </div>
 
         <div className="w-full max-w-md shrink-0">
-          <div className="rounded-2xl border border-white/10 bg-elev-2 p-8 shadow-card-hover shadow-glow backdrop-blur-sm">
+          <div className="rounded-2xl border border-hi/10 bg-elev-2 p-8 shadow-card-hover shadow-glow backdrop-blur-sm">
             <div className="mb-6 hidden lg:block">
               <BrandLogo variant="on-glass" showTagline={false} />
             </div>
@@ -157,7 +157,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
                   autoComplete="email"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
-                  className="mt-1.5 block w-full rounded-xl border border-white/10 bg-elev-3 px-4 py-3 text-hi shadow-soft outline-none transition focus:border-violet/40 focus:ring-2 focus:ring-violet/30"
+                  className="mt-1.5 block w-full rounded-xl border border-hi/10 bg-elev-3 px-4 py-3 text-hi shadow-soft outline-none transition focus:border-primary/40 focus:ring-2 focus:ring-primary/30"
                   placeholder="you@email.com"
                 />
               </label>
@@ -185,7 +185,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
                 disabled={busy}
                 className={cn(
                   'h-12 w-full rounded-xl text-base font-semibold',
-                  'bg-aurora text-[#0A0B1A] hover:brightness-105'
+                  'bg-aurora text-on-aurora hover:brightness-105'
                 )}
               >
                 {busy ? 'Please wait…' : isRegister ? 'Create free account' : 'Sign in'}
@@ -196,7 +196,7 @@ export function AuthPage({ initialMode = 'login', onBack }: AuthPageProps) {
               {isRegister ? 'Already have an account?' : "Don't have an account?"}{' '}
               <button
                 type="button"
-                className="font-semibold text-blue underline-offset-2 hover:underline"
+                className="font-semibold text-accent underline-offset-2 hover:underline"
                 onClick={switchMode}
               >
                 {isRegister ? 'Sign in' : 'Get started free'}

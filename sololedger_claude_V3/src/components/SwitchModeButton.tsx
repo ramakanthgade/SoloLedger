@@ -23,10 +23,10 @@ export function SwitchModeButton({ className }: { className?: string }) {
       type="button"
       onClick={backToLanding}
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5',
+        'inline-flex items-center gap-1.5 rounded-full border border-hi/10 bg-white/[0.04] px-3 py-1.5',
         'font-mono text-xs font-medium text-mid transition-colors',
-        'hover:border-violet/40 hover:bg-violet/[0.08] hover:text-hi',
-        'focus:outline-none focus-visible:ring-2 focus-visible:ring-violet/60',
+        'hover:border-primary/40 hover:bg-primary/[0.08] hover:text-hi',
+        'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
         className
       )}
       title="Return to the landing page to switch mode (Local / BYOK / Hosted)"

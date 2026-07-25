@@ -27,9 +27,9 @@ describe('BrandLogo', () => {
     const shield = container.querySelector(`path[stroke="url(#${gradientId})"]`);
     expect(shield).not.toBeNull();
 
-    // White ledger lines + teal verification tick.
-    expect(container.querySelector('path[stroke="#F5F6FF"]')).not.toBeNull();
-    expect(container.querySelector('path[stroke="#22E1C3"]')).not.toBeNull();
+    // Theme-ink ledger lines + gain verification tick (Ember & Slate).
+    expect(container.querySelector('path[stroke="var(--text-hi)"]')).not.toBeNull();
+    expect(container.querySelector('path[stroke="var(--gain)"]')).not.toBeNull();
   });
 
   it('renders the variant-C filled chip in mark mode (no wordmark/tagline)', () => {
@@ -44,8 +44,8 @@ describe('BrandLogo', () => {
     const chip = container.querySelector(`rect[fill="url(#${gradientId})"]`);
     expect(chip).not.toBeNull();
 
-    // Dark mark drawn on the aurora fill.
-    expect(container.querySelector('path[stroke="#0A0B1A"]')).not.toBeNull();
+    // On-aurora mark drawn on the aurora fill (white in light, charcoal in dark).
+    expect(container.querySelector('path[stroke="var(--on-aurora)"]')).not.toBeNull();
 
     // Mark mode omits the wordmark + tagline.
     expect(screen.queryByText('Solo')).not.toBeInTheDocument();

@@ -36,13 +36,13 @@ export function EmptyState({
   return (
     <div
       className={cn(
-        'flex flex-col items-center justify-center rounded-xl border border-white/10 bg-elev-2 px-8 py-12 text-center shadow-card',
+        'flex flex-col items-center justify-center rounded-xl border border-hi/10 bg-elev-2 px-8 py-12 text-center shadow-card',
         className
       )}
     >
       {icon && (
         <div
-          className="mb-6 grid h-24 w-24 place-items-center rounded-[22px] border border-white/10 text-hi"
+          className="mb-6 grid h-24 w-24 place-items-center rounded-[22px] border border-hi/10 text-hi"
           style={{
             background:
               'radial-gradient(circle at 50% 35%, rgba(124,92,255,0.20), rgba(26,27,56,0.4))'

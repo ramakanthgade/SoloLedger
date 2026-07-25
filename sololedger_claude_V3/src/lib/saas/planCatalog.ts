@@ -36,7 +36,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: 'Up to 100 events',
     tagline: 'Free forever · 100% on-device · no account',
     icon: ShieldCheck,
-    accent: 'from-teal to-blue'
+    accent: 'from-primary to-accent'
   },
   {
     id: 'starter',
@@ -46,7 +46,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: 'Up to 500 events',
     tagline: 'One clean, filing-ready report for a lighter trading year.',
     icon: Zap,
-    accent: 'from-violet to-blue'
+    accent: 'from-primary to-accent'
   },
   {
     id: 'standard',
@@ -56,7 +56,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: 'Up to 2,000 events',
     tagline: 'The complete India filing kit for an active trader.',
     icon: Sparkles,
-    accent: 'from-violet to-blue',
+    accent: 'from-primary to-accent',
     featured: true
   },
   {
@@ -67,7 +67,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: 'Up to 5,000 events',
     tagline: 'For heavy traders with derivatives and multi-year history.',
     icon: Crown,
-    accent: 'from-elev-1 to-blue'
+    accent: 'from-elev-1 to-accent'
   },
   {
     id: 'investor',
@@ -77,7 +77,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: 'Up to 10,000 events',
     tagline: 'High-volume portfolios with a CA-ready pack and the AI advisor.',
     icon: Building2,
-    accent: 'from-violet to-teal'
+    accent: 'from-primary to-accent'
   },
   {
     id: 'enterprise',
@@ -87,7 +87,7 @@ export const PLAN_CATALOG: PlanDisplay[] = [
     limit: '10,000 included, then metered',
     tagline: 'For CAs & firms filing at scale — metered at ₹599 per extra 1,000.',
     icon: Rocket,
-    accent: 'from-blue to-violet',
+    accent: 'from-accent to-primary',
     contactOnly: true
   }
 ];

@@ -151,9 +151,9 @@ export function TdsReconciliationView({
         </div>
       </div>
 
-      <div className="flex items-start gap-3 rounded-xl border border-blue/30 bg-blue/10 px-4 py-3 text-sm leading-relaxed text-mid" data-testid="tds-compare-prompt">
+      <div className="flex items-start gap-3 rounded-xl border border-accent/30 bg-accent/10 px-4 py-3 text-sm leading-relaxed text-mid" data-testid="tds-compare-prompt">
         <span>
-          <b className="text-blue">Compare with Form 26AS / AIS.</b> {TDS_COMPARE_PROMPT} SoloLedger
+          <b className="text-accent">Compare with Form 26AS / AIS.</b> {TDS_COMPARE_PROMPT} SoloLedger
           does not read your 26AS — optionally type the 26AS amount per exchange below to see a
           user-supplied delta.
         </span>
@@ -167,7 +167,7 @@ export function TdsReconciliationView({
         <div className="overflow-x-auto p-1">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
+              <tr className="border-b border-hi/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
                 <th className="px-5 py-3">Exchange</th>
                 <th className="px-5 py-3 text-right">Deductions</th>
                 <th className="px-5 py-3 text-right">TDS in your imports ({currency})</th>
@@ -180,7 +180,7 @@ export function TdsReconciliationView({
                 const v = entered26as[r.exchange];
                 const delta = v != null ? toNumber(add(v, -r.tdsInr)) : null;
                 return (
-                  <tr key={r.exchange} className="border-b border-white/10 transition-colors hover:bg-elev-1/50">
+                  <tr key={r.exchange} className="border-b border-hi/10 transition-colors hover:bg-elev-1/50">
                     <td className="px-5 py-3.5"><span className="font-sans font-semibold text-hi">{r.label}</span></td>
                     <td className="px-5 py-3.5 text-right text-low">{r.deductions}</td>
                     <td className="px-5 py-3.5 text-right text-warn">{formatAmountForExport(r.tdsInr, currency)}</td>
@@ -209,7 +209,7 @@ export function TdsReconciliationView({
             </tbody>
             {rows.length > 0 && (
               <tfoot>
-                <tr className="border-t-2 border-violet/40 bg-elev-3 font-mono text-xs tabular-figures">
+                <tr className="border-t-2 border-primary/40 bg-elev-3 font-mono text-xs tabular-figures">
                   <td className="px-5 py-3.5 font-semibold uppercase tracking-wider text-low">Totals</td>
                   <td className="px-5 py-3.5 text-right text-low">{reconciliation.rows.length}</td>
                   <td className="px-5 py-3.5 text-right font-semibold text-warn">{formatAmountForExport(reconciliation.totalTdsInr, currency)}</td>

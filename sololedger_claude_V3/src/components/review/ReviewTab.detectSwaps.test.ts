@@ -53,7 +53,7 @@ describe('ReviewTab — round 2 UI fixes (Task 1)', () => {
   });
 
   it('renders the shared pagination bar both above and below the table (Issue 2)', () => {
-    const topOfTable = source.indexOf('overflow-x-auto rounded-lg border border-white/10');
+    const topOfTable = source.indexOf('overflow-x-auto rounded-lg border border-hi/10');
     const firstPager = source.indexOf("renderPagination('pb-0.5')");
     const secondPager = source.indexOf("renderPagination('pt-2')");
     expect(firstPager).toBeGreaterThan(-1);

@@ -33,7 +33,7 @@ export function ExchangeConnectionList({ connections, job }: ExchangeConnectionL
     c.label?.trim() || getAutoSyncExchange(c.exchange)?.label || c.exchange;
 
   return (
-    <div className="rounded-lg border border-white/10 bg-elev-2 p-4">
+    <div className="rounded-lg border border-hi/10 bg-elev-2 p-4">
       <div className="mb-3 flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-medium text-mid">Connected exchanges</h3>
         <Badge tone="neutral">{connections.length}</Badge>
@@ -48,12 +48,12 @@ export function ExchangeConnectionList({ connections, job }: ExchangeConnectionL
               key={c.id}
               className={cn(
                 'flex flex-wrap items-center gap-3 rounded-lg px-3 py-2.5',
-                syncing && 'border border-violet/30 bg-violet/[0.06]',
+                syncing && 'border border-primary/30 bg-primary/[0.06]',
                 attention && 'border border-warn/25 bg-warn/[0.05]',
                 !syncing && !attention && 'bg-elev-3/40'
               )}
             >
-              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-[11px] font-extrabold text-[#0A0B1A]">
+              <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-[11px] font-extrabold text-on-aurora">
                 {exchange?.monogram ?? c.exchange.slice(0, 2).toUpperCase()}
               </span>
               <div className="min-w-0 flex-1 basis-60">

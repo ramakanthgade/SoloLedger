@@ -176,7 +176,7 @@ export function SettingsTab() {
               </label>
 
               {settings.rpcLookupEnabled && (
-                <div className="ml-7 space-y-4 border-l border-white/10 pl-4">
+                <div className="ml-7 space-y-4 border-l border-hi/10 pl-4">
                   <ApiKeyField
                     label="Helius API key — PRIMARY for Solana"
                     value={settings.heliusApiKey}
@@ -209,7 +209,7 @@ export function SettingsTab() {
               )}
 
               {settings.priceApiEnabled && (
-                <div className="ml-7 space-y-4 border-l border-white/10 pl-4">
+                <div className="ml-7 space-y-4 border-l border-hi/10 pl-4">
                   <ApiKeyField
                     label="CoinGecko Pro API key"
                     value={settings.coingeckoApiKey}
@@ -261,14 +261,14 @@ export function SettingsTab() {
                   advisor stays off until you explicitly enable it here or from its panel.
                 </span>
               </label>
-              <div className="rounded-lg border border-white/10 bg-elev-2 p-3 text-xs leading-relaxed text-low">
+              <div className="rounded-lg border border-hi/10 bg-elev-2 p-3 text-xs leading-relaxed text-low">
                 <p className="font-semibold text-mid">How your AI data travels</p>
                 <p className="mt-1">
-                  <strong className="text-blue">With your own OpenRouter key (this build):</strong> the aggregated
+                  <strong className="text-accent">With your own OpenRouter key (this build):</strong> the aggregated
                   summary goes <strong className="text-mid">directly</strong> to OpenRouter — SoloLedger never sees it.
                 </p>
                 <p className="mt-1">
-                  <strong className="text-violet">On the hosted SoloLedger app with no key:</strong> the same summary
+                  <strong className="text-primary">On the hosted SoloLedger app with no key:</strong> the same summary
                   is <strong className="text-mid">relayed</strong> through SoloLedger's server to OpenRouter.
                 </p>
                 <p className="mt-1">
@@ -300,12 +300,12 @@ export function SettingsTab() {
                 anytime to opt out.
               </span>
             </label>
-            <div className="rounded-lg border border-white/10 bg-elev-2 p-3 text-xs leading-relaxed text-low">
+            <div className="rounded-lg border border-hi/10 bg-elev-2 p-3 text-xs leading-relaxed text-low">
               <p className="font-semibold text-mid">How your AI data travels</p>
               <p className="mt-1">
                 On the hosted app you don't add an OpenRouter key. When you ask the AI Advisor a question, an
                 aggregated summary (holdings, cost basis, realized gains, jurisdiction) plus your typed question is{' '}
-                <strong className="text-violet">relayed</strong> through SoloLedger's server to OpenRouter — never raw
+                <strong className="text-primary">relayed</strong> through SoloLedger's server to OpenRouter — never raw
                 wallet addresses or transaction hashes. The advisor is on by default for subscribers, and you can
                 turn it off any time from its panel or the checkbox above.
               </p>
@@ -336,7 +336,7 @@ export function SettingsTab() {
                   if (file) setPendingRestore(file);
                 }}
               />
-              <span className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-white/10 bg-elev-2 px-4 text-sm font-semibold text-hi shadow-soft transition-all hover:bg-elev-3">
+              <span className="inline-flex h-9 cursor-pointer items-center justify-center gap-2 rounded-[10px] border border-hi/10 bg-elev-2 px-4 text-sm font-semibold text-hi shadow-soft transition-all hover:bg-elev-3">
                 Import backup
               </span>
             </label>
@@ -363,7 +363,7 @@ export function SettingsTab() {
               {restoreStatus.message}
             </p>
           )}
-          <div className="border-t border-white/10 pt-3">
+          <div className="border-t border-hi/10 pt-3">
             {!confirmDelete ? (
               <Button variant="danger" onClick={() => setConfirmDelete(true)}>
                 Delete all local data

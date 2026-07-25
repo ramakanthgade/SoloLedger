@@ -22,13 +22,13 @@ interface Props {
 }
 
 const selectCls =
-  'mt-1 block w-full rounded border border-white/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-violet focus:outline-none';
+  'mt-1 block w-full rounded border border-hi/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-primary focus:outline-none';
 
 function FieldHint({ text }: { text: string }) {
   return (
     <span className="group relative ml-1 inline-flex align-middle">
       <HelpCircle className="h-3.5 w-3.5 cursor-help text-low" />
-      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1 hidden w-56 -translate-x-1/2 rounded-lg border border-white/10 bg-elev-1 px-2 py-1.5 text-[11px] font-normal normal-case leading-snug text-low shadow-xl group-hover:block">
+      <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1 hidden w-56 -translate-x-1/2 rounded-lg border border-hi/10 bg-elev-1 px-2 py-1.5 text-[11px] font-normal normal-case leading-snug text-low shadow-xl group-hover:block">
         {text}
       </span>
     </span>
@@ -116,7 +116,7 @@ export function ColumnMappingForm({ headers, rows, onMapped }: Props) {
   const ready = !!(timestamp && typeCol && asset && amount && mappedTypeCount > 0);
 
   return (
-    <div className="space-y-4 rounded-lg border border-white/10 bg-elev-2/40 p-4">
+    <div className="space-y-4 rounded-lg border border-hi/10 bg-elev-2/40 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <p className="max-w-xl text-sm text-low">
           Map your file's columns to the fields SoloLedger needs. Only <strong>date, type, asset, and quantity</strong>{' '}

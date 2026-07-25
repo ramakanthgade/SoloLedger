@@ -25,7 +25,7 @@ import { AlertTriangle, RefreshCw, Trash2, Pencil, Check, X } from 'lucide-react
 import { syncCoinGeckoRewardRegistryInBackground } from '@/lib/assets/coingeckoRewardRegistry';
 
 const inputCls =
-  'mt-1 block w-full rounded border border-white/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-violet focus:outline-none';
+  'mt-1 block w-full rounded border border-hi/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-primary focus:outline-none';
 
 /** Detect blockchain from wallet address format — works for BTC, Solana; EVM still needs chain selection. */
 function detectChainFromAddress(address: string): ChainId | null {
@@ -198,7 +198,7 @@ export function WalletLookupPanel() {
 
   if (!settings.rpcLookupEnabled) {
     return (
-      <div className="rounded-lg border border-white/10 bg-elev-2 p-4 text-sm text-low">
+      <div className="rounded-lg border border-hi/10 bg-elev-2 p-4 text-sm text-low">
         Wallet lookup is off. Enable "Wallet address lookup via public RPC/explorer" in Settings.
       </div>
     );
@@ -298,7 +298,7 @@ export function WalletLookupPanel() {
 
   return (
     <div className="space-y-4">
-      <div className="space-y-3 rounded-lg border border-white/10 bg-elev-2 p-4">
+      <div className="space-y-3 rounded-lg border border-hi/10 bg-elev-2 p-4">
         <div className="flex items-start gap-2 rounded-lg bg-warn/10 px-3 py-2 text-xs text-warn">
           <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <span>
@@ -328,11 +328,11 @@ export function WalletLookupPanel() {
         )}
 
         {showChainPicker && (
-          <div className="space-y-2 rounded-lg border border-white/10 bg-elev-3/30 px-3 py-2.5" data-testid="chain-picker">
+          <div className="space-y-2 rounded-lg border border-hi/10 bg-elev-3/30 px-3 py-2.5" data-testid="chain-picker">
             <label className="flex items-center gap-2 text-xs font-medium text-mid">
               <input
                 type="checkbox"
-                className="accent-violet"
+                className="accent-primary"
                 checked={allChainsChecked(pickerChains, checkedChains)}
                 onChange={(e) => setCheckedChains(setAllChains(pickerChains, e.target.checked))}
               />
@@ -343,7 +343,7 @@ export function WalletLookupPanel() {
                 <label key={cid} className="flex items-center gap-2 text-xs text-mid">
                   <input
                     type="checkbox"
-                    className="accent-violet"
+                    className="accent-primary"
                     checked={checkedChains.has(cid)}
                     onChange={(e) => setCheckedChains((prev) => toggleChain(prev, cid, e.target.checked))}
                   />
@@ -410,7 +410,7 @@ export function WalletLookupPanel() {
                 change
               </button>
               <select
-                className="rounded border border-white/10 bg-elev-2 px-2 py-0.5 text-xs text-mid"
+                className="rounded border border-hi/10 bg-elev-2 px-2 py-0.5 text-xs text-mid"
                 value={chainId}
                 onChange={(e) => setChainId(e.target.value as ChainId)}
               >
@@ -514,7 +514,7 @@ export function WalletLookupPanel() {
 
         {/* Aggregated per-chain summary after a multi-chain import */}
         {!job.active && chainSummary && (
-          <div className="space-y-1 rounded-lg border border-violet/30 bg-violet/10 px-3 py-2 text-xs" data-testid="chain-summary">
+          <div className="space-y-1 rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs" data-testid="chain-summary">
             <p className="font-medium text-mid">Import summary</p>
             {chainSummary.map((o) => (
               <p key={o.chainId} className={o.status === 'failed' ? 'text-loss' : 'text-gain'}>
@@ -539,7 +539,7 @@ export function WalletLookupPanel() {
         {/* Job result (shown after job completes) — hidden when the per-chain summary is up,
             and suppressed mid-batch (importingChain set) so chain N's result doesn't flash between chains */}
         {!job.active && job.result && !chainSummary && !importingChain && (
-          <div className="rounded-lg border border-violet/30 bg-violet/10 px-3 py-2 text-xs text-gain">
+          <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-gain">
             <strong>{job.result.imported}</strong> transactions imported
             {job.result.swapsDetected > 0 ? `, ${job.result.swapsDetected} swaps detected` : ''}
             {job.result.pricesUpdated > 0 ? `, ${job.result.pricesUpdated} prices fetched` : ''}.
@@ -564,7 +564,7 @@ export function WalletLookupPanel() {
 
       {/* Saved wallets */}
       {lookedUp.length > 0 && (
-        <div className="rounded-lg border border-white/10 bg-elev-2 p-4">
+        <div className="rounded-lg border border-hi/10 bg-elev-2 p-4">
           <h3 className="mb-3 text-sm font-medium text-mid">Your wallets</h3>
           <div className="space-y-2">
             {lookedUp.map((row) => {
@@ -584,7 +584,7 @@ export function WalletLookupPanel() {
                           if (e.key === 'Enter') void saveLabel(row.id);
                           if (e.key === 'Escape') setEditingLabel(null);
                         }}
-                        className="w-44 rounded border border-violet bg-elev-2 px-2 py-0.5 text-xs text-mid focus:outline-none"
+                        className="w-44 rounded border border-primary bg-elev-2 px-2 py-0.5 text-xs text-mid focus:outline-none"
                         placeholder="e.g. My Phantom wallet"
                       />
                       <button onClick={() => void saveLabel(row.id)} className="text-gain"><Check className="h-3.5 w-3.5" /></button>
@@ -651,7 +651,7 @@ export function WalletLookupPanel() {
       {/* Remove confirmation */}
       {removeConfirm && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-canvas/60 p-4">
-          <div className="max-w-md rounded-lg border border-white/10 bg-elev-2 p-5 shadow-xl">
+          <div className="max-w-md rounded-lg border border-hi/10 bg-elev-2 p-5 shadow-xl">
             <h3 className="text-sm font-semibold text-mid">Remove wallet and its transactions?</h3>
             <p className="mt-2 text-xs text-low">
               Deletes <strong className="text-mid">{removeConfirm.txCount}</strong> transaction

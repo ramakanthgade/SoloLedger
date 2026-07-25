@@ -54,9 +54,9 @@ export function FirstSyncPreview({ job }: FirstSyncPreviewProps) {
     job.phase === 'saving' || job.phase === 'pricing' ? job.phase : null;
 
   return (
-    <section className="flex flex-col gap-[18px] rounded-2xl border border-violet/30 bg-elev-2 p-5 shadow-card">
+    <section className="flex flex-col gap-[18px] rounded-2xl border border-primary/30 bg-elev-2 p-5 shadow-card">
       <div className="flex items-center gap-3">
-        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-xs font-extrabold text-[#0A0B1A]">
+        <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-xs font-extrabold text-on-aurora">
           {exchange?.monogram ?? preview.exchange.slice(0, 2).toUpperCase()}
         </span>
         <div>
@@ -72,7 +72,7 @@ export function FirstSyncPreview({ job }: FirstSyncPreviewProps) {
 
       {preview.dateRange && (
         <div className="flex flex-wrap gap-2">
-          <div className="min-w-[80px] flex-1 rounded-lg border border-white/10 bg-elev-1 px-3 py-2">
+          <div className="min-w-[80px] flex-1 rounded-lg border border-hi/10 bg-elev-1 px-3 py-2">
             <div className="font-mono text-[13px] font-bold leading-relaxed text-hi">
               {dayFmt.format(preview.dateRange.from)} – {dayFmt.format(preview.dateRange.to)}
             </div>
@@ -82,13 +82,13 @@ export function FirstSyncPreview({ job }: FirstSyncPreviewProps) {
       )}
 
       {breakdown.length > 0 && (
-        <div className="rounded-lg border border-white/10 bg-elev-1/50">
+        <div className="rounded-lg border border-hi/10 bg-elev-1/50">
           {breakdown.map(([type, count], i) => (
             <div
               key={type}
               className={
                 i < breakdown.length - 1
-                  ? 'flex items-center gap-2.5 border-b border-white/10 px-3.5 py-2.5'
+                  ? 'flex items-center gap-2.5 border-b border-hi/10 px-3.5 py-2.5'
                   : 'flex items-center gap-2.5 px-3.5 py-2.5'
               }
             >
@@ -103,8 +103,8 @@ export function FirstSyncPreview({ job }: FirstSyncPreviewProps) {
       )}
 
       {preview.duplicatesSkipped > 0 && (
-        <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-low">
-          <Info className="mt-0.5 h-4 w-4 shrink-0 text-violet" />
+        <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-low">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-primary" />
           <span>
             <strong className="font-mono text-mid">{preview.duplicatesSkipped}</strong> duplicates
             already in your ledger will be skipped — you'll only import the{' '}

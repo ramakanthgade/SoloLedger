@@ -214,23 +214,23 @@ export function AiAdvisor() {
   const years = availableYears.length > 0 ? availableYears : [getCurrentFy(jurisdiction)];
 
   const fabClass =
-    'flex items-center justify-center rounded-full shadow-xl transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-violet/40 focus-visible:ring-offset-2';
+    'flex items-center justify-center rounded-full shadow-xl transition-all duration-300 focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 focus-visible:ring-offset-2';
 
   if (!aiAvailable) {
     return (
       <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
-        <span className="hidden rounded-full border border-white/10 bg-elev-2/95 px-3 py-1.5 text-xs font-medium text-low shadow-lg sm:inline">
+        <span className="hidden rounded-full border border-hi/10 bg-elev-2/95 px-3 py-1.5 text-xs font-medium text-low shadow-lg sm:inline">
           AI advisor unavailable
         </span>
         <button
           onClick={() => setOpen((o) => !o)}
           title="AI Tax Advisor — not configured on server"
-          className={`${fabClass} h-14 w-14 bg-elev-3 ring-2 ring-white/10 hover:bg-elev-3`}
+          className={`${fabClass} h-14 w-14 bg-elev-3 ring-2 ring-hi/10 hover:bg-elev-3`}
         >
           <Bot className="h-7 w-7 text-low" />
         </button>
         {open && (
-          <div className="absolute bottom-16 right-0 w-72 rounded-xl border border-white/10 bg-elev-1 p-4 shadow-xl">
+          <div className="absolute bottom-16 right-0 w-72 rounded-xl border border-hi/10 bg-elev-1 p-4 shadow-xl">
             <p className="text-sm text-low">
               {saas ? (
                 <>
@@ -258,10 +258,10 @@ export function AiAdvisor() {
           onClose={() => setOpen(false)}
           overlay={false}
           label="AI Tax Advisor"
-          className="flex h-[560px] w-[380px] flex-col overflow-hidden border-white/10 bg-elev-1 shadow-2xl"
+          className="flex h-[560px] w-[380px] flex-col overflow-hidden border-hi/10 bg-elev-1 shadow-2xl"
         >
           {/* Header */}
-          <div className="flex shrink-0 items-center justify-between border-b border-white/10 bg-elev-2 px-4 py-3">
+          <div className="flex shrink-0 items-center justify-between border-b border-hi/10 bg-elev-2 px-4 py-3">
             <div className="flex items-center gap-2">
               <Bot className="h-5 w-5 text-gain" />
               <span className="text-sm font-semibold text-mid">AI Tax Advisor</span>
@@ -271,7 +271,7 @@ export function AiAdvisor() {
                 <select
                   value={year}
                   onChange={(e) => setYear(Number(e.target.value))}
-                  className="appearance-none rounded border border-white/10 bg-elev-3 py-0.5 pl-2 pr-6 text-xs text-low focus:outline-none"
+                  className="appearance-none rounded border border-hi/10 bg-elev-3 py-0.5 pl-2 pr-6 text-xs text-low focus:outline-none"
                 >
                   {years.map((y) => (
                     <option key={y} value={y}>
@@ -305,7 +305,7 @@ export function AiAdvisor() {
                     <button
                       key={q}
                       onClick={() => void sendMessage(q)}
-                      className="block w-full rounded-lg border border-white/10 bg-elev-2 px-3 py-2 text-left text-xs text-low hover:border-violet hover:bg-elev-3"
+                      className="block w-full rounded-lg border border-hi/10 bg-elev-2 px-3 py-2 text-left text-xs text-low hover:border-primary hover:bg-elev-3"
                     >
                       {q}
                     </button>
@@ -325,7 +325,7 @@ export function AiAdvisor() {
                 <div
                   className={`max-w-[85%] rounded-xl px-3 py-2 text-xs leading-relaxed ${
                     msg.role === 'user'
-                      ? 'bg-violet text-white'
+                      ? 'bg-primary-solid text-white'
                       : 'bg-elev-2 text-mid'
                   }`}
                 >
@@ -342,8 +342,8 @@ export function AiAdvisor() {
           </div>
 
           {/* Input */}
-          <div className="shrink-0 border-t border-white/10 p-3">
-            <div className="flex items-end gap-2 rounded-xl border border-white/10 bg-elev-2 px-3 py-2">
+          <div className="shrink-0 border-t border-hi/10 p-3">
+            <div className="flex items-end gap-2 rounded-xl border border-hi/10 bg-elev-2 px-3 py-2">
               <textarea
                 ref={inputRef}
                 value={input}
@@ -383,7 +383,7 @@ export function AiAdvisor() {
       {/* FAB — prominent */}
       <div className="flex items-center gap-3">
         {!open && (
-          <span className="hidden animate-pulse rounded-full border border-violet/40 bg-gain/10 px-3 py-1.5 text-xs font-semibold text-gain shadow-lg sm:inline">
+          <span className="hidden animate-pulse rounded-full border border-primary/40 bg-gain/10 px-3 py-1.5 text-xs font-semibold text-gain shadow-lg sm:inline">
             <Sparkles className="mr-1 inline h-3.5 w-3.5" />
             Ask AI
           </span>
@@ -393,8 +393,8 @@ export function AiAdvisor() {
           title="AI Tax Advisor — ask about your taxes"
           className={`${fabClass} h-16 w-16 ${
             open
-              ? 'bg-violet ring-4 ring-violet/30 text-white'
-              : 'bg-gradient-to-br from-violet to-blue ring-4 ring-violet/40 text-white hover:scale-105 hover:shadow-2xl hover:shadow-glow'
+              ? 'bg-primary-solid ring-4 ring-primary/30 text-white'
+              : 'bg-gradient-to-br from-primary to-accent ring-4 ring-primary/40 text-on-aurora hover:scale-105 hover:shadow-2xl hover:shadow-glow'
           }`}
         >
           {open ? <X className="h-6 w-6" /> : <Bot className="h-7 w-7" />}
@@ -437,14 +437,14 @@ function ModeBadge({ mode }: { mode: 'direct' | 'relay' }) {
       ? {
           label: 'Relayed via SoloLedger',
           detail: 'No API key on this SaaS build — the summary is routed through SoloLedger to OpenRouter.',
-          cls: 'bg-violet/10 border-violet/30 text-violet',
-          dot: 'bg-violet'
+          cls: 'bg-primary/10 border-primary/30 text-primary',
+          dot: 'bg-primary'
         }
       : {
           label: 'Direct to OpenRouter',
           detail: 'Your own OpenRouter key — the summary goes straight to OpenRouter; SoloLedger never sees it.',
-          cls: 'bg-blue/10 border-blue/30 text-blue',
-          dot: 'bg-blue'
+          cls: 'bg-accent/10 border-accent/30 text-accent',
+          dot: 'bg-accent'
         };
   return (
     <div
@@ -495,8 +495,8 @@ function ConsentGate({
   return (
     <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
       <div className="text-center">
-        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-violet to-blue shadow-glow">
-          <Bot className="h-6 w-6 text-white" />
+        <div className="mx-auto flex h-11 w-11 items-center justify-center rounded-xl bg-gradient-to-br from-primary to-accent shadow-glow">
+          <Bot className="h-6 w-6 text-on-aurora" />
         </div>
         <h3 className="mt-3 text-sm font-bold text-hi">Turn on the AI Advisor?</h3>
         <p className="mt-1 text-xs leading-relaxed text-low">
@@ -507,14 +507,14 @@ function ConsentGate({
 
       <ModeBadge mode={mode} />
 
-      <div className="rounded-lg border border-violet/30 bg-violet/5 p-3">
-        <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-violet">
+      <div className="rounded-lg border border-primary/30 bg-primary/5 p-3">
+        <p className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wide text-primary">
           <Upload className="h-3.5 w-3.5" /> Sent to the AI — an aggregated summary
         </p>
         <ul className="mt-2 space-y-1.5">
           {CONSENT_SENT.map((item) => (
             <li key={item} className="flex items-start gap-2 text-xs text-mid">
-              <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet" />
+              <Check className="mt-0.5 h-3.5 w-3.5 shrink-0 text-primary" />
               <span>{item}</span>
             </li>
           ))}
@@ -544,12 +544,12 @@ function ConsentGate({
         </p>
       </div>
 
-      <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-violet/30 bg-elev-3 p-3">
+      <label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-primary/30 bg-elev-3 p-3">
         <input
           type="checkbox"
           checked={checked}
           onChange={(e) => setChecked(e.target.checked)}
-          className="mt-0.5 h-4 w-4 shrink-0 accent-violet"
+          className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
         />
         <span className="text-xs leading-relaxed text-mid">
           I understand that enabling the AI Advisor sends an <strong className="text-hi">aggregated financial
@@ -561,14 +561,14 @@ function ConsentGate({
       <div className="flex gap-2">
         <button
           onClick={onDecline}
-          className="flex-1 rounded-lg border border-white/10 bg-elev-3 px-3 py-2 text-xs font-semibold text-mid hover:bg-elev-2"
+          className="flex-1 rounded-lg border border-hi/10 bg-elev-3 px-3 py-2 text-xs font-semibold text-mid hover:bg-elev-2"
         >
           Not now — keep it local
         </button>
         <button
           onClick={() => void onEnable()}
           disabled={!checked}
-          className="flex-1 rounded-lg bg-gradient-to-br from-violet to-blue px-3 py-2 text-xs font-semibold text-white shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
+          className="flex-1 rounded-lg bg-gradient-to-br from-primary to-accent px-3 py-2 text-xs font-semibold text-on-aurora shadow-glow disabled:cursor-not-allowed disabled:opacity-50"
         >
           Enable AI Advisor
         </button>

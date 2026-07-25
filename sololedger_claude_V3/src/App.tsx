@@ -125,7 +125,7 @@ function MainApp() {
   return (
     <TabNavProvider value={{ goToImport: () => setActive('import') }}>
     <div className="min-h-screen bg-canvas" key={user?.id ?? 'guest'}>
-      <header className="relative z-50 border-b border-white/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
+      <header className="relative z-50 border-b border-hi/10 bg-elev-1/60 backdrop-blur-xl shadow-soft">
         <div className="mx-auto flex max-w-5xl items-center justify-between gap-4 px-6 py-4 lg:px-8">
           <BrandLogo variant="on-glass" />
           <div className="flex items-center gap-3">
@@ -136,7 +136,7 @@ function MainApp() {
         </div>
       </header>
 
-      <div className="border-b border-white/10 bg-elev-1/40 backdrop-blur-md">
+      <div className="border-b border-hi/10 bg-elev-1/40 backdrop-blur-md">
         <nav
           role="tablist"
           aria-label="Sections"
@@ -160,13 +160,13 @@ function MainApp() {
                 onKeyDown={(e) => handleTabKeyDown(e, i)}
                 className={cn(
                   'relative flex min-h-[44px] shrink-0 items-center gap-2 px-4 py-3.5 text-sm font-medium transition-colors',
-                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-violet/40',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40',
                   isActive
                     ? 'text-hi'
                     : 'text-low hover:text-mid'
                 )}
               >
-                <Icon className={cn('h-4 w-4 transition-colors', isActive ? 'text-teal' : 'text-low')} />
+                <Icon className={cn('h-4 w-4 transition-colors', isActive ? 'text-accent' : 'text-low')} />
                 {tab.label}
                 {isActive && (
                   <span className="absolute inset-x-2 -bottom-px h-0.5 rounded-full bg-aurora shadow-glow" />
@@ -178,9 +178,9 @@ function MainApp() {
       </div>
 
       {importState.active && (
-        <div className="sticky top-0 z-40 border-b border-violet/20 bg-violet/10 backdrop-blur-md px-6 py-2.5">
+        <div className="sticky top-0 z-40 border-b border-primary/20 bg-primary/10 backdrop-blur-md px-6 py-2.5">
           <div className="mx-auto flex max-w-5xl items-center gap-3">
-            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-teal" />
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-accent" />
             <span className="text-sm text-mid">
               {PHASE_LABEL[importState.phase] ?? 'Working'}
               {importState.progress
@@ -207,7 +207,7 @@ function MainApp() {
       >
         {deduping ? (
           <div aria-busy="true" className="flex items-center gap-3 text-sm text-low">
-            <Loader2 className="h-4 w-4 animate-spin text-teal" />
+            <Loader2 className="h-4 w-4 animate-spin text-accent" />
             Tidying up your transactions (removing duplicates)…
           </div>
         ) : (

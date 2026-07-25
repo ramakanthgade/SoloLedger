@@ -18,11 +18,11 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
   return (
     <div className="fixed inset-0 z-50 flex items-start justify-end bg-black/30 p-4 pt-16" onClick={onClose}>
       <div
-        className="w-full max-w-sm rounded-xl border border-white/10 bg-elev-2 p-5 shadow-xl"
+        className="w-full max-w-sm rounded-xl border border-hi/10 bg-elev-2 p-5 shadow-xl"
         onClick={(e) => e.stopPropagation()}
       >
-        <div className="flex items-center gap-3 border-b border-white/10 pb-4">
-          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-violet/15 text-gain">
+        <div className="flex items-center gap-3 border-b border-hi/10 pb-4">
+          <div className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/15 text-gain">
             <User className="h-5 w-5" />
           </div>
           <div>
@@ -59,7 +59,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
             </>
           )}
           {user.role === 'admin' && (
-            <div className="flex items-center gap-2 rounded-lg bg-violet/10 px-3 py-2 text-xs text-gain">
+            <div className="flex items-center gap-2 rounded-lg bg-primary/10 px-3 py-2 text-xs text-gain">
               <Shield className="h-3.5 w-3.5" />
               Full access — manage API keys in Settings
             </div>
@@ -70,7 +70,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
           {onOpenSettings && (
             <button
               type="button"
-              className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-mid hover:bg-elev-3"
+              className="flex items-center gap-2 rounded-lg border border-hi/10 px-3 py-2 text-sm text-mid hover:bg-elev-3"
               onClick={() => {
                 onClose();
                 onOpenSettings();
@@ -83,7 +83,7 @@ export function ProfileModal({ open, onClose, onOpenSettings }: ProfileModalProp
           {saas && user.role !== 'admin' && onOpenSettings && (
             <button
               type="button"
-              className="flex items-center gap-2 rounded-lg border border-white/10 px-3 py-2 text-sm text-mid hover:bg-elev-3"
+              className="flex items-center gap-2 rounded-lg border border-hi/10 px-3 py-2 text-sm text-mid hover:bg-elev-3"
               onClick={() => {
                 onClose();
                 onOpenSettings();
@@ -135,7 +135,7 @@ export function UserProfileMenu({ onOpenSettings }: { onOpenSettings?: () => voi
         onClick={() => setOpen((v) => !v)}
         className={cn(
           'flex h-9 w-9 items-center justify-center rounded-full border text-sm font-semibold transition-colors',
-          'border-white/20 bg-white/10 text-white hover:bg-white/20'
+          'border-hi/20 bg-hi/10 text-hi hover:bg-hi/20'
         )}
         title={user.email}
         aria-label="Open profile menu"

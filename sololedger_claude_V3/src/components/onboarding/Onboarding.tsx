@@ -69,8 +69,7 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
         <div className="mb-8 flex flex-col items-center gap-2">
           <BrandLogo variant="on-glass" />
           <p className="font-mono text-[10.5px] font-medium uppercase tracking-[0.22em] text-low">
-            Private <span className="text-teal">·</span> Precise <span className="text-teal">·</span>{' '}
-            Yours
+            Private. Precise. Yours.
           </p>
         </div>
 
@@ -80,17 +79,17 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
               key={i}
               className={cn(
                 'h-2 w-2 rounded-full',
-                i === step ? 'bg-aurora shadow-glow' : 'border border-white/10 bg-elev-3'
+                i === step ? 'bg-aurora shadow-glow' : 'border border-hi/10 bg-elev-3'
               )}
             />
           ))}
         </div>
 
         {step === 0 ? (
-          <section className="overflow-hidden rounded-2xl border border-violet/30 bg-elev-2 shadow-card">
-            <div className="border-b border-white/5 px-6 py-5">
-              <span className="mb-3 inline-flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-wider text-teal">
-                <span className="h-1.5 w-1.5 rounded-full bg-teal shadow-glow" />
+          <section className="overflow-hidden rounded-2xl border border-primary/30 bg-elev-2 shadow-card">
+            <div className="border-b border-hi/5 px-6 py-5">
+              <span className="mb-3 inline-flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-wider text-accent">
+                <span className="h-1.5 w-1.5 rounded-full bg-accent shadow-glow" />
                 Step 1 of 2 · Your setup
               </span>
               <h2 className="text-xl font-extrabold tracking-tight text-hi">
@@ -102,20 +101,20 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
               </p>
             </div>
             <div className="space-y-4 px-6 py-5">
-              <div className="rounded-xl border border-white/10 bg-elev-1 px-4">
+              <div className="rounded-xl border border-hi/10 bg-elev-1 px-4">
                 <ConfigRow
-                  icon={<Clock className="h-4 w-4 text-teal" />}
+                  icon={<Clock className="h-4 w-4 text-accent" />}
                   label="Reporting period"
                   value="Financial Year (Apr–Mar)"
                 />
                 <ConfigRow
-                  icon={<IndianRupee className="h-4 w-4 text-teal" />}
+                  icon={<IndianRupee className="h-4 w-4 text-accent" />}
                   label="Currency"
                   value="₹ INR · lakh / crore"
                   last={false}
                 />
                 <ConfigRow
-                  icon={<Percent className="h-4 w-4 text-teal" />}
+                  icon={<Percent className="h-4 w-4 text-accent" />}
                   label="Crypto tax rule"
                   value="Flat 30% + 4% cess · 1% TDS"
                   last
@@ -135,7 +134,7 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
                 </div>
               </div>
             </div>
-            <div className="flex flex-col items-stretch gap-3 border-t border-white/5 px-6 py-4">
+            <div className="flex flex-col items-stretch gap-3 border-t border-hi/5 px-6 py-4">
               <Button className="w-full" onClick={() => setStep(1)}>
                 Continue <ChevronRight className="h-4 w-4" />
               </Button>
@@ -143,10 +142,10 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
             </div>
           </section>
         ) : (
-          <section className="overflow-hidden rounded-2xl border border-white/10 bg-elev-2 shadow-card">
-            <div className="border-b border-white/5 px-6 py-5">
-              <span className="mb-3 inline-flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-wider text-violet">
-                <span className="h-1.5 w-1.5 rounded-full bg-violet shadow-glow" />
+          <section className="overflow-hidden rounded-2xl border border-hi/10 bg-elev-2 shadow-card">
+            <div className="border-b border-hi/5 px-6 py-5">
+              <span className="mb-3 inline-flex items-center gap-2 font-mono text-[11px] font-medium uppercase tracking-wider text-primary">
+                <span className="h-1.5 w-1.5 rounded-full bg-primary shadow-glow" />
                 Step 2 of 2 · You're all set
               </span>
               <h2 className="text-xl font-extrabold tracking-tight text-hi">
@@ -174,7 +173,7 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
                 body="See your 30% liability, your 1% TDS credit, and a Schedule VDA report ready to file."
               />
             </div>
-            <div className="flex flex-col gap-3 border-t border-white/5 px-6 py-4">
+            <div className="flex flex-col gap-3 border-t border-hi/5 px-6 py-4">
               <div className="flex items-center gap-3">
                 <Button variant="ghost" onClick={() => setStep(0)}>
                   Back
@@ -211,7 +210,7 @@ function ConfigRow({
     <div
       className={cn(
         'flex items-center justify-between py-3 text-[13px]',
-        !last && 'border-b border-white/5'
+        !last && 'border-b border-hi/5'
       )}
     >
       <span className="flex items-center gap-2.5 text-low">
@@ -233,8 +232,8 @@ function NextStep({
   body: string;
 }) {
   return (
-    <div className="flex items-start gap-3 rounded-xl border border-white/10 bg-elev-3 px-4 py-3.5">
-      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-violet/15 text-violet">
+    <div className="flex items-start gap-3 rounded-xl border border-hi/10 bg-elev-3 px-4 py-3.5">
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-primary/15 text-primary">
         {icon}
       </span>
       <div>

@@ -57,9 +57,9 @@ export function SubscriptionCard() {
   };
 
   return (
-    <div className="rounded-2xl border border-white/10 bg-elev-2 shadow-card">
-      <div className="border-b border-white/5 px-6 py-5">
-        <p className="font-mono text-xs font-semibold uppercase tracking-wider text-violet">Subscription</p>
+    <div className="rounded-2xl border border-hi/10 bg-elev-2 shadow-card">
+      <div className="border-b border-hi/5 px-6 py-5">
+        <p className="font-mono text-xs font-semibold uppercase tracking-wider text-primary">Subscription</p>
         {!user.subscriptionActive && (
           <p className="mt-2 text-sm text-warn">
             Renewal needed — pick a plan below to reactivate your subscription.
@@ -73,14 +73,14 @@ export function SubscriptionCard() {
         )}
       </div>
 
-      <div className="divide-y divide-white/5">
+      <div className="divide-y divide-hi/5">
         {PLAN_CATALOG.map((p) => {
           const isCurrent = user.plan === p.id;
           const highlight = selectedFromLanding === p.id;
           return (
             <div
               key={p.id}
-              className={`flex items-center justify-between gap-4 px-6 py-4 ${highlight ? 'bg-violet/10' : ''}`}
+              className={`flex items-center justify-between gap-4 px-6 py-4 ${highlight ? 'bg-primary/10' : ''}`}
             >
               <div className="min-w-0 flex-1">
                 <p className="font-semibold text-hi">
@@ -111,7 +111,7 @@ export function SubscriptionCard() {
                         value={extraPacks}
                         aria-label="Enterprise extra 1,000-event packs"
                         onChange={(e) => setExtraPacks(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
-                        className="h-8 w-20 rounded-lg border border-white/10 bg-elev-3 px-2 text-right font-mono text-sm text-hi"
+                        className="h-8 w-20 rounded-lg border border-hi/10 bg-elev-3 px-2 text-right font-mono text-sm text-hi"
                       />
                       <span className="text-low">
                         → {formatUnitLimit(10_000 + extraPacks * 1_000)} events

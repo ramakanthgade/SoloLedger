@@ -88,7 +88,7 @@ export function AdminPanel() {
         <CardContent className="overflow-x-auto">
           <table className="w-full min-w-[640px] text-left text-sm">
             <thead>
-              <tr className="border-b border-white/10 text-xs uppercase tracking-wide text-low">
+              <tr className="border-b border-hi/10 text-xs uppercase tracking-wide text-low">
                 <th className="py-2 pr-3">Email</th>
                 <th className="py-2 pr-3">Role</th>
                 <th className="py-2 pr-3">Plan</th>
@@ -124,7 +124,7 @@ function UserRow({
 
   if (isAdmin) {
     return (
-      <tr className="border-b border-white/10 bg-violet/5">
+      <tr className="border-b border-hi/10 bg-primary/5">
         <td className="py-3 pr-3 font-medium text-mid">{user.email}</td>
         <td className="py-3 pr-3 capitalize text-low">Admin</td>
         <td className="py-3 pr-3">
@@ -142,7 +142,7 @@ function UserRow({
   }
 
   return (
-    <tr className="border-b border-white/10">
+    <tr className="border-b border-hi/10">
       <td className="py-3 pr-3 font-medium text-mid">{user.email}</td>
       <td className="py-3 pr-3 capitalize text-low">{user.role}</td>
       <td className="py-3 pr-3">
@@ -172,7 +172,7 @@ function UserRow({
           type="text"
           value={includedUnits}
           onChange={(e) => setIncludedUnits(e.target.value)}
-          className="w-28 rounded border border-white/10 bg-elev-2 px-2 py-1 text-xs"
+          className="w-28 rounded border border-hi/10 bg-elev-2 px-2 py-1 text-xs"
         />
       </td>
       <td className="py-3">

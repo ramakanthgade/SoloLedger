@@ -11,7 +11,7 @@ const TX_TYPES: TxType[] = [
 ];
 
 const inputCls =
-  'mt-1 block w-full rounded border border-white/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-violet focus:outline-none';
+  'mt-1 block w-full rounded border border-hi/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-primary focus:outline-none';
 
 export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
   const [type, setType] = useState<TxType>('buy');
@@ -57,7 +57,7 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
   };
 
   return (
-    <div className="space-y-4 rounded-lg border border-white/10 bg-elev-2/40 p-4">
+    <div className="space-y-4 rounded-lg border border-hi/10 bg-elev-2/40 p-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <label className="text-xs text-low">
           Type

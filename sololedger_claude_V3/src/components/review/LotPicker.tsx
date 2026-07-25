@@ -29,7 +29,7 @@ export function LotPicker({ txId, candidates, currentHint, currency, onSaved }: 
   }
 
   return (
-    <div className="space-y-2 rounded-sm border border-white/10 bg-elev-1/60 p-3">
+    <div className="space-y-2 rounded-sm border border-hi/10 bg-elev-1/60 p-3">
       <p className="text-xs text-low">
         Click lots in the order you want them consumed. Unselected lots fall back to oldest-first for any remainder.
       </p>
@@ -42,7 +42,7 @@ export function LotPicker({ txId, candidates, currentHint, currency, onSaved }: 
               onClick={() => toggle(c.lotId)}
               className={
                 'flex w-full items-center justify-between rounded-sm border px-2 py-1.5 text-left text-xs font-mono ' +
-                (priority >= 0 ? 'border-violet/40 bg-violet/10 text-gain' : 'border-white/10 text-low')
+                (priority >= 0 ? 'border-primary/40 bg-primary/10 text-gain' : 'border-hi/10 text-low')
               }
             >
               <span>

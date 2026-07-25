@@ -419,7 +419,7 @@ export function PortfolioTab() {
             <select
               value={selectedWallet}
               onChange={(e) => setSelectedWallet(e.target.value)}
-              className="max-w-[200px] truncate rounded-full border border-white/10 bg-elev-2 px-3 py-1 text-sm text-mid"
+              className="max-w-[200px] truncate rounded-full border border-hi/10 bg-elev-2 px-3 py-1 text-sm text-mid"
             >
               <option value={ALL_WALLETS}>{ALL_WALLETS}</option>
               {availableWallets.map((w) => (
@@ -519,7 +519,7 @@ export function PortfolioTab() {
       </div>
 
       {ledgerRepairOffered && !repairingBalances && (
-        <div className="flex flex-col gap-3 rounded-lg border border-white/10 bg-elev-2 px-4 py-3 text-sm text-low sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-3 rounded-lg border border-hi/10 bg-elev-2 px-4 py-3 text-sm text-low sm:flex-row sm:items-center sm:justify-between">
           <p>
             Solana wallets imported. Check your ledger against on-chain history to catch missing
             swap legs and balance gaps (uses Solana RPC).
@@ -598,7 +598,7 @@ export function PortfolioTab() {
       ) : (
         <>
           {/* Desktop / tablet: table (sm and up) */}
-          <div className="hidden overflow-x-auto rounded-lg border border-white/10 sm:block">
+          <div className="hidden overflow-x-auto rounded-lg border border-hi/10 sm:block">
             <table className="w-full text-sm">
               <thead className="bg-elev-2 text-left text-xs uppercase tracking-wide text-low">
                 <tr>
@@ -609,7 +609,7 @@ export function PortfolioTab() {
               </thead>
               <tbody className="font-mono tabular-figures">
                 {holdings.map((h, i) => (
-                  <tr key={i} className="border-t border-white/10 hover:bg-elev-3/20">
+                  <tr key={i} className="border-t border-hi/10 hover:bg-elev-3/20">
                     <td className="px-3 py-2 text-mid">
                       {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
                     </td>
@@ -635,7 +635,7 @@ export function PortfolioTab() {
           {/* Mobile: stacked cards (below sm) */}
           <div className="space-y-3 sm:hidden">
             {holdings.map((h, i) => (
-              <div key={i} className="rounded-xl border border-white/10 bg-elev-2 p-4 shadow-card">
+              <div key={i} className="rounded-xl border border-hi/10 bg-elev-2 p-4 shadow-card">
                 <p className="text-sm font-semibold text-mid">
                   {resolveAssetLabel(h.asset, h.contractAddress, h.chain)}
                 </p>
@@ -646,7 +646,7 @@ export function PortfolioTab() {
               </div>
             ))}
             {holdings.length === 0 && (
-              <div className="rounded-xl border border-white/10 bg-elev-2 px-3 py-8 text-center text-sm text-low">
+              <div className="rounded-xl border border-hi/10 bg-elev-2 px-3 py-8 text-center text-sm text-low">
                 No holdings — import transactions or adjust the filter.
               </div>
             )}

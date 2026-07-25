@@ -21,7 +21,7 @@ import {
 import { AUTO_SYNC_EXCHANGES, type AutoSyncExchange } from './autoSyncExchanges';
 
 const inputCls =
-  'mt-1 block w-full rounded border border-white/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-violet focus:outline-none';
+  'mt-1 block w-full rounded border border-hi/10 bg-elev-2 px-2 py-1.5 text-sm text-mid focus:border-primary focus:outline-none';
 
 interface AddConnectionFormProps {
   /** Called with the redacted view right after a connection is saved — the
@@ -51,10 +51,10 @@ function ExchangeTile({
         'flex w-full items-center gap-3 rounded-[10px] border px-3 py-2.5 text-left transition-colors',
         chosen
           ? 'border-gain/50 bg-gain/[0.06]'
-          : 'border-white/10 bg-elev-3/50 hover:border-white/20'
+          : 'border-hi/10 bg-elev-3/50 hover:border-hi/20'
       )}
     >
-      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-[11px] font-extrabold text-[#0A0B1A]">
+      <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-aurora font-mono text-[11px] font-extrabold text-on-aurora">
         {exchange.monogram}
       </span>
       <span className="min-w-0">
@@ -143,7 +143,7 @@ export function AddConnectionForm({ onSaved, syncRunning = false }: AddConnectio
   };
 
   return (
-    <section className="flex flex-col gap-6 rounded-2xl border border-violet/30 bg-elev-2 p-5 shadow-card">
+    <section className="flex flex-col gap-6 rounded-2xl border border-primary/30 bg-elev-2 p-5 shadow-card">
       <div>
         <h3 className="text-base font-extrabold text-hi">Connect an exchange</h3>
         <p className="mt-1 text-xs text-low">
@@ -153,9 +153,9 @@ export function AddConnectionForm({ onSaved, syncRunning = false }: AddConnectio
 
       {/* Step 1 · exchange picker */}
       <div>
-        <div className="mb-2 flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-wider text-teal">
+        <div className="mb-2 flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-wider text-accent">
           Step 1 · Choose your exchange
-          <span className="h-px flex-1 bg-gradient-to-r from-teal/40 to-transparent" />
+          <span className="h-px flex-1 bg-gradient-to-r from-accent/40 to-transparent" />
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
           {AUTO_SYNC_EXCHANGES.map((e) => (
@@ -174,12 +174,12 @@ export function AddConnectionForm({ onSaved, syncRunning = false }: AddConnectio
 
       {/* Step 2 · credentials */}
       <div>
-        <div className="mb-2.5 flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-wider text-teal">
+        <div className="mb-2.5 flex items-center gap-2 font-mono text-[10px] font-bold uppercase tracking-wider text-accent">
           Step 2 · Paste your {exchange.label} credentials
-          <span className="h-px flex-1 bg-gradient-to-r from-teal/40 to-transparent" />
+          <span className="h-px flex-1 bg-gradient-to-r from-accent/40 to-transparent" />
         </div>
 
-        <div className="flex flex-col gap-3.5 rounded-[10px] border border-white/10 bg-elev-3/30 p-3.5">
+        <div className="flex flex-col gap-3.5 rounded-[10px] border border-hi/10 bg-elev-3/30 p-3.5">
           <label className="text-xs text-low">
             API Key
             <input
@@ -254,7 +254,7 @@ export function AddConnectionForm({ onSaved, syncRunning = false }: AddConnectio
                 <ol className="space-y-1.5">
                   {exchange.keyInstructions.map((step, i) => (
                     <li key={i} className="flex gap-2 text-xs text-mid">
-                      <span className="mt-px grid h-4 w-4 shrink-0 place-items-center rounded-full bg-violet/15 font-mono text-[10px] font-bold text-violet">
+                      <span className="mt-px grid h-4 w-4 shrink-0 place-items-center rounded-full bg-primary/15 font-mono text-[10px] font-bold text-primary">
                         {i + 1}
                       </span>
                       <span>{step}</span>
@@ -264,7 +264,7 @@ export function AddConnectionForm({ onSaved, syncRunning = false }: AddConnectio
                 <div className="flex flex-wrap items-center gap-1.5 font-mono text-[10.5px]">
                   {exchange.path.map((crumb, i) => (
                     <span key={i} className="flex items-center gap-1.5">
-                      <span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-mid">
+                      <span className="rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 text-mid">
                         {crumb}
                       </span>
                       {i < exchange.path.length - 1 && <span className="text-faint">›</span>}
@@ -275,7 +275,7 @@ export function AddConnectionForm({ onSaved, syncRunning = false }: AddConnectio
                   href={exchange.docsUrl}
                   target="_blank"
                   rel="noreferrer"
-                  className="inline-flex items-center gap-1 self-start text-xs text-violet underline underline-offset-2 hover:text-hi"
+                  className="inline-flex items-center gap-1 self-start text-xs text-primary underline underline-offset-2 hover:text-hi"
                 >
                   Open {exchange.label}'s API page <ExternalLink className="h-3 w-3" />
                 </a>
@@ -286,7 +286,7 @@ export function AddConnectionForm({ onSaved, syncRunning = false }: AddConnectio
       </div>
 
       {tested && !busy && (
-        <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/15 px-4 py-2.5 text-sm text-gain">
+        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/15 px-4 py-2.5 text-sm text-gain">
           <CheckCircle2 className="h-4 w-4 shrink-0" />
           <span>✓ Connected — read-only access confirmed</span>
         </div>

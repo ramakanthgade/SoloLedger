@@ -50,8 +50,8 @@ const STATES: Record<NetworkMode, StateConfig> = {
     title: 'Local + network on',
     disclosure:
       'Your data still lives on this device — you turned on network features, so only your browser talks to the source directly, and SoloLedger never sees it.',
-    pill: 'bg-blue/10 border-blue/30 text-blue',
-    dot: 'bg-blue',
+    pill: 'bg-accent/10 border-accent/30 text-accent',
+    dot: 'bg-accent',
     dotGlow: 'shadow-[0_0_8px_rgba(78,168,255,0.9)]',
     accent: 'border-t-2 border-t-blue'
   },
@@ -61,8 +61,8 @@ const STATES: Record<NetworkMode, StateConfig> = {
     title: 'Local + relay',
     disclosure:
       "A network feature you used routed a request through SoloLedger's backend — depending on the feature this may include API/auth requests, AI summary relay, or RPC/pricing proxying. Raw transaction data is only sent where that feature explicitly says so.",
-    pill: 'bg-violet/10 border-violet/30 text-violet',
-    dot: 'bg-violet',
+    pill: 'bg-primary/10 border-primary/30 text-primary',
+    dot: 'bg-primary',
     dotGlow: 'shadow-[0_0_8px_rgba(124,92,255,0.9)]',
     accent: 'border-t-2 border-t-violet'
   }
@@ -93,7 +93,7 @@ export function LocalOnlyBadge() {
         onClick={() => setOpen((v) => !v)}
         className={cn(
           'inline-flex items-center gap-2 rounded-full border px-3.5 py-1.5 font-mono text-xs font-semibold',
-          'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-violet/60',
+          'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
           state.pill
         )}
       >

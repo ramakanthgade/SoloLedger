@@ -35,7 +35,7 @@ const CARDS: PathCard[] = [
     mode: 'local',
     num: '01',
     icon: Lock,
-    iconGradient: 'from-teal to-blue',
+    iconGradient: 'from-primary to-accent',
     tag: '100% local',
     title: 'Do it yourself',
     value:
@@ -51,7 +51,7 @@ const CARDS: PathCard[] = [
     mode: 'byok',
     num: '02',
     icon: Key,
-    iconGradient: 'from-violet to-blue',
+    iconGradient: 'from-primary to-accent',
     tag: 'Bring your own keys',
     title: 'BYOK',
     value:
@@ -67,7 +67,7 @@ const CARDS: PathCard[] = [
     mode: 'hosted',
     num: '03',
     icon: CloudUpload,
-    iconGradient: 'from-blue to-teal',
+    iconGradient: 'from-primary to-accent',
     tag: 'Hosted · Managed',
     title: 'Let SoloLedger do it',
     value:
@@ -94,7 +94,7 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
     >
       <div className="mx-auto max-w-6xl px-6 lg:px-8">
         <div className="mx-auto max-w-2xl text-center">
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet/15 px-3 py-1 text-xs font-extrabold uppercase tracking-wide text-blue">
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-primary/15 px-3 py-1 text-xs font-extrabold uppercase tracking-wide text-accent">
             Choose your path
           </span>
           <h2 className="mt-4 font-display text-4xl font-extrabold tracking-tight text-hi sm:text-5xl">
@@ -113,7 +113,7 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
             Account-free
             <span className="h-px flex-1 bg-current opacity-30" />
           </div>
-          <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-widest text-violet">
+          <div className="flex items-center gap-2 text-xs font-extrabold uppercase tracking-widest text-primary">
             <Users className="h-3.5 w-3.5" />
             Hosted
             <span className="h-px flex-1 bg-current opacity-30" />
@@ -130,12 +130,12 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
                 className={cn(
                   'relative flex flex-col rounded-[20px] border p-7 shadow-card transition duration-300 hover:-translate-y-1.5 hover:shadow-card-hover',
                   card.featured
-                    ? 'stat-card-featured border-violet/40'
-                    : 'border-white/10 bg-elev-2 hover:border-violet/40'
+                    ? 'stat-card-featured border-primary/40'
+                    : 'border-hi/10 bg-elev-2 hover:border-primary/40'
                 )}
               >
                 {card.featured && (
-                  <span className="absolute -top-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-gradient-to-r from-violet to-blue px-3.5 py-1 text-[0.66rem] font-extrabold uppercase tracking-wide text-[#0A0B1A] shadow-glow">
+                  <span className="absolute -top-3 left-1/2 inline-flex -translate-x-1/2 items-center gap-1.5 rounded-full bg-gradient-to-r from-primary to-accent px-3.5 py-1 text-[0.66rem] font-extrabold uppercase tracking-wide text-on-aurora shadow-glow">
                     <Users className="h-3 w-3" />
                     Sign-in required
                   </span>
@@ -147,7 +147,7 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
                 <div className="flex items-start justify-between gap-3">
                   <div
                     className={cn(
-                      'inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br text-[#0A0B1A] shadow-soft',
+                      'inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br text-on-aurora shadow-soft',
                       card.iconGradient
                     )}
                   >
@@ -166,7 +166,7 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
                   )}
                 </div>
 
-                <div className="mt-5 text-xs font-extrabold uppercase tracking-wider text-blue">
+                <div className="mt-5 text-xs font-extrabold uppercase tracking-wider text-accent">
                   {card.tag}
                 </div>
                 <h3 className="mt-1 font-display text-2xl font-extrabold tracking-tight text-hi">
@@ -193,8 +193,8 @@ export function ChoosePathSection({ onSelectMode }: ChoosePathSectionProps) {
                   className={cn(
                     'mt-6 inline-flex h-12 w-full items-center justify-center gap-2 rounded-full text-sm font-bold transition',
                     card.featured
-                      ? 'bg-gradient-to-r from-violet to-blue text-[#0A0B1A] shadow-glow hover:brightness-105'
-                      : 'border border-white/10 bg-white/[0.03] text-hi hover:border-violet/50 hover:bg-violet/[0.08]'
+                      ? 'bg-gradient-to-r from-primary to-accent text-on-aurora shadow-glow hover:brightness-105'
+                      : 'border border-hi/10 bg-white/[0.03] text-hi hover:border-primary/50 hover:bg-primary/[0.08]'
                   )}
                 >
                   {card.cta}

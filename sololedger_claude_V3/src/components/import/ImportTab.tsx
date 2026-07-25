@@ -511,7 +511,7 @@ export function ImportTab() {
             onClick={() => setMode(m.id)}
             className={cn(
               'rounded-full px-4 py-2 text-sm font-medium transition-all hover:scale-[1.03] active:scale-95',
-              mode === m.id ? 'bg-violet text-white shadow-pop' : 'bg-elev-3/50 text-low hover:text-mid'
+              mode === m.id ? 'bg-primary-solid text-white shadow-pop' : 'bg-elev-3/50 text-low hover:text-mid'
             )}
           >
             {m.label}
@@ -572,7 +572,7 @@ export function ImportTab() {
               onDrop={onDrop}
               className={
                 'flex flex-col items-center justify-center rounded-lg border-2 border-dashed px-6 py-14 text-center transition-colors ' +
-                (dragOver ? 'border-violet bg-gain/15' : 'border-white/10 bg-elev-2')
+                (dragOver ? 'border-primary bg-gain/15' : 'border-hi/10 bg-elev-2')
               }
             >
               {saving ? (
@@ -593,7 +593,7 @@ export function ImportTab() {
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="mt-3 cursor-pointer rounded-full bg-violet px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-violet active:scale-95"
+                    className="mt-3 cursor-pointer rounded-full bg-primary-solid px-4 py-2 text-sm font-medium text-white shadow-pop transition-all hover:scale-[1.03] hover:bg-primary-solid-deep active:scale-95"
                   >
                     Choose file
                   </button>
@@ -613,13 +613,13 @@ export function ImportTab() {
           )}
 
           {batchNote && (
-            <div className="rounded-lg border border-violet/30 bg-violet/10 px-4 py-3 text-sm text-low">
+            <div className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-low">
               {batchNote}
             </div>
           )}
 
           {extractionNote && (
-            <div className="rounded-lg border border-violet/30 bg-violet/10 px-4 py-3 text-sm text-low">
+            <div className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-3 text-sm text-low">
               {extractionNote}
             </div>
           )}
@@ -675,7 +675,7 @@ export function ImportTab() {
                         type="button"
                         onClick={runAiMapping}
                         disabled={importPhase === 'mapping' || saving}
-                        className="inline-flex items-center gap-2 rounded-full bg-violet px-4 py-2 text-sm font-medium text-white transition-all hover:scale-[1.03] active:scale-95 disabled:opacity-60"
+                        className="inline-flex items-center gap-2 rounded-full bg-primary-solid px-4 py-2 text-sm font-medium text-white transition-all hover:scale-[1.03] active:scale-95 disabled:opacity-60"
                       >
                         {importPhase === 'mapping' ? (
                           <>
@@ -693,7 +693,7 @@ export function ImportTab() {
           )}
 
           {csvImports.length > 0 && (
-            <div className="rounded-lg border border-white/10 bg-elev-2 p-4">
+            <div className="rounded-lg border border-hi/10 bg-elev-2 p-4">
               <h3 className="mb-3 text-sm font-medium text-mid">Files already imported</h3>
               <div className="space-y-2">
                 {csvImports.map((row) => (
@@ -730,7 +730,7 @@ export function ImportTab() {
       {savedCount !== null && (
         <div className="space-y-2">
           {savedCount > 0 ? (
-            <div className="flex items-center gap-2 rounded-lg border border-violet/30 bg-violet/15 px-4 py-2.5 text-sm text-gain">
+            <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/15 px-4 py-2.5 text-sm text-gain">
               <CheckCircle2 className="h-4 w-4" />
               Saved {savedCount} transaction{savedCount === 1 ? '' : 's'} to your local database. Head to
               Review to categorize them.
@@ -748,13 +748,13 @@ export function ImportTab() {
             </div>
           ))}
           {conversionNote && (
-            <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-low">
+            <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-low">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-gain" />
               <span>{conversionNote}</span>
             </div>
           )}
           {priceFetchNote && (
-            <div className="flex items-start gap-2 rounded-lg border border-violet/30 bg-violet/10 px-4 py-2.5 text-sm text-gain">
+            <div className="flex items-start gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-gain">
               <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{priceFetchNote}</span>
             </div>

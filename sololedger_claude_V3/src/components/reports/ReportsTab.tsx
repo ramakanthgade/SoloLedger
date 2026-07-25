@@ -394,7 +394,7 @@ export function ReportsTab() {
           </select>
         </label>
         <label className="flex items-center gap-2 text-sm text-low">
-          <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-violet" />
+          <input type="checkbox" checked={deidentify} onChange={(e) => setDeidentify(e.target.checked)} className="accent-primary" />
           De-identify for sharing
         </label>
         <label
@@ -405,7 +405,7 @@ export function ReportsTab() {
             type="checkbox"
             checked={lightHeader}
             onChange={(e) => setLightHeader(e.target.checked)}
-            className="accent-violet"
+            className="accent-primary"
           />
           Light header for print
         </label>
@@ -492,7 +492,7 @@ export function ReportsTab() {
         <div className="hidden overflow-x-auto p-1 sm:block">
           <table className="w-full text-sm">
             <thead>
-              <tr className="border-b border-white/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
+              <tr className="border-b border-hi/10 bg-elev-1/80 text-left text-[0.625rem] font-semibold uppercase tracking-wider text-low">
                 <th className="px-5 py-3">Date</th>
                 <th className="px-5 py-3">Asset</th>
                 <th className="px-5 py-3 text-right">Amount</th>
@@ -504,9 +504,9 @@ export function ReportsTab() {
             </thead>
             <tbody className="font-mono text-xs tabular-figures">
               {yearDisposals.slice(0, 100).map((d) => (
-                <tr key={d.id} className="border-b border-white/10 transition-colors hover:bg-elev-1/50">
+                <tr key={d.id} className="border-b border-hi/10 transition-colors hover:bg-elev-1/50">
                   <td className="px-5 py-3.5 text-low">{new Date(d.disposedAt).toISOString().slice(0, 10)}</td>
-                  <td className="px-5 py-3.5"><span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span></td>
+                  <td className="px-5 py-3.5"><span className="rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span></td>
                   <td className="px-5 py-3.5 text-right text-low">{d.amount.toFixed(6)}</td>
                   <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(d.proceeds, rules.currency)}</td>
                   <td className="px-5 py-3.5 text-right text-low">{formatAmountForExport(d.costBasis, rules.currency)}</td>
@@ -529,9 +529,9 @@ export function ReportsTab() {
         {/* Mobile: stacked cards (below sm) */}
         <div className="space-y-3 p-4 sm:hidden">
           {yearDisposals.slice(0, 100).map((d) => (
-            <div key={d.id} className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+            <div key={d.id} className="rounded-xl border border-hi/10 bg-elev-1/60 p-4">
               <div className="flex items-center justify-between">
-                <span className="rounded-md border border-white/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span>
+                <span className="rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 text-xs font-semibold text-mid">{d.asset}</span>
                 <span className="font-mono text-xs text-low">{new Date(d.disposedAt).toISOString().slice(0, 10)}</span>
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 font-mono text-xs tabular-figures">

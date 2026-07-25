@@ -338,7 +338,7 @@ export function CapitalGainsTab() {
             setFy(Number(e.target.value));
             setFyInitialized(true);
           }}
-          className="rounded-full border border-white/10 bg-elev-2 px-4 py-1.5 text-sm text-mid"
+          className="rounded-full border border-hi/10 bg-elev-2 px-4 py-1.5 text-sm text-mid"
         >
           {availableFys.map((y) => (
             <option key={y} value={y}>
@@ -349,7 +349,7 @@ export function CapitalGainsTab() {
         <select
           value={method}
           onChange={(e) => setMethod(e.target.value as 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID')}
-          className="rounded-full border border-white/10 bg-elev-2 px-4 py-1.5 text-sm text-mid"
+          className="rounded-full border border-hi/10 bg-elev-2 px-4 py-1.5 text-sm text-mid"
         >
           <option value="FIFO">FIFO matching</option>
           <option value="LIFO">LIFO matching</option>
@@ -469,7 +469,7 @@ export function CapitalGainsTab() {
                   </th>
                   <th className="px-2 py-2 text-right">Gain / loss</th>
                 </tr>
-                <tr className="border-t border-white/10 normal-case">
+                <tr className="border-t border-hi/10 normal-case">
                   <th className="px-2 py-1">Date</th>
                   <th className="px-2 py-1">Asset</th>
                   <th className="px-2 py-1 text-right">Qty</th>
@@ -485,7 +485,7 @@ export function CapitalGainsTab() {
                 {yearMatches.map((r) => {
                   const chainLabel = r.chain ? CHAINS.find((c) => c.id === r.chain)?.label : undefined;
                   return (
-                    <tr key={r.id} className="border-t border-white/10 hover:bg-elev-3/20">
+                    <tr key={r.id} className="border-t border-hi/10 hover:bg-elev-3/20">
                       <td className="px-2 py-2 text-low whitespace-nowrap">{formatDateTime(r.sellDate)}</td>
                       <td className="px-2 py-2 text-mid">
                         {resolveAssetLabel(r.asset, undefined, r.chain)}
@@ -522,7 +522,7 @@ export function CapitalGainsTab() {
             {yearMatches.map((r) => {
               const chainLabel = r.chain ? CHAINS.find((c) => c.id === r.chain)?.label : undefined;
               return (
-                <div key={r.id} className="rounded-xl border border-white/10 bg-elev-1/60 p-4">
+                <div key={r.id} className="rounded-xl border border-hi/10 bg-elev-1/60 p-4">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-semibold text-mid">
                       {resolveAssetLabel(r.asset, undefined, r.chain)}
@@ -574,7 +574,7 @@ export function CapitalGainsTab() {
               </thead>
               <tbody className="font-mono tabular-figures">
                 {yearIncome.map((r) => (
-                  <tr key={r.id} className="border-t border-white/10">
+                  <tr key={r.id} className="border-t border-hi/10">
                     <td className="px-2 py-2 text-low">{formatDateTime(r.date)}</td>
                     <td className="px-2 py-2">
                       <Badge tone={r.kind.includes('suspected') ? 'gold' : 'emerald'}>
@@ -632,7 +632,7 @@ export function CapitalGainsTab() {
                   </thead>
                   <tbody className="font-mono tabular-figures">
                     {yearDerivIncome.map((r) => (
-                      <tr key={r.id} className="border-t border-white/10">
+                      <tr key={r.id} className="border-t border-hi/10">
                         <td className="px-2 py-2 text-low">{formatDateTime(r.date)}</td>
                         <td className="px-2 py-2 text-mid">{r.asset}</td>
                         <td className="px-2 py-2 text-right">{formatCompactAmount(r.amount)}</td>
@@ -681,7 +681,7 @@ export function CapitalGainsTab() {
                   </thead>
                   <tbody className="font-mono tabular-figures">
                     {yearDerivExpense.map((r) => (
-                      <tr key={r.id} className="border-t border-white/10">
+                      <tr key={r.id} className="border-t border-hi/10">
                         <td className="px-2 py-2 text-low">{formatDateTime(r.date)}</td>
                         <td className="px-2 py-2">
                           <Badge tone={r.kind === 'realized_loss' ? 'loss' : 'gold'}>
@@ -743,7 +743,7 @@ export function CapitalGainsTab() {
                 </thead>
                 <tbody className="font-mono tabular-figures">
                   {yearDerivCg.map((r) => (
-                    <tr key={r.id} className="border-t border-white/10">
+                    <tr key={r.id} className="border-t border-hi/10">
                       <td className="px-2 py-2 text-low">{formatDateTime(r.sellDate)}</td>
                       <td className="px-2 py-2 text-mid">{r.asset}</td>
                       <td className="px-2 py-2 text-right">{formatCurrency(r.proceeds, currency)}</td>
