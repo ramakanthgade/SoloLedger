@@ -112,7 +112,17 @@ export function ScheduleVdaView({
         fmt(totals.incomeGain),
         fmt(totals.tdsInr)
       ]],
-      footStyles: { fillColor: PDF.slateLight, textColor: PDF.navy, fontStyle: 'bold' }
+      footStyles: { fillColor: PDF.paperDeep, textColor: PDF.ink, fontStyle: 'bold' },
+      // Ember print accents: gains in moss, losses in crimson, TDS in amber.
+      didParseCell: (data) => {
+        if (data.section !== 'body') return;
+        if (data.column.index === 5) {
+          const r = rows[data.row.index];
+          if (r) data.cell.styles.textColor = r.incomeGain >= 0 ? PDF.gain : PDF.loss;
+        } else if (data.column.index === 6) {
+          data.cell.styles.textColor = PDF.amber;
+        }
+      }
     });
 
     autoTable(doc, {

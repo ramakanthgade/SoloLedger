@@ -79,17 +79,12 @@ const hexPattern = new RegExp(`#(?:${OLD_HEXES.join('|')})\\b`, 'gi');
 
 /**
  * Documented allow-list: exact `path::token` entries that are intentionally
- * exempt.
- *
- * - `lib/export/pdfTheme.ts` — the PDF export still carries the Aurora header
- *   hexes on purpose: it is restyled in the Reports+PDF step of the redesign
- *   (locked guardrail: PDF body stays light/ink-friendly with a solid
- *   non-gradient header). Remove this entry when that step lands.
+ * exempt. Currently EMPTY — the last entries (`lib/export/pdfTheme.ts`'s
+ * Aurora header hexes) were removed when the Reports+PDF step converted the
+ * PDF theme to the solid deep-ember Ember & Slate header. Keep the mechanism
+ * for future documented exemptions; add entries only with an inline reason.
  */
-const ALLOW_LIST = new Set<string>([
-  'lib/export/pdfTheme.ts::#12132A',
-  'lib/export/pdfTheme.ts::#0A0B1A'
-]);
+const ALLOW_LIST = new Set<string>();
 
 const SRC_DIR = resolve(__dirname, '..');
 

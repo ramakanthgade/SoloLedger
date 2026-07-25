@@ -18,7 +18,7 @@ import type { Jurisdiction } from '@/types/transaction';
 import type { TdsReconciliation } from '@/lib/tax/tds';
 import { Button } from '@/components/ui/button';
 import { formatCurrency, formatAmountForExport, getFyLabel, downloadBlob } from '@/lib/utils';
-import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer } from '@/lib/export/pdfTheme';
+import { createBrandedPdf, pdfTableStyles, addPdfDisclaimer, PDF } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { toNumber, add } from '@/lib/costBasis/decimal';
 import { buildTdsExchangeRows, serializeTdsReconciliationCsv } from './reportExports';
@@ -111,7 +111,18 @@ export function TdsReconciliationView({
       return [r.label, String(r.deductions), fmt(r.tdsInr)];
     });
 
-    autoTable(doc, { startY, ...tbl, head, body });
+    autoTable(doc, {
+      startY,
+      ...tbl,
+      head,
+      body,
+      // TDS figures print in amber, matching the on-screen §194S accent.
+      didParseCell: (data) => {
+        if (data.section === 'body' && data.column.index === 2) {
+          data.cell.styles.textColor = PDF.amber;
+        }
+      }
+    });
 
     addPdfDisclaimer(
       doc,
