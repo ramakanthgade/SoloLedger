@@ -219,7 +219,7 @@ export function AiAdvisor() {
 
   if (!aiAvailable) {
     return (
-      <div className="fixed bottom-6 right-6 z-50 flex items-center gap-3">
+      <div className="fixed bottom-20 right-6 z-50 flex items-center gap-3 md:bottom-6">
         <span className="hidden rounded-full border border-hi/10 bg-elev-1/95 px-3.5 py-2 text-xs font-semibold text-low shadow-pop sm:inline">
           AI advisor unavailable
         </span>
@@ -252,7 +252,7 @@ export function AiAdvisor() {
   }
 
   return (
-    <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+    <div className="fixed bottom-20 right-6 z-50 flex flex-col items-end gap-3 md:bottom-6">
       {open && (
         <Dialog
           open={open}
