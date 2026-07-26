@@ -183,7 +183,7 @@ export function walletChainChip(group: WalletGroup): string | undefined {
   const total = group.chains.length;
   if (total === 0) return undefined;
   const synced = group.rows.filter((r) => r.lastSyncedAt > 0).length;
-  if (synced >= total) return undefined;
+  if (synced === 0 || synced >= total) return undefined;
   const pct = Math.round((synced / total) * 100);
   return `${synced}/${total} chains · ${pct}%`;
 }
@@ -272,7 +272,8 @@ export function buildCards(input: BuildCardsInput): ConnectionCardData[] {
         group.chains.length > 1 ? `${group.chains.length} chains` : 'Address'
       ],
       status: { tone: 'gain', label: 'Watching' },
-      metaLine: `Synced ${relativeTime(group.lastSyncedAt)}`,
+      metaLine:
+        group.lastSyncedAt > 0 ? `Synced ${relativeTime(group.lastSyncedAt)}` : 'Not synced yet',
       txLine: `${group.txCount.toLocaleString()} transaction${group.txCount === 1 ? '' : 's'}`,
       syncChip: walletChainChip(group),
       walletRows: group.rows

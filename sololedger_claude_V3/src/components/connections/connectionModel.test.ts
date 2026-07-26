@@ -243,6 +243,14 @@ describe('buildCards', () => {
     expect(chain.tags).toEqual(['Blockchain', 'Address']);
   });
 
+  it('says "Not synced yet" (never an epoch date) for a wallet that has never synced', () => {
+    const [card] = buildCards(
+      input({ wallets: [walletRow({ id: 'ethereum:0xAAA', chain: 'ethereum', address: '0xAAA', lastSyncedAt: 0 })] })
+    );
+    expect(card.metaLine).toBe('Not synced yet');
+    expect(card.syncChip).toBeUndefined();
+  });
+
   it('adds the manual summary card only when manual transactions exist', () => {
     expect(buildCards(input({ manualCount: 0 }))).toHaveLength(0);
     const [card] = buildCards(input({ manualCount: 3 }));
@@ -328,7 +336,11 @@ describe('walletChainChip', () => {
   it('reports chains fully synced ÷ chains enabled with a rounded percent', () => {
     expect(walletChainChip(group([10, 20, 0]))).toBe('2/3 chains · 67%');
     expect(walletChainChip(group([0, 20]))).toBe('1/2 chains · 50%');
-    expect(walletChainChip(group([0]))).toBe('0/1 chains · 0%');
+  });
+
+  it('is undefined when no chain has ever synced (the meta line already says "Not synced yet")', () => {
+    expect(walletChainChip(group([0]))).toBeUndefined();
+    expect(walletChainChip(group([0, 0]))).toBeUndefined();
   });
 });
 

@@ -375,6 +375,19 @@ describe('latestSyncAt / formatRelativeTime', () => {
 });
 
 describe('allocationSlices', () => {
+  it('merges the same asset carried on multiple per-source rows into one slice', () => {
+    const base = { amount: 1, priceNow: null, priceAsOf: null, dayChangePct: null, avgCost: 10, valueNow: null, unrealized: null, unrealizedPct: null };
+    const valued = [
+      { ...base, asset: 'ETH', costBasis: 60 },
+      { ...base, asset: 'ETH', costBasis: 40 },
+      { ...base, asset: 'BTC', costBasis: 50 }
+    ];
+    const slices = allocationSlices(valued, false);
+    expect(slices.map((s) => s.asset)).toEqual(['ETH', 'BTC']);
+    expect(slices[0].value).toBe(100);
+    expect(slices[0].pct).toBeCloseTo((100 / 150) * 100);
+  });
+
   it('keeps the top 5 and folds the remainder into Other', () => {
     const valued = Array.from({ length: 7 }, (_, i) => ({
       asset: `A${i}`,

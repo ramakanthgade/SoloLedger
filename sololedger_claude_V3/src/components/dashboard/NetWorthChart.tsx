@@ -269,7 +269,7 @@ export function NetWorthChart({ points, mode, currency, mask = false }: NetWorth
             </>
           )}
 
-          {/* x labels */}
+          {/* x labels — edge ticks anchor inward so they never clip */}
           {ticks.map((tick) => (
             <text
               key={tick.label + tick.frac}
@@ -278,7 +278,7 @@ export function NetWorthChart({ points, mode, currency, mask = false }: NetWorth
               fontSize="11"
               fontWeight="700"
               fill="var(--text-low)"
-              textAnchor="middle"
+              textAnchor={tick.frac <= 0.001 ? 'start' : tick.frac >= 0.999 ? 'end' : 'middle'}
               style={{ letterSpacing: '0.06em', textTransform: 'uppercase' }}
             >
               {tick.label}

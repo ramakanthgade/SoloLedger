@@ -414,14 +414,10 @@ export function DashboardTab() {
   );
   const taxEstimate = useMemo(() => estimateIndiaVDA(realizedFyGain), [realizedFyGain]);
 
+  // Matches ReviewTab's missingPriceTxs exactly (non-spam + no fiat value,
+  // internal transfers included) so Dashboard and Transactions never disagree.
   const needsPriceCount = useMemo(
-    () =>
-      nonSpamTxs.filter(
-        (t) =>
-          t.fiatValue == null &&
-          (t.flags ?? []).includes('missing_cost_basis') &&
-          !t.isInternalTransfer
-      ).length,
+    () => nonSpamTxs.filter((t) => t.fiatValue == null).length,
     [nonSpamTxs]
   );
   const needsReviewCount = useMemo(() => countNeedsReview(nonSpamTxs), [nonSpamTxs]);
@@ -583,7 +579,11 @@ export function DashboardTab() {
     const pnlCell =
       h.unrealized != null ? (
         <Badge tone={h.unrealized >= 0 ? 'gain' : 'loss'} className="tabular-figures">
-          {hideBalances ? '••••' : `${fmtSigned(h.unrealized)} · ${fmtPct(h.unrealizedPct ?? 0)}`}
+          {hideBalances
+            ? '••••'
+            : h.unrealizedPct != null
+              ? `${fmtSigned(h.unrealized)} · ${fmtPct(h.unrealizedPct)}`
+              : fmtSigned(h.unrealized)}
         </Badge>
       ) : (
         <span className="text-mid">—</span>
@@ -662,7 +662,7 @@ export function DashboardTab() {
               slices={slices}
               currency={currency}
               mask={hideBalances}
-              totalQty={h.amount}
+              totalQty={slices.reduce((sum, s) => sum + s.qty, 0) || h.amount}
             />
           </div>
         )}

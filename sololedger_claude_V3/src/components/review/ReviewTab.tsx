@@ -257,7 +257,29 @@ function FlagSelector({ tx }: { tx: Transaction }) {
 function TypeSelector({ tx }: { tx: Transaction }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const current = tx.type;
+
+  // Close on Escape / outside press while the menu is open (capture phase so
+  // the row's own key handling can't swallow Escape first).
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
 
   const reclassify = async (next: TxType) => {
     if (next === current) { setOpen(false); return; }
@@ -272,7 +294,7 @@ function TypeSelector({ tx }: { tx: Transaction }) {
   };
 
   return (
-    <div className="relative" onClick={(e) => e.stopPropagation()}>
+    <div className="relative" ref={rootRef} onClick={(e) => e.stopPropagation()}>
       <button
         onClick={() => setOpen((o) => !o)}
         title="Click to reclassify this transaction"
@@ -288,7 +310,7 @@ function TypeSelector({ tx }: { tx: Transaction }) {
         {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-9 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+        <div role="menu" className="absolute left-0 top-9 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
           <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">Reclassify as</p>
           {ALL_TYPES.map((t) => (
             <button

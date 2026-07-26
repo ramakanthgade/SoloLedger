@@ -192,6 +192,21 @@ describe('DashboardTab — insights', () => {
     expect(goTo).toHaveBeenCalledWith('review');
   });
 
+  it('counts internal transfers without a fiat value too (parity with the Transactions tab)', async () => {
+    SEED.txs.push({
+      id: 't-sol-internal', timestamp: Date.UTC(2026, 6, 12, 12, 0, 0), type: 'transfer_in',
+      asset: 'SOL', amount: 10, fiatCurrency: 'INR', fiatValue: undefined, source: 'manual',
+      flags: ['missing_cost_basis'], isInternalTransfer: true
+    } as never);
+    try {
+      await renderTab();
+      const card = screen.getByTestId('insight-needs-price');
+      expect(card).toHaveTextContent('2 transactions need a price');
+    } finally {
+      SEED.txs.pop();
+    }
+  });
+
   it('dismisses an insight and persists the dismissal', async () => {
     await renderTab();
     const card = screen.getByTestId('insight-needs-price');

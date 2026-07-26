@@ -669,11 +669,14 @@ export function allocationSlices(
   useMarket: boolean,
   maxSlices = 5
 ): AllocationSlice[] {
-  const rows = valued
-    .map((h) => ({
-      asset: h.asset,
-      value: useMarket && h.valueNow != null ? h.valueNow : h.costBasis
-    }))
+  // `valued` can carry the same asset on multiple rows (per-source split) —
+  // merge by asset first so "By asset" never lists a symbol twice.
+  const byAsset = new Map<string, number>();
+  for (const h of valued) {
+    const value = useMarket && h.valueNow != null ? h.valueNow : h.costBasis;
+    byAsset.set(h.asset, (byAsset.get(h.asset) ?? 0) + value);
+  }
+  const rows = Array.from(byAsset, ([asset, value]) => ({ asset, value }))
     .filter((r) => r.value > 1e-9)
     .sort((a, b) => b.value - a.value);
   const total = rows.reduce((s, r) => s + r.value, 0);
