@@ -85,7 +85,14 @@ export function txFlow(t: Transaction, ctx: FlowCtx): RowFlow {
   const gain: FlowGain | undefined = disposal
     ? { kind: disposal.gain >= 0 ? 'gain' : 'loss', formatted: formatCurrency(Math.abs(disposal.gain), t.fiatCurrency) }
     : undefined;
-  const costSubline = disposal ? `cost ${formatCurrency(disposal.costBasis, t.fiatCurrency)}` : undefined;
+  // Honesty: a disposal whose amount matched no lots has costBasis 0 — that is
+  // UNKNOWN, not zero, so the sub-line reads "cost —", never an invented
+  // "cost ₹0.00".
+  const costSubline = disposal
+    ? disposal.costBasis > 0
+      ? `cost ${formatCurrency(disposal.costBasis, t.fiatCurrency)}`
+      : 'cost —'
+    : undefined;
   const valueSubline = t.fiatValue != null ? `≈ ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : undefined;
   const assetLeg = (sign?: '+' | '−', subline?: string): RowLeg => ({
     kind: 'asset',

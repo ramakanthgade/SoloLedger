@@ -83,6 +83,28 @@ describe('txFlow — the row-face sent → received flow', () => {
     expect(flow.received?.gain).toEqual({ kind: 'gain', formatted: '$2,000.00' });
   });
 
+  it('sell with no cost-basis data: "cost —", never an invented "cost ₹0.00"', () => {
+    // A disposal whose amount matched no lots comes back from the engine with
+    // costBasis 0 — that is UNKNOWN, not zero.
+    const t = tx({ type: 'sell', amount: 1, fiatCurrency: 'INR', fiatValue: 9405090.64 });
+    const flow = txFlow(t, flowCtx({ disposal: { costBasis: 0, gain: 9405090.64 } }));
+    expect(flow.sent?.subline).toBe('cost —');
+  });
+
+  it('trade with no cost-basis data: "cost —" under the sent leg too', () => {
+    const t = tx({
+      type: 'trade',
+      asset: 'LPT',
+      amount: 164,
+      counterAsset: 'USDT',
+      counterAmount: 880,
+      fiatCurrency: 'INR',
+      fiatValue: 74060
+    });
+    const flow = txFlow(t, flowCtx({ assetLabel: 'LPT', counterLabel: 'USDT', disposal: { costBasis: 0, gain: 74060 } }));
+    expect(flow.sent?.subline).toBe('cost —');
+  });
+
   it('buy: fiat leg out, asset leg in, no gain (not a disposal)', () => {
     const t = tx({ type: 'buy', amount: 0.5, fiatValue: 25000 });
     const flow = txFlow(t, flowCtx());
