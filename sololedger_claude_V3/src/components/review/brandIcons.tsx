@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { BRAND_ICON_BASE } from '@/lib/brandAssets';
 import {
   BRAND_ICON_FILES,
   NEEDS_LIGHT_TILE,
@@ -20,7 +21,7 @@ import {
  * (OKX, Ethereum, Trezor) so they stay legible on the dark canvas.
  */
 
-const ICON_BASE = '/assets/brand-icons';
+const ICON_BASE = BRAND_ICON_BASE;
 
 interface BrandImgProps {
   id: BrandIconId;

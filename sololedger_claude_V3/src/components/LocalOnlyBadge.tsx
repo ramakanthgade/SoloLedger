@@ -102,7 +102,9 @@ export function LocalOnlyBadge() {
         )}
       >
         <span className={cn('h-2 w-2 shrink-0 rounded-full', state.dot, state.dotGlow)} />
-        <span>{state.label}</span>
+        {/* Label drops below xl so the six tabs always fit the header — the
+         * full state text lives in the tooltip and this popover. */}
+        <span className="hidden xl:inline">{state.label}</span>
         <span className="text-[0.5rem] opacity-75" aria-hidden="true">
           ▾
         </span>

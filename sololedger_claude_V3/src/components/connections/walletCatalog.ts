@@ -1,3 +1,5 @@
+import { BRAND_ICON_BASE } from '@/lib/brandAssets';
+
 /**
  * Data-driven wallet-app catalog — the Koinly-style picker behind the
  * drawer's "Wallet app" flow (live-feedback round, item 3).
@@ -53,7 +55,7 @@ export interface WalletCatalogEntry {
   aliases?: string[];
 }
 
-const ICONS = '/assets/brand-icons';
+const ICONS = BRAND_ICON_BASE;
 
 /** Section order in the picker (groups not listed here would render last). */
 export const WALLET_GROUP_ORDER: WalletGroup[] = [
