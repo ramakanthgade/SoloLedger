@@ -27,8 +27,10 @@ describe('Dexie v8 — exchangeConnections', () => {
     await db.exchangeConnections.clear();
   });
 
-  it('opens at version 8 with the exchangeConnections table', async () => {
-    expect(db.verno).toBe(8);
+  it('opens at the current version with the exchangeConnections table', async () => {
+    // v9 added walletBalances (round-4 balance reconciliation); the
+    // exchangeConnections schema below is unchanged since v8.
+    expect(db.verno).toBe(9);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
