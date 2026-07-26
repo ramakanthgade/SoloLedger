@@ -21,6 +21,7 @@ import { UserProfileMenu } from '@/components/auth/UserProfileMenu';
 import { useAuth } from '@/lib/saas/authContext';
 import { useAppMode } from '@/lib/saas/modeContext';
 import { useImportJob } from '@/lib/importJob';
+import { maybeAutoSyncOnOpen } from '@/lib/saas/autoSyncOnOpen';
 import {
   Link, ListChecks, LayoutDashboard, TrendingUp, FileText, Settings, Loader2, Shield
 } from 'lucide-react';
@@ -97,6 +98,17 @@ function MainApp() {
     setDeduping(true);
     void deduplicateTransactions().finally(() => setDeduping(false));
   }, [user?.id]);
+
+  // Round-4: paid hosted users get an automatic catch-up sync of every
+  // connection once per app open, after the per-user DB is ready. Free /
+  // local / BYOK users keep the manual per-card Sync only. The ref guard +
+  // the module latch in autoSyncOnOpen keep this to exactly one run per boot.
+  const autoSyncFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoSyncFiredRef.current || !dbReady) return;
+    autoSyncFiredRef.current = true;
+    void maybeAutoSyncOnOpen(user);
+  }, [dbReady, user]);
 
   // Roving-tabindex arrow-key navigation across the tablist.
   const handleTabKeyDown = (e: React.KeyboardEvent, index: number) => {

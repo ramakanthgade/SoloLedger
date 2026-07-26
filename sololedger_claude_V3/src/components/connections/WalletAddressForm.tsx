@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { getLookupAddresses, updateWalletLabel } from '@/lib/storage/db';
 import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveSettings';
@@ -16,7 +16,8 @@ import {
 } from '@/lib/rpc/multiChainImport';
 import { runWalletImport, useImportJob, importJob } from '@/lib/importJob';
 import { Button } from '@/components/ui/button';
-import { Check, Eye, RefreshCw } from 'lucide-react';
+import { Toast, ToastViewport } from '@/components/ui/toast';
+import { AlertTriangle, Check, Eye, RefreshCw } from 'lucide-react';
 import { syncCoinGeckoRewardRegistryInBackground } from '@/lib/assets/coingeckoRewardRegistry';
 import { BrandIcon, chainIconId } from './brandIcons';
 
@@ -123,7 +124,21 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   // Global import job state — persists across tab navigation
   const job = useImportJob();
 
-  const lookedUp = useLiveQuery(() => getLookupAddresses(), []) ?? [];
+  const lookedUpRaw = useLiveQuery(() => getLookupAddresses(), []);
+  /** False until the lookup registry answers — detection must wait for it so an
+   *  already-imported wallet never triggers a detection burst on paste. */
+  const lookupLoaded = lookedUpRaw !== undefined;
+  const lookedUp = useMemo(() => lookedUpRaw ?? [], [lookedUpRaw]);
+
+  // Duplicate-warning toasts (popup) — self-contained host, same pattern as
+  // the Connections home toasts.
+  const [toasts, setToasts] = useState<{ id: number; tone: 'warn'; title: string; description?: string }[]>([]);
+  const toastId = useRef(0);
+  const pushToast = (t: { tone: 'warn'; title: string; description?: string }) => {
+    const id = ++toastId.current;
+    setToasts((ts) => [...ts.slice(-2), { ...t, id }]);
+    window.setTimeout(() => setToasts((ts) => ts.filter((x) => x.id !== id)), 6000);
+  };
 
   useEffect(() => { getEffectiveSettings().then(setSettings); }, []);
 
@@ -142,6 +157,56 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   // user key, or in BYOK when a Moralis key was pasted.
   const canDetectChains = isSaasMode() || Boolean(settings?.moralisApiKey?.trim());
 
+  // ── Duplicate-wallet short-circuit (round-4 item 1) ──
+  // An EVM wallet counts as fully imported only when the lookup registry has a
+  // row for it on EVERY supported EVM chain (the chains detection would find).
+  const enabledEvmChainIds = EVM_CHAIN_IDS.filter((id) => CHAINS.some((c) => c.id === id));
+  const isImportedOn = (address: string, cid: ChainId) =>
+    lookedUp.some((r) => r.chain === cid && r.address.toLowerCase() === address.toLowerCase());
+  const importedOnEveryEvmChain = (address: string) =>
+    enabledEvmChainIds.length > 0 && enabledEvmChainIds.every((cid) => isImportedOn(address, cid));
+  /** Every parsed address is already imported on every applicable chain. */
+  const allEvmDuplicate =
+    hasEvm &&
+    parsedAddresses.length > 0 &&
+    parsedAddresses.every((a) => (isEvmAddress(a) ? importedOnEveryEvmChain(a) : isImportedOn(a, chainId)));
+
+  // Unified all-duplicate state: EVM multi-chain mode checks every enabled
+  // EVM chain; everything else checks the current chain. Drives the prominent
+  // callout, the popup toast and the disabled Import button.
+  const allDuplicate =
+    lookupLoaded &&
+    parsedAddresses.length > 0 &&
+    (hasEvm && !manualChainMode
+      ? allEvmDuplicate
+      : parsedAddresses.every((a) => isImportedOn(a, chainId)));
+  const duplicateMessage = (() => {
+    if (!allDuplicate) return '';
+    const evmMulti = hasEvm && !manualChainMode;
+    if (parsedAddresses.length === 1) {
+      return evmMulti
+        ? 'This wallet is already imported on every supported EVM chain. Sync from the connection card on the Connections home to refresh.'
+        : 'This wallet is already imported. Sync from the connection card on the Connections home to refresh.';
+    }
+    return `All ${parsedAddresses.length} addresses are already imported${
+      evmMulti ? ' on every supported chain' : ''
+    }. Sync from the connection card on the Connections home to refresh.`;
+  })();
+
+  // Popup toast for an all-duplicate paste — fires once per distinct message
+  // and re-arms when the paste stops being all-duplicate.
+  const lastDupToastRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!duplicateMessage) {
+      lastDupToastRef.current = null;
+      return;
+    }
+    if (lastDupToastRef.current === duplicateMessage) return;
+    lastDupToastRef.current = duplicateMessage;
+    pushToast({ tone: 'warn', title: 'Already imported', description: duplicateMessage });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [duplicateMessage]);
+
   // Debounced active-chain detection for EVM addresses. Every failure mode
   // falls back softly to the manual single-chain dropdown.
   useEffect(() => {
@@ -155,9 +220,24 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
       setDetection({ status: 'unavailable' });
       return;
     }
+    if (!lookupLoaded || allEvmDuplicate) {
+      // All-duplicate short-circuit: zero network calls for a wallet already
+      // imported on every supported EVM chain (and wait for the registry to
+      // load before deciding, so a duplicate paste never fires a burst).
+      detectedRef.current = [];
+      setDetection({ status: 'idle' });
+      return;
+    }
     setDetection({ status: 'detecting' });
     let cancelled = false;
-    const targets = evmAddresses.slice(0, MAX_DETECTION_ADDRESSES);
+    // Mixed paste: detect only the fresh wallets — an already-imported one
+    // (present on every EVM chain) never burns relay quota.
+    const targets = evmAddresses.filter((a) => !importedOnEveryEvmChain(a)).slice(0, MAX_DETECTION_ADDRESSES);
+    if (targets.length === 0) {
+      detectedRef.current = [];
+      setDetection({ status: 'idle' });
+      return;
+    }
     const timer = setTimeout(() => {
       void (async () => {
         try {
@@ -208,7 +288,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     };
     // evmAddresses/hasEvm derive from addressText; settings identity is stable after load.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addressText, manualChainMode, canDetectChains, settings]);
+  }, [addressText, manualChainMode, canDetectChains, settings, allEvmDuplicate, lookupLoaded]);
 
   // A new paste invalidates the previous multi-chain summary.
   useEffect(() => { setChainSummary(null); }, [addressText]);
@@ -337,6 +417,20 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
 
   return (
     <div className="flex flex-col gap-3.5" data-testid="wallet-address-form">
+      {/* All-duplicate short-circuit: prominent callout pinned to the top of
+          the form (the popup toast fires from the effect above). Detection is
+          skipped entirely and Import stays disabled while this is up. */}
+      {allDuplicate && (
+        <div
+          className="flex items-start gap-3 rounded-xl border border-warn/40 bg-elev-2 px-3.5 py-3 shadow-xs"
+          data-testid="duplicate-wallet-warning"
+          role="alert"
+        >
+          <AlertTriangle className="mt-0.5 h-[18px] w-[18px] shrink-0 text-warn" aria-hidden="true" />
+          <p className="text-[13px] leading-relaxed text-hi">{duplicateMessage}</p>
+        </div>
+      )}
+
       {/* Wallet name — REQUIRED so every transaction is identifiable by wallet
           in the Transactions tab. Prefilled with the wallet app name. */}
       <label className="text-xs font-semibold text-mid">
@@ -553,15 +647,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
             skipped). {multiFreshWallets.length} new will be imported.
           </div>
         )}
-      {!showChainPicker && alreadyImported.length > 0 && freshAddresses.length === 0 && (
-        <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
-          {alreadyImported.length === 1
-            ? 'This wallet is already imported.'
-            : `All ${alreadyImported.length} addresses are already imported.`}{' '}
-          Sync from the connection card on the Connections home to refresh.
-        </div>
-      )}
-      {!showChainPicker && alreadyImported.length > 0 && freshAddresses.length > 0 && (
+      {!showChainPicker && !allDuplicate && alreadyImported.length > 0 && freshAddresses.length > 0 && (
         <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">
           {alreadyImported.length} already imported (will be skipped). {freshAddresses.length} new will be imported.
         </div>
@@ -571,6 +657,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
         <Button
           disabled={
             job.active ||
+            allDuplicate ||
             (showChainPicker
               ? selectedChains.length === 0 || multiFreshTotal === 0
               : freshAddresses.length === 0 || (needsAlchemyKey && missingAlchemyKey))
@@ -579,7 +666,9 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
         >
           {showChainPicker
             ? `Import ${multiImportWalletCount || ''} wallet${multiImportWalletCount === 1 ? '' : 's'} on ${selectedChains.length} chain${selectedChains.length === 1 ? '' : 's'}`
-            : `Import ${freshAddresses.length || ''} wallet${freshAddresses.length === 1 ? '' : 's'}`}
+            : allDuplicate
+              ? 'Import wallets'
+              : `Import ${freshAddresses.length || ''} wallet${freshAddresses.length === 1 ? '' : 's'}`}
         </Button>
         {settings.priceApiEnabled && !job.active && (showChainPicker ? multiFreshTotal > 0 : freshAddresses.length > 0) && (
           <span className="text-xs text-gain">✓ Swap detection + price fetch runs automatically</span>
@@ -653,6 +742,19 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
             : 'Whichever explorer answers will see every address you query. Bitcoin uses Blockstream (no key); other chains use your own Alchemy key.'}
         </p>
       </div>
+
+      {/* Duplicate-wallet popup toasts */}
+      <ToastViewport>
+        {toasts.map((t) => (
+          <Toast
+            key={t.id}
+            tone={t.tone}
+            title={t.title}
+            description={t.description}
+            onDismiss={() => setToasts((ts) => ts.filter((x) => x.id !== t.id))}
+          />
+        ))}
+      </ToastViewport>
     </div>
   );
 }

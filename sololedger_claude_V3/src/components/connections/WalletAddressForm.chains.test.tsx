@@ -373,19 +373,24 @@ describe('WalletAddressForm — EVM active-chain detection', () => {
   });
 
   it('warns and disables Import when the wallet is already imported on every selected chain', async () => {
+    // Round-4 note: a wallet imported on EVERY enabled EVM chain now hits the
+    // duplicate short-circuit (no detection at all — see
+    // WalletAddressForm.duplicate.test.tsx). This picker warning covers the
+    // remaining case: imported on every DETECTED chain but not every enabled
+    // one (here: imported on Ethereum, detection finds only Ethereum).
+    mocks.fetchActiveChains.mockResolvedValue({ active: ['ethereum'], incomingOnly: [] });
     lookupRows = [
-      { id: `ethereum:${EVM_ADDR}`, chain: 'ethereum', address: EVM_ADDR, txCount: 5, lastSyncedAt: 1_700_000_000_000 },
-      { id: `polygon:${EVM_ADDR}`, chain: 'polygon', address: EVM_ADDR, txCount: 2, lastSyncedAt: 1_700_000_000_000 }
+      { id: `ethereum:${EVM_ADDR}`, chain: 'ethereum', address: EVM_ADDR, txCount: 5, lastSyncedAt: 1_700_000_000_000 }
     ];
     await renderWithEvmAddress();
     await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
 
     await screen.findByText(/already imported on the\s+selected chains/);
-    expect(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' })).toBeDisabled();
-
-    // Unchecking one chain does not help — still zero fresh (chain, address) pairs.
-    fireEvent.click(screen.getByRole('checkbox', { name: /polygon/i }));
     expect(screen.getByRole('button', { name: 'Import 1 wallet on 1 chain' })).toBeDisabled();
+
+    // Unchecking the only chain leaves nothing selected — still disabled.
+    fireEvent.click(screen.getByRole('checkbox', { name: /ethereum/i }));
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 0 chains' })).toBeDisabled();
   });
 
   it('mixed paste — button counts only fresh wallets and notes the already-imported skip', async () => {
