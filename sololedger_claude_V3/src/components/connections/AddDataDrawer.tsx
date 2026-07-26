@@ -126,6 +126,8 @@ export function AddDataDrawer({
   };
 
   // ── Titles / drawer aria-labels ──
+  /** "a" / "an" by the label's first letter — "Watch an Ethereum address". */
+  const articleFor = (label: string) => (/^[aeiou]/i.test(label) ? 'an' : 'a');
   const step2Title =
     flow === 'exchange' ? 'Exchange account' : flow === 'wallet-app' ? 'Wallet app' : 'Blockchain address';
   const step3Title = (() => {
@@ -134,9 +136,9 @@ export function AddDataDrawer({
     if (flow === 'wallet-app' && which?.kind === 'wallet-app')
       // The generic any-wallet tile labels itself "My wallet" — "Watch a My
       // wallet address" reads broken (D-6); use the same generic title as __any.
-      return which.id === 'any-wallet' ? 'Watch an address' : `Watch a ${which.label} address`;
+      return which.id === 'any-wallet' ? 'Watch an address' : `Watch ${articleFor(which.label)} ${which.label} address`;
     if (flow === 'chain' && which?.kind === 'chain')
-      return which.id === '__any' ? 'Watch an address' : `Watch a ${which.label} address`;
+      return which.id === '__any' ? 'Watch an address' : `Watch ${articleFor(which.label)} ${which.label} address`;
     if (flow === 'manual') return 'Add one transaction';
     return 'Import a file';
   })();
