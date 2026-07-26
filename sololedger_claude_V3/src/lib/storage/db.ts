@@ -64,6 +64,30 @@ export interface PriceCacheRow {
   fetchedAt: number;
 }
 
+/**
+ * On-chain balance truth anchor (round 4). One row per (chain, address,
+ * asset) fetched from the chain itself after a wallet sync — the
+ * AUTHORITATIVE current quantity for that address, used to reconcile
+ * tx-history-derived holdings (kills phantom balances left by missed/batch
+ * spends). A confirmed ZERO is data, not absence: a row with amount 0 means
+ * "we checked and the address is empty", which is exactly what drains a
+ * phantom holding. Rows are replaced wholesale per address on each refresh.
+ */
+export interface WalletBalanceRow {
+  /** `${chain}:${address}:${contractAddress ?? asset.toUpperCase()}` */
+  id: string;
+  chain: string;
+  address: string;
+  /** Display symbol (uppercase tickers for native coins, e.g. "BTC"). */
+  asset: string;
+  /** Token contract (EVM) or mint (Solana) — absent for native coins. */
+  contractAddress?: string;
+  amount: number;
+  /** ms epoch of the successful fetch. */
+  asOf: number;
+  source: 'rpc';
+}
+
 class SoloLedgerDB extends Dexie {
   transactions!: Table<Transaction, string>;
   lots!: Table<Lot, string>;
@@ -74,6 +98,7 @@ class SoloLedgerDB extends Dexie {
   priceCache!: Table<PriceCacheRow, string>;
   csvImports!: Table<CsvImportRow, string>;
   exchangeConnections!: Table<ExchangeConnectionRow, string>;
+  walletBalances!: Table<WalletBalanceRow, string>;
 
   constructor(name: string) {
     super(name);
@@ -152,6 +177,19 @@ class SoloLedgerDB extends Dexie {
       csvImports: 'id, importedAt, fileName',
       exchangeConnections: 'id, exchange, lastSyncAt'
     });
+    // v9: on-chain balance truth anchor (round 4) — additive new table.
+    this.version(9).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName',
+      exchangeConnections: 'id, exchange, lastSyncAt',
+      walletBalances: 'id, chain, address, asset'
+    });
   }
 }
 
@@ -221,7 +259,7 @@ export async function seedSettingsIfAbsent(seed: TaxSettings): Promise<boolean> 
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.settings],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -231,6 +269,7 @@ export async function clearAllData(): Promise<void> {
       await db.priceCache.clear();
       await db.csvImports.clear();
       await db.exchangeConnections.clear();
+      await db.walletBalances.clear();
       // "Delete all data" promises to remove everything — reset settings to defaults too.
       await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
     }
@@ -455,7 +494,7 @@ export async function deleteLookupAddressAndTransactions(id: string): Promise<nu
     )
     .toArray();
 
-  await db.transaction('rw', db.transactions, db.lookupAddresses, db.specIdHints, async () => {
+  await db.transaction('rw', db.transactions, db.lookupAddresses, db.specIdHints, db.walletBalances, async () => {
     if (toDelete.length > 0) {
       await db.transactions.bulkDelete(toDelete.map((t) => t.id));
     }
@@ -463,6 +502,11 @@ export async function deleteLookupAddressAndTransactions(id: string): Promise<nu
     for (const t of toDelete) {
       await db.specIdHints.delete(t.id);
     }
+    // On-chain balance rows for this (chain, address) go too.
+    const balanceIds = (await db.walletBalances
+      .filter((b) => b.chain === row.chain && b.address.toLowerCase() === addrLower)
+      .toArray()).map((b) => b.id);
+    if (balanceIds.length > 0) await db.walletBalances.bulkDelete(balanceIds);
   });
 
   return toDelete.length;
@@ -474,6 +518,66 @@ export async function getWalletLabel(address: string): Promise<string | undefine
     .filter((r) => r.address.toLowerCase() === address.toLowerCase())
     .toArray();
   return rows[0]?.label;
+}
+
+// ---- On-chain wallet balances (round-4 truth anchor) ----
+
+/** Stable balance-row id. Token rows key on the contract/mint so same-symbol tokens never collide. */
+export function walletBalanceId(chain: string, address: string, asset: string, contractAddress?: string): string {
+  const assetKey = contractAddress ? contractAddress.toLowerCase() : asset.toUpperCase();
+  return `${chain}:${address}:${assetKey}`;
+}
+
+/**
+ * Replace the stored balance set for one (chain, address) with the freshly
+ * fetched rows — wholesale per address so assets that dropped to zero AND
+ * assets that vanished from the fetch both resolve honestly: a token the
+ * address no longer holds gets an explicit 0 row (a confirmed zero is data).
+ */
+export async function replaceWalletBalances(
+  chain: string,
+  address: string,
+  rows: Array<Pick<WalletBalanceRow, 'asset' | 'contractAddress' | 'amount'>>,
+  asOf: number
+): Promise<void> {
+  const fresh: WalletBalanceRow[] = rows.map((r) => ({
+    id: walletBalanceId(chain, address, r.asset, r.contractAddress),
+    chain,
+    address,
+    asset: r.asset,
+    contractAddress: r.contractAddress,
+    amount: r.amount,
+    asOf,
+    source: 'rpc'
+  }));
+  await db.transaction('rw', db.walletBalances, async () => {
+    const existing = await db.walletBalances
+      .filter((b) => b.chain === chain && b.address.toLowerCase() === address.toLowerCase())
+      .toArray();
+    const freshIds = new Set(fresh.map((r) => r.id));
+    // Assets absent from the new fetch collapse to an explicit zero row.
+    const zeroed: WalletBalanceRow[] = existing
+      .filter((e) => !freshIds.has(e.id))
+      .map((e) => ({ ...e, amount: 0, asOf }));
+    await db.walletBalances.bulkPut([...fresh, ...zeroed]);
+  });
+}
+
+export async function getWalletBalances(): Promise<WalletBalanceRow[]> {
+  return db.walletBalances.toArray();
+}
+
+/** All stored balance rows for one address (any chain), newest schema. */
+export async function getWalletBalancesForAddress(address: string): Promise<WalletBalanceRow[]> {
+  const lower = address.toLowerCase();
+  return db.walletBalances.filter((b) => b.address.toLowerCase() === lower).toArray();
+}
+
+/** Drop balances for a removed wallet (all its chain rows). */
+export async function deleteWalletBalancesForAddress(address: string): Promise<void> {
+  const lower = address.toLowerCase();
+  const rows = await db.walletBalances.filter((b) => b.address.toLowerCase() === lower).toArray();
+  await db.walletBalances.bulkDelete(rows.map((r) => r.id));
 }
 
 export async function deleteTransactionsByIds(ids: string[]): Promise<number> {

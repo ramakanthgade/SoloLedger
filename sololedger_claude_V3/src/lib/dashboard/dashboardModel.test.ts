@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Transaction } from '@/types/transaction';
-import type { PriceCacheRow } from '@/lib/storage/db';
+import type { PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import {
   allocationSlices,
@@ -13,6 +13,7 @@ import {
   moneyStrip,
   periodRange,
   priceAt,
+  reconcileHoldings,
   sourceBreakdown,
   valueHoldings
 } from './dashboardModel';
@@ -422,5 +423,171 @@ describe('allocationSlices', () => {
     const slices = allocationSlices(valued, true);
     // BTC 300 market + DOGE 50 at cost = 350.
     expect(slices[0].pct).toBeCloseTo((300 / 350) * 100);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// Round 4 — on-chain balance reconciliation
+// ---------------------------------------------------------------------------
+
+const BTC_ADDR = '1J33sNnKbs52UjTK39kEEYDfbHijgDxyKU';
+
+function balanceRow(over: Partial<WalletBalanceRow>): WalletBalanceRow {
+  return {
+    id: over.id ?? `bitcoin:${BTC_ADDR}:BTC`,
+    chain: 'bitcoin',
+    address: BTC_ADDR,
+    asset: 'BTC',
+    amount: 0,
+    asOf: Date.now(),
+    source: 'rpc',
+    ...over
+  };
+}
+
+/** The phantom scenario: a receive the ledger holds + a send it missed. */
+function phantomTxs(): Transaction[] {
+  return [
+    tx({
+      id: 'recv',
+      type: 'transfer_in',
+      asset: 'BTC',
+      amount: 32.65574623,
+      source: 'rpc:blockstream',
+      chain: 'bitcoin',
+      walletAddress: BTC_ADDR
+    })
+  ];
+}
+
+describe('reconcileHoldings', () => {
+  it('balance 0 kills the phantom holding entirely (drained Binance deposit address)', () => {
+    const txs = phantomTxs();
+    const holdings = [{ asset: 'BTC', amount: 32.65574623, costBasis: 32.65574623 * 5_000_000, chain: 'bitcoin' }];
+    const result = reconcileHoldings(txs.length ? holdings : [], txs, [balanceRow({ amount: 0 })]);
+    expect(result.holdings).toHaveLength(0); // phantom gone from the table
+    expect(result.adjustedDownCount).toBe(1); // …and the adjustment is disclosed
+    expect(result.reconciledCount).toBe(1);
+  });
+
+  it('balance < tx-derived clamps the holding down, scaling cost per unit', () => {
+    const txs = phantomTxs();
+    const holdings = [{ asset: 'BTC', amount: 32.65574623, costBasis: 326.5574623, chain: 'bitcoin' }];
+    const result = reconcileHoldings(holdings, txs, [balanceRow({ amount: 10 })]);
+    expect(result.holdings).toHaveLength(1);
+    const h = result.holdings[0];
+    expect(h.amount).toBe(10);
+    expect(h.qtySource).toBe('on-chain');
+    expect(h.txDerivedAmount).toBeCloseTo(32.65574623, 8);
+    // Per-unit cost = 326.5574623 / 32.65574623 = 10 → 10 × 10 = 100.
+    expect(h.costBasis).toBeCloseTo(100, 6);
+    expect(result.adjustedDownCount).toBe(1);
+  });
+
+  it('balance > tx-derived shows the on-chain balance (reconciled up)', () => {
+    const txs = phantomTxs();
+    const holdings = [{ asset: 'BTC', amount: 10, costBasis: 100, chain: 'bitcoin' }];
+    const result = reconcileHoldings(holdings, txs, [balanceRow({ amount: 12.5 })]);
+    expect(result.holdings[0].amount).toBe(12.5);
+    expect(result.holdings[0].qtySource).toBe('on-chain');
+    expect(result.adjustedDownCount).toBe(0); // not a downward adjustment
+  });
+
+  it('no balance row for the address falls back to the tx-derived quantity', () => {
+    const txs = phantomTxs();
+    const holdings = [{ asset: 'BTC', amount: 32.65574623, costBasis: 326.5574623, chain: 'bitcoin' }];
+    // A balance row for a DIFFERENT address must not affect this holding.
+    const result = reconcileHoldings(holdings, txs, [
+      balanceRow({ id: 'bitcoin:bc1qother:BTC', address: 'bc1qother', amount: 0 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(32.65574623, 8);
+    expect(result.holdings[0].qtySource).toBe('tx-history');
+    expect(result.reconciledCount).toBe(0);
+  });
+
+  it('empty balance set leaves everything tx-derived', () => {
+    const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20, chain: 'bitcoin' }];
+    const result = reconcileHoldings(holdings, phantomTxs(), []);
+    expect(result.holdings[0]).toMatchObject({ amount: 2, costBasis: 20, qtySource: 'tx-history' });
+    expect(result.adjustedDownCount).toBe(0);
+  });
+
+  it('exchange holdings are untouched while the same-chain wallet phantom drains', () => {
+    // The portfolio engine keys holdings per chain — an exchange BTC row
+    // (no chain) and a bitcoin-chain BTC row are SEPARATE holdings.
+    const txs = [
+      ...phantomTxs(),
+      tx({ id: 'exch-buy', type: 'buy', asset: 'BTC', amount: 0.5, fiatValue: 25_000, source: 'binance' })
+    ];
+    const holdings = [
+      { asset: 'BTC', amount: 0.5, costBasis: 25_000 }, // exchange row (chain undefined)
+      { asset: 'BTC', amount: 32.65574623, costBasis: 326.5574623, chain: 'bitcoin' } // phantom row
+    ];
+    const result = reconcileHoldings(holdings, txs, [balanceRow({ amount: 0 })]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0]).toMatchObject({ amount: 0.5, costBasis: 25_000, qtySource: 'tx-history' });
+    expect(result.adjustedDownCount).toBe(1);
+  });
+
+  it('a manual wallet-less row on the SAME chain counts as a non-wallet slice', () => {
+    const txs = [
+      ...phantomTxs(),
+      tx({
+        id: 'manual-btc', type: 'buy', asset: 'BTC', amount: 0.5, fiatValue: 25_000,
+        source: 'manual', chain: 'bitcoin'
+      })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 33.15574623, costBasis: 331.5574623, chain: 'bitcoin' }];
+    const result = reconcileHoldings(holdings, txs, [balanceRow({ amount: 0 })]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(0.5, 8); // manual slice stays tx-derived
+    expect(result.holdings[0].qtySource).toBe('on-chain'); // wallet slice was reconciled
+  });
+
+  it('token holdings reconcile by contract address, not by symbol', () => {
+    const wbtc = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599';
+    const txs = [
+      tx({
+        id: 'wbtc-in', type: 'transfer_in', asset: 'WBTC', amount: 3,
+        source: 'rpc:alchemy', chain: 'ethereum', walletAddress: '0xWaLlet', contractAddress: wbtc
+      })
+    ];
+    const holdings = [{ asset: 'WBTC', amount: 3, costBasis: 300, chain: 'ethereum', contractAddress: wbtc }];
+    const result = reconcileHoldings(holdings, txs, [
+      balanceRow({
+        id: 'ethereum:0xWaLlet:0x2260fac5e5542a773aa44fbcfedf7c193bc2c599',
+        chain: 'ethereum', address: '0xWaLlet', asset: 'WBTC',
+        contractAddress: wbtc.toLowerCase(), amount: 0
+      })
+    ]);
+    expect(result.holdings).toHaveLength(0);
+    expect(result.adjustedDownCount).toBe(1);
+  });
+});
+
+describe('sourceBreakdown with on-chain balances', () => {
+  const holding = { asset: 'BTC', amount: 1, costBasis: 100, chain: 'bitcoin' };
+
+  it('a wallet slice with a balance row reports the on-chain amount (0 drops the slice)', () => {
+    const slices = sourceBreakdown(
+      phantomTxs(),
+      holding,
+      [{ id: `bitcoin:${BTC_ADDR}`, chain: 'bitcoin', address: BTC_ADDR, label: 'Binance deposit', lastSyncedAt: 1, txCount: 1 }],
+      [balanceRow({ amount: 0 })]
+    );
+    expect(slices).toHaveLength(0); // drained address no longer listed
+  });
+
+  it('a wallet slice without a balance row keeps its tx-derived estimate', () => {
+    const slices = sourceBreakdown(
+      phantomTxs(),
+      holding,
+      [{ id: `bitcoin:${BTC_ADDR}`, chain: 'bitcoin', address: BTC_ADDR, label: 'Binance deposit', lastSyncedAt: 1, txCount: 1 }],
+      [balanceRow({ id: 'bitcoin:bc1qother:BTC', address: 'bc1qother', amount: 0 })]
+    );
+    expect(slices).toHaveLength(1);
+    expect(slices[0].qty).toBeCloseTo(32.65574623, 8);
   });
 });

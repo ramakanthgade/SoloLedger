@@ -250,49 +250,124 @@ export interface LookupResult {
 }
 
 // ---- Bitcoin: Blockstream/mempool.space-compatible, no key ----
+
+/**
+ * Convert one esplora-shaped tx row into a ledger Transaction for `address`.
+ *
+ * Amount semantics (round-4 fix — the phantom-holdings root cause):
+ *  - Incoming: sum of outputs paying the address.
+ *  - Outgoing: inputs FROM the address − outputs back to it (change) − the
+ *    fee this address actually paid. The pre-fix code applied the INCOMING
+ *    rule in both directions, so a batched exchange sweep — the watched
+ *    address one of many vin entries (e.g. "65 inputs → Binance"), no vout
+ *    returning to it — imported as a transfer_out of amount 0. The receive
+ *    stayed on the ledger, the spend effectively vanished, and the address
+ *    kept a phantom balance forever.
+ *  - Fee attribution: the full tx fee is attributed ONLY when every input
+ *    belongs to the address (a sole-input send: vin − change − fee is
+ *    exactly what the recipient received). In a batched sweep the batching
+ *    entity (the exchange) pays the shared fee out of its own outputs, so
+ *    attributing any of it to one input would overstate what left the
+ *    address — the fee stays 0 there and the amount is the full consumed
+ *    UTXO value, netting the address to its true on-chain balance.
+ */
+export function parseBlockstreamTx(row: any, address: string, asset: string): Transaction {
+  const satsFromAddr = (row.vin ?? []).reduce(
+    (s: number, v: any) => (v.prevout?.scriptpubkey_address === address ? s + (v.prevout?.value ?? 0) : s),
+    0
+  );
+  const satsToAddr = (row.vout ?? []).reduce(
+    (s: number, o: any) => (o.scriptpubkey_address === address ? s + (o.value ?? 0) : s),
+    0
+  );
+  const isOutgoing = satsFromAddr > 0;
+  const soleInput =
+    isOutgoing &&
+    (row.vin ?? []).length > 0 &&
+    (row.vin ?? []).every((v: any) => v.prevout?.scriptpubkey_address === address);
+  const feeSats = typeof row.fee === 'number' && soleInput ? row.fee : 0;
+  const netSats = isOutgoing
+    ? Math.max(0, satsFromAddr - satsToAddr - feeSats)
+    : satsToAddr;
+
+  // Best-effort single counterparty: the other address involved, if there's exactly one.
+  const otherAddresses = new Set<string>();
+  for (const v of row.vin ?? []) if (v.prevout?.scriptpubkey_address && v.prevout.scriptpubkey_address !== address) otherAddresses.add(v.prevout.scriptpubkey_address);
+  for (const o of row.vout ?? []) if (o.scriptpubkey_address && o.scriptpubkey_address !== address) otherAddresses.add(o.scriptpubkey_address);
+  const counterparty = otherAddresses.size === 1 ? [...otherAddresses][0] : undefined;
+
+  return {
+    id: makeId('rpc'),
+    timestamp: (row.status?.block_time ?? Date.now() / 1000) * 1000,
+    type: isOutgoing ? 'transfer_out' : 'transfer_in',
+    asset,
+    amount: netSats / 1e8,
+    feeAsset: feeSats > 0 ? asset : undefined,
+    feeAmount: feeSats > 0 ? feeSats / 1e8 : undefined,
+    fiatCurrency: 'USD',
+    fiatValue: undefined,
+    source: 'rpc:blockstream',
+    sourceRef: row.txid,
+    walletAddress: address,
+    counterpartyAddress: counterparty,
+    chain: 'bitcoin',
+    flags: ['possible_internal_transfer', 'missing_cost_basis'] as const,
+    isInternalTransfer: false,
+    raw: row
+  } as Transaction;
+}
+
+/** Map esplora rows for one address (every returned row touches it by construction). */
+export function parseBlockstreamTxs(rows: any[], address: string, asset: string): Transaction[] {
+  return rows.map((row) => parseBlockstreamTx(row, address, asset));
+}
+
+/** Esplora returns up to 50 confirmed txs per page. */
+const BLOCKSTREAM_PAGE_SIZE = 50;
+/** Hard cap on chain-continuation pages so a busy address can't loop forever. */
+const BLOCKSTREAM_MAX_PAGES = 10;
+
 async function fetchBitcoin(address: string, baseUrl: string, asset: string): Promise<LookupResult> {
   // Public explorer (no key, no SaaS proxy) → always a direct browser call.
   recordNetworkActivity(resolveMode(false));
-  const res = await fetch(`${baseUrl}/address/${address}/txs`);
-  if (!res.ok) throw new Error(`Explorer API returned ${res.status}`);
-  const data = await res.json();
-  if (!Array.isArray(data)) return { transactions: [], warnings: [{ address, message: 'Unexpected response shape.' }] };
+  const rows: any[] = [];
+  // Chain continuation: /address/:addr/txs returns mempool + the 50 newest
+  // confirmed txs; older history pages via /address/:addr/txs/chain/:lastTxid.
+  let lastConfirmedTxid: string | undefined;
+  let truncated = false;
+  for (let page = 0; page < BLOCKSTREAM_MAX_PAGES; page++) {
+    const url = lastConfirmedTxid
+      ? `${baseUrl}/address/${address}/txs/chain/${lastConfirmedTxid}`
+      : `${baseUrl}/address/${address}/txs`;
+    // eslint-disable-next-line no-await-in-loop
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Explorer API returned ${res.status}`);
+    // eslint-disable-next-line no-await-in-loop
+    const data = await res.json();
+    if (!Array.isArray(data)) return { transactions: [], warnings: [{ address, message: 'Unexpected response shape.' }] };
+    rows.push(...data);
+    if (data.length < BLOCKSTREAM_PAGE_SIZE) {
+      lastConfirmedTxid = undefined;
+      break;
+    }
+    const lastConfirmed = [...data].reverse().find((r: any) => r.status?.confirmed);
+    lastConfirmedTxid = lastConfirmed?.txid;
+    if (!lastConfirmedTxid) break; // unconfirmed-only page — nothing to continue from
+    if (page === BLOCKSTREAM_MAX_PAGES - 1) truncated = true;
+  }
 
-  const transactions: Transaction[] = data.map((row: any) => {
-    const isOutgoing = row.vin?.some((v: any) => v.prevout?.scriptpubkey_address === address);
-    const totalOut = (row.vout || []).reduce(
-      (s: number, o: any) => (o.scriptpubkey_address === address ? s + o.value : s),
-      0
-    );
-    // Best-effort single counterparty: the other address involved, if there's exactly one.
-    const otherAddresses = new Set<string>();
-    for (const v of row.vin ?? []) if (v.prevout?.scriptpubkey_address && v.prevout.scriptpubkey_address !== address) otherAddresses.add(v.prevout.scriptpubkey_address);
-    for (const o of row.vout ?? []) if (o.scriptpubkey_address && o.scriptpubkey_address !== address) otherAddresses.add(o.scriptpubkey_address);
-    const counterparty = otherAddresses.size === 1 ? [...otherAddresses][0] : undefined;
-
-    return {
-      id: makeId('rpc'),
-      timestamp: (row.status?.block_time ?? Date.now() / 1000) * 1000,
-      type: isOutgoing ? 'transfer_out' : 'transfer_in',
-      asset,
-      amount: totalOut / 1e8,
-      fiatCurrency: 'USD',
-      fiatValue: undefined,
-      source: 'rpc:blockstream',
-      sourceRef: row.txid,
-      walletAddress: address,
-      counterpartyAddress: counterparty,
-      chain: 'bitcoin',
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as const,
-      isInternalTransfer: false,
-      raw: row
-    } as Transaction;
-  });
-
-  return { transactions, warnings: [] };
+  const warnings: LookupWarning[] = truncated
+    ? [
+        {
+          address,
+          message: `Imported the ${BLOCKSTREAM_MAX_PAGES * BLOCKSTREAM_PAGE_SIZE} most recent transactions — this address has a longer history that isn't imported yet.`
+        }
+      ]
+    : [];
+  return { transactions: parseBlockstreamTxs(rows, address, asset), warnings };
 }
 
-function alchemyRpcUrl(network: string): string {
+export function alchemyRpcUrl(network: string): string {
   if (isSaasMode()) {
     return `${getApiBase()}/api/proxy/alchemy/${network}`;
   }
@@ -308,7 +383,7 @@ function alchemyRpcUrl(network: string): string {
   return `https://${network}.g.alchemy.com/v2`;
 }
 
-function alchemyFetch(url: string, init: RequestInit): Promise<Response> {
+export function alchemyFetch(url: string, init: RequestInit): Promise<Response> {
   if (isSaasMode()) {
     recordNetworkActivity(resolveMode(true));
     const path = url.replace(getApiBase(), '');
@@ -404,7 +479,7 @@ function isAlchemyRateLimitError(err: unknown): boolean {
   return msg.includes('rate limit') || msg.includes('429') || msg.toLowerCase().includes('rate-limited');
 }
 
-function alchemyHeaders(apiKey: string): HeadersInit {
+export function alchemyHeaders(apiKey: string): HeadersInit {
   if (isSaasMode()) {
     return { 'Content-Type': 'application/json' };
   }

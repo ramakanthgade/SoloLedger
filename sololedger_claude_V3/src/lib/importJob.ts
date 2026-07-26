@@ -8,6 +8,7 @@
  */
 import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions, filterAlreadyImported } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
+import { refreshWalletBalancesForAddresses } from '@/lib/rpc/balances';
 import { reprocessSwapDetectionInDb, reprocessRewardIncome } from '@/lib/rpc/reprocessSwaps';
 import { applyDefiLlamaRewardSuggestions } from '@/lib/rpc/rewardSuggestions';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
@@ -380,6 +381,29 @@ export async function runWalletImport(
 
   if (isSync && imported === 0) {
     apiWarnings.unshift('No new transactions found since last sync.');
+  }
+
+  // --- Phase 4: on-chain balance refresh (the reconciliation truth anchor) ---
+  // Runs after every successful wallet import/sync so the dashboard can
+  // reconcile tx-history holdings against what the chain says right now.
+  // A balance-fetch failure must NEVER fail the sync — warn and keep the
+  // previously stored balances.
+  if (succeeded.length > 0) {
+    try {
+      const balanceOutcome = await refreshWalletBalancesForAddresses(
+        succeeded.map((addr) => ({ chain, address: addr })),
+        settings
+      );
+      for (const f of balanceOutcome.failed) {
+        apiWarnings.push(
+          `${f.address.slice(0, 8)}…${f.address.slice(-4)}: balance refresh failed (${f.message}) — prior balances kept.`
+        );
+      }
+    } catch (err) {
+      apiWarnings.push(
+        `Balance refresh failed (${err instanceof Error ? err.message : 'network error'}) — prior balances kept.`
+      );
+    }
   }
 
   importJob._finish(

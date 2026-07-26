@@ -134,6 +134,18 @@ vi.mock('./AddDataDrawer', () => ({
     ) : null
 }));
 
+// The detail view has its own test file — stub it to a marker that records
+// the opened card and exposes the Back action.
+vi.mock('./ConnectionDetail', () => ({
+  ConnectionDetail: (props: { card: { id: string }; onBack: () => void }) => (
+    <div data-testid="connection-detail-mock" data-card-id={props.card.id}>
+      <button type="button" data-testid="detail-back-mock" onClick={props.onBack}>
+        back
+      </button>
+    </div>
+  )
+}));
+
 import { ConnectionsHome } from './ConnectionsHome';
 import { importJob } from '@/lib/importJob';
 
@@ -683,5 +695,72 @@ describe('ConnectionsHome — wallet job status', () => {
     };
     render(<ConnectionsHome />);
     expect(screen.getByText('3 new transactions imported from wallet sync.')).toBeInTheDocument();
+  });
+});
+
+describe('ConnectionsHome — per-connection detail (round 4)', () => {
+  it('clicking an exchange card body opens the detail view; Back returns to the grid', () => {
+    mocks.connections.current = [conn()];
+    render(<ConnectionsHome />);
+    fireEvent.click(screen.getByTestId('connection-card-exchange:exc_1'));
+    expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute(
+      'data-card-id',
+      'exchange:exc_1'
+    );
+    expect(screen.queryByTestId('connections-grid')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('detail-back-mock'));
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+    expect(screen.getByTestId('connections-grid')).toBeInTheDocument();
+  });
+
+  it('clicking a wallet card body opens the detail view', () => {
+    mocks.wallets.current = [wallet()];
+    render(<ConnectionsHome />);
+    fireEvent.click(screen.getByTestId('connection-card-wallet:addr1'));
+    expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute(
+      'data-card-id',
+      'wallet:addr1'
+    );
+  });
+
+  it('clicking a file card body opens the detail view', () => {
+    mocks.csvImports.current = [csvImport()];
+    render(<ConnectionsHome />);
+    fireEvent.click(screen.getByTestId('connection-card-file:csv_1'));
+    expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute(
+      'data-card-id',
+      'file:csv_1'
+    );
+  });
+
+  it('the kebab menu still works and does NOT open the detail view', () => {
+    mocks.connections.current = [conn()];
+    render(<ConnectionsHome />);
+    kebab('Binance', 'Sync now');
+    expect(mocks.syncNow).toHaveBeenCalledWith('exc_1');
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+  });
+
+  it('the wallet rename flow still works without opening the detail view', () => {
+    mocks.wallets.current = [wallet()];
+    render(<ConnectionsHome />);
+    kebab('Phantom main', 'Rename');
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+    const input = screen.getByLabelText('Wallet nickname');
+    fireEvent.change(input, { target: { value: 'Vault' } });
+    fireEvent.click(screen.getByLabelText('Save nickname'));
+    expect(mocks.updateWalletLabel).toHaveBeenCalledWith('solana:addr1', 'Vault');
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+  });
+
+  it('the manual card still opens the manual-entry drawer, never the detail view', () => {
+    mocks.manualCount.current = 2;
+    render(<ConnectionsHome />);
+    // The card (whole-card button) — 'Manual entry' also matches the filter pill.
+    const cardBody = screen.getByText('Typed in one at a time').closest('button');
+    expect(cardBody).not.toBeNull();
+    fireEvent.click(cardBody!);
+    expect(screen.getByTestId('add-data-drawer')).toHaveAttribute('data-initial-flow', 'manual');
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
   });
 });

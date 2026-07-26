@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
-import type { CsvImportRow, ExchangeConnectionRow, PriceCacheRow } from '@/lib/storage/db';
+import type { CsvImportRow, ExchangeConnectionRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import type { TaxSettings } from '@/types/transaction';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
@@ -33,6 +33,7 @@ import {
   latestSyncAt,
   moneyStrip,
   periodRange,
+  reconcileHoldings,
   shortDateLabel,
   sourceBreakdown,
   valueHoldings,
@@ -221,7 +222,11 @@ function HoldingExpansion({
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
         <p className={eyebrowClass}>Where it lives</p>
-        <p className="text-[0.6875rem] text-faint">Estimated from transaction history</p>
+        <p className="text-[0.6875rem] text-faint" data-testid="holding-qty-caption">
+          {holding.qtySource === 'on-chain'
+            ? 'Reconciled to on-chain balance'
+            : 'Estimated from transaction history'}
+        </p>
       </div>
 
       {slices.length === 0 ? (
@@ -321,6 +326,7 @@ const NO_WALLETS: Awaited<ReturnType<typeof getLookupAddresses>> = [];
 const NO_CSV_IMPORTS: CsvImportRow[] = [];
 const NO_EXCHANGE_CONNS: ExchangeConnectionRow[] = [];
 const NO_PRICE_ROWS: PriceCacheRow[] = [];
+const NO_BALANCE_ROWS: WalletBalanceRow[] = [];
 
 export function DashboardTab() {
   const { goToImport, goTo } = useTabNav();
@@ -329,6 +335,7 @@ export function DashboardTab() {
   const csvImports = useLiveQuery(() => db.csvImports.toArray(), []) ?? NO_CSV_IMPORTS;
   const exchangeConns = useLiveQuery(() => db.exchangeConnections.toArray(), []) ?? NO_EXCHANGE_CONNS;
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
+  const balanceRows = useLiveQuery(() => db.walletBalances.toArray(), []) ?? NO_BALANCE_ROWS;
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [period, setPeriod] = useState<DashboardPeriod>('FY');
@@ -358,8 +365,18 @@ export function DashboardTab() {
   );
 
   const holdings = useMemo(() => buildPortfolioHoldings(nonSpamTxs), [nonSpamTxs]);
+  // Round 4: reconcile tx-history holdings against stored on-chain balances —
+  // a drained wallet address reports its true (often zero) balance instead of
+  // a phantom left by missed spends. `adjustments` feeds the data-health rail.
+  const reconciliation = useMemo(
+    () => reconcileHoldings(holdings, nonSpamTxs, balanceRows),
+    [holdings, nonSpamTxs, balanceRows]
+  );
   const priceIndex = useMemo(() => buildPriceIndex(priceRows, currency), [priceRows, currency]);
-  const valued = useMemo(() => valueHoldings(holdings, priceIndex), [holdings, priceIndex]);
+  const valued = useMemo(
+    () => valueHoldings(reconciliation.holdings, priceIndex),
+    [reconciliation.holdings, priceIndex]
+  );
 
   const totalCost = valued.reduce((s, h) => s + h.costBasis, 0);
   const unpriced = valued.filter((h) => h.valueNow == null);
@@ -549,11 +566,13 @@ export function DashboardTab() {
   const fyLabel = getFyLabel(currentFy, jurisdiction);
 
   const holdingRow = (h: ValuedHolding) => {
-    const key = portfolioHoldingKey(h);
+    // Chain-scope the expansion key: portfolioHoldingKey is chain-blind, so
+    // an exchange BTC row and a bitcoin-chain BTC row would both expand.
+    const key = `${h.chain ?? 'x'}:${portfolioHoldingKey(h)}`;
     const isOpen = expanded === key;
     const value = h.valueNow ?? h.costBasis;
     const sharePct = netWorth > 0 ? (value / netWorth) * 100 : null;
-    const slices = isOpen ? sourceBreakdown(nonSpamTxs, h, wallets) : [];
+    const slices = isOpen ? sourceBreakdown(nonSpamTxs, h, wallets, balanceRows) : [];
     const toggle = () => setExpanded(isOpen ? null : key);
 
     const assetCell = (
@@ -1075,6 +1094,16 @@ export function DashboardTab() {
                   {sync != null ? `Last sync ${formatRelativeTime(sync, nowMs)}` : 'Not synced yet'}
                 </span>
               </li>
+              {reconciliation.adjustedDownCount > 0 && (
+                <li className="flex items-center gap-2.5" data-testid="reconciled-down-line">
+                  <RefreshCw className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
+                  <span className="text-hi">
+                    {reconciliation.adjustedDownCount} asset
+                    {reconciliation.adjustedDownCount === 1 ? '' : 's'} adjusted to on-chain
+                    balance{reconciliation.adjustedDownCount === 1 ? '' : 's'}
+                  </span>
+                </li>
+              )}
               <li className="flex items-center gap-2.5">
                 {needsPriceCount > 0 ? (
                   <>
