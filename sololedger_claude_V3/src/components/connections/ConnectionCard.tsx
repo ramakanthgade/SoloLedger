@@ -55,6 +55,14 @@ export function ConnectionCard({ card, menuItems, onClick, renaming }: Connectio
             )}
             {card.metaLine}
           </p>
+          {card.syncChip && (
+            <p
+              className="mt-1.5 inline-flex w-fit items-center rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 font-mono text-[11px] leading-4 text-low"
+              data-testid="sync-chip"
+            >
+              {card.syncChip}
+            </p>
+          )}
           {card.txLine && <p className="mt-0.5 text-xs text-low">{card.txLine}</p>}
           {card.error && (
             <p className="mt-1.5 flex items-start gap-1.5 text-xs leading-relaxed text-loss">

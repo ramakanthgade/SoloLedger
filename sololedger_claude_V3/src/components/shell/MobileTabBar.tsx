@@ -99,7 +99,7 @@ export function MobileTabBar<T extends MobileTab>({
     <nav
       ref={rootRef}
       aria-label="Sections (mobile)"
-      className="fixed inset-x-0 bottom-0 z-40 flex h-16 items-stretch border-t border-hi/10 bg-surface/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)] md:hidden"
+      className="fixed inset-x-0 bottom-0 z-40 flex h-16 items-stretch border-t border-hi/10 bg-surface/95 backdrop-blur-xl pb-[env(safe-area-inset-bottom)] lg:hidden"
     >
       {/* ARIA content model: a tablist may only own tabs — the More button and
           its menu live outside as siblings within the nav landmark. */}

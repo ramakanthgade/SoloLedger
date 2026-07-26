@@ -18,37 +18,39 @@ describe('LocalOnlyBadge', () => {
     resetNetworkActivity();
   });
 
-  it('renders the local state with a mint/teal (gain) dot and label', () => {
+  it('renders the local state with a gain dot and compact label (full text in tooltip)', () => {
     seedMode('local');
     render(<LocalOnlyBadge />);
     const pill = screen.getByRole('button');
-    expect(pill).toHaveTextContent('100% Local');
+    // Top-bar overlap fix: the pill is icon + short label; full text in title.
+    expect(pill).toHaveTextContent('Local');
+    expect(pill).toHaveAttribute('title', '100% Local — details');
     // The status dot carries the gain token fill.
     expect(pill.querySelector('.bg-gain')).not.toBeNull();
   });
 
-  it('renders the direct state with a BLUE dot and "your keys, direct" label', () => {
+  it('renders the direct state with an amber (accent) dot and compact label', () => {
     seedMode('direct');
     render(<LocalOnlyBadge />);
     const pill = screen.getByRole('button');
-    expect(pill).toHaveTextContent('Local + network on');
-    expect(pill).toHaveTextContent('· your keys, direct');
+    expect(pill).toHaveTextContent('Network on');
+    expect(pill).toHaveAttribute('title', 'Local + network on· your keys, direct — details');
     expect(pill.querySelector('.bg-accent')).not.toBeNull();
   });
 
-  it('renders the relay state with a VIOLET dot and "via SoloLedger" label', () => {
+  it('renders the relay state with an ember (primary) dot and compact label', () => {
     seedMode('relay');
     render(<LocalOnlyBadge />);
     const pill = screen.getByRole('button');
     expect(pill).toHaveTextContent('Local + relay');
-    expect(pill).toHaveTextContent('· via SoloLedger');
+    expect(pill).toHaveAttribute('title', 'Local + relay· via SoloLedger — details');
     expect(pill.querySelector('.bg-primary')).not.toBeNull();
   });
 
   it('reacts to store escalation without re-rendering manually', () => {
     seedMode('local');
     render(<LocalOnlyBadge />);
-    expect(screen.getByRole('button')).toHaveTextContent('100% Local');
+    expect(screen.getByRole('button')).toHaveTextContent('Local');
     act(() => {
       recordNetworkActivity('relay');
     });

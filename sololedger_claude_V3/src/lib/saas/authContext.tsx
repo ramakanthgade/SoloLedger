@@ -9,6 +9,7 @@ import {
   type PublicUser
 } from './api';
 import { switchUserDatabase } from '@/lib/storage/db';
+import { applyHostedLookupDefaults } from './hostedDefaults';
 
 interface AuthContextValue {
   saas: boolean;
@@ -26,6 +27,12 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 async function bindUserSession(u: PublicUser | null): Promise<void> {
   if (!isSaasMode()) return;
   await switchUserDatabase(u?.id ?? null);
+  // Hosted first run: turn live price + wallet (RPC) lookup ON by default.
+  // Seeds only when the per-user DB has no settings row yet, so a user who
+  // later turns the lookups off in Settings is never re-enabled. Skipped on
+  // logout (u === null): the shared local DB stays opt-in. Awaited before
+  // dbReady flips so no tab can render a pre-seed state.
+  if (u) await applyHostedLookupDefaults(isSaasMode());
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

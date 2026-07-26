@@ -134,6 +134,16 @@ export function summarizeBulkTypeChange(
   };
 }
 
+/**
+ * Plural-aware "still need(s) a price" line for the Transactions page banner:
+ * "1 transaction still needs a price" / "N transactions still need a price".
+ */
+export function needsPriceLine(count: number): string {
+  return count === 1
+    ? '1 transaction still needs a price'
+    : `${count} transactions still need a price`;
+}
+
 /** One concise consequence line per notable impact, for the confirm dialog. */
 export function bulkTypeImpactLines(impact: BulkTypeImpact): string[] {
   const rowCount = (n: number) => `${n} row${n === 1 ? '' : 's'}`;
@@ -165,7 +175,7 @@ export function bulkTypeImpactLines(impact: BulkTypeImpact): string[] {
   }
   if (impact.missingFiat > 0) {
     lines.push(
-      `${rowCount(impact.missingFiat)} still have no fiat value — fetch prices afterwards.`
+      `${rowCount(impact.missingFiat)} still ${impact.missingFiat === 1 ? 'has' : 'have'} no fiat value — fetch prices afterwards.`
     );
   }
   if (impact.alreadyOfType > 0) {

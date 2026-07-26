@@ -73,9 +73,10 @@ function IncomingOnlyNote({ chains }: { chains: ChainId[] }) {
 }
 
 interface WalletAddressFormProps {
-  /** Chain picked in the drawer's Which step (Blockchain address flow). */
+  /** Chain picked in the drawer's Which step (Blockchain address flow), or the
+   *  wallet app's headline chain from the catalog (Wallet app flow). */
   preselectChain?: ChainId;
-  /** Nickname prefill — the wallet-app flow passes the app name ("MetaMask"). */
+  /** Wallet-name prefill (required field) — the wallet-app flow passes the app name ("MetaMask"). */
   defaultLabel?: string;
 }
 
@@ -86,14 +87,23 @@ interface WalletAddressFormProps {
  * Moralis active-chain detection with the multi-chain picker, custom
  * explorer config, sequential multi-chain import, job banners). The saved-
  * wallets list moved out — watched wallets are connection cards on the
- * Connections home now. New on top: an optional Nickname field, applied to
- * the freshly-imported rows via the existing updateWalletLabel.
+ * Connections home now.
+ *
+ * Live-feedback round (item 4): the Wallet name is REQUIRED (prefilled with
+ * the wallet app name, applied via updateWalletLabel) so transactions stay
+ * identifiable by wallet; and the form takes ONE address by default — an
+ * opt-in checkbox reveals the multi-address paste with a warning that one
+ * name for many addresses muddies the Transactions tab.
  */
 export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddressFormProps) {
   const [settings, setSettings] = useState<Awaited<ReturnType<typeof getEffectiveSettings>> | null>(null);
   const [chainId, setChainId] = useState<ChainId>(preselectChain ?? 'solana');
   const [addressText, setAddressText] = useState('');
+  /** One address by default; the checkbox reveals the multi-line box. */
+  const [multiAddress, setMultiAddress] = useState(false);
   const [nickname, setNickname] = useState(defaultLabel ?? '');
+  /** Wallet name is required — set when an import is attempted without one. */
+  const [nameError, setNameError] = useState(false);
   const [customBaseUrl, setCustomBaseUrl] = useState('');
   const [customApiKey, setCustomApiKey] = useState('');
   const [customAsset, setCustomAsset] = useState('');
@@ -255,7 +265,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   const multiImportWalletCount =
     multiFreshWallets.length > 0 ? multiFreshWallets.length : evmAddresses.length;
 
-  /** Apply the optional nickname to freshly imported rows (existing updateWalletLabel). */
+  /** Apply the wallet name to freshly imported rows (existing updateWalletLabel). */
   const applyNickname = (addresses: string[], chains: ChainId[]) => {
     const label = nickname.trim();
     if (!label) return;
@@ -266,9 +276,17 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     }
   };
 
+  /** Wallet name is required — block the connect and flag the field inline. */
+  const requireName = (): boolean => {
+    if (nickname.trim()) return true;
+    setNameError(true);
+    return false;
+  };
+
   const startImport = (addressesOverride?: string[]) => {
     const addrs = addressesOverride ?? freshAddresses;
     if (addrs.length === 0 || job.active) return;
+    if (!requireName()) return;
     // Generic registry refresh only: no wallet address is included in these
     // CoinGecko requests. Seven-day cache + single-flight keep this best effort.
     syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
@@ -289,6 +307,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
    */
   const startMultiChainImport = async () => {
     if (evmAddresses.length === 0 || selectedChains.length === 0 || job.active) return;
+    if (!requireName()) return;
     syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
     importJob.reset();
     setChainSummary(null);
@@ -318,17 +337,72 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
 
   return (
     <div className="flex flex-col gap-3.5" data-testid="wallet-address-form">
-      {/* Address input */}
+      {/* Wallet name — REQUIRED so every transaction is identifiable by wallet
+          in the Transactions tab. Prefilled with the wallet app name. */}
       <label className="text-xs font-semibold text-mid">
-        Wallet addresses — one per line or comma-separated
-        <textarea
-          className={`${inputCls} h-24 font-mono`}
-          value={addressText}
-          onChange={(e) => setAddressText(e.target.value)}
-          placeholder={
-            'Paste any wallet addresses here.\nThe app auto-detects BTC, Solana, and the active chains of EVM wallets.\nYou can always pick a chain manually below.'
-          }
+        Wallet name <span className="font-normal text-faint">(required)</span>
+        <input
+          className={inputCls}
+          value={nickname}
+          onChange={(e) => {
+            setNickname(e.target.value);
+            if (nameError) setNameError(false);
+          }}
+          placeholder="e.g. My MetaMask"
+          aria-invalid={nameError || undefined}
         />
+      </label>
+      {nameError && (
+        <p className="-mt-1.5 text-xs text-loss" role="alert">
+          Name this wallet — it's how its transactions are identified in the Transactions tab.
+        </p>
+      )}
+
+      {/* Address input — a single address by default. The checkbox reveals the
+          multi-line box for pasting several addresses under one name. */}
+      {!multiAddress ? (
+        <label className="text-xs font-semibold text-mid">
+          Wallet address
+          <input
+            className={`${inputCls} font-mono`}
+            value={addressText}
+            onChange={(e) => setAddressText(e.target.value.split(/[\n,]/)[0]?.trim() ?? '')}
+            placeholder="Paste one wallet address or xPub — BTC, Solana and EVM chains are auto-detected."
+          />
+        </label>
+      ) : (
+        <label className="text-xs font-semibold text-mid">
+          Wallet addresses — one per line or comma-separated
+          <textarea
+            className={`${inputCls} h-24 font-mono`}
+            value={addressText}
+            onChange={(e) => setAddressText(e.target.value)}
+            placeholder={
+              'Paste any wallet addresses here.\nThe app auto-detects BTC, Solana, and the active chains of EVM wallets.\nYou can always pick a chain manually below.'
+            }
+          />
+        </label>
+      )}
+      <label className="flex items-start gap-2 text-xs font-medium text-mid">
+        <input
+          type="checkbox"
+          className="mt-0.5 accent-primary"
+          checked={multiAddress}
+          onChange={(e) => {
+            const on = e.target.checked;
+            setMultiAddress(on);
+            // Back to one address — keep only the first so a hidden extra
+            // line cannot silently import with it.
+            if (!on) setAddressText((t) => t.split(/[\n,]/)[0]?.trim() ?? '');
+          }}
+        />
+        <span>
+          Add multiple addresses under this name
+          <span className="mt-0.5 block text-[11px] font-normal leading-snug text-low">
+            Entering multiple addresses under one wallet name can make it harder to tell
+            transactions apart in the Transactions tab.
+          </span>
+        </span>
       </label>
 
       {/* EVM active-chain detection: progress line, chain picker, or notes above the manual dropdown */}
@@ -463,17 +537,6 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
           </label>
         </div>
       )}
-
-      {/* Nickname — applied to the freshly imported rows (updateWalletLabel). */}
-      <label className="text-xs font-semibold text-mid">
-        Nickname <span className="font-normal text-faint">(optional)</span>
-        <input
-          className={inputCls}
-          value={nickname}
-          onChange={(e) => setNickname(e.target.value)}
-          placeholder="e.g. Savings vault"
-        />
-      </label>
 
       {showChainPicker && evmAddresses.length > 0 && selectedChains.length > 0 && multiFreshTotal === 0 && (
         <div className="rounded-lg border border-warn/30 bg-warn/10 px-3 py-2 text-xs text-warn">

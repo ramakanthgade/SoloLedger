@@ -21,14 +21,14 @@ import type { Transaction } from '@/types/transaction';
  * fine in a real browser where microtasks resolve between renders). Stubbing
  * them keeps this a focused, deterministic a11y test.
  */
+vi.mock('@/components/dashboard/DashboardTab', () => ({
+  DashboardTab: () => <div data-testid="panel-dashboard">Dashboard</div>
+}));
 vi.mock('@/components/import/ImportTab', () => ({
   ImportTab: () => <div data-testid="panel-import">Import</div>
 }));
 vi.mock('@/components/review/ReviewTab', () => ({
   ReviewTab: () => <div data-testid="panel-review">Review</div>
-}));
-vi.mock('@/components/portfolio/PortfolioTab', () => ({
-  PortfolioTab: () => <div data-testid="panel-portfolio">Portfolio</div>
 }));
 vi.mock('@/components/capitalGains/CapitalGainsTab', () => ({
   CapitalGainsTab: () => <div data-testid="panel-capital-gains">Capital Gains</div>
@@ -136,16 +136,45 @@ describe('App tab navigation (a11y)', () => {
   it('the tabpanel is wired to the selected tab', async () => {
     await renderApp();
     const panel = screen.getByRole('tabpanel');
-    expect(panel).toHaveAttribute('aria-labelledby', 'tab-import');
+    expect(panel).toHaveAttribute('aria-labelledby', 'tab-dashboard');
   });
 
-  it('labels the first tab "Connections" (redesign rename) while keeping the import wiring', async () => {
+  it('orders tabs Dashboard → Connections → Transactions → Capital Gains → Reports → Settings', async () => {
     await renderApp();
-    const first = headerTabs()[0];
-    expect(first).toHaveAccessibleName('Connections');
+    expect(headerTabs().map((t) => t.textContent)).toEqual([
+      'Dashboard',
+      'Connections',
+      'Transactions',
+      'Capital Gains',
+      'Reports',
+      'Settings'
+    ]);
+  });
+
+  it('labels the second tab "Connections" (redesign rename) while keeping the import wiring', async () => {
+    await renderApp();
+    const connections = headerTabs()[1];
+    expect(connections).toHaveAccessibleName('Connections');
     // The tab id / aria wiring is unchanged — only the visible label moved.
-    expect(first).toHaveAttribute('id', 'tab-import');
-    expect(first).toHaveAttribute('aria-controls', 'tabpanel-import');
+    expect(connections).toHaveAttribute('id', 'tab-import');
+    expect(connections).toHaveAttribute('aria-controls', 'tabpanel-import');
+  });
+
+  it('renames the Review tab to "Transactions" while keeping the review wiring', async () => {
+    await renderApp();
+    const transactions = headerTabs()[2];
+    expect(transactions).toHaveAccessibleName('Transactions');
+    expect(transactions).toHaveAttribute('id', 'tab-review');
+    expect(transactions).toHaveAttribute('aria-controls', 'tabpanel-review');
+    fireEvent.click(transactions);
+    expect(screen.getByTestId('panel-review')).toBeInTheDocument();
+  });
+
+  it('opens the Dashboard (absorbed Portfolio home) as the default first screen', async () => {
+    await renderApp();
+    expect(screen.getByTestId('panel-dashboard')).toBeInTheDocument();
+    expect(headerTabs()[0]).toHaveAccessibleName('Dashboard');
+    expect(headerTabs()[0]).toHaveAttribute('id', 'tab-dashboard');
   });
 
   it('offers a skip link to the main content as the first stop', async () => {
@@ -161,9 +190,9 @@ describe('App tab navigation (a11y)', () => {
       const bar = mobileNav();
       const tabs = within(bar).getAllByRole('tab');
       expect(tabs.map((t) => t.textContent)).toEqual([
+        'Dashboard',
         'Connections',
-        'Review',
-        'Portfolio',
+        'Transactions',
         'Capital Gains'
       ]);
       expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
@@ -174,13 +203,13 @@ describe('App tab navigation (a11y)', () => {
 
     it('activates a section from the bar and keeps the header tablist in sync', async () => {
       await renderApp();
-      fireEvent.click(within(mobileNav()).getByRole('tab', { name: 'Review' }));
+      fireEvent.click(within(mobileNav()).getByRole('tab', { name: 'Transactions' }));
       expect(screen.getByTestId('panel-review')).toBeInTheDocument();
-      expect(within(mobileNav()).getByRole('tab', { name: 'Review' })).toHaveAttribute(
+      expect(within(mobileNav()).getByRole('tab', { name: 'Transactions' })).toHaveAttribute(
         'aria-selected',
         'true'
       );
-      expect(headerTabs()[1]).toHaveAttribute('aria-selected', 'true');
+      expect(headerTabs()[2]).toHaveAttribute('aria-selected', 'true');
     });
 
     it('arrow keys rove focus across the bar including More', async () => {

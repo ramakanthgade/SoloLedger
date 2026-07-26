@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { render, fireEvent } from '@testing-library/react';
 import {
   BrandIcon,
@@ -10,6 +12,13 @@ import {
   parserIconId,
   symbolIconId
 } from './brandIcons';
+import { WALLET_CATALOG, WALLET_GROUP_ORDER } from './walletCatalog';
+
+/**
+ * Wallet apps whose logo genuinely could not be sourced (documented in
+ * SOURCES.md) — these render the clean aurora letter chip, on purpose.
+ */
+const LETTER_CHIP_WALLETS = new Set(['typhon', 'martian']);
 
 /**
  * Brand-icon registry + the BrandIcon component: real logos everywhere
@@ -25,9 +34,38 @@ describe('brandIcons registry', () => {
     }
   });
 
-  it('every wallet app in the picker has a registry icon', () => {
+  it('every catalog wallet ships a bundled logo that exists on disk, or is a documented letter-chip fallback', () => {
+    const publicDir = resolve(__dirname, '../../../public');
+    for (const app of WALLET_CATALOG) {
+      if (LETTER_CHIP_WALLETS.has(app.id)) {
+        expect(app.logo, app.id).toBeUndefined();
+        expect(BRAND_ICONS[app.id], app.id).toBeUndefined();
+        continue;
+      }
+      expect(app.logo, app.id).toMatch(/^\/assets\/brand-icons\//);
+      // The registry merges the catalog logo under the wallet's id.
+      expect(BRAND_ICONS[app.id]?.src, app.id).toBe(app.logo);
+      // Guard against 404s in production (the monogram onError rescue is
+      // for runtime failures, not for missing assets at build time).
+      expect(existsSync(resolve(publicDir, `.${app.logo}`)), app.id).toBe(true);
+    }
+    // The fallback set stays exactly the documented list — a newly unsourced
+    // logo must be justified here AND in SOURCES.md.
+    expect(
+      WALLET_CATALOG.filter((w) => !w.logo).map((w) => w.id),
+      'letter-chip wallets must be documented in SOURCES.md'
+    ).toEqual([...LETTER_CHIP_WALLETS]);
+  });
+
+  it('catalog covers 60+ wallets with unique ids and locked group order', () => {
+    expect(WALLET_CATALOG.length).toBeGreaterThanOrEqual(60);
+    expect(new Set(WALLET_CATALOG.map((w) => w.id)).size).toBe(WALLET_CATALOG.length);
+    for (const w of WALLET_CATALOG) expect(WALLET_GROUP_ORDER).toContain(w.group);
+  });
+
+  it('legacy WALLET_APPS stays derived from the catalog', () => {
+    expect(WALLET_APPS).toHaveLength(WALLET_CATALOG.length);
     for (const app of WALLET_APPS) {
-      expect(BRAND_ICONS[app.id], app.id).toBeDefined();
       expect(WALLET_APP_NAMES).toContain(app.label.toLowerCase());
     }
   });

@@ -146,3 +146,46 @@ describe('SettingsTab — AI Advisor consent (local, opt-in)', () => {
     await waitFor(async () => expect((await getSettings()).aiConsentGranted).toBe(true));
   });
 });
+
+describe('SettingsTab — Network features (hosted first-run defaults)', () => {
+  it('shows both lookup toggles ON after the hosted first-run seed', async () => {
+    setMode('hosted');
+    mocks.user.current = SUBSCRIBER;
+    // Exactly the row applyHostedLookupDefaults writes on first hosted run.
+    await seedSettings({ priceApiEnabled: true, rpcLookupEnabled: true });
+    render(<SettingsTab />);
+
+    const price = await screen.findByRole('checkbox', { name: /Live price lookup/i });
+    const rpc = screen.getByRole('checkbox', { name: /Wallet address lookup/i });
+    expect(price).toBeChecked();
+    expect(rpc).toBeChecked();
+    // Hosted badge copy flips to "On by default"; BYOK key panels stay hidden
+    // (hosted lookups run through the server proxy, which injects the keys).
+    expect(screen.getByText('On by default')).toBeInTheDocument();
+    expect(screen.queryByText(/CoinGecko Pro API key/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Helius API key/i)).not.toBeInTheDocument();
+  });
+
+  it('turning a lookup off persists the explicit opt-out and never snaps back on', async () => {
+    setMode('hosted');
+    mocks.user.current = SUBSCRIBER;
+    await seedSettings({ priceApiEnabled: true, rpcLookupEnabled: true });
+    render(<SettingsTab />);
+
+    const price = await screen.findByRole('checkbox', { name: /Live price lookup/i });
+    fireEvent.click(price);
+
+    // The raw row records both the new value and the explicit-choice marker.
+    await waitFor(async () => {
+      const row = await getSettings();
+      expect(row.priceApiEnabled).toBe(false);
+      expect(row.lookupPrefsExplicit).toBe(true);
+    });
+    // After the effective-view reload ("Settings saved" toast), the toggle
+    // must still be OFF — the hosted merge honors the explicit choice.
+    expect(await screen.findByText('Settings saved')).toBeInTheDocument();
+    expect(price).not.toBeChecked();
+    // The untouched flag stays ON.
+    expect(screen.getByRole('checkbox', { name: /Wallet address lookup/i })).toBeChecked();
+  });
+});

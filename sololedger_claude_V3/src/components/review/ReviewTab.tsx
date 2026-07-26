@@ -41,6 +41,7 @@ import {
   bulkTypeImpactLines,
   bulkTypePatch,
   initialBulkFlagsSelection,
+  needsPriceLine,
   summarizeBulkTypeChange
 } from '@/lib/review/bulkEdit';
 import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
@@ -50,9 +51,10 @@ import { LotPicker } from './LotPicker';
 import { AssetIcon, SourceIcon } from './brandIcons';
 import { sourceBrandInfo } from './brandIconMap';
 import { groupRowsByDate, formatGroupDateLabel, pageNumberList } from './reviewListUtils';
+import { buildTxSummary, txFlow, truncateAddress, OWN_ACCOUNT_SIDE, type RowLeg } from './rowAnatomy';
 import {
   Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles,
-  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, Search, Link2
+  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, Search, Link2, Wallet
 } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useTabNav } from '@/lib/tabNav';
@@ -112,10 +114,6 @@ const TYPE_DOT: Record<TxType, string> = {
   defi_withdraw: 'bg-warn',
   other: 'bg-faint'
 };
-
-/** Types that move value IN (signed +, moss) vs OUT (signed −, ink). */
-const IN_TYPES: ReadonlySet<TxType> = new Set(['buy', 'transfer_in', 'income', 'gift_received', 'nft_mint', 'nft_buy', 'defi_withdraw']);
-const OUT_TYPES: ReadonlySet<TxType> = new Set(['sell', 'transfer_out', 'gift_sent', 'fee', 'nft_sell', 'defi_deposit']);
 
 /**
  * Filter-bar dropdown styled as a mockup `.chip` — pill shaped, 44px touch
@@ -182,7 +180,7 @@ function FlagSelector({ tx }: { tx: Transaction }) {
   };
 
   return (
-    <div className="relative">
+    <div className="relative" onClick={(e) => e.stopPropagation()}>
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -259,7 +257,29 @@ function FlagSelector({ tx }: { tx: Transaction }) {
 function TypeSelector({ tx }: { tx: Transaction }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const current = tx.type;
+
+  // Close on Escape / outside press while the menu is open (capture phase so
+  // the row's own key handling can't swallow Escape first).
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        setOpen(false);
+      }
+    };
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
 
   const reclassify = async (next: TxType) => {
     if (next === current) { setOpen(false); return; }
@@ -274,7 +294,7 @@ function TypeSelector({ tx }: { tx: Transaction }) {
   };
 
   return (
-    <div className="relative">
+    <div className="relative" ref={rootRef} onClick={(e) => e.stopPropagation()}>
       <button
         onClick={() => setOpen((o) => !o)}
         title="Click to reclassify this transaction"
@@ -290,7 +310,7 @@ function TypeSelector({ tx }: { tx: Transaction }) {
         {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-9 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+        <div role="menu" className="absolute left-0 top-9 z-30 max-h-80 min-w-[11rem] overflow-y-auto rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
           <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">Reclassify as</p>
           {ALL_TYPES.map((t) => (
             <button
@@ -330,12 +350,6 @@ const TYPE_TONE: Record<TxType, 'neutral' | 'gain' | 'warn' | 'loss' | 'primary'
   defi_withdraw: 'warn',
   other: 'neutral'
 };
-
-function truncateAddress(addr?: string): string {
-  if (!addr) return '—';
-  if (addr.length <= 14) return addr;
-  return `${addr.slice(0, 6)}…${addr.slice(-4)}`;
-}
 
 /** Derive From/To for Review display. Fees are paid FROM the wallet. */
 function txFromToAddresses(t: Transaction): { fromAddr?: string; toAddr?: string } {
@@ -395,7 +409,6 @@ export function ReviewTab() {
   const [instrumentFilter, setInstrumentFilter] = useState<'all' | 'spot' | 'derivative'>('all');
   const [page, setPage] = useState(1);
   const PAGE_SIZE = 200;
-  const [walletLabels, setWalletLabels] = useState<Map<string, string>>(new Map());
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -450,13 +463,17 @@ export function ReviewTab() {
   const hintsLive = useLiveQuery(() => getSpecIdHints(), []);
   const hints = useMemo(() => hintsLive ?? {}, [hintsLive]);
 
-  // Load wallet labels + jurisdiction on mount
+  // Wallet labels from Connections — a LIVE query so renaming a wallet in
+  // Connections updates every row's name resolution in place.
+  const lookupRowsLive = useLiveQuery(() => getLookupAddresses(), []);
+  const walletLabels = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of lookupRowsLive ?? []) if (r.label) map.set(r.address.toLowerCase(), r.label);
+    return map;
+  }, [lookupRowsLive]);
+
+  // Load jurisdiction on mount
   useEffect(() => {
-    getLookupAddresses().then((rows) => {
-      const map = new Map<string, string>();
-      for (const r of rows) if (r.label) map.set(r.address.toLowerCase(), r.label);
-      setWalletLabels(map);
-    });
     db.settings.get('singleton').then((s) => {
       if (s?.jurisdiction) setJurisdiction(s.jurisdiction as Jurisdiction);
     });
@@ -678,6 +695,9 @@ export function ReviewTab() {
   const startEditFiat = (txId: string, current?: number) => {
     setEditingFiat(txId);
     setEditValue(current != null ? String(current) : '');
+    // The inline editor lives in the Details panel — open the row so the
+    // input the user just asked for is actually on screen.
+    setExpandedId(txId);
   };
 
   const saveFiat = async (tx: (typeof transactions)[number]) => {
@@ -1089,12 +1109,7 @@ export function ReviewTab() {
 
   // ---------- Row rendering (date-grouped ledger, mockup frame 06) ----------
 
-  const CHIP =
-    'inline-flex h-7 max-w-full items-center gap-1.5 rounded-full border border-hi/10 bg-elev-3/50 px-2.5 text-[0.6875rem] font-bold text-mid';
-
-  const chipArrow = <ArrowRight className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden="true" />;
-
-  /** Currency symbol (₹, $, €…) for the fiat-balance chip; falls back to the
+  /** Currency symbol (₹, $, €…) for the fiat leg; falls back to the
    * currency code's first letter for unrecognized codes. */
   const fiatSymbol = (currency: string): string => {
     try {
@@ -1110,120 +1125,76 @@ export function ReviewTab() {
     }
   };
 
-  /** Middle-column from → to chips: token legs for swaps, wallet/address chips
-   * for transfers, asset → fiat-balance chips for exchange buys/sells. */
-  const renderMiddleChips = (t: Transaction, assetLabel: string, counterLabel: string | null, fromAddr?: string, toAddr?: string) => {
-    const fiatChip = (
-      <span className={CHIP}>
-        <span className="grid h-4 w-4 shrink-0 place-items-center rounded-full bg-elev-3 text-[9px] font-extrabold text-low" aria-hidden="true">
-          {fiatSymbol(t.fiatCurrency)}
-        </span>
-        {t.fiatCurrency} balance
+  /** One leg of the row-face flow (sent or received): asset / fiat / endpoint.
+   *  Amounts never truncate — they wrap under the row on narrow screens. */
+  const renderLeg = (leg: RowLeg, spam: boolean) => {
+    const gainLine = leg.gain && (
+      <span
+        className={cn(
+          'mt-0.5 block text-[11px] font-bold tabular-figures',
+          leg.gain.kind === 'gain' ? 'text-gain' : 'text-loss'
+        )}
+      >
+        {leg.gain.kind === 'gain' ? '+' : '−'}
+        {leg.gain.formatted}
       </span>
     );
-    const assetChip = (
-      <span className={CHIP}>
-        <AssetIcon symbol={t.asset} size={16} />
-        {assetLabel}
-      </span>
-    );
-    if (t.type === 'trade' && t.counterAsset) {
+    if (leg.kind === 'endpoint') {
       return (
-        <>
-          {assetChip}
-          {chipArrow}
-          <span className={CHIP}>
-            <AssetIcon symbol={t.counterAsset} size={16} />
-            {counterLabel}
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-hi/10 bg-elev-3 text-low"
+            aria-hidden="true"
+          >
+            <Wallet className="h-3 w-3" />
           </span>
-        </>
+          <span
+            className={cn('truncate text-[0.8125rem] font-semibold', leg.isName ? 'text-hi' : 'font-mono text-mid')}
+            title={leg.title}
+          >
+            {leg.label}
+          </span>
+        </span>
       );
     }
-    const fromLabel = fromAddr ? walletLabels.get(fromAddr.toLowerCase()) ?? truncateAddress(fromAddr) : null;
-    const toLabel = toAddr ? walletLabels.get(toAddr.toLowerCase()) ?? truncateAddress(toAddr) : null;
-    if (!fromLabel && !toLabel) {
-      // No on-chain counterparties recorded. Transfers read as source ↔ asset
-      // (a CoinDCX withdrawal, a wallet receive); buys/sells/income read as a
-      // leg against the fiat balance — into the asset for acquisitions, out
-      // of it for disposals.
-      if (t.type === 'transfer_in' || t.type === 'transfer_out') {
-        const chipChain = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : null;
-        const srcChip = (
-          <span className={CHIP}>
-            <SourceIcon source={t.source} chainLabel={chipChain} size={16} />
-            {sourceBrandInfo(t.source, chipChain).label}
+    if (leg.kind === 'fiat') {
+      return (
+        <span className="min-w-0">
+          <span className="flex items-center gap-1.5">
+            <span
+              className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full bg-elev-3 text-[10px] font-extrabold text-low"
+              aria-hidden="true"
+            >
+              {fiatSymbol(leg.currency ?? '')}
+            </span>
+            <span className={cn('whitespace-nowrap text-[0.875rem] font-bold tabular-figures text-hi', spam && 'line-through')}>
+              {leg.amount != null && leg.currency ? formatCurrency(leg.amount, leg.currency) : '—'}
+            </span>
           </span>
-        );
-        return t.type === 'transfer_in' ? (
-          <>
-            {srcChip}
-            {chipArrow}
-            {assetChip}
-          </>
-        ) : (
-          <>
-            {assetChip}
-            {chipArrow}
-            {srcChip}
-          </>
-        );
-      }
-      return IN_TYPES.has(t.type) ? (
-        <>
-          {fiatChip}
-          {chipArrow}
-          {assetChip}
-        </>
-      ) : (
-        <>
-          {assetChip}
-          {chipArrow}
-          {fiatChip}
-        </>
+          {gainLine}
+        </span>
       );
     }
     return (
-      <>
-        {fromLabel && (
-          <span className={cn(CHIP, 'font-mono font-semibold')} title={fromAddr}>
-            {fromLabel}
+      <span className="min-w-0">
+        <span className="flex items-center gap-1.5">
+          <AssetIcon symbol={leg.symbol} size={22} />
+          <span
+            className={cn(
+              'whitespace-nowrap text-[0.875rem] font-bold tabular-figures',
+              leg.sign === '+' ? 'text-gain' : 'text-hi',
+              spam && 'line-through'
+            )}
+          >
+            {leg.sign}
+            {leg.amount != null ? formatCompactAmount(leg.amount) : '—'}
           </span>
-        )}
-        {fromLabel && toLabel && chipArrow}
-        {toLabel && (
-          <span className={cn(CHIP, 'font-mono font-semibold')} title={toAddr}>
-            {toLabel}
-          </span>
-        )}
-      </>
+          <span className="truncate text-xs font-semibold text-mid">{leg.symbol}</span>
+        </span>
+        {leg.subline && <span className="mt-0.5 block text-[11px] tabular-figures text-low">{leg.subline}</span>}
+        {gainLine}
+      </span>
     );
-  };
-
-  /** Plain-English one-liner for the expanded Details panel. */
-  const txSummary = (t: Transaction, assetLabel: string, counterLabel: string | null, srcLabel: string): string => {
-    const amt = `${formatCompactAmount(t.amount)} ${assetLabel}`;
-    const val = t.fiatValue != null ? ` worth ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : '';
-    const { fromAddr, toAddr } = txFromToAddresses(t);
-    const from = fromAddr ? walletLabels.get(fromAddr.toLowerCase()) ?? truncateAddress(fromAddr) : null;
-    const to = toAddr ? walletLabels.get(toAddr.toLowerCase()) ?? truncateAddress(toAddr) : null;
-    switch (t.type) {
-      case 'buy':
-        return `Bought ${amt}${val} via ${srcLabel}.`;
-      case 'sell':
-        return `Sold ${amt}${val} via ${srcLabel}.`;
-      case 'trade':
-        return `Swapped ${amt} for ${t.counterAmount != null ? `${formatCompactAmount(t.counterAmount)} ` : ''}${counterLabel ?? t.counterAsset ?? '?'} via ${srcLabel}.`;
-      case 'transfer_in':
-        return `Received ${amt}${to ? ` into ${to}` : ''} — imported from ${srcLabel}.`;
-      case 'transfer_out':
-        return `Sent ${amt}${from ? ` from ${from}` : ''}${to ? ` to ${to}` : ''}.`;
-      case 'income':
-        return `Received ${amt} as income${val} — ${srcLabel}.`;
-      case 'fee':
-        return `Paid ${amt} as a network fee${from ? ` from ${from}` : ''}.`;
-      default:
-        return `${TYPE_LABEL[t.type]} ${amt}${val} — ${srcLabel}.`;
-    }
   };
 
   const renderRow = (t: Transaction, idx: number) => {
@@ -1244,18 +1215,74 @@ export function ReviewTab() {
     const hashUrl = hash ? explorerTxUrl(t.chain, hash) : null;
     const isSelected = selected.has(t.id);
     const timeUtc = new Date(t.timestamp).toISOString().slice(11, 16);
-    const sign = IN_TYPES.has(t.type) ? '+' : OUT_TYPES.has(t.type) ? '−' : '';
+    const dateUtc = formatGroupDateLabel(new Date(t.timestamp).toISOString().slice(0, 10));
+    const spam = t.isSpam === true;
+    const resolveWallet = (addr: string) => walletLabels.get(addr.toLowerCase());
+    // Cost basis / gain only surface once the disposal is priced.
+    const pricedDisposal = disposal && t.fiatValue != null ? disposal : null;
+    const flow = txFlow(t, { assetLabel, counterLabel, fromAddr, toAddr, resolveWallet, disposal: pricedDisposal });
+    const summary = buildTxSummary(t, {
+      assetLabel,
+      counterLabel,
+      sourceLabel: src.label,
+      typeLabel: TYPE_LABEL[t.type],
+      resolveWallet,
+      fromAddr,
+      toAddr,
+      disposal: pricedDisposal
+    });
+    const ownSide = OWN_ACCOUNT_SIDE[t.type];
+    // Exchange rows carry an order/trade id in sourceRef; on-chain rows a tx hash.
+    const hashFactLabel = t.txHash || t.chain || t.source.startsWith('rpc:') ? 'Tx hash' : 'Order ID';
+
+    /** From/To fact value: the wallet NAME beats the raw address wherever
+     * Connections knows it; the source brand stands in for the user's own
+     * account side when no address was recorded. */
+    const endpointFact = (addr: string | undefined, isOwnSide: boolean) => {
+      if (addr) {
+        const name = walletLabels.get(addr.toLowerCase());
+        return (
+          <>
+            {name && (
+              <span
+                className="grid h-[18px] w-[18px] shrink-0 place-items-center rounded-full border border-hi/10 bg-elev-3 text-low"
+                aria-hidden="true"
+              >
+                <Wallet className="h-2.5 w-2.5" />
+              </span>
+            )}
+            <span className={cn('min-w-0 truncate', name ? 'text-hi' : 'font-mono text-[11px]')} title={addr}>
+              {name ?? truncateAddress(addr)}
+            </span>
+            <CopyButton text={addr} label="Copy address" />
+          </>
+        );
+      }
+      if (isOwnSide) {
+        return (
+          <>
+            <SourceIcon source={t.source} chainLabel={chainLabel} size={18} />
+            {src.label}
+          </>
+        );
+      }
+      return '—';
+    };
     return (
       <div key={t.id} className={cn(idx > 0 && 'border-t border-hi/10')}>
         <div
+          onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
           className={cn(
-            'flex flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 transition-colors sm:px-5',
-            isSelected && 'bg-primary/[0.05]',
-            t.isSpam && 'opacity-60'
+            'flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 transition-colors hover:bg-elev-3/40 sm:px-5',
+            isSelected && 'bg-primary/[0.05] hover:bg-primary/[0.08]',
+            spam && 'opacity-60'
           )}
         >
           {/* Bulk select */}
-          <label className="grid h-11 w-7 shrink-0 cursor-pointer place-items-center">
+          <label
+            className="grid h-11 w-7 shrink-0 cursor-pointer place-items-center"
+            onClick={(e) => e.stopPropagation()}
+          >
             <input
               type="checkbox"
               checked={isSelected}
@@ -1265,119 +1292,53 @@ export function ReviewTab() {
             />
           </label>
 
-          {/* Type block: source mark + directional type + time · source */}
+          {/* Left: type label + time + chain */}
           <div className="flex min-w-0 items-center gap-3">
-            <SourceIcon source={t.source} chainLabel={chainLabel} size={36} />
             <div className="min-w-0">
-              <span className={cn(t.isSpam && 'line-through')}>
+              <span className={cn(spam && 'line-through')}>
                 <TypeSelector tx={t} />
               </span>
-              <p className="mt-0.5 truncate pl-1 text-[11px] text-low">
-                {timeUtc} · {src.label}
-                {chainLabel && chainLabel !== src.label ? ` · ${chainLabel}` : ''}
+              <p className="mt-0.5 whitespace-nowrap pl-1 text-[11px] text-low">
+                {timeUtc}
+                {chainLabel ? ` · ${chainLabel}` : ''}
               </p>
             </div>
           </div>
 
-          {/* Middle: from → to chips + flags (wide screens) */}
-          <div className="hidden min-w-0 flex-1 flex-col gap-1 lg:flex">
-            <div className="flex flex-wrap items-center gap-1.5">
-              {renderMiddleChips(t, assetLabel, counterLabel, fromAddr, toAddr)}
-            </div>
-            <FlagSelector tx={t} />
+          {/* Middle: the flow — sent leg → received leg (full-width row on mobile) */}
+          <div
+            className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 lg:order-none lg:w-auto lg:flex-1"
+            data-testid="tx-flow"
+          >
+            {flow.sent && renderLeg(flow.sent, spam)}
+            {flow.sent && flow.received && (
+              <ArrowRight className="h-4 w-4 shrink-0 text-faint" aria-hidden="true" />
+            )}
+            {flow.received && renderLeg(flow.received, spam)}
           </div>
 
-          {/* Amount block */}
-          <div className="ml-auto text-right lg:ml-0 lg:w-56 lg:shrink-0">
-            <div className="flex items-center justify-end gap-1.5 text-[0.8125rem] font-bold tabular-figures text-hi">
-              {t.type === 'trade' && t.counterAmount != null ? (
-                <>
-                  <span className={cn(t.isSpam && 'line-through')}>−{formatCompactAmount(t.amount)}</span>
-                  <AssetIcon symbol={t.asset} size={18} />
-                  <ArrowRight className="h-3.5 w-3.5 text-faint" aria-hidden="true" />
-                  <span className={cn('text-gain', t.isSpam && 'line-through')}>+{formatCompactAmount(t.counterAmount)}</span>
-                  <AssetIcon symbol={t.counterAsset} size={18} />
-                </>
-              ) : (
-                <>
-                  <span className={cn(IN_TYPES.has(t.type) && 'text-gain', t.isSpam && 'line-through')}>
-                    {sign}
-                    {formatCompactAmount(t.amount)}
-                  </span>
-                  <AssetIcon symbol={t.asset} size={18} />
-                  <span className="font-semibold text-mid">{assetLabel}</span>
-                </>
+          {/* Right: source context (logo + name + fee chip) + flags + expander */}
+          <div className="order-3 ml-auto flex shrink-0 items-center gap-2.5 lg:order-none lg:ml-0">
+            <SourceIcon source={t.source} chainLabel={chainLabel} size={30} />
+            <div className="min-w-0">
+              <p className="max-w-[7rem] truncate text-xs font-bold text-hi sm:max-w-[9rem]" title={src.label}>
+                {src.label}
+              </p>
+              {t.feeAmount != null && t.feeAsset && (
+                <span className="mt-0.5 hidden max-w-full items-center rounded-full border border-hi/10 bg-elev-3/50 px-2 py-px text-[10px] font-bold tabular-figures text-low sm:inline-flex">
+                  fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}
+                </span>
               )}
             </div>
-            {isEditing ? (
-              <span className="mt-1 flex items-center justify-end gap-1">
-                <input
-                  autoFocus
-                  value={editValue}
-                  onChange={(e) => setEditValue(e.target.value)}
-                  inputMode="decimal"
-                  className="h-9 w-24 rounded-md border border-primary/60 bg-elev-1 px-2 text-right text-xs tabular-figures text-hi focus:outline-none focus:ring-2 focus:ring-primary/30"
-                  placeholder="0.00"
-                  aria-label="Fiat value"
-                />
-                <button
-                  onClick={() => saveFiat(t)}
-                  className="grid h-9 w-9 place-items-center rounded-md text-gain transition-colors hover:bg-gain/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                  aria-label="Save"
-                >
-                  <Check className="h-4 w-4" />
-                </button>
-                <button
-                  onClick={() => setEditingFiat(null)}
-                  className="grid h-9 w-9 place-items-center rounded-md text-low transition-colors hover:bg-elev-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                  aria-label="Cancel"
-                >
-                  <X className="h-4 w-4" />
-                </button>
-              </span>
-            ) : (
-              <button
-                onClick={() => startEditFiat(t.id, t.fiatValue)}
-                className="group mt-0.5 inline-flex items-center gap-1 rounded text-xs tabular-figures text-low transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                title="Click to enter a fiat value manually"
-              >
-                {t.fiatValue != null ? `≈ ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : 'Add price'}
-                <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-70" />
-              </button>
-            )}
-            {disposal && t.fiatValue != null && !isEditing && (
-              <p className="mt-0.5 text-[11px] tabular-figures text-low">
-                cost {formatCurrency(disposal.costBasis, t.fiatCurrency)} · {disposal.method} · {disposal.lotConsumption.length} lot
-                {disposal.lotConsumption.length === 1 ? '' : 's'}{' '}
-                <span className={cn('whitespace-nowrap font-bold', disposal.gain >= 0 ? 'text-gain' : 'text-loss')}>
-                  {`${disposal.gain >= 0 ? '+' : '−'}${formatCurrency(Math.abs(disposal.gain), t.fiatCurrency)}`}
-                </span>
-              </p>
-            )}
-          </div>
-
-          {/* Row actions */}
-          <div className="flex shrink-0 items-center gap-1">
-            {hash &&
-              (hashUrl ? (
-                <a
-                  href={hashUrl}
-                  target="_blank"
-                  rel="noreferrer"
-                  title={`View transaction hash on explorer: ${hash}`}
-                  aria-label="View transaction hash on explorer"
-                  className="grid h-9 w-9 place-items-center rounded-lg text-low transition-colors hover:bg-elev-3 hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                >
-                  <Link2 className="h-4 w-4" />
-                </a>
-              ) : (
-                <span title={hash} className="grid h-9 w-9 place-items-center rounded-lg text-faint">
-                  <Link2 className="h-4 w-4" />
-                </span>
-              ))}
+            <div className="hidden lg:block">
+              <FlagSelector tx={t} />
+            </div>
             <button
               type="button"
-              onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
+              onClick={(e) => {
+                e.stopPropagation();
+                setExpandedId((cur) => (cur === t.id ? null : t.id));
+              }}
               aria-expanded={expanded}
               aria-label={expanded ? 'Collapse transaction details' : 'Expand transaction details'}
               className={cn(
@@ -1389,8 +1350,8 @@ export function ReviewTab() {
             </button>
           </div>
 
-          {/* Flags (narrow screens — under the type block, full width) */}
-          <div className="w-full pl-10 lg:hidden">
+          {/* Flags (narrow screens — under the flow, full width) */}
+          <div className="order-5 w-full pl-10 lg:hidden">
             <FlagSelector tx={t} />
           </div>
         </div>
@@ -1413,115 +1374,131 @@ export function ReviewTab() {
           </div>
         )}
 
-        {/* Expanded Details panel */}
+        {/* Expanded Details panel — plain-English summary, facts grid, lots */}
         {expanded && (
-          <div className="border-t border-hi/10 bg-elev-1/40 px-4 py-4 sm:px-6">
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_260px]">
-              <div className="min-w-0">
-                <p className="text-[0.8125rem] leading-relaxed text-mid">{txSummary(t, assetLabel, counterLabel, src.label)}</p>
-                <div className="mt-3 space-y-2">
-                  <DetailRow label="Tx hash">
-                    {hash ? (
-                      <>
-                        <span className="rounded-md border border-hi/10 bg-elev-3/60 px-2 py-0.5 font-mono text-[11px]" title={hash}>
-                          {truncateAddress(hash)}
-                        </span>
-                        <CopyButton text={hash} label="Copy transaction hash" />
-                        {hashUrl && (
-                          <a
-                            href={hashUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                          >
-                            Explorer ↗
-                          </a>
-                        )}
-                      </>
-                    ) : (
-                      '—'
+          <div className="border-t border-hi/10 bg-elev-1/40 px-4 py-4 sm:px-6" data-testid="tx-details">
+            <p className="text-[0.875rem] leading-relaxed text-mid" data-testid="tx-summary">
+              {summary.lead}
+              {summary.tail ? (
+                <>
+                  {' — a '}
+                  <span className={cn('font-bold', summary.tail.kind === 'gain' ? 'text-gain' : 'text-loss')}>
+                    {summary.tail.kind} of {summary.tail.formatted}
+                  </span>
+                  .
+                </>
+              ) : (
+                '.'
+              )}
+            </p>
+
+            {/* Facts grid */}
+            <div className="mt-4 grid gap-x-8 gap-y-2.5 sm:grid-cols-2">
+              <DetailRow label="Date">
+                {dateUtc} · {timeUtc} UTC
+              </DetailRow>
+              <DetailRow label={hashFactLabel}>
+                {hash ? (
+                  <>
+                    <span className="rounded-md border border-hi/10 bg-elev-3/60 px-2 py-0.5 font-mono text-[11px]" title={hash}>
+                      {truncateAddress(hash)}
+                    </span>
+                    <CopyButton text={hash} label={`Copy ${hashFactLabel === 'Tx hash' ? 'transaction hash' : 'order id'}`} />
+                    {hashUrl && (
+                      <a
+                        href={hashUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                      >
+                        Explorer ↗
+                      </a>
                     )}
-                  </DetailRow>
-                  <DetailRow label="Source">
-                    <SourceIcon source={t.source} chainLabel={chainLabel} size={18} />
-                    {src.label}
-                  </DetailRow>
-                  <DetailRow label="From">
-                    {fromAddr ? (
-                      <>
-                        <span className="font-mono text-[11px]" title={fromAddr}>
-                          {walletLabels.get(fromAddr.toLowerCase()) ?? truncateAddress(fromAddr)}
-                        </span>
-                        <CopyButton text={fromAddr} label="Copy source address" />
-                      </>
-                    ) : (
-                      '—'
-                    )}
-                  </DetailRow>
-                  <DetailRow label="To">
-                    {toAddr ? (
-                      <>
-                        <span className="font-mono text-[11px]" title={toAddr}>
-                          {walletLabels.get(toAddr.toLowerCase()) ?? truncateAddress(toAddr)}
-                        </span>
-                        <CopyButton text={toAddr} label="Copy destination address" />
-                      </>
-                    ) : (
-                      '—'
-                    )}
-                  </DetailRow>
-                  {chainLabel && <DetailRow label="Chain">{chainLabel}</DetailRow>}
-                  {t.notes && <DetailRow label="Notes">{t.notes}</DetailRow>}
-                </div>
-                {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
+                  </>
+                ) : (
+                  '—'
+                )}
+              </DetailRow>
+              <DetailRow label="Source">
+                <SourceIcon source={t.source} chainLabel={chainLabel} size={18} />
+                {src.label}
+                {chainLabel && chainLabel !== src.label ? ` · ${chainLabel}` : ''}
+              </DetailRow>
+              <DetailRow label="From">{endpointFact(fromAddr, ownSide === 'from' || ownSide === 'both')}</DetailRow>
+              <DetailRow label="To">{endpointFact(toAddr, ownSide === 'to' || ownSide === 'both')}</DetailRow>
+              <DetailRow label="Value">
+                {isEditing ? (
+                  <span className="flex items-center gap-1">
+                    <input
+                      autoFocus
+                      value={editValue}
+                      onChange={(e) => setEditValue(e.target.value)}
+                      inputMode="decimal"
+                      className="h-9 w-28 rounded-md border border-primary/60 bg-elev-1 px-2 text-right text-xs tabular-figures text-hi focus:outline-none focus:ring-2 focus-visible:ring-primary/30"
+                      placeholder="0.00"
+                      aria-label="Fiat value"
+                    />
+                    <button
+                      onClick={() => saveFiat(t)}
+                      className="grid h-9 w-9 place-items-center rounded-md text-gain transition-colors hover:bg-gain/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                      aria-label="Save"
+                    >
+                      <Check className="h-4 w-4" />
+                    </button>
+                    <button
+                      onClick={() => setEditingFiat(null)}
+                      className="grid h-9 w-9 place-items-center rounded-md text-low transition-colors hover:bg-elev-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                      aria-label="Cancel"
+                    >
+                      <X className="h-4 w-4" />
+                    </button>
+                  </span>
+                ) : (
                   <button
-                    type="button"
-                    className="mt-3 rounded text-xs font-bold text-primary underline decoration-dotted hover:text-primary-deep focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                    onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
+                    onClick={() => startEditFiat(t.id, t.fiatValue)}
+                    className="group inline-flex items-center gap-1 rounded text-xs tabular-figures text-mid transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                    title="Click to enter a fiat value manually"
                   >
-                    {openLotPicker === t.id ? 'Hide lot picker' : 'Match lots (Specific ID)'}
+                    {t.fiatValue != null ? `≈ ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : 'Add price'}
+                    <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-70" />
                   </button>
                 )}
-              </div>
-              <aside className="self-start rounded-xl border border-hi/10 bg-elev-3/50 p-4 text-xs">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="font-semibold text-mid">Market value</span>
-                  <span className="font-bold tabular-figures text-hi">
-                    {t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : '—'}
+              </DetailRow>
+              {t.feeAmount != null && t.feeAsset && (
+                <DetailRow label="Fee">
+                  {formatCompactAmount(t.feeAmount)} {t.feeAsset}
+                </DetailRow>
+              )}
+              {pricedDisposal && (
+                <DetailRow label="Cost basis">{formatCurrency(pricedDisposal.costBasis, t.fiatCurrency)}</DetailRow>
+              )}
+              {pricedDisposal && (
+                <DetailRow label="Gain">
+                  <span
+                    className={cn(
+                      'whitespace-nowrap font-bold tabular-figures',
+                      pricedDisposal.gain >= 0 ? 'text-gain' : 'text-loss'
+                    )}
+                  >
+                    {`${pricedDisposal.gain >= 0 ? '+' : '−'}${formatCurrency(Math.abs(pricedDisposal.gain), t.fiatCurrency)}`}
                   </span>
-                </div>
-                {t.feeAmount != null && t.feeAsset && (
-                  <div className="mt-2 flex items-center justify-between gap-3">
-                    <span className="font-semibold text-mid">Network fee</span>
-                    <span className="font-bold tabular-figures text-hi">
-                      {formatCompactAmount(t.feeAmount)} {t.feeAsset}
-                    </span>
-                  </div>
-                )}
-                {disposal && (
-                  <>
-                    <div className="my-2.5 border-t border-hi/10" />
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-semibold text-mid">Cost basis</span>
-                      <span className="font-bold tabular-figures text-hi">{formatCurrency(disposal.costBasis, t.fiatCurrency)}</span>
-                    </div>
-                    <div className="mt-2 flex items-center justify-between gap-3">
-                      <span className="font-semibold text-mid">Realized gain</span>
-                      <span className={cn('whitespace-nowrap font-bold tabular-figures', disposal.gain >= 0 ? 'text-gain' : 'text-loss')}>
-                        {`${disposal.gain >= 0 ? '+' : '−'}${formatCurrency(Math.abs(disposal.gain), t.fiatCurrency)}`}
-                      </span>
-                    </div>
-                    <div className="mt-2.5">
-                      <Badge tone="primary">Cost basis · {disposal.method}</Badge>
-                    </div>
-                  </>
-                )}
-                {t.isInternalTransfer && (
-                  <div className="mt-2.5">
-                    <Badge tone="neutral">Internal · not taxable</Badge>
-                  </div>
-                )}
-              </aside>
+                </DetailRow>
+              )}
+              {t.notes && <DetailRow label="Notes">{t.notes}</DetailRow>}
+            </div>
+
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {pricedDisposal && <Badge tone="primary">Cost basis · {pricedDisposal.method}</Badge>}
+              {t.isInternalTransfer && <Badge tone="neutral">Internal · not taxable</Badge>}
+              {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
+                <button
+                  type="button"
+                  className="rounded text-xs font-bold text-primary underline decoration-dotted hover:text-primary-deep focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                  onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
+                >
+                  {openLotPicker === t.id ? 'Hide lot picker' : 'Match lots (Specific ID)'}
+                </button>
+              )}
             </div>
 
             {/* Matched lots (the cost-basis provenance story) */}
@@ -1588,7 +1565,7 @@ export function ReviewTab() {
     return (
       <div className="space-y-6">
         <div>
-          <h2 className="page-title">Review</h2>
+          <h2 className="page-title">Transactions</h2>
           <p className="mt-1 text-sm text-low">Give each transaction a quick once-over before you file.</p>
         </div>
         <EmptyState
@@ -1604,11 +1581,13 @@ export function ReviewTab() {
 
   return (
     <div className="space-y-5 pb-28">
-      {/* Page head — mockup frame 06: title + count pill + on-device footnote */}
+      {/* Page head — mockup frame 06: title + count pill + on-device footnote.
+          The pill counts the default (non-spam) view; spam rows are reachable
+          via the Spam chip and counted there. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <h2 className="page-title">Review</h2>
+        <h2 className="page-title">Transactions</h2>
         <span className="inline-flex h-[26px] items-center rounded-full border border-hi/10 bg-elev-3 px-2.5 text-xs font-bold tabular-figures text-mid">
-          {transactions.length.toLocaleString('en-IN')}
+          {(transactions.length - spamTxCount).toLocaleString('en-IN')}
         </span>
         <p className="text-sm text-low">Review, label &amp; reconcile — all on-device.</p>
         <div className="ml-auto flex items-center gap-2">
@@ -1759,15 +1738,13 @@ export function ReviewTab() {
               <AlertTriangle className="h-5 w-5" />
             </span>
             <div>
-              <p className="text-sm font-semibold text-hi">
-                {missingPriceTxs.length} transaction{missingPriceTxs.length === 1 ? '' : 's'} still need a price
-              </p>
+              <p className="text-sm font-semibold text-hi">{needsPriceLine(missingPriceTxs.length)}</p>
               <p className="text-xs text-low">
                 {settings?.priceApiEnabled
                   ? rpcTransferCount > 0
                     ? 'Wallet imports are included — click the button to fetch historical prices. Swaps auto-detected as trades will feed cost basis after prices are filled.'
                     : 'Nothing happens automatically — click the button to fetch them now.'
-                  : 'Turn on "Live price lookup" in Settings, or click any dash below to type a value in yourself.'}
+                  : 'Turn on "Live price lookup" in Settings, or open any row below and type the value in yourself.'}
               </p>
             </div>
           </div>
@@ -1925,7 +1902,7 @@ export function ReviewTab() {
               showSpam ? 'border-loss/40 bg-loss/15 text-loss' : 'border-hi/10 bg-elev-1 text-low shadow-xs hover:text-mid'
             )}
           >
-            {showSpam ? `Spam (${spamTxCount}) ✕` : `Spam: ${spamTxCount}`}
+            {showSpam ? `Spam (${spamTxCount}) ✕` : `Spam (${spamTxCount})`}
           </button>
         )}
 
@@ -2016,6 +1993,11 @@ export function ReviewTab() {
       {pageRows.length === 0 ? (
         <div className="rounded-2xl border border-dashed border-hi/15 bg-elev-2 px-6 py-10 text-center shadow-xs">
           <p className="text-sm font-semibold text-mid">No transactions match these filters.</p>
+          {!showSpam && !anyFilterActive && spamTxCount > 0 && (
+            <p className="mt-2 text-xs text-low">
+              Everything in the ledger is flagged spam — open the Spam ({spamTxCount}) chip above to review it.
+            </p>
+          )}
           {anyFilterActive && (
             <button
               type="button"

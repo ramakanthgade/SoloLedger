@@ -203,6 +203,21 @@ export async function saveSettings(settings: TaxSettings): Promise<void> {
   await db.settings.put({ id: 'singleton', ...settings });
 }
 
+/**
+ * Write the settings singleton ONLY when no row exists yet (first run for
+ * this database). Returns true when the row was written. Never overwrites an
+ * existing row — an explicit user choice always wins over a first-run
+ * default seed (see lib/saas/hostedDefaults for the hosted caller).
+ */
+export async function seedSettingsIfAbsent(seed: TaxSettings): Promise<boolean> {
+  return db.transaction('rw', db.settings, async () => {
+    const existing = await db.settings.get('singleton');
+    if (existing) return false;
+    await db.settings.put({ id: 'singleton', ...seed });
+    return true;
+  });
+}
+
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',

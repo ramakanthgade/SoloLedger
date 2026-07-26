@@ -118,6 +118,17 @@ export interface TaxSettings {
   derivativesTreatment?: DerivativesTreatment;
   priceApiEnabled: boolean;
   rpcLookupEnabled: boolean;
+  /**
+   * Stamped `true` the first time the user toggles either lookup flag in
+   * Settings. Hosted mode enables both lookups by default (seeded on first
+   * sign-in — see lib/saas/hostedDefaults), so a stored false without this
+   * marker is a LEGACY default, not a choice: getEffectiveSettings honors the
+   * local flag only when the marker is present, which keeps pre-defaults
+   * hosted rows on the old always-on behavior while letting users turn
+   * lookups off at any time. Unused outside hosted mode (local/BYOK return
+   * the raw row as-is).
+   */
+  lookupPrefsExplicit?: boolean;
   /** One Alchemy key covers Ethereum + every EVM chain it supports + Solana. */
   alchemyApiKey?: string;
   /** CoinGecko Pro key — historical prices by date (recommended for 100+ tx imports). */

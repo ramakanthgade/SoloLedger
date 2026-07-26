@@ -1,3 +1,4 @@
+import { useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import {
   BRAND_ICON_FILES,
@@ -26,12 +27,18 @@ interface BrandImgProps {
   size: number;
   label: string;
   className?: string;
+  /** Rendered when the icon file fails to load (404 etc.) — the letter chip,
+   *  so a missing asset never shows a broken-image glyph. */
+  fallback: ReactNode;
 }
 
 /** The mark itself. Decorative (`alt=""`) — adjacent text always names the
  * source/asset, so the image stays out of the accessibility tree. */
-function BrandImg({ id, size, label, className }: BrandImgProps) {
+function BrandImg({ id, size, label, className, fallback }: BrandImgProps) {
   const src = `${ICON_BASE}/${BRAND_ICON_FILES[id]}`;
+  const [loadFailed, setLoadFailed] = useState(false);
+  if (loadFailed) return <>{fallback}</>;
+  const onError = () => setLoadFailed(true);
   if (NEEDS_LIGHT_TILE.has(id)) {
     return (
       <span
@@ -39,7 +46,7 @@ function BrandImg({ id, size, label, className }: BrandImgProps) {
         style={{ width: size, height: size }}
         title={label}
       >
-        <img src={src} width={size} height={size} alt="" loading="lazy" className="h-full w-full object-contain p-[8%]" />
+        <img src={src} width={size} height={size} alt="" loading="lazy" onError={onError} className="h-full w-full object-contain p-[8%]" />
       </span>
     );
   }
@@ -50,6 +57,7 @@ function BrandImg({ id, size, label, className }: BrandImgProps) {
       height={size}
       alt=""
       loading="lazy"
+      onError={onError}
       title={label}
       className={cn('shrink-0 rounded-lg object-contain', className)}
     />
@@ -70,8 +78,7 @@ interface SourceIconProps {
  */
 export function SourceIcon({ source, chainLabel, size = 36, className }: SourceIconProps) {
   const { id, label } = sourceBrandInfo(source, chainLabel);
-  if (id) return <BrandImg id={id} size={size} label={label} className={className} />;
-  return (
+  const chip = (
     <span
       className={cn('grid shrink-0 place-items-center rounded-lg border border-hi/10 bg-elev-3 font-extrabold text-mid', className)}
       style={{ width: size, height: size, fontSize: Math.max(9, size * 0.32) }}
@@ -81,6 +88,8 @@ export function SourceIcon({ source, chainLabel, size = 36, className }: SourceI
       {chipInitials(label)}
     </span>
   );
+  if (id) return <BrandImg id={id} size={size} label={label} className={className} fallback={chip} />;
+  return chip;
 }
 
 interface AssetIconProps {
@@ -92,8 +101,7 @@ interface AssetIconProps {
 /** Token mark for an asset symbol; letter chip fallback for unmapped ones. */
 export function AssetIcon({ symbol, size = 18, className }: AssetIconProps) {
   const id = assetIconId(symbol);
-  if (id) return <BrandImg id={id} size={size} label={symbol ?? ''} className={className} />;
-  return (
+  const chip = (
     <span
       className={cn('grid shrink-0 place-items-center rounded-full bg-elev-3 font-extrabold text-low', className)}
       style={{ width: size, height: size, fontSize: Math.max(8, size * 0.5) }}
@@ -102,4 +110,6 @@ export function AssetIcon({ symbol, size = 18, className }: AssetIconProps) {
       {(symbol ?? '?').slice(0, 1).toUpperCase()}
     </span>
   );
+  if (id) return <BrandImg id={id} size={size} label={symbol ?? ''} className={className} fallback={chip} />;
+  return chip;
 }

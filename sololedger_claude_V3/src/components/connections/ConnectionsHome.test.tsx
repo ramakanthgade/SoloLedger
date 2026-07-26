@@ -146,6 +146,8 @@ function conn(over: Partial<ExchangeConnectionView> = {}): ExchangeConnectionVie
     lastSyncAt: Date.now() - 2 * 3_600_000,
     txCount: 1284,
     lastError: null,
+    // Full data-range coverage by default — the coverage chip is opt-out at 100%.
+    cursors: { trades: Date.now(), deposits: Date.now(), withdrawals: Date.now() },
     ...over
   };
 }
@@ -329,6 +331,34 @@ describe('ConnectionsHome — cards', () => {
     render(<ConnectionsHome />);
     expect(screen.getByText('Needs attention')).toBeInTheDocument();
     expect(screen.getByText('Your session has expired.')).toBeInTheDocument();
+  });
+
+  it('shows honest "% Synced" chips on partially-covered cards, none at 100%', () => {
+    mocks.connections.current = [
+      conn({ id: 'exc_partial', cursors: { trades: Date.now(), deposits: Date.now() } })
+    ];
+    mocks.wallets.current = [
+      // Two chains enabled on one address; only one has a completed sync.
+      wallet({ id: 'ethereum:0xAAA', chain: 'ethereum', address: '0xAAA', label: 'MetaMask' }),
+      wallet({ id: 'solana:0xAAA', chain: 'solana', address: '0xAAA', lastSyncedAt: 0 })
+    ];
+    render(<ConnectionsHome />);
+
+    const grid = screen.getByTestId('connections-grid');
+    const chips = within(grid).getAllByTestId('sync-chip');
+    expect(chips.map((c) => c.textContent)).toEqual([
+      'Trades ✓ · Deposits ✓ · Withdrawals —',
+      '1/2 chains · 50%'
+    ]);
+    // The green states stay for fully-covered cards elsewhere (none here).
+    expect(within(grid).queryByText('3/3 chains · 100%')).not.toBeInTheDocument();
+  });
+
+  it('renders no sync chip when every data range / chain is covered', () => {
+    mocks.connections.current = [conn()]; // full cursors by default
+    mocks.wallets.current = [wallet()];
+    render(<ConnectionsHome />);
+    expect(screen.queryByTestId('sync-chip')).not.toBeInTheDocument();
   });
 
   it('warm empty state when there are no sources at all', () => {

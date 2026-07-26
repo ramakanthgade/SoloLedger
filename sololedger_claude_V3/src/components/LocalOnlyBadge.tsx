@@ -15,9 +15,12 @@ import {
  *   relay  → ember (primary) — routed through the SoloLedger relay
  */
 interface StateConfig {
-  /** Main pill label. */
+  /**
+   * Compact pill label — the top bar is crowded, so the pill shows only an
+   * icon + short label; the full text lives in the tooltip and popover.
+   */
   label: string;
-  /** Optional muted suffix rendered after the label (e.g. "· your keys, direct"). */
+  /** Optional muted suffix used in the full label (tooltip + popover). */
   suffix?: string;
   /** Popover heading. */
   title: string;
@@ -35,7 +38,7 @@ interface StateConfig {
 
 const STATES: Record<NetworkMode, StateConfig> = {
   local: {
-    label: '100% Local',
+    label: 'Local',
     title: '100% Local',
     disclosure:
       'Nothing has left this device — every import, calculation and report runs right here in your browser.',
@@ -45,7 +48,7 @@ const STATES: Record<NetworkMode, StateConfig> = {
     accent: 'border-t-2 border-t-gain'
   },
   direct: {
-    label: 'Local + network on',
+    label: 'Network on',
     suffix: '· your keys, direct',
     title: 'Local + network on',
     disclosure:
@@ -91,15 +94,15 @@ export function LocalOnlyBadge() {
         aria-haspopup="dialog"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
+        title={`${state.title}${state.suffix ?? ''} — details`}
         className={cn(
-          'inline-flex h-9 items-center gap-2 rounded-full border px-3.5 font-mono text-[0.6875rem] font-semibold',
+          'inline-flex h-9 shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-3 font-mono text-[0.6875rem] font-semibold',
           'transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas',
           state.pill
         )}
       >
         <span className={cn('h-2 w-2 shrink-0 rounded-full', state.dot, state.dotGlow)} />
         <span>{state.label}</span>
-        {state.suffix && <span className="font-normal opacity-80">{state.suffix}</span>}
         <span className="text-[0.5rem] opacity-75" aria-hidden="true">
           ▾
         </span>

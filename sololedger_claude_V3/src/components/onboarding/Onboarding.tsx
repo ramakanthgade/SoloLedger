@@ -79,7 +79,7 @@ export function Onboarding({ onStartImport, onSkip }: OnboardingProps) {
       onClick={onSkip}
       className="inline-flex min-h-11 items-center justify-center rounded-lg px-3 text-center text-xs font-medium text-low transition-colors hover:text-mid focus:outline-none focus-visible:underline"
     >
-      Skip setup — go straight to Import
+      Skip setup — go straight to my dashboard
     </button>
   );
 

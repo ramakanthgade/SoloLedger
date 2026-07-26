@@ -1,0 +1,692 @@
+/**
+ * Dashboard data model — pure, testable derivation logic for the Dashboard
+ * home screen. Everything here is computed from data already on the device
+ * (transactions, price cache, lookup addresses); no network calls, no
+ * invented numbers.
+ *
+ * Honesty rules encoded here:
+ *  - Market values come ONLY from the IndexedDB price cache (daily closes
+ *    stored when prices were fetched). When a holding has no cached price it
+ *    is reported at cost and counted in `unpricedCount` so the UI can say so.
+ *  - The chart's market line is qty × last cached close ≤ that day; the
+ *    cost-basis line is the same portfolio engine's cumulative cost.
+ *  - Per-source "where it lives" slices net acquisition against disposal per
+ *    source — an estimate derived from transaction history, labeled as such.
+ */
+import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
+import type { LookupAddressRow, PriceCacheRow } from '@/lib/storage/db';
+import { buildPortfolioHoldings, type PortfolioHolding } from '@/lib/portfolio/portfolioCompute';
+import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
+import { resolveAssetLabel } from '@/lib/assets/solanaMints';
+import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
+import { brandLabel, chainIconId, parserIconId } from '@/components/connections/brandIcons';
+import { getCurrentFy, getFyBoundaries, IST_OFFSET_MS } from '@/lib/utils';
+
+// ---------------------------------------------------------------------------
+// Price cache indexing
+// ---------------------------------------------------------------------------
+
+export interface PricePoint {
+  /** UTC ms of the daily close (midnight of the dd-mm-yyyy key day). */
+  dateMs: number;
+  price: number;
+}
+
+export interface PriceIndex {
+  /** `BTC` → daily closes, ascending. */
+  bySymbol: Map<string, PricePoint[]>;
+  /** `${coingeckoPlatform}:${contractLower}` → daily closes, ascending. */
+  byContract: Map<string, PricePoint[]>;
+}
+
+function parseCacheDate(ddmmyyyy: string): number | null {
+  const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(ddmmyyyy);
+  if (!m) return null;
+  return Date.UTC(Number(m[3]), Number(m[2]) - 1, Number(m[1]));
+}
+
+/** Index the raw price-cache table into per-asset daily-close histories. */
+export function buildPriceIndex(rows: PriceCacheRow[], currency: string): PriceIndex {
+  const cur = currency.toUpperCase();
+  const bySymbol = new Map<string, PricePoint[]>();
+  const byContract = new Map<string, PricePoint[]>();
+
+  for (const row of rows) {
+    const parts = row.key.split(':');
+    let dateMs: number | null = null;
+    let bucket: Map<string, PricePoint[]> | null = null;
+    let bucketKey: string | null = null;
+
+    if (parts[0] === 'sym' && parts.length === 4) {
+      if (parts[3].toUpperCase() !== cur) continue;
+      dateMs = parseCacheDate(parts[2]);
+      bucket = bySymbol;
+      bucketKey = parts[1].toUpperCase();
+    } else if (parts[0] === 'ctr' && parts.length === 5) {
+      if (parts[4].toUpperCase() !== cur) continue;
+      dateMs = parseCacheDate(parts[3]);
+      bucket = byContract;
+      bucketKey = `${parts[1]}:${parts[2].toLowerCase()}`;
+    }
+    if (dateMs == null || !bucket || !bucketKey) continue;
+    if (!Number.isFinite(row.price) || row.price <= 0) continue;
+    const list = bucket.get(bucketKey) ?? [];
+    list.push({ dateMs, price: row.price });
+    bucket.set(bucketKey, list);
+  }
+
+  for (const list of [...bySymbol.values(), ...byContract.values()]) {
+    list.sort((a, b) => a.dateMs - b.dateMs);
+  }
+  return { bySymbol, byContract };
+}
+
+/** Daily-close history for a holding: contract-keyed first, symbol fallback. */
+export function priceHistoryFor(
+  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
+  index: PriceIndex
+): PricePoint[] | null {
+  if (holding.contractAddress && holding.chain) {
+    const platform = COINGECKO_PLATFORM[holding.chain as ChainId];
+    if (platform) {
+      const points = index.byContract.get(`${platform}:${holding.contractAddress.toLowerCase()}`);
+      if (points && points.length > 0) return points;
+    }
+  }
+  const symbol = resolvePriceAsset(holding.asset, holding.contractAddress, holding.chain).toUpperCase();
+  const points = index.bySymbol.get(symbol);
+  return points && points.length > 0 ? points : null;
+}
+
+/** Last cached close at or before `ts` (step interpolation), else null. */
+export function priceAt(points: PricePoint[], ts: number): number | null {
+  let lo = 0;
+  let hi = points.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].dateMs <= ts) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans >= 0 ? points[ans].price : null;
+}
+
+// ---------------------------------------------------------------------------
+// Valued holdings (now snapshot)
+// ---------------------------------------------------------------------------
+
+export interface ValuedHolding extends PortfolioHolding {
+  /** Latest cached close for this asset, if any. */
+  priceNow: number | null;
+  /** UTC ms of that close's day (for "prices as of …" honesty captions). */
+  priceAsOf: number | null;
+  /** % change between the two latest closes — only when they sit ~24h apart. */
+  dayChangePct: number | null;
+  /** costBasis / amount (0 when amount is 0). */
+  avgCost: number;
+  /** amount × priceNow, when priced. */
+  valueNow: number | null;
+  /** valueNow − costBasis, when priced. */
+  unrealized: number | null;
+  /** unrealized as % of cost basis, when priced and cost > 0. */
+  unrealizedPct: number | null;
+}
+
+const DAY_MS = 86_400_000;
+
+export function valueHoldings(holdings: PortfolioHolding[], index: PriceIndex): ValuedHolding[] {
+  return holdings.map((h) => {
+    const points = priceHistoryFor(h, index);
+    const avgCost = h.amount > 1e-9 ? h.costBasis / h.amount : 0;
+    if (!points) {
+      return {
+        ...h,
+        priceNow: null,
+        priceAsOf: null,
+        dayChangePct: null,
+        avgCost,
+        valueNow: null,
+        unrealized: null,
+        unrealizedPct: null
+      };
+    }
+    const latest = points[points.length - 1];
+    const prev = points.length >= 2 ? points[points.length - 2] : null;
+    const gap = prev ? latest.dateMs - prev.dateMs : null;
+    const dayChangePct =
+      prev && gap != null && gap >= DAY_MS * 0.8 && gap <= DAY_MS * 1.2 && prev.price > 0
+        ? ((latest.price - prev.price) / prev.price) * 100
+        : null;
+    const valueNow = h.amount * latest.price;
+    const unrealized = valueNow - h.costBasis;
+    return {
+      ...h,
+      priceNow: latest.price,
+      priceAsOf: latest.dateMs,
+      dayChangePct,
+      avgCost,
+      valueNow,
+      unrealized,
+      unrealizedPct: h.costBasis > 0 ? (unrealized / h.costBasis) * 100 : null
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Period ranges + hero change
+// ---------------------------------------------------------------------------
+
+export type DashboardPeriod = '1M' | '6M' | 'FY' | '1Y' | 'ALL';
+
+export const DASHBOARD_PERIODS: { value: DashboardPeriod; label: string }[] = [
+  { value: '1M', label: '1M' },
+  { value: '6M', label: '6M' },
+  { value: 'FY', label: 'FY' },
+  { value: '1Y', label: '1Y' },
+  { value: 'ALL', label: 'All' }
+];
+
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** Short "Apr 1" style label (UTC — FY boundaries are instants near midnight UTC). */
+export function shortDateLabel(ts: number): string {
+  const d = new Date(ts);
+  return `${MONTHS_SHORT[d.getUTCMonth()]} ${d.getUTCDate()}`;
+}
+
+export interface PeriodRange {
+  start: number;
+  end: number;
+  /** Caption fragment after the change figure, e.g. "since Apr 1 · FY 2026-27". */
+  sinceCaption: string;
+}
+
+export function periodRange(
+  period: DashboardPeriod,
+  jurisdiction: Jurisdiction,
+  nowMs: number,
+  firstTxMs: number | null
+): PeriodRange {
+  switch (period) {
+    case '1M':
+      return { start: nowMs - 30 * DAY_MS, end: nowMs, sinceCaption: 'past 30 days' };
+    case '6M':
+      return { start: nowMs - 182 * DAY_MS, end: nowMs, sinceCaption: 'past 6 months' };
+    case 'FY': {
+      const fy = getCurrentFy(jurisdiction);
+      const { start } = getFyBoundaries(fy, jurisdiction);
+      const fyLabel =
+        jurisdiction === 'IN' ? `FY ${fy}-${String(fy + 1).slice(-2)}` : String(fy);
+      // IN boundaries are IST-correct instants (Mar 31 18:30 UTC) — label them
+      // in IST so the caption reads "Apr 1", matching how India names its FY.
+      const labelTs = jurisdiction === 'IN' ? start + IST_OFFSET_MS : start;
+      return { start, end: nowMs, sinceCaption: `since ${shortDateLabel(labelTs)} · ${fyLabel}` };
+    }
+    case '1Y':
+      return { start: nowMs - 365 * DAY_MS, end: nowMs, sinceCaption: 'past year' };
+    case 'ALL':
+      return {
+        start: firstTxMs ?? nowMs - 30 * DAY_MS,
+        end: nowMs,
+        sinceCaption: 'all time'
+      };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Chart series — prefix holdings through the same engine as the table
+// ---------------------------------------------------------------------------
+
+export interface ChartPoint {
+  t: number;
+  /** Cumulative cost basis of everything held at t. */
+  cost: number;
+  /**
+   * Market value of the priced slice at t (qty × last cached close ≤ t).
+   * Null when nothing held/priced at t. May exclude unpriced assets — pair
+   * with `unpricedCount` for honest labeling.
+   */
+  market: number | null;
+  /** Holdings at t with no cached close ≤ t (excluded from `market`). */
+  unpricedCount: number;
+}
+
+export function buildChartSeries(
+  transactions: Transaction[],
+  index: PriceIndex,
+  start: number,
+  end: number,
+  maxSamples = 72
+): ChartPoint[] {
+  const sorted = transactions
+    .filter((t) => !t.isSpam)
+    .slice()
+    .sort((a, b) => a.timestamp - b.timestamp);
+  if (sorted.length === 0 || end <= start) return [];
+
+  const span = end - start;
+  const samples = Math.max(2, Math.min(maxSamples, Math.floor(span / DAY_MS) + 1));
+  const points: ChartPoint[] = [];
+  let cursor = 0;
+
+  for (let i = 0; i < samples; i++) {
+    const ts = i === samples - 1 ? end : Math.round(start + (span * i) / (samples - 1));
+    while (cursor < sorted.length && sorted[cursor].timestamp <= ts) cursor++;
+    if (cursor === 0) {
+      points.push({ t: ts, cost: 0, market: null, unpricedCount: 0 });
+      continue;
+    }
+    const holdings = buildPortfolioHoldings(sorted.slice(0, cursor));
+    let cost = 0;
+    let market = 0;
+    let pricedAny = false;
+    let unpricedCount = 0;
+    for (const h of holdings) {
+      cost += h.costBasis;
+      const history = priceHistoryFor(h, index);
+      const p = history ? priceAt(history, ts) : null;
+      if (p != null) {
+        market += h.amount * p;
+        pricedAny = true;
+      } else if (Math.abs(h.amount) > 1e-9) {
+        unpricedCount++;
+      }
+    }
+    points.push({ t: ts, cost, market: pricedAny ? market : null, unpricedCount });
+  }
+  return points;
+}
+
+// ---------------------------------------------------------------------------
+// Money strip — period cash-flow summary
+// ---------------------------------------------------------------------------
+
+export interface MoneyStrip {
+  moneyIn: number;
+  moneyOut: number;
+  income: number;
+  fees: number;
+  realizedGains: number;
+}
+
+export function moneyStrip(
+  transactions: Transaction[],
+  disposals: Disposal[],
+  start: number,
+  end: number
+): MoneyStrip {
+  const inRange = (ts: number) => ts >= start && ts <= end;
+  const strip: MoneyStrip = { moneyIn: 0, moneyOut: 0, income: 0, fees: 0, realizedGains: 0 };
+  for (const t of transactions) {
+    if (t.isSpam || !inRange(t.timestamp)) continue;
+    const fiat = t.fiatValue ?? 0;
+    switch (t.type) {
+      case 'buy':
+        strip.moneyIn += fiat;
+        break;
+      case 'sell':
+        strip.moneyOut += fiat;
+        break;
+      case 'income':
+      case 'gift_received':
+        strip.income += fiat;
+        break;
+      case 'fee':
+        strip.fees += fiat;
+        break;
+      default:
+        break;
+    }
+  }
+  for (const d of disposals) {
+    if (inRange(d.disposedAt)) strip.realizedGains += d.gain;
+  }
+  return strip;
+}
+
+// ---------------------------------------------------------------------------
+// Per-source "where it lives" breakdown (estimate from transaction history)
+// ---------------------------------------------------------------------------
+
+export interface SourceSlice {
+  key: string;
+  /** Display name — wallet label, exchange brand label, or prettified source. */
+  name: string;
+  /** Brand-icon registry key (connections/brandIcons), when one exists. */
+  iconId?: string;
+  /** Net quantity of the holding's asset attributed to this source. */
+  qty: number;
+}
+
+function prettifySource(source: string): string {
+  const base = source.replace(/_api$/, '').split('_')[0].toLowerCase();
+  if (base === 'manual') return 'Manual entry';
+  if (base === 'rpc') return 'On-chain sync';
+  return base.charAt(0).toUpperCase() + base.slice(1);
+}
+
+function holdingMatches(
+  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
+  asset: string | undefined,
+  contractAddress: string | undefined,
+  chain: string | undefined
+): boolean {
+  if (!asset) return false;
+  if (holding.contractAddress && contractAddress) {
+    return contractAddress.toLowerCase() === holding.contractAddress.toLowerCase();
+  }
+  return (
+    resolveAssetLabel(asset, contractAddress, chain).toUpperCase() === holding.asset.toUpperCase()
+  );
+}
+
+/** Signed quantity a transaction contributes to `holding` (both legs considered). */
+function txDeltaFor(
+  t: Transaction,
+  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>
+): number {
+  let delta = 0;
+  if (holdingMatches(holding, t.asset, t.contractAddress, t.chain)) {
+    switch (t.type) {
+      case 'buy':
+      case 'transfer_in':
+      case 'income':
+      case 'gift_received':
+        delta += t.amount;
+        break;
+      case 'sell':
+      case 'trade':
+      case 'transfer_out':
+      case 'gift_sent':
+      case 'fee':
+        delta -= t.amount;
+        break;
+      default:
+        break;
+    }
+  }
+  // Counter leg: buy/sell/trade move the counter asset the opposite way.
+  if (
+    (t.type === 'trade' || t.type === 'sell') &&
+    t.counterAsset &&
+    t.counterAmount &&
+    holdingMatches(holding, t.counterAsset, undefined, t.chain)
+  ) {
+    delta += t.counterAmount;
+  } else if (
+    t.type === 'buy' &&
+    t.counterAsset &&
+    t.counterAmount &&
+    holdingMatches(holding, t.counterAsset, undefined, t.chain)
+  ) {
+    delta -= t.counterAmount;
+  }
+  return delta;
+}
+
+/**
+ * Net each source's accumulation of `holding`: acquisition minus disposal per
+ * exchange / wallet, from transaction history. Wallet rows (walletAddress
+ * set) attribute to that wallet; everything else attributes to `t.source`.
+ * Slices at or below zero are dropped — the remainder is labeled an estimate.
+ */
+export function sourceBreakdown(
+  transactions: Transaction[],
+  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
+  wallets: LookupAddressRow[]
+): SourceSlice[] {
+  const walletByAddress = new Map(wallets.map((w) => [w.address.toLowerCase(), w]));
+  const slices = new Map<string, SourceSlice>();
+
+  const upsert = (key: string, name: string, iconId: string | undefined, delta: number) => {
+    const existing = slices.get(key);
+    if (existing) {
+      existing.qty += delta;
+    } else {
+      slices.set(key, { key, name, iconId, qty: delta });
+    }
+  };
+
+  for (const t of transactions) {
+    if (t.isSpam) continue;
+    const delta = txDeltaFor(t, holding);
+    if (Math.abs(delta) < 1e-12) continue;
+    if (t.walletAddress) {
+      const addrLower = t.walletAddress.toLowerCase();
+      const wallet = walletByAddress.get(addrLower);
+      const name =
+        wallet?.label ??
+        `${t.walletAddress.slice(0, 6)}…${t.walletAddress.slice(-4)}`;
+      upsert(`wallet:${addrLower}`, name, chainIconId(t.chain ?? ''), delta);
+    } else {
+      const iconId = parserIconId(t.source);
+      upsert(
+        `source:${t.source}`,
+        iconId ? brandLabel(iconId) : prettifySource(t.source),
+        iconId,
+        delta
+      );
+    }
+  }
+
+  return Array.from(slices.values())
+    .filter((s) => s.qty > 1e-9)
+    .sort((a, b) => b.qty - a.qty);
+}
+
+// ---------------------------------------------------------------------------
+// Insights — on-device, rule-based "For you today" cards
+// ---------------------------------------------------------------------------
+
+export type InsightKind = 'needs-price' | 'needs-review' | 'itr-deadline' | 'tds' | 'unrealized-loss';
+
+export interface Insight {
+  /** Stable id — persisted when dismissed. */
+  id: string;
+  kind: InsightKind;
+  title: string;
+  body: string;
+  /** Optional action — navigates to a primary tab. */
+  cta?: { label: string; tab: string };
+}
+
+export interface ItrDeadline {
+  daysLeft: number;
+  deadlineMs: number;
+  /** FY being filed (e.g. 2025 → FY 2025-26, deadline Jul 31 2026). */
+  filingFy: number;
+}
+
+/**
+ * India's ITR filing deadline for a VDA FY is Jul 31 after the FY ends.
+ * Returns the NEXT upcoming deadline (or the one just passed this season —
+ * callers decide the visibility window).
+ */
+export function itrDeadline(nowMs: number, jurisdiction: Jurisdiction): ItrDeadline | null {
+  if (jurisdiction !== 'IN') return null;
+  const istYear = new Date(nowMs + IST_OFFSET_MS).getUTCFullYear();
+  // Jul 31 end-of-day IST, this calendar year; roll forward if already past.
+  let deadlineMs = Date.UTC(istYear, 6, 31, 23, 59, 59) - IST_OFFSET_MS;
+  if (nowMs > deadlineMs) {
+    deadlineMs = Date.UTC(istYear + 1, 6, 31, 23, 59, 59) - IST_OFFSET_MS;
+  }
+  const filingFy = new Date(deadlineMs + IST_OFFSET_MS).getUTCFullYear() - 1;
+  // Calendar-day countdown in IST (Jul 25 → Jul 31 reads "due in 6 days").
+  const istDay = (ms: number) => Math.floor((ms + IST_OFFSET_MS) / DAY_MS);
+  return { daysLeft: istDay(deadlineMs) - istDay(nowMs), deadlineMs, filingFy };
+}
+
+export interface InsightInput {
+  /** Transactions missing a fiat value (excl. internal transfers), non-spam. */
+  needsPriceCount: number;
+  needsReviewCount: number;
+  jurisdiction: Jurisdiction;
+  nowMs: number;
+  /** INR TDS withheld in the current FY (0 when none). */
+  tdsTotalInr: number;
+  tdsFyLabel: string;
+  /** Deepest unrealized loss among priced holdings, when any. */
+  biggestLoss: { asset: string; amountInr: number; pct: number } | null;
+  /** Window for the ITR card (days). Defaults to 90. */
+  itrWindowDays?: number;
+  /** INR currency label for money formatting in copy. */
+  formatMoney: (amount: number) => string;
+}
+
+export function buildInsights(input: InsightInput): Insight[] {
+  const insights: Insight[] = [];
+  const {
+    needsPriceCount,
+    needsReviewCount,
+    jurisdiction,
+    nowMs,
+    tdsTotalInr,
+    tdsFyLabel,
+    biggestLoss,
+    itrWindowDays = 90,
+    formatMoney
+  } = input;
+
+  if (needsPriceCount > 0) {
+    insights.push({
+      id: 'needs-price',
+      kind: 'needs-price',
+      title:
+        needsPriceCount === 1
+          ? '1 transaction needs a price'
+          : `${needsPriceCount} transactions need a price`,
+      body: 'Add fiat values so net worth, gains and your tax estimate stay accurate.',
+      cta: { label: 'Fix', tab: 'review' }
+    });
+  }
+
+  if (needsReviewCount > 0) {
+    insights.push({
+      id: 'needs-review',
+      kind: 'needs-review',
+      title:
+        needsReviewCount === 1
+          ? '1 transaction needs review'
+          : `${needsReviewCount} transactions need review`,
+      body: 'Confirm types and flags so nothing lands in the wrong tax bucket.',
+      cta: { label: 'Fix', tab: 'review' }
+    });
+  }
+
+  const itr = itrDeadline(nowMs, jurisdiction);
+  if (itr && itr.daysLeft >= 0 && itr.daysLeft < itrWindowDays) {
+    const fyShort = `FY ${itr.filingFy}-${String(itr.filingFy + 1).slice(-2)}`;
+    insights.push({
+      id: `itr-deadline-fy${itr.filingFy}`,
+      kind: 'itr-deadline',
+      title:
+        itr.daysLeft === 0
+          ? 'ITR filing closes today'
+          : `ITR due in ${itr.daysLeft} day${itr.daysLeft === 1 ? '' : 's'}`,
+      body: `${fyShort} filing closes Jul 31. Export your Schedule VDA from Capital Gains before the deadline.`,
+      cta: { label: 'Open Capital Gains', tab: 'capital-gains' }
+    });
+  }
+
+  if (tdsTotalInr > 0) {
+    insights.push({
+      id: `tds-${tdsFyLabel.replace(/\s+/g, '-')}`,
+      kind: 'tds',
+      title: `${formatMoney(tdsTotalInr)} TDS deducted`,
+      body: `Exchanges withheld 1% u/s 194S on your ${tdsFyLabel} sales. Reconcile with Form 26AS so you don't lose the credit.`,
+      cta: { label: 'Open TDS reconciliation', tab: 'capital-gains' }
+    });
+  }
+
+  if (biggestLoss) {
+    insights.push({
+      id: 'unrealized-loss',
+      kind: 'unrealized-loss',
+      title: `${biggestLoss.asset}: ${formatMoney(Math.abs(biggestLoss.amountInr))} unrealized loss`,
+      body: "Under Sec 115BBH, VDA losses can't offset gains — selling now won't cut your FY tax; it only resets your cost basis lower."
+    });
+  }
+
+  return insights;
+}
+
+// ---------------------------------------------------------------------------
+// Small shared helpers
+// ---------------------------------------------------------------------------
+
+/** "Synced 2 min ago" style relative label. */
+export function formatRelativeTime(ts: number, nowMs: number): string {
+  const diff = Math.max(0, nowMs - ts);
+  const mins = Math.floor(diff / 60_000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins} min ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 48) return `${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} day${days === 1 ? '' : 's'} ago`;
+  return new Date(ts).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+/** Latest sync/import timestamp across every connected source, if any. */
+export function latestSyncAt(
+  wallets: LookupAddressRow[],
+  exchangeConnections: { lastSyncAt?: number }[],
+  csvImports: { importedAt: number }[]
+): number | null {
+  let latest: number | null = null;
+  const consider = (ts: number | undefined) => {
+    if (ts != null && (latest == null || ts > latest)) latest = ts;
+  };
+  for (const w of wallets) consider(w.lastSyncedAt);
+  for (const c of exchangeConnections) consider(c.lastSyncAt);
+  for (const c of csvImports) consider(c.importedAt);
+  return latest;
+}
+
+// ---------------------------------------------------------------------------
+// Allocation (by asset)
+// ---------------------------------------------------------------------------
+
+export interface AllocationSlice {
+  /** Resolved asset label (e.g. "BTC"). */
+  asset: string;
+  value: number;
+  /** 0–100 share of the total. */
+  pct: number;
+}
+
+/**
+ * By-asset allocation. `useMarket` values priced holdings at their latest
+ * close; everything else is valued at cost. Top `maxSlices` by value, with
+ * the remainder folded into "Other".
+ */
+export function allocationSlices(
+  valued: ValuedHolding[],
+  useMarket: boolean,
+  maxSlices = 5
+): AllocationSlice[] {
+  // `valued` can carry the same asset on multiple rows (per-source split) —
+  // merge by asset first so "By asset" never lists a symbol twice.
+  const byAsset = new Map<string, number>();
+  for (const h of valued) {
+    const value = useMarket && h.valueNow != null ? h.valueNow : h.costBasis;
+    byAsset.set(h.asset, (byAsset.get(h.asset) ?? 0) + value);
+  }
+  const rows = Array.from(byAsset, ([asset, value]) => ({ asset, value }))
+    .filter((r) => r.value > 1e-9)
+    .sort((a, b) => b.value - a.value);
+  const total = rows.reduce((s, r) => s + r.value, 0);
+  if (total <= 0) return [];
+  const top = rows.slice(0, maxSlices);
+  const rest = rows.slice(maxSlices);
+  const slices = top.map((r) => ({ asset: r.asset, value: r.value, pct: (r.value / total) * 100 }));
+  if (rest.length > 0) {
+    const restValue = rest.reduce((s, r) => s + r.value, 0);
+    slices.push({ asset: 'Other', value: restValue, pct: (restValue / total) * 100 });
+  }
+  return slices;
+}

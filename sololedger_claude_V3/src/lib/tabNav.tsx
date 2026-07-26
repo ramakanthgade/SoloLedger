@@ -7,9 +7,16 @@ import { createContext, useContext } from 'react';
  */
 export interface TabNav {
   goToImport: () => void;
+  /**
+   * Navigate to any primary tab by id ('dashboard' | 'import' | 'review' |
+   * 'capital-gains' | 'reports' | 'settings'). Unknown ids are ignored by the
+   * shell; the default outside the app shell is a no-op so components render
+   * safely in tests.
+   */
+  goTo: (tabId: string) => void;
 }
 
-const TabNavContext = createContext<TabNav>({ goToImport: () => {} });
+const TabNavContext = createContext<TabNav>({ goToImport: () => {}, goTo: () => {} });
 
 export function TabNavProvider({
   value,

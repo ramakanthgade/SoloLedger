@@ -5,14 +5,15 @@ import { cn } from '@/lib/utils';
 import type { ExchangeId } from '@/lib/exchangeSync';
 import { AUTO_SYNC_EXCHANGES } from '@/components/import/autoSyncExchanges';
 import { IMPORT_SOURCES } from '@/components/import/importSources';
-import { BrandIcon, WALLET_APPS } from './brandIcons';
+import { BrandIcon } from './brandIcons';
+import { WALLET_CATALOG, WALLET_GROUP_ORDER } from './walletCatalog';
 import type { FlowKind } from './WhatStep';
 
 /** What the user picked in step 2 — routed by the drawer's Connect step. */
 export type WhichSelection =
   | { kind: 'exchange-api'; id: ExchangeId; label: string }
   | { kind: 'exchange-file'; id: string; label: string }
-  | { kind: 'wallet-app'; id: string; label: string }
+  | { kind: 'wallet-app'; id: string; label: string; preselectChain?: string }
   | { kind: 'chain'; id: string; label: string };
 
 interface WhichStepProps {
@@ -88,19 +89,23 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
       ];
     }
     if (flow === 'wallet-app') {
-      return [
-        {
-          heading: null,
-          cells: WALLET_APPS.map((w) => ({
+      // Data-driven catalog, sectioned by ecosystem (group order locked in walletCatalog).
+      return WALLET_GROUP_ORDER.map((group) => ({
+        heading: group as string,
+        cells: WALLET_CATALOG.filter((w) => w.group === group).map((w) => ({
+          id: w.id,
+          label: w.name,
+          meta: w.subtitle,
+          iconId: w.logo ? w.id : null,
+          added: added.has(w.id),
+          selection: {
+            kind: 'wallet-app',
             id: w.id,
-            label: w.label,
-            meta: w.hint,
-            iconId: w.id,
-            added: added.has(w.id),
-            selection: { kind: 'wallet-app', id: w.id, label: w.label }
-          }))
-        }
-      ];
+            label: w.name,
+            preselectChain: w.chains[0]
+          } as WhichSelection
+        }))
+      })).filter((s) => s.cells.length > 0);
     }
     // chain
     return [
