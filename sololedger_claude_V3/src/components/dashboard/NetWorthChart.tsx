@@ -269,8 +269,8 @@ export function NetWorthChart({ points, mode, currency, mask = false }: NetWorth
             </>
           )}
 
-          {/* x labels — edge ticks anchor inward so they never clip */}
-          {ticks.map((tick) => (
+          {/* x labels — first/last ticks anchor inward so they never clip */}
+          {ticks.map((tick, i) => (
             <text
               key={tick.label + tick.frac}
               x={PAD_X + tick.frac * (W - 2 * PAD_X)}
@@ -278,7 +278,7 @@ export function NetWorthChart({ points, mode, currency, mask = false }: NetWorth
               fontSize="11"
               fontWeight="700"
               fill="var(--text-low)"
-              textAnchor={tick.frac <= 0.001 ? 'start' : tick.frac >= 0.999 ? 'end' : 'middle'}
+              textAnchor={i === 0 ? 'start' : i === ticks.length - 1 ? 'end' : 'middle'}
               style={{ letterSpacing: '0.06em', textTransform: 'uppercase' }}
             >
               {tick.label}
