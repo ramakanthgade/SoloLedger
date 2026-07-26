@@ -25,6 +25,12 @@ const mocks = vi.hoisted(() => ({
       contractAddress?: string; amount: number; asOf: number; source: 'rpc'
     }[]
   },
+  lookupRows: {
+    current: [] as {
+      id: string; chain: string; address: string; lastSyncedAt: number
+    }[]
+  },
+  exchangeRow: { current: undefined as { id: string; lastSyncAt?: number } | undefined },
   user: { current: null as { plan: string; subscriptionActive: boolean } | null },
   mode: { current: 'local' as 'local' | 'byok' | 'hosted' },
   syncNow: vi.fn(async (_id: string) => {}),
@@ -75,7 +81,10 @@ vi.mock('@/lib/storage/db', () => ({
   db: {
     transactions: { toArray: () => mocks.txs.current },
     priceCache: { toArray: () => mocks.priceRows.current },
-    walletBalances: { toArray: () => mocks.balanceRows.current }
+    walletBalances: { toArray: () => mocks.balanceRows.current },
+    lookupAddresses: { toArray: () => mocks.lookupRows.current },
+    exchangeConnections: { get: (id: string) =>
+      mocks.exchangeRow.current?.id === id ? mocks.exchangeRow.current : undefined }
   },
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
   transactionSourceKey: (t: { sourceRef?: string; walletAddress?: string }) =>
@@ -254,6 +263,8 @@ beforeEach(() => {
   mocks.txs.current = [];
   mocks.priceRows.current = [];
   mocks.balanceRows.current = [];
+  mocks.lookupRows.current = [];
+  mocks.exchangeRow.current = undefined;
   mocks.user.current = null;
   mocks.mode.current = 'local';
   mocks.exchangeJob.current = { ...IDLE_JOB };
@@ -281,6 +292,17 @@ describe('ConnectionDetail — wallet kind', () => {
       bal('bc1qaaa1111111111111', 'XYZ', 5),
       // A confirmed zero is data — the drained-address proof.
       bal('bc1qbbb2222222222222', 'BTC', 0)
+    ];
+    // The live lookupAddresses table (D-4) — mirrors the card's own rows.
+    mocks.lookupRows.current = [
+      {
+        id: 'bitcoin:bc1qaaa1111111111111', chain: 'bitcoin',
+        address: 'bc1qaaa1111111111111', lastSyncedAt: day(2026, 1, 10)
+      },
+      {
+        id: 'bitcoin:bc1qbbb2222222222222', chain: 'bitcoin',
+        address: 'bc1qbbb2222222222222', lastSyncedAt: day(2026, 3, 15)
+      }
     ];
   }
 
@@ -366,6 +388,22 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(mocks.runWalletImport.mock.calls[0][4]).toBe(true);
     expect(mocks.runWalletImport.mock.calls[1][0]).toEqual(['bc1qbbb2222222222222']);
   });
+
+  it('D-4: the last-synced line reads the live lookup rows, not the stale card snapshot', () => {
+    // The card prop says March; the live table says "just now" (post-Sync-now).
+    mocks.lookupRows.current = [
+      {
+        id: 'bitcoin:bc1qaaa1111111111111', chain: 'bitcoin',
+        address: 'bc1qaaa1111111111111', lastSyncedAt: Date.now()
+      },
+      {
+        id: 'bitcoin:bc1qbbb2222222222222', chain: 'bitcoin',
+        address: 'bc1qbbb2222222222222', lastSyncedAt: day(2026, 3, 15)
+      }
+    ];
+    render(<ConnectionDetail card={walletCard()} onBack={() => {}} />);
+    expect(screen.getByTestId('detail-lastsync-line')).toHaveTextContent('Last synced just now');
+  });
 });
 
 describe('ConnectionDetail — exchange kind', () => {
@@ -425,6 +463,12 @@ describe('ConnectionDetail — exchange kind', () => {
     mocks.user.current = { plan: 'pro', subscriptionActive: false };
     render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
     expect(screen.getByTestId('detail-autosync-line')).toHaveTextContent('Manual sync · free plan');
+  });
+
+  it('D-4: the last-synced line reads the live exchange row, not the stale card snapshot', () => {
+    mocks.exchangeRow.current = { id: 'exc_1', lastSyncAt: Date.now() };
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
+    expect(screen.getByTestId('detail-lastsync-line')).toHaveTextContent('Last synced just now');
   });
 });
 

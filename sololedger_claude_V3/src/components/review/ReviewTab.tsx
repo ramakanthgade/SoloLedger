@@ -1216,7 +1216,7 @@ export function ReviewTab() {
     const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : null;
     const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
     const counterLabel = t.counterAsset ? resolveAssetLabel(t.counterAsset, undefined, t.chain) : null;
-    const src = sourceBrandInfo(t.source, chainLabel);
+    const src = sourceBrandInfo(t.source, chainLabel, t.chain ?? null);
     const disposal = disposalByTxId.get(t.id);
     const isEditing = editingFiat === t.id;
     const expanded = expandedId === t.id;
@@ -1273,7 +1273,7 @@ export function ReviewTab() {
       if (isOwnSide) {
         return (
           <>
-            <SourceIcon source={t.source} chainLabel={chainLabel} size={18} />
+            <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={18} />
             {src.label}
           </>
         );
@@ -1341,7 +1341,7 @@ export function ReviewTab() {
               badges wrap under, still right-aligned) with the chevron after. */}
           <div className="order-3 ml-auto flex shrink-0 items-center gap-2.5 lg:order-none lg:ml-0 lg:justify-end">
             <div className="flex flex-wrap items-center justify-end gap-x-2.5 gap-y-1 lg:w-[13.5rem]">
-              <SourceIcon source={t.source} chainLabel={chainLabel} size={30} />
+              <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={30} />
               <div className="min-w-0 lg:text-right">
                 <p className="max-w-[7rem] truncate text-xs font-bold text-hi sm:max-w-[9rem]" title={src.label}>
                   {src.label}
@@ -1443,7 +1443,7 @@ export function ReviewTab() {
                 )}
               </DetailRow>
               <DetailRow label="Source">
-                <SourceIcon source={t.source} chainLabel={chainLabel} size={18} />
+                <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={18} />
                 {src.label}
                 {chainLabel && chainLabel !== src.label ? ` · ${chainLabel}` : ''}
               </DetailRow>

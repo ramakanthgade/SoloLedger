@@ -16,6 +16,7 @@
 import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
 import type { LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import { buildPortfolioHoldings, type PortfolioHolding } from '@/lib/portfolio/portfolioCompute';
+import { isNativeSolAsset } from '@/lib/portfolio/solBalance';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
@@ -531,6 +532,15 @@ export function balanceRowFor(
 ): WalletBalanceRow | undefined {
   return balances.find((b) => {
     if (b.chain !== chain || b.address.toLowerCase() !== addressLower) return false;
+    // Native SOL: the holding carries the wrapped-SOL mint while the stored
+    // native balance row is contract-less — match on the asset label instead.
+    if (
+      chain === 'solana' &&
+      isNativeSolAsset(holding.asset) &&
+      !b.contractAddress
+    ) {
+      return b.asset.toUpperCase() === holding.asset.toUpperCase();
+    }
     if (holding.contractAddress || b.contractAddress) {
       return (
         !!holding.contractAddress &&
@@ -583,9 +593,23 @@ export function reconcileHoldings(
     const addrChain = new Map<string, string>();
     let nonWalletDelta = 0;
     const holdingChainKey = h.chain ?? 'x';
+    // Native SOL is the one upstream exception to chain keying:
+    // computeMainWalletSolFromTransactions is chain-blind, so chain-less
+    // manual SOL rows (chain undefined) built this holding too and must be
+    // counted here — filtering them out zeroed the holding (D-3).
+    const chainMergedSol = holdingChainKey === 'solana' && isNativeSolAsset(h.asset);
     for (const t of transactions) {
       if (t.isSpam) continue;
-      if ((t.chain ?? 'x') !== holdingChainKey) continue;
+      // Mirror buildPortfolioHoldings: internal transfer-outs never built qty
+      // (except DCA escrow deposits — an edge case we don't replicate here).
+      if (
+        t.isInternalTransfer &&
+        (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent')
+      ) {
+        continue;
+      }
+      const txChainKey = t.chain ?? 'x';
+      if (txChainKey !== holdingChainKey && !(chainMergedSol && txChainKey === 'x')) continue;
       const delta = txDeltaFor(t, h);
       if (Math.abs(delta) < 1e-12) continue;
       if (t.walletAddress) {
@@ -606,7 +630,11 @@ export function reconcileHoldings(
         qty += Math.max(0, row.amount); // on-chain truth (0 drains a phantom)
         reconciledAny = true;
       } else {
-        qty += Math.max(0, delta); // tx-derived fallback
+        // No on-chain row for this address (unsupported chain / never
+        // fetched): fall back to its raw tx-derived contribution. Clamping
+        // negatives to 0 here broke parity with the tx-history estimate —
+        // a real send would silently vanish instead of reducing the qty (D-3).
+        qty += delta;
       }
     }
 

@@ -546,6 +546,96 @@ describe('reconcileHoldings', () => {
     expect(result.holdings[0].qtySource).toBe('on-chain'); // wallet slice was reconciled
   });
 
+  it('D-3: chain-less manual SOL + wallet send survive unrelated balance rows (SOL does not vanish)', () => {
+    // The F6 repro: manual chain-less transfer_in 10 SOL merged upstream into
+    // the single solana-keyed SOL holding; a Phantom transfer_out −2.500005;
+    // balance rows exist only for OTHER chains (ethereum/bitcoin). The SOL
+    // holding must stay at the tx-derived 7.499995, captioned tx-history.
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const txs = [
+      tx({ id: 'manual-sol', type: 'transfer_in', asset: 'SOL', amount: 10, source: 'manual' }),
+      tx({
+        id: 'phantom-send', type: 'transfer_out', asset: 'SOL', amount: 2.500005,
+        source: 'rpc:helius', chain: 'solana', walletAddress: 'phantomAddr'
+      })
+    ];
+    const holdings = [
+      { asset: 'SOL', amount: 7.499995, costBasis: 75, chain: 'solana', contractAddress: SOL_MINT }
+    ];
+    const result = reconcileHoldings(holdings, txs, [
+      balanceRow({ id: 'ethereum:0xA:ETH', chain: 'ethereum', address: '0xA', asset: 'ETH', amount: 0 }),
+      balanceRow({ amount: 0 }) // bitcoin phantom row
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(7.499995, 8);
+    expect(result.holdings[0].qtySource).toBe('tx-history');
+    expect(result.reconciledCount).toBe(0);
+    expect(result.adjustedDownCount).toBe(0);
+  });
+
+  it('D-3: a no-row wallet send REDUCES the tx-derived qty instead of clamping to 0', () => {
+    // Manual 10 in, wallet 4 out, no balance row anywhere for the chain:
+    // the honest estimate is 6, not 10.
+    const txs = [
+      tx({ id: 'm-in', type: 'transfer_in', asset: 'BTC', amount: 10, source: 'manual', chain: 'bitcoin' }),
+      tx({
+        id: 'w-out', type: 'transfer_out', asset: 'BTC', amount: 4,
+        source: 'rpc:blockstream', chain: 'bitcoin', walletAddress: BTC_ADDR
+      })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 6, costBasis: 60, chain: 'bitcoin' }];
+    // Unrelated-chain balance rows only → no row for (bitcoin, BTC_ADDR).
+    const result = reconcileHoldings(holdings, txs, [
+      balanceRow({ id: 'ethereum:0xA:ETH', chain: 'ethereum', address: '0xA', asset: 'ETH', amount: 5 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(6, 8);
+    expect(result.holdings[0].qtySource).toBe('tx-history');
+  });
+
+  it('internal transfer-outs never reduce a holding (parity with buildPortfolioHoldings)', () => {
+    const txs = [
+      tx({ id: 'w-in', type: 'transfer_in', asset: 'BTC', amount: 3, source: 'rpc:blockstream', chain: 'bitcoin', walletAddress: BTC_ADDR }),
+      tx({
+        id: 'w-internal', type: 'transfer_out', asset: 'BTC', amount: 1,
+        source: 'rpc:blockstream', chain: 'bitcoin', walletAddress: BTC_ADDR,
+        isInternalTransfer: true
+      })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 3, costBasis: 30, chain: 'bitcoin' }];
+    // An unrelated-chain balance row forces the scan to execute (an empty
+    // balances array early-returns and would make this test vacuous).
+    const result = reconcileHoldings(holdings, txs, [
+      balanceRow({ id: 'ethereum:0xA:ETH', chain: 'ethereum', address: '0xA', asset: 'ETH', amount: 5 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(3, 8); // 3 in, internal out skipped
+    expect(result.holdings[0].qtySource).toBe('tx-history');
+  });
+
+  it('native SOL holding matches a contract-less native balance row (wrapped mint vs SOL)', () => {
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const txs = [
+      tx({
+        id: 'sol-in', type: 'transfer_in', asset: 'SOL', amount: 9,
+        source: 'rpc:helius', chain: 'solana', walletAddress: 'phantomAddr'
+      })
+    ];
+    const holdings = [
+      { asset: 'SOL', amount: 9, costBasis: 90, chain: 'solana', contractAddress: SOL_MINT }
+    ];
+    const result = reconcileHoldings(holdings, txs, [
+      balanceRow({
+        id: 'solana:phantomAddr:SOL', chain: 'solana', address: 'phantomAddr',
+        asset: 'SOL', amount: 4.25
+      })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(4.25, 8);
+    expect(result.holdings[0].qtySource).toBe('on-chain');
+    expect(result.adjustedDownCount).toBe(1);
+  });
+
   it('token holdings reconcile by contract address, not by symbol', () => {
     const wbtc = '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599';
     const txs = [

@@ -138,10 +138,18 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
   }, [flow, added]);
 
   const q = query.trim().toLowerCase();
+  // Tokenized match: every word must appear in the label, so "any wallet"
+  // still finds "Any other wallet" (D-5) and "trust wallet" finds "Trust Wallet".
+  const tokens = q.split(/\s+/).filter(Boolean);
   const visible = sections
     .map((s) => ({
       ...s,
-      cells: q ? s.cells.filter((c) => c.label.toLowerCase().includes(q)) : s.cells
+      cells: tokens.length
+        ? s.cells.filter((c) => {
+            const label = c.label.toLowerCase();
+            return tokens.every((t) => label.includes(t));
+          })
+        : s.cells
     }))
     .filter((s) => s.cells.length > 0);
 

@@ -597,7 +597,13 @@ export function DashboardTab() {
 
     const pnlCell =
       h.unrealized != null ? (
-        <Badge tone={h.unrealized >= 0 ? 'gain' : 'loss'} className="tabular-figures">
+        // Huge gain text (phantom-scale numbers) must truncate inside the
+        // chip, not overflow the card edge at 390px (D-2) — parents carry
+        // min-w-0 so max-w-full has something real to constrain against.
+        <Badge
+          tone={h.unrealized >= 0 ? 'gain' : 'loss'}
+          className="max-w-full truncate tabular-figures"
+        >
           {hideBalances
             ? '••••'
             : h.unrealizedPct != null
@@ -656,7 +662,7 @@ export function DashboardTab() {
               <span className="text-mid">—</span>
             )}
           </div>
-          <div className="text-right">{pnlCell}</div>
+          <div className="min-w-0 text-right">{pnlCell}</div>
           <div>{shareCell}</div>
         </div>
 
@@ -664,13 +670,13 @@ export function DashboardTab() {
         <div className="px-4 py-3.5 sm:hidden">
           {assetCell}
           <div className="mt-3 flex items-end justify-between gap-3 pl-11">
-            <div>
+            <div className="min-w-0">
               <p className="text-sm font-semibold tabular-figures text-hi">
                 {hideBalances ? '••••' : `${formatCompactAmount(h.amount)} ${h.asset}`}
               </p>
               <p className="text-xs tabular-figures text-low">{fm(value)}</p>
             </div>
-            {pnlCell}
+            <div className="min-w-0 shrink text-right">{pnlCell}</div>
           </div>
         </div>
 

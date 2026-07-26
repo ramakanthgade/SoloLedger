@@ -29,6 +29,7 @@ export const BRAND_ICON_FILES = {
   ethereum: 'ethereum.svg',
   solana: 'solana.svg',
   polygon: 'polygon.svg',
+  polkadot: 'polkadot.svg',
   tether: 'tether.svg',
   bnb: 'bnb.png',
   usdc: 'usdc.png',
@@ -73,7 +74,8 @@ const CHAIN_ICONS: Record<string, BrandIconId> = {
   ethereum: 'ethereum',
   solana: 'solana',
   polygon: 'polygon',
-  bsc: 'bnb'
+  bsc: 'bnb',
+  polkadot: 'polkadot'
 };
 
 /** Asset symbol → token mark (uppercased lookup). */
@@ -144,11 +146,17 @@ function prettify(raw: string): string {
  * chain (e.g. "Ethereum"), so `rpc:ethereum` reads "Ethereum" rather than
  * "Rpc ethereum".
  */
-export function sourceBrandInfo(source: string, chainLabel?: string | null): SourceBrand {
+export function sourceBrandInfo(
+  source: string,
+  chainLabel?: string | null,
+  chainId?: string | null
+): SourceBrand {
   if (source.startsWith('rpc:')) {
-    const chainId = source.slice(4);
-    const id = CHAIN_ICONS[chainId];
-    const label = chainLabel ?? (id ? prettify(chainId) : 'Wallet import');
+    // Sources are `rpc:<provider>` (blockstream/helius/alchemy/…), not
+    // `rpc:<chain>` — resolve the chain mark from the row's own chain id.
+    const slug = source.slice(4);
+    const id = CHAIN_ICONS[slug] ?? (chainId ? CHAIN_ICONS[chainId] : undefined);
+    const label = chainLabel ?? (CHAIN_ICONS[slug] ? prettify(slug) : 'Wallet import');
     return { id, label };
   }
   if (source.startsWith('csv')) return { label: 'CSV import' };

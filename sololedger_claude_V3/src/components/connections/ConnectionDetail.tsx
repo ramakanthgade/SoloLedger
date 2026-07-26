@@ -93,6 +93,16 @@ export function ConnectionDetail({
   const transactions = useLiveQuery(() => db.transactions.toArray(), []);
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
   const balanceRows = useLiveQuery(() => db.walletBalances.toArray(), []) ?? NO_BALANCE_ROWS;
+  // Live sync stamps — the `card` prop is a snapshot, so without these the
+  // last-synced line stayed stale after Sync now until a remount (D-4).
+  const liveWalletRows = useLiveQuery(() => db.lookupAddresses.toArray(), []);
+  const liveExchange = useLiveQuery(
+    () =>
+      card.kind === 'exchange-api' && card.exchange
+        ? db.exchangeConnections.get(card.exchange.id)
+        : undefined,
+    [card.kind, card.kind === 'exchange-api' ? card.exchange?.id : null]
+  );
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   useEffect(() => {
@@ -237,10 +247,16 @@ export function ConnectionDetail({
 
   const lastSyncAt =
     card.kind === 'exchange-api'
-      ? card.exchange?.lastSyncAt
+      ? (liveExchange?.lastSyncAt ?? card.exchange?.lastSyncAt)
       : card.kind === 'wallet'
         ? (() => {
-            const stamps = (card.walletRows ?? []).map((r) => r.lastSyncedAt);
+            const own = new Set(
+              (card.walletRows ?? []).map((r) => `${r.chain}:${r.address.toLowerCase()}`)
+            );
+            const rows = (liveWalletRows ?? card.walletRows ?? []).filter((r) =>
+              own.has(`${r.chain}:${r.address.toLowerCase()}`)
+            );
+            const stamps = rows.map((r) => r.lastSyncedAt);
             return stamps.length > 0 ? Math.max(...stamps) : 0;
           })()
         : null;
