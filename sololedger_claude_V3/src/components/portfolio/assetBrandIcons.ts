@@ -15,7 +15,8 @@ const BRAND_ICON_BY_SYMBOL: Record<string, string> = {
   POL: brandIconUrl('polygon.svg'),
   USDT: brandIconUrl('tether.svg'),
   BNB: brandIconUrl('bnb.png'),
-  USDC: brandIconUrl('usdc.png')
+  USDC: brandIconUrl('usdc.png'),
+  LPT: brandIconUrl('livepeer.svg')
 };
 
 /** Resolve a ticker (any case, e.g. "btc") to its brand-icon URL, if one exists. */

@@ -31,7 +31,8 @@ export const BRAND_ICON_FILES = {
   polygon: 'polygon.svg',
   tether: 'tether.svg',
   bnb: 'bnb.png',
-  usdc: 'usdc.png'
+  usdc: 'usdc.png',
+  livepeer: 'livepeer.svg'
 } as const;
 
 export type BrandIconId = keyof typeof BRAND_ICON_FILES;
@@ -85,7 +86,8 @@ const ASSET_ICONS: Record<string, BrandIconId> = {
   POL: 'polygon',
   USDT: 'tether',
   BNB: 'bnb',
-  USDC: 'usdc'
+  USDC: 'usdc',
+  LPT: 'livepeer'
 };
 
 /** Display names where the raw source id isn't already user-friendly. */

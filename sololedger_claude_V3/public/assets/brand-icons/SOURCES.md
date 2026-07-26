@@ -110,6 +110,7 @@ these; wallets with no entry here render the clean aurora letter chip.
 | `tether.svg` | Simple Icons (slug `tether`, #50AF95) | CC0 1.0 |
 | `bnb.png` | TrustWallet `assets` repo, `blockchains/binance/info/logo.png` (256×256, RGBA) | TrustWallet-hosted brand asset |
 | `usdc.png` | TrustWallet `assets` repo (181×181, RGBA) | TrustWallet-hosted brand asset |
+| `livepeer.svg` | cryptologos.cc `https://cryptologos.cc/logos/livepeer-lpt-logo.svg` (black-blocks mark; white tile baked in — the mark is designed for light backgrounds, same accommodation as OKX/Trezor) | Logo provided for identification use |
 
 ## Adding a new icon
 
