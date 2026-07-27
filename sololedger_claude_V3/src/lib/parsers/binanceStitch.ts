@@ -375,8 +375,19 @@ const INCOME_OPS = new Set([
   'distribution',
   'cash voucher distribution',
   'airdrop',
+  'airdrop assets',
   'referral commission',
-  'launchpool interest'
+  'launchpool interest',
+  // Real-export income operations (verified against the 28,928-row ledger).
+  'commission rebate',
+  'referee commission',
+  'launchpool airdrop - user claim distribution',
+  'campaign related reward',
+  'token swap - distribution',
+  // 'Asset - Transfer' rows in this export are 2017-2019 airdrops (remarks like
+  // 'Binance空投TRX' / 'TRX BTT 空投') — positive legs are income; the few
+  // negative legs (old token migrations) fall through to transfer_out below.
+  'asset - transfer'
 ]);
 
 function isP2pOperation(operation: string): boolean {
@@ -523,6 +534,182 @@ function stitchSimpleTrades(rows: BinanceLedgerRow[]): Transaction[] {
   return out;
 }
 
+/**
+ * Futures realized PnL (USD-M / Coin-M accounts). Each row is one closed
+ * position's profit (change > 0 → income) or loss (change < 0 → sell/disposal
+ * of the settlement asset). Category 'perp' + instrumentClass 'derivative' so
+ * the gains engine and Reports can bucket them separately from spot.
+ */
+function stitchFuturesPnl(rows: BinanceLedgerRow[]): Transaction[] {
+  return rows
+    .filter((r) => r.operation.toLowerCase() === 'realized profit and loss')
+    .map((r) => {
+      const amount = Math.abs(r.change);
+      const profit = r.change > 0;
+      const type: TxType = profit ? 'income' : 'sell';
+      return makeTx({
+        timestamp: r.timestamp,
+        type,
+        asset: r.coin,
+        amount,
+        // Settlement coin is a stable in practice (USDT/BUSD) → fiat value.
+        fiatValue: isStable(r.coin) ? amount : undefined,
+        fiatCurrency: fiatFromCoin(r.coin),
+        sourceRef: exchangeSourceRef('binance', r.timestamp, type, r.coin, amount),
+        notes: r.remark ? `Futures realized PnL: ${r.remark}` : 'Futures realized PnL',
+        flags: profit ? ['missing_cost_basis'] : [],
+        category: 'perp',
+        instrumentClass: 'derivative',
+        raw: r.raw
+      });
+    });
+}
+
+/**
+ * Futures funding fees. Sign varies (you can pay OR receive funding):
+ * paid (change < 0) → 'fee'; received (change > 0) → 'income'.
+ */
+function stitchFundingFees(rows: BinanceLedgerRow[]): Transaction[] {
+  return rows
+    .filter((r) => r.operation.toLowerCase() === 'funding fee')
+    .map((r) => {
+      const amount = Math.abs(r.change);
+      const received = r.change > 0;
+      const type: TxType = received ? 'income' : 'fee';
+      return makeTx({
+        timestamp: r.timestamp,
+        type,
+        asset: r.coin,
+        amount,
+        sourceRef: exchangeSourceRef('binance', r.timestamp, type, r.coin, amount),
+        notes: received ? 'Funding fee received' : 'Funding fee paid',
+        flags: received ? ['missing_cost_basis'] : [],
+        category: 'perp',
+        instrumentClass: 'derivative',
+        raw: r.raw
+      });
+    });
+}
+
+/** Dust convert: per (timestamp, account) group, all spent dust → received BNB. */
+function stitchDustConverts(rows: BinanceLedgerRow[]): Transaction[] {
+  const dust = rows.filter((r) => r.operation.toLowerCase() === 'small assets exchange bnb');
+  if (dust.length === 0) return [];
+  const byGroup = new Map<string, BinanceLedgerRow[]>();
+  for (const r of dust) {
+    const k = `${r.timestamp}|${r.account}`;
+    const list = byGroup.get(k) ?? [];
+    list.push(r);
+    byGroup.set(k, list);
+  }
+  const out: Transaction[] = [];
+  for (const group of byGroup.values()) {
+    const receivedTotal = group.filter((r) => r.change > 0).reduce((s, r) => s + r.change, 0);
+    for (const r of group) {
+      if (r.change >= 0) continue; // the BNB credit rows are implied by the trades
+      const amount = Math.abs(r.change);
+      out.push(
+        makeTx({
+          timestamp: r.timestamp,
+          type: 'trade',
+          asset: r.coin,
+          amount,
+          counterAsset: 'BNB',
+          sourceRef: exchangeSourceRef('binance', r.timestamp, 'trade', r.coin, amount),
+          notes: `Small assets (dust) converted to BNB (group total +${receivedTotal} BNB)`,
+          flags: ['missing_cost_basis'],
+          raw: r.raw
+        })
+      );
+    }
+  }
+  return out;
+}
+
+/**
+ * 'Transaction Related' = fiat/stable conversion legs (verified on the real
+ * export: all 40 rows are fiat/stable pairs — CAD→USDT on-ramp, BUSD↔USD
+ * conversions). No crypto legs. Stitch each pair as a 'trade' (disposal of the
+ * spent fiat/stable → acquisition of the received one); the stable side gets a
+ * fiat value via quoteToFiatCurrency.
+ */
+function stitchFiatOnramp(rows: BinanceLedgerRow[]): Transaction[] {
+  const rel = rows.filter((r) => r.operation.toLowerCase() === 'transaction related');
+  if (rel.length < 2) return [];
+  const outLegs = rel.filter((r) => r.change < 0).map((r) => ({ row: r, amount: Math.abs(r.change) }));
+  const inLegs = rel.filter((r) => r.change > 0).map((r) => ({ row: r, amount: Math.abs(r.change) }));
+  if (outLegs.length === 0 || inLegs.length === 0) return [];
+  return pairLegs(outLegs, inLegs).map(({ row: out, amount, pairedRow }) => {
+    const inRow = pairedRow;
+    const received = inRow ? Math.abs(inRow.change) : undefined;
+    return makeTx({
+      timestamp: out.timestamp,
+      type: 'trade',
+      asset: out.coin,
+      amount,
+      counterAsset: inRow?.coin,
+      counterAmount: received,
+      // Fiat value of the received leg when it maps to a fiat currency.
+      fiatValue: inRow && quoteToFiatCurrency(inRow.coin) ? received : undefined,
+      fiatCurrency: inRow ? fiatFromCoin(inRow.coin) : fiatFromCoin(out.coin),
+      sourceRef: exchangeSourceRef('binance', out.timestamp, 'trade', out.coin, amount),
+      notes: 'Fiat/stable conversion (Transaction Related)',
+      flags: [],
+      category: 'fiat',
+      raw: { out: out.raw, in: inRow?.raw }
+    });
+  });
+}
+
+/** Pair trade-like ops with a spent leg and a received leg (auto-conversion, futures convert, token rebranding). */
+function stitchPairedSwaps(
+  rows: BinanceLedgerRow[],
+  ops: Set<string>,
+  notes: string
+): Transaction[] {
+  const sel = rows.filter((r) => ops.has(r.operation.toLowerCase()));
+  if (sel.length < 2) return [];
+  const outLegs = sel.filter((r) => r.change < 0).map((r) => ({ row: r, amount: Math.abs(r.change) }));
+  const inLegs = sel.filter((r) => r.change > 0).map((r) => ({ row: r, amount: Math.abs(r.change) }));
+  if (outLegs.length === 0 || inLegs.length === 0) return [];
+  return pairLegs(outLegs, inLegs).map(({ row: out, amount, pairedRow }) => {
+    const inRow = pairedRow;
+    return makeTx({
+      timestamp: out.timestamp,
+      type: 'trade',
+      asset: out.coin,
+      amount,
+      counterAsset: inRow?.coin,
+      counterAmount: inRow ? Math.abs(inRow.change) : undefined,
+      sourceRef: exchangeSourceRef('binance', out.timestamp, 'trade', out.coin, amount),
+      notes,
+      flags: ['missing_cost_basis'],
+      raw: { out: out.raw, in: inRow?.raw }
+    });
+  });
+}
+
+/** Fiat withdrawals (USD/EUR/… off-ramp to bank): the fiat leg of spot sells. */
+function stitchFiatWithdrawals(rows: BinanceLedgerRow[]): Transaction[] {
+  return rows
+    .filter((r) => r.operation.toLowerCase() === 'fiat withdraw')
+    .map((r) => {
+      const amount = Math.abs(r.change);
+      return makeTx({
+        timestamp: r.timestamp,
+        type: 'sell',
+        asset: r.coin,
+        amount,
+        fiatValue: amount,
+        fiatCurrency: fiatFromCoin(r.coin),
+        sourceRef: exchangeSourceRef('binance', r.timestamp, 'sell', r.coin, amount),
+        notes: 'Fiat withdrawal to bank',
+        category: 'fiat',
+        raw: r.raw
+      });
+    });
+}
+
 function stitchSimpleRows(rows: BinanceLedgerRow[]): Transaction[] {
   const out: Transaction[] = [];
   const tradeOps = new Set([
@@ -550,10 +737,28 @@ function stitchSimpleRows(rows: BinanceLedgerRow[]): Transaction[] {
     if (tradeOps.has(op) || op.includes('transfer between') || isP2pOperation(op)) continue;
     if (op === 'withdraw' && isP2pRemark(r.remark)) continue;
     if (op === 'fee' && groupHadSimpleTrade) continue;
+    // Handled by dedicated stitchers above.
+    if (op === 'realized profit and loss') continue;
+    if (op === 'funding fee') continue;
+    if (op === 'small assets exchange bnb') continue;
+    if (op === 'transaction related') continue;
+    if (op === 'fiat withdraw') continue;
+    if (op === 'inter-wallet transfer') continue; // explicit internal acct move
+    if (op === 'stablecoins auto-conversion') continue;
+    if (op === 'futures convert - from' || op === 'futures convert - to') continue;
+    if (op === 'token swap - redenomination/rebranding') continue;
+    if (op === 'launchpool subscription/redemption') continue; // principal lock/unlock
+    if (op === 'asset recovery') continue; // delisted-asset recovery: balance event only, user reviews
+    if (op === 'margin loan' || op.startsWith('margin loan repayment')) continue; // loan principal is not a taxable event
+    if (op.startsWith('cross margin liquidation')) continue; // forced repayment: balance event only, user reviews
 
     let type: TxType | null = null;
     if (op === 'deposit') type = 'transfer_in';
     else if (op === 'withdraw') type = 'transfer_out';
+    // 'Asset - Transfer': positive legs are old airdrops (income, via
+    // INCOME_OPS below); the few negative legs are token migrations / clawbacks
+    // → transfer_out for user review, not income.
+    else if (op === 'asset - transfer' && r.change < 0) type = 'transfer_out';
     else if (INCOME_OPS.has(op)) type = 'income';
     else if (op === 'fee') type = 'fee';
     else if (op === 'transfer') type = r.change > 0 ? 'transfer_in' : 'transfer_out';
@@ -620,6 +825,14 @@ export function stitchBinanceTransactionHistory(rows: Record<string, string>[]):
       ...stitchConverts(group),
       ...stitchInternalTransfers(group),
       ...stitchP2pRows(group),
+      ...stitchFuturesPnl(group),
+      ...stitchFundingFees(group),
+      ...stitchDustConverts(group),
+      ...stitchFiatOnramp(group),
+      ...stitchPairedSwaps(group, new Set(['stablecoins auto-conversion']), 'Stablecoins auto-conversion'),
+      ...stitchPairedSwaps(group, new Set(['futures convert - from', 'futures convert - to']), 'Futures convert'),
+      ...stitchPairedSwaps(group, new Set(['token swap - redenomination/rebranding']), 'Token swap (redenomination/rebranding)'),
+      ...stitchFiatWithdrawals(group),
       ...stitchSimpleRows(group)
     );
   }

@@ -61,4 +61,96 @@ describe.skipIf(!HAS_GROUND_TRUTH)('Binance ledger — every operation accounted
     expect(deps).toBeGreaterThanOrEqual(inDeps);
     expect(wds).toBeGreaterThanOrEqual(inWds);
   }, 30000);
+
+  it('A1 — non-spot operations: every recognized op maps to a tx; zero unrecognized drops', () => {
+    const rows = parseCsv(LEDGER);
+    const { transactions } = stitchBinanceTransactionHistory(rows);
+
+    // Futures realized PnL: 1:1 per row, split income (profit) vs sell (loss).
+    const pnl = transactions.filter((t) => t.category === 'perp' && t.notes?.includes('realized PnL'));
+    expect(pnl.length).toBe(248);
+    expect(pnl.filter((t) => t.type === 'income').length).toBeGreaterThan(0);
+    expect(pnl.filter((t) => t.type === 'sell').length).toBeGreaterThan(0);
+
+    // Funding fees: 1:1, paid → fee, received → income.
+    const funding = transactions.filter((t) => t.notes?.startsWith('Funding fee'));
+    expect(funding.length).toBe(25);
+
+    // Income ops now recognized (the INCOME_OPS name-mismatch fix).
+    const incomeOps: [string, number][] = [
+      ['Commission Rebate', 208],
+      ['Referee Commission', 165],
+      ['Distribution', 31],
+      ['Staking Rewards', 10],
+      ['Airdrop Assets', 10],
+      ['Launchpool Airdrop - User Claim Distribution', 24],
+      ['Commission History', 19],
+      ['Token Swap - Distribution', 4],
+      ['Campaign Related Reward', 1]
+    ];
+    for (const [op, count] of incomeOps) {
+      const hits = transactions.filter((t) => t.type === 'income' && (t.notes === op || t.raw && Object.values(t.raw as Record<string, string>).includes(op)));
+      expect(hits.length, `income op '${op}'`).toBe(count);
+    }
+    // 'Asset - Transfer' positive legs are airdrop income (15 of 18 rows; 3 negatives are migration debits).
+    const assetTransferIncome = transactions.filter((t) => t.type === 'income' &&
+      t.raw && String((t.raw as Record<string, string>).Operation) === 'Asset - Transfer');
+    expect(assetTransferIncome.length).toBe(15);
+
+    // Dust convert: one trade per spent dust row (BNB credit rows implied).
+    const dust = transactions.filter((t) => t.notes?.startsWith('Small assets (dust)'));
+    expect(dust.length).toBeGreaterThan(40); // 86 rows total, ~half are BNB credits
+    expect(dust.every((t) => t.type === 'trade' && t.counterAsset === 'BNB')).toBe(true);
+
+    // Transaction Related: 20 fiat/stable conversion pairs → trades.
+    const onramp = transactions.filter((t) => t.notes === 'Fiat/stable conversion (Transaction Related)');
+    expect(onramp.length).toBe(20);
+    expect(onramp.every((t) => t.type === 'trade')).toBe(true);
+
+    // Fiat withdrawals: 1:1 → sell of the fiat asset.
+    const fiatWd = transactions.filter((t) => t.notes === 'Fiat withdrawal to bank');
+    expect(fiatWd.length).toBe(16);
+
+    // Paired swaps: auto-conversion, futures convert, token rebranding → trade.
+    // Paired swaps: auto-conversion + futures convert stitch; the lone
+    // redenomination leg has no counter-leg in the export (paired row absent)
+    // so it can't stitch — 2 trades expected.
+    const swaps = transactions.filter((t) =>
+      t.notes === 'Stablecoins auto-conversion' ||
+      t.notes === 'Futures convert' ||
+      t.notes === 'Token swap (redenomination/rebranding)');
+    expect(swaps.length).toBe(2);
+    expect(swaps.every((t) => t.type === 'trade')).toBe(true);
+
+    // Every operation in the export is now either imported or deliberately
+    // classified (principal/review ops are skipped on purpose, not dropped).
+    const importedOps = new Set([
+      'Fee', 'Sell', 'Buy', 'Transaction Fee', 'Transaction Sold', 'Transaction Revenue',
+      'Transaction Spend', 'Transaction Buy', 'Withdraw', 'Deposit', 'Binance Convert',
+      'P2P Trading', 'Transfer Between Spot and Funding', 'Transfer Between Spot and CM Futures',
+      'Transfer Between Spot and UM Futures', 'Transfer Between Spot and Options',
+      'Transfer Between UM Futures and Options', 'Transfer',
+      'Realized Profit and Loss', 'Funding Fee', 'Small Assets Exchange BNB',
+      'Transaction Related', 'Fiat Withdraw', 'Stablecoins Auto-Conversion',
+      'Futures Convert - From', 'Futures Convert - To', 'Token Swap - Redenomination/Rebranding',
+      'Token Swap - Distribution',
+      'Commission Rebate', 'Referee Commission', 'Distribution', 'Staking Rewards',
+      'Airdrop Assets', 'Launchpool Airdrop - User Claim Distribution', 'Commission History',
+      'Campaign Related Reward', 'Asset - Transfer',
+      // Deliberately classified, not imported as txs (principal / balance events):
+      'Inter-Wallet Transfer', 'Launchpool Subscription/Redemption',
+      'Asset Recovery', 'Margin Loan', 'Cross Margin Liquidation - Repayment'
+    ]);
+    const unrecognized = Object.keys(opCountsFor(rows)).filter((op) => !importedOps.has(op));
+    expect(unrecognized, `unrecognized ops: ${unrecognized.join(', ')}`).toEqual([]);
+  }, 30000);
 });
+
+function opCountsFor(rows: Record<string, string>[]): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const r of rows) {
+    const op = (r.Operation ?? '').trim();
+    if (op) counts[op] = (counts[op] || 0) + 1;
+  }
+  return counts;
+}
