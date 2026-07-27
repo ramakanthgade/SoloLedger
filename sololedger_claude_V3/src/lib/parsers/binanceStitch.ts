@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeTimestamp } from './types';
+import { exchangeSourceRef, makeId, safeTimestampUtc } from './types';
 import { quoteToFiatCurrency } from './pairUtils';
 
 const STABLECOINS = new Set(['USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI', 'USD', 'EUR', 'GBP']);
@@ -37,7 +37,7 @@ export function normalizeBinanceLedgerRows(rows: Record<string, string>[]): Bina
     const coin = col(row, 'coin').trim().toUpperCase();
     const changeRaw = col(row, 'change');
     const change = safeNumberSigned(changeRaw);
-    const timestamp = safeTimestamp(col(row, 'utctime', 'time', 'datetime'));
+    const timestamp = safeTimestampUtc(col(row, 'utctime', 'time', 'datetime'));
     const account = col(row, 'account').trim() || 'Spot';
 
     if (!operation || !coin || !Number.isFinite(timestamp) || change === 0) continue;
@@ -422,6 +422,76 @@ function stitchP2pRows(rows: BinanceLedgerRow[]): Transaction[] {
   return out;
 }
 
+/**
+ * OLD-era (≈2017–2021) spot trades: Binance's older Transaction History export
+ * used SIMPLE operations — one `Sell` (spent asset) + one `Buy` (received
+ * asset) + a `Fee` (in the received asset) per trade — instead of the modern
+ * `Transaction Buy/Spend/Fee` triplet. Each such group is a crypto-for-crypto
+ * trade (no fiat leg), so we emit a 'trade' with asset = SPENT, counterAsset =
+ * RECEIVED. Without this handler those rows fell through every stitcher and
+ * were silently dropped (measured: 4,921 of 9,289 real fills ≈ 53%).
+ *
+ * Fiat value is unknown (the export carries no price), so rows are flagged
+ * missing_cost_basis and priced later.
+ */
+function stitchSimpleTrades(rows: BinanceLedgerRow[]): Transaction[] {
+  // Guard: a modern-era group (Transaction Buy/Sold triplets) never mixes with
+  // simple-era Buy/Sell — but if one ever did, defer to the modern stitchers.
+  const isModernGroup = rows.some((r) => {
+    const op = r.operation.toLowerCase();
+    return op === 'transaction buy' || op === 'transaction sold';
+  });
+  if (isModernGroup) return [];
+  const sells = rows.filter((r) => r.operation.toLowerCase() === 'sell');
+  const buys = rows.filter((r) => r.operation.toLowerCase() === 'buy');
+  if (sells.length === 0 || buys.length === 0) return [];
+  const fees = rows.filter((r) => r.operation.toLowerCase() === 'fee' && r.change < 0);
+
+  // A simple trade = one Sell (spent) + one Buy (received). Pair spent with
+  // received. The Buy coin is the quote/counter asset the user received.
+  const sellLegs = sells.map((s) => ({ row: s, amount: Math.abs(s.change) }));
+  const buyLegs = buys.map((b) => ({ row: b, amount: Math.abs(b.change) }));
+  const paired = pairLegs(sellLegs, buyLegs);
+
+  const usedFees = new Set<number>();
+  return paired.map(({ row: sell, amount, pairedRow }) => {
+    const buyRow = pairedRow;
+    const receivedAsset = buyRow?.coin;
+    // Fee is charged in the received asset for this era; consume each once.
+    const feeRow =
+      fees.find((f) => !usedFees.has(f.index) && f.coin === receivedAsset) ??
+      fees.find((f) => !usedFees.has(f.index));
+    if (feeRow) usedFees.add(feeRow.index);
+
+    const isStableQuote = receivedAsset != null && isStable(receivedAsset);
+    const receivedAmount = buyRow ? Math.abs(buyRow.change) : undefined;
+    return makeTx({
+      timestamp: sell.timestamp,
+      type: isStableQuote ? 'sell' : 'trade',
+      asset: sell.coin,
+      amount,
+      counterAsset: receivedAsset,
+      counterAmount: receivedAmount,
+      // Stable-quote simple trades carry a fiat value (proceeds); crypto-quote
+      // ones are flagged for later pricing.
+      fiatValue: isStableQuote ? receivedAmount : undefined,
+      fiatCurrency: isStableQuote && receivedAsset ? fiatFromCoin(receivedAsset) : 'USD',
+      feeAmount: feeRow ? Math.abs(feeRow.change) : undefined,
+      feeAsset: feeRow?.coin,
+      sourceRef: exchangeSourceRef(
+        'binance',
+        sell.timestamp,
+        isStableQuote ? 'sell' : 'trade',
+        sell.coin,
+        amount
+      ),
+      notes: isStableQuote ? undefined : 'Crypto-for-crypto trade',
+      flags: isStableQuote ? [] : ['missing_cost_basis'],
+      raw: { sell: sell.raw, buy: buyRow?.raw, fee: feeRow?.raw }
+    });
+  });
+}
+
 function stitchSimpleRows(rows: BinanceLedgerRow[]): Transaction[] {
   const out: Transaction[] = [];
   const tradeOps = new Set([
@@ -431,12 +501,24 @@ function stitchSimpleRows(rows: BinanceLedgerRow[]): Transaction[] {
     'transaction revenue',
     'transaction fee',
     'binance convert'
+    // NOTE: simple-era 'buy'/'sell' are NOT excluded here — paired groups are
+    // consumed by stitchSimpleTrades, and unpaired legs fall through below to
+    // standalone buy/sell rows (see the groupHadSimpleTrade branches).
   ]);
+
+  // Plain `Fee` rows in a group that also held a simple-era trade are consumed
+  // by stitchSimpleTrades (attached to the trade); skip them here so they are
+  // not double-counted as standalone fee rows. Fees in groups WITHOUT a
+  // simple trade still fall through to standalone `fee` handling below.
+  const groupHadSimpleTrade =
+    rows.some((r) => r.operation.toLowerCase() === 'buy') &&
+    rows.some((r) => r.operation.toLowerCase() === 'sell');
 
   for (const r of rows) {
     const op = r.operation.toLowerCase();
     if (tradeOps.has(op) || op.includes('transfer between') || isP2pOperation(op)) continue;
     if (op === 'withdraw' && isP2pRemark(r.remark)) continue;
+    if (op === 'fee' && groupHadSimpleTrade) continue;
 
     let type: TxType | null = null;
     if (op === 'deposit') type = 'transfer_in';
@@ -444,6 +526,13 @@ function stitchSimpleRows(rows: BinanceLedgerRow[]): Transaction[] {
     else if (INCOME_OPS.has(op)) type = 'income';
     else if (op === 'fee') type = 'fee';
     else if (op === 'transfer') type = r.change > 0 ? 'transfer_in' : 'transfer_out';
+    // Simple-era Buy/Sell legs that stitchSimpleTrades could NOT pair (the
+    // counter-leg is absent from the export — e.g. a fiat/stable-quoted Buy
+    // with no recorded Sell leg) must still import: emit them standalone with
+    // the known amount and missing_cost_basis (priced later). Dropping them
+    // would silently lose real trades (RCN / SALT / ICX stragglers).
+    else if (op === 'buy' && !groupHadSimpleTrade) type = 'buy';
+    else if (op === 'sell' && !groupHadSimpleTrade) type = 'sell';
     else continue;
 
     const amount = Math.abs(r.change);
@@ -496,6 +585,7 @@ export function stitchBinanceTransactionHistory(rows: Record<string, string>[]):
     transactions.push(
       ...stitchBuys(group),
       ...stitchSells(group),
+      ...stitchSimpleTrades(group),
       ...stitchConverts(group),
       ...stitchInternalTransfers(group),
       ...stitchP2pRows(group),
