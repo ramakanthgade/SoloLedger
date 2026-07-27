@@ -66,6 +66,21 @@ vi.mock('@/lib/rpc/dcaDetection', () => ({
   }))
 }));
 
+const refreshWalletBalancesForAddresses = vi.fn(
+  async (_entries: { chain: ChainDef; address: string }[], _settings: TaxSettings) => ({
+    updated: 1,
+    skipped: [] as { address: string; chain: string; reason: string }[],
+    failed: [] as { address: string; message: string }[]
+  })
+);
+vi.mock('@/lib/rpc/balances', () => ({
+  refreshWalletBalancesForAddresses: (
+    entries: { chain: ChainDef; address: string }[],
+    settings: TaxSettings
+  ) => refreshWalletBalancesForAddresses(entries, settings),
+  refreshWalletBalances: vi.fn(async () => ({ updated: 0, skipped: [], failed: [] }))
+}));
+
 const fetchMissingPricesForAllTransactions = vi.fn(async (..._args: unknown[]) => ({
   updated: 3,
   failed: 0,
@@ -406,5 +421,55 @@ describe('wallet-remove reset guard', () => {
     expect(importJob.get().active).toBe(true);
     expect(importJob.get().phase).toBe('classifying');
     expect(importJob.get().progress).toEqual({ done: 2, total: 5 });
+  });
+});
+
+describe('runWalletImport post-sync balance refresh (round 4)', () => {
+  beforeEach(() => {
+    store.clear();
+    importJob.reset();
+    refreshWalletBalancesForAddresses.mockClear();
+    refreshWalletBalancesForAddresses.mockResolvedValue({ updated: 1, skipped: [], failed: [] });
+  });
+
+  it('refreshes on-chain balances for succeeded addresses after the sync', async () => {
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
+    expect(refreshWalletBalancesForAddresses).toHaveBeenCalledTimes(1);
+    const [entries, passedSettings] = refreshWalletBalancesForAddresses.mock.calls[0];
+    expect(entries).toEqual([{ chain: CHAIN, address: '0xabc' }]);
+    expect(passedSettings).toEqual(settings());
+  });
+
+  it('does NOT refresh balances for addresses whose lookup failed', async () => {
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [],
+      warnings: [],
+      failed: [{ address: '0xabc', message: 'boom' }],
+      perAddress: []
+    });
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG);
+    expect(refreshWalletBalancesForAddresses).not.toHaveBeenCalled();
+  });
+
+  it('a balance-refresh failure warns but never fails the sync', async () => {
+    refreshWalletBalancesForAddresses.mockResolvedValueOnce({
+      updated: 0,
+      skipped: [],
+      failed: [{ address: '0xabc', message: 'Explorer API returned 502' }]
+    });
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
+    const state = importJob.get();
+    expect(state.error).toBeNull();
+    expect(state.active).toBe(false);
+    expect(state.result?.imported).toBe(1);
+    expect(state.warnings.some((w) => w.includes('balance refresh failed'))).toBe(true);
+  });
+
+  it('a balance-refresh throw warns but never fails the sync', async () => {
+    refreshWalletBalancesForAddresses.mockRejectedValueOnce(new Error('kaboom'));
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
+    const state = importJob.get();
+    expect(state.error).toBeNull();
+    expect(state.warnings.some((w) => w.includes('Balance refresh failed'))).toBe(true);
   });
 });

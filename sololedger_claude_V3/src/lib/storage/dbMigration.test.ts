@@ -73,3 +73,75 @@ describe('Dexie v6 → v7 migration', () => {
     v7.close();
   });
 });
+
+const V8_STORES = {
+  ...V6_STORES,
+  exchangeConnections: 'id, exchange, lastSyncAt'
+};
+
+describe('Dexie v8 → v9 migration (walletBalances truth anchor)', () => {
+  it('adds the walletBalances table and preserves every existing row', async () => {
+    const name = `migration_v9_test_${Math.random().toString(36).slice(2)}`;
+
+    const v8 = new Dexie(name);
+    v8.version(6).stores(V6_STORES);
+    v8.version(7).stores(V6_STORES);
+    v8.version(8).stores(V8_STORES);
+    await v8.open();
+    await v8.table('transactions').put(makeTx('legacy-1'));
+    await v8.table('lookupAddresses').put({
+      id: 'bitcoin:1abc', chain: 'bitcoin', address: '1abc', lastSyncedAt: 1, txCount: 3
+    });
+    v8.close();
+
+    const v9 = new Dexie(name);
+    v9.version(6).stores(V6_STORES);
+    v9.version(7).stores(V6_STORES);
+    v9.version(8).stores(V8_STORES);
+    v9.version(9).stores({ ...V8_STORES, walletBalances: 'id, chain, address, asset' });
+    await v9.open();
+
+    expect(await v9.table('transactions').count()).toBe(1);
+    expect(await v9.table('lookupAddresses').count()).toBe(1);
+
+    // The new table accepts rows (incl. a confirmed-zero balance).
+    await v9.table('walletBalances').put({
+      id: 'bitcoin:1abc:BTC', chain: 'bitcoin', address: '1abc',
+      asset: 'BTC', amount: 0, asOf: 123, source: 'rpc'
+    });
+    const row = await v9.table('walletBalances').get('bitcoin:1abc:BTC');
+    expect(row.amount).toBe(0);
+
+    v9.close();
+  });
+});
+
+describe('walletBalances storage helpers', () => {
+  it('walletBalanceId keys tokens by contract, natives by symbol', async () => {
+    const { walletBalanceId } = await import('@/lib/storage/db');
+    expect(walletBalanceId('bitcoin', '1abc', 'BTC')).toBe('bitcoin:1abc:BTC');
+    expect(walletBalanceId('ethereum', '0xA', 'wbtc', '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'))
+      .toBe('ethereum:0xA:0x2260fac5e5542a773aa44fbcfedf7c193bc2c599');
+  });
+
+  it('replaceWalletBalances upserts fresh rows and zeroes vanished assets', async () => {
+    const { db, replaceWalletBalances, getWalletBalancesForAddress } = await import('@/lib/storage/db');
+    await db.walletBalances.clear();
+    await replaceWalletBalances('bitcoin', '1abc', [{ asset: 'BTC', amount: 1.5 }], 100);
+    await replaceWalletBalances('bitcoin', '1abc', [{ asset: 'BTC', amount: 0 }], 200);
+    let rows = await getWalletBalancesForAddress('1abc');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ amount: 0, asOf: 200, source: 'rpc' });
+
+    // A second asset appears, then vanishes from the next fetch → explicit 0.
+    await replaceWalletBalances('ethereum', '0xwallet', [
+      { asset: 'ETH', amount: 1 },
+      { asset: 'WBTC', amount: 0.25, contractAddress: '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599' }
+    ], 300);
+    await replaceWalletBalances('ethereum', '0xwallet', [{ asset: 'ETH', amount: 0.5 }], 400);
+    rows = await getWalletBalancesForAddress('0xwallet');
+    const byAsset = new Map(rows.map((r) => [r.asset, r]));
+    expect(byAsset.get('ETH')).toMatchObject({ amount: 0.5, asOf: 400 });
+    expect(byAsset.get('WBTC')).toMatchObject({ amount: 0, asOf: 400 });
+  });
+});

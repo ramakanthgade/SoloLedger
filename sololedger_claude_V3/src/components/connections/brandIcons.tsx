@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
 import { WALLET_CATALOG } from './walletCatalog';
+import { BRAND_ICON_BASE } from '@/lib/brandAssets';
 
 /**
  * Real brand logos for sources (exchanges, wallet apps, blockchains, assets) —
@@ -26,7 +27,7 @@ export interface BrandIconDef {
   lightChip?: boolean;
 }
 
-const ICONS = '/assets/brand-icons';
+const ICONS = BRAND_ICON_BASE;
 
 export const BRAND_ICONS: Record<string, BrandIconDef> = {
   // Exchanges

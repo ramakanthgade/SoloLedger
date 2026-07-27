@@ -21,6 +21,13 @@ import { WALLET_CATALOG, WALLET_GROUP_ORDER } from './walletCatalog';
 const LETTER_CHIP_WALLETS = new Set(['typhon', 'martian']);
 
 /**
+ * Generic affordances, NOT brands (round-4 "Any other wallet" tile) — no logo
+ * exists BY DESIGN; the picker renders a neutral lucide glyph chip instead and
+ * the aurora letter chip must never kick in for these.
+ */
+const GENERIC_GLYPH_WALLETS = new Set(['any-wallet']);
+
+/**
  * Brand-icon registry + the BrandIcon component: real logos everywhere
  * (locked decision), brand tiles BEHIND no-fill glyphs (never recolored),
  * white light-chips for no-alpha rasters, and the aurora monogram as the
@@ -37,7 +44,7 @@ describe('brandIcons registry', () => {
   it('every catalog wallet ships a bundled logo that exists on disk, or is a documented letter-chip fallback', () => {
     const publicDir = resolve(__dirname, '../../../public');
     for (const app of WALLET_CATALOG) {
-      if (LETTER_CHIP_WALLETS.has(app.id)) {
+      if (LETTER_CHIP_WALLETS.has(app.id) || GENERIC_GLYPH_WALLETS.has(app.id)) {
         expect(app.logo, app.id).toBeUndefined();
         expect(BRAND_ICONS[app.id], app.id).toBeUndefined();
         continue;
@@ -50,11 +57,12 @@ describe('brandIcons registry', () => {
       expect(existsSync(resolve(publicDir, `.${app.logo}`)), app.id).toBe(true);
     }
     // The fallback set stays exactly the documented list — a newly unsourced
-    // logo must be justified here AND in SOURCES.md.
+    // logo must be justified here AND in SOURCES.md (generic-glyph tiles are
+    // non-brand affordances, also locked here).
     expect(
       WALLET_CATALOG.filter((w) => !w.logo).map((w) => w.id),
       'letter-chip wallets must be documented in SOURCES.md'
-    ).toEqual([...LETTER_CHIP_WALLETS]);
+    ).toEqual([...GENERIC_GLYPH_WALLETS, ...LETTER_CHIP_WALLETS]);
   });
 
   it('catalog covers 60+ wallets with unique ids and locked group order', () => {

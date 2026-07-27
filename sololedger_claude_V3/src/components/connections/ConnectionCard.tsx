@@ -11,6 +11,12 @@ interface ConnectionCardProps {
   menuItems?: CardMenuItem[];
   /** When set, the whole card acts as a button (manual entry → add another). */
   onClick?: () => void;
+  /**
+   * When set (and no whole-card onClick), the card body opens the
+   * per-connection detail view. The kebab menu and rename slot stop
+   * propagation so their clicks never trigger this.
+   */
+  onOpenDetail?: () => void;
   /** Inline rename slot replacing the title/subtitle block (wallet cards). */
   renaming?: React.ReactNode;
 }
@@ -21,13 +27,18 @@ interface ConnectionCardProps {
  * sync state (Synced / Needs attention / Watching / Imported) next to the
  * last-sync line and transaction count. No invented health metrics.
  */
-export function ConnectionCard({ card, menuItems, onClick, renaming }: ConnectionCardProps) {
+export function ConnectionCard({ card, menuItems, onClick, onOpenDetail, renaming }: ConnectionCardProps) {
   const body = (
     <>
       <div className="flex items-start gap-3">
         <BrandIcon id={card.iconId} fallback={card.iconFallback} size={40} />
         <div className="min-w-0 flex-1">
-          {renaming ?? (
+          {renaming ? (
+            // Rename input/save/cancel must not bubble into a detail open.
+            <span className="block" onClick={(e) => e.stopPropagation()}>
+              {renaming}
+            </span>
+          ) : (
             <>
               <p className="truncate text-[15px] font-bold leading-5 text-hi">{card.title}</p>
               <p className="mt-0.5 truncate font-mono text-xs text-low">{card.subtitle}</p>
@@ -35,7 +46,10 @@ export function ConnectionCard({ card, menuItems, onClick, renaming }: Connectio
           )}
         </div>
         {menuItems && menuItems.length > 0 && (
-          <CardMenu label={`${card.title} actions`} items={menuItems} />
+          // The kebab keeps working when the card body is clickable.
+          <span className="shrink-0" onClick={(e) => e.stopPropagation()}>
+            <CardMenu label={`${card.title} actions`} items={menuItems} />
+          </span>
         )}
       </div>
 
@@ -92,6 +106,31 @@ export function ConnectionCard({ card, menuItems, onClick, renaming }: Connectio
       >
         {body}
       </button>
+    );
+  }
+  if (onOpenDetail) {
+    return (
+      <article
+        role="button"
+        tabIndex={0}
+        aria-label={`Open ${card.title} details`}
+        onClick={onOpenDetail}
+        onKeyDown={(e) => {
+          if (e.target !== e.currentTarget) return;
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            onOpenDetail();
+          }
+        }}
+        className={cn(
+          shell,
+          'cursor-pointer',
+          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60'
+        )}
+        data-testid={`connection-card-${card.id}`}
+      >
+        {body}
+      </article>
     );
   }
   return <article className={shell}>{body}</article>;

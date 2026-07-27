@@ -1,5 +1,6 @@
 import { useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
+import { BRAND_ICON_BASE } from '@/lib/brandAssets';
 import {
   BRAND_ICON_FILES,
   NEEDS_LIGHT_TILE,
@@ -20,7 +21,7 @@ import {
  * (OKX, Ethereum, Trezor) so they stay legible on the dark canvas.
  */
 
-const ICON_BASE = '/assets/brand-icons';
+const ICON_BASE = BRAND_ICON_BASE;
 
 interface BrandImgProps {
   id: BrandIconId;
@@ -68,6 +69,9 @@ interface SourceIconProps {
   source: string;
   /** Pretty chain label from CHAINS (for `rpc:<chain>` sources). */
   chainLabel?: string | null;
+  /** Raw chain id from the row (`t.chain`) — resolves the chain mark for
+   * `rpc:<provider>` sources. */
+  chainId?: string | null;
   size?: number;
   className?: string;
 }
@@ -76,8 +80,8 @@ interface SourceIconProps {
  * The row-leading source avatar: the real exchange/wallet/chain mark when we
  * ship one, else a letter chip with the source's initials (mockup `.src-lg`).
  */
-export function SourceIcon({ source, chainLabel, size = 36, className }: SourceIconProps) {
-  const { id, label } = sourceBrandInfo(source, chainLabel);
+export function SourceIcon({ source, chainLabel, chainId, size = 36, className }: SourceIconProps) {
+  const { id, label } = sourceBrandInfo(source, chainLabel, chainId);
   const chip = (
     <span
       className={cn('grid shrink-0 place-items-center rounded-lg border border-hi/10 bg-elev-3 font-extrabold text-mid', className)}

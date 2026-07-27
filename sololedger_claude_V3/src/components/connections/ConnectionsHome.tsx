@@ -40,6 +40,7 @@ import { CHAINS } from '@/lib/rpc/providers';
 import { importJob, runWalletImport, useImportJob } from '@/lib/importJob';
 import { FirstSyncPreview } from '@/components/import/FirstSyncPreview';
 import { AddDataCard, ConnectionCard } from './ConnectionCard';
+import { ConnectionDetail } from './ConnectionDetail';
 import type { CardMenuItem } from './CardMenu';
 import {
   buildCards,
@@ -110,6 +111,8 @@ export function ConnectionsHome() {
 
   const [pill, setPill] = useState<PillFilter>('all');
   const pillRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  /** Open per-connection detail view (round 4) — null shows the cards grid. */
+  const [detail, setDetail] = useState<ConnectionCardData | null>(null);
   const [drawer, setDrawer] = useState<DrawerState>({ open: false, guided: false, initialFlow: null });
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastId = useRef(0);
@@ -276,6 +279,11 @@ export function ConnectionsHome() {
       : exchangeJob.warnings;
 
   const previewStaged = exchangeJob.preview !== null;
+
+  // Per-connection portfolio view replaces the grid while open.
+  if (detail) {
+    return <ConnectionDetail card={detail} onBack={() => setDetail(null)} />;
+  }
 
   return (
     <div className="space-y-5" data-testid="connections-home">
@@ -509,6 +517,7 @@ export function ConnectionsHome() {
               onClick={
                 card.kind === 'manual' ? () => openDrawer({ initialFlow: 'manual' }) : undefined
               }
+              onOpenDetail={card.kind === 'manual' ? undefined : () => setDetail(card)}
               renaming={
                 renaming?.cardId === card.id ? (
                   <div className="flex items-center gap-1.5">

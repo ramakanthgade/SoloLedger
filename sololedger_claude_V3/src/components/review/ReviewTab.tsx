@@ -1126,41 +1126,54 @@ export function ReviewTab() {
   };
 
   /** One leg of the row-face flow (sent or received): asset / fiat / endpoint.
-   *  Amounts never truncate — they wrap under the row on narrow screens. */
+   *  Every leg is the same two-line skeleton — a fixed-height main line over a
+   *  fixed-height sub-line (rendered even when empty) — so amounts and
+   *  sub-lines baseline-align across legs and across rows. Amounts never
+   *  truncate — they wrap under the row on narrow screens. */
   const renderLeg = (leg: RowLeg, spam: boolean) => {
-    const gainLine = leg.gain && (
-      <span
-        className={cn(
-          'mt-0.5 block text-[11px] font-bold tabular-figures',
-          leg.gain.kind === 'gain' ? 'text-gain' : 'text-loss'
+    // The sub-line: cost basis under the sent side of a disposal; fiat value
+    // and the gain/loss together under the received side.
+    const subRow = (
+      <span className="mt-0.5 flex h-3.5 items-center gap-1.5 text-[11px] tabular-figures">
+        {leg.subline && <span className="whitespace-nowrap text-low">{leg.subline}</span>}
+        {leg.gain && (
+          <span
+            className={cn(
+              'whitespace-nowrap font-bold',
+              leg.gain.kind === 'gain' ? 'text-gain' : 'text-loss'
+            )}
+          >
+            {leg.gain.kind === 'gain' ? '+' : '−'}
+            {leg.gain.formatted}
+          </span>
         )}
-      >
-        {leg.gain.kind === 'gain' ? '+' : '−'}
-        {leg.gain.formatted}
       </span>
     );
     if (leg.kind === 'endpoint') {
       return (
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span
-            className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-hi/10 bg-elev-3 text-low"
-            aria-hidden="true"
-          >
-            <Wallet className="h-3 w-3" />
+        <span className="flex min-w-0 max-w-[15rem] flex-col">
+          <span className="flex h-6 items-center gap-1.5">
+            <span
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-hi/10 bg-elev-3 text-low"
+              aria-hidden="true"
+            >
+              <Wallet className="h-3 w-3" />
+            </span>
+            <span
+              className={cn('truncate text-[0.8125rem] font-semibold', leg.isName ? 'text-hi' : 'font-mono text-mid')}
+              title={leg.title}
+            >
+              {leg.label}
+            </span>
           </span>
-          <span
-            className={cn('truncate text-[0.8125rem] font-semibold', leg.isName ? 'text-hi' : 'font-mono text-mid')}
-            title={leg.title}
-          >
-            {leg.label}
-          </span>
+          {subRow}
         </span>
       );
     }
     if (leg.kind === 'fiat') {
       return (
-        <span className="min-w-0">
-          <span className="flex items-center gap-1.5">
+        <span className="flex min-w-0 max-w-[15rem] flex-col">
+          <span className="flex h-6 items-center gap-1.5">
             <span
               className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full bg-elev-3 text-[10px] font-extrabold text-low"
               aria-hidden="true"
@@ -1171,13 +1184,13 @@ export function ReviewTab() {
               {leg.amount != null && leg.currency ? formatCurrency(leg.amount, leg.currency) : '—'}
             </span>
           </span>
-          {gainLine}
+          {subRow}
         </span>
       );
     }
     return (
-      <span className="min-w-0">
-        <span className="flex items-center gap-1.5">
+      <span className="flex min-w-0 max-w-[15rem] flex-col">
+        <span className="flex h-6 items-center gap-1.5">
           <AssetIcon symbol={leg.symbol} size={22} />
           <span
             className={cn(
@@ -1191,8 +1204,7 @@ export function ReviewTab() {
           </span>
           <span className="truncate text-xs font-semibold text-mid">{leg.symbol}</span>
         </span>
-        {leg.subline && <span className="mt-0.5 block text-[11px] tabular-figures text-low">{leg.subline}</span>}
-        {gainLine}
+        {subRow}
       </span>
     );
   };
@@ -1204,7 +1216,7 @@ export function ReviewTab() {
     const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : null;
     const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
     const counterLabel = t.counterAsset ? resolveAssetLabel(t.counterAsset, undefined, t.chain) : null;
-    const src = sourceBrandInfo(t.source, chainLabel);
+    const src = sourceBrandInfo(t.source, chainLabel, t.chain ?? null);
     const disposal = disposalByTxId.get(t.id);
     const isEditing = editingFiat === t.id;
     const expanded = expandedId === t.id;
@@ -1261,7 +1273,7 @@ export function ReviewTab() {
       if (isOwnSide) {
         return (
           <>
-            <SourceIcon source={t.source} chainLabel={chainLabel} size={18} />
+            <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={18} />
             {src.label}
           </>
         );
@@ -1274,6 +1286,12 @@ export function ReviewTab() {
           onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
           className={cn(
             'flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 transition-colors hover:bg-elev-3/40 sm:px-5',
+            // Desktop: one continuous compact line on fixed column tracks —
+            // select · type (8.5rem) · flow (content-sized, capped) · source +
+            // chevron (13.5rem, right-aligned) — packed from the left with
+            // even gaps, never stretched space-between style (that left a
+            // desert between the flow and the source block).
+            'lg:grid lg:grid-cols-[auto_8.5rem_auto_auto] lg:justify-start lg:gap-x-6 xl:gap-x-8',
             isSelected && 'bg-primary/[0.05] hover:bg-primary/[0.08]',
             spam && 'opacity-60'
           )}
@@ -1292,22 +1310,22 @@ export function ReviewTab() {
             />
           </label>
 
-          {/* Left: type label + time + chain */}
-          <div className="flex min-w-0 items-center gap-3">
-            <div className="min-w-0">
-              <span className={cn(spam && 'line-through')}>
-                <TypeSelector tx={t} />
-              </span>
-              <p className="mt-0.5 whitespace-nowrap pl-1 text-[11px] text-low">
-                {timeUtc}
-                {chainLabel ? ` · ${chainLabel}` : ''}
-              </p>
-            </div>
+          {/* Type label + time + chain — fixed track, so every row's flow
+              column starts at the same x (single-leg rows don't jump). */}
+          <div className="min-w-0">
+            <span className={cn(spam && 'line-through')}>
+              <TypeSelector tx={t} />
+            </span>
+            <p className="mt-0.5 whitespace-nowrap pl-1 text-[11px] text-low">
+              {timeUtc}
+              {chainLabel ? ` · ${chainLabel}` : ''}
+            </p>
           </div>
 
-          {/* Middle: the flow — sent leg → received leg (full-width row on mobile) */}
+          {/* The flow — sent leg → received leg. Content-sized, never
+              stretched: legs cap at 15rem each (full-width row on mobile). */}
           <div
-            className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 lg:order-none lg:w-auto lg:flex-1"
+            className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 lg:order-none lg:w-auto lg:max-w-[34rem]"
             data-testid="tx-flow"
           >
             {flow.sent && renderLeg(flow.sent, spam)}
@@ -1317,21 +1335,26 @@ export function ReviewTab() {
             {flow.received && renderLeg(flow.received, spam)}
           </div>
 
-          {/* Right: source context (logo + name + fee chip) + flags + expander */}
-          <div className="order-3 ml-auto flex shrink-0 items-center gap-2.5 lg:order-none lg:ml-0">
-            <SourceIcon source={t.source} chainLabel={chainLabel} size={30} />
-            <div className="min-w-0">
-              <p className="max-w-[7rem] truncate text-xs font-bold text-hi sm:max-w-[9rem]" title={src.label}>
-                {src.label}
-              </p>
-              {t.feeAmount != null && t.feeAsset && (
-                <span className="mt-0.5 hidden max-w-full items-center rounded-full border border-hi/10 bg-elev-3/50 px-2 py-px text-[10px] font-bold tabular-figures text-low sm:inline-flex">
-                  fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}
-                </span>
-              )}
-            </div>
-            <div className="hidden lg:block">
-              <FlagSelector tx={t} />
+          {/* Source context + expander — one unit on mobile (wraps together,
+              never an orphaned chevron); on desktop the source is a fixed
+              13.5rem right-aligned block (logo + name, fee chip, flag badges —
+              badges wrap under, still right-aligned) with the chevron after. */}
+          <div className="order-3 ml-auto flex shrink-0 items-center gap-2.5 lg:order-none lg:ml-0 lg:justify-end">
+            <div className="flex flex-wrap items-center justify-end gap-x-2.5 gap-y-1 lg:w-[13.5rem]">
+              <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={30} />
+              <div className="min-w-0 lg:text-right">
+                <p className="max-w-[7rem] truncate text-xs font-bold text-hi sm:max-w-[9rem]" title={src.label}>
+                  {src.label}
+                </p>
+                {t.feeAmount != null && t.feeAsset && (
+                  <span className="mt-0.5 hidden max-w-full items-center rounded-full border border-hi/10 bg-elev-3/50 px-2 py-px text-[10px] font-bold tabular-figures text-low sm:inline-flex">
+                    fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}
+                  </span>
+                )}
+              </div>
+              <div className="hidden lg:block">
+                <FlagSelector tx={t} />
+              </div>
             </div>
             <button
               type="button"
@@ -1342,7 +1365,7 @@ export function ReviewTab() {
               aria-expanded={expanded}
               aria-label={expanded ? 'Collapse transaction details' : 'Expand transaction details'}
               className={cn(
-                'grid h-9 w-9 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                'grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
                 expanded ? 'bg-elev-3 text-primary' : 'text-low hover:bg-elev-3 hover:text-hi'
               )}
             >
@@ -1420,7 +1443,7 @@ export function ReviewTab() {
                 )}
               </DetailRow>
               <DetailRow label="Source">
-                <SourceIcon source={t.source} chainLabel={chainLabel} size={18} />
+                <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={18} />
                 {src.label}
                 {chainLabel && chainLabel !== src.label ? ` · ${chainLabel}` : ''}
               </DetailRow>
@@ -1470,7 +1493,9 @@ export function ReviewTab() {
                 </DetailRow>
               )}
               {pricedDisposal && (
-                <DetailRow label="Cost basis">{formatCurrency(pricedDisposal.costBasis, t.fiatCurrency)}</DetailRow>
+                <DetailRow label="Cost basis">
+                  {pricedDisposal.costBasis > 0 ? formatCurrency(pricedDisposal.costBasis, t.fiatCurrency) : '—'}
+                </DetailRow>
               )}
               {pricedDisposal && (
                 <DetailRow label="Gain">

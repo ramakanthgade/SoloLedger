@@ -22,6 +22,18 @@ describe('sourceBrandInfo', () => {
     expect(sourceBrandInfo('rpc:solana', 'Solana')).toEqual({ id: 'solana', label: 'Solana' });
     // No chain label passed and no mark for the chain → generic wallet import.
     expect(sourceBrandInfo('rpc:scroll')).toEqual({ id: undefined, label: 'Wallet import' });
+  });
+
+  it('maps rpc:<provider> sources to the row chain mark via chainId (D-1)', () => {
+    // Real sources are provider-keyed — the chain mark comes from t.chain.
+    expect(sourceBrandInfo('rpc:blockstream', 'Bitcoin', 'bitcoin')).toEqual({ id: 'bitcoin', label: 'Bitcoin' });
+    expect(sourceBrandInfo('rpc:helius', 'Solana', 'solana')).toEqual({ id: 'solana', label: 'Solana' });
+    expect(sourceBrandInfo('rpc:alchemy', 'Ethereum', 'ethereum')).toEqual({ id: 'ethereum', label: 'Ethereum' });
+    expect(sourceBrandInfo('rpc:moralis', 'Polygon', 'polygon')).toEqual({ id: 'polygon', label: 'Polygon' });
+    // Chain without a shipped mark still falls back to the letter chip.
+    expect(sourceBrandInfo('rpc:alchemy', 'Arbitrum One', 'arbitrum')).toEqual({ id: undefined, label: 'Arbitrum One' });
+    // No chain context at all → generic wallet import chip.
+    expect(sourceBrandInfo('rpc:alchemy')).toEqual({ id: undefined, label: 'Wallet import' });
     expect(sourceBrandInfo('rpc:alchemy', 'Solana')).toEqual({ id: undefined, label: 'Solana' });
   });
 

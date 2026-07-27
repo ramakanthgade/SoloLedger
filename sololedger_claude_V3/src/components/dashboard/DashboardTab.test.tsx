@@ -17,7 +17,11 @@ const keyDate = (ts: number) => {
 
 const SEED = vi.hoisted(() => {
   const dayFn = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d, 12, 0, 0);
-  const txs = [
+  const txs: Array<{
+    id: string; timestamp: number; type: string; asset: string; amount: number;
+    fiatCurrency: string; fiatValue?: number; source: string; chain?: string;
+    walletAddress?: string; flags: string[]; isInternalTransfer: boolean;
+  }> = [
     // FY 2025-26 (IN) — excluded from the default FY-period money strip.
     {
       id: 't-btc-buy', timestamp: dayFn(2026, 1, 15), type: 'buy', asset: 'BTC', amount: 0.5,
@@ -43,7 +47,11 @@ const SEED = vi.hoisted(() => {
     priceRows: [] as { key: string; price: number; fetchedAt: number }[],
     wallets: [] as unknown[],
     csvImports: [] as { importedAt: number }[],
-    exchangeConns: [] as { lastSyncAt?: number }[]
+    exchangeConns: [] as { lastSyncAt?: number }[],
+    balanceRows: [] as {
+      id: string; chain: string; address: string; asset: string;
+      contractAddress?: string; amount: number; asOf: number; source: 'rpc'
+    }[]
   };
 });
 
@@ -57,7 +65,8 @@ vi.mock('@/lib/storage/db', () => ({
     transactions: { toArray: () => SEED.txs },
     csvImports: { toArray: () => SEED.csvImports },
     exchangeConnections: { toArray: () => SEED.exchangeConns },
-    priceCache: { toArray: () => SEED.priceRows }
+    priceCache: { toArray: () => SEED.priceRows },
+    walletBalances: { toArray: () => SEED.balanceRows }
   },
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
   getLookupAddresses: () => SEED.wallets,
@@ -84,6 +93,9 @@ async function renderTab(nav?: { goToImport: () => void; goTo: (id: string) => v
 beforeEach(() => {
   localStorage.clear();
   SEED.priceRows.length = 0;
+  SEED.balanceRows.length = 0;
+  // Reset the tx list to the base seed (some tests append wallet rows).
+  SEED.txs.length = 4;
 });
 
 describe('DashboardTab — hero honesty', () => {
@@ -268,5 +280,73 @@ describe('DashboardTab — period pills', () => {
     expect(
       within(screen.getByTestId('hero-period-pills')).getAllByRole('radio')[3]
     ).toHaveAttribute('aria-checked', 'true');
+  });
+});
+
+
+describe('DashboardTab — on-chain reconciliation (round 4)', () => {
+  const BTC_ADDR = '1J33sNnKbs52UjTK39kEEYDfbHijgDxyKU';
+  const dayFn = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d, 12, 0, 0);
+
+  function seedPhantom() {
+    // The live bug: a 32.6557 BTC receive on a drained Binance deposit
+    // address, whose batched-sweep send the old parser missed.
+    SEED.txs.push({
+      id: 't-phantom-btc', timestamp: dayFn(2026, 2, 5), type: 'transfer_in', asset: 'BTC',
+      amount: 32.65574623, fiatCurrency: 'INR', fiatValue: 1_000_000, source: 'rpc:blockstream',
+      chain: 'bitcoin', walletAddress: BTC_ADDR, flags: ['missing_cost_basis'], isInternalTransfer: false
+    } as (typeof SEED.txs)[number]);
+    SEED.wallets.push({
+      id: `bitcoin:${BTC_ADDR}`, chain: 'bitcoin', address: BTC_ADDR,
+      label: 'Binance deposit', lastSyncedAt: 1, txCount: 1
+    });
+  }
+
+  function seedBalance(amount: number) {
+    SEED.balanceRows.push({
+      id: `bitcoin:${BTC_ADDR}:BTC`, chain: 'bitcoin', address: BTC_ADDR,
+      asset: 'BTC', amount, asOf: Date.now(), source: 'rpc'
+    });
+  }
+
+  it('without a balance row the phantom inflates net worth (tx-derived fallback)', async () => {
+    seedPhantom();
+    await renderTab();
+    // Base ₹25,000 + phantom ₹1,000,000 cost.
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹10,25,000.00');
+    expect(screen.queryByTestId('reconciled-down-line')).not.toBeInTheDocument();
+  });
+
+  it('a confirmed-zero balance kills the phantom and discloses the adjustment', async () => {
+    seedPhantom();
+    seedBalance(0);
+    await renderTab();
+    // Phantom drained → honest base net worth again.
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹25,000.00');
+    expect(screen.getByTestId('reconciled-down-line')).toHaveTextContent(
+      '1 asset adjusted to on-chain balance'
+    );
+    // The holdings table keeps only the exchange BTC row (0.3), no bitcoin-chain row.
+    expect(screen.queryByText('bitcoin')).not.toBeInTheDocument();
+  });
+
+  it('a partial balance clamps the holding down and labels it reconciled', async () => {
+    seedPhantom();
+    seedBalance(0.25);
+    await renderTab();
+    // Net worth = base ₹25,000 + 0.25 BTC at the phantom row's per-unit cost.
+    // per-unit = 1,000,000 / 32.65574623 ≈ 30,622.48 → 0.25 × 30,622.48 ≈ ₹7,655.62.
+    const hero = screen.getByTestId('net-worth-value');
+    expect(hero).toHaveTextContent('₹32,655.62');
+    // Expand the bitcoin-chain BTC row → reconciled caption. The asset cell
+    // renders in both the desktop and mobile row layouts, so there are two
+    // 'bitcoin' chain labels in the DOM; either toggle opens the same row.
+    const chainLabels = screen.getAllByText('bitcoin');
+    const toggle = chainLabels[0].closest('button');
+    expect(toggle).not.toBeNull();
+    fireEvent.click(toggle!);
+    expect(screen.getByTestId('holding-qty-caption')).toHaveTextContent(
+      'Reconciled to on-chain balance'
+    );
   });
 });

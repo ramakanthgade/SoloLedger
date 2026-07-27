@@ -138,6 +138,13 @@ describe('AddDataDrawer — step routing', () => {
     expect(screen.getByRole('dialog', { name: 'Watch a Bitcoin address' })).toBeInTheDocument();
   });
 
+  it('chain flow uses "an" for vowel chains (D-6 residual: Watch an Ethereum address)', () => {
+    renderDrawer();
+    fireEvent.click(screen.getByRole('button', { name: /blockchain address/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^ethereum/i }));
+    expect(screen.getByRole('dialog', { name: 'Watch an Ethereum address' })).toBeInTheDocument();
+  });
+
   it('file flow skips Which (rail marks it done)', () => {
     renderDrawer();
     fireEvent.click(screen.getByRole('button', { name: /a file/i }));

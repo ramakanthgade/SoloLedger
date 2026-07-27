@@ -14,8 +14,9 @@
  *    source — an estimate derived from transaction history, labeled as such.
  */
 import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
-import type { LookupAddressRow, PriceCacheRow } from '@/lib/storage/db';
+import type { LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import { buildPortfolioHoldings, type PortfolioHolding } from '@/lib/portfolio/portfolioCompute';
+import { isNativeSolAsset } from '@/lib/portfolio/solBalance';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
@@ -120,6 +121,10 @@ export function priceAt(points: PricePoint[], ts: number): number | null {
 // ---------------------------------------------------------------------------
 
 export interface ValuedHolding extends PortfolioHolding {
+  /** Reconciliation provenance (round 4) — flows through from ReconciledHolding. */
+  qtySource?: 'on-chain' | 'tx-history';
+  /** Pre-reconciliation tx-derived qty, when reconciliation ran. */
+  txDerivedAmount?: number;
   /** Latest cached close for this asset, if any. */
   priceNow: number | null;
   /** UTC ms of that close's day (for "prices as of …" honesty captions). */
@@ -437,10 +442,12 @@ function txDeltaFor(
 export function sourceBreakdown(
   transactions: Transaction[],
   holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
-  wallets: LookupAddressRow[]
+  wallets: LookupAddressRow[],
+  balances?: WalletBalanceRow[]
 ): SourceSlice[] {
   const walletByAddress = new Map(wallets.map((w) => [w.address.toLowerCase(), w]));
   const slices = new Map<string, SourceSlice>();
+  const walletChain = new Map<string, string>();
 
   const upsert = (key: string, name: string, iconId: string | undefined, delta: number) => {
     const existing = slices.get(key);
@@ -462,6 +469,7 @@ export function sourceBreakdown(
         wallet?.label ??
         `${t.walletAddress.slice(0, 6)}…${t.walletAddress.slice(-4)}`;
       upsert(`wallet:${addrLower}`, name, chainIconId(t.chain ?? ''), delta);
+      if (t.chain && !walletChain.has(addrLower)) walletChain.set(addrLower, t.chain);
     } else {
       const iconId = parserIconId(t.source);
       upsert(
@@ -473,9 +481,181 @@ export function sourceBreakdown(
     }
   }
 
+  // On-chain truth anchor: a wallet slice with a stored balance row reports
+  // the chain's number, not the tx-derived estimate — drained addresses
+  // (balance 0) drop out of "where it lives" entirely.
+  if (balances && balances.length > 0) {
+    for (const slice of slices.values()) {
+      if (!slice.key.startsWith('wallet:')) continue;
+      const addrLower = slice.key.slice('wallet:'.length);
+      const chain = walletChain.get(addrLower);
+      if (!chain) continue;
+      const row = balanceRowFor(balances, chain, addrLower, holding);
+      if (row) slice.qty = Math.max(0, row.amount);
+    }
+  }
+
   return Array.from(slices.values())
     .filter((s) => s.qty > 1e-9)
     .sort((a, b) => b.qty - a.qty);
+}
+
+// ---------------------------------------------------------------------------
+// On-chain balance reconciliation (round 4 — kills phantom holdings)
+// ---------------------------------------------------------------------------
+
+export interface ReconciledHolding extends PortfolioHolding {
+  /** 'on-chain' when at least one contributing wallet address had a balance row. */
+  qtySource: 'on-chain' | 'tx-history';
+  /** The tx-derived qty before reconciliation (for honest "adjusted" reporting). */
+  txDerivedAmount: number;
+}
+
+export interface ReconciliationResult {
+  holdings: ReconciledHolding[];
+  /** Holdings whose quantity came DOWN to the on-chain balance (phantom drain). */
+  adjustedDownCount: number;
+  /** Holdings with at least one address reconciled to an on-chain balance row. */
+  reconciledCount: number;
+}
+
+/**
+ * The stored balance row for (chain, address) matching this holding, if any.
+ * Contract-keyed match first (tokens), symbol match for native coins; a row
+ * with amount 0 IS a match — a confirmed zero is data, not absence.
+ */
+export function balanceRowFor(
+  balances: WalletBalanceRow[],
+  chain: string,
+  addressLower: string,
+  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress'>
+): WalletBalanceRow | undefined {
+  return balances.find((b) => {
+    if (b.chain !== chain || b.address.toLowerCase() !== addressLower) return false;
+    // Native SOL: the holding carries the wrapped-SOL mint while the stored
+    // native balance row is contract-less — match on the asset label instead.
+    if (
+      chain === 'solana' &&
+      isNativeSolAsset(holding.asset) &&
+      !b.contractAddress
+    ) {
+      return b.asset.toUpperCase() === holding.asset.toUpperCase();
+    }
+    if (holding.contractAddress || b.contractAddress) {
+      return (
+        !!holding.contractAddress &&
+        !!b.contractAddress &&
+        holding.contractAddress.toLowerCase() === b.contractAddress.toLowerCase()
+      );
+    }
+    return b.asset.toUpperCase() === holding.asset.toUpperCase();
+  });
+}
+
+/**
+ * Reconcile tx-history holdings against stored on-chain balances.
+ *
+ * Per holding, quantities are recomputed per contributing source:
+ *  - wallet address WITH a balance row → the on-chain amount (authoritative);
+ *  - wallet address WITHOUT one (never fetched / unsupported chain) → the
+ *    tx-derived estimate (UI keeps the "Estimated from transaction history"
+ *    caption);
+ *  - exchange / manual sources → always tx-derived (no address to check).
+ *
+ * Cost basis keeps the tx-derived PER-UNIT cost scaled by the reconciled
+ * quantity. Reconciled-zero holdings drop out of the list (the phantom is
+ * gone) and are counted in `adjustedDownCount` so the UI can disclose the
+ * adjustment — no silent magic.
+ */
+export function reconcileHoldings(
+  holdings: PortfolioHolding[],
+  transactions: Transaction[],
+  balances: WalletBalanceRow[]
+): ReconciliationResult {
+  const result: ReconciledHolding[] = [];
+  let adjustedDownCount = 0;
+  let reconciledCount = 0;
+
+  for (const h of holdings) {
+    const txDerivedAmount = h.amount;
+    if (balances.length === 0) {
+      result.push({ ...h, qtySource: 'tx-history', txDerivedAmount });
+      continue;
+    }
+
+    // Attribute this holding's deltas per contributing wallet address, and
+    // lump everything without an address (exchange/manual) together.
+    // Chain-scoped to match buildPortfolioHoldings' keying (`${chain ?? 'x'}`
+    // prefix) — txDeltaFor alone is chain-blind (a display choice inside
+    // sourceBreakdown), which would double-attribute same-symbol rows across
+    // chains (e.g. exchange BTC into a bitcoin-chain BTC row).
+    const addrDeltas = new Map<string, number>();
+    const addrChain = new Map<string, string>();
+    let nonWalletDelta = 0;
+    const holdingChainKey = h.chain ?? 'x';
+    // Native SOL is the one upstream exception to chain keying:
+    // computeMainWalletSolFromTransactions is chain-blind, so chain-less
+    // manual SOL rows (chain undefined) built this holding too and must be
+    // counted here — filtering them out zeroed the holding (D-3).
+    const chainMergedSol = holdingChainKey === 'solana' && isNativeSolAsset(h.asset);
+    for (const t of transactions) {
+      if (t.isSpam) continue;
+      // Mirror buildPortfolioHoldings: internal transfer-outs never built qty
+      // (except DCA escrow deposits — an edge case we don't replicate here).
+      if (
+        t.isInternalTransfer &&
+        (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent')
+      ) {
+        continue;
+      }
+      const txChainKey = t.chain ?? 'x';
+      if (txChainKey !== holdingChainKey && !(chainMergedSol && txChainKey === 'x')) continue;
+      const delta = txDeltaFor(t, h);
+      if (Math.abs(delta) < 1e-12) continue;
+      if (t.walletAddress) {
+        const addrLower = t.walletAddress.toLowerCase();
+        addrDeltas.set(addrLower, (addrDeltas.get(addrLower) ?? 0) + delta);
+        if (t.chain && !addrChain.has(addrLower)) addrChain.set(addrLower, t.chain);
+      } else {
+        nonWalletDelta += delta;
+      }
+    }
+
+    let qty = Math.max(0, nonWalletDelta);
+    let reconciledAny = false;
+    for (const [addrLower, delta] of addrDeltas) {
+      const chain = addrChain.get(addrLower);
+      const row = chain ? balanceRowFor(balances, chain, addrLower, h) : undefined;
+      if (row) {
+        qty += Math.max(0, row.amount); // on-chain truth (0 drains a phantom)
+        reconciledAny = true;
+      } else {
+        // No on-chain row for this address (unsupported chain / never
+        // fetched): fall back to its raw tx-derived contribution. Clamping
+        // negatives to 0 here broke parity with the tx-history estimate —
+        // a real send would silently vanish instead of reducing the qty (D-3).
+        qty += delta;
+      }
+    }
+
+    const qtySource: ReconciledHolding['qtySource'] = reconciledAny ? 'on-chain' : 'tx-history';
+    if (reconciledAny) reconciledCount++;
+    if (qtySource === 'on-chain' && qty < txDerivedAmount - 1e-9) adjustedDownCount++;
+
+    // Per-unit cost from the tx-derived computation, scaled to the reconciled qty.
+    const perUnit = txDerivedAmount > 1e-9 ? h.costBasis / txDerivedAmount : 0;
+    if (qty > 1e-9) {
+      result.push({
+        ...h,
+        amount: qty,
+        costBasis: perUnit * qty,
+        qtySource,
+        txDerivedAmount
+      });
+    }
+  }
+
+  return { holdings: result, adjustedDownCount, reconciledCount };
 }
 
 // ---------------------------------------------------------------------------

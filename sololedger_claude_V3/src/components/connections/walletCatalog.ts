@@ -1,3 +1,5 @@
+import { BRAND_ICON_BASE } from '@/lib/brandAssets';
+
 /**
  * Data-driven wallet-app catalog — the Koinly-style picker behind the
  * drawer's "Wallet app" flow (live-feedback round, item 3).
@@ -51,9 +53,78 @@ export interface WalletCatalogEntry {
    * used by the Wallet-app lane classifier alongside `name`.
    */
   aliases?: string[];
+  /**
+   * Generic affordance, NOT a brand (the "Any other wallet" tile): the picker
+   * renders a neutral lucide glyph chip — never a logo, never the aurora
+   * letter-chip fallback (the real-logos rule doesn't apply to non-brands).
+   */
+  genericGlyph?: 'wallet';
 }
 
-const ICONS = '/assets/brand-icons';
+const ICONS = BRAND_ICON_BASE;
+
+/** Catalog id of the generic "Any other wallet" tile (round-4 item 2). */
+export const ANY_WALLET_ID = 'any-wallet';
+/** Name prefill when connecting via the generic tile (editable, still required). */
+export const ANY_WALLET_DEFAULT_NAME = 'My wallet';
+
+/**
+ * Every chain the lookup layer can watch — the generic tile is chain-agnostic,
+ * so its hints span all supported ChainIds (the first pre-selects the form's
+ * chain; the pasted address's own format auto-detect takes over from there).
+ */
+const ANY_WALLET_CHAINS: ChainId[] = [
+  'bitcoin',
+  'ethereum',
+  'solana',
+  'polygon',
+  'arbitrum',
+  'base',
+  'bsc',
+  'optimism',
+  'avalanche',
+  'celo',
+  'zksync',
+  'linea',
+  'scroll',
+  'blast',
+  'mantle',
+  'starknet',
+  'aurora',
+  'cronos',
+  'gnosis',
+  'moonbeam',
+  'moonriver',
+  'metis',
+  'opbnb',
+  'abstract',
+  'apechain',
+  'anime',
+  'berachain',
+  'hyperevm',
+  'ink',
+  'lens',
+  'monad',
+  'mythos',
+  'robinhood',
+  'rootstock',
+  'ronin',
+  'shape',
+  'settlus',
+  'soneium',
+  'story',
+  'unichain',
+  'worldchain',
+  'zora',
+  'zetachain',
+  'fraxtal',
+  'sei',
+  'sonic',
+  'plasma',
+  'stable',
+  'megaeth',
+  'katana'
+];
 
 /** Section order in the picker (groups not listed here would render last). */
 export const WALLET_GROUP_ORDER: WalletGroup[] = [
@@ -78,6 +149,18 @@ export const WALLET_CATALOG: WalletCatalogEntry[] = [
   { id: 'ledger', name: 'Ledger', subtitle: 'Hardware wallet · BTC & ETH · xPub friendly', group: 'Popular wallets', chains: ['bitcoin', 'ethereum'], logo: `${ICONS}/ledger.svg` },
   { id: 'keplr', name: 'Keplr', subtitle: 'Cosmos ecosystem wallet', group: 'Popular wallets', chains: [], logo: `${ICONS}/keplr.png` },
   { id: 'exodus', name: 'Exodus', subtitle: 'Multi-chain desktop & mobile', group: 'Popular wallets', chains: ['bitcoin', 'ethereum', 'solana'], logo: `${ICONS}/exodus.svg` },
+  // Generic catch-all — pinned LAST in Popular wallets (round-4 item 2). Not a
+  // brand: the picker renders the neutral lucide Wallet glyph chip, and the
+  // connect form prefills the name "My wallet" (ANY_WALLET_DEFAULT_NAME).
+  {
+    id: ANY_WALLET_ID,
+    name: 'Any other wallet',
+    aliases: ['any wallet', 'another wallet', 'other wallet', 'generic wallet'],
+    subtitle: 'Connect any wallet by address or xPub',
+    group: 'Popular wallets',
+    chains: ANY_WALLET_CHAINS,
+    genericGlyph: 'wallet'
+  },
 
   // ── EVM & multi-chain ──
   { id: 'okxwallet', name: 'OKX Web3 Wallet', aliases: ['okx wallet'], subtitle: 'Multi-chain Web3 wallet by OKX', group: 'EVM & multi-chain', chains: ['ethereum'], logo: `${ICONS}/okx.svg`, tile: '#FFFFFF' },

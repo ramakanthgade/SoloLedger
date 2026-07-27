@@ -32,7 +32,8 @@ export function SwitchModeButton({ className }: { className?: string }) {
       title="Return to the landing page to switch mode (Local / BYOK / Hosted)"
     >
       <ArrowLeftRight className="h-3.5 w-3.5" aria-hidden="true" />
-      <span>Switch mode</span>
+      {/* Label drops below 2xl so the six tabs always fit the header. */}
+      <span className="hidden 2xl:inline">Switch mode</span>
     </button>
   );
 }

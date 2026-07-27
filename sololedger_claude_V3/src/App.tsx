@@ -21,6 +21,7 @@ import { UserProfileMenu } from '@/components/auth/UserProfileMenu';
 import { useAuth } from '@/lib/saas/authContext';
 import { useAppMode } from '@/lib/saas/modeContext';
 import { useImportJob } from '@/lib/importJob';
+import { maybeAutoSyncOnOpen } from '@/lib/saas/autoSyncOnOpen';
 import {
   Link, ListChecks, LayoutDashboard, TrendingUp, FileText, Settings, Loader2, Shield
 } from 'lucide-react';
@@ -98,6 +99,17 @@ function MainApp() {
     void deduplicateTransactions().finally(() => setDeduping(false));
   }, [user?.id]);
 
+  // Round-4: paid hosted users get an automatic catch-up sync of every
+  // connection once per app open, after the per-user DB is ready. Free /
+  // local / BYOK users keep the manual per-card Sync only. The ref guard +
+  // the module latch in autoSyncOnOpen keep this to exactly one run per boot.
+  const autoSyncFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoSyncFiredRef.current || !dbReady) return;
+    autoSyncFiredRef.current = true;
+    void maybeAutoSyncOnOpen(user);
+  }, [dbReady, user]);
+
   // Roving-tabindex arrow-key navigation across the tablist.
   const handleTabKeyDown = (e: React.KeyboardEvent, index: number) => {
     const count = tabs.length;
@@ -155,7 +167,7 @@ function MainApp() {
        * brand lockup, the primary tablist, and the privacy/theme/account
        * cluster. Layering: shell z-40 < advisor z-50 < dialogs z-[60] < toasts z-[70]. */}
       <header className="sticky top-0 z-40 border-b border-hi/10 bg-canvas/85 backdrop-blur-xl">
-        <div className="mx-auto flex h-16 max-w-7xl items-center gap-2 px-4 sm:px-6 lg:px-8">
+        <div className="mx-auto flex h-16 max-w-[90rem] items-center gap-2 px-4 sm:px-6 lg:px-8">
           {/* Top-bar overlap fix: the wordmark drops below xl so the six tabs
            * always fit — the brand mark alone carries the header at mid widths.
            * The desktop tablist only appears at lg+ (where all six tabs always
@@ -193,8 +205,9 @@ function MainApp() {
                       : 'text-low hover:bg-elev-3 hover:text-hi'
                   )}
                 >
-                  {/* Icons yield to labels below xl — tabs never clip. */}
-                  <Icon className="hidden h-4 w-4 xl:block" aria-hidden="true" />
+                  {/* Icons yield to labels below 2xl — tabs never clip,
+                   * even with the widest ("Local + relay") privacy pill. */}
+                  <Icon className="hidden h-4 w-4 2xl:block" aria-hidden="true" />
                   {tab.label}
                 </button>
               );

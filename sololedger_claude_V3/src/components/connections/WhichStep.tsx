@@ -1,12 +1,12 @@
 import { useMemo, useState } from 'react';
-import { ChevronRight, Search } from 'lucide-react';
+import { ChevronRight, Search, Wallet } from 'lucide-react';
 import { Badge } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import type { ExchangeId } from '@/lib/exchangeSync';
 import { AUTO_SYNC_EXCHANGES } from '@/components/import/autoSyncExchanges';
 import { IMPORT_SOURCES } from '@/components/import/importSources';
 import { BrandIcon } from './brandIcons';
-import { WALLET_CATALOG, WALLET_GROUP_ORDER } from './walletCatalog';
+import { ANY_WALLET_DEFAULT_NAME, ANY_WALLET_ID, WALLET_CATALOG, WALLET_GROUP_ORDER } from './walletCatalog';
 import type { FlowKind } from './WhatStep';
 
 /** What the user picked in step 2 — routed by the drawer's Connect step. */
@@ -28,6 +28,8 @@ interface Cell {
   label: string;
   meta: string;
   iconId: string | null;
+  /** Generic affordance (not a brand) — render the neutral lucide glyph chip. */
+  genericGlyph?: 'wallet';
   added?: boolean;
   selection: WhichSelection;
 }
@@ -97,11 +99,14 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
           label: w.name,
           meta: w.subtitle,
           iconId: w.logo ? w.id : null,
+          genericGlyph: w.genericGlyph,
           added: added.has(w.id),
           selection: {
             kind: 'wallet-app',
             id: w.id,
-            label: w.name,
+            // The generic tile prefills the connect form's (required) wallet
+            // name with "My wallet"; brand tiles prefill the app name.
+            label: w.id === ANY_WALLET_ID ? ANY_WALLET_DEFAULT_NAME : w.name,
             preselectChain: w.chains[0]
           } as WhichSelection
         }))
@@ -133,10 +138,18 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
   }, [flow, added]);
 
   const q = query.trim().toLowerCase();
+  // Tokenized match: every word must appear in the label, so "any wallet"
+  // still finds "Any other wallet" (D-5) and "trust wallet" finds "Trust Wallet".
+  const tokens = q.split(/\s+/).filter(Boolean);
   const visible = sections
     .map((s) => ({
       ...s,
-      cells: q ? s.cells.filter((c) => c.label.toLowerCase().includes(q)) : s.cells
+      cells: tokens.length
+        ? s.cells.filter((c) => {
+            const label = c.label.toLowerCase();
+            return tokens.every((t) => label.includes(t));
+          })
+        : s.cells
     }))
     .filter((s) => s.cells.length > 0);
 
@@ -190,7 +203,19 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60'
                 )}
               >
-                <BrandIcon id={cell.iconId} fallback={cell.label} size={32} />
+                {cell.genericGlyph === 'wallet' ? (
+                  // Generic "Any other wallet" affordance — a neutral lucide
+                  // glyph chip; the aurora letter-chip fallback must NOT kick in.
+                  <span
+                    aria-hidden="true"
+                    data-testid="any-wallet-glyph"
+                    className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-hi/10 bg-elev-2 text-mid"
+                  >
+                    <Wallet className="h-4 w-4" aria-hidden="true" />
+                  </span>
+                ) : (
+                  <BrandIcon id={cell.iconId} fallback={cell.label} size={32} />
+                )}
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-bold text-hi">{cell.label}</span>
                   <span className="block text-[11px] text-low">{cell.meta}</span>
