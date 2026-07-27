@@ -61,6 +61,13 @@ function isLiveSpot(market: UnifiedMarket | undefined): market is UnifiedMarket 
  * Candidate spot symbols to scan for trades: bases × QUOTE_CANDIDATES
  * intersected with live spot+active markets (self-pairs dropped), unioned
  * with persisted knownSymbols that are still live. Sorted for determinism.
+ *
+ * NOTE: this is the INCREMENTAL-sync discovery (cheap). It is BLIND to
+ * fully-divested assets — an asset bought AND sold to zero with no
+ * deposit/withdrawal trace leaves no balance/transfer signal, so its symbols
+ * never appear here. The INITIAL sync must use allSpotSymbols instead (see
+ * engine) or those trades are silently never fetched (the HNT/NPXS/BUSD
+ * blind spot — measured 7% trade coverage on a real account).
  */
 export function candidateSpotSymbols(
   assets: string[],
@@ -82,6 +89,26 @@ export function candidateSpotSymbols(
   // before stays covered across syncs).
   for (const symbol of knownSymbols) {
     if (isLiveSpot(markets[symbol])) symbols.add(symbol);
+  }
+  return [...symbols].sort();
+}
+
+/**
+ * ALL live spot symbols — the INITIAL-sync discovery set. The only way to
+ * guarantee complete trade history: Binance's myTrades requires a symbol and
+ * there is no "all my trades" endpoint, so the initial (cursorless) sync must
+ * probe every live spot market. A never-traded symbol costs exactly one empty
+ * myTrades call (the fromId scan short-circuits), so this is bounded — heavy
+ * accounts hit ~50-100 symbols with fills, the rest are single empty probes.
+ * Traded symbols are persisted to knownSymbols, so incremental syncs fall
+ * back to the cheap candidateSpotSymbols path.
+ */
+export function allSpotSymbols(markets: Record<string, UnifiedMarket>): string[] {
+  const symbols = new Set<string>();
+  for (const market of Object.values(markets)) {
+    if (!isLiveSpot(market)) continue;
+    if (market.base.toUpperCase() === market.quote.toUpperCase()) continue;
+    symbols.add(market.symbol);
   }
   return [...symbols].sort();
 }

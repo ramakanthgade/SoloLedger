@@ -47,7 +47,7 @@ import {
   normalizeTransfer,
   resolveMarket
 } from './normalize';
-import { assetsFromBalance, candidateSpotSymbols } from './binanceSymbols';
+import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols } from './binanceSymbols';
 import type {
   ExchangeId,
   ExchangeSyncCursors,
@@ -573,12 +573,30 @@ export async function syncConnection(
     let newKnownSymbols: string[] | undefined;
 
     if (exchange === 'binance') {
-      // §B-4 symbol discovery: balances ∪ transfer currencies ∪ knownAssets
-      // crossed with live spot markets, unioned with persisted knownSymbols.
-      const assets = [
-        ...new Set([...balanceAssets, ...transferAssets, ...(row.knownAssets ?? [])])
-      ];
-      const symbols = candidateSpotSymbols(assets, markets, row.knownSymbols ?? []);
+      // §B-4 symbol discovery.
+      //
+      // INITIAL (cursorless) sync: probe EVERY live spot symbol. Binance's
+      // myTrades requires a symbol and there is no "all my trades" endpoint,
+      // so asset-derived discovery is the only completeness killer: an asset
+      // bought AND fully sold to zero (no current balance, no deposit/
+      // withdrawal trace) leaves nothing to discover and its trades are
+      // silently never fetched — measured 7% trade coverage on a real
+      // account (HNT 6,284 fills / NPXS / BUSD-quoted pairs all missed).
+      // Probing all symbols is bounded: a never-traded symbol costs exactly
+      // one empty myTrades call (the fromId scan short-circuits).
+      //
+      // INCREMENTAL sync: cheap asset-derived discovery (balances ∪ transfer
+      // currencies ∪ knownAssets) ∪ persisted knownSymbols. Symbols that
+      // returned trades are persisted below, so assets discovered on the
+      // initial full scan stay covered forever.
+      const isInitialScan = oldCursors.trades == null;
+      const symbols = isInitialScan
+        ? allSpotSymbols(markets)
+        : candidateSpotSymbols(
+            [...new Set([...balanceAssets, ...transferAssets, ...(row.knownAssets ?? [])])],
+            markets,
+            row.knownSymbols ?? []
+          );
       const symbolHits = new Set<string>();
       let done = 0;
       hooks.onProgress?.({ done: 0, total: symbols.length });
