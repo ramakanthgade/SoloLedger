@@ -914,8 +914,20 @@ export function stitchLedger(
       `Stitched ${buysSells} spot trade(s) from ledger rows — ${withFiat} include USDT/fiat value for cost basis.`
     );
   }
-  const deposits = transactions.filter((t) => t.type === 'transfer_in').length;
-  const withdrawals = transactions.filter((t) => t.type === 'transfer_out').length;
+  // Count only the transfers that still need user review — rows already
+  // auto-confirmed internal (intra-account "Transfer Between…" / "Inter-Wallet
+  // Transfer") net to zero and need no action, so exclude them from the
+  // "mark internal transfers" prompt to avoid alarming the user with rows
+  // they've already been told are handled.
+  const reviewableIn = transactions.filter(
+    (t) => t.type === 'transfer_in' && !t.isInternalTransfer
+  ).length;
+  const reviewableOut = transactions.filter(
+    (t) => t.type === 'transfer_out' && !t.isInternalTransfer
+  ).length;
+  const autoInternal = transactions.filter(
+    (t) => (t.type === 'transfer_in' || t.type === 'transfer_out') && t.isInternalTransfer
+  ).length;
   const p2pTrades = transactions.filter((t) => t.category === 'p2p').length;
   if (p2pTrades > 0) {
     const p2pSells = transactions.filter((t) => t.category === 'p2p' && t.type === 'sell').length;
@@ -923,9 +935,14 @@ export function stitchLedger(
       `${p2pTrades} P2P trade(s) classified as buy/sell (${p2pTrades - p2pSells} buy, ${p2pSells} sell) — included in capital gains unless you mark internal transfer in Review.`
     );
   }
-  if (deposits + withdrawals > 0) {
+  if (autoInternal > 0) {
     warnings.push(
-      `${deposits} deposit(s) and ${withdrawals} withdrawal(s) imported — mark internal transfers in Review if moving between your own wallets.`
+      `${autoInternal} internal account transfer(s) auto-confirmed (Spot ↔ Funding/Futures/Options) — these net to zero, no action needed.`
+    );
+  }
+  if (reviewableIn + reviewableOut > 0) {
+    warnings.push(
+      `${reviewableIn} deposit(s) and ${reviewableOut} withdrawal(s) imported — mark internal transfers in Review if moving between your own wallets.`
     );
   }
 
