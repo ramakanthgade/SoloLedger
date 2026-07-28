@@ -9,7 +9,7 @@
  * Run: npx vitest run src/lib/parsers/binanceRealData.verify.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { stitchBinanceTransactionHistory } from './binanceStitch';
 
 const DIR = 'C:/Users/ramak/.hermes/desktop-attachments';
@@ -17,9 +17,12 @@ const LEDGER = `${DIR}/Ram_Binance-Transaction-History-Jan 01 2017_July 27 2026.
 const TRADES = `${DIR}/Ram_Binance-Spot-Trade-History-Jan 01 2017_July 27 2026.csv`;
 const DEPS = `${DIR}/Ram_Binance-Deposit-History-Jan 01 2017_July 27 2026.csv`;
 const WDS = `${DIR}/Ram_Binance-Withdraw-History-Jan 01 2017_July 27 2026.csv`;
+// Real-data ground truth lives only on the author's machine — skip cleanly on
+// CI/other machines instead of ENOENT-failing the whole suite.
+const HAS_GROUND_TRUTH = existsSync(LEDGER) && existsSync(TRADES) && existsSync(DEPS) && existsSync(WDS);
 
 function parseCsv(file: string): Record<string, string>[] {
-  const txt = readFileSync(file, 'utf8').replace(/^﻿/, '');
+  const txt = readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
   const lines = txt.split(/\r?\n/).filter((l) => l.trim());
   const head = lines[0].split(',').map((h) => h.trim());
   return lines.slice(1).map((l) => {
@@ -30,7 +33,7 @@ function parseCsv(file: string): Record<string, string>[] {
   });
 }
 
-describe('REAL Binance Transaction History through the production stitcher', () => {
+describe.skipIf(!HAS_GROUND_TRUTH)('REAL Binance Transaction History through the production stitcher', () => {
   it('ingests the full 28,928-row ledger and reports coverage vs ground truth', () => {
     const ledgerRows = parseCsv(LEDGER);
     const { transactions, skippedRows, warnings } = stitchBinanceTransactionHistory(ledgerRows);

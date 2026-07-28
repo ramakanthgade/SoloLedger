@@ -439,7 +439,9 @@ function stitchSimpleTrades(rows: BinanceLedgerRow[]): Transaction[] {
   // simple-era Buy/Sell — but if one ever did, defer to the modern stitchers.
   const isModernGroup = rows.some((r) => {
     const op = r.operation.toLowerCase();
-    return op === 'transaction buy' || op === 'transaction sold';
+    return op === 'transaction buy' || op === 'transaction sold' ||
+      op === 'transaction spend' || op === 'transaction revenue' ||
+      op === 'transaction fee' || op === 'binance convert';
   });
   if (isModernGroup) return [];
   const sells = rows.filter((r) => r.operation.toLowerCase() === 'sell');
@@ -454,7 +456,7 @@ function stitchSimpleTrades(rows: BinanceLedgerRow[]): Transaction[] {
   const paired = pairLegs(sellLegs, buyLegs);
 
   const usedFees = new Set<number>();
-  return paired.map(({ row: sell, amount, pairedRow }) => {
+  const out: Transaction[] = paired.map(({ row: sell, amount, pairedRow }) => {
     const buyRow = pairedRow;
     const receivedAsset = buyRow?.coin;
     // Fee is charged in the received asset for this era; consume each once.
@@ -490,6 +492,35 @@ function stitchSimpleTrades(rows: BinanceLedgerRow[]): Transaction[] {
       raw: { sell: sell.raw, buy: buyRow?.raw, fee: feeRow?.raw }
     });
   });
+
+  // Surplus legs: when one side has MORE rows than the other (e.g. 1 Sell +
+  // 2 Buys — two fills sharing a timestamp with a single combined spent leg),
+  // pairLegs leaves the extra legs un-paired. pairLegs already emitted those
+  // with pairedRow === undefined above when SELLS were surplus. Here we handle
+  // surplus BUYS (acquisitions) that no Sell leg consumed — dropping them
+  // silently loses real acquisitions (reproduced: XRP 5000 buy vanished).
+  const pairedBuyIndexes = new Set(
+    paired.map((p) => p.pairedRow?.index).filter((i): i is number => i != null)
+  );
+  for (const b of buys) {
+    if (pairedBuyIndexes.has(b.index)) continue;
+    const amount = Math.abs(b.change);
+    out.push(
+      makeTx({
+        timestamp: b.timestamp,
+        type: 'buy',
+        asset: b.coin,
+        amount,
+        fiatValue: undefined,
+        sourceRef: exchangeSourceRef('binance', b.timestamp, 'buy', b.coin, amount),
+        notes: 'Unpaired simple-era Buy leg (counter-leg absent)',
+        flags: ['missing_cost_basis'],
+        raw: { buy: b.raw }
+      })
+    );
+  }
+
+  return out;
 }
 
 function stitchSimpleRows(rows: BinanceLedgerRow[]): Transaction[] {
