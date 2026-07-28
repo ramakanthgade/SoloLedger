@@ -90,6 +90,6 @@ describe('Binance Transaction-History stitch (C1)', () => {
     expect(transactions.length).toBe(1);
     expect(transactions[0].type).toBe('buy');
     expect(transactions[0].flags).toContain('missing_cost_basis');
-    expect(transactions[0].flags).toContain('possible_internal_transfer');
+    expect(transactions[0].flags).not.toContain('possible_internal_transfer');
   });
 });

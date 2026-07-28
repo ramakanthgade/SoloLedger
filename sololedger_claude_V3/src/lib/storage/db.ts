@@ -295,7 +295,7 @@ export async function seedSettingsIfAbsent(seed: TaxSettings): Promise<boolean> 
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.settings],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -306,6 +306,7 @@ export async function clearAllData(): Promise<void> {
       await db.csvImports.clear();
       await db.exchangeConnections.clear();
       await db.walletBalances.clear();
+      await db.exchangeBalances.clear();
       // "Delete all data" promises to remove everything — reset settings to defaults too.
       await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
     }
@@ -634,7 +635,8 @@ export async function replaceExchangeBalances(
   }));
   await db.transaction('rw', db.exchangeBalances, async () => {
     const existing = await db.exchangeBalances
-      .filter((b) => b.connectionId === connectionId)
+      .where('connectionId')
+      .equals(connectionId)
       .toArray();
     const freshIds = new Set(fresh.map((r) => r.id));
     // Assets absent from the new fetch collapse to an explicit zero row.
@@ -650,7 +652,7 @@ export async function getExchangeBalances(): Promise<ExchangeBalanceRow[]> {
 }
 
 export async function getExchangeBalancesForConnection(connectionId: string): Promise<ExchangeBalanceRow[]> {
-  return db.exchangeBalances.filter((b) => b.connectionId === connectionId).toArray();
+  return db.exchangeBalances.where('connectionId').equals(connectionId).toArray();
 }
 
 /** All stored balance rows for one address (any chain), newest schema. */

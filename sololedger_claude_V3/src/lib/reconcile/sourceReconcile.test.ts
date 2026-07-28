@@ -24,9 +24,9 @@ function bal(asset: string, amount: number): ExchangeBalanceRow {
   };
 }
 
-let seq = 0;
-function tx(partial: Partial<Transaction> & Pick<Transaction, 'type' | 'asset' | 'amount'>): Transaction {
-  return {
+function makeTxFactory() {
+  let seq = 0;
+  return (partial: Partial<Transaction> & Pick<Transaction, 'type' | 'asset' | 'amount'>): Transaction => ({
     id: `t${++seq}`,
     timestamp: 1700000000000 + seq,
     fiatCurrency: 'USD',
@@ -35,8 +35,10 @@ function tx(partial: Partial<Transaction> & Pick<Transaction, 'type' | 'asset' |
     isInternalTransfer: false,
     importBatchId: CONN,
     ...partial
-  };
+  });
 }
+
+const tx = makeTxFactory();
 
 describe('ledgerImpliedQty', () => {
   it('nets buys, sells, transfers, income, fees per asset', () => {

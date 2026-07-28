@@ -900,7 +900,9 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
     const flags: Transaction['flags'] =
       type === 'transfer_in' || type === 'transfer_out'
         ? ['possible_internal_transfer']
-        : ['missing_cost_basis', 'possible_internal_transfer'];
+        : type === 'buy' || type === 'sell'
+          ? ['missing_cost_basis']
+          : [];
 
     out.push(
       makeTx(ctx, {
