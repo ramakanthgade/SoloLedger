@@ -67,13 +67,14 @@ describe.skipIf(!HAS_GROUND_TRUTH)('Binance ledger — every operation accounted
     const { transactions } = stitchBinanceTransactionHistory(rows);
 
     // Futures realized PnL: 1:1 per row, split income (profit) vs sell (loss).
-    const pnl = transactions.filter((t) => t.category === 'perp' && t.notes?.includes('realized PnL'));
+    // Engine notes = 'Realized Profit and Loss[: remark]'.
+    const pnl = transactions.filter((t) => t.category === 'perp' && t.notes?.startsWith('Realized Profit and Loss'));
     expect(pnl.length).toBe(248);
     expect(pnl.filter((t) => t.type === 'income').length).toBeGreaterThan(0);
     expect(pnl.filter((t) => t.type === 'sell').length).toBeGreaterThan(0);
 
-    // Funding fees: 1:1, paid → fee, received → income.
-    const funding = transactions.filter((t) => t.notes?.startsWith('Funding fee'));
+    // Funding fees: 1:1, paid → fee, received → income. Engine notes = 'Funding Fee'.
+    const funding = transactions.filter((t) => t.notes === 'Funding Fee' || t.notes?.startsWith('Funding Fee:'));
     expect(funding.length).toBe(25);
 
     // Income ops now recognized (the INCOME_OPS name-mismatch fix).
@@ -114,11 +115,13 @@ describe.skipIf(!HAS_GROUND_TRUTH)('Binance ledger — every operation accounted
     // Paired swaps: auto-conversion, futures convert, token rebranding → trade.
     // Paired swaps: auto-conversion + futures convert stitch; the lone
     // redenomination leg has no counter-leg in the export (paired row absent)
-    // so it can't stitch — 2 trades expected.
+    // so it can't stitch — 2 trades expected. Engine notes = raw operation string.
     const swaps = transactions.filter((t) =>
-      t.notes === 'Stablecoins auto-conversion' ||
-      t.notes === 'Futures convert' ||
-      t.notes === 'Token swap (redenomination/rebranding)');
+      t.type === 'trade' &&
+      (t.notes === 'Stablecoins Auto-Conversion' ||
+        t.notes === 'Futures Convert - From' ||
+        t.notes === 'Futures Convert - To' ||
+        t.notes === 'Token Swap - Redenomination/Rebranding'));
     expect(swaps.length).toBe(2);
     expect(swaps.every((t) => t.type === 'trade')).toBe(true);
 
