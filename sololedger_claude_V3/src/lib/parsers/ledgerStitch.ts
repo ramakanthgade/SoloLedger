@@ -666,6 +666,17 @@ function stitchFiatConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
   });
 }
 
+/**
+ * Intra-account transfers ("Transfer Between Spot and Funding/CM/UM/Options",
+ * "Inter-Wallet Transfer"). These operations are ONLY ever emitted for moves
+ * between accounts inside the SAME exchange account — there is no possible
+ * external counterparty. They are therefore internal transfers with 100%
+ * certainty, so we auto-confirm them (isInternalTransfer: true, no
+ * possible_internal_transfer flag) instead of asking the user to mark them.
+ * This removes a manual Review step and makes them net to zero in portfolio
+ * math immediately. External Deposit/Withdraw stay review-needed (handled
+ * separately) because the ledger can't tell own-wallet from third-party there.
+ */
 function stitchInternalTransfers(ctx: StitchContext, rows: LedgerRow[]): Transaction[] {
   return rows
     .filter((r) => ctx.sets.internal.has(r.operation.toLowerCase()))
@@ -683,8 +694,8 @@ function stitchInternalTransfers(ctx: StitchContext, rows: LedgerRow[]): Transac
           Math.abs(r.change)
         ),
         notes: r.operation,
-        flags: ['possible_internal_transfer'],
-        isInternalTransfer: false,
+        flags: [],
+        isInternalTransfer: true, // provably intra-account → auto-confirmed
         raw: r.raw
       })
     );
