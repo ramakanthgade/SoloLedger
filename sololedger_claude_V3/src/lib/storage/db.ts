@@ -88,6 +88,26 @@ export interface WalletBalanceRow {
   source: 'rpc';
 }
 
+/**
+ * Exchange balance truth anchor — mirrors WalletBalanceRow but for exchange
+ * connections. The sync engine ALREADY calls fetchBalance() on every sync;
+ * this persists the result (instead of discarding it) so the Dashboard can
+ * anchor display quantity to what the exchange says you hold, and the
+ * reconciliation engine can cross-check ledger-implied qty vs authority qty.
+ */
+export interface ExchangeBalanceRow {
+  /** `${connectionId}:${asset.toUpperCase()}` */
+  id: string;
+  connectionId: string; // FK → exchangeConnections.id
+  exchange: string; // 'binance' | … (denormalized for cheap filter)
+  asset: string; // uppercase ticker
+  /** free + used (total) from ccxt Balances — what the exchange says you hold. */
+  amount: number;
+  /** ms epoch of the successful fetch. */
+  asOf: number;
+  source: 'exchange_api';
+}
+
 class SoloLedgerDB extends Dexie {
   transactions!: Table<Transaction, string>;
   lots!: Table<Lot, string>;
@@ -99,6 +119,7 @@ class SoloLedgerDB extends Dexie {
   csvImports!: Table<CsvImportRow, string>;
   exchangeConnections!: Table<ExchangeConnectionRow, string>;
   walletBalances!: Table<WalletBalanceRow, string>;
+  exchangeBalances!: Table<ExchangeBalanceRow, string>;
 
   constructor(name: string) {
     super(name);
@@ -189,6 +210,21 @@ class SoloLedgerDB extends Dexie {
       csvImports: 'id, importedAt, fileName',
       exchangeConnections: 'id, exchange, lastSyncAt',
       walletBalances: 'id, chain, address, asset'
+    });
+    // v10: exchange balance truth anchor (reconciliation engine Phase 1) —
+    // additive new table, all v9 tables carried over unchanged.
+    this.version(10).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName',
+      exchangeConnections: 'id, exchange, lastSyncAt',
+      walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset'
     });
   }
 }
@@ -565,6 +601,56 @@ export async function replaceWalletBalances(
 
 export async function getWalletBalances(): Promise<WalletBalanceRow[]> {
   return db.walletBalances.toArray();
+}
+
+// ---- Exchange balances (reconciliation engine Phase 1 truth anchor) ----
+
+/** Stable exchange-balance-row id: one row per (connection, asset). */
+export function exchangeBalanceId(connectionId: string, asset: string): string {
+  return `${connectionId}:${asset.toUpperCase()}`;
+}
+
+/**
+ * Replace the stored balance set for one connection with the freshly fetched
+ * rows — wholesale per connection (same contract as replaceWalletBalances) so
+ * an asset that dropped to zero OR vanished from the fetch both resolve
+ * honestly: a previously-seen asset absent from the new fetch collapses to an
+ * explicit 0 row (a confirmed zero is data, drains phantoms).
+ */
+export async function replaceExchangeBalances(
+  connectionId: string,
+  exchange: string,
+  rows: Array<Pick<ExchangeBalanceRow, 'asset' | 'amount'>>,
+  asOf: number
+): Promise<void> {
+  const fresh: ExchangeBalanceRow[] = rows.map((r) => ({
+    id: exchangeBalanceId(connectionId, r.asset),
+    connectionId,
+    exchange,
+    asset: r.asset.toUpperCase(),
+    amount: r.amount,
+    asOf,
+    source: 'exchange_api'
+  }));
+  await db.transaction('rw', db.exchangeBalances, async () => {
+    const existing = await db.exchangeBalances
+      .filter((b) => b.connectionId === connectionId)
+      .toArray();
+    const freshIds = new Set(fresh.map((r) => r.id));
+    // Assets absent from the new fetch collapse to an explicit zero row.
+    const zeroed: ExchangeBalanceRow[] = existing
+      .filter((e) => !freshIds.has(e.id))
+      .map((e) => ({ ...e, amount: 0, asOf }));
+    await db.exchangeBalances.bulkPut([...fresh, ...zeroed]);
+  });
+}
+
+export async function getExchangeBalances(): Promise<ExchangeBalanceRow[]> {
+  return db.exchangeBalances.toArray();
+}
+
+export async function getExchangeBalancesForConnection(connectionId: string): Promise<ExchangeBalanceRow[]> {
+  return db.exchangeBalances.filter((b) => b.connectionId === connectionId).toArray();
 }
 
 /** All stored balance rows for one address (any chain), newest schema. */

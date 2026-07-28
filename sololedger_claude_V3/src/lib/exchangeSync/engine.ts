@@ -23,6 +23,7 @@ import {
   deduplicateTransactions,
   filterAlreadyImported,
   getSettings,
+  replaceExchangeBalances,
   type ExchangeConnectionRow
 } from '@/lib/storage/db';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
@@ -37,6 +38,7 @@ import {
   hasErrorName,
   syncErrorMessage,
   type ExchangeClient,
+  type UnifiedBalance,
   type UnifiedMarket,
   type UnifiedTrade,
   type UnifiedTransfer
@@ -47,7 +49,7 @@ import {
   normalizeTransfer,
   resolveMarket
 } from './normalize';
-import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols } from './binanceSymbols';
+import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols, flattenBalanceTotals } from './binanceSymbols';
 import type {
   ExchangeId,
   ExchangeSyncCursors,
@@ -725,6 +727,7 @@ export async function syncConnection(
       cursors: newCursors,
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
+      balance,
       hooks,
       deps
     });
@@ -769,6 +772,8 @@ export async function persistSyncedRows(args: {
   cursors: ExchangeSyncCursors;
   knownAssets?: string[];
   knownSymbols?: string[];
+  /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
+  balance?: UnifiedBalance;
   hooks?: SyncHooks;
   deps?: SyncEngineDeps;
 }): Promise<{ saved: number; pricesUpdated: number; warnings: string[] }> {
@@ -810,6 +815,23 @@ export async function persistSyncedRows(args: {
     status: 'ok',
     lastError: undefined
   });
+
+  // Exchange balance truth anchor — persist the fetchBalance() result the
+  // sync ALREADY fetched (no new network call) so the Dashboard can anchor
+  // display quantity to authority and the reconciliation engine can
+  // cross-check ledger-implied vs authority qty. Written post-save, same
+  // cursor-safety invariant as cursors. Failure here must not strand a sync.
+  if (args.balance) {
+    try {
+      const conn = await db.exchangeConnections.get(args.connectionId);
+      const flat = flattenBalanceTotals(args.balance);
+      await replaceExchangeBalances(args.connectionId, conn?.exchange ?? 'unknown', flat, now());
+    } catch (err) {
+      warnings.push(
+        `Balance snapshot failed (${err instanceof Error ? err.message : 'unknown error'}) — transactions are saved; balance anchor updates next sync.`
+      );
+    }
+  }
 
   // Pricing — gated on the EFFECTIVE flag; failure degrades to a warning.
   let pricesUpdated = 0;
