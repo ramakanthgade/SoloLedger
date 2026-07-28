@@ -3,7 +3,7 @@
  * candidateSpotSymbols purity tests.
  */
 import { describe, expect, it } from 'vitest';
-import { assetsFromBalance, candidateSpotSymbols, QUOTE_CANDIDATES } from './binanceSymbols';
+import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols, QUOTE_CANDIDATES } from './binanceSymbols';
 import type { UnifiedBalance, UnifiedMarket } from './ccxtLoader';
 
 function market(
@@ -101,5 +101,40 @@ describe('candidateSpotSymbols', () => {
       'ETH',
       'BNB'
     ]);
+  });
+});
+
+describe('allSpotSymbols (initial-sync full scan)', () => {
+  const markets: Record<string, UnifiedMarket> = {
+    'BTC/USDT': market('BTC/USDT', 'BTC', 'USDT'),
+    'HNT/USDT': market('HNT/USDT', 'HNT', 'USDT'), // fully-divested asset — no balance/transfer trace
+    'HNT/BUSD': market('HNT/BUSD', 'HNT', 'BUSD'), // dead-quote pair, also invisible to asset discovery
+    'NPXS/USDT': market('NPXS/USDT', 'NPXS', 'USDT'), // another fully-divested asset
+    'DOGE/USDT': market('DOGE/USDT', 'DOGE', 'USDT', { active: false }), // delisted
+    'XRP/USDT': market('XRP/USDT', 'XRP', 'USDT', { spot: false }), // futures market
+    'USDT/USDT': market('USDT/USDT', 'USDT', 'USDT') // self-pair
+  };
+
+  it('returns EVERY live spot symbol regardless of balances/transfers (covers fully-divested assets)', () => {
+    // This is the blind-spot fix: candidateSpotSymbols([], markets) would
+    // return [] for an account holding nothing, but allSpotSymbols must still
+    // surface HNT/NPXS markets so their historical trades get fetched.
+    expect(candidateSpotSymbols([], markets)).toEqual([]); // old path is blind
+    expect(allSpotSymbols(markets)).toEqual(['BTC/USDT', 'HNT/BUSD', 'HNT/USDT', 'NPXS/USDT']);
+  });
+
+  it('drops only self-pairs, inactive, and non-spot markets (quote-agnostic)', () => {
+    const out = allSpotSymbols(markets);
+    expect(out).not.toContain('USDT/USDT'); // self-pair
+    expect(out).not.toContain('DOGE/USDT'); // inactive
+    expect(out).not.toContain('XRP/USDT'); // non-spot
+    // HNT/BUSD included even though BUSD is not a balance asset — dead-quote
+    // pairs are exactly what the old discovery missed.
+    expect(out).toContain('HNT/BUSD');
+  });
+
+  it('is sorted for determinism', () => {
+    const out = allSpotSymbols(markets);
+    expect(out).toEqual([...out].sort());
   });
 });
