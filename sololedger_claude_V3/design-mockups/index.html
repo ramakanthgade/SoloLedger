@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SoloLedger — Design Theme Mockups</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=Figtree:wght@400;500;600;700&family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&family=Instrument+Sans:wght@400;500;600;700&family=Nunito:wght@400;600;700;800&family=Plus+Jakarta+Sans:wght@400;500;600;700&family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      min-height: 100vh;
+      font-family: system-ui, sans-serif;
+      background: #e8eaed;
+      color: #1a1a1a;
+    }
+
+    /* ── Mockup chrome (outside the app) ── */
+    .mockup-chrome {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      background: #fff;
+      border-bottom: 1px solid #ddd;
+      box-shadow: 0 2px 12px rgba(0,0,0,.06);
+    }
+    .mockup-chrome-inner {
+      max-width: 1280px;
+      margin: 0 auto;
+      padding: 16px 24px;
+    }
+    .mockup-chrome h1 {
+      font-size: 1.1rem;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .mockup-chrome p {
+      font-size: 0.8rem;
+      color: #666;
+      margin-bottom: 14px;
+    }
+    .theme-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .theme-tab {
+      border: 2px solid transparent;
+      border-radius: 10px;
+      padding: 10px 16px;
+      font-size: 0.82rem;
+      font-weight: 600;
+      cursor: pointer;
+      background: #f4f4f5;
+      color: #444;
+      transition: all .2s;
+    }
+    .theme-tab:hover { background: #ebebeb; }
+    .theme-tab.active { border-color: currentColor; }
+    .theme-tab[data-theme="1"] { color: #0f2744; }
+    .theme-tab[data-theme="1"].active { background: #e8f4f8; }
+    .theme-tab[data-theme="2"] { color: #4a6741; }
+    .theme-tab[data-theme="2"].active { background: #eef3ea; }
+    .theme-tab[data-theme="3"] { color: #0891b2; }
+    .theme-tab[data-theme="3"].active { background: #ecfeff; }
+    .theme-tab[data-theme="4"] { color: #2563eb; }
+    .theme-tab[data-theme="4"].active { background: #eff6ff; }
+    .theme-tab .rec { font-size: 0.65rem; font-weight: 500; opacity: .7; display: block; }
+
+    .mockup-frame-wrap {
+      max-width: 1280px;
+      margin: 24px auto 48px;
+      padding: 0 24px;
+    }
+    .mockup-label {
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: #888;
+      margin-bottom: 8px;
+    }
+    .mockup-frame {
+      border-radius: 16px;
+      overflow: hidden;
+      box-shadow: 0 8px 40px rgba(0,0,0,.12), 0 0 0 1px rgba(0,0,0,.06);
+      min-height: 820px;
+    }
+
+    /* ── Shared app structure ── */
+    .app { min-height: 820px; display: flex; flex-direction: column; }
+    .app-header { flex-shrink: 0; }
+    .app-nav { flex-shrink: 0; }
+    .app-main { flex: 1; padding: 28px 32px 40px; }
+
+    .logo-row { display: flex; align-items: center; gap: 12px; }
+    .logo-img { height: 36px; width: auto; object-fit: contain; }
+    .tagline { font-size: 0.72rem; opacity: .65; }
+
+    .nav-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+    .nav-tab {
+      display: inline-flex; align-items: center; gap: 6px;
+      padding: 8px 14px; border-radius: 999px; font-size: 0.8rem; font-weight: 500;
+      border: none; cursor: default; background: transparent;
+    }
+    .nav-tab svg { width: 15px; height: 15px; }
+    .nav-tab.active { font-weight: 600; }
+
+    .local-badge {
+      font-size: 0.68rem; font-weight: 600; padding: 5px 10px; border-radius: 6px;
+      letter-spacing: .02em;
+    }
+
+    .page-title { font-size: 1.35rem; font-weight: 600; margin-bottom: 4px; }
+    .page-sub { font-size: 0.82rem; opacity: .7; margin-bottom: 20px; }
+
+    .toolbar {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 20px;
+    }
+    .select, .checkbox-label { font-size: 0.8rem; }
+    .select {
+      padding: 7px 12px; border-radius: 8px; border: 1px solid;
+      background: transparent; cursor: default;
+    }
+    .checkbox-label { display: flex; align-items: center; gap: 6px; }
+    .export-group { margin-left: auto; display: flex; gap: 6px; }
+    .btn {
+      padding: 7px 14px; border-radius: 8px; font-size: 0.78rem; font-weight: 600;
+      border: 1px solid transparent; cursor: default;
+    }
+    .btn-secondary { background: transparent; }
+    .btn-primary { font-weight: 600; }
+
+    .alert {
+      padding: 10px 14px; border-radius: 8px; font-size: 0.78rem; margin-bottom: 18px;
+      border: 1px solid;
+    }
+
+    .stat-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 20px;
+    }
+    @media (max-width: 900px) { .stat-grid { grid-template-columns: repeat(2, 1fr); } }
+
+    .stat-card {
+      border-radius: 12px; padding: 18px 20px; border: 1px solid;
+    }
+    .stat-label { font-size: 0.72rem; font-weight: 500; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 8px; opacity: .75; }
+    .stat-value { font-size: 1.55rem; font-weight: 600; font-variant-numeric: tabular-nums; }
+    .stat-value.positive { }
+    .stat-value.income { }
+
+    .panel {
+      border-radius: 12px; border: 1px solid; margin-bottom: 18px; overflow: hidden;
+    }
+    .panel-head {
+      padding: 14px 20px; font-size: 0.88rem; font-weight: 600;
+      border-bottom: 1px solid;
+    }
+    .panel-body { padding: 0; }
+
+    table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+    th {
+      text-align: left; padding: 10px 16px; font-weight: 500; font-size: 0.72rem;
+      text-transform: uppercase; letter-spacing: .03em;
+    }
+    th.num, td.num { text-align: right; }
+    td { padding: 11px 16px; font-variant-numeric: tabular-nums; }
+    tr.data-row { border-top: 1px solid; }
+    .gain-pos { font-weight: 600; }
+    .gain-neg { font-weight: 600; }
+
+    .rules-panel .panel-body { padding: 16px 20px; }
+    .rules-text { font-size: 0.82rem; line-height: 1.55; margin-bottom: 12px; }
+    .badge {
+      display: inline-block; font-size: 0.68rem; font-weight: 600; padding: 5px 10px; border-radius: 6px;
+    }
+
+    .theme-panel { display: none; }
+    .theme-panel.active { display: block; }
+
+    /* ═══════════════════════════════════════
+       THEME 1 — Modern Fintech
+    ═══════════════════════════════════════ */
+    .theme-1 { background: #f4f7fb; color: #1e293b; font-family: 'DM Sans', sans-serif; }
+    .theme-1 .app-header {
+      background: linear-gradient(135deg, #0f2744 0%, #152d4a 100%);
+      color: #f8fafc; padding: 16px 32px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .theme-1 .tagline { color: #94b8cc; }
+    .theme-1 .local-badge { background: rgba(45,212,191,.15); color: #5eead4; border: 1px solid rgba(45,212,191,.3); }
+    .theme-1 .app-nav { background: #fff; padding: 10px 32px 12px; border-bottom: 1px solid #e2e8f0; }
+    .theme-1 .nav-tab { color: #64748b; }
+    .theme-1 .nav-tab.active { background: #0f2744; color: #fff; box-shadow: 0 2px 8px rgba(15,39,68,.25); }
+    .theme-1 .page-title { color: #0f2744; font-family: 'Instrument Sans', sans-serif; }
+    .theme-1 .page-sub { color: #64748b; }
+    .theme-1 .select { border-color: #cbd5e1; background: #fff; color: #334155; }
+    .theme-1 .checkbox-label { color: #475569; }
+    .theme-1 .btn-secondary { border-color: #cbd5e1; color: #334155; background: #fff; }
+    .theme-1 .btn-primary { background: #14b8a6; color: #fff; border-color: #14b8a6; }
+    .theme-1 .stat-card { background: #fff; border-color: #e2e8f0; box-shadow: 0 1px 3px rgba(15,39,68,.04); }
+    .theme-1 .stat-value { font-family: 'IBM Plex Mono', monospace; color: #0f2744; }
+    .theme-1 .stat-value.positive { color: #0d9488; }
+    .theme-1 .stat-value.income { color: #b45309; }
+    .theme-1 .panel { background: #fff; border-color: #e2e8f0; box-shadow: 0 1px 3px rgba(15,39,68,.04); }
+    .theme-1 .panel-head { background: #f8fafc; border-color: #e2e8f0; color: #0f2744; }
+    .theme-1 th { background: #f1f5f9; color: #64748b; }
+    .theme-1 tr.data-row { border-color: #f1f5f9; }
+    .theme-1 tr.data-row:hover { background: #f8fafc; }
+    .theme-1 .gain-pos { color: #0d9488; }
+    .theme-1 .gain-neg { color: #dc2626; }
+    .theme-1 .rules-text { color: #475569; }
+    .theme-1 .badge { background: #f0fdfa; color: #0f766e; border: 1px solid #99f6e4; }
+    .theme-1 .alt-tagline { color: #14b8a6; font-size: 0.7rem; font-style: italic; }
+
+    /* ═══════════════════════════════════════
+       THEME 2 — Calm & Trustworthy
+    ═══════════════════════════════════════ */
+    .theme-2 { background: #f7f5f2; color: #3d4f5f; font-family: 'Source Serif 4', Georgia, serif; }
+    .theme-2 .app-header {
+      background: #f7f5f2; color: #2d3a42; padding: 20px 36px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #e5e0d8;
+    }
+    .theme-2 .tagline { color: #7c8a7a; font-family: 'Figtree', sans-serif; }
+    .theme-2 .local-badge { background: #eef3ea; color: #5a7352; border: 1px solid #c5d4bc; font-family: 'Figtree', sans-serif; }
+    .theme-2 .app-nav { background: #faf9f7; padding: 14px 36px 16px; border-bottom: 1px solid #e5e0d8; }
+    .theme-2 .nav-tab { color: #8a9a8c; font-family: 'Figtree', sans-serif; border-radius: 10px; }
+    .theme-2 .nav-tab.active { background: #7c9a82; color: #fff; }
+    .theme-2 .app-main { padding: 36px 40px 48px; }
+    .theme-2 .page-title { color: #2d3a42; font-size: 1.5rem; font-weight: 600; }
+    .theme-2 .page-sub { color: #7a8b7e; font-family: 'Figtree', sans-serif; font-size: 0.85rem; line-height: 1.5; }
+    .theme-2 .select { border-color: #d4cfc6; background: #fff; color: #3d4f5f; font-family: 'Figtree', sans-serif; border-radius: 10px; }
+    .theme-2 .checkbox-label { color: #5a6b5e; font-family: 'Figtree', sans-serif; }
+    .theme-2 .btn-secondary { border-color: #d4cfc6; color: #3d4f5f; background: #fff; font-family: 'Figtree', sans-serif; border-radius: 10px; }
+    .theme-2 .btn-primary { background: #7c9a82; color: #fff; font-family: 'Figtree', sans-serif; border-radius: 10px; }
+    .theme-2 .stat-grid { gap: 20px; }
+    .theme-2 .stat-card { background: #fff; border-color: #e8e4dc; border-radius: 16px; padding: 24px; }
+    .theme-2 .stat-label { font-family: 'Figtree', sans-serif; color: #8a9a8c; }
+    .theme-2 .stat-value { font-family: 'Figtree', sans-serif; color: #2d3a42; font-size: 1.6rem; }
+    .theme-2 .stat-value.positive { color: #5a7352; }
+    .theme-2 .stat-value.income { color: #9a7b4f; }
+    .theme-2 .panel { background: #fff; border-color: #e8e4dc; border-radius: 16px; }
+    .theme-2 .panel-head { background: transparent; border-color: #ebe7df; color: #2d3a42; padding: 18px 24px; }
+    .theme-2 th { background: #faf9f7; color: #8a9a8c; font-family: 'Figtree', sans-serif; padding: 12px 20px; }
+    .theme-2 td { padding: 14px 20px; font-family: 'Figtree', sans-serif; }
+    .theme-2 tr.data-row { border-color: #f0ece6; }
+    .theme-2 .gain-pos { color: #5a7352; }
+    .theme-2 .gain-neg { color: #b85c5c; }
+    .theme-2 .rules-text { color: #5a6b5e; line-height: 1.65; }
+    .theme-2 .badge { background: #eef3ea; color: #4a6741; font-family: 'Figtree', sans-serif; }
+    .theme-2 .alt-tagline { color: #7c9a82; font-size: 0.7rem; font-family: 'Figtree', sans-serif; }
+
+    /* ═══════════════════════════════════════
+       THEME 3 — Modern Data-Heavy
+    ═══════════════════════════════════════ */
+    .theme-3 { background: #0c0f14; color: #e2e8f0; font-family: 'IBM Plex Sans', sans-serif; }
+    .theme-3 .app-header {
+      background: #111827; color: #f9fafb; padding: 14px 28px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid #1f2937;
+    }
+    .theme-3 .tagline { color: #6b7280; font-family: 'IBM Plex Mono', monospace; font-size: 0.68rem; }
+    .theme-3 .local-badge { background: #1f2937; color: #22d3ee; border: 1px solid #374151; font-family: 'IBM Plex Mono', monospace; }
+    .theme-3 .app-nav { background: #111827; padding: 8px 28px 10px; border-bottom: 1px solid #1f2937; }
+    .theme-3 .nav-tab { color: #6b7280; font-family: 'IBM Plex Sans', sans-serif; border-radius: 6px; }
+    .theme-3 .nav-tab.active { background: #0891b2; color: #fff; }
+    .theme-3 .page-title { color: #f9fafb; font-weight: 700; letter-spacing: -.02em; }
+    .theme-3 .page-sub { color: #9ca3af; }
+    .theme-3 .select { border-color: #374151; background: #1f2937; color: #e5e7eb; border-radius: 6px; }
+    .theme-3 .checkbox-label { color: #9ca3af; }
+    .theme-3 .btn-secondary { border-color: #374151; color: #d1d5db; background: #1f2937; border-radius: 6px; }
+    .theme-3 .btn-primary { background: #06b6d4; color: #0c0f14; border-radius: 6px; }
+    .theme-3 .stat-grid { gap: 10px; }
+    .theme-3 .stat-card {
+      background: #161b22; border-color: #21262d; border-radius: 8px;
+      position: relative; overflow: hidden;
+    }
+    .theme-3 .stat-card::after {
+      content: ''; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+      background: linear-gradient(90deg, #06b6d4, #22d3ee);
+    }
+    .theme-3 .stat-label { color: #6b7280; font-family: 'IBM Plex Mono', monospace; font-size: 0.65rem; }
+    .theme-3 .stat-value { font-family: 'IBM Plex Mono', monospace; color: #f9fafb; font-size: 1.45rem; }
+    .theme-3 .stat-value.positive { color: #34d399; }
+    .theme-3 .stat-value.income { color: #fbbf24; }
+    .theme-3 .mini-chart {
+      height: 28px; margin-top: 10px; display: flex; align-items: flex-end; gap: 3px;
+    }
+    .theme-3 .mini-chart span {
+      flex: 1; background: #06b6d4; border-radius: 2px 2px 0 0; opacity: .6;
+    }
+    .theme-3 .panel { background: #161b22; border-color: #21262d; border-radius: 8px; }
+    .theme-3 .panel-head { background: #1c2128; border-color: #21262d; color: #f9fafb; font-family: 'IBM Plex Mono', monospace; font-size: 0.8rem; }
+    .theme-3 th { background: #1c2128; color: #6b7280; font-family: 'IBM Plex Mono', monospace; font-size: 0.68rem; }
+    .theme-3 td { font-family: 'IBM Plex Mono', monospace; font-size: 0.76rem; }
+    .theme-3 tr.data-row { border-color: #21262d; }
+    .theme-3 tr.data-row:hover { background: #1c2128; }
+    .theme-3 .gain-pos { color: #34d399; }
+    .theme-3 .gain-neg { color: #f87171; }
+    .theme-3 .rules-text { color: #9ca3af; }
+    .theme-3 .badge { background: #1f2937; color: #9ca3af; border: 1px solid #374151; font-family: 'IBM Plex Mono', monospace; }
+    .theme-3 .alt-tagline { color: #22d3ee; font-size: 0.68rem; font-family: 'IBM Plex Mono', monospace; }
+    .theme-3 .data-viz-row {
+      display: grid; grid-template-columns: 1fr 200px; gap: 16px; padding: 16px 20px;
+      border-bottom: 1px solid #21262d;
+    }
+    .theme-3 .bar-chart { display: flex; flex-direction: column; gap: 8px; }
+    .theme-3 .bar-row { display: flex; align-items: center; gap: 10px; font-size: 0.72rem; }
+    .theme-3 .bar-label { width: 48px; color: #9ca3af; font-family: 'IBM Plex Mono', monospace; }
+    .theme-3 .bar-track { flex: 1; height: 8px; background: #21262d; border-radius: 4px; overflow: hidden; }
+    .theme-3 .bar-fill { height: 100%; border-radius: 4px; }
+    .theme-3 .bar-fill.gain { background: #34d399; }
+    .theme-3 .bar-fill.proc { background: #06b6d4; }
+    .theme-3 .bar-fill.cost { background: #6b7280; }
+
+    /* ═══════════════════════════════════════
+       THEME 4 — Friendly & Inviting
+    ═══════════════════════════════════════ */
+    .theme-4 { background: linear-gradient(180deg, #f0f9ff 0%, #fefce8 100%); color: #1e3a5f; font-family: 'Nunito', sans-serif; }
+    .theme-4 .app-header {
+      background: #fff; color: #1e3a5f; padding: 16px 32px;
+      display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 2px solid #dbeafe;
+    }
+    .theme-4 .tagline { color: #60a5fa; font-weight: 600; }
+    .theme-4 .local-badge { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; border-radius: 999px; }
+    .theme-4 .app-nav { background: #fff; padding: 12px 32px; border-bottom: 2px solid #e0f2fe; }
+    .theme-4 .nav-tab { color: #94a3b8; border-radius: 999px; }
+    .theme-4 .nav-tab.active { background: linear-gradient(135deg, #60a5fa, #34d399); color: #fff; box-shadow: 0 4px 12px rgba(96,165,250,.35); }
+    .theme-4 .page-title { color: #1e3a5f; font-size: 1.4rem; }
+    .theme-4 .page-sub { color: #64748b; }
+    .theme-4 .welcome-banner {
+      background: linear-gradient(135deg, #dbeafe 0%, #d1fae5 100%);
+      border-radius: 16px; padding: 16px 20px; margin-bottom: 20px;
+      display: flex; align-items: center; gap: 14px; border: 2px solid #bfdbfe;
+    }
+    .theme-4 .welcome-emoji { font-size: 2rem; }
+    .theme-4 .welcome-text h3 { font-size: 0.95rem; font-weight: 700; margin-bottom: 2px; }
+    .theme-4 .welcome-text p { font-size: 0.8rem; color: #475569; }
+    .theme-4 .select { border-color: #bfdbfe; background: #fff; color: #1e3a5f; border-radius: 12px; }
+    .theme-4 .checkbox-label { color: #475569; }
+    .theme-4 .btn-secondary { border-color: #bfdbfe; color: #2563eb; background: #fff; border-radius: 12px; }
+    .theme-4 .btn-primary { background: linear-gradient(135deg, #3b82f6, #10b981); color: #fff; border-radius: 12px; box-shadow: 0 2px 8px rgba(59,130,246,.3); }
+    .theme-4 .stat-card {
+      background: #fff; border: 2px solid #e0f2fe; border-radius: 20px; padding: 20px;
+      transition: transform .2s;
+    }
+    .theme-4 .stat-card:hover { transform: translateY(-2px); }
+    .theme-4 .stat-icon { font-size: 1.2rem; margin-bottom: 6px; }
+    .theme-4 .stat-label { color: #64748b; font-weight: 700; text-transform: none; letter-spacing: 0; }
+    .theme-4 .stat-value { color: #1e3a5f; font-weight: 800; }
+    .theme-4 .stat-value.positive { color: #059669; }
+    .theme-4 .stat-value.income { color: #d97706; }
+    .theme-4 .panel { background: #fff; border: 2px solid #e0f2fe; border-radius: 20px; }
+    .theme-4 .panel-head { background: #f8fafc; border-color: #e0f2fe; color: #1e3a5f; border-radius: 18px 18px 0 0; }
+    .theme-4 th { background: #f0f9ff; color: #64748b; font-weight: 700; }
+    .theme-4 tr.data-row { border-color: #f0f9ff; }
+    .theme-4 tr.data-row:hover { background: #f8fafc; }
+    .theme-4 .gain-pos { color: #059669; }
+    .theme-4 .gain-neg { color: #ef4444; }
+    .theme-4 .rules-text { color: #475569; line-height: 1.6; }
+    .theme-4 .badge { background: #fef3c7; color: #b45309; border-radius: 999px; }
+    .theme-4 .alt-tagline { color: #60a5fa; font-size: 0.72rem; font-weight: 600; }
+    .theme-4 .asset-pill {
+      display: inline-block; background: #eff6ff; color: #2563eb; padding: 2px 8px;
+      border-radius: 999px; font-weight: 700; font-size: 0.72rem;
+    }
+
+    .compare-link {
+      display: inline-block; margin-top: 10px; font-size: 0.78rem; color: #2563eb;
+      text-decoration: none;
+    }
+    .compare-link:hover { text-decoration: underline; }
+
+    body.embed .mockup-chrome { display: none; }
+    body.embed .mockup-frame-wrap { margin: 0; padding: 0; max-width: none; }
+    body.embed .mockup-label { display: none; }
+    body.embed .mockup-frame { border-radius: 0; box-shadow: none; min-height: 100vh; }
+  </style>
+</head>
+<body>
+
+  <div class="mockup-chrome" id="chrome">
+    <div class="mockup-chrome-inner">
+      <h1>SoloLedger — UI/UX Design Mockups</h1>
+      <p>Reports screen preview · Tagline: <strong>Private. Precise. Yours.</strong> · Mockup only — not wired to the app.</p>
+      <div class="theme-tabs">
+        <button class="theme-tab active" data-theme="1">① Modern Fintech<span class="rec">Recommended</span></button>
+        <button class="theme-tab" data-theme="2">② Calm &amp; Trustworthy</button>
+        <button class="theme-tab" data-theme="3">③ Modern Data-Heavy</button>
+        <button class="theme-tab" data-theme="4">④ Friendly &amp; Inviting</button>
+      </div>
+      <a class="compare-link" href="compare.html">→ View all 4 themes side-by-side</a>
+      <a class="compare-link" href="modern-fintech/index.html" style="margin-left:16px">→ Modern Fintech v2 (design system + Reports)</a>
+    </div>
+  </div>
+
+  <div class="mockup-frame-wrap">
+    <div class="mockup-label" id="theme-label">Theme 1 — Modern Fintech</div>
+    <div class="mockup-frame" id="mockup-frame"></div>
+  </div>
+
+  <script>
+    const NAV = [
+      { label: 'Import', active: false },
+      { label: 'Review', active: false },
+      { label: 'Portfolio', active: false },
+      { label: 'Capital Gains', active: false },
+      { label: 'Reports', active: true },
+      { label: 'Settings', active: false },
+    ];
+
+    const ROWS = [
+      ['2024-03-15', 'HONEY', '1250.000000', '₹42,350.00', '₹38,120.00', '₹4,230.00', '47', true],
+      ['2024-03-02', 'USDC', '500.000000', '₹41,500.00', '₹41,200.00', '₹300.00', '12', true],
+      ['2024-02-18', 'ETH', '0.450000', '₹98,200.00', '₹0.00', '₹98,200.00', '180', true],
+      ['2024-02-05', 'BTC', '0.012000', '₹72,400.00', '₹65,000.00', '₹7,400.00', '365', true],
+      ['2024-01-22', 'SOL', '15.500000', '₹28,900.00', '₹31,200.00', '−₹2,300.00', '90', false],
+    ];
+
+    const THEMES = {
+      1: {
+        name: 'Theme 1 — Modern Fintech',
+        cls: 'theme-1',
+        logo: 'assets/logo-theme-1-fintech.png',
+        altTaglines: ['Your books. Your rules.', 'Tax clarity, on your device.'],
+        showViz: false,
+        showWelcome: false,
+        statExtras: false,
+      },
+      2: {
+        name: 'Theme 2 — Calm & Trustworthy',
+        cls: 'theme-2',
+        logo: 'assets/logo-theme-2-calm.png',
+        altTaglines: ['Nothing leaves your device.', 'Clarity you can trust.'],
+        showViz: false,
+        showWelcome: false,
+        statExtras: false,
+      },
+      3: {
+        name: 'Theme 3 — Modern Data-Heavy',
+        cls: 'theme-3',
+        logo: 'assets/logo-theme-3-data.png',
+        altTaglines: ['Numbers that add up.', 'Precision at a glance.'],
+        showViz: true,
+        showWelcome: false,
+        statExtras: true,
+      },
+      4: {
+        name: 'Theme 4 — Friendly & Inviting',
+        cls: 'theme-4',
+        logo: 'assets/logo-theme-4-friendly.png',
+        altTaglines: ['Taxes made manageable.', "You've got this."],
+        showViz: false,
+        showWelcome: true,
+        statExtras: false,
+      },
+    };
+
+    function icon() {
+      return '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/></svg>';
+    }
+
+    function renderTheme(id) {
+      const t = THEMES[id];
+      const navHtml = NAV.map(n =>
+        `<button class="nav-tab${n.active ? ' active' : ''}">${icon()} ${n.label}</button>`
+      ).join('');
+
+      const rowsHtml = ROWS.map(r => {
+        const assetCell = id === '4'
+          ? `<span class="asset-pill">${r[1]}</span>`
+          : r[1];
+        const gainCls = r[7] ? 'gain-pos' : 'gain-neg';
+        return `<tr class="data-row">
+          <td>${r[0]}</td><td>${assetCell}</td>
+          <td class="num">${r[2]}</td><td class="num">${r[3]}</td>
+          <td class="num">${r[4]}</td><td class="num ${gainCls}">${r[5]}</td>
+          <td class="num">${r[6]}</td>
+        </tr>`;
+      }).join('');
+
+      const welcome = t.showWelcome ? `
+        <div class="welcome-banner">
+          <div class="welcome-emoji">📊</div>
+          <div class="welcome-text">
+            <h3>Your 2024 report is ready!</h3>
+            <p>5 disposals found. Export as CSV or JSON for your CA — we recommend those over PDF for detailed review.</p>
+          </div>
+        </div>` : '';
+
+      const viz = t.showViz ? `
+        <div class="data-viz-row">
+          <div class="bar-chart">
+            <div class="bar-row"><span class="bar-label">BTC</span><div class="bar-track"><div class="bar-fill gain" style="width:72%"></div></div><span>₹7.4k</span></div>
+            <div class="bar-row"><span class="bar-label">ETH</span><div class="bar-track"><div class="bar-fill gain" style="width:95%"></div></div><span>₹98.2k</span></div>
+            <div class="bar-row"><span class="bar-label">HONEY</span><div class="bar-track"><div class="bar-fill proc" style="width:35%"></div></div><span>₹4.2k</span></div>
+            <div class="bar-row"><span class="bar-label">SOL</span><div class="bar-track"><div class="bar-fill cost" style="width:18%"></div></div><span>−₹2.3k</span></div>
+          </div>
+          <div style="font-size:0.72rem;color:#6b7280;font-family:'IBM Plex Mono',monospace">
+            <div style="margin-bottom:6px;color:#9ca3af">BY ASSET · FY 2024</div>
+            <div>Net P&amp;L <span style="color:#34d399;float:right">+₹107,830</span></div>
+            <div>Disposals <span style="float:right">5</span></div>
+            <div>Method <span style="float:right">FIFO</span></div>
+          </div>
+        </div>` : '';
+
+      const statCard = (icon, label, value, cls, miniBars) => `
+        <div class="stat-card">
+          ${icon ? `<div class="stat-icon">${icon}</div>` : ''}
+          <div class="stat-label">${label}</div>
+          <div class="stat-value ${cls}">${value}</div>
+          ${miniBars || ''}
+        </div>`;
+
+      const miniChart = t.statExtras ? `<div class="mini-chart">${[40,65,55,80,70,90,75].map(h=>`<span style="height:${h}%"></span>`).join('')}</div>` : '';
+
+      return `
+        <div class="app ${t.cls}">
+          <header class="app-header">
+            <div class="logo-row">
+              <img class="logo-img" src="${t.logo}" alt="SoloLedger logo" />
+              <div>
+                <div class="alt-tagline">${t.altTaglines[0]}</div>
+              </div>
+            </div>
+            <span class="local-badge">🔒 LOCAL ONLY</span>
+          </header>
+          <nav class="app-nav"><div class="nav-tabs">${navHtml}</div></nav>
+          <main class="app-main">
+            <h2 class="page-title">Reports</h2>
+            <p class="page-sub">Generated locally — files are written directly on your device. <em>${t.altTaglines[1]}</em></p>
+
+            ${welcome}
+
+            <div class="toolbar">
+              <select class="select"><option>India (IN)</option></select>
+              <select class="select"><option>2024</option></select>
+              <select class="select"><option>FIFO</option></select>
+              <label class="checkbox-label"><input type="checkbox" /> De-identify for sharing</label>
+              <div class="export-group">
+                <button class="btn btn-secondary">CSV</button>
+                <button class="btn btn-secondary">JSON</button>
+                <button class="btn btn-primary">Export PDF</button>
+              </div>
+            </div>
+
+            <div class="stat-grid">
+              ${statCard(id==='4'?'📈':'', 'Total gain / loss', '₹107,830.00', 'positive', id==='3'?miniChart:'')}
+              ${statCard(id==='4'?'💰':'', 'Proceeds', '₹283,350.00', '', '')}
+              ${statCard(id==='4'?'📋':'', 'Cost basis', '₹175,520.00', '', '')}
+              ${statCard(id==='4'?'🎁':'', 'Income events', '₹12,450.00', 'income', '')}
+            </div>
+
+            <div class="panel">
+              <div class="panel-head">Disposals — 2024</div>
+              ${viz}
+              <div class="panel-body">
+                <table>
+                  <thead><tr>
+                    <th>Date</th><th>Asset</th><th class="num">Amount</th>
+                    <th class="num">Proceeds (INR)</th><th class="num">Cost basis (INR)</th>
+                    <th class="num">Gain/Loss (INR)</th><th class="num">Held (days)</th>
+                  </tr></thead>
+                  <tbody>${rowsHtml}</tbody>
+                </table>
+              </div>
+            </div>
+
+            <div class="panel rules-panel">
+              <div class="panel-head">India rules note</div>
+              <div class="panel-body">
+                <p class="rules-text">Crypto is treated as a virtual digital asset. Gains on disposal are taxable per current IT rules. Short-term vs long-term classification depends on holding period. Verify current rates with a qualified professional.</p>
+                <span class="badge">Not tax advice — verify with a professional</span>
+              </div>
+            </div>
+          </main>
+        </div>`;
+    }
+
+    const frame = document.getElementById('mockup-frame');
+    const label = document.getElementById('theme-label');
+    let current = '1';
+
+    function showTheme(id) {
+      current = id;
+      frame.innerHTML = renderTheme(id);
+      label.textContent = THEMES[id].name;
+      document.querySelectorAll('.theme-tab').forEach(btn => {
+        btn.classList.toggle('active', btn.dataset.theme === id);
+      });
+    }
+
+    document.querySelectorAll('.theme-tab').forEach(btn => {
+      btn.addEventListener('click', () => showTheme(btn.dataset.theme));
+    });
+
+    const params = new URLSearchParams(location.search);
+    const start = params.get('theme') || '1';
+    if (params.get('embed') === '1') document.body.classList.add('embed');
+    showTheme(start);
+  </script>
+</body>
+</html>

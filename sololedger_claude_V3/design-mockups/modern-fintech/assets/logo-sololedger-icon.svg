@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" fill="none" role="img" aria-label="SoloLedger S icon">
+  <g fill="#22D3EE">
+    <!-- Top-right cluster: ascending stairs (forms upper curve of S) -->
+    <rect x="18" y="10" width="5" height="8"  rx="1"/>
+    <rect x="26" y="5"  width="5" height="13" rx="1"/>
+    <rect x="34" y="0"  width="5" height="18" rx="1"/>
+
+    <!-- Middle-left cluster: narrow waist -->
+    <rect x="0"  y="16" width="5" height="9"  rx="1"/>
+    <rect x="8"  y="18" width="5" height="7"  rx="1"/>
+    <rect x="16" y="16" width="5" height="9"  rx="1"/>
+
+    <!-- Bottom-left cluster: descending stairs (forms lower curve of S) -->
+    <rect x="0"  y="22" width="5" height="18" rx="1"/>
+    <rect x="8"  y="27" width="5" height="13" rx="1"/>
+    <rect x="16" y="32" width="5" height="8"  rx="1"/>
+  </g>
+</svg>

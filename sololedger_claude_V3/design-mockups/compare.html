@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SoloLedger — All 4 Themes Compared</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #ddd; font-family: system-ui, sans-serif; padding: 24px; }
+    h1 { text-align: center; font-size: 1.2rem; margin-bottom: 6px; }
+    p.sub { text-align: center; font-size: 0.8rem; color: #666; margin-bottom: 24px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+      max-width: 1600px;
+      margin: 0 auto;
+    }
+    @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,.1);
+    }
+    .card-head {
+      padding: 12px 16px;
+      font-size: 0.85rem;
+      font-weight: 700;
+      border-bottom: 1px solid #eee;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .card-head a { font-size: 0.72rem; font-weight: 500; color: #2563eb; text-decoration: none; }
+    .card iframe {
+      width: 100%;
+      height: 520px;
+      border: none;
+      display: block;
+      transform-origin: top left;
+    }
+    .logo-strip {
+      display: flex; justify-content: center; gap: 32px; flex-wrap: wrap;
+      margin-bottom: 28px; padding: 20px; background: #fff; border-radius: 12px;
+      max-width: 1600px; margin-left: auto; margin-right: auto;
+    }
+    .logo-strip img { height: 48px; object-fit: contain; }
+    .logo-strip figcaption { text-align: center; font-size: 0.7rem; color: #888; margin-top: 6px; }
+    .back { display: block; text-align: center; margin-bottom: 16px; font-size: 0.8rem; color: #2563eb; }
+  </style>
+</head>
+<body>
+  <a class="back" href="index.html">← Back to interactive preview</a>
+  <h1>SoloLedger — 4 Design Themes</h1>
+  <p class="sub">Tagline: <strong>Private. Precise. Yours.</strong> · Reports screen mockups</p>
+
+  <div class="logo-strip">
+    <figure><img src="assets/logo-theme-1-fintech.png" alt="Theme 1 logo" /><figcaption>① Modern Fintech</figcaption></figure>
+    <figure><img src="assets/logo-theme-2-calm.png" alt="Theme 2 logo" /><figcaption>② Calm &amp; Trustworthy</figcaption></figure>
+    <figure><img src="assets/logo-theme-3-data.png" alt="Theme 3 logo" /><figcaption>③ Data-Heavy</figcaption></figure>
+    <figure><img src="assets/logo-theme-4-friendly.png" alt="Theme 4 logo" /><figcaption>④ Friendly &amp; Inviting</figcaption></figure>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <div class="card-head">① Modern Fintech <span style="font-weight:400;color:#888">Recommended</span> <a href="index.html?theme=1">Full view →</a></div>
+      <iframe src="index.html?theme=1&embed=1" title="Theme 1"></iframe>
+    </div>
+    <div class="card">
+      <div class="card-head">② Calm &amp; Trustworthy <a href="index.html?theme=2">Full view →</a></div>
+      <iframe src="index.html?theme=2&embed=1" title="Theme 2"></iframe>
+    </div>
+    <div class="card">
+      <div class="card-head">③ Modern Data-Heavy <a href="index.html?theme=3">Full view →</a></div>
+      <iframe src="index.html?theme=3&embed=1" title="Theme 3"></iframe>
+    </div>
+    <div class="card">
+      <div class="card-head">④ Friendly &amp; Inviting <a href="index.html?theme=4">Full view →</a></div>
+      <iframe src="index.html?theme=4&embed=1" title="Theme 4"></iframe>
+    </div>
+  </div>
+</body>
+</html>
