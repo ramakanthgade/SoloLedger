@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { cn } from '@/lib/utils';
-import { brandIconForSymbol } from './assetBrandIcons';
+import { getAssetLogoUrl } from '@/lib/assetLogos';
 
 export interface AssetIconProps {
   /** Ticker / resolved asset label (e.g. "BTC", "jitoSOL"). */
@@ -11,21 +11,27 @@ export interface AssetIconProps {
 }
 
 /**
- * Asset brand icon for wealth views — real logos for mapped tickers
- * (see `assetBrandIcons`), a neutral two-letter chip otherwise. Decorative
- * (`aria-hidden`) — the asset name is always rendered as adjacent text, so
- * screen readers get the label from the row, not the image. If the icon file
- * 404s the component swaps in the letter chip at runtime.
+ * Asset brand icon — real logos for all assets via CDN fallback chain.
+ *
+ * Uses the assetLogos service:
+ * 1. Tries local bundled icons (currently empty — SVGs render black)
+ * 2. Falls back to simplr-sh/coin-logos CDN (16k+ assets, colored PNGs)
+ * 3. Falls back to letter chip for unknown assets
+ *
+ * Decorative (`aria-hidden`) — the asset name is always rendered as adjacent text,
+ * so screen readers get the label from the row, not the image.
  */
 export function AssetIcon({ symbol, size = 36, className }: AssetIconProps) {
   const label = symbol.trim() || '?';
-  const src = brandIconForSymbol(label);
   const [loadFailed, setLoadFailed] = useState(false);
 
-  if (src && !loadFailed) {
+  // Get logo URL from the assetLogos service
+  const logoUrl = getAssetLogoUrl(label, 'small');
+
+  if (logoUrl && !loadFailed) {
     return (
       <img
-        src={src}
+        src={logoUrl}
         alt=""
         aria-hidden="true"
         width={size}
@@ -33,7 +39,7 @@ export function AssetIcon({ symbol, size = 36, className }: AssetIconProps) {
         loading="lazy"
         onError={() => setLoadFailed(true)}
         className={cn(
-          'shrink-0 rounded-full border border-hi/10 bg-elev-1 object-contain',
+          'shrink-0 rounded-full border border-hi/10 bg-elev-1 object-cover',
           className
         )}
         style={{ width: size, height: size }}
@@ -41,6 +47,7 @@ export function AssetIcon({ symbol, size = 36, className }: AssetIconProps) {
     );
   }
 
+  // Letter chip fallback
   return (
     <span
       aria-hidden="true"
