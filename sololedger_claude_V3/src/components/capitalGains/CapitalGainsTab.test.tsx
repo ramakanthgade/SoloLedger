@@ -192,10 +192,10 @@ describe('CapitalGainsTab (Ember & Slate)', () => {
     const { container } = await renderTab();
     const panel = screen.getByTestId('capital-gains-disposals');
 
-    // Real brand icons for BTC and ETH.
+    // Real brand icons for BTC and ETH (CDN-based colored logos, 'small' size).
     const imgs = Array.from(panel.querySelectorAll('img')).map((i) => i.getAttribute('src'));
-    expect(imgs).toContain('/assets/brand-icons/bitcoin.svg');
-    expect(imgs).toContain('/assets/brand-icons/ethereum.svg');
+    expect(imgs).toContain('https://cdn.jsdelivr.net/gh/simplr-sh/coin-logos/images/bitcoin/small.png');
+    expect(imgs).toContain('https://cdn.jsdelivr.net/gh/simplr-sh/coin-logos/images/ethereum/small.png');
 
     // Table a11y: one caption + seven scoped column headers (desktop table).
     expect(panel.querySelectorAll('caption')).toHaveLength(1);
