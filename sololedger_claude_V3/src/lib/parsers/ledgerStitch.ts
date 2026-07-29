@@ -845,13 +845,6 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
   const { sets } = ctx;
   const out: Transaction[] = [];
 
-  // Fees in a group that held a simple-era trade are consumed by
-  // stitchSimpleTrades / stitchCrossGroupSimpleTrades; skip here to avoid
-  // double counting.
-  const groupHadSimpleTrade =
-    rows.some((r) => sets.simpleBuy.has(r.operation.toLowerCase())) &&
-    rows.some((r) => sets.simpleSell.has(r.operation.toLowerCase()));
-
   const withdrawRemarkP2p = new Set(
     (ctx.ops.p2p?.withdrawOpsWithP2pRemark ?? []).map((o) => o.toLowerCase())
   );
@@ -877,7 +870,6 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
     )
       continue;
     if (withdrawRemarkP2p.has(op) && isP2pRemark(r.remark)) continue;
-    if (sets.simpleFee.has(op) && groupHadSimpleTrade) continue;
 
     let type: TxType | null = null;
     if (sets.deposit.has(op)) type = 'transfer_in';
@@ -892,8 +884,8 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
     // Unpaired simple-era legs (counter-leg absent from the export) still import,
     // but only AFTER cross-group pairing has had its chance. A genuinely orphaned
     // leg is flagged for review instead of silently inflating holdings.
-    else if (sets.simpleBuy.has(op) && !groupHadSimpleTrade) type = 'buy';
-    else if (sets.simpleSell.has(op) && !groupHadSimpleTrade) type = 'sell';
+    else if (sets.simpleBuy.has(op)) type = 'buy';
+    else if (sets.simpleSell.has(op)) type = 'sell';
     else continue;
 
     const amount = Math.abs(r.change);
