@@ -856,6 +856,14 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
   const { sets } = ctx;
   const out: Transaction[] = [];
 
+  // Fees in a group that held a simple-era trade are consumed by
+  // stitchSimpleTrades / stitchCrossGroupSimpleTrades; skip here to avoid
+  // double counting. Since this now runs per-group (regrouped in stitchLedger),
+  // groupHadSimpleTrade correctly identifies groups with both Buy and Sell legs.
+  const groupHadSimpleTrade =
+    rows.some((r) => sets.simpleBuy.has(r.operation.toLowerCase())) &&
+    rows.some((r) => sets.simpleSell.has(r.operation.toLowerCase()));
+
   const withdrawRemarkP2p = new Set(
     (ctx.ops.p2p?.withdrawOpsWithP2pRemark ?? []).map((o) => o.toLowerCase())
   );
@@ -881,6 +889,7 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
     )
       continue;
     if (withdrawRemarkP2p.has(op) && isP2pRemark(r.remark)) continue;
+    if (sets.simpleFee.has(op) && groupHadSimpleTrade) continue;
 
     let type: TxType | null = null;
     if (sets.deposit.has(op)) type = 'transfer_in';
@@ -976,10 +985,21 @@ export function stitchLedger(
   }
 
   // Third pass: simple rows (deposits, withdrawals, income, fees, strays)
-  // on whatever is still unconsumed.
+  // on whatever is still unconsumed. Regroup by timestamp|account so that
+  // groupHadSimpleTrade correctly identifies groups where fees belong to
+  // simple-era trades (preventing double-counting).
   const stillRemaining = normalized.filter((r) => !consumed.has(r.index));
   if (stillRemaining.length > 0) {
-    transactions.push(...stitchSimpleRows(ctx, stillRemaining));
+    const remainingGroups = new Map<string, LedgerRow[]>();
+    for (const r of stillRemaining) {
+      const k = groupKey(r);
+      const list = remainingGroups.get(k) ?? [];
+      list.push(r);
+      remainingGroups.set(k, list);
+    }
+    for (const group of remainingGroups.values()) {
+      transactions.push(...stitchSimpleRows(ctx, group));
+    }
   }
 
   transactions.sort((a, b) => a.timestamp - b.timestamp);
