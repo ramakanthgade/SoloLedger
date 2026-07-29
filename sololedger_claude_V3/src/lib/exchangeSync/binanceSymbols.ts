@@ -53,6 +53,33 @@ export function assetsFromBalance(balance: UnifiedBalance): string[] {
   return [...out];
 }
 
+/**
+ * Flatten ccxt Balances → per-asset {asset, amount} TOTAL rows (free + used),
+ * for persisting as the exchange balance truth anchor. Only assets with a
+ * non-zero total are returned; the persistence layer (replaceExchangeBalances)
+ * collapses previously-seen-but-now-absent assets to explicit zero rows.
+ */
+export function flattenBalanceTotals(balance: UnifiedBalance): { asset: string; amount: number }[] {
+  const out = new Map<string, number>();
+  const total = balance?.total;
+  if (total && typeof total === 'object' && Object.keys(total).length > 0) {
+    for (const [asset, amount] of Object.entries(total)) {
+      if (typeof amount === 'number' && amount > 0) out.set(asset.toUpperCase(), amount);
+    }
+    return [...out.entries()].map(([asset, amount]) => ({ asset, amount }));
+  }
+  // Fallback: per-asset {free, used, total} buckets.
+  for (const [key, value] of Object.entries(balance ?? {})) {
+    if (key === 'info' || key === 'free' || key === 'used' || key === 'total' || key === 'debt') continue;
+    const bucket = value as { total?: number; free?: number; used?: number } | undefined;
+    if (bucket && typeof bucket === 'object') {
+      const t = bucket.total ?? (bucket.free ?? 0) + (bucket.used ?? 0);
+      if ((t ?? 0) > 0) out.set(key.toUpperCase(), t ?? 0);
+    }
+  }
+  return [...out.entries()].map(([asset, amount]) => ({ asset, amount }));
+}
+
 function isLiveSpot(market: UnifiedMarket | undefined): market is UnifiedMarket {
   return !!market && market.spot === true && market.active !== false;
 }

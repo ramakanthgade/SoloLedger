@@ -56,4 +56,40 @@ describe('Binance Transaction-History stitch (C1)', () => {
     expect(buys[0].fiatValue).toBe(500);
     expect(buys[1].fiatValue).toBe(1100);
   });
+
+  it('cross-group pairs old-era Buy/Sell legs split by timestamp', () => {
+    // NPXS repro: Binance records the Buy legs at 10:38:10 and the Sell legs
+    // at 11:00:10 — different groups. Without cross-group pairing the Buy
+    // imports as a standalone acquisition and the Sell as a standalone
+    // disposal, creating a permanent phantom holding.
+    const rows: Record<string, string>[] = [
+      { UTC_Time: '2019-03-19 10:38:10', Account: 'Spot', Operation: 'Buy', Coin: 'NPXS', Change: '1505377', Remark: '' },
+      { UTC_Time: '2019-03-19 10:38:10', Account: 'Spot', Operation: 'Fee', Coin: 'NPXS', Change: '-1505.377', Remark: '' },
+      { UTC_Time: '2019-03-19 11:00:10', Account: 'Spot', Operation: 'Sell', Coin: 'NPXS', Change: '-1503871.99872071', Remark: '' }
+    ];
+    const { transactions } = stitchBinanceTransactionHistory(rows);
+    const npxsTx = transactions.filter((t) => t.asset === 'NPXS');
+    // The cross-group pair collapses Buy+Sell into one trade; the fee remains.
+    const trade = npxsTx.find((t) => t.type === 'trade');
+    const fee = npxsTx.find((t) => t.type === 'fee');
+    expect(trade).toBeDefined();
+    expect(fee).toBeDefined();
+    // Net NPXS from the trade should be ~0 (Sell -1,503,872 vs Buy +1,505,377
+    // leaves a small residual from the fee and rounding).
+    const tradeNet = trade ? -trade.amount + (trade.counterAmount ?? 0) : 0;
+    expect(Math.abs(tradeNet)).toBeLessThan(2000); // ~1,505 residual
+  });
+
+  it('leaves genuinely orphaned old-era legs as flagged standalone rows', () => {
+    // A Buy with no Sell anywhere in the export (e.g. delisted asset,
+    // counter-leg lost to history) must still import, but flagged for review.
+    const rows: Record<string, string>[] = [
+      { UTC_Time: '2018-02-04 04:25:16', Account: 'Spot', Operation: 'Buy', Coin: 'CMT', Change: '1364', Remark: '' }
+    ];
+    const { transactions } = stitchBinanceTransactionHistory(rows);
+    expect(transactions.length).toBe(1);
+    expect(transactions[0].type).toBe('buy');
+    expect(transactions[0].flags).toContain('missing_cost_basis');
+    expect(transactions[0].flags).not.toContain('possible_internal_transfer');
+  });
 });

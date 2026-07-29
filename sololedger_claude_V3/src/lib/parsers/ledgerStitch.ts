@@ -488,9 +488,16 @@ function stitchSells(ctx: StitchContext, rows: LedgerRow[]): Transaction[] {
 /**
  * OLD-era simple trades: one Sell (spent) + one Buy (received) + Fee per
  * trade. Stable-quote → 'sell' with fiat value; crypto-quote → 'trade'.
+ *
+ * Returns both the stitched transactions AND the indexes of rows consumed,
+ * so the caller can run a cross-group pairing pass on the leftovers.
  */
-function stitchSimpleTrades(ctx: StitchContext, rows: LedgerRow[]): Transaction[] {
+function stitchSimpleTrades(
+  ctx: StitchContext,
+  rows: LedgerRow[]
+): { transactions: Transaction[]; consumed: Set<number> } {
   const { sets } = ctx;
+  const consumed = new Set<number>();
   // Guard: defer to the modern stitchers if a modern group is present (any
   // modern-era op in the group — triplet legs, shared fee, or convert).
   const isModernGroup = rows.some((r) => {
@@ -504,11 +511,11 @@ function stitchSimpleTrades(ctx: StitchContext, rows: LedgerRow[]): Transaction[
       sets.convert.has(op)
     );
   });
-  if (isModernGroup) return [];
+  if (isModernGroup) return { transactions: [], consumed };
 
   const sells = rows.filter((r) => sets.simpleSell.has(r.operation.toLowerCase()));
   const buys = rows.filter((r) => sets.simpleBuy.has(r.operation.toLowerCase()));
-  if (sells.length === 0 || buys.length === 0) return [];
+  if (sells.length === 0 || buys.length === 0) return { transactions: [], consumed };
   const fees = rows.filter((r) => sets.simpleFee.has(r.operation.toLowerCase()) && r.change < 0);
 
   const paired = pairLegs(
@@ -518,12 +525,17 @@ function stitchSimpleTrades(ctx: StitchContext, rows: LedgerRow[]): Transaction[
 
   const usedFees = new Set<number>();
   const out: Transaction[] = paired.map(({ row: sell, amount, pairedRow }) => {
+    consumed.add(sell.index);
     const buyRow = pairedRow;
+    if (buyRow) consumed.add(buyRow.index);
     const receivedAsset = buyRow?.coin;
     const feeRow =
       fees.find((f) => !usedFees.has(f.index) && f.coin === receivedAsset) ??
       fees.find((f) => !usedFees.has(f.index));
-    if (feeRow) usedFees.add(feeRow.index);
+    if (feeRow) {
+      usedFees.add(feeRow.index);
+      consumed.add(feeRow.index);
+    }
 
     const isStableQuote = receivedAsset != null && isStable(receivedAsset);
     const receivedAmount = buyRow ? Math.abs(buyRow.change) : undefined;
@@ -545,31 +557,81 @@ function stitchSimpleTrades(ctx: StitchContext, rows: LedgerRow[]): Transaction[
     });
   });
 
-  // Surplus Buy legs (1 Sell + 2 Buys): the extra acquisitions no Sell leg
-  // consumed must still import — dropping them silently loses real
-  // acquisitions (reproduced: XRP 5000 buy vanished).
-  const pairedBuyIndexes = new Set(
-    paired.map((p) => p.pairedRow?.index).filter((i): i is number => i != null)
-  );
+  return { transactions: out, consumed };
+}
+
+/**
+ * Cross-group pairing for old-era simple trades whose Buy and Sell legs
+ * landed in different timestamp groups (Binance records them seconds or
+ * minutes apart). Without this pass the Buy imports as a standalone
+ * acquisition and the Sell as a standalone disposal — the two never net,
+ * creating permanent phantom holdings (NPXS +9M, HNT +112k, etc.).
+ *
+ * Pairing rule: same asset, same account, nearest timestamp within ±24h.
+ * Emits a single 'trade' transaction (crypto-for-crypto) per pair.
+ */
+function stitchCrossGroupSimpleTrades(
+  ctx: StitchContext,
+  rows: LedgerRow[]
+): { transactions: Transaction[]; consumed: Set<number> } {
+  const { sets } = ctx;
+  const consumed = new Set<number>();
+  const WINDOW_MS = 24 * 60 * 60 * 1000; // ±24 hours
+
+  const sells = rows.filter((r) => sets.simpleSell.has(r.operation.toLowerCase()));
+  const buys = rows.filter((r) => sets.simpleBuy.has(r.operation.toLowerCase()));
+  if (sells.length === 0 || buys.length === 0) return { transactions: [], consumed };
+
+  // Index buys by (asset, account) for fast lookup.
+  const buyIndex = new Map<string, LedgerRow[]>();
   for (const b of buys) {
-    if (pairedBuyIndexes.has(b.index)) continue;
-    const amount = Math.abs(b.change);
+    const k = `${b.coin}|${b.account}`;
+    const list = buyIndex.get(k) ?? [];
+    list.push(b);
+    buyIndex.set(k, list);
+  }
+  for (const list of buyIndex.values()) list.sort((a, b) => a.timestamp - b.timestamp);
+
+  const out: Transaction[] = [];
+  for (const sell of sells) {
+    const k = `${sell.coin}|${sell.account}`;
+    const candidates = buyIndex.get(k) ?? [];
+    // Find the nearest unconsumed buy within the window.
+    let best: LedgerRow | undefined;
+    let bestDist = Infinity;
+    for (const b of candidates) {
+      if (consumed.has(b.index)) continue;
+      const dist = Math.abs(b.timestamp - sell.timestamp);
+      if (dist > WINDOW_MS) continue;
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = b;
+      }
+    }
+    if (!best) continue;
+
+    consumed.add(sell.index);
+    consumed.add(best.index);
+    const isStableQuote = isStable(best.coin);
     out.push(
       makeTx(ctx, {
-        timestamp: b.timestamp,
-        type: 'buy',
-        asset: b.coin,
-        amount,
-        fiatValue: undefined,
-        sourceRef: srcRef(ctx, b.timestamp, 'buy', b.coin, amount),
-        notes: 'Unpaired simple-era Buy leg (counter-leg absent)',
-        flags: ['missing_cost_basis'],
-        raw: { buy: b.raw }
+        timestamp: sell.timestamp,
+        type: isStableQuote ? 'sell' : 'trade',
+        asset: sell.coin,
+        amount: Math.abs(sell.change),
+        counterAsset: best.coin,
+        counterAmount: Math.abs(best.change),
+        fiatValue: isStableQuote ? Math.abs(best.change) : undefined,
+        fiatCurrency: isStableQuote ? fiatFromCoin(best.coin) : 'USD',
+        sourceRef: srcRef(ctx, sell.timestamp, isStableQuote ? 'sell' : 'trade', sell.coin, Math.abs(sell.change)),
+        notes: `Cross-group paired simple trade (Δ${Math.round(bestDist / 1000)}s)`,
+        flags: isStableQuote ? [] : ['missing_cost_basis'],
+        raw: { sell: sell.raw, buy: best.raw }
       })
     );
   }
 
-  return out;
+  return { transactions: out, consumed };
 }
 
 /** Two-leg swaps: spent leg + received leg → trade. */
@@ -794,12 +856,6 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
   const { sets } = ctx;
   const out: Transaction[] = [];
 
-  // Fees in a group that held a simple-era trade are consumed by
-  // stitchSimpleTrades; skip here to avoid double counting.
-  const groupHadSimpleTrade =
-    rows.some((r) => sets.simpleBuy.has(r.operation.toLowerCase())) &&
-    rows.some((r) => sets.simpleSell.has(r.operation.toLowerCase()));
-
   const withdrawRemarkP2p = new Set(
     (ctx.ops.p2p?.withdrawOpsWithP2pRemark ?? []).map((o) => o.toLowerCase())
   );
@@ -825,7 +881,6 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
     )
       continue;
     if (withdrawRemarkP2p.has(op) && isP2pRemark(r.remark)) continue;
-    if (sets.simpleFee.has(op) && groupHadSimpleTrade) continue;
 
     let type: TxType | null = null;
     if (sets.deposit.has(op)) type = 'transfer_in';
@@ -837,16 +892,20 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
       else type = 'income';
     } else if (sets.simpleFee.has(op)) type = 'fee';
     else if (op === 'transfer') type = r.change > 0 ? 'transfer_in' : 'transfer_out';
-    // Unpaired simple-era legs (counter-leg absent from the export) still import.
-    else if (sets.simpleBuy.has(op) && !groupHadSimpleTrade) type = 'buy';
-    else if (sets.simpleSell.has(op) && !groupHadSimpleTrade) type = 'sell';
+    // Unpaired simple-era legs (counter-leg absent from the export) still import,
+    // but only AFTER cross-group pairing has had its chance. A genuinely orphaned
+    // leg is flagged for review instead of silently inflating holdings.
+    else if (sets.simpleBuy.has(op)) type = 'buy';
+    else if (sets.simpleSell.has(op)) type = 'sell';
     else continue;
 
     const amount = Math.abs(r.change);
     const flags: Transaction['flags'] =
       type === 'transfer_in' || type === 'transfer_out'
         ? ['possible_internal_transfer']
-        : ['missing_cost_basis'];
+        : type === 'buy' || type === 'sell'
+          ? ['missing_cost_basis']
+          : [];
 
     out.push(
       makeTx(ctx, {
@@ -886,20 +945,41 @@ export function stitchLedger(
   }
 
   const transactions: Transaction[] = [];
+  const consumed = new Set<number>();
+
+  // First pass: per-group stitchers (fast path for same-timestamp groups).
   for (const group of groups.values()) {
+    const simple = stitchSimpleTrades(ctx, group);
     transactions.push(
       ...stitchBuys(ctx, group),
       ...stitchSells(ctx, group),
-      ...stitchSimpleTrades(ctx, group),
+      ...simple.transactions,
       ...stitchConverts(ctx, group),
       ...stitchInternalTransfers(ctx, group),
       ...stitchP2pRows(ctx, group),
       ...stitchSignSplits(ctx, group),
       ...stitchDustConverts(ctx, group),
       ...stitchFiatConverts(ctx, group),
-      ...stitchFiatWithdrawals(ctx, group),
-      ...stitchSimpleRows(ctx, group)
+      ...stitchFiatWithdrawals(ctx, group)
     );
+    for (const idx of simple.consumed) consumed.add(idx);
+  }
+
+  // Second pass: cross-group pairing for old-era simple trades whose Buy
+  // and Sell legs landed in different timestamp groups (Binance records
+  // them seconds or minutes apart). Only runs on rows not yet consumed.
+  const remaining = normalized.filter((r) => !consumed.has(r.index));
+  if (remaining.length > 0) {
+    const cross = stitchCrossGroupSimpleTrades(ctx, remaining);
+    transactions.push(...cross.transactions);
+    for (const idx of cross.consumed) consumed.add(idx);
+  }
+
+  // Third pass: simple rows (deposits, withdrawals, income, fees, strays)
+  // on whatever is still unconsumed.
+  const stillRemaining = normalized.filter((r) => !consumed.has(r.index));
+  if (stillRemaining.length > 0) {
+    transactions.push(...stitchSimpleRows(ctx, stillRemaining));
   }
 
   transactions.sort((a, b) => a.timestamp - b.timestamp);
