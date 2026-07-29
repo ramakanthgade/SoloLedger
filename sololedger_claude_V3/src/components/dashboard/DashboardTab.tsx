@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/Skeleton';
 import { useTabNav } from '@/lib/tabNav';
 import { NetWorthChart } from './NetWorthChart';
+import { DataHealthRecon } from './DataHealthRecon';
 import {
   cn,
   formatCurrency,
@@ -1138,6 +1139,14 @@ export function DashboardTab() {
                   </>
                 )}
               </li>
+              {/* Per-connection exchange reconciliation (recon engine §3.4) — the
+                  completeness cross-check: what the exchange says you hold vs what
+                  the ledger implies. Only renders for connections with a balance anchor. */}
+              <DataHealthRecon
+                connections={exchangeConns}
+                exchangeBalances={exchangeBalanceRows}
+                transactions={nonSpamTxs}
+              />
             </ul>
           </section>
         </aside>
