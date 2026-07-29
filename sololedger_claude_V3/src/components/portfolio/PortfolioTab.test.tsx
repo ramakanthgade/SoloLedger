@@ -40,7 +40,7 @@ const SEED = vi.hoisted(() => {
       id: 't-doge',
       timestamp: Date.UTC(2026, 4, 11),
       type: 'buy',
-      asset: 'DOGE',
+      asset: 'ZZZNOLOGO',
       amount: 500,
       fiatCurrency: 'INR',
       fiatValue: 500,
@@ -158,10 +158,10 @@ describe('PortfolioTab (Ember & Slate)', () => {
       })
     ).toHaveAttribute('aria-checked', 'true');
 
-    // FY 2025-26 keeps only the January BTC buy — ETH/DOGE (May 2026) drop out.
+    // FY 2025-26 keeps only the January BTC buy — ETH/ZZZNOLOGO (May 2026) drop out.
     // (Rows render in both the desktop table and the mobile card list.)
     expect(screen.getAllByText('BTC').length).toBeGreaterThanOrEqual(1);
-    expect(screen.queryByText('DOGE')).not.toBeInTheDocument();
+    expect(screen.queryByText('ZZZNOLOGO')).not.toBeInTheDocument();
     expect(screen.getByText('1 asset')).toBeInTheDocument();
   });
 
@@ -185,10 +185,13 @@ describe('PortfolioTab (Ember & Slate)', () => {
     const panel = screen.getByTestId('portfolio-holdings');
 
     const imgs = Array.from(panel.querySelectorAll('img')).map((i) => i.getAttribute('src'));
-    expect(imgs).toContain('/assets/brand-icons/bitcoin.svg');
-    expect(imgs).toContain('/assets/brand-icons/ethereum.svg');
-    // Unmapped asset → two-letter chip (desktop row + mobile card).
-    expect(within(panel).getAllByText('DO').length).toBeGreaterThanOrEqual(1);
+    // CDN-based colored logos (coin-logos) keyed by CoinGecko ID ('small' size).
+    expect(imgs).toContain('https://cdn.jsdelivr.net/gh/simplr-sh/coin-logos/images/bitcoin/small.png');
+    expect(imgs).toContain('https://cdn.jsdelivr.net/gh/simplr-sh/coin-logos/images/ethereum/small.png');
+    // Every asset gets a CDN URL (tier-3 ticker guess) — the letter-chip fallback
+    // only appears after a load error (covered by AssetIcon.test.tsx via
+    // fireEvent.error). Here we just assert the third asset rendered an <img>.
+    expect(imgs.length).toBeGreaterThanOrEqual(3);
 
     // Share column: BTC is 25,000 / 35,500 ≈ 70.4% of the total cost basis.
     expect(within(panel).getAllByText('70.4%').length).toBeGreaterThanOrEqual(1);

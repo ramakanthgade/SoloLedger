@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { Transaction } from '@/types/transaction';
-import type { PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
+import type { ExchangeBalanceRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import {
   allocationSlices,
@@ -446,6 +446,19 @@ function balanceRow(over: Partial<WalletBalanceRow>): WalletBalanceRow {
   };
 }
 
+function exchangeBalanceRow(over: Partial<ExchangeBalanceRow>): ExchangeBalanceRow {
+  return {
+    id: over.id ?? 'conn1:BTC',
+    connectionId: 'conn1',
+    exchange: 'binance',
+    asset: 'BTC',
+    amount: 0,
+    asOf: Date.now(),
+    source: 'exchange_api',
+    ...over
+  };
+}
+
 /** The phantom scenario: a receive the ledger holds + a send it missed. */
 function phantomTxs(): Transaction[] {
   return [
@@ -654,6 +667,108 @@ describe('reconcileHoldings', () => {
     ]);
     expect(result.holdings).toHaveLength(0);
     expect(result.adjustedDownCount).toBe(1);
+  });
+
+  // ---------------------------------------------------------------------
+  // Round 5 — exchange-authority reconciliation (design doc §3.3)
+  // ---------------------------------------------------------------------
+
+  it('an exchange slice anchors to the persisted fetchBalance row, draining the phantom', () => {
+    // Ledger implies 9.17 BTC on Binance (conn1) but fetchBalance says 0.0000049.
+    const txs = [
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 10, source: 'binance', importBatchId: 'conn1' }),
+      tx({ id: 's1', type: 'sell', asset: 'BTC', amount: 0.83, source: 'binance', importBatchId: 'conn1' })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 9.17, costBasis: 91.7 }];
+    const result = reconcileHoldings(holdings, txs, [], [
+      exchangeBalanceRow({ connectionId: 'conn1', asset: 'BTC', amount: 0.0000049 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(0.0000049, 8);
+    expect(result.holdings[0].qtySource).toBe('exchange-api');
+    expect(result.holdings[0].txDerivedAmount).toBeCloseTo(9.17, 8);
+    // cost basis scales per-unit: 91.7/9.17 = 10 × 0.0000049
+    expect(result.holdings[0].costBasis).toBeCloseTo(0.000049, 8);
+    expect(result.adjustedDownCount).toBe(1);
+  });
+
+  it('a confirmed-zero exchange balance drops the holding entirely', () => {
+    const txs = [
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'conn1' })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
+    const result = reconcileHoldings(holdings, txs, [], [
+      exchangeBalanceRow({ connectionId: 'conn1', asset: 'BTC', amount: 0 })
+    ]);
+    expect(result.holdings).toHaveLength(0);
+    expect(result.adjustedDownCount).toBe(1);
+  });
+
+  it('an exchange slice without a balance row stays tx-derived', () => {
+    const txs = [
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'conn1' })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
+    // Balance row is for a DIFFERENT asset — no authority for BTC.
+    const result = reconcileHoldings(holdings, txs, [], [
+      exchangeBalanceRow({ connectionId: 'conn1', asset: 'ETH', amount: 5 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(2, 8);
+    expect(result.holdings[0].qtySource).toBe('tx-history');
+  });
+
+  it('a CSV-imported exchange row (no connectionId) stays tx-derived', () => {
+    const txs = [
+      // importBatchId is a CSV file hash, not a connectionId → no authority.
+      tx({ id: 'c1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'csv-filehash-abc' })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
+    const result = reconcileHoldings(holdings, txs, [], [
+      exchangeBalanceRow({ connectionId: 'conn1', asset: 'BTC', amount: 0 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(2, 8);
+    expect(result.holdings[0].qtySource).toBe('tx-history');
+  });
+
+  it('multiple connections of the same exchange sum their authority for a shared asset', () => {
+    const txs = [
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 1, source: 'binance', importBatchId: 'conn1' }),
+      tx({ id: 'b2', type: 'buy', asset: 'BTC', amount: 1, source: 'binance', importBatchId: 'conn2' })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
+    const result = reconcileHoldings(holdings, txs, [], [
+      exchangeBalanceRow({ connectionId: 'conn1', asset: 'BTC', amount: 0.3 }),
+      exchangeBalanceRow({ id: 'conn2:BTC', connectionId: 'conn2', asset: 'BTC', amount: 0.7 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(1.0, 8);
+    expect(result.holdings[0].qtySource).toBe('exchange-api');
+  });
+
+  it('wallet and exchange slices reconcile independently within one holding', () => {
+    // BTC on-chain (bitcoin) and BTC on Binance are SEPARATE holdings (chain
+    // keying) — this test guards that an exchange balance row does NOT touch
+    // the on-chain holding and vice versa.
+    const txs = [
+      tx({ id: 'w-in', type: 'transfer_in', asset: 'BTC', amount: 3, source: 'rpc:blockstream', chain: 'bitcoin', walletAddress: BTC_ADDR }),
+      tx({ id: 'e-buy', type: 'buy', asset: 'BTC', amount: 1, source: 'binance', importBatchId: 'conn1' })
+    ];
+    const holdings = [
+      { asset: 'BTC', amount: 3, costBasis: 30, chain: 'bitcoin' },
+      { asset: 'BTC', amount: 1, costBasis: 10 }
+    ];
+    const result = reconcileHoldings(holdings, txs,
+      [balanceRow({ amount: 1.5 })], // on-chain: 3 → 1.5
+      [exchangeBalanceRow({ connectionId: 'conn1', asset: 'BTC', amount: 0.25 })] // exchange: 1 → 0.25
+    );
+    const wallet = result.holdings.find((h) => h.chain === 'bitcoin');
+    const exch = result.holdings.find((h) => !h.chain);
+    expect(wallet?.amount).toBeCloseTo(1.5, 8);
+    expect(wallet?.qtySource).toBe('on-chain');
+    expect(exch?.amount).toBeCloseTo(0.25, 8);
+    expect(exch?.qtySource).toBe('exchange-api');
   });
 });
 

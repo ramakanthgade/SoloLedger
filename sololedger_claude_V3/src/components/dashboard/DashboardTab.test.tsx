@@ -66,7 +66,8 @@ vi.mock('@/lib/storage/db', () => ({
     csvImports: { toArray: () => SEED.csvImports },
     exchangeConnections: { toArray: () => SEED.exchangeConns },
     priceCache: { toArray: () => SEED.priceRows },
-    walletBalances: { toArray: () => SEED.balanceRows }
+    walletBalances: { toArray: () => SEED.balanceRows },
+    exchangeBalances: { toArray: () => [] }
   },
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
   getLookupAddresses: () => SEED.wallets,

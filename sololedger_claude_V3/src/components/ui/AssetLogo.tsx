@@ -35,19 +35,19 @@ export function AssetLogo({
     setLogoUrl(url);
   }, [ticker, size]);
 
-  // Letter chip colors for common assets (fallback)
+  // Letter chip colors for common assets (fallback) — Ember & Slate tokens only.
   const letterColors: Record<string, string> = {
     BTC: 'bg-orange-500',
-    ETH: 'bg-blue-500',
+    ETH: 'bg-primary-solid',
     SOL: 'bg-purple-500',
-    USDT: 'bg-emerald-500',
-    USDC: 'bg-blue-400',
+    USDT: 'bg-gain',
+    USDC: 'bg-accent',
     BNB: 'bg-yellow-500',
     XRP: 'bg-gray-600',
-    ADA: 'bg-blue-600',
+    ADA: 'bg-primary',
     DOGE: 'bg-yellow-400',
-    DOT: 'bg-pink-500',
-    MATIC: 'bg-violet-500',
+    DOT: 'bg-warn',
+    MATIC: 'bg-accent',
   };
 
   const letterColor = letterColors[ticker.toUpperCase()] || 'bg-gray-500';

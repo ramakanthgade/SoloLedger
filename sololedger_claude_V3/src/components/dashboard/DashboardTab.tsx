@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
-import type { CsvImportRow, ExchangeConnectionRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
+import type { CsvImportRow, ExchangeBalanceRow, ExchangeConnectionRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import type { TaxSettings } from '@/types/transaction';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
@@ -225,7 +225,9 @@ function HoldingExpansion({
         <p className="text-[0.6875rem] text-faint" data-testid="holding-qty-caption">
           {holding.qtySource === 'on-chain'
             ? 'Reconciled to on-chain balance'
-            : 'Estimated from transaction history'}
+            : holding.qtySource === 'exchange-api'
+              ? 'Reconciled to exchange balance'
+              : 'Estimated from transaction history'}
         </p>
       </div>
 
@@ -327,6 +329,7 @@ const NO_CSV_IMPORTS: CsvImportRow[] = [];
 const NO_EXCHANGE_CONNS: ExchangeConnectionRow[] = [];
 const NO_PRICE_ROWS: PriceCacheRow[] = [];
 const NO_BALANCE_ROWS: WalletBalanceRow[] = [];
+const NO_EXCHANGE_BALANCES: ExchangeBalanceRow[] = [];
 
 export function DashboardTab() {
   const { goToImport, goTo } = useTabNav();
@@ -336,6 +339,7 @@ export function DashboardTab() {
   const exchangeConns = useLiveQuery(() => db.exchangeConnections.toArray(), []) ?? NO_EXCHANGE_CONNS;
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
   const balanceRows = useLiveQuery(() => db.walletBalances.toArray(), []) ?? NO_BALANCE_ROWS;
+  const exchangeBalanceRows = useLiveQuery(() => db.exchangeBalances.toArray(), []) ?? NO_EXCHANGE_BALANCES;
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [period, setPeriod] = useState<DashboardPeriod>('FY');
@@ -365,12 +369,13 @@ export function DashboardTab() {
   );
 
   const holdings = useMemo(() => buildPortfolioHoldings(nonSpamTxs), [nonSpamTxs]);
-  // Round 4: reconcile tx-history holdings against stored on-chain balances —
-  // a drained wallet address reports its true (often zero) balance instead of
+  // Round 4: reconcile tx-history holdings against stored authority balances —
+  // a drained wallet/exchange reports its true (often zero) balance instead of
   // a phantom left by missed spends. `adjustments` feeds the data-health rail.
+  // Exchange slices are anchored to the persisted fetchBalance rows (db v10).
   const reconciliation = useMemo(
-    () => reconcileHoldings(holdings, nonSpamTxs, balanceRows),
-    [holdings, nonSpamTxs, balanceRows]
+    () => reconcileHoldings(holdings, nonSpamTxs, balanceRows, exchangeBalanceRows),
+    [holdings, nonSpamTxs, balanceRows, exchangeBalanceRows]
   );
   const priceIndex = useMemo(() => buildPriceIndex(priceRows, currency), [priceRows, currency]);
   const valued = useMemo(
