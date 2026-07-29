@@ -83,6 +83,22 @@ describe('txFlow — the row-face sent → received flow', () => {
     expect(flow.received?.gain).toEqual({ kind: 'gain', formatted: '$2,000.00' });
   });
 
+  it('crypto-to-crypto sell: shows the counter-asset leg (Sold LPT → USDT), ₹ as a subline', () => {
+    const t = tx({ type: 'sell', asset: 'LPT', amount: 954.5, counterAsset: 'USDT', counterAmount: 4850.6, fiatCurrency: 'INR', fiatValue: 404700 });
+    const flow = txFlow(t, flowCtx({ assetLabel: 'LPT', counterLabel: 'USDT' }));
+    expect(flow.sent).toMatchObject({ kind: 'asset', symbol: 'LPT', amount: 954.5, sign: '−' });
+    // NOT a fiat leg — the original pair is preserved.
+    expect(flow.received).toMatchObject({ kind: 'asset', symbol: 'USDT', amount: 4850.6, sign: '+' });
+    expect(flow.received?.subline).toBe('≈ ₹4,04,700.00');
+  });
+
+  it('crypto-to-crypto buy: shows the counter-asset paid leg (Bought LPT with USDT)', () => {
+    const t = tx({ type: 'buy', asset: 'LPT', amount: 954.5, counterAsset: 'USDT', counterAmount: 4850.6, fiatCurrency: 'INR', fiatValue: 404700 });
+    const flow = txFlow(t, flowCtx({ assetLabel: 'LPT', counterLabel: 'USDT' }));
+    expect(flow.sent).toMatchObject({ kind: 'asset', symbol: 'USDT', amount: 4850.6, sign: '−', subline: '≈ ₹4,04,700.00' });
+    expect(flow.received).toMatchObject({ kind: 'asset', symbol: 'LPT', amount: 954.5, sign: '+' });
+  });
+
   it('sell with no cost-basis data: "cost —", never an invented "cost ₹0.00"', () => {
     // A disposal whose amount matched no lots comes back from the engine with
     // costBasis 0 — that is UNKNOWN, not zero.
@@ -179,6 +195,18 @@ describe('buildTxSummary — plain-English one-liners per type', () => {
     const buy = buildTxSummary(tx({ type: 'buy', amount: 0.5, fiatValue: 25000 }), summaryCtx());
     expect(buy.lead).toBe('You bought 0.500000 BTC for $25,000.00 on Binance');
     expect(buy.tail).toBeUndefined();
+  });
+
+  it('crypto-to-crypto sell keeps the original pair: "You sold LPT for USDT (≈ ₹…)"', () => {
+    const t = tx({ type: 'sell', asset: 'LPT', amount: 954.5, counterAsset: 'USDT', counterAmount: 4850.6, fiatCurrency: 'INR', fiatValue: 404700 });
+    const s = buildTxSummary(t, summaryCtx({ assetLabel: 'LPT', counterLabel: 'USDT' }));
+    expect(s.lead).toBe('You sold 954.5000 LPT for 4850.60 USDT (≈ ₹4,04,700.00) on Binance');
+  });
+
+  it('crypto-to-crypto buy keeps the original pair: "You bought LPT for USDT (≈ ₹…)"', () => {
+    const t = tx({ type: 'buy', asset: 'LPT', amount: 954.5, counterAsset: 'USDT', counterAmount: 4850.6, fiatCurrency: 'INR', fiatValue: 404700 });
+    const s = buildTxSummary(t, summaryCtx({ assetLabel: 'LPT', counterLabel: 'USDT' }));
+    expect(s.lead).toBe('You bought 954.5000 LPT for 4850.60 USDT (≈ ₹4,04,700.00) on Binance');
   });
 
   it('trade: "You swapped X for Y on Binance"', () => {

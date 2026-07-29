@@ -121,10 +121,24 @@ export function txFlow(t: Transaction, ctx: FlowCtx): RowFlow {
       };
     case 'sell':
     case 'nft_sell':
-      return { sent: assetLeg('−', costSubline), received: fiatLeg(gain) };
+      // Crypto-to-crypto sell (Sold LPT → USDT): show the counter-asset leg,
+      // not a fiat leg — the ₹ value rides as a subline. Fiat-currency sells
+      // (no counterAsset) keep the fiat leg. This matches Koinly, which keeps
+      // the original pair and shows the fiat equivalent beside it.
+      return {
+        sent: assetLeg('−', costSubline),
+        received: t.counterAsset
+          ? { kind: 'asset', symbol: counterLabel ?? t.counterAsset, amount: t.counterAmount, sign: '+', subline: valueSubline, gain }
+          : fiatLeg(gain)
+      };
     case 'buy':
     case 'nft_buy':
-      return { sent: fiatLeg(), received: assetLeg('+') };
+      return {
+        sent: t.counterAsset
+          ? { kind: 'asset', symbol: counterLabel ?? t.counterAsset, amount: t.counterAmount, sign: '−', subline: valueSubline }
+          : fiatLeg(),
+        received: assetLeg('+')
+      };
     case 'transfer_in':
     case 'gift_received':
       return { sent: fromEndpoint, received: assetLeg('+', valueSubline) };
@@ -223,10 +237,22 @@ export function buildTxSummary(t: Transaction, ctx: SummaryCtx): TxSummary {
     ? { kind: disposal.gain >= 0 ? 'gain' : 'loss', formatted: formatCurrency(Math.abs(disposal.gain), t.fiatCurrency) }
     : undefined;
   switch (t.type) {
-    case 'buy':
+    case 'buy': {
+      // Crypto-to-crypto buy (Bought LPT with USDT): keep the original pair,
+      // show the fiat equivalent beside. Fiat buys keep "for ₹X".
+      if (t.counterAsset) {
+        const paid = `${t.counterAmount != null ? `${formatCompactAmount(t.counterAmount)} ` : ''}${counterLabel ?? t.counterAsset}`;
+        return { lead: `You bought ${amt} for ${paid}${fiat ? ` (≈ ${fiat})` : ''} ${src}` };
+      }
       return { lead: `You bought ${amt}${fiat ? ` for ${fiat}` : ''} ${src}` };
-    case 'sell':
+    }
+    case 'sell': {
+      if (t.counterAsset) {
+        const got = `${t.counterAmount != null ? `${formatCompactAmount(t.counterAmount)} ` : ''}${counterLabel ?? t.counterAsset}`;
+        return { lead: `You sold ${amt} for ${got}${fiat ? ` (≈ ${fiat})` : ''} ${src}`, tail };
+      }
       return { lead: `You sold ${amt}${fiat ? ` for ${fiat}` : ''} ${src}`, tail };
+    }
     case 'trade': {
       const counter = `${t.counterAmount != null ? `${formatCompactAmount(t.counterAmount)} ` : ''}${counterLabel ?? t.counterAsset ?? '?'}`;
       return { lead: `You swapped ${amt} for ${counter} ${src}`, tail };
