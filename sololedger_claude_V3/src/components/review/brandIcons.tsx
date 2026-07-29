@@ -1,10 +1,10 @@
 import { useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { BRAND_ICON_BASE } from '@/lib/brandAssets';
+import { AssetIcon as CdnAssetIcon } from '@/components/portfolio/AssetIcon';
 import {
   BRAND_ICON_FILES,
   NEEDS_LIGHT_TILE,
-  assetIconId,
   chipInitials,
   sourceBrandInfo,
   type BrandIconId
@@ -22,6 +22,45 @@ import {
  */
 
 const ICON_BASE = BRAND_ICON_BASE;
+
+/** Brands hosted (in color) by the simpleicons CDN — used instead of the local
+ *  fill-less SVGs, which render black. Anything not listed keeps the letter
+ *  chip (wallets like MetaMask/Phantom/Ledger aren't on the CDN). */
+const SIMPLEICONS_CDN = 'https://cdn.simpleicons.org';
+const SIMPLEICONS_SLUGS: Partial<Record<BrandIconId, string>> = {
+  // Exchanges (verified 200 on cdn.simpleicons.org)
+  binance: 'binance',
+  coinbase: 'coinbase',
+  okx: 'okx',
+  kucoin: 'kucoin',
+  wazirx: 'wazirx',
+  zebpay: 'zebpay',
+  // Chains (verified 200)
+  bitcoin: 'bitcoin',
+  ethereum: 'ethereum',
+  solana: 'solana',
+  polygon: 'polygon',
+  polkadot: 'polkadot',
+  tether: 'tether'
+};
+
+/** Colored brand mark from the simpleicons CDN, with the letter-chip fallback. */
+function CdnBrandImg({ slug, size, label, className, fallback }: { slug: string; size: number; label: string; className?: string; fallback: ReactNode }) {
+  const [loadFailed, setLoadFailed] = useState(false);
+  if (loadFailed) return <>{fallback}</>;
+  return (
+    <img
+      src={`${SIMPLEICONS_CDN}/${slug}`}
+      width={size}
+      height={size}
+      alt=""
+      loading="lazy"
+      onError={() => setLoadFailed(true)}
+      title={label}
+      className={cn('shrink-0 rounded-lg object-contain', className)}
+    />
+  );
+}
 
 interface BrandImgProps {
   id: BrandIconId;
@@ -92,7 +131,11 @@ export function SourceIcon({ source, chainLabel, chainId, size = 36, className }
       {chipInitials(label)}
     </span>
   );
-  if (id) return <BrandImg id={id} size={size} label={label} className={className} fallback={chip} />;
+  if (id) {
+    const slug = SIMPLEICONS_SLUGS[id];
+    if (slug) return <CdnBrandImg slug={slug} size={size} label={label} className={className} fallback={chip} />;
+    return <BrandImg id={id} size={size} label={label} className={className} fallback={chip} />;
+  }
   return chip;
 }
 
@@ -102,18 +145,10 @@ interface AssetIconProps {
   className?: string;
 }
 
-/** Token mark for an asset symbol; letter chip fallback for unmapped ones. */
+/** Token mark for an asset symbol — CDN colored logo (coin-logos), letter chip
+ *  fallback for unmapped ones. Delegates to the portfolio AssetIcon so the
+ *  Review ledger gets the same 16k+ colored marks as the Dashboard (the old
+ *  local fill-less SVGs rendered black). */
 export function AssetIcon({ symbol, size = 18, className }: AssetIconProps) {
-  const id = assetIconId(symbol);
-  const chip = (
-    <span
-      className={cn('grid shrink-0 place-items-center rounded-full bg-elev-3 font-extrabold text-low', className)}
-      style={{ width: size, height: size, fontSize: Math.max(8, size * 0.5) }}
-      aria-hidden="true"
-    >
-      {(symbol ?? '?').slice(0, 1).toUpperCase()}
-    </span>
-  );
-  if (id) return <BrandImg id={id} size={size} label={symbol ?? ''} className={className} fallback={chip} />;
-  return chip;
+  return <CdnAssetIcon symbol={symbol ?? '?'} size={size} className={className} />;
 }
