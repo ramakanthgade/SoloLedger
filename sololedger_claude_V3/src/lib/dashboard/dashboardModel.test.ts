@@ -675,9 +675,10 @@ describe('reconcileHoldings', () => {
 
   it('an exchange slice anchors to the persisted fetchBalance row, draining the phantom', () => {
     // Ledger implies 9.17 BTC on Binance (conn1) but fetchBalance says 0.0000049.
+    // API-sync rows carry source = 'binance_api' + importBatchId = connectionId.
     const txs = [
-      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 10, source: 'binance', importBatchId: 'conn1' }),
-      tx({ id: 's1', type: 'sell', asset: 'BTC', amount: 0.83, source: 'binance', importBatchId: 'conn1' })
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 10, source: 'binance_api', importBatchId: 'conn1' }),
+      tx({ id: 's1', type: 'sell', asset: 'BTC', amount: 0.83, source: 'binance_api', importBatchId: 'conn1' })
     ];
     const holdings = [{ asset: 'BTC', amount: 9.17, costBasis: 91.7 }];
     const result = reconcileHoldings(holdings, txs, [], [
@@ -694,7 +695,7 @@ describe('reconcileHoldings', () => {
 
   it('a confirmed-zero exchange balance drops the holding entirely', () => {
     const txs = [
-      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'conn1' })
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance_api', importBatchId: 'conn1' })
     ];
     const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
     const result = reconcileHoldings(holdings, txs, [], [
@@ -706,7 +707,7 @@ describe('reconcileHoldings', () => {
 
   it('an exchange slice without a balance row stays tx-derived', () => {
     const txs = [
-      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'conn1' })
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance_api', importBatchId: 'conn1' })
     ];
     const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
     // Balance row is for a DIFFERENT asset — no authority for BTC.
@@ -718,24 +719,64 @@ describe('reconcileHoldings', () => {
     expect(result.holdings[0].qtySource).toBe('tx-history');
   });
 
-  it('a CSV-imported exchange row (no connectionId) stays tx-derived', () => {
+  it('a CSV-imported exchange row (no API connection) stays tx-derived', () => {
     const txs = [
-      // importBatchId is a CSV file hash, not a connectionId → no authority.
+      // CSV import: source = 'binance' (not '_api'), importBatchId = file hash.
       tx({ id: 'c1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'csv-filehash-abc' })
     ];
     const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
-    const result = reconcileHoldings(holdings, txs, [], [
-      exchangeBalanceRow({ connectionId: 'conn1', asset: 'BTC', amount: 0 })
-    ]);
+    // No exchange balance anchor at all → tx-derived.
+    const result = reconcileHoldings(holdings, txs, [], []);
     expect(result.holdings).toHaveLength(1);
     expect(result.holdings[0].amount).toBeCloseTo(2, 8);
     expect(result.holdings[0].qtySource).toBe('tx-history');
   });
 
+  it('REGRESSION (CSV+API double-source): CSV ledger of an exchange the user ALSO connected via API is subsumed by the authority, not added on top', () => {
+    // The user's real flow: a giant CSV statement backfill (source 'binance',
+    // importBatchId = file hash) PLUS an API auto-sync of the same Binance
+    // account (source 'binance_api', importBatchId = connectionId, with a
+    // fetchBalance anchor). Both describe the SAME coins — the CSV is the
+    // history backfill for the API ledger. The Dashboard must report the
+    // exchange-reported balance ONCE, not authority + CSV phantom.
+    const txs = [
+      // CSV statement rows: ledger implies a huge holding (phantom).
+      tx({ id: 'csv1', type: 'buy', asset: 'BTC', amount: 10, source: 'binance', importBatchId: 'csv-filehash-abc' }),
+      tx({ id: 'csv2', type: 'sell', asset: 'BTC', amount: 0.83, source: 'binance', importBatchId: 'csv-filehash-abc' }),
+      // API rows for the same account (recent window).
+      tx({ id: 'api1', type: 'buy', asset: 'BTC', amount: 0.0000049, source: 'binance_api', importBatchId: 'conn1' })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 9.17, costBasis: 91.7 }];
+    const result = reconcileHoldings(holdings, txs, [], [
+      exchangeBalanceRow({ connectionId: 'conn1', asset: 'BTC', amount: 0.0000049 })
+    ]);
+    // The CSV phantom (9.17) is subsumed; only the real balance survives.
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(0.0000049, 8);
+    expect(result.holdings[0].qtySource).toBe('exchange-api');
+    expect(result.adjustedDownCount).toBe(1);
+  });
+
+  it('REGRESSION (CSV-only user): no API connection → CSV ledger stays tx-derived (the honest pre-anchor ceiling)', () => {
+    // CSV import only, NO API connection, NO balance anchor. There is no
+    // authority to drain the phantom, so the Dashboard reports the tx-derived
+    // number — this is the known ceiling for a CSV-only user (fixed by
+    // connecting the exchange via API once).
+    const txs = [
+      tx({ id: 'csv1', type: 'buy', asset: 'BTC', amount: 10, source: 'binance', importBatchId: 'csv-filehash-abc' }),
+      tx({ id: 'csv2', type: 'sell', asset: 'BTC', amount: 0.83, source: 'binance', importBatchId: 'csv-filehash-abc' })
+    ];
+    const holdings = [{ asset: 'BTC', amount: 9.17, costBasis: 91.7 }];
+    const result = reconcileHoldings(holdings, txs, [], []);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0].amount).toBeCloseTo(9.17, 8);
+    expect(result.holdings[0].qtySource).toBe('tx-history');
+  });
+
   it('multiple connections of the same exchange sum their authority for a shared asset', () => {
     const txs = [
-      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 1, source: 'binance', importBatchId: 'conn1' }),
-      tx({ id: 'b2', type: 'buy', asset: 'BTC', amount: 1, source: 'binance', importBatchId: 'conn2' })
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 1, source: 'binance_api', importBatchId: 'conn1' }),
+      tx({ id: 'b2', type: 'buy', asset: 'BTC', amount: 1, source: 'binance_api', importBatchId: 'conn2' })
     ];
     const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
     const result = reconcileHoldings(holdings, txs, [], [
@@ -753,7 +794,7 @@ describe('reconcileHoldings', () => {
     // the on-chain holding and vice versa.
     const txs = [
       tx({ id: 'w-in', type: 'transfer_in', asset: 'BTC', amount: 3, source: 'rpc:blockstream', chain: 'bitcoin', walletAddress: BTC_ADDR }),
-      tx({ id: 'e-buy', type: 'buy', asset: 'BTC', amount: 1, source: 'binance', importBatchId: 'conn1' })
+      tx({ id: 'e-buy', type: 'buy', asset: 'BTC', amount: 1, source: 'binance_api', importBatchId: 'conn1' })
     ];
     const holdings = [
       { asset: 'BTC', amount: 3, costBasis: 30, chain: 'bitcoin' },
