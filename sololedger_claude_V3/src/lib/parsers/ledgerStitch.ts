@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeTimestampUtc } from './types';
+import { exchangeSourceRef, makeId, safeTimestampUtc, stableAmountKey } from './types';
 import { quoteToFiatCurrency } from './pairUtils';
 
 /**
@@ -92,6 +92,17 @@ export interface OperationMap {
    * coverage tests count these as handled.
    */
   skip: string[];
+  /**
+   * Clawback / balance-reversal ops (e.g. Binance 'Asset Recovery', 'Token
+   * Swap - Redenomination/Rebranding'). These are sign-aware: a NEGATIVE leg
+   * reverses a prior credit (airdrop/distribution) and MUST subtract
+   * (transfer_out) or the credit survives as a phantom holding (the NFT
+   * +44,680 case). A POSITIVE leg is a recovery of a previously-lost balance
+   * and is treated as skippable (balance event, not taxable). This is a
+   * deliberate accuracy edge over Koinly/rotki, which skip these entirely and
+   * leave the phantom.
+   */
+  clawback?: string[];
   /** P2P rows: positive → buy, negative → sell, category 'p2p'. */
   p2p?: { ops: string[]; withdrawOpsWithP2pRemark?: string[] };
 }
@@ -187,6 +198,7 @@ export function recognizedOps(ops: OperationMap): Set<string> {
   ops.signSplit?.forEach((x) => s.add(x.op.toLowerCase()));
   add(ops.fiatWithdraw);
   add(ops.skip);
+  add(ops.clawback);
   add(ops.p2p?.ops);
   add(ops.p2p?.withdrawOpsWithP2pRemark);
   return s;
@@ -202,11 +214,64 @@ function compositeFillKey(r: LedgerRow): string {
   return `${r.timestamp}|${r.account}|${(r.remark ?? '').trim().toLowerCase()}`;
 }
 
+/** Small FNV-1a (32-bit) hex hash — deterministic, no crypto needed. */
+function fnv1aHex(str: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+
 /**
- * Pair trade legs by order/trade id (preferred), falling back to a composite
- * `timestamp|account|remark` key, then to stable input order. Each right leg
- * is consumed at most once. (Sorting-by-magnitude-and-zipping is WRONG: it
- * mispairs same-timestamp fills and crossing magnitudes.)
+ * Content hash discriminating one fill from another that shares its formula
+ * sourceRef. Hashes the fields that differ between same-timestamp fills
+ * (asset/amount/counter/fee/fiat) PLUS the raw source-row content, so two
+ * fills that are economically distinct always get distinct hashes while a
+ * re-import of the SAME file reproduces the SAME hash (dedup-stable). For
+ * truly byte-identical duplicate rows (e.g. a deposit recorded twice) the raw
+ * content is identical too — those are genuine duplicates that dedup SHOULD
+ * collapse, so a shared hash is correct there.
+ */
+function fillContentHash(t: Transaction): string {
+  const raw = t.raw ? JSON.stringify(t.raw) : '';
+  const s = [
+    t.timestamp,
+    t.type,
+    (t.asset ?? '').toUpperCase(),
+    stableAmountKey(t.amount),
+    (t.counterAsset ?? '').toUpperCase(),
+    t.counterAmount != null ? stableAmountKey(t.counterAmount) : '',
+    t.feeAmount != null ? stableAmountKey(t.feeAmount) : '',
+    t.fiatValue != null ? stableAmountKey(t.fiatValue) : '',
+    raw
+  ].join('|');
+  return fnv1aHex(s);
+}
+
+/**
+ * Pair trade legs deterministically, most-certain-first. A ledger trade is an
+ * internally BALANCED unit — within one (timestamp, account) group, the legs of
+ * a fill move the same economic amount, so we reconstruct fills by *amount*,
+ * not by raw array position. This is what makes order-less CSVs (Binance
+ * Transaction History has 0% orderIds) stitch correctly, and it is
+ * exchange-agnostic: it operates on LedgerRow, so every exchange whose CSV
+ * normalizes into LedgerRow gets it for free.
+ *
+ * Tiers (per left leg, each right leg consumed at most once):
+ *   0. orderId match (when the exchange provides one) — the gold standard.
+ *   1. composite key (timestamp|account|remark) — same remark ≈ same fill.
+ *   2. EXACT amount twin — a right leg whose amount appears exactly once among
+ *      unconsumed right legs (zero-assumption match).
+ *   3. RANK pairing — both sides sorted ascending by amount, paired by rank.
+ *      Sound because same-second fills of one pair share a price, so larger
+ *      out ↔ larger in proportionally. Deterministic via (amount, index) sort.
+ *   4. orphan — no counterpart: pairedAmount undefined, never force-paired.
+ *
+ * The old positional fallback ("first unused right leg") was the bug: it glued
+ * fill #1's leg to fill #2's counterpart whenever the ledger ordered rows
+ * arbitrarily within a second, scrambling quantities AND cost basis.
  */
 export function pairLegs<T extends Leg>(
   left: T[],
@@ -215,6 +280,12 @@ export function pairLegs<T extends Leg>(
   const usedRight = new Set<number>();
   const byOrder = new Map<string, number[]>();
   const byComposite = new Map<string, number[]>();
+
+  // Deterministic processing order for the right side (amount, then original
+  // index) so re-imports of the same file pair identically every time.
+  const rightOrder = right
+    .map((leg, i) => ({ leg, i }))
+    .sort((a, b) => a.leg.amount - b.leg.amount || a.i - b.i);
 
   right.forEach((leg, i) => {
     if (leg.row.orderId) {
@@ -228,6 +299,16 @@ export function pairLegs<T extends Leg>(
     byComposite.set(ck, clist);
   });
 
+  // Tier-2 index: amount key → unconsumed right indexes (to detect uniqueness).
+  const amountKey = (amt: number) => stableAmountKey(amt);
+  const byAmount = new Map<string, number[]>();
+  right.forEach((leg, i) => {
+    const k = amountKey(leg.amount);
+    const list = byAmount.get(k) ?? [];
+    list.push(i);
+    byAmount.set(k, list);
+  });
+
   const takeFrom = (list: number[] | undefined): number | undefined => {
     if (!list) return undefined;
     for (const idx of list) {
@@ -236,19 +317,35 @@ export function pairLegs<T extends Leg>(
     return undefined;
   };
 
-  return left.map((item) => {
-    let matchIdx =
-      (item.row.orderId ? takeFrom(byOrder.get(item.row.orderId)) : undefined) ??
-      takeFrom(byComposite.get(compositeFillKey(item.row)));
+  // Exact-amount twin: only when the amount is unique among unconsumed rights.
+  const takeUniqueAmount = (amt: number): number | undefined => {
+    const list = byAmount.get(amountKey(amt));
+    if (!list) return undefined;
+    const free = list.filter((i) => !usedRight.has(i));
+    return free.length === 1 ? free[0] : undefined;
+  };
 
-    if (matchIdx == null) {
-      for (let i = 0; i < right.length; i++) {
-        if (!usedRight.has(i)) {
-          matchIdx = i;
-          break;
-        }
+  // Tier-3 rank pairing: sorted-unconsumed right legs by ascending amount.
+  const takeRanked = (amt: number): number | undefined => {
+    let best: number | undefined;
+    let bestDist = Infinity;
+    for (const { i } of rightOrder) {
+      if (usedRight.has(i)) continue;
+      const dist = Math.abs(right[i].amount - amt);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
       }
     }
+    return best;
+  };
+
+  return left.map((item) => {
+    const matchIdx =
+      (item.row.orderId ? takeFrom(byOrder.get(item.row.orderId)) : undefined) ??
+      takeFrom(byComposite.get(compositeFillKey(item.row))) ??
+      takeUniqueAmount(item.amount) ??
+      takeRanked(item.amount);
 
     if (matchIdx == null) return { ...item, pairedAmount: undefined, pairedRow: undefined };
     usedRight.add(matchIdx);
@@ -282,6 +379,7 @@ export interface StitchContext {
     internalExclude: Set<string>;
     fiatWithdraw: Set<string>;
     skip: Set<string>;
+    clawback: Set<string>;
     p2p: Set<string>;
     spendLike: Set<string>;
     revenueLike: Set<string>;
@@ -311,6 +409,7 @@ export function makeStitchContext(cfg: LedgerStitchConfig): StitchContext {
       internalExclude: lc(cfg.ops.internalTransferExclude),
       fiatWithdraw: lc(cfg.ops.fiatWithdraw),
       skip: lc(cfg.ops.skip),
+      clawback: lc(cfg.ops.clawback),
       p2p: lc(cfg.ops.p2p?.ops),
       spendLike: lc(cfg.ops.spendOps),
       revenueLike: lc(cfg.ops.revenueOps),
@@ -868,7 +967,41 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
     (ctx.ops.p2p?.withdrawOpsWithP2pRemark ?? []).map((o) => o.toLowerCase())
   );
 
+  // Cancellation-reversal pass: the ledger records a CANCELLED/reversed
+  // transfer as a second row with the SAME operation and coin but the OPPOSITE
+  // sign (e.g. `Deposit` +11,559 immediately followed by `Deposit` −11,559).
+  // The pair nets to ~0 — the transfer never settled, so it is not a balance
+  // or taxable event. But because the legs are typed purely by operation
+  // (`Deposit` → transfer_in) and Math.abs'd, the reversal imported as a SECOND
+  // credit and a cancelled deposit netted +2X (this fabricated +433,878 USDC,
+  // plus the NFT/NPXS/BTT phantoms, on the real 28,928-row export). Detect
+  // same-(op, coin) legs whose signed sum ≈ 0 and drop BOTH legs before typing.
+  // Only applies to deposit/withdraw ops (genuine transfers); trades/fees are
+  // never self-cancelling this way.
+  const cancelledIdx = new Set<number>();
+  {
+    const byOpCoin = new Map<string, LedgerRow[]>();
+    for (const r of rows) {
+      const op = r.operation.toLowerCase();
+      if (!sets.deposit.has(op) && !sets.withdraw.has(op)) continue;
+      const k = `${op}|${r.coin.toUpperCase()}`;
+      const list = byOpCoin.get(k) ?? [];
+      list.push(r);
+      byOpCoin.set(k, list);
+    }
+    for (const list of byOpCoin.values()) {
+      if (list.length < 2) continue;
+      const sum = list.reduce((s, r) => s + r.change, 0);
+      const maxAbs = Math.max(...list.map((r) => Math.abs(r.change)));
+      // Nets to zero within rounding → the whole group is reversal noise.
+      if (Math.abs(sum) <= Math.max(1e-6, maxAbs * 1e-9)) {
+        for (const r of list) cancelledIdx.add(r.index);
+      }
+    }
+  }
+
   for (const r of rows) {
+    if (cancelledIdx.has(r.index)) continue; // reversal pair — never settled
     const op = r.operation.toLowerCase();
     // All rows consumed by dedicated stitchers above.
     if (
@@ -890,6 +1023,29 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
       continue;
     if (withdrawRemarkP2p.has(op) && isP2pRemark(r.remark)) continue;
     if (sets.simpleFee.has(op) && groupHadSimpleTrade) continue;
+
+    // Sign-aware clawback (Asset Recovery / Token Swap redenomination): a
+    // NEGATIVE leg reverses a prior credit and must subtract (transfer_out) so
+    // the credit doesn't survive as a phantom holding; a POSITIVE leg is a
+    // balance recovery, not a taxable/acquisition event → skip it. (Koinly and
+    // rotki skip these entirely and leave the phantom — SoloLedger subtracts.)
+    if (sets.clawback.has(op)) {
+      if (r.change >= 0) continue; // positive recovery: skip
+      const amount = Math.abs(r.change);
+      out.push(
+        makeTx(ctx, {
+          timestamp: r.timestamp,
+          type: 'transfer_out',
+          asset: r.coin,
+          amount,
+          sourceRef: srcRef(ctx, r.timestamp, 'transfer_out', r.coin, amount),
+          notes: `${r.operation} (clawback)`,
+          flags: ['possible_internal_transfer'],
+          raw: r.raw
+        })
+      );
+      continue;
+    }
 
     let type: TxType | null = null;
     if (sets.deposit.has(op)) type = 'transfer_in';
@@ -999,6 +1155,64 @@ export function stitchLedger(
     }
     for (const group of remainingGroups.values()) {
       transactions.push(...stitchSimpleRows(ctx, group));
+    }
+  }
+
+  // Unique per-fill sourceRef: two distinct fills can legitimately share the
+  // formula ref `exchange:ts:type:asset:amount` (same-second, same-asset,
+  // same-amount partial fills — Binance records no orderId for these). When
+  // that happens, deduplicateTransactions (keyed on `ex:${sourceRef}`) would
+  // collapse them into one row, losing a fill's quantity and corrupting cost
+  // basis (it drove USDT/BTC negative on the real 28,928-row export).
+  //
+  // Resolution (rotki-validated — rotki #10979 does the same via a content
+  // hash): when a ref occurs more than once, re-derive each colliding tx's ref
+  // as a CONTENT HASH of its distinguishing fields (timestamp, type, asset,
+  // amount, counterAsset, counterAmount, fee, fiatValue). A content hash — not
+  // an ordinal `#f{n}` — is stable across re-imports AND row reordering, so
+  // the same file always yields the same refs (dedup-stable) while distinct
+  // fills (which differ in counter/fee/fiat) get distinct refs. Single-fill
+  // refs stay byte-identical, preserving the CSV↔API zero-duplicate guarantee.
+  {
+    const refCount = new Map<string, number>();
+    for (const t of transactions) {
+      if (!t.sourceRef) continue;
+      refCount.set(t.sourceRef, (refCount.get(t.sourceRef) ?? 0) + 1);
+    }
+    const dupRefs = new Set([...refCount.entries()].filter(([, n]) => n > 1).map(([r]) => r));
+    if (dupRefs.size > 0) {
+      for (const t of transactions) {
+        if (!t.sourceRef || !dupRefs.has(t.sourceRef)) continue;
+        t.sourceRef = `${t.sourceRef}#h${fillContentHash(t)}`;
+      }
+      // Grid/DCA bots place BYTE-IDENTICAL orders (same asset, amount, price,
+      // fee) several times in one second. Those fills are economically distinct
+      // (each is a real fill) but hash identically — they must NOT collapse.
+      // Append a deterministic occurrence suffix scoped per content-hashed ref,
+      // ordered by raw-row JSON so a re-import of the same file reproduces the
+      // same suffixes (dedup-stable) while distinct identical fills stay apart.
+      const hashCount = new Map<string, number>();
+      for (const t of transactions) {
+        if (!t.sourceRef) continue;
+        hashCount.set(t.sourceRef, (hashCount.get(t.sourceRef) ?? 0) + 1);
+      }
+      const dupHashes = new Set([...hashCount.entries()].filter(([, n]) => n > 1).map(([r]) => r));
+      if (dupHashes.size > 0) {
+        const ordered = transactions
+          .filter((t) => t.sourceRef && dupHashes.has(t.sourceRef))
+          .slice()
+          .sort((a, b) => {
+            const ja = JSON.stringify(a.raw ?? {});
+            const jb = JSON.stringify(b.raw ?? {});
+            return ja < jb ? -1 : ja > jb ? 1 : 0;
+          });
+        const seen = new Map<string, number>();
+        for (const t of ordered) {
+          const n = (seen.get(t.sourceRef!) ?? 0) + 1;
+          seen.set(t.sourceRef!, n);
+          t.sourceRef = `${t.sourceRef}~${n}`;
+        }
+      }
     }
   }
 

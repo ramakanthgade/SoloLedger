@@ -75,11 +75,14 @@ export const binanceLedgerConfig: LedgerStitchConfig = {
     fiatWithdraw: ['Fiat Withdraw'],
     skip: [
       'Launchpool Subscription/Redemption', // principal lock/unlock
-      'Asset Recovery', // delisted-asset recovery: balance event only
       'Margin Loan', // loan principal is not a taxable event
       'Margin Loan Repayment',
       'Cross Margin Liquidation - Repayment' // forced repayment: balance event only
     ],
+    // Clawback / balance-reversal: a NEGATIVE leg reverses a prior credit
+    // (airdrop/distribution) and must subtract or the credit survives as a
+    // phantom (the NFT +44,680 case). Positive legs are skipped in the engine.
+    clawback: ['Asset Recovery'],
     p2p: { ops: ['P2P Trading'], withdrawOpsWithP2pRemark: ['Withdraw'] }
   }
 };
