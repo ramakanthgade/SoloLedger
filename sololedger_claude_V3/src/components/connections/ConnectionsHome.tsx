@@ -17,6 +17,33 @@ import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Toast, ToastViewport } from '@/components/ui/toast';
 import { cn } from '@/lib/utils';
+
+/**
+ * Thin determinate progress bar for sync/import banners. Renders only when a
+ * usable done/total pair exists (total > 0); the caller keeps the spinner for
+ * the indeterminate phases. Accessible (role=progressbar + aria-valuenow).
+ */
+function SyncProgressBar({ done, total }: { done: number; total: number }) {
+  if (!Number.isFinite(total) || total <= 0) return null;
+  const pct = Math.max(0, Math.min(100, (done / total) * 100));
+  return (
+    <div className="mt-2 flex items-center gap-2">
+      <div
+        className="h-1.5 flex-1 overflow-hidden rounded-full bg-primary/15"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(pct)}
+      >
+        <div
+          className="h-full rounded-full bg-primary transition-[width] duration-300"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-xs font-medium tabular-figures text-mid">{Math.round(pct)}%</span>
+    </div>
+  );
+}
 import {
   deleteConnectionAndTransactions,
   listConnections,
@@ -394,18 +421,26 @@ export function ConnectionsHome() {
       ) : (
         <>
           {exchangeJob.active && (
-            <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-mid">
-              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
-              <span>
-                Syncing {exchangeJob.connectionLabel}
-                {exchangeJob.phase !== 'idle'
-                  ? ` — ${PHASE_LABELS[exchangeJob.phase] ?? exchangeJob.phase}`
-                  : ''}
-                {exchangeJob.progress
-                  ? ` (${exchangeJob.progress.done}/${exchangeJob.progress.total})`
-                  : ''}
-                …
-              </span>
+            <div className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-mid">
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+                <span>
+                  Syncing {exchangeJob.connectionLabel}
+                  {exchangeJob.phase !== 'idle'
+                    ? ` — ${PHASE_LABELS[exchangeJob.phase] ?? exchangeJob.phase}`
+                    : ''}
+                  {exchangeJob.progress
+                    ? ` (${exchangeJob.progress.done}/${exchangeJob.progress.total})`
+                    : ''}
+                  …
+                </span>
+              </div>
+              {exchangeJob.progress && (
+                <SyncProgressBar
+                  done={exchangeJob.progress.done}
+                  total={exchangeJob.progress.total}
+                />
+              )}
             </div>
           )}
 
@@ -465,15 +500,20 @@ export function ConnectionsHome() {
 
       {/* Wallet sync status (the global import job — also drives card Sync). */}
       {walletJob.active && (
-        <div className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-mid">
-          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
-          <span>
-            Syncing wallet
-            {walletJob.addresses.length > 0 ? ` ${shortAddress(walletJob.addresses[0])}` : ''}
-            {walletJob.chainLabel ? ` on ${walletJob.chainLabel}` : ''}
-            {walletJob.phase !== 'idle' ? ` — ${walletJob.phase}` : ''}
-            {walletJob.progress ? ` (${walletJob.progress.done}/${walletJob.progress.total})` : ''}…
-          </span>
+        <div className="rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-mid">
+          <div className="flex items-center gap-2">
+            <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+            <span>
+              Syncing wallet
+              {walletJob.addresses.length > 0 ? ` ${shortAddress(walletJob.addresses[0])}` : ''}
+              {walletJob.chainLabel ? ` on ${walletJob.chainLabel}` : ''}
+              {walletJob.phase !== 'idle' ? ` — ${walletJob.phase}` : ''}
+              {walletJob.progress ? ` (${walletJob.progress.done}/${walletJob.progress.total})` : ''}…
+            </span>
+          </div>
+          {walletJob.progress && (
+            <SyncProgressBar done={walletJob.progress.done} total={walletJob.progress.total} />
+          )}
         </div>
       )}
       {!walletJob.active && walletJob.result && (

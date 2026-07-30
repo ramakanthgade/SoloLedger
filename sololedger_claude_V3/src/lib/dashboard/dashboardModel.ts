@@ -619,7 +619,6 @@ export function reconcileHoldings(
     const addrChain = new Map<string, string>();
     // `${exchangeLower}|${connectionId}` → tx-derived delta for this asset.
     const exSlices = new Map<string, number>();
-    const exSliceHasAuthority = new Map<string, boolean>();
     let nonWalletDelta = 0;
     const holdingChainKey = h.chain ?? 'x';
     // Native SOL is the one upstream exception to chain keying:
@@ -646,11 +645,57 @@ export function reconcileHoldings(
         addrDeltas.set(addrLower, (addrDeltas.get(addrLower) ?? 0) + delta);
         if (t.chain && !addrChain.has(addrLower)) addrChain.set(addrLower, t.chain);
       } else if (t.importBatchId && t.source) {
-        // API auto-sync slice: attribute per (exchange, connectionId).
-        const exKey = `${t.source.toLowerCase()}|${t.importBatchId}`;
-        exSlices.set(exKey, (exSlices.get(exKey) ?? 0) + delta);
-        const authKey = `${t.source.toLowerCase()}|${t.importBatchId}|${h.asset.toUpperCase()}`;
-        if (exIndex.has(authKey)) exSliceHasAuthority.set(exKey, true);
+        // Classify the row's exchange so we can decide whether the API
+        // authority (fetchBalance) should subsume it. API rows carry
+        // `source = ${exchange}_api`; CSV rows carry 'binance' /
+        // 'binance_spot' / 'binance_transfers' — strip either suffix to get
+        // the exchange id, so a CSV 'binance' row and an API 'binance_api'
+        // row resolve to the SAME exchange.
+        const srcLower = t.source.toLowerCase();
+        const exchange = srcLower.endsWith('_api')
+          ? srcLower.slice(0, -'_api'.length)
+          : srcLower.split('_')[0];
+        const isApiRow = srcLower.endsWith('_api');
+
+        // Does a fetchBalance anchor exist for (exchange, asset)? The API
+        // connection stamps importBatchId = connectionId, so any anchor key
+        // `${exchange}|<connId>|ASSET` in exIndex marks that exchange+asset as
+        // authority-backed. CSV imports of the same exchange are the hybrid
+        // backfill for the API ledger — the SAME coins — so they must NOT be
+        // added on top of the authority (that double-count was the ₹75cr bug).
+        const assetSuffix = `|${h.asset.toUpperCase()}`;
+        const exchangePrefix = `${exchange}|`;
+        // This row's OWN connection anchor (API rows): `exchange|batch|ASSET`.
+        const ownAuthKey = `${exchangePrefix}${t.importBatchId}${assetSuffix}`;
+        const ownConnAnchored = exIndex.has(ownAuthKey);
+        // ANY connection anchor for this exchange+asset (CSV subsume test).
+        let anyConnAnchored = ownConnAnchored;
+        if (!anyConnAnchored && exIndex.size > 0) {
+          for (const key of exIndex.keys()) {
+            if (key.startsWith(exchangePrefix) && key.endsWith(assetSuffix)) {
+              anyConnAnchored = true;
+              break;
+            }
+          }
+        }
+
+        if (isApiRow && ownConnAnchored) {
+          // Genuine API-sync row whose own connection HAS an anchor → its
+          // slice reports the exchange-reported quantity, not the tx sum.
+          const exKey = `${exchange}|${t.importBatchId}`;
+          exSlices.set(exKey, (exSlices.get(exKey) ?? 0) + delta);
+        } else if (isApiRow && !ownConnAnchored) {
+          // API row for a connection WITHOUT an anchor (balance fetch failed /
+          // pre-v10): no authority for THIS connection → keep it tx-derived.
+          nonWalletDelta += delta;
+        } else if (!isApiRow && anyConnAnchored) {
+          // CSV row for an exchange the user ALSO connected via API: subsumed
+          // by the authority — drop it so the same coins aren't double-counted.
+          continue;
+        } else {
+          // CSV row, no authority anywhere for this exchange+asset → tx-derived.
+          nonWalletDelta += delta;
+        }
       } else {
         nonWalletDelta += delta;
       }
