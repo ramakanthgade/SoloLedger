@@ -58,7 +58,10 @@ vi.mock('dexie-react-hooks', () => ({
 }));
 
 vi.mock('@/lib/storage/db', () => ({
-  db: { transactions: { toArray: () => SEED.txs } },
+  db: {
+    transactions: { toArray: () => SEED.txs },
+    csvImports: { toArray: () => [] }
+  },
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
   // Stable reference: the sync useLiveQuery stub re-invokes the querier on
   // every render, so returning a fresh [] here would re-fire the balance

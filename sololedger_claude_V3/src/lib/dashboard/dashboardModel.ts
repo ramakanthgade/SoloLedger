@@ -15,7 +15,11 @@
  */
 import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
 import type { ExchangeBalanceRow, LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
-import { buildPortfolioHoldings, type PortfolioHolding } from '@/lib/portfolio/portfolioCompute';
+import {
+  buildPortfolioHoldings,
+  pairedInternalTransferIds,
+  type PortfolioHolding
+} from '@/lib/portfolio/portfolioCompute';
 import { isNativeSolAsset } from '@/lib/portfolio/solBalance';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
@@ -430,6 +434,13 @@ function txDeltaFor(
   ) {
     delta -= t.counterAmount;
   }
+  if (
+    t.feeAmount &&
+    t.feeAmount > 0 &&
+    holdingMatches(holding, t.feeAsset ?? t.asset, undefined, t.chain)
+  ) {
+    delta -= t.feeAmount;
+  }
   return delta;
 }
 
@@ -448,6 +459,7 @@ export function sourceBreakdown(
   const walletByAddress = new Map(wallets.map((w) => [w.address.toLowerCase(), w]));
   const slices = new Map<string, SourceSlice>();
   const walletChain = new Map<string, string>();
+  const pairedInternalIds = pairedInternalTransferIds(transactions);
 
   const upsert = (key: string, name: string, iconId: string | undefined, delta: number) => {
     const existing = slices.get(key);
@@ -459,7 +471,11 @@ export function sourceBreakdown(
   };
 
   for (const t of transactions) {
-    if (t.isSpam) continue;
+    if (t.isSpam || pairedInternalIds.has(t.id)) continue;
+    if (
+      t.isInternalTransfer &&
+      (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent')
+    ) continue;
     const delta = txDeltaFor(t, holding);
     if (Math.abs(delta) < 1e-12) continue;
     if (t.walletAddress) {
@@ -590,6 +606,7 @@ export function reconcileHoldings(
   exchangeBalances?: ExchangeBalanceRow[]
 ): ReconciliationResult {
   const result: ReconciledHolding[] = [];
+  const pairedInternalIds = pairedInternalTransferIds(transactions);
   let adjustedDownCount = 0;
   let reconciledCount = 0;
 
@@ -628,8 +645,8 @@ export function reconcileHoldings(
     // counted here — filtering them out zeroed the holding (D-3).
     const chainMergedSol = holdingChainKey === 'solana' && isNativeSolAsset(h.asset);
     for (const t of transactions) {
-      if (t.isSpam) continue;
-      // Mirror buildPortfolioHoldings: internal transfer-outs never built qty
+      if (t.isSpam || pairedInternalIds.has(t.id)) continue;
+      // Mirror buildPortfolioHoldings: unmatched internal transfer-outs never built qty
       // (except DCA escrow deposits — an edge case we don't replicate here).
       if (
         t.isInternalTransfer &&
@@ -646,10 +663,13 @@ export function reconcileHoldings(
         addrDeltas.set(addrLower, (addrDeltas.get(addrLower) ?? 0) + delta);
         if (t.chain && !addrChain.has(addrLower)) addrChain.set(addrLower, t.chain);
       } else if (t.importBatchId && t.source) {
-        // API auto-sync slice: attribute per (exchange, connectionId).
-        const exKey = `${t.source.toLowerCase()}|${t.importBatchId}`;
+        // API transaction sources use `<exchange>_api`, while authority rows
+        // store the bare exchange id. Normalize before building lookup keys.
+        const source = t.source.toLowerCase();
+        const exchange = source.endsWith('_api') ? source.slice(0, -4) : source;
+        const exKey = `${exchange}|${t.importBatchId}`;
         exSlices.set(exKey, (exSlices.get(exKey) ?? 0) + delta);
-        const authKey = `${t.source.toLowerCase()}|${t.importBatchId}|${h.asset.toUpperCase()}`;
+        const authKey = `${exchange}|${t.importBatchId}|${h.asset.toUpperCase()}`;
         if (exIndex.has(authKey)) exSliceHasAuthority.set(exKey, true);
       } else {
         nonWalletDelta += delta;

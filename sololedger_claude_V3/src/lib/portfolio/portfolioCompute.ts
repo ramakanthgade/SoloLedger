@@ -1,7 +1,7 @@
 /**
  * Portfolio holdings from transaction ledger — shared by Portfolio tab and validation.
  */
-import { transactionSourceKey } from '@/lib/storage/db';
+import { transactionSourceKey, type CsvImportRow } from '@/lib/storage/db';
 import { resolveAssetLabel, resolveSolanaMintAddress } from '@/lib/assets/solanaMints';
 import {
   computeMainWalletSolFromTransactions,
@@ -39,7 +39,41 @@ function portfolioRowScore(t: Transaction): number {
   return typeScore * 1_000_000 + (t.fiatValue != null ? 10_000 : 0) + t.amount;
 }
 
+function rawAccount(t: Transaction): string | undefined {
+  const direct = t.raw?.Account;
+  return typeof direct === 'string' && direct.trim() ? direct.trim().toLowerCase() : undefined;
+}
+
+export function pairedInternalTransferIds(txs: Transaction[]): Set<string> {
+  const ins = txs
+    .filter((t) => t.isInternalTransfer && t.type === 'transfer_in')
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const outs = txs
+    .filter((t) => t.isInternalTransfer && t.type === 'transfer_out')
+    .sort((a, b) => a.timestamp - b.timestamp);
+  const paired = new Set<string>();
+
+  for (const out of outs) {
+    const match = ins.find((input) =>
+      !paired.has(input.id) &&
+      input.source === out.source &&
+      input.importBatchId === out.importBatchId &&
+      input.asset.toUpperCase() === out.asset.toUpperCase() &&
+      Math.abs(input.amount - out.amount) <= Math.max(1e-9, out.amount * 1e-12) &&
+      Math.abs(input.timestamp - out.timestamp) <= 2_000 &&
+      (input.notes ?? '') === (out.notes ?? '') &&
+      (!rawAccount(input) || !rawAccount(out) || rawAccount(input) !== rawAccount(out))
+    );
+    if (!match) continue;
+    paired.add(out.id);
+    paired.add(match.id);
+  }
+
+  return paired;
+}
+
 function collapseForPortfolio(txs: Transaction[]): Transaction[] {
+  const pairedInternalIds = pairedInternalTransferIds(txs);
   const tradesByRef = new Map<string, Transaction>();
   for (const t of txs) {
     if (t.type !== 'trade' || !t.sourceRef || !t.walletAddress) continue;
@@ -54,6 +88,11 @@ function collapseForPortfolio(txs: Transaction[]): Transaction[] {
     if (!prev || portfolioRowScore(t) > portfolioRowScore(prev)) best.set(sk, t);
   }
   return txs.filter((t) => {
+    // Both legs of a same-source custody move are present in full-ledger CSVs.
+    // Remove the matched pair from aggregate holdings: applying both would net
+    // to zero, while the wallet-specific internal-out rule below intentionally
+    // keeps one-sided cross-source transfers from reducing an own-wallet total.
+    if (pairedInternalIds.has(t.id)) return false;
     const sk = transactionSourceKey(t);
     if (sk && best.get(sk) !== t) return false;
     if (t.sourceRef && t.walletAddress) {
@@ -177,6 +216,9 @@ function applyTxToHoldings(
       t.chain,
       t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
     );
+    if (t.feeAmount && t.feeAmount > 0) {
+      upsert(t.feeAsset ?? t.asset, t.feeAmount, -1, 0, t.chain);
+    }
     return;
   }
   if (t.type === 'sell' && t.counterAsset && t.counterAmount) {
@@ -189,6 +231,9 @@ function applyTxToHoldings(
       t.chain,
       t.chain === 'solana' ? resolveSolanaMintAddress(t.counterAsset) : undefined
     );
+    if (t.feeAmount && t.feeAmount > 0) {
+      upsert(t.feeAsset ?? t.asset, t.feeAmount, -1, 0, t.chain);
+    }
     return;
   }
 
@@ -213,16 +258,36 @@ function applyTxToHoldings(
   }
 }
 
+export function journalAuthority(
+  txs: Transaction[],
+  csvImports: CsvImportRow[]
+): CsvImportRow | undefined {
+  const visibleCounts = new Map<string, number>();
+  for (const t of txs) {
+    if (t.source !== 'binance' || !t.importBatchId) continue;
+    visibleCounts.set(t.importBatchId, (visibleCounts.get(t.importBatchId) ?? 0) + 1);
+  }
+  // Each snapshot is a full-file journal total, not an incremental delta.
+  // Save paths persist it only when every parsed row survives dedup. The first
+  // complete visible import is therefore the baseline; later surviving rows
+  // are genuine deltas and remain additive rather than replacing the baseline.
+  return csvImports
+    .filter((batch) => visibleCounts.get(batch.id) === batch.txCount && batch.balanceSnapshot)
+    .sort((a, b) => a.importedAt - b.importedAt)[0];
+}
+
 /** Build portfolio holdings from a filtered transaction set (one wallet or all). */
-export function buildPortfolioHoldings(filteredTxs: Transaction[]): PortfolioHolding[] {
+export function buildPortfolioHoldings(
+  filteredTxs: Transaction[],
+  csvImports: CsvImportRow[] = []
+): PortfolioHolding[] {
   const dcaCtx = buildPortfolioDcaContext(filteredTxs);
   const portfolioLedgerTxs = applyRuntimeDcaFlags(filteredTxs, dcaCtx);
-  const solLedgerBalance = computeMainWalletSolFromTransactions(portfolioLedgerTxs);
-
   const map = new Map<string, PortfolioHolding>();
   const appliedSourceKeys = new Set<string>();
   const tradeCoveredLegs = new Set<string>();
   const ledgerTxs = collapseForPortfolio(portfolioLedgerTxs);
+  let solLedgerBalance = computeMainWalletSolFromTransactions(ledgerTxs);
 
   for (const t of ledgerTxs) {
     if (t.type !== 'trade' || !t.counterAsset || !t.counterAmount || !t.sourceRef || !t.walletAddress) continue;
@@ -242,6 +307,39 @@ export function buildPortfolioHoldings(filteredTxs: Transaction[]): PortfolioHol
   });
   for (const t of ordered) {
     applyTxToHoldings(map, t, appliedSourceKeys, tradeCoveredLegs, dcaCtx);
+  }
+
+  // Binance's signed source journal is quantity authority for each imported
+  // batch. Replace only that batch's stitched contribution by applying the
+  // residual (journal minus stitched batch quantity); unrelated sources stay
+  // intact, so Dashboard and the file Connections card use the same rule.
+  const authority = journalAuthority(filteredTxs, csvImports);
+  if (authority?.balanceSnapshot) {
+    const binanceTxs = filteredTxs.filter((t) =>
+      t.source === 'binance' && t.importBatchId &&
+      csvImports.some((batch) => batch.id === t.importBatchId && batch.importedAt >= authority.importedAt)
+    );
+    const stitchedBinance = buildPortfolioHoldings(binanceTxs);
+    const stitchedByAsset = new Map(stitchedBinance.map((h) => [h.asset.toUpperCase(), h.amount]));
+    for (const [rawAsset, authoritativeAmount] of Object.entries(authority.balanceSnapshot)) {
+      if (!Number.isFinite(authoritativeAmount)) continue;
+      const asset = rawAsset.toUpperCase();
+      const residual = authoritativeAmount - (stitchedByAsset.get(asset) ?? 0);
+      if (Math.abs(residual) <= 1e-9) continue;
+      if (asset === 'SOL') {
+        solLedgerBalance += residual;
+        continue;
+      }
+      const h = [...map.values()].find((row) => row.asset.toUpperCase() === asset && !row.chain);
+      if (h) {
+        h.amount += residual;
+        if (h.amount <= 1e-9) {
+          for (const [key, row] of map) if (row === h) map.delete(key);
+        }
+      } else if (residual > 1e-9) {
+        map.set(`x:${asset}`, { asset, amount: residual, costBasis: 0 });
+      }
+    }
   }
 
   if (Math.abs(solLedgerBalance) > 1e-9) {

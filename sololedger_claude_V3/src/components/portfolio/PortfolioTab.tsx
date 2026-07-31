@@ -114,6 +114,7 @@ function formatShare(sharePct: number | null): string {
 export function PortfolioTab() {
   const { goToImport } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
+  const csvImports = useLiveQuery(() => db.csvImports.toArray(), []) ?? [];
   const [reportingCurrency, setReportingCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
@@ -310,8 +311,8 @@ export function PortfolioTab() {
   }, [transactions, selectedWallet, selectedFy, jurisdiction]);
 
   const holdings = useMemo(
-    () => buildPortfolioHoldings(filteredTxs),
-    [filteredTxs]
+    () => buildPortfolioHoldings(filteredTxs, csvImports),
+    [filteredTxs, csvImports]
   );
 
   const integrityIssues = useMemo(

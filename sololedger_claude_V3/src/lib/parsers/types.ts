@@ -7,6 +7,10 @@ export interface ParseResult {
   transactions: Transaction[];
   skippedRows: number;
   warnings: string[];
+  /** Source-reported end quantities for this file, keyed by asset. */
+  balanceSnapshot?: Record<string, number>;
+  /** The source export omits activity needed to reconstruct an Options balance. */
+  optionsBalanceUnavailable?: boolean;
   /**
    * Structured hint of which required field(s) were absent when a file could
    * not be parsed. Lets callers render specific fix-the-file guidance instead

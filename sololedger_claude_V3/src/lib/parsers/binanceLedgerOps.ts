@@ -65,9 +65,9 @@ export const binanceLedgerConfig: LedgerStitchConfig = {
       'Transfer Between Spot and UM Futures',
       'Transfer Between Spot and Options',
       'Transfer Between UM Futures and Options',
-      'Transfer'
+      'Inter-Wallet Transfer'
     ],
-    internalTransferExclude: ['Inter-Wallet Transfer'],
+    internalTransferExclude: [],
     signSplit: [
       { op: 'Realized Profit and Loss', negativeType: 'sell', category: 'perp', derivative: true },
       { op: 'Funding Fee', negativeType: 'fee', category: 'perp', derivative: true }

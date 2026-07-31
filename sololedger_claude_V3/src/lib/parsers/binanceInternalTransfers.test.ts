@@ -36,8 +36,36 @@ describe('Intra-account transfers — auto-confirmed internal', () => {
       row('Inter-Wallet Transfer', 'BUSD', '-30000', '2022-11-08 23:57:35', 'Cross Margin'),
       row('Inter-Wallet Transfer', 'BUSD', '30000', '2022-11-08 23:57:35', 'Spot')
     ]);
+    expect(transactions).toHaveLength(2);
     expect(transactions.every((t) => t.isInternalTransfer)).toBe(true);
     expect(transactions.every((t) => !t.flags.includes('possible_internal_transfer'))).toBe(true);
+  });
+
+  it('Binance Pay Transfer rows are external custody changes, not account shuffles', () => {
+    const { transactions } = stitchBinanceTransactionHistory([
+      { ...row('Transfer', 'BUSD', '-5700'), Remark: 'Binance Pay - P_A17W2GBS5JW71113' },
+      { ...row('Transfer', 'USDT', '101'), Remark: 'Binance Pay - P_A1CRZJTB1J171115' }
+    ]);
+    expect(transactions).toHaveLength(2);
+    expect(transactions.map((t) => t.type).sort()).toEqual(['transfer_in', 'transfer_out']);
+    expect(transactions.every((t) => !t.isInternalTransfer)).toBe(true);
+    expect(transactions.every((t) => t.flags.includes('possible_internal_transfer'))).toBe(true);
+  });
+
+  it('incomplete Options history excludes the unsupported Options leg and warns explicitly', () => {
+    const { transactions, warnings, balanceSnapshot, optionsBalanceUnavailable } = stitchBinanceTransactionHistory([
+      row('Transfer Between Spot and Options', 'USDT', '-3000', '2023-03-22 17:48:18', 'Spot'),
+      row('Transfer Between Spot and Options', 'USDT', '3000', '2023-03-22 17:48:19', 'Options')
+    ]);
+    expect(transactions).toHaveLength(1);
+    expect(transactions[0]).toMatchObject({
+      type: 'transfer_out', asset: 'USDT', amount: 3000, isInternalTransfer: true
+    });
+    expect(transactions[0].notes).toContain('Options history unavailable');
+    expect(warnings).toContainEqual(expect.stringContaining('Options account movement'));
+    expect(warnings).toContainEqual(expect.stringContaining('exchange balance sync or current balance entry'));
+    expect(balanceSnapshot).toEqual({ USDT: -3000 });
+    expect(optionsBalanceUnavailable).toBe(true);
   });
 
   it('external Deposit/Withdraw stay review-needed (possible_internal_transfer)', () => {

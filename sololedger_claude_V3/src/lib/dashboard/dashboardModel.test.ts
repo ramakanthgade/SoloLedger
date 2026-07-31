@@ -243,6 +243,14 @@ describe('sourceBreakdown', () => {
     expect(slices[0].name).toBe('Binance');
   });
 
+  it('does not subtract an unmatched internal Options boundary from source quantity', () => {
+    const slices = sourceBreakdown([
+      tx({ id: 'in', type: 'transfer_in', amount: 100, source: 'binance' }),
+      tx({ id: 'options', type: 'transfer_out', amount: 90, source: 'binance', isInternalTransfer: true })
+    ], { asset: 'BTC' }, []);
+    expect(slices[0]).toMatchObject({ name: 'Binance', qty: 100 });
+  });
+
   it('counts the counter leg of a trade toward the acquired asset', () => {
     const usdt = { asset: 'USDT', amount: 50, costBasis: 50 };
     const slices = sourceBreakdown(
@@ -676,8 +684,8 @@ describe('reconcileHoldings', () => {
   it('an exchange slice anchors to the persisted fetchBalance row, draining the phantom', () => {
     // Ledger implies 9.17 BTC on Binance (conn1) but fetchBalance says 0.0000049.
     const txs = [
-      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 10, source: 'binance', importBatchId: 'conn1' }),
-      tx({ id: 's1', type: 'sell', asset: 'BTC', amount: 0.83, source: 'binance', importBatchId: 'conn1' })
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 10, source: 'binance_api', importBatchId: 'conn1' }),
+      tx({ id: 's1', type: 'sell', asset: 'BTC', amount: 0.83, source: 'binance_api', importBatchId: 'conn1' })
     ];
     const holdings = [{ asset: 'BTC', amount: 9.17, costBasis: 91.7 }];
     const result = reconcileHoldings(holdings, txs, [], [
@@ -694,7 +702,7 @@ describe('reconcileHoldings', () => {
 
   it('a confirmed-zero exchange balance drops the holding entirely', () => {
     const txs = [
-      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'conn1' })
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance_api', importBatchId: 'conn1' })
     ];
     const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
     const result = reconcileHoldings(holdings, txs, [], [
@@ -706,7 +714,7 @@ describe('reconcileHoldings', () => {
 
   it('an exchange slice without a balance row stays tx-derived', () => {
     const txs = [
-      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'conn1' })
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance_api', importBatchId: 'conn1' })
     ];
     const holdings = [{ asset: 'BTC', amount: 2, costBasis: 20 }];
     // Balance row is for a DIFFERENT asset — no authority for BTC.

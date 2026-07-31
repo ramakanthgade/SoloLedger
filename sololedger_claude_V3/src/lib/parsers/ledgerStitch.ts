@@ -778,9 +778,14 @@ function stitchDustConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
   const out: Transaction[] = [];
   for (const group of byGroup.values()) {
     const receivedTotal = group.filter((r) => r.change > 0).reduce((s, r) => s + r.change, 0);
-    for (const r of group) {
-      if (r.change >= 0) continue; // credit rows are implied by the trades
+    const spent = group.filter((r) => r.change < 0);
+    const spentTotal = spent.reduce((s, r) => s + Math.abs(r.change), 0);
+    for (const r of spent) {
       const amount = Math.abs(r.change);
+      // Binance exports one aggregate BNB credit beside multiple dust debits.
+      // Allocate that credit deterministically across the emitted trades so
+      // portfolio math applies both sides and the BNB total remains conserved.
+      const counterAmount = spentTotal > 0 ? receivedTotal * (amount / spentTotal) : undefined;
       out.push(
         makeTx(ctx, {
           timestamp: r.timestamp,
@@ -788,6 +793,7 @@ function stitchDustConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
           asset: r.coin,
           amount,
           counterAsset: dc.toAsset,
+          counterAmount,
           sourceRef: srcRef(ctx, r.timestamp, 'trade', r.coin, amount),
           notes: `Small assets (dust) converted to ${dc.toAsset} (group total +${receivedTotal} ${dc.toAsset})`,
           flags: ['missing_cost_basis'],
@@ -841,8 +847,15 @@ function stitchFiatConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
 function stitchInternalTransfers(ctx: StitchContext, rows: LedgerRow[]): Transaction[] {
   return rows
     .filter((r) => ctx.sets.internal.has(r.operation.toLowerCase()))
-    .map((r) =>
-      makeTx(ctx, {
+    // Binance Transaction History contains transfers INTO Options but omits
+    // option premiums/settlements and later outflows. Counting the Options leg
+    // therefore leaves historical collateral as a permanent phantom. Treat
+    // Options as an unsupported custody boundary: omit its incomplete leg and
+    // keep the complete Spot/UM leg as a non-taxable quantity movement.
+    .filter((r) => r.account.toLowerCase() !== 'options')
+    .map((r) => {
+      const crossesOptions = r.operation.toLowerCase().includes('options');
+      return makeTx(ctx, {
         timestamp: r.timestamp,
         type: r.change > 0 ? 'transfer_in' : 'transfer_out',
         asset: r.coin,
@@ -854,12 +867,12 @@ function stitchInternalTransfers(ctx: StitchContext, rows: LedgerRow[]): Transac
           r.coin,
           Math.abs(r.change)
         ),
-        notes: r.operation,
+        notes: crossesOptions ? `${r.operation} (Options history unavailable)` : r.operation,
         flags: [],
-        isInternalTransfer: true, // provably intra-account → auto-confirmed
+        isInternalTransfer: true,
         raw: r.raw
-      })
-    );
+      });
+    });
 }
 
 function isP2pRemark(remark?: string): boolean {
@@ -1095,7 +1108,13 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
 export function stitchLedger(
   rows: Record<string, string>[],
   cfg: LedgerStitchConfig
-): { transactions: Transaction[]; skippedRows: number; warnings: string[] } {
+): {
+  transactions: Transaction[];
+  skippedRows: number;
+  warnings: string[];
+  balanceSnapshot?: Record<string, number>;
+  optionsBalanceUnavailable?: boolean;
+} {
   const normalized = normalizeLedgerRows(rows, cfg);
   const skippedRows = rows.length - normalized.length;
   const warnings: string[] = [];
@@ -1251,7 +1270,13 @@ export function stitchLedger(
   }
   if (autoInternal > 0) {
     warnings.push(
-      `${autoInternal} internal account transfer(s) auto-confirmed (Spot ↔ Funding/Futures/Options) — these net to zero, no action needed.`
+      `${autoInternal} internal account transfer(s) auto-confirmed (Spot ↔ Funding/Futures) — these net to zero, no action needed.`
+    );
+  }
+  const optionRows = normalized.filter((r) => r.account.toLowerCase() === 'options').length;
+  if (optionRows > 0) {
+    warnings.push(
+      `${optionRows} Options account movement(s) have no reconstructible current balance — Binance Transaction History omits option premiums and settlements, so use an exchange balance sync or current balance entry for Options.`
     );
   }
   if (reviewableIn + reviewableOut > 0) {
@@ -1260,5 +1285,21 @@ export function stitchLedger(
     );
   }
 
-  return { transactions, skippedRows, warnings };
+  if (cfg.exchange !== 'binance') return { transactions, skippedRows, warnings };
+
+  // Binance Transaction History is a signed custody journal. Keep its final
+  // non-Options quantities as batch-level parser metadata: this never becomes
+  // a taxable transaction or changes imported transaction counts.
+  const balanceSnapshot: Record<string, number> = {};
+  for (const r of normalized) {
+    if (r.account.toLowerCase() === 'options') continue;
+    balanceSnapshot[r.coin] = (balanceSnapshot[r.coin] ?? 0) + r.change;
+  }
+  return {
+    transactions,
+    skippedRows,
+    warnings,
+    balanceSnapshot,
+    optionsBalanceUnavailable: optionRows > 0
+  };
 }
