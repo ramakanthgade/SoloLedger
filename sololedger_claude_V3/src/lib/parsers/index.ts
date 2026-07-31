@@ -80,6 +80,8 @@ export interface SheetParseOutcome {
   transactions: Transaction[];
   skippedRows: number;
   warnings: string[];
+  balanceSnapshot?: Record<string, number>;
+  optionsBalanceUnavailable?: boolean;
   headerScore: number;
   /** Required field(s) a generic parse found missing, for fix-the-file guidance. */
   missingFields?: MissingField[];
@@ -209,6 +211,8 @@ function parseSheetMatrix(
     rows: extracted.rows,
     transactions: txs,
     skippedRows: result.skippedRows,
+    balanceSnapshot: result.balanceSnapshot,
+    optionsBalanceUnavailable: result.optionsBalanceUnavailable,
     warnings: [
       ...(preambleWarning ? [preambleWarning] : []),
       ...result.warnings.map((w) => (w.includes(sheetName) ? w : `[${sheetName}] ${w}`))
@@ -231,6 +235,9 @@ function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): Fil
   const transactions = parsed.flatMap((s) => s.transactions);
   const skippedRows = sheets.reduce((a, s) => a + s.skippedRows, 0);
   const warnings: string[] = [];
+  const snapshots = parsed.map((s) => s.balanceSnapshot).filter(Boolean) as Record<string, number>[];
+  const balanceSnapshot = snapshots.length === 1 ? snapshots[0] : undefined;
+  const optionsBalanceUnavailable = parsed.some((s) => s.optionsBalanceUnavailable);
 
   // Aggregate structured missing-field hints from empty sheets so callers can
   // render actionable fix-the-file guidance instead of a generic dead-end.
@@ -286,6 +293,8 @@ function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): Fil
     transactions,
     skippedRows,
     warnings,
+    balanceSnapshot,
+    optionsBalanceUnavailable: optionsBalanceUnavailable || undefined,
     missingFields: missingFields.length > 0 ? missingFields : undefined,
     // Convenience "any sheet ambiguous" flag for gating; the per-sheet flag on
     // each SheetParseOutcome is authoritative for WHICH rows to orient.
@@ -333,6 +342,8 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
                 transactions: result.transactions,
                 skippedRows: result.skippedRows,
                 warnings: result.warnings,
+                balanceSnapshot: result.balanceSnapshot,
+                optionsBalanceUnavailable: result.optionsBalanceUnavailable,
                 headerScore: extracted.headerScore,
                 addressColumnAmbiguous: result.addressColumnAmbiguous
               }

@@ -46,7 +46,7 @@ const SEED = vi.hoisted(() => {
     txs,
     priceRows: [] as { key: string; price: number; fetchedAt: number }[],
     wallets: [] as unknown[],
-    csvImports: [] as { importedAt: number }[],
+    csvImports: [] as { importedAt: number; optionsBalanceUnavailable?: boolean }[],
     exchangeConns: [] as { lastSyncAt?: number }[],
     balanceRows: [] as {
       id: string; chain: string; address: string; asset: string;
@@ -161,6 +161,18 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     try {
       await renderTab();
       expect(screen.getByTestId('synced-chip')).toHaveTextContent('Synced 5 min ago');
+    } finally {
+      SEED.csvImports.length = 0;
+    }
+  });
+
+  it('shows persisted Options balance-unavailable status without a zero quantity claim', async () => {
+    SEED.csvImports.push({ importedAt: Date.now(), optionsBalanceUnavailable: true });
+    try {
+      await renderTab();
+      const notice = screen.getByTestId('options-balance-unavailable');
+      expect(notice).toHaveTextContent('Options balance unavailable');
+      expect(notice).not.toHaveTextContent('0');
     } finally {
       SEED.csvImports.length = 0;
     }

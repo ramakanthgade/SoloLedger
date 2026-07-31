@@ -32,6 +32,10 @@ export interface CsvImportRow {
   importedAt: number;
   txCount: number;
   parserId: string | null;
+  /** Source-journal end quantities for this import; quantity authority only. */
+  balanceSnapshot?: Record<string, number>;
+  /** Binance Transaction History omitted the Options lifecycle for this file. */
+  optionsBalanceUnavailable?: boolean;
 }
 
 /**
@@ -717,14 +721,16 @@ export async function upsertCsvImport(
   id: string,
   fileName: string,
   parserId: string | null,
-  txCount: number
+  txCount: number,
+  metadata?: Pick<CsvImportRow, 'balanceSnapshot' | 'optionsBalanceUnavailable'>
 ): Promise<void> {
   await db.csvImports.put({
     id,
     fileName,
     parserId,
     importedAt: Date.now(),
-    txCount
+    txCount,
+    ...metadata
   });
 }
 

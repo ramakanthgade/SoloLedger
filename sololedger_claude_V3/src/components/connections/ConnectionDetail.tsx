@@ -231,8 +231,11 @@ export function ConnectionDetail({
   /** Exchange/file holdings: tx-derived, valued through the price cache. */
   const sourceHoldings = useMemo(() => {
     if (card.kind === 'wallet') return [];
-    return valueHoldings(buildPortfolioHoldings(connTxs), priceIndex);
-  }, [card.kind, connTxs, priceIndex]);
+    return valueHoldings(
+      buildPortfolioHoldings(connTxs, card.csvImport ? [card.csvImport] : []),
+      priceIndex
+    );
+  }, [card.kind, card.csvImport, connTxs, priceIndex]);
 
   // ── Header facts ──
   const addedAt =
@@ -438,6 +441,11 @@ export function ConnectionDetail({
               </p>
             )}
             {card.kind !== 'wallet' && sourceAtCost && <p>Valued at cost where no live price is cached.</p>}
+            {card.kind === 'file' && card.csvImport?.optionsBalanceUnavailable && (
+              <p className="text-warn" data-testid="detail-options-balance-unavailable">
+                Options balance unavailable — add a current-balance authority to include it.
+              </p>
+            )}
           </div>
         </div>
 

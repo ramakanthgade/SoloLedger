@@ -101,7 +101,8 @@ export function FileImportFlow() {
     txs: Transaction[],
     parserId: string | null,
     hash: string,
-    name: string
+    name: string,
+    metadata?: Pick<FileParseOutcome, 'balanceSnapshot' | 'optionsBalanceUnavailable'>
   ): Promise<{ converted: number; failed: number; pricesUpdated: number; pricesFailed: number; warnings: string[]; saved: number }> => {
     setConversionNote(null);
     setPriceFetchNote(null);
@@ -131,7 +132,10 @@ export function FileImportFlow() {
     await db.transactions.bulkPut(converted);
     await deduplicateTransactions();
     const count = await countCsvImportTransactions(hash);
-    await upsertCsvImport(hash, name, parserId, count);
+    await upsertCsvImport(hash, name, parserId, count, {
+      balanceSnapshot: count === converted.length ? metadata?.balanceSnapshot : undefined,
+      optionsBalanceUnavailable: metadata?.optionsBalanceUnavailable
+    });
 
     // Auto price fetch only when Live price lookup is enabled (network egress).
     let pricesUpdated = 0;
@@ -212,7 +216,10 @@ export function FileImportFlow() {
           // (non-local only). Only the ambiguous sheets' rows are re-oriented;
           // clearly-named / non-generic sheets are left untouched. Non-fatal.
           const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
-          const persisted = await persistTransactions(toPersist, result.detectedParser, hash, file.name);
+          const persisted = await persistTransactions(toPersist, result.detectedParser, hash, file.name, {
+            balanceSnapshot: result.balanceSnapshot,
+            optionsBalanceUnavailable: result.optionsBalanceUnavailable
+          });
           setImportWarnings(result.warnings);
           setFileName('');
           setFileHash('');

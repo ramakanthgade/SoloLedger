@@ -495,6 +495,17 @@ describe('ConnectionDetail — file kind', () => {
     expect(within(chips).getByText('2 trades')).toBeInTheDocument();
   });
 
+  it('shows the persisted Options authority-required disclosure', () => {
+    const card = fileCard({
+      csvImport: { ...fileCard().csvImport!, parserId: 'binance', optionsBalanceUnavailable: true }
+    });
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+    expect(screen.getByTestId('detail-options-balance-unavailable')).toHaveTextContent(
+      'Options balance unavailable'
+    );
+    expect(screen.getByTestId('detail-options-balance-unavailable')).not.toHaveTextContent('0');
+  });
+
   it('an import without positions shows the empty holdings state', () => {
     render(<ConnectionDetail card={fileCard()} onBack={() => {}} />);
     expect(screen.getByTestId('detail-empty-balances')).toHaveTextContent(

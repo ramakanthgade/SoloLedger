@@ -369,7 +369,11 @@ export function DashboardTab() {
     [transactions]
   );
 
-  const holdings = useMemo(() => buildPortfolioHoldings(nonSpamTxs), [nonSpamTxs]);
+  const holdings = useMemo(
+    () => buildPortfolioHoldings(nonSpamTxs, csvImports),
+    [nonSpamTxs, csvImports]
+  );
+  const optionsBalanceUnavailable = csvImports.some((row) => row.optionsBalanceUnavailable);
   // Round 4: reconcile tx-history holdings against stored authority balances —
   // a drained wallet/exchange reports its true (often zero) balance instead of
   // a phantom left by missed spends. `adjustments` feeds the data-health rail.
@@ -1001,6 +1005,14 @@ export function DashboardTab() {
               {marketMode ? 'Priced from cached daily closes' : 'Valued at cost'}
             </span>
           </div>
+          {optionsBalanceUnavailable && (
+            <div
+              className="border-b border-warn/25 bg-warn/10 px-5 py-3 text-xs text-warn"
+              data-testid="options-balance-unavailable"
+            >
+              Binance Options balance unavailable — this CSV omits premiums and settlements. Add a current-balance authority to include Options.
+            </div>
+          )}
           {valued.length === 0 ? (
             <p className="px-5 py-8 text-center text-sm text-low">
               No holdings yet — imports appear here.

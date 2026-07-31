@@ -67,6 +67,8 @@ interface PreviewData {
   fileName: string;
   fileSize: number;
   warnings: string[];
+  balanceSnapshot?: Record<string, number>;
+  optionsBalanceUnavailable?: boolean;
   /** Rows missing a fiat value — surfaced so the user knows before confirming. */
   missingPriceCount: number;
   distinctAssets: number;
@@ -216,7 +218,8 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
       hash: string,
       file: { name: string; size: number },
       warnings: string[],
-      aiIncomplete: boolean
+      aiIncomplete: boolean,
+      metadata?: Pick<PreviewData, 'balanceSnapshot' | 'optionsBalanceUnavailable'>
     ) => {
       const distinctAssets = new Set(transactions.map((t) => t.asset)).size;
       const missingPriceCount = transactions.filter(
@@ -230,6 +233,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         fileName: file.name,
         fileSize: file.size,
         warnings,
+        ...metadata,
         missingPriceCount,
         distinctAssets,
         tdsTotalInr,
@@ -330,7 +334,11 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           hash,
           file,
           [...result.warnings],
-          false
+          false,
+          {
+            balanceSnapshot: result.balanceSnapshot,
+            optionsBalanceUnavailable: result.optionsBalanceUnavailable
+          }
         );
       } catch {
         // A file that throws mid-read (corrupt workbook, parser failure, hash
@@ -505,7 +513,11 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         // count. Overlapping re-exports (new hash, same rows) dedupe away, and
         // the banner must not claim those rows were saved.
         savedNow = await countCsvImportTransactions(preview.hash);
-        await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, savedNow);
+        const completeImport = savedNow === converted.length;
+        await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, savedNow, {
+          balanceSnapshot: completeImport ? preview.balanceSnapshot : undefined,
+          optionsBalanceUnavailable: preview.optionsBalanceUnavailable
+        });
       } catch {
         setError(`"${preview.fileName}" couldn't be saved — Confirm again to retry.`);
         return;
