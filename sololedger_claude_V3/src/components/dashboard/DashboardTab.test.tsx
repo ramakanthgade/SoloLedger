@@ -21,6 +21,7 @@ const SEED = vi.hoisted(() => {
     id: string; timestamp: number; type: string; asset: string; amount: number;
     fiatCurrency: string; fiatValue?: number; source: string; chain?: string;
     walletAddress?: string; flags: string[]; isInternalTransfer: boolean;
+    importBatchId?: string; sourceRef?: string; category?: string;
   }> = [
     // FY 2025-26 (IN) — excluded from the default FY-period money strip.
     {
@@ -292,6 +293,46 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     // BTC: 0.5 bought − 0.2 sold on Binance → 0.3 netted there.
     expect(within(expansion).getByText('Binance')).toBeInTheDocument();
     expect(within(expansion).getByText(/0\.30/)).toBeInTheDocument();
+  });
+
+  it('shows only the authoritative Binance Options balance, not gross historical funding', async () => {
+    const txBackup = [...SEED.txs];
+    const importBackup = [...SEED.csvImports];
+    SEED.txs.length = 0;
+    SEED.csvImports.length = 0;
+    SEED.txs.push(
+      {
+        id: 'gross-options-funding', timestamp: Date.UTC(2023, 2, 22), type: 'transfer_in',
+        asset: 'USDT', amount: 23_892.79, fiatCurrency: 'INR', source: 'binance',
+        importBatchId: 'history', sourceRef: 'history:funding', flags: [], isInternalTransfer: false
+      },
+      {
+        id: 'options-net', timestamp: Date.UTC(2023, 2, 22), type: 'transfer_in',
+        asset: 'USDT', amount: 119.5193, fiatCurrency: 'INR', source: 'binance_options',
+        sourceRef: 'options:net', category: 'options_collateral', flags: [], isInternalTransfer: false
+      }
+    );
+    SEED.csvImports.push({
+      id: 'history', importedAt: Date.UTC(2026, 0, 1), txCount: 1,
+      balanceSnapshot: { USDT: 0 }
+    } as (typeof SEED.csvImports)[number]);
+
+    try {
+      await renderTab();
+      const holdings = screen.getByTestId('dashboard-holdings');
+      const usdtToggle = within(holdings)
+        .getAllByRole('button', { expanded: false })
+        .find((button) => button.textContent?.includes('USDT'));
+      expect(usdtToggle).toBeDefined();
+      fireEvent.click(usdtToggle!);
+      const expansion = screen.getByTestId('holding-expansion');
+      expect(within(expansion).getByText('Binance Options')).toBeInTheDocument();
+      expect(within(expansion).getByText(/119\.5193 USDT/)).toBeInTheDocument();
+      expect(within(expansion).queryByText(/23892\.79 USDT/)).not.toBeInTheDocument();
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
+      SEED.csvImports.splice(0, SEED.csvImports.length, ...importBackup);
+    }
   });
 });
 

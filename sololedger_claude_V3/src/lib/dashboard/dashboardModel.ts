@@ -14,9 +14,10 @@
  *    source — an estimate derived from transaction history, labeled as such.
  */
 import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
-import type { ExchangeBalanceRow, LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
+import type { CsvImportRow, ExchangeBalanceRow, LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import {
   buildPortfolioHoldings,
+  journalAuthority,
   pairedInternalTransferIds,
   type PortfolioHolding
 } from '@/lib/portfolio/portfolioCompute';
@@ -473,7 +474,8 @@ export function sourceBreakdown(
   transactions: Transaction[],
   holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
   wallets: LookupAddressRow[],
-  balances?: WalletBalanceRow[]
+  balances?: WalletBalanceRow[],
+  csvImports: CsvImportRow[] = []
 ): SourceSlice[] {
   const walletByAddress = new Map(wallets.map((w) => [w.address.toLowerCase(), w]));
   const slices = new Map<string, SourceSlice>();
@@ -509,11 +511,42 @@ export function sourceBreakdown(
       const iconId = parserIconId(t.source);
       upsert(
         `source:${t.source}`,
-        iconId ? brandLabel(iconId) : prettifySource(t.source),
+        t.source === 'binance_options'
+          ? 'Binance Options'
+          : iconId ? brandLabel(iconId) : prettifySource(t.source),
         iconId,
         delta
       );
     }
+  }
+
+  // Mirror buildPortfolioHoldings' Binance signed-journal authority. Without
+  // this correction, the expansion can show gross historical Options funding
+  // even though the aggregate holding correctly replaces that batch with its
+  // non-Options journal balance.
+  const authority = journalAuthority(transactions, csvImports);
+  const authoritativeQty = authority?.balanceSnapshot?.[holding.asset.toUpperCase()];
+  if (authority && Number.isFinite(authoritativeQty)) {
+    const authoritativeBatches = new Set(
+      csvImports
+        .filter((batch) => batch.importedAt >= authority.importedAt)
+        .map((batch) => batch.id)
+    );
+    const scopedSignedQty = transactions.reduce((sum, t) => {
+      if (
+        t.source !== 'binance' ||
+        !t.importBatchId ||
+        !authoritativeBatches.has(t.importBatchId) ||
+        t.isSpam ||
+        pairedInternalIds.has(t.id) ||
+        (t.isInternalTransfer &&
+          (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent'))
+      ) return sum;
+      return sum + txDeltaFor(t, holding);
+    }, 0);
+    const residual = authoritativeQty! - scopedSignedQty;
+    const binance = slices.get('source:binance');
+    if (binance) binance.qty += residual;
   }
 
   // On-chain truth anchor: a wallet slice with a stored balance row reports
