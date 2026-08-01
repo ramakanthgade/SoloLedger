@@ -71,6 +71,15 @@ describe('buildPriceIndex', () => {
     );
     expect(index.byContract.get(`solana:${'a'.repeat(44)}`)?.[0].price).toBe(7);
   });
+
+  it('keeps current spot marks separate from historical chart closes', () => {
+    const index = buildPriceIndex([
+      priceRow('spot:sym:UNI:INR', 405),
+      priceRow(`sym:UNI:${keyDate(day(2024, 12, 12))}:INR`, 1_282.25)
+    ], 'INR');
+    expect(index.currentBySymbol.get('UNI')?.price).toBe(405);
+    expect(index.bySymbol.get('UNI')?.map((point) => point.price)).toEqual([1_282.25]);
+  });
 });
 
 describe('priceAt', () => {
@@ -96,7 +105,8 @@ describe('valueHoldings', () => {
   it('values priced holdings and leaves unpriced ones null', () => {
     const index = buildPriceIndex(
       [
-        priceRow(`sym:BTC:${keyDate(day(2026, 7, 24))}:INR`, 80),
+        priceRow('spot:sym:BTC:INR', 80),
+        priceRow(`sym:BTC:${keyDate(day(2026, 7, 24))}:INR`, 79),
         priceRow(`sym:BTC:${keyDate(day(2026, 7, 23))}:INR`, 70)
       ],
       'INR'
@@ -108,7 +118,7 @@ describe('valueHoldings', () => {
     expect(btc.unrealizedPct).toBeCloseTo(60);
     expect(btc.avgCost).toBe(50);
     // The two latest closes sit ~24h apart → an honest 24h change figure.
-    expect(btc.dayChangePct).toBeCloseTo(((80 - 70) / 70) * 100);
+    expect(btc.dayChangePct).toBeNull();
     expect(doge.priceNow).toBeNull();
     expect(doge.valueNow).toBeNull();
     expect(doge.unrealized).toBeNull();
@@ -123,6 +133,25 @@ describe('valueHoldings', () => {
       'INR'
     );
     expect(valueHoldings([holdings[0]], index)[0].dayChangePct).toBeNull();
+  });
+
+  it('never applies a symbol-only spot mark to a contract token', () => {
+    const index = buildPriceIndex([priceRow('spot:sym:USDT:INR', 95)], 'INR');
+    const [fake] = valueHoldings([
+      { asset: 'USDT', amount: 1_000_000, costBasis: 0, chain: 'ethereum', contractAddress: '0xfake' }
+    ], index);
+    expect(fake.priceNow).toBeNull();
+    expect(fake.valueNow).toBeNull();
+  });
+
+  it('applies the SOL spot mark to the canonical native-SOL holding', () => {
+    const index = buildPriceIndex([priceRow('spot:sym:SOL:INR', 12_000)], 'INR');
+    const [sol] = valueHoldings([{
+      asset: 'SOL', amount: 2, costBasis: 10_000, chain: 'solana',
+      contractAddress: 'So11111111111111111111111111111111111111112'
+    }], index);
+    expect(sol.priceNow).toBe(12_000);
+    expect(sol.valueNow).toBe(24_000);
   });
 });
 

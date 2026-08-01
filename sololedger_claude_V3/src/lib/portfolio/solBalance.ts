@@ -30,6 +30,17 @@ export function isNativeSolAsset(asset?: string | null): boolean {
   return a === WSOL_MINT;
 }
 
+/** True only for the canonical native-SOL holding representation. */
+export function isNativeSolHolding(holding: {
+  asset: string;
+  chain?: string;
+  contractAddress?: string;
+}): boolean {
+  return holding.chain === 'solana' &&
+    holding.asset.toUpperCase() === 'SOL' &&
+    holding.contractAddress === WSOL_MINT;
+}
+
 function solRowScore(t: Transaction): number {
   if (t.type === 'fee') return 1_000_000;
   if (t.type === 'trade') return 500_000;

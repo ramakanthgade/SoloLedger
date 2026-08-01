@@ -84,6 +84,47 @@ describe('buildPortfolioHoldings custody conservation', () => {
     expect(holdings.find((h) => h.asset === 'SOL')?.amount).toBe(2);
   });
 
+  it('scales cost basis when a journal snapshot reduces a balance to dust', () => {
+    const batch: CsvImportRow = {
+      id: 'b', fileName: 'binance.csv', parserId: 'binance', importedAt: 1, txCount: 1,
+      balanceSnapshot: { BTC: 0.00000049 }
+    };
+    const holdings = buildPortfolioHoldings([
+      tx({ id: 'btc', source: 'binance', importBatchId: 'b', asset: 'BTC', amount: 1, fiatValue: 100_000 })
+    ], [batch]);
+    const btc = holdings.find((h) => h.asset === 'BTC')!;
+    expect(btc.amount).toBeCloseTo(0.00000049, 12);
+    expect(btc.costBasis / btc.amount).toBeCloseTo(100_000, 4);
+  });
+
+  it('scales only the Binance cost slice when other sources hold the same asset', () => {
+    const batch: CsvImportRow = {
+      id: 'b', fileName: 'binance.csv', parserId: 'binance', importedAt: 1, txCount: 1,
+      balanceSnapshot: { BTC: 0.00000049 }
+    };
+    const holdings = buildPortfolioHoldings([
+      tx({ id: 'binance', source: 'binance', importBatchId: 'b', asset: 'BTC', amount: 1, fiatValue: 100_000 }),
+      tx({ id: 'manual', source: 'manual', asset: 'BTC', amount: 1, fiatValue: 10_000 })
+    ], [batch]);
+    const btc = holdings.find((h) => h.asset === 'BTC')!;
+    expect(btc.amount).toBeCloseTo(1.00000049, 10);
+    expect(btc.costBasis).toBeCloseTo(10_000.049, 4);
+  });
+
+  it('scales only the Binance SOL cost slice while preserving manual SOL cost', () => {
+    const batch: CsvImportRow = {
+      id: 'b', fileName: 'binance.csv', parserId: 'binance', importedAt: 1, txCount: 1,
+      balanceSnapshot: { SOL: 0.00000049 }
+    };
+    const holdings = buildPortfolioHoldings([
+      tx({ id: 'binance', type: 'buy', source: 'binance', importBatchId: 'b', asset: 'SOL', amount: 1, fiatValue: 100_000 }),
+      tx({ id: 'manual', type: 'buy', source: 'manual', asset: 'SOL', amount: 1, fiatValue: 10_000 })
+    ], [batch]);
+    const sol = holdings.find((h) => h.asset === 'SOL')!;
+    expect(sol.amount).toBeCloseTo(1.00000049, 10);
+    expect(sol.costBasis).toBeCloseTo(10_000.049, 4);
+  });
+
   it('applies a buy fee in its fee asset exactly once', () => {
     const holdings = buildPortfolioHoldings([
       tx({ id: 'cash', amount: 100 }),

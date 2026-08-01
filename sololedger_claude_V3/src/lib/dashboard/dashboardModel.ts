@@ -20,7 +20,7 @@ import {
   pairedInternalTransferIds,
   type PortfolioHolding
 } from '@/lib/portfolio/portfolioCompute';
-import { isNativeSolAsset } from '@/lib/portfolio/solBalance';
+import { isNativeSolAsset, isNativeSolHolding } from '@/lib/portfolio/solBalance';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
@@ -42,7 +42,11 @@ export interface PriceIndex {
   bySymbol: Map<string, PricePoint[]>;
   /** `${coingeckoPlatform}:${contractLower}` → daily closes, ascending. */
   byContract: Map<string, PricePoint[]>;
+  /** Current spot marks keyed by symbol. Kept separate from immutable history. */
+  currentBySymbol: Map<string, PricePoint>;
 }
+
+const CURRENT_PRICE_MAX_AGE_MS = 15 * 60_000;
 
 function parseCacheDate(ddmmyyyy: string): number | null {
   const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(ddmmyyyy);
@@ -55,6 +59,7 @@ export function buildPriceIndex(rows: PriceCacheRow[], currency: string): PriceI
   const cur = currency.toUpperCase();
   const bySymbol = new Map<string, PricePoint[]>();
   const byContract = new Map<string, PricePoint[]>();
+  const currentBySymbol = new Map<string, PricePoint>();
 
   for (const row of rows) {
     const parts = row.key.split(':');
@@ -62,7 +67,13 @@ export function buildPriceIndex(rows: PriceCacheRow[], currency: string): PriceI
     let bucket: Map<string, PricePoint[]> | null = null;
     let bucketKey: string | null = null;
 
-    if (parts[0] === 'sym' && parts.length === 4) {
+    if (parts[0] === 'spot' && parts[1] === 'sym' && parts.length === 4) {
+      if (parts[3].toUpperCase() !== cur) continue;
+      if (!Number.isFinite(row.price) || row.price <= 0) continue;
+      if (Date.now() - row.fetchedAt > CURRENT_PRICE_MAX_AGE_MS) continue;
+      currentBySymbol.set(parts[2].toUpperCase(), { dateMs: row.fetchedAt, price: row.price });
+      continue;
+    } else if (parts[0] === 'sym' && parts.length === 4) {
       if (parts[3].toUpperCase() !== cur) continue;
       dateMs = parseCacheDate(parts[2]);
       bucket = bySymbol;
@@ -83,7 +94,7 @@ export function buildPriceIndex(rows: PriceCacheRow[], currency: string): PriceI
   for (const list of [...bySymbol.values(), ...byContract.values()]) {
     list.sort((a, b) => a.dateMs - b.dateMs);
   }
-  return { bySymbol, byContract };
+  return { bySymbol, byContract, currentBySymbol };
 }
 
 /** Daily-close history for a holding: contract-keyed first, symbol fallback. */
@@ -101,6 +112,16 @@ export function priceHistoryFor(
   const symbol = resolvePriceAsset(holding.asset, holding.contractAddress, holding.chain).toUpperCase();
   const points = index.bySymbol.get(symbol);
   return points && points.length > 0 ? points : null;
+}
+
+/** Current spot mark for a holding, separate from immutable historical closes. */
+export function currentPriceFor(
+  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
+  index: PriceIndex
+): PricePoint | null {
+  if (holding.contractAddress && !isNativeSolHolding(holding)) return null;
+  const symbol = resolvePriceAsset(holding.asset, holding.contractAddress, holding.chain).toUpperCase();
+  return index.currentBySymbol.get(symbol) ?? null;
 }
 
 /** Last cached close at or before `ts` (step interpolation), else null. */
@@ -149,9 +170,9 @@ const DAY_MS = 86_400_000;
 
 export function valueHoldings(holdings: PortfolioHolding[], index: PriceIndex): ValuedHolding[] {
   return holdings.map((h) => {
-    const points = priceHistoryFor(h, index);
+    const current = currentPriceFor(h, index);
     const avgCost = h.amount > 1e-9 ? h.costBasis / h.amount : 0;
-    if (!points) {
+    if (!current) {
       return {
         ...h,
         priceNow: null,
@@ -163,13 +184,8 @@ export function valueHoldings(holdings: PortfolioHolding[], index: PriceIndex): 
         unrealizedPct: null
       };
     }
-    const latest = points[points.length - 1];
-    const prev = points.length >= 2 ? points[points.length - 2] : null;
-    const gap = prev ? latest.dateMs - prev.dateMs : null;
-    const dayChangePct =
-      prev && gap != null && gap >= DAY_MS * 0.8 && gap <= DAY_MS * 1.2 && prev.price > 0
-        ? ((latest.price - prev.price) / prev.price) * 100
-        : null;
+    const latest = current!;
+    const dayChangePct = null;
     const valueNow = h.amount * latest.price;
     const unrealized = valueNow - h.costBasis;
     return {

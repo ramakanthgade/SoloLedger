@@ -4,7 +4,7 @@ import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from 
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import type { TxType, Transaction, FlagReason, Jurisdiction } from '@/types/transaction';
+import type { TxType, Transaction, FlagReason, Jurisdiction, TaxSettings } from '@/types/transaction';
 import { cn, formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
@@ -454,6 +454,7 @@ export function ReviewTab() {
   // getEffectiveSettings(), the same way WalletLookupPanel does. `null` while
   // resolving; treated as OFF by the banner variant + the auto-run guard.
   const [priceLookupEnabled, setPriceLookupEnabled] = useState<boolean | null>(null);
+  const [effectivePricingSettings, setEffectivePricingSettings] = useState<TaxSettings | null>(null);
 
   const { goToImport } = useTabNav();
   const transactionsLive = useLiveQuery(() => db.transactions.toArray(), []);
@@ -565,9 +566,9 @@ export function ReviewTab() {
     [engineResult]
   );
 
-  /** Non-spam transactions missing a fiat value (includes internal transfers for display). */
+  /** Tax-relevant rows missing historical fiat value; internal custody moves do not need basis. */
   const missingPriceTxs = useMemo(
-    () => transactions.filter((t) => !t.isSpam && t.fiatValue == null),
+    () => transactions.filter((t) => !t.isSpam && !t.isInternalTransfer && t.fiatValue == null),
     [transactions]
   );
 
@@ -641,7 +642,10 @@ export function ReviewTab() {
     let cancelled = false;
     getEffectiveSettings()
       .then((s) => {
-        if (!cancelled) setPriceLookupEnabled(s.priceApiEnabled);
+        if (!cancelled) {
+          setPriceLookupEnabled(s.priceApiEnabled);
+          setEffectivePricingSettings(s);
+        }
       })
       .catch(() => {
         /* keep null → treated as OFF; the banner variant + the auto-run guard */
@@ -675,11 +679,11 @@ export function ReviewTab() {
   }, [priceLookupEnabled, solanaTransferInCount, llamaSuggesting, suggestRewardIncome]);
 
   const fetchMissingPrices = async () => {
-    if (!settings?.priceApiEnabled || missingPriceTxs.length === 0) return;
+    if (!effectivePricingSettings?.priceApiEnabled || missingPriceTxs.length === 0) return;
     setFetchingPrices(true);
     setPriceErrors([]);
     try {
-      const r = await fetchMissingPricesForAllTransactions(settings, (done, total) =>
+      const r = await fetchMissingPricesForAllTransactions(effectivePricingSettings, (done, total) =>
         setPriceProgress({ done, total })
       );
       const msg = `Finished: ${r.updated} updated, ${r.failed} could not be priced.`;
@@ -1765,15 +1769,15 @@ export function ReviewTab() {
             <div>
               <p className="text-sm font-semibold text-hi">{needsPriceLine(missingPriceTxs.length)}</p>
               <p className="text-xs text-low">
-                {settings?.priceApiEnabled
+                {priceLookupEnabled
                   ? rpcTransferCount > 0
                     ? 'Wallet imports are included — click the button to fetch historical prices. Swaps auto-detected as trades will feed cost basis after prices are filled.'
-                    : 'Nothing happens automatically — click the button to fetch them now.'
+                    : 'Automatic historical-price lookup is enabled; use the button to retry anything still missing.'
                   : 'Turn on "Live price lookup" in Settings, or open any row below and type the value in yourself.'}
               </p>
             </div>
           </div>
-          {settings?.priceApiEnabled && (
+          {priceLookupEnabled && (
             <Button
               disabled={fetchingPrices}
               onClick={fetchMissingPrices}
@@ -1986,7 +1990,7 @@ export function ReviewTab() {
 
           <span className="text-xs tabular-figures text-low">{filtered.length} shown</span>
 
-          {missingPriceTxs.length > 0 && settings?.priceApiEnabled && (
+          {missingPriceTxs.length > 0 && priceLookupEnabled && (
             <Button size="sm" disabled={fetchingPrices} onClick={fetchMissingPrices} className="shrink-0">
               {fetchingPrices
                 ? `Fetching ${priceProgress?.done ?? 0}/${priceProgress?.total ?? missingPriceTxs.length}…`
@@ -2280,4 +2284,3 @@ export function ReviewTab() {
     </div>
   );
 }
-

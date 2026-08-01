@@ -8,6 +8,9 @@ import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { buildPortfolioHoldings, portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
+import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
 import { BrandIcon } from '@/components/connections/brandIcons';
 import { Badge } from '@/components/ui/card';
@@ -356,6 +359,13 @@ export function DashboardTab() {
   const pillRefs = useRef<(HTMLButtonElement | null)[]>([]);
   // Stable "now" per mount so memoized series don't rebuild on every render.
   const [nowMs] = useState(() => Date.now());
+  const [spotRefreshTick, setSpotRefreshTick] = useState(0);
+  const autoPriceAttemptedRef = useRef(false);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setSpotRefreshTick((tick) => tick + 1), 5 * 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     getSettings().then(setSettings);
@@ -373,6 +383,23 @@ export function DashboardTab() {
     () => buildPortfolioHoldings(nonSpamTxs, csvImports),
     [nonSpamTxs, csvImports]
   );
+
+  useEffect(() => {
+    let cancelled = false;
+    getEffectiveSettings().then((effective) => {
+      if (cancelled || !effective.priceApiEnabled) return;
+      void refreshCurrentHoldingPrices(holdings, currency, effective.coingeckoApiKey);
+      if (!autoPriceAttemptedRef.current) {
+        autoPriceAttemptedRef.current = true;
+        void fetchMissingPricesForAllTransactions(effective);
+      }
+    }).catch(() => {
+      // Price services are optional; the UI remains honest at cost when unavailable.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [holdings, currency, spotRefreshTick]);
   const optionsBalanceUnavailable = csvImports.some((row) => row.optionsBalanceUnavailable);
   // Round 4: reconcile tx-history holdings against stored authority balances —
   // a drained wallet/exchange reports its true (often zero) balance instead of
@@ -382,9 +409,14 @@ export function DashboardTab() {
     () => reconcileHoldings(holdings, nonSpamTxs, balanceRows, exchangeBalanceRows),
     [holdings, nonSpamTxs, balanceRows, exchangeBalanceRows]
   );
-  const priceIndex = useMemo(() => buildPriceIndex(priceRows, currency), [priceRows, currency]);
+  const priceIndex = useMemo(
+    () => buildPriceIndex(priceRows, currency),
+    [priceRows, currency, spotRefreshTick]
+  );
   const valued = useMemo(
-    () => valueHoldings(reconciliation.holdings, priceIndex),
+    () => valueHoldings(reconciliation.holdings, priceIndex).sort(
+      (a, b) => (b.valueNow ?? b.costBasis) - (a.valueNow ?? a.costBasis) || Math.abs(b.amount) - Math.abs(a.amount)
+    ),
     [reconciliation.holdings, priceIndex]
   );
 
@@ -441,10 +473,9 @@ export function DashboardTab() {
   );
   const taxEstimate = useMemo(() => estimateIndiaVDA(realizedFyGain), [realizedFyGain]);
 
-  // Matches ReviewTab's missingPriceTxs exactly (non-spam + no fiat value,
-  // internal transfers included) so Dashboard and Transactions never disagree.
+  // Internal custody movements do not need historical tax cost basis.
   const needsPriceCount = useMemo(
-    () => nonSpamTxs.filter((t) => t.fiatValue == null).length,
+    () => nonSpamTxs.filter((t) => !t.isInternalTransfer && t.fiatValue == null).length,
     [nonSpamTxs]
   );
   const needsReviewCount = useMemo(() => countNeedsReview(nonSpamTxs), [nonSpamTxs]);
@@ -1002,7 +1033,7 @@ export function DashboardTab() {
               </Badge>
             </div>
             <span className="text-xs text-low">
-              {marketMode ? 'Priced from cached daily closes' : 'Valued at cost'}
+              {marketMode ? 'Current prices · refreshed automatically' : 'Valued at cost'}
             </span>
           </div>
           {optionsBalanceUnavailable && (
@@ -1011,6 +1042,19 @@ export function DashboardTab() {
               data-testid="options-balance-unavailable"
             >
               Binance Options balance unavailable — this CSV omits premiums and settlements. Add a current-balance authority to include Options.
+            </div>
+          )}
+          {valued.length > 0 && (
+            <div
+              className="hidden grid-cols-[24%_16%_14%_16%_18%_12%] gap-4 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5 text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-faint sm:grid"
+              data-testid="dashboard-holdings-columns"
+            >
+              <span>Asset</span>
+              <span className="text-right">Quantity · value</span>
+              <span className="text-right">Avg cost</span>
+              <span className="text-right">Current price</span>
+              <span className="text-right">Unrealized P&amp;L</span>
+              <span className="text-right">Share</span>
             </div>
           )}
           {valued.length === 0 ? (

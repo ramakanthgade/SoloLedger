@@ -75,8 +75,8 @@ export interface AutoFetchResult {
 
 /**
  * Fetch prices for all transactions in the DB that are missing a fiat value.
- * Skips spam, skips anything that already has a price.
- * Internal transfers are included so Review can show fiat values for display.
+ * Skips spam, internal custody movements, and anything already priced.
+ * Internal transfers do not need historical tax cost basis.
  * Uses the persistent IndexedDB price cache — the same asset+date pair is only
  * ever fetched once from CoinGecko/Alchemy/Birdeye, across all time.
  */
@@ -85,7 +85,7 @@ export async function fetchMissingPricesForAllTransactions(
   onProgress?: (done: number, total: number) => void
 ): Promise<AutoFetchResult> {
   const all = await db.transactions.toArray();
-  const needsPrice = all.filter((t) => t.fiatValue == null && !t.isSpam);
+  const needsPrice = all.filter((t) => t.fiatValue == null && !t.isSpam && !t.isInternalTransfer);
   const needsConversion = all.filter(
     (t) =>
       t.fiatValue != null &&

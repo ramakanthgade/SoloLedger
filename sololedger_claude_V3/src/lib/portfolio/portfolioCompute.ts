@@ -288,6 +288,7 @@ export function buildPortfolioHoldings(
   const tradeCoveredLegs = new Set<string>();
   const ledgerTxs = collapseForPortfolio(portfolioLedgerTxs);
   let solLedgerBalance = computeMainWalletSolFromTransactions(ledgerTxs);
+  let solCostResidual = 0;
 
   for (const t of ledgerTxs) {
     if (t.type !== 'trade' || !t.counterAsset || !t.counterAmount || !t.sourceRef || !t.walletAddress) continue;
@@ -320,19 +321,25 @@ export function buildPortfolioHoldings(
       csvImports.some((batch) => batch.id === t.importBatchId && batch.importedAt >= authority.importedAt)
     );
     const stitchedBinance = buildPortfolioHoldings(binanceTxs);
-    const stitchedByAsset = new Map(stitchedBinance.map((h) => [h.asset.toUpperCase(), h.amount]));
+    const stitchedByAsset = new Map(stitchedBinance.map((h) => [h.asset.toUpperCase(), h]));
     for (const [rawAsset, authoritativeAmount] of Object.entries(authority.balanceSnapshot)) {
       if (!Number.isFinite(authoritativeAmount)) continue;
       const asset = rawAsset.toUpperCase();
-      const residual = authoritativeAmount - (stitchedByAsset.get(asset) ?? 0);
+      const stitched = stitchedByAsset.get(asset);
+      const stitchedAmount = stitched?.amount ?? 0;
+      const residual = authoritativeAmount - stitchedAmount;
+      const stitchedPerUnitCost = stitchedAmount > 1e-9 ? (stitched?.costBasis ?? 0) / stitchedAmount : 0;
+      const costResidual = Math.max(0, stitchedPerUnitCost * authoritativeAmount) - (stitched?.costBasis ?? 0);
       if (Math.abs(residual) <= 1e-9) continue;
       if (asset === 'SOL') {
         solLedgerBalance += residual;
+        solCostResidual += costResidual;
         continue;
       }
       const h = [...map.values()].find((row) => row.asset.toUpperCase() === asset && !row.chain);
       if (h) {
         h.amount += residual;
+        h.costBasis = Math.max(0, h.costBasis + costResidual);
         if (h.amount <= 1e-9) {
           for (const [key, row] of map) if (row === h) map.delete(key);
         }
@@ -351,10 +358,10 @@ export function buildPortfolioHoldings(
         if (isNativeSolAsset(t.asset) && t.type === 'buy') return true;
         return t.type === 'trade' && isNativeSolAsset(t.counterAsset);
       })
-      .reduce((s, t) => s + (t.fiatValue ?? 0), 0);
+      .reduce((s, t) => s + (t.fiatValue ?? 0), 0) + solCostResidual;
     map.set(solKey, {
       amount: solLedgerBalance,
-      costBasis: solCost,
+      costBasis: Math.max(0, solCost),
       chain: 'solana',
       contractAddress: solMint,
       asset: 'SOL'

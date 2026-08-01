@@ -43,7 +43,7 @@ const mocks = vi.hoisted(() => ({
       _isSync?: boolean
     ) => {}
   ),
-  getEffectiveSettings: vi.fn(async () => ({ reportingCurrency: 'INR' })),
+  getEffectiveSettings: vi.fn(async () => ({ reportingCurrency: 'INR', priceApiEnabled: false })),
   exchangeJob: { current: null as unknown as ExchangeSyncJobState },
   walletJob: { current: null as unknown as ImportJobState }
 }));
@@ -284,7 +284,8 @@ describe('ConnectionDetail — wallet kind', () => {
     // BTC ₹90,00,000 latest close; nothing else priced.
     mocks.priceRows.current = [
       { key: 'sym:BTC:24-07-2026:INR', price: 8_900_000, fetchedAt: 1 },
-      { key: 'sym:BTC:25-07-2026:INR', price: 9_000_000, fetchedAt: 2 }
+      { key: 'sym:BTC:25-07-2026:INR', price: 9_000_000, fetchedAt: 2 },
+      { key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: Date.now() }
     ];
     mocks.balanceRows.current = [
       bal('bc1qaaa1111111111111', 'BTC', 0.5),
@@ -357,6 +358,7 @@ describe('ConnectionDetail — wallet kind', () => {
   it('a single-address wallet renders a flat list without a group header', () => {
     mocks.balanceRows.current = [bal('bc1qaaa1111111111111', 'BTC', 0.5)];
     mocks.priceRows.current = [{ key: 'sym:BTC:25-07-2026:INR', price: 9_000_000, fetchedAt: 1 }];
+    mocks.priceRows.current.push({ key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: Date.now() });
     const card = walletCard({
       walletRows: [
         {
@@ -417,6 +419,7 @@ describe('ConnectionDetail — exchange kind', () => {
       makeTx({ id: 'e5', type: 'buy', asset: 'SOL', amount: 10, fiatValue: 1_000, importBatchId: 'exc_2' })
     ];
     mocks.priceRows.current = [{ key: 'sym:BTC:25-07-2026:INR', price: 9_000_000, fetchedAt: 1 }];
+    mocks.priceRows.current.push({ key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: Date.now() });
   }
 
   it('renders tx-derived holdings valued via the price cache with at-cost fallback', () => {
@@ -479,6 +482,7 @@ describe('ConnectionDetail — file kind', () => {
       makeTx({ id: 'f2', type: 'buy', asset: 'ETH', amount: 2, fiatValue: 8_000, importBatchId: 'csv_1', source: 'coinbase' })
     ];
     mocks.priceRows.current = [{ key: 'sym:BTC:25-07-2026:INR', price: 9_000_000, fetchedAt: 1 }];
+    mocks.priceRows.current.push({ key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: Date.now() });
     render(<ConnectionDetail card={fileCard()} onBack={() => {}} />);
 
     expect(screen.getByRole('heading', { name: 'Coinbase' })).toBeInTheDocument();
