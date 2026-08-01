@@ -55,6 +55,7 @@ async function seedConnection(): Promise<string> {
 beforeEach(async () => {
   await db.transactions.clear();
   await db.exchangeConnections.clear();
+  await db.exchangeBalances.clear();
   exchangeSyncJob.reset();
   apiFetchMock.mockReset();
   installBinanceFixtureServer(apiFetchMock);
@@ -89,6 +90,7 @@ describe('Binance full replay through the tunnel', () => {
 
     // NOTHING persisted: no rows, no cursors, no lastSyncAt.
     expect(await db.transactions.count()).toBe(0);
+    expect(await db.exchangeBalances.count()).toBe(0);
     const row = (await db.exchangeConnections.get(id))!;
     expect(row.status).toBe('idle');
     expect(row.lastSyncAt).toBeUndefined();
@@ -105,6 +107,20 @@ describe('Binance full replay through the tunnel', () => {
     expect(rows).toHaveLength(6);
     expect(rows.every((t) => t.importBatchId === id)).toBe(true);
     expect(rows.every((t) => t.source === 'binance_api')).toBe(true);
+
+    // The first-sync preview must carry its already-fetched balance through
+    // confirmation. Without this authority snapshot, Dashboard falls back to
+    // summing the entire imported transaction history as current holdings.
+    expect(
+      (await db.exchangeBalances.where('connectionId').equals(id).toArray())
+        .map(({ asset, amount }) => ({ asset, amount }))
+        .sort((a, b) => a.asset.localeCompare(b.asset))
+    ).toEqual([
+      { asset: 'BNB', amount: 0.3 },
+      { asset: 'BTC', amount: 0.01 },
+      { asset: 'ETH', amount: 0.5 },
+      { asset: 'USDT', amount: 120.5 }
+    ]);
 
     const refs = rows.map((t) => t.sourceRef).sort();
     expect(refs).toEqual(
@@ -161,6 +177,7 @@ describe('Binance full replay through the tunnel', () => {
     discardInitialSync(id);
     expect(exchangeSyncJob.get().preview).toBeNull();
     expect(await db.transactions.count()).toBe(0);
+    expect(await db.exchangeBalances.count()).toBe(0);
     const row = (await db.exchangeConnections.get(id))!;
     expect(row.cursors).toEqual({}); // never written
     expect(row.status).toBe('idle');
