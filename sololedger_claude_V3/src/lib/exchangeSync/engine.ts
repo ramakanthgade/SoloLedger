@@ -488,6 +488,12 @@ export interface SyncFetchOutcome {
   knownAssets: string[] | undefined;
   knownSymbols: string[] | undefined;
   skippedUnsettled: number;
+  /**
+   * Balance fetched during validation. Stage mode keeps this in the private
+   * job metadata so first-sync confirmation can persist the same authority
+   * snapshot without making a second signed request.
+   */
+  balance: UnifiedBalance;
   /** Set when the connection row no longer exists mid-run. */
 }
 
@@ -710,7 +716,8 @@ export async function syncConnection(
       cursors: newCursors,
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
-      skippedUnsettled
+      skippedUnsettled,
+      balance
     };
 
     if (options.mode === 'stage') {

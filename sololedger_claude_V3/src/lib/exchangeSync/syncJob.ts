@@ -16,8 +16,10 @@ import { useEffect, useState } from 'react';
 import { filterAlreadyImported } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
 import { getConnectionRow } from './connections';
+import type { UnifiedBalance } from './ccxtLoader';
 import { persistSyncedRows, syncConnection, type SyncEngineDeps } from './engine';
 import { exchangeLabel } from './ccxtLoader';
+import { flattenBalanceTotals } from './binanceSymbols';
 import type {
   ExchangeId,
   ExchangeSyncCursors,
@@ -44,6 +46,8 @@ interface StagedMeta {
   cursors: ExchangeSyncCursors;
   knownAssets?: string[];
   knownSymbols?: string[];
+  /** Private current-balance authority fetched with the staged rows. */
+  balance: UnifiedBalance;
 }
 
 type Listener = (state: ExchangeSyncJobState) => void;
@@ -121,7 +125,10 @@ class ExchangeSyncJobStore {
     });
   }
   _error(msg: string) {
-    this.patch({ active: false, phase: 'idle', progress: null, error: msg });
+    // A failed staged commit is terminal. Do not retain private balance
+    // metadata (or its now-unusable preview) in module memory.
+    this.stagedMeta = null;
+    this.patch({ active: false, phase: 'idle', progress: null, preview: null, error: msg });
   }
   _warn(msg: string) {
     this.patch({ warnings: [...this.state.warnings, msg] });
@@ -255,7 +262,19 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
     );
     exchangeSyncJob._stage(
       preview,
-      { cursors: outcome.cursors, knownAssets: outcome.knownAssets, knownSymbols: outcome.knownSymbols },
+      {
+        cursors: outcome.cursors,
+        knownAssets: outcome.knownAssets,
+        knownSymbols: outcome.knownSymbols,
+        // Keep only normalized totals in memory. ccxt's raw `info` can carry
+        // account metadata (for example a Binance UID) and is not needed for
+        // confirmation.
+        balance: {
+          total: Object.fromEntries(
+            flattenBalanceTotals(outcome.balance).map(({ asset, amount }) => [asset, amount])
+          )
+        }
+      },
       allWarnings
     );
     return preview;
@@ -284,6 +303,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       cursors: staged.meta?.cursors ?? {},
       knownAssets: staged.meta?.knownAssets,
       knownSymbols: staged.meta?.knownSymbols,
+      balance: staged.meta?.balance,
       hooks: hooks(),
       deps
     });
