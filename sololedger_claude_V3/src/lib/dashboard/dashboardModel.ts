@@ -348,6 +348,9 @@ export function moneyStrip(
   const strip: MoneyStrip = { moneyIn: 0, moneyOut: 0, income: 0, fees: 0, realizedGains: 0 };
   for (const t of transactions) {
     if (t.isSpam || !inRange(t.timestamp)) continue;
+    // Premium cash flows are deferred until the Options lifecycle can be
+    // matched (close/exercise/expiry). Do not mislabel them as income/fees.
+    if (t.category === 'options_premium') continue;
     const fiat = t.fiatValue ?? 0;
     switch (t.type) {
       case 'buy':

@@ -46,7 +46,7 @@ const SEED = vi.hoisted(() => {
     txs,
     priceRows: [] as { key: string; price: number; fetchedAt: number }[],
     wallets: [] as unknown[],
-    csvImports: [] as { importedAt: number; optionsBalanceUnavailable?: boolean }[],
+    csvImports: [] as { importedAt: number; optionsBalanceUnavailable?: boolean; optionsBalanceIncluded?: boolean; optionsCoverageThrough?: number }[],
     exchangeConns: [] as { lastSyncAt?: number }[],
     balanceRows: [] as {
       id: string; chain: string; address: string; asset: string;
@@ -181,6 +181,32 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       const notice = screen.getByTestId('options-balance-unavailable');
       expect(notice).toHaveTextContent('Options balance unavailable');
       expect(notice).not.toHaveTextContent('0');
+    } finally {
+      SEED.csvImports.length = 0;
+    }
+  });
+
+  it('clears the unavailable warning after a complete Binance Options journal is imported', async () => {
+    SEED.csvImports.push(
+      { importedAt: Date.now() - 1, optionsBalanceUnavailable: true, optionsCoverageThrough: 100 },
+      { importedAt: Date.now(), optionsBalanceIncluded: true, optionsCoverageThrough: 100 }
+    );
+    try {
+      await renderTab();
+      expect(screen.queryByTestId('options-balance-unavailable')).not.toBeInTheDocument();
+    } finally {
+      SEED.csvImports.length = 0;
+    }
+  });
+
+  it('restores the warning when a newer Transaction History import exposes later Options activity', async () => {
+    SEED.csvImports.push(
+      { importedAt: Date.now(), optionsBalanceIncluded: true, optionsCoverageThrough: 100 },
+      { importedAt: Date.now() - 1, optionsBalanceUnavailable: true, optionsCoverageThrough: 200 }
+    );
+    try {
+      await renderTab();
+      expect(screen.getByTestId('options-balance-unavailable')).toBeInTheDocument();
     } finally {
       SEED.csvImports.length = 0;
     }

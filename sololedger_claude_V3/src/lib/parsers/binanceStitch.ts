@@ -18,6 +18,7 @@ export function stitchBinanceTransactionHistory(rows: Record<string, string>[]):
   warnings: string[];
   balanceSnapshot?: Record<string, number>;
   optionsBalanceUnavailable?: boolean;
+  optionsCoverageThrough?: number;
 } {
   return stitchLedger(rows, binanceLedgerConfig);
 }

@@ -69,6 +69,8 @@ interface PreviewData {
   warnings: string[];
   balanceSnapshot?: Record<string, number>;
   optionsBalanceUnavailable?: boolean;
+  optionsBalanceIncluded?: boolean;
+  optionsCoverageThrough?: number;
   /** Rows missing a fiat value — surfaced so the user knows before confirming. */
   missingPriceCount: number;
   distinctAssets: number;
@@ -219,7 +221,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
       file: { name: string; size: number },
       warnings: string[],
       aiIncomplete: boolean,
-      metadata?: Pick<PreviewData, 'balanceSnapshot' | 'optionsBalanceUnavailable'>
+      metadata?: Pick<PreviewData, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>
     ) => {
       const distinctAssets = new Set(transactions.map((t) => t.asset)).size;
       const missingPriceCount = transactions.filter(
@@ -337,7 +339,9 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           false,
           {
             balanceSnapshot: result.balanceSnapshot,
-            optionsBalanceUnavailable: result.optionsBalanceUnavailable
+            optionsBalanceUnavailable: result.optionsBalanceUnavailable,
+            optionsBalanceIncluded: result.optionsBalanceIncluded,
+            optionsCoverageThrough: result.optionsCoverageThrough
           }
         );
       } catch {
@@ -516,7 +520,9 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         const completeImport = savedNow === converted.length;
         await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, savedNow, {
           balanceSnapshot: completeImport ? preview.balanceSnapshot : undefined,
-          optionsBalanceUnavailable: preview.optionsBalanceUnavailable
+          optionsBalanceUnavailable: preview.optionsBalanceUnavailable,
+          optionsBalanceIncluded: completeImport ? preview.optionsBalanceIncluded : undefined,
+          optionsCoverageThrough: preview.optionsCoverageThrough
         });
       } catch {
         setError(`"${preview.fileName}" couldn't be saved — Confirm again to retry.`);

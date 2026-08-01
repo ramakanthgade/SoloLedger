@@ -4,6 +4,7 @@ import type { ExchangeConnectionView, ExchangeSyncJobState } from '@/lib/exchang
 import type { ImportJobState } from '@/lib/importJob';
 import type { Transaction } from '@/types/transaction';
 import type { ConnectionCardData } from './connectionModel';
+import { binanceOptionsParser } from '@/lib/parsers/binanceOptions';
 
 /**
  * ConnectionDetail — the per-connection portfolio view (round 4, issue 6).
@@ -476,6 +477,44 @@ describe('ConnectionDetail — exchange kind', () => {
 });
 
 describe('ConnectionDetail — file kind', () => {
+  it('shows the signed Binance Options journal net instead of summing only transfers', () => {
+    const rows = [
+      ['2023-03-22 17:00:45', 'transfer', '14892.79058793'],
+      ['2023-03-22 17:33:53', 'commission_fee', '-13.69519336'],
+      ['2023-03-22 17:33:53', 'premium', '-2867.7'],
+      ['2023-03-22 17:33:53', 'premium', '-11352.3'],
+      ['2023-03-22 17:33:53', 'commission_fee', '-54.21485636'],
+      ['2023-03-22 17:48:18', 'transfer', '3000'],
+      ['2023-03-22 17:50:45', 'commission_fee', '-17.003506'],
+      ['2023-03-22 17:50:45', 'premium', '-3540'],
+      ['2023-03-22 18:37:17', 'transfer', '6000'],
+      ['2023-03-22 18:38:25', 'premium', '-5900'],
+      ['2023-03-22 18:38:25', 'commission_fee', '-28.35773905']
+    ].map(([Time, Type, Amount]) => ({ Time, Type, Amount, Asset: 'USDT' }));
+    mocks.txs.current = binanceOptionsParser.parse(rows).transactions.map((t) => ({
+      ...t,
+      importBatchId: 'csv_1'
+    }));
+    const base = fileCard();
+    render(<ConnectionDetail card={fileCard({
+      iconId: 'binance',
+      iconFallback: 'Binance',
+      title: 'Binance Options',
+      subtitle: 'Binance-Options-Transaction-History.csv',
+      txLine: '11 transactions',
+      csvImport: {
+        ...base.csvImport!,
+        parserId: 'binance_options',
+        txCount: 11,
+        optionsBalanceIncluded: true
+      }
+    })} onBack={() => {}} />);
+
+    expect(screen.getByRole('heading', { name: 'Binance Options' })).toBeInTheDocument();
+    expect(screen.getByText('119.5193')).toBeInTheDocument();
+    expect(screen.queryByText('23892.79')).not.toBeInTheDocument();
+  });
+
   it('renders tx-derived holdings with no Sync action and a re-import note', () => {
     mocks.txs.current = [
       makeTx({ id: 'f1', type: 'buy', asset: 'BTC', amount: 0.2, fiatValue: 20_000, importBatchId: 'csv_1', source: 'coinbase' }),

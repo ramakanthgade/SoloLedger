@@ -36,6 +36,10 @@ export interface CsvImportRow {
   balanceSnapshot?: Record<string, number>;
   /** Binance Transaction History omitted the Options lifecycle for this file. */
   optionsBalanceUnavailable?: boolean;
+  /** Binance Options history includes signed premiums, fees, and transfers. */
+  optionsBalanceIncluded?: boolean;
+  /** Latest Options activity timestamp represented by this import. */
+  optionsCoverageThrough?: number;
 }
 
 /**
@@ -726,7 +730,7 @@ export async function upsertCsvImport(
   fileName: string,
   parserId: string | null,
   txCount: number,
-  metadata?: Pick<CsvImportRow, 'balanceSnapshot' | 'optionsBalanceUnavailable'>
+  metadata?: Pick<CsvImportRow, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>
 ): Promise<void> {
   await db.csvImports.put({
     id,

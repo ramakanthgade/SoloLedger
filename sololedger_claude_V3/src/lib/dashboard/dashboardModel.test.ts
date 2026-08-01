@@ -238,6 +238,17 @@ describe('moneyStrip', () => {
     expect(strip.fees).toBe(5);
     expect(strip.realizedGains).toBeCloseTo(60);
   });
+
+  it('defers both sides of unmatched Options premiums from income and fees', () => {
+    const start = day(2026, 4, 1);
+    const end = day(2026, 7, 25);
+    const strip = moneyStrip([
+      tx({ id: 'paid', timestamp: day(2026, 5, 1), type: 'fee', category: 'options_premium', fiatValue: 100 }),
+      tx({ id: 'received', timestamp: day(2026, 5, 2), type: 'income', category: 'options_premium', fiatValue: 100 })
+    ], [], start, end);
+    expect(strip.income).toBe(0);
+    expect(strip.fees).toBe(0);
+  });
 });
 
 describe('sourceBreakdown', () => {

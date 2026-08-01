@@ -3,6 +3,7 @@ import { coinbaseParser } from './coinbase';
 import { binanceParser } from './binance';
 import { binanceSpotParser } from './binanceSpot';
 import { binanceTransfersParser } from './binanceTransfers';
+import { binanceOptionsParser } from './binanceOptions';
 import { wazirxTradesParser } from './wazirxTrades';
 import { wazirxDepositsParser } from './wazirxDeposits';
 import { wazirxLedgerParser } from './wazirxLedger';
@@ -64,6 +65,8 @@ export const PARSERS: ExchangeParser[] = [
   // Binance standalone Deposit/Withdrawal History exports (Coin+Network+TXID
   // shape) — ahead of the generic fallback, which cannot type these files.
   binanceTransfersParser,
+  // Common four-column header, disambiguated by premium/commission row values.
+  binanceOptionsParser,
   // Deterministic loose fallback — MUST be last so specific parsers win.
   genericHistoryParser
 ];
@@ -82,6 +85,8 @@ export interface SheetParseOutcome {
   warnings: string[];
   balanceSnapshot?: Record<string, number>;
   optionsBalanceUnavailable?: boolean;
+  optionsBalanceIncluded?: boolean;
+  optionsCoverageThrough?: number;
   headerScore: number;
   /** Required field(s) a generic parse found missing, for fix-the-file guidance. */
   missingFields?: MissingField[];
@@ -168,7 +173,7 @@ function parseSheetMatrix(
 
   const ctx = detectSheetContext(matrix, extracted.headerRowIndex);
 
-  const matched = PARSERS.find((p) => p.detect(extracted.headers, ctx));
+  const matched = PARSERS.find((p) => p.detect(extracted.headers, ctx, extracted.rows));
   if (!matched) {
     // No parser claimed the sheet (the generic parser needs date+asset+amount,
     // so files missing one never reach parse()). Derive which required fields
@@ -213,6 +218,8 @@ function parseSheetMatrix(
     skippedRows: result.skippedRows,
     balanceSnapshot: result.balanceSnapshot,
     optionsBalanceUnavailable: result.optionsBalanceUnavailable,
+    optionsBalanceIncluded: result.optionsBalanceIncluded,
+    optionsCoverageThrough: result.optionsCoverageThrough,
     warnings: [
       ...(preambleWarning ? [preambleWarning] : []),
       ...result.warnings.map((w) => (w.includes(sheetName) ? w : `[${sheetName}] ${w}`))
@@ -238,6 +245,15 @@ function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): Fil
   const snapshots = parsed.map((s) => s.balanceSnapshot).filter(Boolean) as Record<string, number>[];
   const balanceSnapshot = snapshots.length === 1 ? snapshots[0] : undefined;
   const optionsBalanceUnavailable = parsed.some((s) => s.optionsBalanceUnavailable);
+  const optionsCoverageThrough = Math.max(
+    ...parsed.map((s) => s.optionsCoverageThrough ?? Number.NEGATIVE_INFINITY)
+  );
+  const optionsSheets = parsed.filter((s) => s.detectedParser === 'binance_options');
+  const optionsBalanceIncluded =
+    optionsSheets.length > 0 &&
+    optionsSheets.every((s) => s.optionsBalanceIncluded === true) &&
+    skippedRows === 0 &&
+    unrecognized.length === 0;
 
   // Aggregate structured missing-field hints from empty sheets so callers can
   // render actionable fix-the-file guidance instead of a generic dead-end.
@@ -295,6 +311,8 @@ function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): Fil
     warnings,
     balanceSnapshot,
     optionsBalanceUnavailable: optionsBalanceUnavailable || undefined,
+    optionsBalanceIncluded: optionsBalanceIncluded || undefined,
+    optionsCoverageThrough: Number.isFinite(optionsCoverageThrough) ? optionsCoverageThrough : undefined,
     missingFields: missingFields.length > 0 ? missingFields : undefined,
     // Convenience "any sheet ambiguous" flag for gating; the per-sheet flag on
     // each SheetParseOutcome is authoritative for WHICH rows to orient.
@@ -322,7 +340,7 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
     const extracted = extractTableFromMatrix(matrix);
     if (extracted.headers.length > 0 && extracted.rows.length > 0) {
       const ctx = detectSheetContext(matrix, extracted.headerRowIndex);
-      const matched = PARSERS.find((p) => p.detect(extracted.headers, ctx));
+      const matched = PARSERS.find((p) => p.detect(extracted.headers, ctx, extracted.rows));
       if (matched) {
         const result = matched.parse(extracted.rows, ctx);
         if (result.transactions.length > 0) {
@@ -344,6 +362,8 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
                 warnings: result.warnings,
                 balanceSnapshot: result.balanceSnapshot,
                 optionsBalanceUnavailable: result.optionsBalanceUnavailable,
+                optionsBalanceIncluded: result.optionsBalanceIncluded,
+                optionsCoverageThrough: result.optionsCoverageThrough,
                 headerScore: extracted.headerScore,
                 addressColumnAmbiguous: result.addressColumnAmbiguous
               }
@@ -427,7 +447,7 @@ export async function parseImportFile(file: File): Promise<FileParseOutcome> {
   return parseCsvFile(file);
 }
 
-export { coinbaseParser, binanceParser, binanceSpotParser, binanceTransfersParser };
+export { coinbaseParser, binanceParser, binanceSpotParser, binanceTransfersParser, binanceOptionsParser };
 export { wazirxTradesParser, wazirxDepositsParser, wazirxLedgerParser };
 export { hyperliquidTradesParser, hyperliquidDepositsParser };
 export { coindcxParser, coinswitchParser, zebpayParser, mudrexParser };

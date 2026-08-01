@@ -102,7 +102,7 @@ export function FileImportFlow() {
     parserId: string | null,
     hash: string,
     name: string,
-    metadata?: Pick<FileParseOutcome, 'balanceSnapshot' | 'optionsBalanceUnavailable'>
+    metadata?: Pick<FileParseOutcome, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>
   ): Promise<{ converted: number; failed: number; pricesUpdated: number; pricesFailed: number; warnings: string[]; saved: number }> => {
     setConversionNote(null);
     setPriceFetchNote(null);
@@ -134,19 +134,28 @@ export function FileImportFlow() {
     const count = await countCsvImportTransactions(hash);
     await upsertCsvImport(hash, name, parserId, count, {
       balanceSnapshot: count === converted.length ? metadata?.balanceSnapshot : undefined,
-      optionsBalanceUnavailable: metadata?.optionsBalanceUnavailable
+      optionsBalanceUnavailable: metadata?.optionsBalanceUnavailable,
+      optionsBalanceIncluded: count === converted.length ? metadata?.optionsBalanceIncluded : undefined,
+      optionsCoverageThrough: metadata?.optionsCoverageThrough
     });
 
     // Auto price fetch only when Live price lookup is enabled (network egress).
     let pricesUpdated = 0;
     let pricesFailed = 0;
+    const warnings: string[] = [];
     if (priceApiEnabled) {
       setImportPhase('pricing');
-      const priceResult = await fetchMissingPricesForAllTransactions(settings);
-      pricesUpdated = priceResult.updated;
-      pricesFailed = priceResult.failed;
-      if (priceResult.updated > 0 || priceResult.failed > 0) {
-        setPriceFetchNote(priceFetchNoteText(priceResult.updated, priceResult.failed));
+      try {
+        const priceResult = await fetchMissingPricesForAllTransactions(settings);
+        pricesUpdated = priceResult.updated;
+        pricesFailed = priceResult.failed;
+        if (priceResult.updated > 0 || priceResult.failed > 0) {
+          setPriceFetchNote(priceFetchNoteText(priceResult.updated, priceResult.failed));
+        }
+      } catch {
+        // The import is already durable. Pricing is optional and must never
+        // turn a successful save into a misleading "file could not be read".
+        setPriceFetchNote('Transactions saved. Optional market prices could not be fetched — try again later.');
       }
     }
 
@@ -155,7 +164,7 @@ export function FileImportFlow() {
       failed: nFailed,
       pricesUpdated,
       pricesFailed,
-      warnings: [],
+      warnings,
       // Post-dedup rows attributable to this import — the honest "saved" count.
       // Parsed-but-deduped rows (overlapping re-exports) must not inflate it.
       saved: count
@@ -218,9 +227,11 @@ export function FileImportFlow() {
           const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
           const persisted = await persistTransactions(toPersist, result.detectedParser, hash, file.name, {
             balanceSnapshot: result.balanceSnapshot,
-            optionsBalanceUnavailable: result.optionsBalanceUnavailable
+            optionsBalanceUnavailable: result.optionsBalanceUnavailable,
+            optionsBalanceIncluded: result.optionsBalanceIncluded,
+            optionsCoverageThrough: result.optionsCoverageThrough
           });
-          setImportWarnings(result.warnings);
+          setImportWarnings([...result.warnings, ...persisted.warnings]);
           setFileName('');
           setFileHash('');
           return {
@@ -506,7 +517,7 @@ export function FileImportFlow() {
             <Loader2 className="mb-3 h-6 w-6 animate-spin text-primary" aria-hidden="true" />
             <p className="text-sm text-mid">
               {importPhase === 'pricing'
-                ? 'Fetching missing market prices…'
+                ? 'Transactions saved. Fetching optional market prices in the background — you can close this panel.'
                 : importPhase === 'mapping'
                   ? 'Asking AI to map columns…'
                   : 'Importing and saving transactions…'}

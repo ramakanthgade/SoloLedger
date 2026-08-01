@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import type { Transaction } from '@/types/transaction';
 
 /**
@@ -340,5 +340,67 @@ describe('FileImportFlow — multi-file batch handling', () => {
     expect(screen.getAllByText(/Fetched prices for \d+ transactions?\./)).toHaveLength(1);
     // Single file: no batch summary line.
     expect(screen.queryByText(/of 1 files imported/)).not.toBeInTheDocument();
+  });
+
+  it('pricing continues after unmount because transactions and import metadata are already saved', async () => {
+    mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: true });
+    let resolvePricing!: (value: { updated: number; failed: number }) => void;
+    let pricingFinished = false;
+    mocks.fetchMissingPrices.mockImplementation(() =>
+      new Promise<{ updated: number; failed: number }>((resolve) => {
+        resolvePricing = (value) => {
+          pricingFinished = true;
+          resolve(value);
+        };
+      })
+    );
+    mocks.parseImportFile.mockResolvedValue(recognized(1, 'options.csv'));
+    savedCounts = { 'hash:aaa': 1 };
+    const view = render(<FileImportFlow />);
+
+    fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('options.csv', 'aaa')] } });
+    await screen.findByText(/Transactions saved.*you can close this panel/i);
+    expect(mocks.bulkPut).toHaveBeenCalledTimes(1);
+    expect(mocks.upsertCsvImport).toHaveBeenCalledTimes(1);
+
+    view.unmount();
+    await act(async () => resolvePricing({ updated: 1, failed: 0 }));
+    await waitFor(() => expect(pricingFinished).toBe(true));
+  });
+
+  it('reports optional pricing failure without turning a saved import into a read failure', async () => {
+    mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: true });
+    mocks.fetchMissingPrices.mockRejectedValue(new Error('pricing unavailable'));
+    mocks.parseImportFile.mockResolvedValue(recognized(1, 'options.csv'));
+    savedCounts = { 'hash:aaa': 1 };
+    render(<FileImportFlow />);
+
+    fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('options.csv', 'aaa')] } });
+
+    await screen.findByText(/Saved 1 transaction/i);
+    expect(screen.getAllByText(/Optional market prices could not be fetched/i)).toHaveLength(1);
+    expect(screen.queryByText(/could not be read/i)).not.toBeInTheDocument();
+    expect(mocks.bulkPut).toHaveBeenCalledTimes(1);
+    expect(mocks.upsertCsvImport).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists Options coverage only when every parsed row survives dedup', async () => {
+    mocks.parseImportFile.mockResolvedValue({
+      ...recognized(2, 'options.csv'),
+      detectedParser: 'binance_options',
+      optionsBalanceIncluded: true
+    });
+    savedCounts = { 'hash:aaa': 1 };
+    render(<FileImportFlow />);
+
+    fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('options.csv', 'aaa')] } });
+    await waitFor(() => expect(mocks.upsertCsvImport).toHaveBeenCalled());
+    expect(mocks.upsertCsvImport).toHaveBeenCalledWith(
+      'hash:aaa',
+      'options.csv',
+      'binance_options',
+      1,
+      expect.objectContaining({ optionsBalanceIncluded: undefined })
+    );
   });
 });
