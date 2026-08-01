@@ -311,6 +311,68 @@ describe('sourceBreakdown', () => {
     );
     expect(slices[0]).toMatchObject({ name: 'Binance', qty: 50 });
   });
+
+  it('removes phantom Binance Options funding using the same journal authority as holdings', () => {
+    const importedAt = Date.UTC(2026, 0, 1);
+    const transactions = [
+      tx({
+        id: 'gross-options-funding', type: 'transfer_in', asset: 'USDT', amount: 23_892.79,
+        source: 'binance', importBatchId: 'history', sourceRef: 'history:funding'
+      }),
+      tx({
+        id: 'options-net', type: 'transfer_in', asset: 'USDT', amount: 119.5193,
+        source: 'binance_options', category: 'options_collateral', sourceRef: 'options:net'
+      })
+    ];
+    const slices = sourceBreakdown(
+      transactions,
+      { asset: 'USDT' },
+      [],
+      [],
+      [{
+        id: 'history', fileName: 'binance.csv', parserId: 'binance',
+        importedAt, txCount: 1, balanceSnapshot: { USDT: 0 }
+      }]
+    );
+
+    expect(slices).toEqual([
+      expect.objectContaining({
+        key: 'source:binance_options', name: 'Binance Options', qty: 119.5193
+      })
+    ]);
+    expect(slices.some((slice) => Math.abs(slice.qty - 23_892.79) < 1e-9)).toBe(false);
+    expect(slices.reduce((sum, slice) => sum + slice.qty, 0)).toBeCloseTo(119.5193, 8);
+  });
+
+  it('preserves an outflow-first authoritative Binance slice beside unrelated holdings', () => {
+    const importedAt = Date.UTC(2026, 0, 1);
+    const slices = sourceBreakdown(
+      [
+        tx({
+          id: 'out', type: 'transfer_out', asset: 'USDT', amount: 100,
+          source: 'binance', importBatchId: 'history', sourceRef: 'history:out'
+        }),
+        tx({
+          id: 'in', type: 'transfer_in', asset: 'USDT', amount: 105,
+          source: 'binance', importBatchId: 'history', sourceRef: 'history:in'
+        }),
+        tx({ id: 'manual', type: 'transfer_in', asset: 'USDT', amount: 3, source: 'manual' })
+      ],
+      { asset: 'USDT' },
+      [],
+      [],
+      [{
+        id: 'history', fileName: 'binance.csv', parserId: 'binance', importedAt,
+        txCount: 2, balanceSnapshot: { USDT: 5 }
+      }]
+    );
+
+    expect(slices).toEqual([
+      expect.objectContaining({ key: 'source:binance', qty: 5 }),
+      expect.objectContaining({ key: 'source:manual', qty: 3 })
+    ]);
+    expect(slices.reduce((sum, slice) => sum + slice.qty, 0)).toBe(8);
+  });
 });
 
 describe('itrDeadline', () => {

@@ -621,7 +621,9 @@ export function DashboardTab() {
     const isOpen = expanded === key;
     const value = h.valueNow ?? h.costBasis;
     const sharePct = netWorth > 0 ? (value / netWorth) * 100 : null;
-    const slices = isOpen ? sourceBreakdown(nonSpamTxs, h, wallets, balanceRows) : [];
+    const slices = isOpen
+      ? sourceBreakdown(nonSpamTxs, h, wallets, balanceRows, csvImports)
+      : [];
     const toggle = () => setExpanded(isOpen ? null : key);
 
     const assetCell = (
