@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { ChevronRight, Search, Wallet } from 'lucide-react';
+import { Check, ChevronRight, Search, Wallet } from 'lucide-react';
 import { Badge } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import type { ExchangeId } from '@/lib/exchangeSync';
@@ -16,10 +16,13 @@ export type WhichSelection =
   | { kind: 'wallet-app'; id: string; label: string; preselectChain?: string }
   | { kind: 'chain'; id: string; label: string };
 
+export type ApiExchangeState = 'connected' | 'synced' | 'attention';
+export type ApiExchangeStates = Partial<Record<ExchangeId, ApiExchangeState>>;
+
 interface WhichStepProps {
   flow: FlowKind;
-  /** Slugs that already have a connection or import (shown as "Added"). */
-  addedSlugs: string[];
+  apiExchangeStates: ApiExchangeStates;
+  fileImportedSlugs: string[];
   onPick: (selection: WhichSelection) => void;
 }
 
@@ -32,6 +35,14 @@ interface Cell {
   genericGlyph?: 'wallet';
   added?: boolean;
   selection: WhichSelection;
+  modes?: Array<{
+    kind: 'file' | 'api';
+    label: string;
+    hint: string;
+    active: boolean;
+    tone?: 'primary' | 'gain' | 'warn';
+    selection: WhichSelection;
+  }>;
 }
 
 /** Chains offered as one-tap picks; everything else stays reachable in the form. */
@@ -46,27 +57,61 @@ const CHAIN_PICKS: { id: string; label: string }[] = [
 /** File-only exchanges that have a real brand logo in the registry. */
 const FILE_SOURCE_ICONS = new Set(['coindcx', 'coinswitch', 'zebpay', 'wazirx']);
 
-/** Merge the API-sync catalog with the file-import catalog — API wins on overlap. */
-function exchangeCells(added: Set<string>): { india: Cell[]; global: Cell[] } {
-  const apiIds = new Set(AUTO_SYNC_EXCHANGES.map((e) => e.id as string));
-  const apiCells: Cell[] = AUTO_SYNC_EXCHANGES.map((e) => ({
-    id: e.id,
-    label: e.label,
-    meta: 'API auto-sync',
-    iconId: e.id,
-    added: added.has(e.id),
-    selection: { kind: 'exchange-api', id: e.id, label: e.label }
-  }));
-  const fileCells: Cell[] = IMPORT_SOURCES.filter((s) => !apiIds.has(s.id)).map((s) => ({
-    id: s.id,
-    label: s.label,
-    meta: s.id === 'other' ? 'Any CSV / Excel' : 'File import',
-    iconId: FILE_SOURCE_ICONS.has(s.id) ? s.id : null,
-    added: added.has(s.id),
-    selection: { kind: 'exchange-file', id: s.id, label: s.label }
-  }));
+/** Merge catalogs by exchange identity while keeping each mode independent. */
+function exchangeCells(
+  apiExchangeStates: ApiExchangeStates,
+  fileImported: Set<string>
+): { india: Cell[]; global: Cell[] } {
+  const byId = new Map<string, Cell>();
+  for (const source of IMPORT_SOURCES) {
+    const selection: WhichSelection = { kind: 'exchange-file', id: source.id, label: source.label };
+    byId.set(source.id, {
+      id: source.id,
+      label: source.label,
+      meta: source.id === 'other' ? 'Any CSV / Excel' : 'File import',
+      iconId: FILE_SOURCE_ICONS.has(source.id) || source.id === 'binance' || source.id === 'coinbase' ? source.id : null,
+      added: fileImported.has(source.id),
+      selection,
+      modes: [{ kind: 'file', label: fileImported.has(source.id) ? 'CSV imported' : 'File import', hint: 'CSV export', active: fileImported.has(source.id), selection }]
+    });
+  }
+  for (const exchange of AUTO_SYNC_EXCHANGES) {
+    const selection: WhichSelection = { kind: 'exchange-api', id: exchange.id, label: exchange.label };
+    const existing = byId.get(exchange.id);
+    const apiState = apiExchangeStates[exchange.id];
+    const apiMode = {
+      kind: 'api' as const,
+      label:
+        apiState === 'synced'
+          ? 'API synced'
+          : apiState === 'connected'
+            ? 'API connected'
+            : apiState === 'attention'
+              ? 'Needs attention'
+              : 'API auto-sync',
+      hint: apiState === 'connected' ? 'Ready to sync' : 'Read-only key',
+      active: apiState !== undefined,
+      tone: apiState === 'synced' ? 'gain' as const : apiState === 'attention' ? 'warn' as const : 'primary' as const,
+      selection
+    };
+    if (existing) {
+      existing.meta = 'Supports file import and API auto-sync';
+      existing.iconId = exchange.id;
+      existing.modes = [...(existing.modes ?? []), apiMode];
+    } else {
+      byId.set(exchange.id, {
+        id: exchange.id,
+        label: exchange.label,
+        meta: 'API auto-sync',
+        iconId: exchange.id,
+        added: apiState !== undefined,
+        selection,
+        modes: [apiMode]
+      });
+    }
+  }
   const indiaSources = new Set(IMPORT_SOURCES.filter((s) => s.region === 'india').map((s) => s.id));
-  const all = [...apiCells, ...fileCells];
+  const all = Array.from(byId.values());
   return {
     india: all.filter((c) => indiaSources.has(c.id)),
     global: all.filter((c) => !indiaSources.has(c.id))
@@ -78,13 +123,13 @@ function exchangeCells(added: Set<string>): { india: Cell[]; global: Cell[] } {
  * Popular in India / More exchanges for exchange accounts, the wallet-app
  * grid, or the chain grid. Cells with an existing connection show "Added".
  */
-export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
+export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }: WhichStepProps) {
   const [query, setQuery] = useState('');
-  const added = useMemo(() => new Set(addedSlugs), [addedSlugs]);
+  const fileImported = useMemo(() => new Set(fileImportedSlugs), [fileImportedSlugs]);
 
   const sections: { heading: string | null; cells: Cell[] }[] = useMemo(() => {
     if (flow === 'exchange') {
-      const { india, global } = exchangeCells(added);
+      const { india, global } = exchangeCells(apiExchangeStates, fileImported);
       return [
         { heading: 'Popular in India', cells: india },
         { heading: 'More exchanges', cells: global }
@@ -100,7 +145,7 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
           meta: w.subtitle,
           iconId: w.logo ? w.id : null,
           genericGlyph: w.genericGlyph,
-          added: added.has(w.id),
+          added: false,
           selection: {
             kind: 'wallet-app',
             id: w.id,
@@ -122,7 +167,7 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
             label: c.label,
             meta: c.id === 'bitcoin' ? 'Address or xPub' : 'Public address',
             iconId: c.id,
-            added: added.has(c.id),
+            added: false,
             selection: { kind: 'chain', id: c.id, label: c.label } as WhichSelection
           })),
           {
@@ -135,7 +180,7 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
         ]
       }
     ];
-  }, [flow, added]);
+  }, [flow, apiExchangeStates, fileImported]);
 
   const q = query.trim().toLowerCase();
   // Tokenized match: every word must appear in the label, so "any wallet"
@@ -192,7 +237,49 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
             </p>
           )}
           <div className="flex flex-col gap-2">
-            {section.cells.map((cell) => (
+            {section.cells.map((cell) => cell.modes && cell.modes.length > 1 ? (
+              <div
+                key={cell.id}
+                className="flex min-h-11 flex-wrap items-start gap-3 rounded-xl border border-hi/10 bg-elev-1 px-3.5 py-2.5"
+                aria-label={`${cell.label} — choose file import or API auto-sync`}
+                data-testid={`exchange-row-${cell.id}`}
+              >
+                <BrandIcon id={cell.iconId} fallback={cell.label} size={32} />
+                <span className="min-w-[8rem] flex-1">
+                  <span className="block text-sm font-bold text-hi">{cell.label}</span>
+                  <span className="block text-[11px] text-low">{cell.meta}</span>
+                </span>
+                <span className="flex flex-wrap gap-2">
+                  {cell.modes.map((mode) => (
+                    <button
+                      key={mode.kind}
+                      type="button"
+                      onClick={() => onPick(mode.selection)}
+                      aria-label={`${cell.label} ${mode.label}`}
+                      data-testid={`${cell.id}-mode-${mode.kind}`}
+                      className={cn(
+                        'flex min-w-[118px] items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs font-semibold transition-colors',
+                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                        mode.active
+                          ? mode.kind === 'file' || mode.tone === 'primary'
+                            ? 'border-primary/30 bg-primary/10 text-primary'
+                            : mode.tone === 'warn'
+                              ? 'border-warn/30 bg-warn/10 text-warn'
+                              : 'border-gain/30 bg-gain/10 text-gain'
+                          : 'border-hi/10 bg-elev-1 text-mid hover:border-primary/40 hover:bg-primary/[0.04]'
+                      )}
+                    >
+                      {mode.active && <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={3} aria-hidden="true" />}
+                      <span className="min-w-0 flex-1">
+                        <span className="block">{mode.label}</span>
+                        <span className="block text-[10px] font-normal opacity-70">{mode.hint}</span>
+                      </span>
+                      {!mode.active && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden="true" />}
+                    </button>
+                  ))}
+                </span>
+              </div>
+            ) : (
               <button
                 key={cell.id}
                 type="button"
@@ -221,7 +308,15 @@ export function WhichStep({ flow, addedSlugs, onPick }: WhichStepProps) {
                   <span className="block text-[11px] text-low">{cell.meta}</span>
                 </span>
                 {cell.added ? (
-                  <Badge tone="gain">Added</Badge>
+                  <Badge
+                    tone={
+                      cell.modes?.[0]?.kind === 'file'
+                        ? 'primary'
+                        : cell.modes?.[0]?.tone ?? 'gain'
+                    }
+                  >
+                    {cell.modes?.[0]?.label ?? 'Added'}
+                  </Badge>
                 ) : (
                   <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden="true" />
                 )}

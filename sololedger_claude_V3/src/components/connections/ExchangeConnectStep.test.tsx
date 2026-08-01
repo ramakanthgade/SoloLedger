@@ -161,6 +161,23 @@ describe('ExchangeConnectStep — credential fields per exchange', () => {
     await renderForm(exchangeId);
     expect(screen.getByLabelText(/Passphrase/)).toBeInTheDocument();
   });
+
+  it('orders instructions, docs, label, key, secret and passphrase before actions', async () => {
+    await renderForm('okx');
+    const ordered = [
+      screen.getByTestId('key-instructions'),
+      screen.getByRole('link', { name: /open okx api page/i }),
+      screen.getByLabelText(/Label/),
+      screen.getByLabelText('API key'),
+      screen.getByLabelText('API secret'),
+      screen.getByLabelText(/Passphrase/),
+      screen.getByRole('button', { name: /test connection/i }),
+      screen.getByRole('button', { name: /connect securely/i })
+    ];
+    for (let i = 1; i < ordered.length; i += 1) {
+      expect(ordered[i - 1].compareDocumentPosition(ordered[i]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    }
+  });
 });
 
 describe('ExchangeConnectStep — test-gated Connect (ported from AddConnectionForm)', () => {
@@ -276,22 +293,14 @@ describe('ExchangeConnectStep — connect', () => {
   });
 });
 
-describe('ExchangeConnectStep — tick-as-you-go checklist', () => {
-  it('counts ticked steps and strikes them through', async () => {
+describe('ExchangeConnectStep — concise guidance', () => {
+  it('renders static read-only guidance without mandatory checklist acknowledgements or duplicate notes', async () => {
     await renderForm('binance');
-
-    const count = screen.getByTestId('checklist-count');
-    expect(count).toHaveTextContent(/^0 of \d+$/);
-
-    const steps = screen.getAllByRole('checkbox');
-    expect(steps.length).toBeGreaterThan(0);
-    fireEvent.click(steps[0]);
-    expect(steps[0]).toHaveAttribute('aria-checked', 'true');
-    expect(count).toHaveTextContent(/^1 of \d+$/);
-
-    // Untick again.
-    fireEvent.click(steps[0]);
-    expect(count).toHaveTextContent(/^0 of \d+$/);
+    expect(screen.getByText('Get a read-only key')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+    expect(screen.queryByText(/What happens next/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Good to know')).not.toBeInTheDocument();
+    expect(screen.getByText(/your secret never leaves it/i)).toBeInTheDocument();
   });
 
   it('links to the exchange API docs in a new tab', async () => {

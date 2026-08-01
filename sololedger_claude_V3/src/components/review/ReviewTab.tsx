@@ -1290,12 +1290,11 @@ export function ReviewTab() {
           onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
           className={cn(
             'flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 transition-colors hover:bg-elev-3/40 sm:px-5',
-            // Desktop: one continuous compact line on fixed column tracks —
-            // select · type (8.5rem) · flow (content-sized, capped) · source +
-            // chevron (13.5rem, right-aligned) — packed from the left with
-            // even gaps, never stretched space-between style (that left a
-            // desert between the flow and the source block).
-            'lg:grid lg:grid-cols-[auto_8.5rem_auto_auto] lg:justify-start lg:gap-x-6 xl:gap-x-8',
+            // Desktop: one continuous compact line on aligned column tracks —
+            // select · type (8.5rem) · flexible flow (content capped below) ·
+            // source + chevron (13.5rem, right-aligned). The minmax track lets
+            // source, flags and chevrons line up without changing mobile flow.
+            'lg:grid lg:grid-cols-[auto_8.5rem_minmax(0,1fr)_auto] lg:gap-x-6 xl:gap-x-8',
             isSelected && 'bg-primary/[0.05] hover:bg-primary/[0.08]',
             spam && 'opacity-60'
           )}

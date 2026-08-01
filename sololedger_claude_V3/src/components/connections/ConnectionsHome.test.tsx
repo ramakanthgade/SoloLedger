@@ -124,12 +124,20 @@ vi.mock('@/lib/rpc/providers', () => ({
 
 // The drawer has its own test file — stub it to a marker that records props.
 vi.mock('./AddDataDrawer', () => ({
-  AddDataDrawer: (props: { open: boolean; guided: boolean; initialFlow: string | null }) =>
+  AddDataDrawer: (props: {
+    open: boolean;
+    guided: boolean;
+    initialFlow: string | null;
+    apiExchangeStates: Record<string, string>;
+    fileImportedSlugs: string[];
+  }) =>
     props.open ? (
       <div
         data-testid="add-data-drawer"
         data-guided={String(props.guided)}
         data-initial-flow={props.initialFlow ?? 'null'}
+        data-api-states={JSON.stringify(props.apiExchangeStates)}
+        data-file-imported={props.fileImportedSlugs.join(',')}
       />
     ) : null
 }));
@@ -330,7 +338,7 @@ describe('ConnectionsHome — cards', () => {
     expect(within(grid).getByText('Binance')).toBeInTheDocument();
     expect(within(grid).getByText('Synced')).toBeInTheDocument();
     expect(within(grid).getByText('CoinDCX')).toBeInTheDocument();
-    expect(within(grid).getByText('Imported')).toBeInTheDocument();
+    expect(within(grid).getByText('CSV imported')).toBeInTheDocument();
     expect(within(grid).getByText('Phantom main')).toBeInTheDocument();
     expect(within(grid).getByText('Watching')).toBeInTheDocument();
     expect(within(grid).getAllByText('Manual entry').length).toBeGreaterThan(0);
@@ -381,6 +389,30 @@ describe('ConnectionsHome — cards', () => {
 });
 
 describe('ConnectionsHome — drawer entry points', () => {
+  it('derives independent API and CSV statuses from their own stores', () => {
+    mocks.connections.current = [conn({ exchange: 'okx' })];
+    mocks.csvImports.current = [csvImport({ parserId: 'binance_spot' })];
+    render(<ConnectionsHome />);
+
+    fireEvent.click(screen.getByTestId('add-data'));
+    expect(screen.getByTestId('add-data-drawer')).toHaveAttribute(
+      'data-api-states',
+      JSON.stringify({ okx: 'synced' })
+    );
+    expect(screen.getByTestId('add-data-drawer')).toHaveAttribute('data-file-imported', 'binance');
+  });
+
+  it('passes a saved never-synced API connection to the chooser as connected', () => {
+    mocks.connections.current = [conn({ exchange: 'binance', lastSyncAt: null })];
+    render(<ConnectionsHome />);
+
+    fireEvent.click(screen.getByTestId('add-data'));
+    expect(screen.getByTestId('add-data-drawer')).toHaveAttribute(
+      'data-api-states',
+      JSON.stringify({ binance: 'connected' })
+    );
+  });
+
   it('Add data (header), + New chip and the Add data card open the drawer', () => {
     mocks.connections.current = [conn()];
     render(<ConnectionsHome />);

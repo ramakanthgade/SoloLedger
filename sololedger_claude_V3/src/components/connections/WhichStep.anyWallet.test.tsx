@@ -13,7 +13,14 @@ import { WhichStep, type WhichSelection } from './WhichStep';
 import { ANY_WALLET_DEFAULT_NAME, ANY_WALLET_ID, getWalletApp } from './walletCatalog';
 
 function renderPicker(onPick: (s: WhichSelection) => void = () => {}) {
-  return render(<WhichStep flow="wallet-app" addedSlugs={[]} onPick={onPick} />);
+  return render(
+    <WhichStep
+      flow="wallet-app"
+      apiExchangeStates={{}}
+      fileImportedSlugs={[]}
+      onPick={onPick}
+    />
+  );
 }
 
 function anyWalletTile(): HTMLElement {

@@ -44,6 +44,7 @@ import { ConnectionDetail } from './ConnectionDetail';
 import type { CardMenuItem } from './CardMenu';
 import {
   buildCards,
+  fileImportExchangeId,
   pillCounts,
   shortAddress,
   type CardLane,
@@ -51,6 +52,7 @@ import {
   type PillFilter
 } from './connectionModel';
 import { AddDataDrawer } from './AddDataDrawer';
+import type { ApiExchangeState, ApiExchangeStates } from './WhichStep';
 import type { FlowKind } from './WhatStep';
 
 /** Locked pill order (mockup `cv2-filter-pills`): Manual entry before + New. */
@@ -139,16 +141,27 @@ export function ConnectionsHome() {
   const counts = useMemo(() => pillCounts(cards), [cards]);
   const visibleCards = pill === 'all' ? cards : cards.filter((c) => c.lane === pill);
 
-  /** Slugs that already have a connection/import — the Which step ticks them "Added". */
-  const addedSlugs = useMemo(() => {
-    const slugs = new Set<string>();
-    for (const c of connections) slugs.add(c.exchange);
-    for (const r of csvImports) {
-      const slug = r.parserId?.split('_')[0];
-      if (slug) slugs.add(slug);
+  const apiExchangeStates = useMemo<ApiExchangeStates>(() => {
+    const states: ApiExchangeStates = {};
+    const priority: Record<ApiExchangeState, number> = { connected: 1, synced: 2, attention: 3 };
+    for (const connection of connections) {
+      const next: ApiExchangeState = connection.lastError
+        ? 'attention'
+        : connection.lastSyncAt == null
+          ? 'connected'
+          : 'synced';
+      const current = states[connection.exchange];
+      if (!current || priority[next] > priority[current]) states[connection.exchange] = next;
     }
-    return Array.from(slugs);
-  }, [connections, csvImports]);
+    return states;
+  }, [connections]);
+  const fileImportedSlugs = useMemo(
+    () =>
+      Array.from(
+        new Set(csvImports.map(fileImportExchangeId).filter((slug): slug is string => slug !== null))
+      ),
+    [csvImports]
+  );
 
   const openDrawer = (opts?: { guided?: boolean; initialFlow?: FlowKind | null }) =>
     setDrawer({ open: true, guided: opts?.guided ?? false, initialFlow: opts?.initialFlow ?? null });
@@ -568,7 +581,8 @@ export function ConnectionsHome() {
         open={drawer.open}
         guided={drawer.guided}
         initialFlow={drawer.initialFlow}
-        addedSlugs={addedSlugs}
+        apiExchangeStates={apiExchangeStates}
+        fileImportedSlugs={fileImportedSlugs}
         onClose={() => setDrawer((d) => ({ ...d, open: false }))}
         onToast={pushToast}
       />

@@ -777,17 +777,52 @@ function stitchDustConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
   }
   const out: Transaction[] = [];
   for (const group of byGroup.values()) {
-    const receivedTotal = group.filter((r) => r.change > 0).reduce((s, r) => s + r.change, 0);
+    const credits = group.filter(
+      (r) => r.change > 0 && r.coin.toUpperCase() === dc.toAsset.toUpperCase()
+    );
+    const receivedTotal = credits.reduce((s, r) => s + r.change, 0);
     const spent = group.filter((r) => r.change < 0);
-    const spentTotal = spent.reduce((s, r) => s + Math.abs(r.change), 0);
+    const normalizeRemark = (r: LedgerRow) => (r.remark ?? '').trim().toLowerCase();
+    const creditsByRemark = new Map<string, LedgerRow[]>();
+    for (const credit of credits) {
+      const remark = normalizeRemark(credit);
+      if (!remark) continue;
+      const matches = creditsByRemark.get(remark) ?? [];
+      matches.push(credit);
+      creditsByRemark.set(remark, matches);
+    }
+
+    const usedCredits = new Set<number>();
+    const matchedCredit = new Map<number, LedgerRow>();
+    for (const debit of spent) {
+      const remark = normalizeRemark(debit);
+      if (!remark) continue;
+      const credit = creditsByRemark.get(remark)?.find((candidate) => !usedCredits.has(candidate.index));
+      if (!credit) continue;
+      usedCredits.add(credit.index);
+      matchedCredit.set(debit.index, credit);
+    }
+
+    // Any rows left after exact non-empty-Remark matching are uncertain. Pool
+    // only that residual set and allocate its BNB total proportionally across
+    // residual debits. This covers legacy blank remarks, mismatched remarks,
+    // and unequal row counts while conserving the source journal exactly,
+    // without presenting an aggregate allocation as an exact counterpart.
+    const residualCredits = credits.filter((r) => !usedCredits.has(r.index));
+    const residualSpent = spent.filter((r) => !matchedCredit.has(r.index));
+    const residualReceivedTotal = residualCredits.reduce((sum, r) => sum + r.change, 0);
+    const residualSpentTotal = residualSpent.reduce((sum, r) => sum + Math.abs(r.change), 0);
+
     for (const r of spent) {
       const amount = Math.abs(r.change);
-      // Binance exports one aggregate BNB credit beside multiple dust debits.
-      // Allocate that credit deterministically across the emitted trades so
-      // portfolio math applies both sides and the BNB total remains conserved.
-      const counterAmount = spentTotal > 0 ? receivedTotal * (amount / spentTotal) : undefined;
-      out.push(
-        makeTx(ctx, {
+      const exactCredit = matchedCredit.get(r.index);
+      const counterAmount = exactCredit
+        ? exactCredit.change
+        : residualSpentTotal > 0 && residualReceivedTotal > 0
+          ? residualReceivedTotal * (amount / residualSpentTotal)
+          : undefined;
+      if (counterAmount != null) {
+        out.push(makeTx(ctx, {
           timestamp: r.timestamp,
           type: 'trade',
           asset: r.coin,
@@ -797,9 +832,37 @@ function stitchDustConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
           sourceRef: srcRef(ctx, r.timestamp, 'trade', r.coin, amount),
           notes: `Small assets (dust) converted to ${dc.toAsset} (group total +${receivedTotal} ${dc.toAsset})`,
           flags: ['missing_cost_basis'],
-          raw: r.raw
-        })
-      );
+          raw: exactCredit
+            ? { spent: r.raw, received: exactCredit.raw }
+            : { spent: r.raw, receivedAggregate: residualCredits.map((credit) => credit.raw) }
+        }));
+      } else {
+        out.push(makeTx(ctx, {
+          timestamp: r.timestamp,
+          type: 'transfer_out',
+          asset: r.coin,
+          amount,
+          sourceRef: srcRef(ctx, r.timestamp, 'transfer_out', r.coin, amount),
+          notes: `Unmatched small-assets (dust) debit; no ${dc.toAsset} credit in group`,
+          flags: ['needs_review'],
+          raw: { spent: r.raw }
+        }));
+      }
+    }
+
+    if (residualSpent.length === 0) {
+      for (const credit of residualCredits) {
+        out.push(makeTx(ctx, {
+          timestamp: credit.timestamp,
+          type: 'transfer_in',
+          asset: dc.toAsset,
+          amount: credit.change,
+          sourceRef: srcRef(ctx, credit.timestamp, 'transfer_in', dc.toAsset, credit.change),
+          notes: 'Unmatched small-assets (dust) credit; no residual debit in group',
+          flags: ['needs_review', 'missing_cost_basis'],
+          raw: { received: credit.raw }
+        }));
+      }
     }
   }
   return out;
