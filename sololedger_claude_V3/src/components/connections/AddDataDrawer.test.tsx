@@ -59,7 +59,8 @@ function renderDrawer(over: Partial<Parameters<typeof AddDataDrawer>[0]> = {}) {
     open: true,
     guided: false,
     initialFlow: null,
-    addedSlugs: [] as string[],
+    apiExchangeStates: {},
+    fileImportedSlugs: [] as string[],
     onClose: vi.fn(),
     onToast: vi.fn(),
     ...over
@@ -93,7 +94,7 @@ describe('AddDataDrawer — step routing', () => {
     expect(screen.getByTestId('addflow-search')).toBeInTheDocument();
 
     // Pick an API exchange (Binance) → Connect step renders the stubbed API form.
-    fireEvent.click(screen.getByRole('button', { name: /^binance/i }));
+    fireEvent.click(screen.getByRole('button', { name: /binance api auto-sync/i }));
     expect(screen.getByTestId('step-exchange-api')).toHaveAttribute('data-exchange', 'binance');
     expect(screen.getByText('Step 3 of 3')).toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: 'Connect Binance' })).toBeInTheDocument();
@@ -106,6 +107,18 @@ describe('AddDataDrawer — step routing', () => {
 
     expect(screen.getByTestId('step-file-flow')).toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: 'Import a CoinDCX file' })).toBeInTheDocument();
+  });
+
+  it('a dual-support exchange preserves independent file and API routes', () => {
+    renderDrawer({ fileImportedSlugs: ['binance'] });
+    fireEvent.click(screen.getByRole('button', { name: /exchange account/i }));
+
+    expect(screen.getByRole('button', { name: /binance csv imported/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /binance api auto-sync/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /binance csv imported/i }));
+    expect(screen.getByTestId('step-file-flow')).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Import a Binance file' })).toBeInTheDocument();
   });
 
   it('wallet-app flow passes the app name as the default nickname and preselects its headline chain', () => {
@@ -170,7 +183,7 @@ describe('AddDataDrawer — step routing', () => {
   it('Back walks Connect → Which → What', () => {
     renderDrawer();
     fireEvent.click(screen.getByRole('button', { name: /exchange account/i }));
-    fireEvent.click(screen.getByRole('button', { name: /^binance/i }));
+    fireEvent.click(screen.getByRole('button', { name: /binance api auto-sync/i }));
     expect(screen.getByTestId('step-exchange-api')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));

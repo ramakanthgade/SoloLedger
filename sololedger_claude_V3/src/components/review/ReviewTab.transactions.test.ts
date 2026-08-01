@@ -82,18 +82,15 @@ describe('ReviewTab — item 10: richer rows + click-anywhere details', () => {
 });
 
 describe('ReviewTab — round 4: compact aligned rows (no middle desert)', () => {
-  it('lays the row on fixed column tracks packed from the left — never space-between', () => {
-    // select · type (8.5rem) · flow (content-sized) · source+chevron — with
-    // the source context in a fixed 13.5rem right-aligned block; the same
-    // tracks on every row.
-    expect(source).toContain('lg:grid-cols-[auto_8.5rem_auto_auto]');
-    expect(source).toContain('lg:justify-start');
+  it('lays the row on aligned tracks with a flexible flow column', () => {
+    // select · type (8.5rem) · flexible flow · source+chevron — with the
+    // source context in a fixed 13.5rem right-aligned block on every row.
+    expect(source).toContain('lg:grid-cols-[auto_8.5rem_minmax(0,1fr)_auto]');
+    expect(source).not.toContain('lg:justify-start');
     expect(source).toContain('lg:w-[13.5rem]');
   });
 
-  it('the flow column is content-sized and capped — it no longer stretches across the row', () => {
-    // `lg:flex-1` on tx-flow was the desert-maker: it pushed the source block
-    // to the far right edge at wide viewports.
+  it('the flow content stays capped inside its flexible alignment track', () => {
     expect(source).not.toContain('lg:flex-1');
     expect(source).toContain('lg:max-w-[34rem]');
   });

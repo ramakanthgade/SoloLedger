@@ -4,6 +4,7 @@ import type { CsvImportRow, LookupAddressRow } from '@/lib/storage/db';
 import {
   buildCards,
   exchangeCoverageChip,
+  fileImportExchangeId,
   fileImportTitle,
   groupWallets,
   pillCounts,
@@ -164,6 +165,15 @@ describe('fileImportTitle', () => {
   });
 });
 
+describe('fileImportExchangeId', () => {
+  it('normalizes parser variants without inferring identity from the filename', () => {
+    expect(fileImportExchangeId(csvRow({ parserId: 'binance_spot' }))).toBe('binance');
+    expect(fileImportExchangeId(csvRow({ parserId: 'coinbase' }))).toBe('coinbase');
+    expect(fileImportExchangeId(csvRow({ parserId: 'generic_history', fileName: 'binance.csv' }))).toBeNull();
+    expect(fileImportExchangeId(csvRow({ parserId: null, fileName: 'binance.csv' }))).toBeNull();
+  });
+});
+
 describe('buildCards', () => {
   it('maps an exchange API connection to a Synced card in the exchanges lane', () => {
     const [card] = buildCards(input({ connections: [exchangeConn()] }));
@@ -203,7 +213,7 @@ describe('buildCards', () => {
     expect(other.status.label).toBe('Synced');
   });
 
-  it('maps a file import to an Imported card titled by brand, sublined by file name', () => {
+  it('maps a file import to a CSV imported card titled by brand, sublined by file name', () => {
     const [card] = buildCards(input({ csvImports: [csvRow()] }));
     expect(card).toMatchObject({
       id: 'file:csv_1',
@@ -212,7 +222,7 @@ describe('buildCards', () => {
       iconId: 'coindcx',
       title: 'CoinDCX',
       subtitle: 'coindcx-trades-fy25.csv',
-      status: { tone: 'primary', label: 'Imported' },
+      status: { tone: 'primary', label: 'CSV imported' },
       txLine: '412 transactions'
     });
   });

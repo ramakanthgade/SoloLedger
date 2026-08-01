@@ -190,11 +190,22 @@ export function walletChainChip(group: WalletGroup): string | undefined {
 
 /** Display title for a file import: the exchange it came from, else the file name. */
 export function fileImportTitle(row: CsvImportRow): string {
-  const parserSlug = row.parserId?.split('_')[0];
-  if (row.parserId && parserIconId(row.parserId)) return brandLabel(parserIconId(row.parserId)!);
-  const source = getImportSource(parserSlug ?? null);
+  const exchangeId = fileImportExchangeId(row);
+  if (exchangeId && parserIconId(row.parserId)) return brandLabel(exchangeId);
+  const source = getImportSource(exchangeId);
   if (source) return source.label;
   return shortFileName(row.fileName);
+}
+
+/**
+ * Normalize a persisted parser id to its exchange identity. File status must
+ * come from csvImports + parser output only — never from a filename or an API
+ * connection with the same brand.
+ */
+export function fileImportExchangeId(row: Pick<CsvImportRow, 'parserId'>): string | null {
+  if (!row.parserId) return null;
+  const slug = row.parserId.split('_')[0].toLowerCase();
+  return getImportSource(slug)?.id ?? parserIconId(row.parserId) ?? null;
 }
 
 export interface BuildCardsInput {
@@ -247,7 +258,7 @@ export function buildCards(input: BuildCardsInput): ConnectionCardData[] {
       title,
       subtitle: shortFileName(row.fileName),
       tags: ['Exchange', 'File'],
-      status: { tone: 'primary', label: 'Imported' },
+      status: { tone: 'primary', label: 'CSV imported' },
       metaLine: `Imported ${new Date(row.importedAt).toLocaleDateString()}`,
       txLine: `${row.txCount.toLocaleString()} transaction${row.txCount === 1 ? '' : 's'}`,
       csvImport: row

@@ -7,7 +7,7 @@ import { ConnectionWizard } from '@/components/import/ConnectionWizard';
 import { ManualEntryForm } from '@/components/import/ManualEntryForm';
 import { Drawer } from './Drawer';
 import { WhatStep, type FlowKind } from './WhatStep';
-import { WhichStep, type WhichSelection } from './WhichStep';
+import { WhichStep, type ApiExchangeStates, type WhichSelection } from './WhichStep';
 import { ExchangeConnectStep } from './ExchangeConnectStep';
 import { WalletAddressForm } from './WalletAddressForm';
 import { FileImportFlow } from './FileImportFlow';
@@ -19,8 +19,9 @@ interface AddDataDrawerProps {
   guided: boolean;
   /** Deep-link straight into a flow ('file'/'manual' skip What + Which). */
   initialFlow: FlowKind | null;
-  /** Slugs that already have a connection/import (Which step ticks them). */
-  addedSlugs: string[];
+  /** Independent exchange status sources for the Which step. */
+  apiExchangeStates: ApiExchangeStates;
+  fileImportedSlugs: string[];
   onClose: () => void;
   onToast: (t: { tone: 'gain' | 'loss' | 'warn' | 'primary'; title: string; description?: string }) => void;
 }
@@ -95,7 +96,8 @@ export function AddDataDrawer({
   open,
   guided,
   initialFlow,
-  addedSlugs,
+  apiExchangeStates,
+  fileImportedSlugs,
   onClose,
   onToast
 }: AddDataDrawerProps) {
@@ -309,7 +311,12 @@ export function AddDataDrawer({
             <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
               {step === 1 && <WhatStep onPick={setFlow} />}
               {step === 2 && needsWhich(flow) && (
-                <WhichStep flow={flow} addedSlugs={addedSlugs} onPick={setWhich} />
+                <WhichStep
+                  flow={flow}
+                  apiExchangeStates={apiExchangeStates}
+                  fileImportedSlugs={fileImportedSlugs}
+                  onPick={setWhich}
+                />
               )}
               {step === 3 && renderConnect()}
             </div>
