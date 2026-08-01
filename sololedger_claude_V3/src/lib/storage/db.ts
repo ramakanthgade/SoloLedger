@@ -330,6 +330,10 @@ export async function saveSpecIdHint(txId: string, preferredLotIds: string[]): P
 
 // ---- Price cache ----
 
+export function buildCurrentPriceCacheKey(asset: string, currency: string): string {
+  return `spot:sym:${asset.toUpperCase()}:${currency.toUpperCase()}`;
+}
+
 export function buildPriceCacheKey(
   type: 'sym' | 'ctr',
   assetOrAddress: string,

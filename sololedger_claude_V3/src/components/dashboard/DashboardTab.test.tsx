@@ -75,6 +75,12 @@ vi.mock('@/lib/storage/db', () => ({
     t.sourceRef && t.walletAddress ? `${t.walletAddress}|${t.sourceRef}` : null
 }));
 
+vi.mock('@/lib/saas/effectiveSettings', () => ({
+  getEffectiveSettings: () => Promise.resolve({
+    reportingCurrency: 'INR', jurisdiction: 'IN', priceApiEnabled: false
+  })
+}));
+
 import { DashboardTab } from './DashboardTab';
 
 async function renderTab(nav?: { goToImport: () => void; goTo: (id: string) => void }) {
@@ -119,6 +125,8 @@ describe('DashboardTab — hero honesty', () => {
   it('switches to market value + unrealized gain when cached prices exist', async () => {
     const today = Date.now();
     SEED.priceRows.push(
+      { key: 'spot:sym:BTC:INR', price: 100000, fetchedAt: Date.now() },
+      { key: 'spot:sym:ETH:INR', price: 6000, fetchedAt: Date.now() },
       { key: `sym:BTC:${keyDate(today)}:INR`, price: 100000, fetchedAt: today },
       { key: `sym:BTC:${keyDate(today - 86_400_000)}:INR`, price: 95000, fetchedAt: today },
       { key: `sym:ETH:${keyDate(today)}:INR`, price: 6000, fetchedAt: today }
@@ -217,7 +225,7 @@ describe('DashboardTab — insights', () => {
     expect(goTo).toHaveBeenCalledWith('review');
   });
 
-  it('counts internal transfers without a fiat value too (parity with the Transactions tab)', async () => {
+  it('excludes internal custody transfers from the historical-price count', async () => {
     SEED.txs.push({
       id: 't-sol-internal', timestamp: Date.UTC(2026, 6, 12, 12, 0, 0), type: 'transfer_in',
       asset: 'SOL', amount: 10, fiatCurrency: 'INR', fiatValue: undefined, source: 'manual',
@@ -226,7 +234,7 @@ describe('DashboardTab — insights', () => {
     try {
       await renderTab();
       const card = screen.getByTestId('insight-needs-price');
-      expect(card).toHaveTextContent('2 transactions need a price');
+      expect(card).toHaveTextContent('1 transaction needs a price');
     } finally {
       SEED.txs.pop();
     }

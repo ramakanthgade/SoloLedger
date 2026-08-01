@@ -64,6 +64,9 @@ const SYMBOL_TO_ID: Record<string, string> = {
   ZEC: 'zcash',
   LINK: 'chainlink',
   UNI: 'uniswap',
+  ROSE: 'oasis-network',
+  RCN: 'ripio-credit-network',
+  XPR: 'proton',
   ATOM: 'cosmos',
   NEAR: 'near',
   APT: 'aptos',
@@ -191,6 +194,48 @@ async function resolveCoinGeckoId(symbol: string, coingeckoApiKey?: string): Pro
     return id;
   } catch {
     return null;
+  }
+}
+
+export interface CurrentPriceResult {
+  asset: string;
+  price: number | null;
+  currency: string;
+  error?: string;
+}
+
+/** Batch current spot prices. This is valuation-only and never mutates tax rows. */
+export async function fetchCurrentPrices(
+  assets: string[],
+  fiatCurrency: string,
+  coingeckoApiKey?: string
+): Promise<CurrentPriceResult[]> {
+  const unique = [...new Set(assets.map((asset) => asset.toUpperCase()))];
+  const resolved = await Promise.all(
+    unique.map(async (asset) => ({ asset, id: await resolveCoinGeckoId(asset, coingeckoApiKey) }))
+  );
+  const ids = [...new Set(resolved.flatMap((row) => row.id ? [row.id] : []))];
+  if (ids.length === 0) {
+    return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error: 'CoinGecko asset not found.' }));
+  }
+  try {
+    const base = coingeckoBase(coingeckoApiKey);
+    const currency = fiatCurrency.toLowerCase();
+    const url = `${base}/simple/price?ids=${encodeURIComponent(ids.join(','))}&vs_currencies=${encodeURIComponent(currency)}`;
+    const res = await fetchWithRetry(url, coingeckoHeaders(coingeckoApiKey));
+    if (!res.ok) {
+      return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error: `Price API returned ${res.status}` }));
+    }
+    const data = await res.json() as Record<string, Record<string, number | undefined> | undefined>;
+    return resolved.map(({ asset, id }) => ({
+      asset,
+      price: id ? data[id]?.[currency] ?? null : null,
+      currency: fiatCurrency,
+      error: id ? undefined : 'CoinGecko asset not found.'
+    }));
+  } catch (err) {
+    const error = err instanceof Error ? err.message : 'Network request failed.';
+    return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error }));
   }
 }
 

@@ -19,9 +19,10 @@ import { getMode } from '@/lib/saas/mode';
 import { useAuth } from '@/lib/saas/authContext';
 import { CHAINS } from '@/lib/rpc/providers';
 import { buildPortfolioHoldings } from '@/lib/portfolio/portfolioCompute';
+import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import {
   buildPriceIndex,
-  priceHistoryFor,
+  currentPriceFor,
   valueHoldings
 } from '@/lib/dashboard/dashboardModel';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
@@ -90,6 +91,11 @@ export function ConnectionDetail({
   card: ConnectionCardData;
   onBack: () => void;
 }) {
+  const [spotRefreshTick, setSpotRefreshTick] = useState(0);
+  useEffect(() => {
+    const timer = window.setInterval(() => setSpotRefreshTick((tick) => tick + 1), 5 * 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
   const transactions = useLiveQuery(() => db.transactions.toArray(), []);
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
   const balanceRows = useLiveQuery(() => db.walletBalances.toArray(), []) ?? NO_BALANCE_ROWS;
@@ -121,7 +127,10 @@ export function ConnectionDetail({
 
   const currency = settings?.reportingCurrency ?? 'INR';
   const fm = (v: number) => formatCurrency(v, currency);
-  const priceIndex = useMemo(() => buildPriceIndex(priceRows, currency), [priceRows, currency]);
+  const priceIndex = useMemo(
+    () => buildPriceIndex(priceRows, currency),
+    [priceRows, currency, spotRefreshTick]
+  );
 
   /** Watched addresses of this card's wallet group (lowercase). */
   const walletAddrs = useMemo(
@@ -182,14 +191,14 @@ export function ConnectionDetail({
       return h && h.amount > 1e-9 && h.costBasis > 0 ? h.costBasis / h.amount : null;
     };
     const views: WalletAssetView[] = rows.map((b) => {
-      const points = priceHistoryFor(
+      const current = currentPriceFor(
         { asset: b.asset, contractAddress: b.contractAddress, chain: b.chain },
         priceIndex
       );
       let value: number | null = null;
       let atCost = false;
-      if (points && points.length > 0) {
-        value = b.amount * points[points.length - 1].price;
+      if (current) {
+        value = b.amount * current.price;
       } else {
         const puc = perUnitCost(b);
         if (puc != null) {
@@ -229,13 +238,49 @@ export function ConnectionDetail({
   }, [card.kind, balanceRows, walletAddrs, connTxs, priceIndex]);
 
   /** Exchange/file holdings: tx-derived, valued through the price cache. */
-  const sourceHoldings = useMemo(() => {
+  const sourcePortfolioHoldings = useMemo(() => {
     if (card.kind === 'wallet') return [];
-    return valueHoldings(
-      buildPortfolioHoldings(connTxs, card.csvImport ? [card.csvImport] : []),
-      priceIndex
-    );
-  }, [card.kind, card.csvImport, connTxs, priceIndex]);
+    return buildPortfolioHoldings(connTxs, card.csvImport ? [card.csvImport] : []);
+  }, [card.kind, card.csvImport, connTxs]);
+
+  const holdingsNeedingCurrentMarks = useMemo(() => {
+    if (card.kind !== 'wallet') return sourcePortfolioHoldings;
+    return balanceRows
+      .filter((row) => walletAddrs.has(row.address.toLowerCase()) && row.amount > 1e-9)
+      .map((row) => ({
+        asset: row.asset,
+        amount: row.amount,
+        costBasis: 0,
+        chain: row.chain,
+        contractAddress: row.contractAddress
+      }));
+  }, [card.kind, sourcePortfolioHoldings, balanceRows, walletAddrs]);
+
+  useEffect(() => {
+    if (holdingsNeedingCurrentMarks.length === 0) return;
+    let cancelled = false;
+    getEffectiveSettings().then((effective) => {
+      if (!cancelled && effective.priceApiEnabled) {
+        void refreshCurrentHoldingPrices(
+          holdingsNeedingCurrentMarks,
+          currency,
+          effective.coingeckoApiKey
+        );
+      }
+    }).catch(() => {
+      // Current marks are optional; the source remains honestly valued at cost.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [holdingsNeedingCurrentMarks, currency, spotRefreshTick]);
+
+  const sourceHoldings = useMemo(
+    () => valueHoldings(sourcePortfolioHoldings, priceIndex).sort(
+      (a, b) => (b.valueNow ?? b.costBasis) - (a.valueNow ?? a.costBasis) || Math.abs(b.amount) - Math.abs(a.amount)
+    ),
+    [sourcePortfolioHoldings, priceIndex]
+  );
 
   // ── Header facts ──
   const addedAt =
