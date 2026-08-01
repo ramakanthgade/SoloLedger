@@ -7,6 +7,7 @@ import { cn, formatCompactAmount, formatCurrency } from '@/lib/utils';
 import {
   db,
   getSettings,
+  type ExchangeBalanceRow,
   type PriceCacheRow,
   type WalletBalanceRow
 } from '@/lib/storage/db';
@@ -22,6 +23,7 @@ import { buildPortfolioHoldings } from '@/lib/portfolio/portfolioCompute';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import {
   buildPriceIndex,
+  applyExchangeBalanceAuthority,
   currentPriceFor,
   valueHoldings
 } from '@/lib/dashboard/dashboardModel';
@@ -36,6 +38,7 @@ import {
 const NO_TXS: Transaction[] = [];
 const NO_PRICE_ROWS: PriceCacheRow[] = [];
 const NO_BALANCE_ROWS: WalletBalanceRow[] = [];
+const NO_EXCHANGE_BALANCE_ROWS: ExchangeBalanceRow[] = [];
 
 function chainLabel(chainId: string): string {
   return CHAINS.find((c) => c.id === chainId)?.label ?? chainId;
@@ -99,6 +102,12 @@ export function ConnectionDetail({
   const transactions = useLiveQuery(() => db.transactions.toArray(), []);
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
   const balanceRows = useLiveQuery(() => db.walletBalances.toArray(), []) ?? NO_BALANCE_ROWS;
+  const exchangeBalanceRows = useLiveQuery(
+    () => card.kind === 'exchange-api' && card.exchange
+      ? db.exchangeBalances.where('connectionId').equals(card.exchange.id).toArray()
+      : [],
+    [card.kind, card.kind === 'exchange-api' ? card.exchange?.id : null]
+  ) ?? NO_EXCHANGE_BALANCE_ROWS;
   // Live sync stamps — the `card` prop is a snapshot, so without these the
   // last-synced line stayed stale after Sync now until a remount (D-4).
   const liveWalletRows = useLiveQuery(() => db.lookupAddresses.toArray(), []);
@@ -240,8 +249,11 @@ export function ConnectionDetail({
   /** Exchange/file holdings: tx-derived, valued through the price cache. */
   const sourcePortfolioHoldings = useMemo(() => {
     if (card.kind === 'wallet') return [];
+    if (card.kind === 'exchange-api') {
+      return applyExchangeBalanceAuthority(connTxs, exchangeBalanceRows).holdings;
+    }
     return buildPortfolioHoldings(connTxs, card.csvImport ? [card.csvImport] : []);
-  }, [card.kind, card.csvImport, connTxs]);
+  }, [card.kind, card.csvImport, connTxs, exchangeBalanceRows]);
 
   const holdingsNeedingCurrentMarks = useMemo(() => {
     if (card.kind !== 'wallet') return sourcePortfolioHoldings;

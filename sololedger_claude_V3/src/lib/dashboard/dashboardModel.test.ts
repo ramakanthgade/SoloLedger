@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 import type { ExchangeBalanceRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
+import { buildPortfolioHoldings } from '@/lib/portfolio/portfolioCompute';
 import {
   allocationSlices,
   buildChartSeries,
@@ -342,6 +343,51 @@ describe('sourceBreakdown', () => {
     ]);
     expect(slices.some((slice) => Math.abs(slice.qty - 23_892.79) < 1e-9)).toBe(false);
     expect(slices.reduce((sum, slice) => sum + slice.qty, 0)).toBeCloseTo(119.5193, 8);
+  });
+
+  it('replaces API historical network deposits with one current exchange slice', () => {
+    const rows = [
+      tx({
+        id: 'eth-deposit', type: 'transfer_in', asset: 'USDT', amount: 544_193,
+        source: 'binance_api', importBatchId: 'conn1', chain: 'ethereum',
+        walletAddress: '0x1111111111111111111111111111111111111111'
+      }),
+      tx({
+        id: 'bsc-deposit', type: 'transfer_in', asset: 'USDT', amount: 701.8764,
+        source: 'binance_api', importBatchId: 'conn1', chain: 'bsc',
+        walletAddress: '0x2222222222222222222222222222222222222222'
+      })
+    ];
+    const slices = sourceBreakdown(
+      rows,
+      { asset: 'USDT' },
+      [],
+      [],
+      [],
+      [exchangeBalanceRow({ asset: 'USDT', amount: 119.5193 })]
+    );
+    expect(slices).toEqual([
+      expect.objectContaining({
+        key: 'exchange-api:binance', name: 'Binance API', qty: 119.5193
+      })
+    ]);
+    expect(slices.reduce((sum, slice) => sum + slice.qty, 0)).toBeCloseTo(119.5193, 8);
+  });
+
+  it('treats an asset omitted from an exchange snapshot as zero in the breakdown', () => {
+    const slices = sourceBreakdown(
+      [
+        tx({ id: 'old-binance', type: 'transfer_in', asset: 'BTC', amount: 9, source: 'binance_api' }),
+        tx({ id: 'manual', type: 'transfer_in', asset: 'BTC', amount: 2, source: 'manual' })
+      ],
+      { asset: 'BTC' },
+      [],
+      [],
+      [],
+      [exchangeBalanceRow({ asset: 'ETH', amount: 1 })]
+    );
+    expect(slices).toEqual([expect.objectContaining({ name: 'Manual entry', qty: 2 })]);
+    expect(slices.reduce((sum, slice) => sum + slice.qty, 0)).toBe(2);
   });
 
   it('preserves an outflow-first authoritative Binance slice beside unrelated holdings', () => {
@@ -786,8 +832,8 @@ describe('reconcileHoldings', () => {
   it('an exchange slice anchors to the persisted fetchBalance row, draining the phantom', () => {
     // Ledger implies 9.17 BTC on Binance (conn1) but fetchBalance says 0.0000049.
     const txs = [
-      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 10, source: 'binance_api', importBatchId: 'conn1' }),
-      tx({ id: 's1', type: 'sell', asset: 'BTC', amount: 0.83, source: 'binance_api', importBatchId: 'conn1' })
+      tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 10, fiatValue: 100, source: 'binance_api', importBatchId: 'conn1' }),
+      tx({ id: 's1', type: 'sell', asset: 'BTC', amount: 0.83, fiatValue: 8.3, source: 'binance_api', importBatchId: 'conn1' })
     ];
     const holdings = [{ asset: 'BTC', amount: 9.17, costBasis: 91.7 }];
     const result = reconcileHoldings(holdings, txs, [], [
@@ -796,7 +842,7 @@ describe('reconcileHoldings', () => {
     expect(result.holdings).toHaveLength(1);
     expect(result.holdings[0].amount).toBeCloseTo(0.0000049, 8);
     expect(result.holdings[0].qtySource).toBe('exchange-api');
-    expect(result.holdings[0].txDerivedAmount).toBeCloseTo(9.17, 8);
+    expect(result.holdings[0].txDerivedAmount).toBeCloseTo(0.0000049, 8);
     // cost basis scales per-unit: 91.7/9.17 = 10 × 0.0000049
     expect(result.holdings[0].costBasis).toBeCloseTo(0.000049, 8);
     expect(result.adjustedDownCount).toBe(1);
@@ -814,7 +860,7 @@ describe('reconcileHoldings', () => {
     expect(result.adjustedDownCount).toBe(1);
   });
 
-  it('an exchange slice without a balance row stays tx-derived', () => {
+  it('an asset omitted by a successful exchange snapshot is treated as zero', () => {
     const txs = [
       tx({ id: 'b1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance_api', importBatchId: 'conn1' })
     ];
@@ -824,11 +870,10 @@ describe('reconcileHoldings', () => {
       exchangeBalanceRow({ connectionId: 'conn1', asset: 'ETH', amount: 5 })
     ]);
     expect(result.holdings).toHaveLength(1);
-    expect(result.holdings[0].amount).toBeCloseTo(2, 8);
-    expect(result.holdings[0].qtySource).toBe('tx-history');
+    expect(result.holdings[0]).toMatchObject({ asset: 'ETH', amount: 5, qtySource: 'exchange-api' });
   });
 
-  it('a CSV-imported exchange row (no connectionId) stays tx-derived', () => {
+  it('a same-exchange CSV custody row is superseded by API balance authority', () => {
     const txs = [
       // importBatchId is a CSV file hash, not a connectionId → no authority.
       tx({ id: 'c1', type: 'buy', asset: 'BTC', amount: 2, source: 'binance', importBatchId: 'csv-filehash-abc' })
@@ -837,9 +882,7 @@ describe('reconcileHoldings', () => {
     const result = reconcileHoldings(holdings, txs, [], [
       exchangeBalanceRow({ connectionId: 'conn1', asset: 'BTC', amount: 0 })
     ]);
-    expect(result.holdings).toHaveLength(1);
-    expect(result.holdings[0].amount).toBeCloseTo(2, 8);
-    expect(result.holdings[0].qtySource).toBe('tx-history');
+    expect(result.holdings).toHaveLength(0);
   });
 
   it('multiple connections of the same exchange sum their authority for a shared asset', () => {
@@ -855,6 +898,82 @@ describe('reconcileHoldings', () => {
     expect(result.holdings).toHaveLength(1);
     expect(result.holdings[0].amount).toBeCloseTo(1.0, 8);
     expect(result.holdings[0].qtySource).toBe('exchange-api');
+  });
+
+  it('API-only network deposits collapse to chainless current balances', () => {
+    const depositAddress = '0x1111111111111111111111111111111111111111';
+    const txs = [
+      tx({
+        id: 'eth-deposit', type: 'transfer_in', asset: 'USDT', amount: 544_193,
+        source: 'binance_api', importBatchId: 'conn1', chain: 'ethereum',
+        walletAddress: depositAddress
+      }),
+      tx({
+        id: 'bsc-deposit', type: 'transfer_in', asset: 'USDT', amount: 701.8764,
+        source: 'binance_api', importBatchId: 'conn1', chain: 'bsc',
+        walletAddress: '0x2222222222222222222222222222222222222222'
+      })
+    ];
+    const result = reconcileHoldings(buildPortfolioHoldings(txs), txs, [], [
+      exchangeBalanceRow({ id: 'conn1:USDT', asset: 'USDT', amount: 119.5193 })
+    ]);
+    expect(result.holdings).toEqual([
+      expect.objectContaining({ asset: 'USDT', amount: 119.5193, qtySource: 'exchange-api' })
+    ]);
+    expect(result.holdings[0].chain).toBeUndefined();
+  });
+
+  it('Transaction History + Options + API produces API spot plus Options exactly once', () => {
+    const txs = [
+      tx({
+        id: 'csv-gross', type: 'transfer_in', asset: 'USDT', amount: 23_892.79,
+        source: 'binance', importBatchId: 'csv-history'
+      }),
+      tx({
+        id: 'api-gross', type: 'transfer_in', asset: 'USDT', amount: 23_892.79,
+        source: 'binance_api', importBatchId: 'conn1', chain: 'ethereum',
+        walletAddress: '0x1111111111111111111111111111111111111111'
+      }),
+      tx({
+        id: 'options-net', type: 'transfer_in', asset: 'USDT', amount: 119.5193,
+        source: 'binance_options', category: 'options_collateral'
+      })
+    ];
+    const result = reconcileHoldings(buildPortfolioHoldings(txs), txs, [], [
+      exchangeBalanceRow({ id: 'conn1:USDT', asset: 'USDT', amount: 10 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0]).toMatchObject({ asset: 'USDT', amount: 129.5193 });
+    expect(result.holdings[0].chain).toBeUndefined();
+  });
+
+  it('does not borrow cost basis from unrelated sources for transfer-only Binance custody', () => {
+    const txs = [
+      tx({ id: 'binance-transfer', type: 'transfer_in', asset: 'BTC', amount: 1, source: 'binance_api', importBatchId: 'conn1' }),
+      tx({ id: 'manual-buy', type: 'buy', asset: 'BTC', amount: 1, fiatValue: 100, source: 'manual' })
+    ];
+    const result = reconcileHoldings(buildPortfolioHoldings(txs), txs, [], [
+      exchangeBalanceRow({ asset: 'BTC', amount: 1 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    expect(result.holdings[0]).toMatchObject({ asset: 'BTC', amount: 2, costBasis: 100 });
+  });
+
+  it('preserves Binance derivatives and Options beside authoritative spot custody', () => {
+    const txs = [
+      tx({ id: 'spot', type: 'buy', asset: 'USDT', amount: 100, source: 'binance', raw: { buy: { Account: 'Spot' } } }),
+      tx({ id: 'funding', type: 'transfer_in', asset: 'USDT', amount: 4, source: 'binance', raw: { Account: 'Funding' } }),
+      tx({ id: 'margin', type: 'buy', asset: 'USDT', amount: 5, source: 'binance', raw: { buy: { Account: 'Cross Margin' }, spend: { Account: 'Cross Margin' } } }),
+      tx({ id: 'futures', type: 'income', asset: 'USDT', amount: 7, fiatValue: 7, source: 'binance', category: 'perp', instrumentClass: 'derivative', raw: { Account: 'USD-M Futures' } }),
+      tx({ id: 'options', type: 'transfer_in', asset: 'USDT', amount: 3, source: 'binance_options' })
+    ];
+    const result = reconcileHoldings(buildPortfolioHoldings(txs), txs, [], [
+      exchangeBalanceRow({ asset: 'USDT', amount: 10 })
+    ]);
+    expect(result.holdings).toHaveLength(1);
+    // Spot 100 is replaced by 10. Funding, Margin, Futures and Options are
+    // separate scopes that Binance's spot fetchBalance does not authorize.
+    expect(result.holdings[0]).toMatchObject({ asset: 'USDT', amount: 29 });
   });
 
   it('wallet and exchange slices reconcile independently within one holding', () => {

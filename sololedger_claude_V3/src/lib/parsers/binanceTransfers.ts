@@ -184,15 +184,14 @@ export const binanceTransfersParser: ExchangeParser = {
         source: 'binance_transfers',
         sourceRef: exchangeSourceRef('binance', timestamp, type, coin, amount),
         txHash,
-        // Withdrawal Address is the destination (counterparty); a deposit
-        // Address is the user's own Binance deposit address (wallet side).
+        // Binance deposit addresses belong to centralized exchange custody,
+        // not a watched self-custody wallet.
         counterpartyAddress: type === 'transfer_out' && address ? address : undefined,
-        walletAddress: type === 'transfer_in' && address ? address : undefined,
         chain,
         notes: `${type === 'transfer_in' ? 'Deposit' : 'Withdrawal'}${network ? ` via ${network}` : ''}`,
         flags: ['possible_internal_transfer'],
         isInternalTransfer: false,
-        raw: row
+        raw: { ...row, _exchangeAddress: address }
       });
     }
 

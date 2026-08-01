@@ -241,7 +241,9 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
     if (result.mode !== 'stage') throw new Error('Unexpected sync mode.');
     const { outcome } = result;
     // Dry-run against the DB: staged rows already present are reported, not saved.
-    const fresh = await filterAlreadyImported(outcome.rows);
+    const fresh = await filterAlreadyImported(
+      outcome.rows.map((transaction) => ({ ...transaction, importBatchId: id }))
+    );
     const duplicatesSkipped = outcome.rows.length - fresh.length;
     const allWarnings = [...warnings, ...outcome.warnings];
     const preview = buildPreview(

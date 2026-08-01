@@ -1,5 +1,6 @@
 import Dexie, { type Table } from 'dexie';
 import type { Transaction, Lot, Disposal, TaxSettings } from '@/types/transaction';
+import { binanceApiIdentity, binanceEconomicKey } from './binanceEconomicDedup';
 
 /**
  * The entire app's data lives in this IndexedDB database, scoped to the
@@ -749,6 +750,11 @@ export async function countCsvImportTransactions(importId: string): Promise<numb
 export async function deleteCsvImportAndTransactions(importId: string): Promise<number> {
   const toDelete = await db.transactions.filter((t) => t.importBatchId === importId).toArray();
   await db.transaction('rw', db.transactions, db.csvImports, db.specIdHints, async () => {
+    const recoverableApiRows = toDelete
+      .map((t) => t.dedupMatchedApiRow)
+      .filter((t): t is Transaction => !!t)
+      .map((t) => ({ ...t, dedupMatchedApiId: undefined, dedupMatchedApiRow: undefined }));
+    if (recoverableApiRows.length > 0) await db.transactions.bulkPut(recoverableApiRows);
     if (toDelete.length > 0) {
       await db.transactions.bulkDelete(toDelete.map((t) => t.id));
       for (const t of toDelete) await db.specIdHints.delete(t.id);
@@ -768,15 +774,75 @@ export async function deduplicateTransactions(): Promise<number> {
   const seen = new Map<string, string>();
   const toDelete: string[] = [];
 
+  const csvByEconomicKey = new Map<string, Transaction[]>();
+  const apiByEconomicKey = new Map<string, Transaction[]>();
+  const durableReservations = new Set(
+    all.map((row) => row.source === 'binance' ? row.dedupMatchedApiId : undefined).filter(Boolean)
+  );
+  for (const row of all) {
+    const key = binanceEconomicKey(row);
+    if (!key) continue;
+    const target = row.source === 'binance' ? csvByEconomicKey : apiByEconomicKey;
+    const bucket = target.get(key) ?? [];
+    bucket.push(row);
+    target.set(key, bucket);
+  }
+  for (const api of all) {
+    const identity = binanceApiIdentity(api);
+    if (identity && durableReservations.has(identity)) toDelete.push(api.id);
+  }
+  const reservationUpdates: Array<{ id: string; dedupMatchedApiId: string; dedupMatchedApiRow: Transaction }> = [];
+  for (const [key, csvRows] of csvByEconomicKey) {
+    const apiRows = apiByEconomicKey.get(key) ?? [];
+    const reserved = new Set(csvRows.map((row) => row.dedupMatchedApiId).filter(Boolean));
+    for (const api of apiRows) {
+      const identity = binanceApiIdentity(api);
+      if (!identity) continue;
+      if (reserved.has(identity)) {
+        toDelete.push(api.id);
+        continue;
+      }
+      const csv = csvRows.find((row) => !row.dedupMatchedApiId);
+      if (!csv) continue;
+      csv.dedupMatchedApiId = identity;
+      csv.dedupMatchedApiRow = api;
+      reserved.add(identity);
+      reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
+      toDelete.push(api.id);
+    }
+  }
+
+  // Standalone Binance Spot/Transfer CSV exports already share byte-identical
+  // refs with API rows. Match those explicitly so Binance API/API identity can
+  // use native IDs without weakening the established CSV survivor contract.
+  const specializedCsvByRef = new Map<string, Transaction[]>();
+  for (const row of all) {
+    if (row.source !== 'binance_spot' && row.source !== 'binance_transfers') continue;
+    if (!row.sourceRef) continue;
+    const bucket = specializedCsvByRef.get(row.sourceRef) ?? [];
+    bucket.push(row);
+    specializedCsvByRef.set(row.sourceRef, bucket);
+  }
+  for (const api of all) {
+    if (api.source !== 'binance_api' || !api.sourceRef || toDelete.includes(api.id)) continue;
+    const csv = specializedCsvByRef.get(api.sourceRef)?.shift();
+    if (csv) toDelete.push(api.id);
+  }
+
   const score = (row: Transaction) =>
+    (row.dedupMatchedApiId ? 8 : 0) +
     (row.fiatValue != null ? 4 : 0) +
     (row.type === 'income' || row.type === 'trade' ? 2 : 0) +
     (row.flags.length === 0 ? 1 : 0);
 
   for (const t of all) {
+    if (toDelete.includes(t.id)) continue;
     const exchangeKey = transactionExchangeKey(t);
     const sourceKey = transactionSourceKey(t);
-    const key = exchangeKey
+    const apiIdentity = binanceApiIdentity(t);
+    const key = t.source === 'binance_api' && apiIdentity
+      ? `binance-api:${apiIdentity}`
+      : exchangeKey
       ? exchangeKey
       : sourceKey
         ? `src:${sourceKey}`
@@ -798,8 +864,16 @@ export async function deduplicateTransactions(): Promise<number> {
   }
 
   const uniqueDeletes = [...new Set(toDelete)];
-  if (uniqueDeletes.length > 0) {
-    await db.transactions.bulkDelete(uniqueDeletes);
+  if (uniqueDeletes.length > 0 || reservationUpdates.length > 0) {
+    await db.transaction('rw', db.transactions, async () => {
+      for (const update of reservationUpdates) {
+        await db.transactions.update(update.id, {
+          dedupMatchedApiId: update.dedupMatchedApiId,
+          dedupMatchedApiRow: update.dedupMatchedApiRow
+        });
+      }
+      if (uniqueDeletes.length > 0) await db.transactions.bulkDelete(uniqueDeletes);
+    });
   }
   return uniqueDeletes.length;
 }
@@ -820,8 +894,37 @@ export async function filterAlreadyImported(transactions: Transaction[]): Promis
   const existingExchangeKeys = new Set(
     existing.map((t) => transactionExchangeKey(t)).filter(Boolean) as string[]
   );
+  const fullHistoryEconomicKeys = new Set<string>();
+  const reservedApiIds = new Set<string>();
+  const existingApiIds = new Set<string>();
+  for (const row of existing) {
+    const apiIdentity = binanceApiIdentity(row);
+    if (apiIdentity) existingApiIds.add(apiIdentity);
+    const fullHistoryKey = row.source === 'binance' ? binanceEconomicKey(row) : null;
+    if (fullHistoryKey) fullHistoryEconomicKeys.add(fullHistoryKey);
+    if (row.source === 'binance' && row.dedupMatchedApiId) reservedApiIds.add(row.dedupMatchedApiId);
+    if (row.source !== 'binance' || row.dedupMatchedApiId) continue;
+    const key = binanceEconomicKey(row);
+    if (key) fullHistoryEconomicKeys.add(key);
+  }
   return transactions.filter((t) => {
-    const exKey = transactionExchangeKey(t);
+    const economicKey = binanceEconomicKey(t);
+    const exactExchangeKey = transactionExchangeKey(t);
+    if (t.source === 'binance' && exactExchangeKey && existingExchangeKeys.has(exactExchangeKey)) {
+      return false;
+    }
+    if (t.source === 'binance_api' && economicKey && fullHistoryEconomicKeys.has(economicKey)) {
+      const identity = binanceApiIdentity(t);
+      if (identity && (reservedApiIds.has(identity) || existingApiIds.has(identity))) return false;
+      // Persist the candidate; deduplicateTransactions performs the durable
+      // one-to-one reservation and removes only the matched API occurrence.
+      return true;
+    }
+    if (
+      t.source === 'binance' && economicKey &&
+      existing.some((row) => row.source === 'binance_api' && binanceEconomicKey(row) === economicKey)
+    ) return true;
+    const exKey = exactExchangeKey;
     if (exKey && existingExchangeKeys.has(exKey)) return false;
     const sourceKey = transactionSourceKey(t);
     if (sourceKey && existingSourceKeys.has(sourceKey)) return false;

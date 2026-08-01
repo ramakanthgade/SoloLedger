@@ -344,6 +344,10 @@ export function DashboardTab() {
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
   const balanceRows = useLiveQuery(() => db.walletBalances.toArray(), []) ?? NO_BALANCE_ROWS;
   const exchangeBalanceRows = useLiveQuery(() => db.exchangeBalances.toArray(), []) ?? NO_EXCHANGE_BALANCES;
+  const activeExchangeBalanceRows = useMemo(() => {
+    const activeIds = new Set(exchangeConns.map((connection) => connection.id));
+    return exchangeBalanceRows.filter((row) => activeIds.has(row.connectionId));
+  }, [exchangeBalanceRows, exchangeConns]);
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [period, setPeriod] = useState<DashboardPeriod>('FY');
@@ -414,8 +418,8 @@ export function DashboardTab() {
   // a phantom left by missed spends. `adjustments` feeds the data-health rail.
   // Exchange slices are anchored to the persisted fetchBalance rows (db v10).
   const reconciliation = useMemo(
-    () => reconcileHoldings(holdings, nonSpamTxs, balanceRows, exchangeBalanceRows),
-    [holdings, nonSpamTxs, balanceRows, exchangeBalanceRows]
+    () => reconcileHoldings(holdings, nonSpamTxs, balanceRows, activeExchangeBalanceRows),
+    [holdings, nonSpamTxs, balanceRows, activeExchangeBalanceRows]
   );
   const priceIndex = useMemo(
     () => buildPriceIndex(priceRows, currency),
@@ -622,7 +626,7 @@ export function DashboardTab() {
     const value = h.valueNow ?? h.costBasis;
     const sharePct = netWorth > 0 ? (value / netWorth) * 100 : null;
     const slices = isOpen
-      ? sourceBreakdown(nonSpamTxs, h, wallets, balanceRows, csvImports)
+      ? sourceBreakdown(nonSpamTxs, h, wallets, balanceRows, csvImports, activeExchangeBalanceRows)
       : [];
     const toggle = () => setExpanded(isOpen ? null : key);
 
@@ -1210,7 +1214,7 @@ export function DashboardTab() {
                   the ledger implies. Only renders for connections with a balance anchor. */}
               <DataHealthRecon
                 connections={exchangeConns}
-                exchangeBalances={exchangeBalanceRows}
+                exchangeBalances={activeExchangeBalanceRows}
                 transactions={nonSpamTxs}
               />
             </ul>

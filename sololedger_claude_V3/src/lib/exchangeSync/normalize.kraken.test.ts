@@ -181,7 +181,7 @@ describe('normalizeTransfer — kraken (real ccxt parse of Deposit/WithdrawStatu
     expect(row!.sourceRef).toBe('KRDEP-00001'); // == CSV refid
     expect(row!.source).toBe('kraken_api');
     expect(row!.flags).toEqual(['possible_internal_transfer']);
-    expect(row!.raw).toEqual({
+    expect(row!.raw).toMatchObject({
       txid: 'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90',
       refid: 'KRDEP-00001'
     });

@@ -65,11 +65,19 @@ export async function addConnection(input: NewConnectionInput): Promise<Exchange
  */
 export async function deleteConnectionAndTransactions(id: string): Promise<void> {
   const toDelete = await db.transactions.where('importBatchId').equals(id).toArray();
-  await db.transaction('rw', db.transactions, db.exchangeConnections, db.specIdHints, async () => {
+  await db.transaction(
+    'rw',
+    db.transactions,
+    db.exchangeConnections,
+    db.exchangeBalances,
+    db.specIdHints,
+    async () => {
     if (toDelete.length > 0) {
       await db.transactions.bulkDelete(toDelete.map((t) => t.id));
       for (const t of toDelete) await db.specIdHints.delete(t.id);
     }
+    await db.exchangeBalances.where('connectionId').equals(id).delete();
     await db.exchangeConnections.delete(id);
-  });
+    }
+  );
 }

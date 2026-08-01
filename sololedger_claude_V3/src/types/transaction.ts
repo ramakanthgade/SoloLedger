@@ -43,6 +43,10 @@ export interface Transaction {
   counterAmount?: number;
   source: string;               // "coinbase" | "binance" | "manual" | "rpc:<chain>" etc.
   sourceRef?: string;           // original row id / tx hash from the source, for audit trail
+  /** Internal one-to-one reservation when a full Binance journal row replaces an API twin. */
+  dedupMatchedApiId?: string;
+  /** Recoverable API twin, restored if the authoritative CSV import is deleted. */
+  dedupMatchedApiRow?: Transaction;
   walletAddress?: string;       // the queried address this row belongs to (RPC lookups)
   counterpartyAddress?: string; // the other side of a transfer, when derivable
   contractAddress?: string;     // token contract (EVM) or mint address (Solana), for price lookups

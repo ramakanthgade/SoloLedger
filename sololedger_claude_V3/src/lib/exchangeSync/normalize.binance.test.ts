@@ -159,7 +159,7 @@ describe('normalizeTrade — binance (real ccxt parse of myTrades fixture)', () 
 });
 
 describe('normalizeTransfer — binance (real ccxt parse of capital fixtures)', () => {
-  it('settled deposit (raw status 1) → transfer_in with txHash, chain, wallet address', () => {
+  it('settled deposit keeps network metadata without claiming watched-wallet ownership', () => {
     const fixture = loadFixture<unknown[]>('binance', 'deposits.json');
     const parsed = binance.parseTransactions(fixture, undefined, undefined, undefined, {
       type: 'deposit'
@@ -173,8 +173,11 @@ describe('normalizeTransfer — binance (real ccxt parse of capital fixtures)', 
     expect(row!.timestamp).toBe(1699900000000);
     expect(row!.chain).toBe('bitcoin');
     expect(row!.txHash).toBe('a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90');
-    expect(row!.walletAddress).toBe('bc1qmaskeddepositaddress000000000000000');
+    expect(row!.walletAddress).toBeUndefined();
     expect(row!.counterpartyAddress).toBeUndefined();
+    expect(row!.raw).toMatchObject({
+      exchangeAddress: 'bc1qmaskeddepositaddress000000000000000'
+    });
     expect(row!.notes).toBe('Deposit via BTC');
     expect(row!.flags).toEqual(['possible_internal_transfer']);
     expect(row!.source).toBe('binance_api');

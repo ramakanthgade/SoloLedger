@@ -784,10 +784,10 @@ export async function persistSyncedRows(args: {
   const settings = await getSettings();
   const { priceApiEnabled } = await getEffectiveSettings();
 
-  const fresh = await filterAlreadyImported(args.rows);
+  const scopedRows = args.rows.map((t) => ({ ...t, importBatchId: args.connectionId }));
+  const fresh = await filterAlreadyImported(scopedRows);
   const stamped = fresh.map((t) => ({
     ...t,
-    importBatchId: args.connectionId,
     fiatValue: normalizeFiatMagnitude(t.fiatValue),
     feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
   }));
