@@ -369,14 +369,18 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     source: `${exchange}_api`,
     sourceRef: transferSourceRef(exchange, transfer, type, asset, amount, ts),
     txHash,
-    // Withdrawal address is the destination (counterparty); a deposit address
-    // is the user's own exchange deposit address (wallet side).
+    // Exchange deposit addresses belong to centralized custody; they are not
+    // watched self-custody wallets and must never drive wallet reconciliation.
     counterpartyAddress: type === 'transfer_out' && address ? address : undefined,
-    walletAddress: type === 'transfer_in' && address ? address : undefined,
     chain,
     notes: `${type === 'transfer_in' ? 'Deposit' : 'Withdrawal'}${network ? ` via ${network}` : ''}`,
     flags: ['possible_internal_transfer'],
     isInternalTransfer: false,
-    raw: { txid, refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined }
+    raw: {
+      txid,
+      refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
+      transferId: transfer.id,
+      exchangeAddress: address
+    }
   };
 }

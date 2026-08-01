@@ -52,6 +52,10 @@ const SEED = vi.hoisted(() => {
     balanceRows: [] as {
       id: string; chain: string; address: string; asset: string;
       contractAddress?: string; amount: number; asOf: number; source: 'rpc'
+    }[],
+    exchangeBalanceRows: [] as {
+      id: string; connectionId: string; exchange: string; asset: string;
+      amount: number; asOf: number; source: 'exchange_api'
     }[]
   };
 });
@@ -68,7 +72,7 @@ vi.mock('@/lib/storage/db', () => ({
     exchangeConnections: { toArray: () => SEED.exchangeConns },
     priceCache: { toArray: () => SEED.priceRows },
     walletBalances: { toArray: () => SEED.balanceRows },
-    exchangeBalances: { toArray: () => [] }
+    exchangeBalances: { toArray: () => SEED.exchangeBalanceRows }
   },
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
   getLookupAddresses: () => SEED.wallets,
@@ -102,6 +106,7 @@ beforeEach(() => {
   localStorage.clear();
   SEED.priceRows.length = 0;
   SEED.balanceRows.length = 0;
+  SEED.exchangeBalanceRows.length = 0;
   // Reset the tx list to the base seed (some tests append wallet rows).
   SEED.txs.length = 4;
 });
@@ -332,6 +337,54 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...txBackup);
       SEED.csvImports.splice(0, SEED.csvImports.length, ...importBackup);
+    }
+  });
+
+  it('API-only history renders one chainless current balance instead of network phantoms', async () => {
+    const txBackup = [...SEED.txs];
+    SEED.txs.length = 0;
+    SEED.txs.push(
+      {
+        id: 'api-eth-deposit', timestamp: Date.UTC(2024, 0, 1), type: 'transfer_in',
+        asset: 'USDT', amount: 544_193, fiatCurrency: 'INR', source: 'binance_api',
+        chain: 'ethereum', walletAddress: '0x1111111111111111111111111111111111111111',
+        importBatchId: 'conn1', flags: [], isInternalTransfer: false
+      },
+      {
+        id: 'api-bsc-deposit', timestamp: Date.UTC(2024, 0, 2), type: 'transfer_in',
+        asset: 'USDT', amount: 701.8764, fiatCurrency: 'INR', source: 'binance_api',
+        chain: 'bsc', walletAddress: '0x2222222222222222222222222222222222222222',
+        importBatchId: 'conn1', flags: [], isInternalTransfer: false
+      }
+    );
+    SEED.exchangeBalanceRows.push({
+      id: 'conn1:USDT', connectionId: 'conn1', exchange: 'binance', asset: 'USDT',
+      amount: 119.5193, asOf: Date.now(), source: 'exchange_api'
+    });
+    SEED.exchangeConns.push({
+      id: 'conn1', exchange: 'binance', apiKey: 'redacted', secret: 'redacted',
+      createdAt: Date.now(), cursors: {}, status: 'ok', lastSyncAt: Date.now()
+    } as never);
+
+    try {
+      await renderTab();
+      const holdings = screen.getByTestId('dashboard-holdings');
+      const usdtButtons = within(holdings).getAllByRole('button', { expanded: false })
+        .filter((button) => button.textContent?.includes('USDT'));
+      // The responsive row renders one asset button for mobile and one for desktop.
+      expect(usdtButtons).toHaveLength(2);
+      expect(within(holdings).getByText('1 asset')).toBeInTheDocument();
+      expect(within(holdings).getAllByText(/119\.5193/).length).toBeGreaterThan(0);
+      expect(within(holdings).queryByText('ethereum')).not.toBeInTheDocument();
+      expect(within(holdings).queryByText('bsc')).not.toBeInTheDocument();
+      fireEvent.click(usdtButtons[0]);
+      const expansion = screen.getByTestId('holding-expansion');
+      expect(within(expansion).getByText('Binance API')).toBeInTheDocument();
+      expect(within(expansion).getByText(/119\.5193 USDT/)).toBeInTheDocument();
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
+      SEED.exchangeBalanceRows.length = 0;
+      SEED.exchangeConns.length = 0;
     }
   });
 });

@@ -13,6 +13,9 @@ describe('Binance Deposit & Withdrawal History parser', () => {
     // The "Pending" BTC deposit is not settled and must be skipped.
     expect(skippedRows).toBe(1);
     expect(warnings.join(' ')).toMatch(/status not completed/i);
+    const eth = transactions.find((t) => t.asset === 'ETH')!;
+    expect(eth.walletAddress).toBeUndefined();
+    expect(eth.raw).toMatchObject({ _exchangeAddress: expect.any(String) });
   });
 
   it('matches the golden withdrawal fixture (failed row skipped, fee captured)', () => {

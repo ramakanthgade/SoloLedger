@@ -32,6 +32,7 @@ import { apiFetch } from '@/lib/saas/api';
 import type { Transaction } from '@/types/transaction';
 import { binanceSpotParser } from '@/lib/parsers/binanceSpot';
 import { binanceTransfersParser } from '@/lib/parsers/binanceTransfers';
+import { stitchBinanceTransactionHistory } from '@/lib/parsers/binanceStitch';
 import { loadFixtureRows } from '@/lib/parsers/__fixtures__/fixtureUtils';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import {
@@ -232,6 +233,139 @@ describe('dedup contract — end to end through fake-indexeddb', () => {
     }
     const netNew = await filterAlreadyImported(replay);
     expect(netNew).toEqual([]);
+  });
+});
+
+describe('dedup contract — full Binance Transaction History authority', () => {
+  function stitchedIdenticalBuys(count: number): Transaction[] {
+    const rows: Record<string, string>[] = [];
+    for (let i = 0; i < count; i++) {
+      rows.push(
+        { UTC_Time: '2025-05-03 09:00:00', Account: 'Spot', Operation: 'Transaction Buy', Coin: 'BTC', Change: '0.01', Remark: '' },
+        { UTC_Time: '2025-05-03 09:00:00', Account: 'Spot', Operation: 'Transaction Spend', Coin: 'USDT', Change: '-500', Remark: '' }
+      );
+    }
+    return stitchBinanceTransactionHistory(rows).transactions.filter((row) => row.type === 'buy');
+  }
+
+  function apiTwins(csv: Transaction[], count = csv.length): Transaction[] {
+    return Array.from({ length: count }, (_, index) => {
+      const basis = csv[index % csv.length];
+      return {
+        ...basis,
+        id: `api-full-${index + 1}`,
+        source: 'binance_api',
+        sourceRef: `binance:${basis.timestamp}:buy:BTC:0.010000`,
+        importBatchId: 'conn1',
+        raw: { tradeId: `trade-${index + 1}` },
+        dedupMatchedApiId: undefined
+      };
+    });
+  }
+
+  beforeEach(async () => {
+    await db.transactions.clear();
+  });
+
+  it('preserves #h/~n CSV occurrences and removes matching API rows one-to-one', async () => {
+    const csv = stitchedIdenticalBuys(2).map((row, index) => ({ ...row, importBatchId: 'full-history', id: `csv-${index + 1}` }));
+    expect(csv).toHaveLength(2);
+    expect(new Set(csv.map((row) => row.sourceRef)).size).toBe(2);
+    expect(csv.every((row) => row.sourceRef?.includes('#h'))).toBe(true);
+    const originalRefs = csv.map((row) => row.sourceRef);
+    await db.transactions.bulkPut([...apiTwins(csv), ...csv]);
+
+    expect(await deduplicateTransactions()).toBe(2);
+    const survivors = await db.transactions.toArray();
+    expect(survivors).toHaveLength(2);
+    expect(survivors.every((row) => row.source === 'binance')).toBe(true);
+    expect(survivors.map((row) => row.sourceRef).sort()).toEqual(originalRefs.sort());
+    expect(await deduplicateTransactions()).toBe(0);
+  });
+
+  it('keeps a distinct excess API fill and filters only its exact replay', async () => {
+    const csv = stitchedIdenticalBuys(1).map((row) => ({ ...row, importBatchId: 'full-history', id: 'csv-one' }));
+    const [first, second] = apiTwins(csv, 2);
+    await db.transactions.bulkPut([...csv, first, second]);
+    expect(await deduplicateTransactions()).toBe(1);
+    let survivors = await db.transactions.toArray();
+    expect(survivors.filter((row) => row.source === 'binance')).toHaveLength(1);
+    expect(survivors.filter((row) => row.source === 'binance_api')).toHaveLength(1);
+    expect(survivors.find((row) => row.source === 'binance')?.dedupMatchedApiId).toBe('conn1:buy:BTC:USDT:trade-1');
+
+    expect(await filterAlreadyImported([{ ...first, id: 'first-replay' }])).toEqual([]);
+    expect(await filterAlreadyImported([{ ...second, id: 'second-replay' }])).toEqual([]);
+    expect(await filterAlreadyImported([{ ...csv[0], id: 'csv-exact-reimport' }])).toEqual([]);
+    const third = { ...second, id: 'api-third', raw: { tradeId: 'trade-3' } };
+    expect(await filterAlreadyImported([third])).toEqual([third]);
+    await db.transactions.put(third);
+    expect(await deduplicateTransactions()).toBe(0);
+    survivors = await db.transactions.toArray();
+    expect(survivors.filter((row) => row.source === 'binance_api')).toHaveLength(2);
+  });
+
+  it('preserves distinct API-only fills that share the same economic ref', async () => {
+    const csvBasis = stitchedIdenticalBuys(1);
+    const [first, second] = apiTwins(csvBasis, 2);
+    await db.transactions.bulkPut([first, second]);
+    expect(await deduplicateTransactions()).toBe(0);
+    expect(await db.transactions.count()).toBe(2);
+    await db.transactions.put({ ...first, id: 'first-replay' });
+    expect(await deduplicateTransactions()).toBe(1);
+    expect(await db.transactions.count()).toBe(2);
+  });
+
+  it('retains the API reservation when the same full-history CSV is reimported', async () => {
+    const [csv] = stitchedIdenticalBuys(1).map((row) => ({ ...row, importBatchId: 'first-csv', id: 'csv-original' }));
+    const [api] = apiTwins([csv]);
+    await db.transactions.bulkPut([csv, api]);
+    expect(await deduplicateTransactions()).toBe(1);
+    await db.transactions.put({ ...csv, id: 'csv-reimport', importBatchId: 'second-csv', dedupMatchedApiId: undefined });
+    expect(await deduplicateTransactions()).toBe(1);
+    const [survivor] = await db.transactions.toArray();
+    expect(survivor.source).toBe('binance');
+    expect(survivor.dedupMatchedApiId).toBe('conn1:buy:BTC:USDT:trade-1');
+    await db.transactions.put({ ...api, id: 'api-replay' });
+    expect(await deduplicateTransactions()).toBe(1);
+    expect(await db.transactions.count()).toBe(1);
+  });
+
+  it('honors a durable reservation after the user edits the CSV economics', async () => {
+    const [csv] = stitchedIdenticalBuys(1).map((row) => ({ ...row, id: 'csv-edited' }));
+    const [api] = apiTwins([csv]);
+    await db.transactions.bulkPut([csv, api]);
+    expect(await deduplicateTransactions()).toBe(1);
+    const reserved = (await db.transactions.get('csv-edited'))!;
+    await db.transactions.put({ ...reserved, amount: 0.02, type: 'trade' });
+    await db.transactions.put({ ...api, id: 'api-after-edit' });
+    expect(await deduplicateTransactions()).toBe(1);
+    expect(await db.transactions.count()).toBe(1);
+  });
+
+  it('restores the suppressed API twin when the authoritative CSV import is deleted', async () => {
+    const [csv] = stitchedIdenticalBuys(1).map((row) => ({ ...row, id: 'csv-delete', importBatchId: 'full-history' }));
+    const [api] = apiTwins([csv]);
+    await db.csvImports.put({
+      id: 'full-history', fileName: 'history.csv', parserId: 'binance', importedAt: 1,
+      txCount: 1, balanceSnapshot: { BTC: 0.01 }
+    });
+    await db.transactions.bulkPut([csv, api]);
+    expect(await deduplicateTransactions()).toBe(1);
+    expect(await db.transactions.count()).toBe(1);
+
+    const { deleteCsvImportAndTransactions } = await import('@/lib/storage/db');
+    expect(await deleteCsvImportAndTransactions('full-history')).toBe(1);
+    const [restored] = await db.transactions.toArray();
+    expect(restored).toMatchObject({ id: api.id, source: 'binance_api', importBatchId: 'conn1' });
+  });
+
+  it('does not collide identical native trade IDs from separate Binance connections', async () => {
+    const [basis] = stitchedIdenticalBuys(1);
+    const [first] = apiTwins([basis]);
+    const second = { ...first, id: 'other-account', importBatchId: 'conn2' };
+    await db.transactions.bulkPut([first, second]);
+    expect(await deduplicateTransactions()).toBe(0);
+    expect(await db.transactions.count()).toBe(2);
   });
 });
 

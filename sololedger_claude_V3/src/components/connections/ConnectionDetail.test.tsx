@@ -26,6 +26,12 @@ const mocks = vi.hoisted(() => ({
       contractAddress?: string; amount: number; asOf: number; source: 'rpc'
     }[]
   },
+  exchangeBalanceRows: {
+    current: [] as {
+      id: string; connectionId: string; exchange: string; asset: string;
+      amount: number; asOf: number; source: 'exchange_api'
+    }[]
+  },
   lookupRows: {
     current: [] as {
       id: string; chain: string; address: string; lastSyncedAt: number
@@ -83,6 +89,13 @@ vi.mock('@/lib/storage/db', () => ({
     transactions: { toArray: () => mocks.txs.current },
     priceCache: { toArray: () => mocks.priceRows.current },
     walletBalances: { toArray: () => mocks.balanceRows.current },
+    exchangeBalances: {
+      where: () => ({
+        equals: (id: string) => ({
+          toArray: () => mocks.exchangeBalanceRows.current.filter((row) => row.connectionId === id)
+        })
+      })
+    },
     lookupAddresses: { toArray: () => mocks.lookupRows.current },
     exchangeConnections: { get: (id: string) =>
       mocks.exchangeRow.current?.id === id ? mocks.exchangeRow.current : undefined }
@@ -264,6 +277,7 @@ beforeEach(() => {
   mocks.txs.current = [];
   mocks.priceRows.current = [];
   mocks.balanceRows.current = [];
+  mocks.exchangeBalanceRows.current = [];
   mocks.lookupRows.current = [];
   mocks.exchangeRow.current = undefined;
   mocks.user.current = null;
@@ -423,8 +437,14 @@ describe('ConnectionDetail — exchange kind', () => {
     mocks.priceRows.current.push({ key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: Date.now() });
   }
 
-  it('renders tx-derived holdings valued via the price cache with at-cost fallback', () => {
+  it('renders current API balances instead of historical transaction accumulation', () => {
     seedExchangeScene();
+    mocks.exchangeBalanceRows.current = [
+      { id: 'exc_1:BTC', connectionId: 'exc_1', exchange: 'binance', asset: 'BTC', amount: 0.12, asOf: Date.now(), source: 'exchange_api' },
+      { id: 'exc_1:ETH', connectionId: 'exc_1', exchange: 'binance', asset: 'ETH', amount: 0.4, asOf: Date.now(), source: 'exchange_api' },
+      { id: 'exc_1:USDC', connectionId: 'exc_1', exchange: 'binance', asset: 'USDC', amount: 7, asOf: Date.now(), source: 'exchange_api' },
+      { id: 'exc_2:SOL', connectionId: 'exc_2', exchange: 'binance', asset: 'SOL', amount: 99, asOf: Date.now(), source: 'exchange_api' }
+    ];
     render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
 
     expect(screen.getByRole('heading', { name: 'Binance · Main' })).toBeInTheDocument();
@@ -439,16 +459,19 @@ describe('ConnectionDetail — exchange kind', () => {
     expect(within(chips).getByText('1 withdrawal')).toBeInTheDocument();
     expect(within(chips).getByText('2 trades')).toBeInTheDocument();
 
-    // BTC: (0.3 + 0.1 − 0.05) × 9,000,000 = ₹31,50,000. ETH: at cost ₹5,000.
+    // Current snapshot, not historical net: BTC 0.12 × ₹90L; ETH 0.4 at
+    // history-derived unit cost ₹5,000.
     const holdings = screen.getByTestId('detail-holdings');
     const btcRow = within(holdings).getByText('BTC').closest('li')!;
-    expect(btcRow).toHaveTextContent('0.35');
-    expect(btcRow).toHaveTextContent('₹31,50,000.00');
+    expect(btcRow).toHaveTextContent('0.12');
+    expect(btcRow).toHaveTextContent('₹10,80,000.00');
     const ethRow = within(holdings).getByText('ETH').closest('li')!;
-    expect(ethRow).toHaveTextContent('₹5,000.00 · at cost');
+    expect(ethRow).toHaveTextContent('0.4');
+    expect(ethRow).toHaveTextContent('₹2,000.00 · at cost');
+    expect(within(holdings).getByText('USDC').closest('li')).toHaveTextContent('7');
     expect(screen.queryByText('SOL')).not.toBeInTheDocument();
 
-    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹31,55,000.00');
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹10,82,000.00');
     expect(screen.getByText('Valued at cost where no live price is cached.')).toBeInTheDocument();
   });
 

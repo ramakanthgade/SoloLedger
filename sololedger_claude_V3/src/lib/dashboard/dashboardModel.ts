@@ -475,12 +475,14 @@ export function sourceBreakdown(
   holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
   wallets: LookupAddressRow[],
   balances?: WalletBalanceRow[],
-  csvImports: CsvImportRow[] = []
+  csvImports: CsvImportRow[] = [],
+  exchangeBalances: ExchangeBalanceRow[] = []
 ): SourceSlice[] {
   const walletByAddress = new Map(wallets.map((w) => [w.address.toLowerCase(), w]));
   const slices = new Map<string, SourceSlice>();
   const walletChain = new Map<string, string>();
   const pairedInternalIds = pairedInternalTransferIds(transactions);
+  const balanceExchanges = new Set(exchangeBalances.map((row) => row.exchange.toLowerCase()));
 
   const upsert = (key: string, name: string, iconId: string | undefined, delta: number) => {
     const existing = slices.get(key);
@@ -499,7 +501,17 @@ export function sourceBreakdown(
     ) continue;
     const delta = txDeltaFor(t, holding);
     if (Math.abs(delta) < 1e-12) continue;
-    if (t.walletAddress) {
+    const centralizedExchange = [...balanceExchanges]
+      .find((exchange) => transactionMatchesExchangeCustody(t, exchange));
+    if (centralizedExchange) {
+      const iconId = parserIconId(centralizedExchange);
+      upsert(
+        `exchange-custody:${centralizedExchange}`,
+        iconId ? brandLabel(iconId) : prettifySource(centralizedExchange),
+        iconId,
+        delta
+      );
+    } else if (t.walletAddress) {
       const addrLower = t.walletAddress.toLowerCase();
       const wallet = walletByAddress.get(addrLower);
       const name =
@@ -549,6 +561,31 @@ export function sourceBreakdown(
     if (binance) binance.qty += residual;
   }
 
+  // A centralized exchange API balance is the current custody truth. Replace
+  // its historical API/CSV source slices (including network-tagged deposits)
+  // with one chainless API slice; Options remains a separate subaccount.
+  if (!holding.chain && exchangeBalances.length > 0) {
+    const asset = holding.asset.toUpperCase();
+    const byExchange = new Map([...balanceExchanges].map((exchange) => [exchange, 0]));
+    for (const row of exchangeBalances) {
+      if (row.asset.toUpperCase() !== asset) continue;
+      const exchange = row.exchange.toLowerCase();
+      byExchange.set(exchange, (byExchange.get(exchange) ?? 0) + Math.max(0, row.amount));
+    }
+    for (const [exchange, amount] of byExchange) {
+      slices.delete(`exchange-custody:${exchange}`);
+      if (amount > 1e-9) {
+        const iconId = parserIconId(exchange);
+        slices.set(`exchange-api:${exchange}`, {
+          key: `exchange-api:${exchange}`,
+          name: `${iconId ? brandLabel(iconId) : prettifySource(exchange)} API`,
+          iconId,
+          qty: amount
+        });
+      }
+    }
+  }
+
   // On-chain truth anchor: a wallet slice with a stored balance row reports
   // the chain's number, not the tx-derived estimate — drained addresses
   // (balance 0) drop out of "where it lives" entirely.
@@ -589,6 +626,112 @@ export interface ReconciliationResult {
   adjustedDownCount: number;
   /** Holdings with at least one address reconciled to an on-chain balance row. */
   reconciledCount: number;
+}
+
+function transactionMatchesExchangeCustody(t: Transaction, exchange: string): boolean {
+  const normalized = t.source.toLowerCase();
+  const id = exchange.toLowerCase();
+  if (normalized === `${id}_options` || t.instrumentClass === 'derivative' || t.category === 'perp') {
+    return false;
+  }
+  if (normalized === `${id}_api` || normalized === `${id}_spot` || normalized === `${id}_transfers`) {
+    return true;
+  }
+  if (normalized !== id) return false;
+  const accounts: string[] = [];
+  const collectAccounts = (value: unknown) => {
+    if (!value || typeof value !== 'object') return;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      if (key.toLowerCase() === 'account' && typeof nested === 'string') {
+        accounts.push(nested.toLowerCase());
+      } else if (nested && typeof nested === 'object') {
+        collectAccounts(nested);
+      }
+    }
+  };
+  collectAccounts(t.raw);
+  return accounts.length === 0 || accounts.every((account) => account.includes('spot'));
+}
+
+export interface ExchangeAuthorityPortfolio {
+  holdings: PortfolioHolding[];
+  authorityHoldings: PortfolioHolding[];
+  remainingTransactions: Transaction[];
+  authorityAssets: Set<string>;
+  adjustedDownCount: number;
+}
+
+/**
+ * Replace historical custody deltas for exchanges with a current API balance
+ * snapshot. CSV and API rows remain stored for tax/history and each
+ * Connections card, but they are one overlapping custody account on the
+ * aggregate Dashboard. Options journals stay additive because Binance spot
+ * fetchBalance does not include the Options subaccount.
+ */
+export function applyExchangeBalanceAuthority(
+  transactions: Transaction[],
+  exchangeBalances: ExchangeBalanceRow[]
+): ExchangeAuthorityPortfolio {
+  const exchanges = new Set(exchangeBalances.map((row) => row.exchange.toLowerCase()));
+  const custodyByExchange = new Map<string, Transaction[]>();
+  const remainingTransactions: Transaction[] = [];
+  for (const t of transactions) {
+    const exchange = [...exchanges].find((id) => transactionMatchesExchangeCustody(t, id));
+    if (!exchange) {
+      remainingTransactions.push(t);
+      continue;
+    }
+    const rows = custodyByExchange.get(exchange) ?? [];
+    rows.push(t);
+    custodyByExchange.set(exchange, rows);
+  }
+
+  // Build non-overlapping sources without CSV balance snapshots; the live API
+  // snapshot is newer authority. Signed Options rows remain in this set.
+  const holdings = buildPortfolioHoldings(remainingTransactions);
+  const byKey = new Map(
+    holdings.map((h) => [`${h.chain ?? 'x'}|${h.asset.toUpperCase()}|${h.contractAddress?.toLowerCase() ?? ''}`, h])
+  );
+  const balancesByExchangeAsset = new Map<string, number>();
+  for (const row of exchangeBalances) {
+    const key = `${row.exchange.toLowerCase()}|${row.asset.toUpperCase()}`;
+    balancesByExchangeAsset.set(key, (balancesByExchangeAsset.get(key) ?? 0) + Math.max(0, row.amount));
+  }
+
+  const authorityAssets = new Set<string>();
+  const authorityHoldings: PortfolioHolding[] = [];
+  let adjustedDownCount = 0;
+  for (const [exchangeAsset, amount] of balancesByExchangeAsset) {
+    const [exchange, asset] = exchangeAsset.split('|');
+    const history = buildPortfolioHoldings(custodyByExchange.get(exchange) ?? [])
+      .filter((h) => h.asset.toUpperCase() === asset);
+    const historyAmount = history.reduce((sum, h) => sum + h.amount, 0);
+    const historyCost = history.reduce((sum, h) => sum + h.costBasis, 0);
+    const perUnit = historyAmount > 1e-9 ? historyCost / historyAmount : 0;
+    if (amount < historyAmount - 1e-9) adjustedDownCount++;
+
+    const key = `x|${asset}|`;
+    const existing = byKey.get(key);
+    if (amount > 1e-9) {
+      authorityHoldings.push({ asset, amount, costBasis: perUnit * amount });
+      if (existing) {
+        existing.amount += amount;
+        existing.costBasis += perUnit * amount;
+      } else {
+        const holding: PortfolioHolding = { asset, amount, costBasis: perUnit * amount };
+        holdings.push(holding);
+        byKey.set(key, holding);
+      }
+    }
+    authorityAssets.add(asset);
+  }
+  return {
+    holdings,
+    authorityHoldings,
+    remainingTransactions,
+    authorityAssets,
+    adjustedDownCount
+  };
 }
 
 /**
@@ -657,6 +800,36 @@ export function reconcileHoldings(
   balances: WalletBalanceRow[],
   exchangeBalances?: ExchangeBalanceRow[]
 ): ReconciliationResult {
+  if (exchangeBalances && exchangeBalances.length > 0) {
+    const authority = applyExchangeBalanceAuthority(transactions, exchangeBalances);
+    const additiveHoldings = buildPortfolioHoldings(authority.remainingTransactions);
+    const walletResult = reconcileHoldings(additiveHoldings, authority.remainingTransactions, balances);
+    const merged = [...walletResult.holdings];
+    for (const apiHolding of authority.authorityHoldings) {
+      const existing = merged.find((h) =>
+        !h.chain &&
+        h.asset.toUpperCase() === apiHolding.asset.toUpperCase() &&
+        !h.contractAddress
+      );
+      if (existing) {
+        existing.amount += apiHolding.amount;
+        existing.costBasis += apiHolding.costBasis;
+        existing.txDerivedAmount += apiHolding.amount;
+        existing.qtySource = 'exchange-api';
+      } else {
+        merged.push({
+          ...apiHolding,
+          qtySource: 'exchange-api',
+          txDerivedAmount: apiHolding.amount
+        });
+      }
+    }
+    return {
+      ...walletResult,
+      holdings: merged,
+      adjustedDownCount: walletResult.adjustedDownCount + authority.adjustedDownCount
+    };
+  }
   const result: ReconciledHolding[] = [];
   const pairedInternalIds = pairedInternalTransferIds(transactions);
   let adjustedDownCount = 0;
