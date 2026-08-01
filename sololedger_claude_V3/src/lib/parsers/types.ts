@@ -11,6 +11,10 @@ export interface ParseResult {
   balanceSnapshot?: Record<string, number>;
   /** The source export omits activity needed to reconstruct an Options balance. */
   optionsBalanceUnavailable?: boolean;
+  /** A Binance Options cash journal was imported, including premiums and fees. */
+  optionsBalanceIncluded?: boolean;
+  /** Latest Options activity timestamp covered by this source file. */
+  optionsCoverageThrough?: number;
   /**
    * Structured hint of which required field(s) were absent when a file could
    * not be parsed. Lets callers render specific fix-the-file guidance instead
@@ -41,7 +45,7 @@ export interface ExchangeParser {
   id: string;
   label: string;
   /** Cheap heuristic check on headers to auto-detect this format. */
-  detect: (headers: string[], ctx?: SheetContext) => boolean;
+  detect: (headers: string[], ctx?: SheetContext, rows?: Record<string, string>[]) => boolean;
   parse: (rows: Record<string, string>[], ctx?: SheetContext) => ParseResult;
 }
 

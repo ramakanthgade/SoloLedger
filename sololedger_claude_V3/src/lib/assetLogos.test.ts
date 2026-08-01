@@ -27,6 +27,16 @@ describe('getAssetLogoUrl', () => {
     expect(getAssetLogoUrl('HNT')).toBe(
       'https://cdn.jsdelivr.net/gh/simplr-sh/coin-logos/images/helium/small.png'
     );
+    expect(getAssetLogoUrl('BTT')).toContain('/bittorrent/small.png');
+    expect(getAssetLogoUrl('CITY')).toContain('/manchester-city-fan-token/small.png');
+    expect(getAssetLogoUrl('QI')).toContain('/benqi/small.png');
+    expect(getAssetLogoUrl('STX')).toContain('/blockstack/small.png');
+  });
+
+  it('uses bundled accurate marks when the CDN snapshot is missing or wrong', () => {
+    expect(getAssetLogoUrl('0G')).toMatch(/\/assets\/brand-icons\/0g\.png$/);
+    expect(getAssetLogoUrl('BUSD')).toMatch(/\/assets\/brand-icons\/busd\.png$/);
+    expect(getAssetLogoUrl('CAD')).toMatch(/\/assets\/brand-icons\/cad\.svg$/);
   });
 
   it('returns CDN URL with correct size', () => {
@@ -68,11 +78,14 @@ describe('getAssetLogoUrl', () => {
 });
 
 describe('getLocalLogoPath', () => {
-  it('returns null for all assets (no local bundling — use CDN)', () => {
+  it('returns bundled paths only for locally pinned marks', () => {
     expect(getLocalLogoPath('BTC')).toBeNull();
     expect(getLocalLogoPath('ETH')).toBeNull();
     expect(getLocalLogoPath('UNI')).toBeNull();
     expect(getLocalLogoPath('UNKNOWN')).toBeNull();
+    expect(getLocalLogoPath('0G')).toMatch(/\/assets\/brand-icons\/0g\.png$/);
+    expect(getLocalLogoPath('BUSD')).toMatch(/\/assets\/brand-icons\/busd\.png$/);
+    expect(getLocalLogoPath('CAD')).toMatch(/\/assets\/brand-icons\/cad\.svg$/);
   });
 });
 

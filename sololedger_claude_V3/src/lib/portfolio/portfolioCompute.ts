@@ -150,6 +150,14 @@ function applyTxToHoldings(
       : `${chain ?? 'x'}:${label.toUpperCase()}`;
     if (!map.has(key)) map.set(key, { amount: 0, costBasis: 0, chain, contractAddress: mint, asset: label });
     const h = map.get(key)!;
+    if (t.category?.startsWith('options_')) {
+      // Options exports are signed cash journals and may cover a period that
+      // starts with an outflow. Preserve the arithmetic delta instead of the
+      // generic spot safeguard that clamps withdrawals to current holdings.
+      h.amount += sign * amount;
+      h.costBasis += sign * costAdd;
+      return;
+    }
     if (sign > 0) { h.amount += amount; h.costBasis += costAdd; return; }
     if (h.amount > 1e-9) {
       const q = Math.min(amount, h.amount);
@@ -242,7 +250,10 @@ function applyTxToHoldings(
     : ['sell', 'transfer_out', 'gift_sent', 'fee'].includes(t.type) ? -1
     : 0;
   if (sign === 0) return;
-  upsert(t.asset, t.amount, sign as 1 | -1, sign > 0 ? (t.fiatValue ?? 0) : 0, t.chain, t.contractAddress);
+  const costAdd = t.category?.startsWith('options_')
+    ? (t.fiatValue ?? 0)
+    : sign > 0 ? (t.fiatValue ?? 0) : 0;
+  upsert(t.asset, t.amount, sign as 1 | -1, costAdd, t.chain, t.contractAddress);
 
   if (t.feeAmount && t.feeAmount > 0 && t.type !== 'trade') {
     upsert(

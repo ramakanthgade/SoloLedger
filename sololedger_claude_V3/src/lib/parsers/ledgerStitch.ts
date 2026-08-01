@@ -1177,6 +1177,7 @@ export function stitchLedger(
   warnings: string[];
   balanceSnapshot?: Record<string, number>;
   optionsBalanceUnavailable?: boolean;
+  optionsCoverageThrough?: number;
 } {
   const normalized = normalizeLedgerRows(rows, cfg);
   const skippedRows = rows.length - normalized.length;
@@ -1363,6 +1364,9 @@ export function stitchLedger(
     skippedRows,
     warnings,
     balanceSnapshot,
-    optionsBalanceUnavailable: optionRows > 0
+    optionsBalanceUnavailable: optionRows > 0,
+    optionsCoverageThrough: optionRows > 0
+      ? Math.max(...normalized.filter((r) => r.account.toLowerCase() === 'options').map((r) => r.timestamp))
+      : undefined
   };
 }

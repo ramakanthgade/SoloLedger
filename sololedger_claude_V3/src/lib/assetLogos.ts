@@ -11,10 +11,13 @@
  * CoinGecko ID directly (works for most major assets).
  */
 
-// Top assets we bundle locally (instant, no network) — BUT these SVGs often
-// render black because they lack fill colors. Use CDN for everything instead.
+import { brandIconUrl } from './brandAssets';
+
+// Assets whose current/accurate mark is not available in the CDN snapshot.
 const LOCAL_ICONS: Record<string, string> = {
-  // Intentionally empty — all assets use CDN for correct colors
+  '0G': '0g.png',
+  BUSD: 'busd.png',
+  CAD: 'cad.svg'
 };
 
 // Ticker → CoinGecko ID mapping for CDN fallback
@@ -92,7 +95,7 @@ const COINGECKO_IDS: Record<string, string> = {
   APT: 'aptos',
   REQ: 'request-network',
   SALT: 'salt',
-  CITY: 'city-coin',
+  CITY: 'manchester-city-fan-token',
   RDN: 'raiden-network',
   NPXS: 'pundi-x',
   PAXG: 'pax-gold',
@@ -100,7 +103,9 @@ const COINGECKO_IDS: Record<string, string> = {
   // Frequently-held assets whose CoinGecko ID differs from the lowercase ticker
   '0G': '0g-protocol',
   LPT: 'livepeer',
-  STX: 'stacks',
+  STX: 'blockstack',
+  BTT: 'bittorrent',
+  QI: 'benqi',
   JTO: 'jito-governance-token',
   MTL: 'metal',
   FLOW: 'flow',
@@ -372,7 +377,6 @@ const COINGECKO_IDS: Record<string, string> = {
 };
 
 const CDN_BASE = 'https://cdn.jsdelivr.net/gh/simplr-sh/coin-logos/images';
-const LOCAL_BASE = '/assets/brand-icons';
 
 export type LogoSize = 'thumb' | 'small' | 'standard' | 'large';
 
@@ -396,8 +400,7 @@ export function getAssetLogoUrl(ticker: string, size: LogoSize = 'small'): strin
   // 1. Local bundled icons (fastest)
   const localFile = LOCAL_ICONS[normalized];
   if (localFile) {
-    const ext = localFile.endsWith('.png') ? '' : '.svg';
-    return `${LOCAL_BASE}/${localFile}${ext}`;
+    return brandIconUrl(localFile);
   }
 
   // 2. CDN via CoinGecko ID mapping
@@ -425,8 +428,7 @@ export function getLocalLogoPath(ticker: string): string | null {
   const normalized = ticker.toUpperCase().trim();
   const localFile = LOCAL_ICONS[normalized];
   if (!localFile) return null;
-  const ext = localFile.endsWith('.png') ? '' : '.svg';
-  return `${LOCAL_BASE}/${localFile}${ext}`;
+  return brandIconUrl(localFile);
 }
 
 /**

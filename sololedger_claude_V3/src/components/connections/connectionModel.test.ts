@@ -161,6 +161,7 @@ describe('fileImportTitle', () => {
     expect(fileImportTitle(csvRow({ parserId: 'wazirx_ledger' }))).toBe('WazirX');
     expect(fileImportTitle(csvRow({ parserId: 'coindcx' }))).toBe('CoinDCX');
     expect(fileImportTitle(csvRow({ parserId: 'mudrex' }))).toBe('Mudrex'); // source, no logo
+    expect(fileImportTitle(csvRow({ parserId: 'binance_options' }))).toBe('Binance Options');
     expect(fileImportTitle(csvRow({ parserId: 'generic_history', fileName: 'my-export.csv' }))).toBe('my-export.csv');
   });
 });

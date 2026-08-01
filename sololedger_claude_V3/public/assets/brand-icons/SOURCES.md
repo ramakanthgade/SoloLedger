@@ -111,6 +111,9 @@ these; wallets with no entry here render the clean aurora letter chip.
 | `bnb.png` | TrustWallet `assets` repo, `blockchains/binance/info/logo.png` (256×256, RGBA) | TrustWallet-hosted brand asset |
 | `usdc.png` | TrustWallet `assets` repo (181×181, RGBA) | TrustWallet-hosted brand asset |
 | `livepeer.svg` | cryptologos.cc `https://cryptologos.cc/logos/livepeer-lpt-logo.svg` (black-blocks mark; white tile baked in — the mark is designed for light backgrounds, same accommodation as OKX/Trezor) | Logo provided for identification use |
+| `0g.png` | CoinGecko-hosted 0G image (`zero-gravity`, 250×250 RGBA), sourced from the current 0G listing | CoinGecko-hosted brand asset; used for identification only |
+| `busd.png` | TrustWallet assets repo, BNB Smart Chain token `0xe9e7…7D56` (256×256) | TrustWallet-hosted brand asset |
+| `cad.svg` | Flag Icons Canada flag (`lipis/flag-icons`, `flags/4x3/ca.svg`) | MIT |
 
 ## Adding a new icon
 

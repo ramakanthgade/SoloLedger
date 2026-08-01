@@ -400,7 +400,15 @@ export function DashboardTab() {
       cancelled = true;
     };
   }, [holdings, currency, spotRefreshTick]);
-  const optionsBalanceUnavailable = csvImports.some((row) => row.optionsBalanceUnavailable);
+  const includedThrough = Math.max(
+    ...csvImports.filter((row) => row.optionsBalanceIncluded)
+      .map((row) => row.optionsCoverageThrough ?? Number.NEGATIVE_INFINITY)
+  );
+  const unavailableThrough = Math.max(
+    ...csvImports.filter((row) => row.optionsBalanceUnavailable)
+      .map((row) => row.optionsCoverageThrough ?? Number.POSITIVE_INFINITY)
+  );
+  const optionsBalanceUnavailable = unavailableThrough > includedThrough;
   // Round 4: reconcile tx-history holdings against stored authority balances —
   // a drained wallet/exchange reports its true (often zero) balance instead of
   // a phantom left by missed spends. `adjustments` feeds the data-health rail.
@@ -656,14 +664,14 @@ export function DashboardTab() {
       );
 
     const shareCell = (
-      <div className="flex items-center justify-end gap-2.5">
-        <span aria-hidden="true" className="h-1.5 w-16 overflow-hidden rounded-full bg-elev-3">
+      <div className="flex min-w-0 items-center justify-end gap-1.5">
+        <span aria-hidden="true" className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-elev-3">
           <span
             className="block h-full rounded-full bg-primary/60"
             style={{ width: `${Math.min(100, Math.max(sharePct ?? 0, 2))}%` }}
           />
         </span>
-        <span className="w-12 text-right text-xs tabular-figures text-low">
+        <span className="w-10 shrink-0 text-right text-xs tabular-figures text-low">
           {sharePct == null ? '—' : sharePct < 0.1 ? '<0.1%' : `${sharePct.toFixed(1)}%`}
         </span>
       </div>
@@ -672,7 +680,7 @@ export function DashboardTab() {
     return (
       <div key={key} className="border-b border-hi/10 last:border-b-0">
         {/* desktop row */}
-        <div className="hidden items-center gap-4 px-5 py-3.5 sm:grid sm:grid-cols-[24%_16%_14%_16%_18%_12%]">
+        <div className="hidden items-center gap-2 px-5 py-3.5 sm:grid sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,.9fr)_minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,.9fr)]">
           <div className="min-w-0">{assetCell}</div>
           <div className="text-right">
             <p className="text-sm font-semibold tabular-figures text-hi">
@@ -1041,12 +1049,12 @@ export function DashboardTab() {
               className="border-b border-warn/25 bg-warn/10 px-5 py-3 text-xs text-warn"
               data-testid="options-balance-unavailable"
             >
-              Binance Options balance unavailable — this CSV omits premiums and settlements. Add a current-balance authority to include Options.
+              Binance Options balance unavailable — this CSV omits premiums and settlements. Import your Binance Options Transaction History CSV to include Options.
             </div>
           )}
           {valued.length > 0 && (
             <div
-              className="hidden grid-cols-[24%_16%_14%_16%_18%_12%] gap-4 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5 text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-faint sm:grid"
+              className="hidden grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,.9fr)_minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,.9fr)] gap-2 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5 text-[0.6875rem] font-bold uppercase tracking-[0.06em] text-faint sm:grid"
               data-testid="dashboard-holdings-columns"
             >
               <span>Asset</span>

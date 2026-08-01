@@ -190,6 +190,7 @@ export function walletChainChip(group: WalletGroup): string | undefined {
 
 /** Display title for a file import: the exchange it came from, else the file name. */
 export function fileImportTitle(row: CsvImportRow): string {
+  if (row.parserId === 'binance_options') return 'Binance Options';
   const exchangeId = fileImportExchangeId(row);
   if (exchangeId && parserIconId(row.parserId)) return brandLabel(exchangeId);
   const source = getImportSource(exchangeId);
