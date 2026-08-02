@@ -56,9 +56,12 @@ vi.mock('@/lib/rpc/providers', () => ({
     { id: 'polygon', label: 'Polygon', asset: 'POL', provider: 'alchemy_evm', needsKey: true },
     // Fantom stays in the registry (legacy data) but must never reach the dropdown.
     { id: 'fantom', label: 'Fantom', asset: 'FTM', provider: 'alchemy_evm', needsKey: true },
+    { id: 'starknet', label: 'StarkNet', asset: 'STRK', provider: 'unsupported', needsKey: false },
     { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true }
   ],
-  DROPDOWN_HIDDEN_CHAINS: new Set(['fantom'])
+  DROPDOWN_HIDDEN_CHAINS: new Set(['fantom', 'starknet']),
+  isEvmChain: (chain: { provider: string }) =>
+    chain.provider === 'alchemy_evm' || chain.provider === 'etherscan_compatible'
 }));
 
 vi.mock('@/lib/rpc/moralis', () => ({
@@ -412,7 +415,7 @@ describe('WalletAddressForm — EVM active-chain detection', () => {
     await screen.findByText(/already imported on the selected chains \(will be\s+skipped\)\. 1 new will be imported/);
   });
 
-  it('excludes Fantom from the manual chain dropdown (Item 5h)', async () => {
+  it('excludes Fantom and unsupported StarkNet from the manual chain dropdown', async () => {
     // No address pasted → the manual chain dropdown renders immediately.
     // The mocked CHAINS registry DOES contain Fantom (legacy data must keep
     // classifying) — the dropdown must filter it out.
@@ -420,6 +423,7 @@ describe('WalletAddressForm — EVM active-chain detection', () => {
     const select = (await screen.findByRole('combobox')) as HTMLSelectElement;
     const labels = Array.from(select.querySelectorAll('option')).map((o) => o.textContent ?? '');
     expect(labels.some((l) => /fantom/i.test(l))).toBe(false);
+    expect(labels.some((l) => /starknet/i.test(l))).toBe(false);
     expect(labels.some((l) => /ethereum/i.test(l))).toBe(true);
     expect(labels.some((l) => /polygon/i.test(l))).toBe(true);
   });

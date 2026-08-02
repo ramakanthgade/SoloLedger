@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react';
-import { Check, ChevronRight, Search, Wallet } from 'lucide-react';
+import { Check, ChevronRight, Globe2, Search, Wallet } from 'lucide-react';
 import { Badge } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import type { ExchangeId } from '@/lib/exchangeSync';
 import { AUTO_SYNC_EXCHANGES } from '@/components/import/autoSyncExchanges';
 import { IMPORT_SOURCES } from '@/components/import/importSources';
-import { BrandIcon } from './brandIcons';
+import { CHAINS, DROPDOWN_HIDDEN_CHAINS } from '@/lib/rpc/providers';
+import { BrandIcon, chainIconId } from './brandIcons';
 import { ANY_WALLET_DEFAULT_NAME, ANY_WALLET_ID, WALLET_CATALOG, WALLET_GROUP_ORDER } from './walletCatalog';
 import type { FlowKind } from './WhatStep';
 
@@ -31,8 +32,9 @@ interface Cell {
   label: string;
   meta: string;
   iconId: string | null;
+  searchText?: string;
   /** Generic affordance (not a brand) — render the neutral lucide glyph chip. */
-  genericGlyph?: 'wallet';
+  genericGlyph?: 'wallet' | 'chain';
   added?: boolean;
   selection: WhichSelection;
   modes?: Array<{
@@ -45,14 +47,17 @@ interface Cell {
   }>;
 }
 
-/** Chains offered as one-tap picks; everything else stays reachable in the form. */
-const CHAIN_PICKS: { id: string; label: string }[] = [
-  { id: 'bitcoin', label: 'Bitcoin' },
-  { id: 'ethereum', label: 'Ethereum' },
-  { id: 'solana', label: 'Solana' },
-  { id: 'polygon', label: 'Polygon' },
-  { id: 'bsc', label: 'BNB Smart Chain' }
-];
+const POPULAR_CHAIN_IDS = [
+  'bitcoin',
+  'ethereum',
+  'solana',
+  'polygon',
+  'bsc',
+  'arbitrum',
+  'base',
+  'optimism',
+  'avalanche'
+] as const;
 
 /** File-only exchanges that have a real brand logo in the registry. */
 const FILE_SOURCE_ICONS = new Set(['coindcx', 'coinswitch', 'zebpay', 'wazirx']);
@@ -68,11 +73,12 @@ function exchangeCells(
     byId.set(source.id, {
       id: source.id,
       label: source.label,
-      meta: source.id === 'other' ? 'Any CSV / Excel' : 'File import',
+      meta: source.id === 'other' ? 'Any CSV / Excel' : source.formatHint,
+      searchText: `${source.id} ${source.formatHint}`,
       iconId: FILE_SOURCE_ICONS.has(source.id) || source.id === 'binance' || source.id === 'coinbase' ? source.id : null,
       added: fileImported.has(source.id),
       selection,
-      modes: [{ kind: 'file', label: fileImported.has(source.id) ? 'CSV imported' : 'File import', hint: 'CSV export', active: fileImported.has(source.id), selection }]
+      modes: [{ kind: 'file', label: fileImported.has(source.id) ? 'CSV imported' : 'File import', hint: source.formatHint, active: fileImported.has(source.id), selection }]
     });
   }
   for (const exchange of AUTO_SYNC_EXCHANGES) {
@@ -111,7 +117,11 @@ function exchangeCells(
     }
   }
   const indiaSources = new Set(IMPORT_SOURCES.filter((s) => s.region === 'india').map((s) => s.id));
-  const all = Array.from(byId.values());
+  // Map insertion order follows the file catalog, but keep the generic escape
+  // hatch explicitly last even after the API and file catalogs are merged.
+  const all = Array.from(byId.values()).sort((a, b) =>
+    a.id === 'other' ? 1 : b.id === 'other' ? -1 : 0
+  );
   return {
     india: all.filter((c) => indiaSources.has(c.id)),
     global: all.filter((c) => !indiaSources.has(c.id))
@@ -157,29 +167,40 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
         }))
       })).filter((s) => s.cells.length > 0);
     }
-    // chain
+    // First-step discovery includes only standard provider-wired built-ins.
+    // Unsupported, legacy-hidden and per-connection explorer/BYOK chains stay
+    // available only in the full WalletAddressForm dropdown for compatibility.
+    const actionable = CHAINS.filter(
+      (chain) =>
+        !DROPDOWN_HIDDEN_CHAINS.has(chain.id) &&
+        (chain.provider === 'blockstream' ||
+          chain.provider === 'alchemy_solana' ||
+          chain.provider === 'alchemy_evm')
+    );
+    const byChainId = new Map(actionable.map((chain) => [chain.id, chain]));
+    const popular = POPULAR_CHAIN_IDS.flatMap((id) => {
+      const chain = byChainId.get(id);
+      return chain ? [chain] : [];
+    });
+    const popularIds = new Set(popular.map((chain) => chain.id));
+    const standard = actionable.filter((chain) => !popularIds.has(chain.id));
+    const toCell = (chain: (typeof CHAINS)[number]): Cell => ({
+      id: chain.id,
+      label: chain.label,
+      meta:
+        chain.id === 'bitcoin'
+          ? 'Address or xPub · no key needed'
+          : 'Public address · configured wallet-data provider',
+      searchText: `${chain.id} ${chain.asset} ${chain.provider}`,
+      iconId: chainIconId(chain.id) ?? null,
+      genericGlyph: chainIconId(chain.id) ? undefined : 'chain',
+      added: false,
+      selection: { kind: 'chain', id: chain.id, label: chain.label }
+    });
     return [
-      {
-        heading: null,
-        cells: [
-          ...CHAIN_PICKS.map((c) => ({
-            id: c.id,
-            label: c.label,
-            meta: c.id === 'bitcoin' ? 'Address or xPub' : 'Public address',
-            iconId: c.id,
-            added: false,
-            selection: { kind: 'chain', id: c.id, label: c.label } as WhichSelection
-          })),
-          {
-            id: '__any',
-            label: 'Another chain',
-            meta: 'Pick from the full list next',
-            iconId: null,
-            selection: { kind: 'chain', id: '__any', label: 'Another chain' } as WhichSelection
-          }
-        ]
-      }
-    ];
+      { heading: 'Popular supported chains', cells: popular.map(toCell) },
+      { heading: 'More supported chains', cells: standard.map(toCell) }
+    ].filter((section) => section.cells.length > 0);
   }, [flow, apiExchangeStates, fileImported]);
 
   const q = query.trim().toLowerCase();
@@ -191,8 +212,8 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
       ...s,
       cells: tokens.length
         ? s.cells.filter((c) => {
-            const label = c.label.toLowerCase();
-            return tokens.every((t) => label.includes(t));
+            const searchable = `${c.label} ${c.meta} ${c.id} ${c.searchText ?? ''}`.toLowerCase();
+            return tokens.every((t) => searchable.includes(t));
           })
         : s.cells
     }))
@@ -237,11 +258,11 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
             </p>
           )}
           <div className="flex flex-col gap-2">
-            {section.cells.map((cell) => cell.modes && cell.modes.length > 1 ? (
+            {section.cells.map((cell) => cell.modes && cell.modes.length > 0 ? (
               <div
                 key={cell.id}
                 className="flex min-h-11 flex-wrap items-start gap-3 rounded-xl border border-hi/10 bg-elev-1 px-3.5 py-2.5"
-                aria-label={`${cell.label} — choose file import or API auto-sync`}
+                aria-label={`${cell.label} import options`}
                 data-testid={`exchange-row-${cell.id}`}
               >
                 <BrandIcon id={cell.iconId} fallback={cell.label} size={32} />
@@ -283,6 +304,7 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
               <button
                 key={cell.id}
                 type="button"
+                data-testid={`choice-${flow}-${cell.id}`}
                 onClick={() => onPick(cell.selection)}
                 className={cn(
                   'relative flex min-h-11 w-full items-center gap-3 rounded-xl border border-hi/10 bg-elev-1 px-3.5 py-2.5 text-left',
@@ -290,15 +312,19 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60'
                 )}
               >
-                {cell.genericGlyph === 'wallet' ? (
-                  // Generic "Any other wallet" affordance — a neutral lucide
-                  // glyph chip; the aurora letter-chip fallback must NOT kick in.
+                {cell.genericGlyph ? (
+                  // Generic wallet/chain affordances use a neutral lucide glyph;
+                  // unmapped chains must not look like invented brand initials.
                   <span
                     aria-hidden="true"
-                    data-testid="any-wallet-glyph"
+                    data-testid={cell.genericGlyph === 'wallet' ? 'any-wallet-glyph' : 'neutral-chain-glyph'}
                     className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-hi/10 bg-elev-2 text-mid"
                   >
-                    <Wallet className="h-4 w-4" aria-hidden="true" />
+                    {cell.genericGlyph === 'wallet' ? (
+                      <Wallet className="h-4 w-4" aria-hidden="true" />
+                    ) : (
+                      <Globe2 className="h-4 w-4" aria-hidden="true" />
+                    )}
                   </span>
                 ) : (
                   <BrandIcon id={cell.iconId} fallback={cell.label} size={32} />

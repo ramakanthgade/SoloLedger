@@ -4,7 +4,7 @@ import { getLookupAddresses, updateWalletLabel } from '@/lib/storage/db';
 import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveSettings';
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import { isSaasMode } from '@/lib/saas/config';
-import { CHAINS, DROPDOWN_HIDDEN_CHAINS, type ChainId } from '@/lib/rpc/providers';
+import { CHAINS, DROPDOWN_HIDDEN_CHAINS, isEvmChain, type ChainId } from '@/lib/rpc/providers';
 import { fetchWalletActiveChains } from '@/lib/rpc/moralis';
 import {
   allChainsChecked,
@@ -42,7 +42,9 @@ function isEvmAddress(address: string): boolean {
   return /^0x[a-fA-F0-9]{40}$/.test(address.trim());
 }
 
-const EVM_CHAIN_IDS: ChainId[] = ['ethereum', 'polygon', 'arbitrum', 'base', 'bsc', 'optimism', 'avalanche'];
+const EVM_CHAIN_IDS: ChainId[] = CHAINS.filter(
+  (chain) => chain.provider === 'alchemy_evm' && !DROPDOWN_HIDDEN_CHAINS.has(chain.id)
+).map((chain) => chain.id);
 
 /** Debounce between the last keystroke and the Moralis active-chains call. */
 const CHAIN_DETECT_DEBOUNCE_MS = 500;
@@ -147,8 +149,13 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     const first = addressText.split(/[\n,]/)[0]?.trim();
     if (!first) return;
     const detected = detectChainFromAddress(first);
+    const selected = CHAINS.find((chain) => chain.id === chainId);
+    // All EVM chains share the same address shape. Keep a registry-backed EVM
+    // preselection (including newly exposed chains) instead of collapsing it
+    // back to Ethereum as soon as the user pastes the address.
+    if (detected === 'ethereum' && selected && isEvmChain(selected)) return;
     if (detected && detected !== chainId) setChainId(detected);
-  }, [addressText]);
+  }, [addressText, chainId]);
 
   const parsedAddresses = addressText.split(/[\n,]/).map((a) => a.trim()).filter(Boolean);
   const evmAddresses = parsedAddresses.filter(isEvmAddress);
@@ -304,7 +311,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   }
 
   const chain = CHAINS.find((c) => c.id === chainId)!;
-  const isEvm = EVM_CHAIN_IDS.includes(chainId);
+  const isEvm = isEvmChain(chain);
   const isBitcoin = chainId === 'bitcoin';
   const isSolana = chainId === 'solana';
   const needsAlchemyKey =

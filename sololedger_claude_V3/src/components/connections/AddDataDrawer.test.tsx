@@ -143,12 +143,21 @@ describe('AddDataDrawer — step routing', () => {
     expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-chain', 'none');
   });
 
-  it('chain flow preselects the picked chain; "Another chain" preselects nothing', () => {
+  it('chain flow preselects the picked chain', () => {
     renderDrawer();
     fireEvent.click(screen.getByRole('button', { name: /blockchain address/i }));
     fireEvent.click(screen.getByRole('button', { name: /^bitcoin/i }));
     expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-chain', 'bitcoin');
     expect(screen.getByRole('dialog', { name: 'Watch a Bitcoin address' })).toBeInTheDocument();
+  });
+
+  it('passes a newly exposed registry chain through to WalletAddressForm unchanged', () => {
+    renderDrawer();
+    fireEvent.click(screen.getByRole('button', { name: /blockchain address/i }));
+    fireEvent.change(screen.getByTestId('addflow-search'), { target: { value: 'Monad' } });
+    fireEvent.click(screen.getByTestId('choice-chain-monad'));
+
+    expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-chain', 'monad');
   });
 
   it('chain flow uses "an" for vowel chains (D-6 residual: Watch an Ethereum address)', () => {

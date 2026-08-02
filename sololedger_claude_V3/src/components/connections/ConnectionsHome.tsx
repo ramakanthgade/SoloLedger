@@ -1,7 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
-  ArrowRight,
   Check,
   CheckCircle2,
   Compass,
@@ -96,10 +95,9 @@ interface DrawerState {
 /**
  * ConnectionsHome — the Connections v2 screen. One honest card per source
  * (exchange API connection, imported file, watched wallet address group,
- * manual-entry summary), the locked filter-pill order, a guided-setup hint
- * ribbon, the staged first-sync preview surface, and the exchange/wallet
- * job banners ported from AutoSyncPanel. All add-flows open in the
- * right-side AddDataDrawer.
+ * manual-entry summary), the locked filter-pill order, the staged first-sync
+ * preview surface, and the exchange/wallet job banners ported from
+ * AutoSyncPanel. All add-flows open in the right-side AddDataDrawer.
  */
 export function ConnectionsHome() {
   const connections = useLiveQuery(() => listConnections(), []) ?? [];
@@ -163,8 +161,8 @@ export function ConnectionsHome() {
     [csvImports]
   );
 
-  const openDrawer = (opts?: { guided?: boolean; initialFlow?: FlowKind | null }) =>
-    setDrawer({ open: true, guided: opts?.guided ?? false, initialFlow: opts?.initialFlow ?? null });
+  const openDrawer = (opts?: { initialFlow?: FlowKind | null }) =>
+    setDrawer({ open: true, guided: false, initialFlow: opts?.initialFlow ?? null });
 
   const pushToast = (t: Omit<ToastItem, 'id'>) => {
     const id = ++toastId.current;
@@ -376,30 +374,6 @@ export function ConnectionsHome() {
           <Plus className="h-4 w-4" aria-hidden="true" /> New
         </button>
       </div>
-
-      {/* Guided-setup hint ribbon */}
-      <button
-        type="button"
-        onClick={() => openDrawer({ guided: true })}
-        className={cn(
-          'flex w-full items-center gap-3.5 rounded-2xl border border-accent/25 bg-accent/[0.07] px-4 py-3.5 text-left',
-          'transition-colors hover:border-accent/40 hover:bg-accent/[0.12]',
-          'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60'
-        )}
-      >
-        <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-accent/15 text-accent">
-          <Compass className="h-5 w-5" aria-hidden="true" />
-        </span>
-        <span className="min-w-0 flex-1">
-          <span className="block text-sm font-bold text-hi">Not sure where to start?</span>
-          <span className="mt-0.5 block text-xs leading-relaxed text-mid">
-            Take the guided setup — we walk you through your first connection, step by step.
-          </span>
-        </span>
-        <span className="flex shrink-0 items-center gap-1.5 text-[13px] font-bold text-accent">
-          Start guided setup <ArrowRight className="h-4 w-4" aria-hidden="true" />
-        </span>
-      </button>
 
       {/* Staged first-sync preview takes over the banner area. */}
       {previewStaged ? (

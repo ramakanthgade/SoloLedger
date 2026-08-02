@@ -48,4 +48,30 @@ describe('WhichStep — exchange modes', () => {
     expect(screen.getByRole('button', { name: 'Binance API connected' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Binance API synced' })).not.toBeInTheDocument();
   });
+
+  it('shows file controls for the complete parser-backed catalog and API controls for only five exchanges', () => {
+    renderChooser();
+    const fileIds = [
+      'binance', 'coinbase', 'coindcx', 'coinswitch', 'zebpay', 'wazirx', 'mudrex',
+      'kraken', 'kucoin', 'cryptocom', 'bybit', 'okx', 'gateio', 'bitfinex',
+      'gemini', 'htx', 'coinspot', 'hyperliquid', 'other'
+    ];
+    for (const id of fileIds) expect(screen.getByTestId(`${id}-mode-file`)).toBeInTheDocument();
+
+    const apiIds = ['binance', 'coinbase', 'kraken', 'okx', 'kucoin'];
+    expect(document.querySelectorAll('[data-testid$="-mode-api"]')).toHaveLength(apiIds.length);
+    for (const id of apiIds) expect(screen.getByTestId(`${id}-mode-api`)).toBeInTheDocument();
+    expect(screen.queryByTestId('bybit-mode-api')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('hyperliquid-mode-api')).not.toBeInTheDocument();
+  });
+
+  it('searches the expanded catalog and keeps Other last after API/file merge', () => {
+    renderChooser();
+    const rows = screen.getAllByTestId(/exchange-row-/);
+    expect(rows[rows.length - 1]).toHaveAttribute('data-testid', 'exchange-row-other');
+
+    fireEvent.change(screen.getByTestId('addflow-search'), { target: { value: 'Hyperliquid' } });
+    expect(screen.getByTestId('exchange-row-hyperliquid')).toBeInTheDocument();
+    expect(screen.queryByTestId('exchange-row-binance')).not.toBeInTheDocument();
+  });
 });
