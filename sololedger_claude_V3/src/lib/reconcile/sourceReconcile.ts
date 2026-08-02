@@ -1,5 +1,12 @@
 import type { Transaction } from '@/types/transaction';
 import type { ExchangeBalanceRow } from '@/lib/storage/db';
+import type { DerivedPosting } from '@/lib/ledger/derivedPostings';
+import { postingBalances, postingBalanceKey } from '@/lib/ledger/postingBalances';
+import type {
+  AuthorityAssetRow,
+  AuthoritySelection,
+  AuthorityStatus
+} from './authoritySelection';
 
 /**
  * RECONCILIATION ENGINE (Phase 2) — pure, testable, no ccxt/db runtime imports.
@@ -19,7 +26,9 @@ import type { ExchangeBalanceRow } from '@/lib/storage/db';
  * Ledger sign convention mirrors buildPortfolioHoldings:
  *   + buy, transfer_in, income, gift_received
  *   - sell, transfer_out, gift_sent, fee
- *   trade: -asset/+counterAsset; internal transfers net to zero (skipped).
+ *   trade: -asset/+counterAsset. Legacy consumers skip confirmed internal
+ *   transfers exactly as before; custody-correct scope handling is available
+ *   only through DerivedPosting APIs until consumer migration.
  */
 
 export type ReconStatus = 'reconciled' | 'ledger_under' | 'ledger_over' | 'no_authority';
@@ -70,9 +79,7 @@ export function ledgerImpliedQty(txs: Transaction[]): Map<string, number> {
 
   for (const t of txs) {
     if (t.isSpam) continue;
-    // Internal transfers net to zero across own wallets — exclude both legs.
     if (t.isInternalTransfer) continue;
-
     if (t.type === 'trade' && t.counterAsset && t.counterAmount != null) {
       add(t.asset, -Math.abs(t.amount));
       add(t.counterAsset, Math.abs(t.counterAmount));
@@ -91,6 +98,154 @@ export function ledgerImpliedQty(txs: Transaction[]): Map<string, number> {
     if (t.feeAmount && t.feeAmount > 0) add(t.feeAsset ?? t.asset, -Math.abs(t.feeAmount));
   }
   return map;
+}
+
+export type BalanceStatus = 'reconciled' | 'ledger_under' | 'ledger_over' | 'not_compared';
+export type CoverageStatus = 'complete' | 'partial' | 'failed' | 'unknown' | 'opening_balance_required';
+export type ScopeStatus = 'resolved' | 'unresolved' | 'source_deleted';
+export type ReconSeverity = 'blocked' | 'error' | 'warning' | 'info' | 'clean';
+
+export interface CoverageEvidence {
+  status: Exclude<CoverageStatus, 'opening_balance_required'>;
+  /** Earliest instant structurally proven by the source, not a user-selected date. */
+  provenHistoryStart?: number;
+  authorityAsOf?: number;
+  hasEvidenceBackedOpeningBalance?: boolean;
+  firstMovement?: { effectiveAt: number; signedQuantity: number };
+  minimumPrefixQuantity?: number;
+  negativeTolerance?: number;
+  declaredOpeningSnapshot?: { effectiveAt: number; quantity: number };
+  earliestExplainingAcquisitionAt?: number;
+}
+
+export function coverageStatusFromEvidence(evidence: CoverageEvidence): CoverageStatus {
+  if (evidence.status !== 'complete' || evidence.hasEvidenceBackedOpeningBalance === true) return evidence.status;
+  if (
+    evidence.provenHistoryStart == null || evidence.authorityAsOf == null ||
+    !Number.isFinite(evidence.provenHistoryStart) || !Number.isFinite(evidence.authorityAsOf) ||
+    evidence.provenHistoryStart > evidence.authorityAsOf
+  ) return evidence.status;
+  const tolerance = Math.max(0, evidence.negativeTolerance ?? 1e-9);
+  const firstOutflow = evidence.firstMovement != null &&
+    evidence.firstMovement.effectiveAt >= evidence.provenHistoryStart &&
+    evidence.firstMovement.effectiveAt <= evidence.authorityAsOf &&
+    evidence.firstMovement.signedQuantity < -tolerance;
+  const negativePrefix = evidence.minimumPrefixQuantity != null &&
+    evidence.minimumPrefixQuantity < -tolerance;
+  const opening = evidence.declaredOpeningSnapshot;
+  const unexplainedDeclaredOpening = opening != null &&
+    opening.effectiveAt >= evidence.provenHistoryStart && opening.effectiveAt <= evidence.authorityAsOf &&
+    opening.quantity > tolerance &&
+    (evidence.earliestExplainingAcquisitionAt == null || evidence.earliestExplainingAcquisitionAt > opening.effectiveAt);
+  if (firstOutflow || negativePrefix || unexplainedDeclaredOpening) return 'opening_balance_required';
+  return evidence.status;
+}
+
+export interface ReconciliationResult {
+  scopeId: string;
+  accountClass: DerivedPosting['accountClass'];
+  assetKey: string;
+  asset: string;
+  balanceStatus: BalanceStatus;
+  authorityStatus: AuthorityStatus;
+  coverageStatus: CoverageStatus;
+  scopeStatus: ScopeStatus;
+  selectedSnapshotId?: string;
+  selectedGeneration?: number;
+  asOf?: number;
+  ledgerQuantity?: number;
+  authorityQuantity?: number;
+  delta?: number;
+  postingEvidenceCount: number;
+  authorityEvidenceCount: number;
+}
+
+export interface ReconPresentation {
+  severity: ReconSeverity;
+  primaryRemediation: string;
+  secondaryRemediations: string[];
+}
+
+function remediationFindings(result: ReconciliationResult): { severity: ReconSeverity; remediation: string }[] {
+  const findings: { severity: ReconSeverity; remediation: string }[] = [];
+  if (result.scopeStatus !== 'resolved') findings.push({ severity: 'blocked', remediation: result.scopeStatus === 'source_deleted' ? 'reconnect_source' : 'resolve_source_scope' });
+  if (result.authorityStatus === 'non_comparable') findings.push({ severity: 'blocked', remediation: 'capture_coherent_authority' });
+  if (result.authorityStatus === 'missing') findings.push({ severity: 'warning', remediation: 'add_timestamped_authority' });
+  if (result.coverageStatus === 'failed') findings.push({ severity: 'error', remediation: 'retry_source_operation' });
+  if (result.coverageStatus === 'partial') findings.push({ severity: 'warning', remediation: 'complete_source_history' });
+  if (result.coverageStatus === 'unknown') findings.push({ severity: 'warning', remediation: 'establish_source_coverage' });
+  if (result.coverageStatus === 'opening_balance_required') findings.push({ severity: 'warning', remediation: 'add_evidence_backed_opening_balance' });
+  if (result.authorityStatus === 'stale') findings.push({ severity: 'info', remediation: 'refresh_authority' });
+  if (result.balanceStatus === 'ledger_under' || result.balanceStatus === 'ledger_over') findings.push({ severity: 'warning', remediation: 'inspect_evidence_history' });
+  return findings;
+}
+
+export function deriveReconPresentation(result: ReconciliationResult): ReconPresentation {
+  const findings = remediationFindings(result);
+  if (findings.length === 0) return { severity: 'clean', primaryRemediation: 'none', secondaryRemediations: [] };
+  return {
+    severity: findings[0].severity,
+    primaryRemediation: findings[0].remediation,
+    secondaryRemediations: findings.slice(1).map((finding) => finding.remediation)
+  };
+}
+
+export interface ReconcileDerivedPostingsInput {
+  scopeId: string;
+  accountClass: DerivedPosting['accountClass'];
+  assetKey: string;
+  asset: string;
+  postings: readonly DerivedPosting[];
+  authority: AuthoritySelection;
+  coverage: CoverageEvidence;
+  scopeStatus: ScopeStatus;
+}
+
+function authorityQuantity(rows: readonly AuthorityAssetRow[], assetKey: string): number {
+  return rows.reduce((sum, row) => row.assetKey === assetKey ? sum + row.quantity : sum, 0);
+}
+
+export function reconcileDerivedPostings(input: ReconcileDerivedPostingsInput): ReconciliationResult {
+  const coverageStatus = coverageStatusFromEvidence(input.coverage);
+  const hasExactAuthorityAsset = input.authority.selectedAssets.some((row) => row.assetKey === input.assetKey);
+  const canInferAbsentZero = input.authority.selectedSnapshot?.endpointProof.exhaustiveBalances === true;
+  const absentAssetNonComparable = input.authority.selectedSnapshot != null &&
+    !hasExactAuthorityAsset && !canInferAbsentZero;
+  const effectiveAuthorityStatus: AuthorityStatus = absentAssetNonComparable
+    ? 'non_comparable' : input.authority.authorityStatus;
+  const blocked = input.scopeStatus !== 'resolved' ||
+    effectiveAuthorityStatus === 'missing' || effectiveAuthorityStatus === 'non_comparable' ||
+    input.authority.selectedSnapshot?.asOf == null;
+  const relevantEvidence = new Set<string>();
+  for (const posting of input.postings) {
+    if (posting.accountScopeId !== input.scopeId || posting.accountClass !== input.accountClass || posting.assetKey !== input.assetKey) continue;
+    for (const evidence of posting.evidence) relevantEvidence.add(`${evidence.kind}:${JSON.stringify(evidence)}`);
+  }
+  const base: ReconciliationResult = {
+    scopeId: input.scopeId, accountClass: input.accountClass, assetKey: input.assetKey, asset: input.asset,
+    balanceStatus: 'not_compared', authorityStatus: effectiveAuthorityStatus,
+    coverageStatus, scopeStatus: input.scopeStatus,
+    selectedSnapshotId: input.authority.selectedSnapshot?.snapshotId,
+    selectedGeneration: input.authority.selectedSnapshot?.generation,
+    asOf: input.authority.selectedSnapshot?.asOf,
+    postingEvidenceCount: relevantEvidence.size,
+    authorityEvidenceCount: input.authority.selectedAssets.length + input.authority.diagnostics.length
+  };
+  if (blocked) return base;
+
+  const asOf = input.authority.selectedSnapshot!.asOf!;
+  const probe: Pick<DerivedPosting, 'accountScopeId' | 'accountClass' | 'assetKey'> = {
+    accountScopeId: input.scopeId, accountClass: input.accountClass, assetKey: input.assetKey
+  };
+  const ledgerQuantity = postingBalances(input.postings, {
+    asOf, scopeId: input.scopeId, accountClass: input.accountClass
+  }).get(postingBalanceKey(probe)) ?? 0;
+  const sourceQuantity = authorityQuantity(input.authority.selectedAssets, input.assetKey);
+  const delta = sourceQuantity - ledgerQuantity;
+  const tolerance = epsilon(sourceQuantity);
+  const balanceStatus: BalanceStatus = Math.abs(delta) <= tolerance
+    ? 'reconciled' : delta > 0 ? 'ledger_under' : 'ledger_over';
+  return { ...base, balanceStatus, ledgerQuantity, authorityQuantity: sourceQuantity, delta };
 }
 
 /**

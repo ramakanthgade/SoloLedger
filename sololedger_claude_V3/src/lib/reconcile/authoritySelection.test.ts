@@ -1,0 +1,188 @@
+import { describe, expect, it } from 'vitest';
+import {
+  binanceSpotEndpointProof,
+  selectAuthoritySnapshot,
+  type AuthorityAssetRow,
+  type AuthoritySnapshotRow,
+  type EndpointProof
+} from './authoritySelection';
+
+const NOW = 1_800_000_000_000;
+function snapshot(partial: Partial<AuthoritySnapshotRow> = {}): AuthoritySnapshotRow {
+  return {
+    snapshotId: 's1', generation: 1, scopeId: 'exchange:c1', authorityKind: 'api',
+    authorityClass: 'exchange_balance', accountClass: 'spot', coveredAccountClasses: ['spot'],
+    asOf: NOW - 1_000, capturedAt: NOW - 1_000, sourceIdentityId: 'c1',
+    endpointProof: binanceSpotEndpointProof(), status: 'complete', ...partial
+  };
+}
+function asset(partial: Partial<AuthorityAssetRow> = {}): AuthorityAssetRow {
+  return {
+    id: 'a1', snapshotId: 's1', generation: 1, scopeId: 'exchange:c1', accountClass: 'spot',
+    assetKey: 'asset:BTC', asset: 'BTC', quantity: 2, ...partial
+  };
+}
+const csvProof = (): EndpointProof => ({
+  authorityKind: 'csv', provider: 'binance', operation: 'journal_export',
+  parametersClass: 'full_history', requestedAccountClasses: ['spot'],
+  provenAccountClasses: ['spot'], exhaustiveBalances: true
+});
+
+describe('selectAuthoritySnapshot', () => {
+  it('selects compatible API over CSV regardless of input order', () => {
+    const csv = snapshot({
+      snapshotId: 'csv', generation: 2, authorityKind: 'csv', authorityClass: 'journal_final_balance',
+      endpointProof: csvProof(), declaredCurrentThrough: NOW
+    });
+    const result = selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [csv, snapshot()],
+      assets: [asset({ snapshotId: 'csv', generation: 2 }), asset()], now: NOW
+    });
+    expect(result.selectedSnapshot?.snapshotId).toBe('s1');
+    expect(result.authorityStatus).toBe('current');
+  });
+
+  it('prefers a current compatible CSV generation to stale API evidence', () => {
+    const staleApi = snapshot({ asOf: NOW - 86_400_001 });
+    const currentCsv = snapshot({
+      snapshotId: 'csv', generation: 2, authorityKind: 'csv',
+      authorityClass: 'journal_final_balance', endpointProof: csvProof(), declaredCurrentThrough: NOW
+    });
+    const result = selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [staleApi, currentCsv],
+      assets: [asset(), asset({ snapshotId: 'csv', generation: 2 })], now: NOW,
+      comparisonAt: currentCsv.asOf
+    });
+    expect(result.selectedSnapshot?.snapshotId).toBe('csv');
+    expect(result.authorityStatus).toBe('current');
+  });
+
+  it('never grants Spot authority to Funding/Margin/Futures/Options', () => {
+    for (const accountClass of ['funding', 'margin', 'futures', 'options'] as const) {
+      expect(selectAuthoritySnapshot({
+        scopeId: 'exchange:c1', accountClass, snapshots: [snapshot()], assets: [asset()], now: NOW
+      }).authorityStatus).toBe('missing');
+    }
+  });
+
+  it('marks missing asOf and mixed generations non-comparable', () => {
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot({ asOf: undefined })], assets: [asset()], now: NOW
+    }).authorityStatus).toBe('non_comparable');
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot()], assets: [asset({ generation: 99 })], now: NOW
+    }).authorityStatus).toBe('non_comparable');
+  });
+
+  it('accepts an empty generation as confirmed zero only with exhaustive proof', () => {
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot()], assets: [], now: NOW
+    })).toMatchObject({
+      authorityStatus: 'current', selectedSnapshot: { snapshotId: 's1' }, selectedAssets: []
+    });
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot',
+      snapshots: [snapshot({ endpointProof: { ...binanceSpotEndpointProof(), exhaustiveBalances: false } })],
+      assets: [], now: NOW
+    })).toMatchObject({ authorityStatus: 'non_comparable', selectedAssets: [] });
+  });
+
+  it('rejects a non-empty row whose generation is absent or differs from its snapshot', () => {
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot()],
+      assets: [asset({ generation: 2 })], now: NOW
+    }).authorityStatus).toBe('non_comparable');
+  });
+
+  it('uses injected clocks: API/RPC expire at 24h', () => {
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot({ asOf: NOW - 86_400_001 })], assets: [asset()], now: NOW
+    }).authorityStatus).toBe('stale');
+  });
+
+  it.each([
+    [NOW - 2_000, 'non_comparable'],
+    [NOW - 1_000, 'current'],
+    [NOW, 'stale']
+  ] as const)('classifies CSV comparisonAt %s against asOf before/equal/after', (comparisonAt, expected) => {
+    const csv = snapshot({
+      authorityKind: 'csv', authorityClass: 'journal_final_balance',
+      endpointProof: csvProof(),
+      declaredCurrentThrough: NOW - 10_000
+    });
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [csv], assets: [asset()],
+      now: NOW, comparisonAt
+    }).authorityStatus).toBe(expected);
+  });
+
+  it('validates endpoint class proof and authority-kind/scope compatibility', () => {
+    for (const endpointProof of [
+      { ...binanceSpotEndpointProof(), requestedAccountClasses: ['spot'] as const, provenAccountClasses: ['funding'] as const },
+      { ...binanceSpotEndpointProof(), requestedAccountClasses: ['funding'] as const, provenAccountClasses: ['spot'] as const }
+    ]) {
+      expect(selectAuthoritySnapshot({
+        scopeId: 'exchange:c1', accountClass: 'spot',
+        snapshots: [snapshot({ endpointProof: {
+          ...endpointProof,
+          requestedAccountClasses: [...endpointProof.requestedAccountClasses],
+          provenAccountClasses: [...endpointProof.provenAccountClasses]
+        } })],
+        assets: [asset()], now: NOW
+      }).authorityStatus).toBe('non_comparable');
+    }
+    for (const accountClass of ['funding', 'margin', 'futures', 'options'] as const) {
+      const relabeled = snapshot({
+        accountClass, coveredAccountClasses: [accountClass]
+      });
+      expect(selectAuthoritySnapshot({
+        scopeId: 'exchange:c1', accountClass, snapshots: [relabeled],
+        assets: [asset({ accountClass })], now: NOW
+      }).authorityStatus).toBe('non_comparable');
+    }
+    expect(selectAuthoritySnapshot({
+      scopeId: 'wallet:evm:1:0xabc', accountClass: 'wallet',
+      snapshots: [snapshot({
+        scopeId: 'wallet:evm:1:0xabc', authorityKind: 'rpc', authorityClass: 'wallet_balance',
+        accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+        endpointProof: {
+          authorityKind: 'rpc', provider: 'alchemy', operation: 'balance', parametersClass: 'wallet',
+          requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true
+        }
+      })],
+      assets: [asset({ scopeId: 'wallet:evm:1:0xabc', accountClass: 'wallet' })], now: NOW
+    }).authorityStatus).toBe('current');
+    expect(selectAuthoritySnapshot({
+      scopeId: 'wallet:evm:1:0xabc', accountClass: 'wallet',
+      snapshots: [snapshot({
+        scopeId: 'wallet:evm:1:0xabc', accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+        endpointProof: { ...binanceSpotEndpointProof(), requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'] }
+      })], assets: [], now: NOW
+    }).authorityStatus).toBe('non_comparable');
+
+    const rpcOnExchange = snapshot({
+      authorityKind: 'rpc', authorityClass: 'wallet_balance',
+      endpointProof: {
+        authorityKind: 'rpc', provider: 'alchemy', operation: 'balance', parametersClass: 'wallet',
+        requestedAccountClasses: ['spot'], provenAccountClasses: ['spot'], exhaustiveBalances: true
+      }
+    });
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [rpcOnExchange], assets: [asset()], now: NOW
+    }).authorityStatus).toBe('non_comparable');
+
+    const fileCsv = snapshot({
+      scopeId: 'file:batch:spot', authorityKind: 'csv', authorityClass: 'journal_final_balance',
+      endpointProof: csvProof()
+    });
+    expect(selectAuthoritySnapshot({
+      scopeId: 'file:batch:spot', accountClass: 'spot', snapshots: [fileCsv],
+      assets: [asset({ scopeId: 'file:batch:spot' })], now: NOW, comparisonAt: fileCsv.asOf
+    }).authorityStatus).toBe('current');
+    expect(selectAuthoritySnapshot({
+      scopeId: 'wallet:evm:1:0xabc', accountClass: 'spot',
+      snapshots: [{ ...fileCsv, scopeId: 'wallet:evm:1:0xabc' }],
+      assets: [asset({ scopeId: 'wallet:evm:1:0xabc' })], now: NOW, comparisonAt: fileCsv.asOf
+    }).authorityStatus).toBe('non_comparable');
+  });
+});

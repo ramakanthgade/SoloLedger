@@ -9,6 +9,7 @@
     "build:pages": "cross-env VITE_BASE_PATH=/SoloLedger/ VITE_SAAS_MODE=true VITE_API_URL=https://sololedger-production.up.railway.app vite build",
     "preview": "vite preview",
     "test": "vitest run",
+    "test:ledger-perf": "vitest run --config vite.perf.config.ts",
     "test:watch": "vitest",
     "lint": "eslint .",
     "deploy:pages": "npm run build:pages && npx --yes gh-pages -d dist -t"

@@ -282,6 +282,8 @@ function heliusSwapToTrade(
   let inputAmount: number | undefined;
   let outputMint: string | undefined;
   let outputAmount: number | undefined;
+  let nativeInput = false;
+  let nativeOutput = false;
 
   if (swap) {
     const inp = swap.tokenInputs?.[0];
@@ -324,13 +326,19 @@ function heliusSwapToTrade(
     return Math.abs(raw) >= 1e6 ? raw / 1e9 : raw;
   };
 
-  if (swap?.nativeInput && !inputMint) {
-    inputMint = WSOL;
-    inputAmount = Math.abs(normalizeNativeSolAmount(swap.nativeInput.amount) ?? 0);
+  if (swap?.nativeInput && (!inputMint || inputMint === WSOL)) {
+    if (!inputMint) {
+      inputMint = WSOL;
+      inputAmount = Math.abs(normalizeNativeSolAmount(swap.nativeInput.amount) ?? 0);
+    }
+    nativeInput = true;
   }
-  if (swap?.nativeOutput && !outputMint) {
-    outputMint = WSOL;
-    outputAmount = Math.abs(normalizeNativeSolAmount(swap.nativeOutput.amount) ?? 0);
+  if (swap?.nativeOutput && (!outputMint || outputMint === WSOL)) {
+    if (!outputMint) {
+      outputMint = WSOL;
+      outputAmount = Math.abs(normalizeNativeSolAmount(swap.nativeOutput.amount) ?? 0);
+    }
+    nativeOutput = true;
   }
 
   // Reconcile with accountData whenever native SOL moved materially.
@@ -340,8 +348,12 @@ function heliusSwapToTrade(
     if (!outIsSol && !inIsSol) {
       outputMint = WSOL;
       outputAmount = solFromSwap;
+      nativeOutput = true;
     } else if (outIsSol && ((outputAmount ?? 0) < 0.001 || Math.abs((outputAmount ?? 0) - solFromSwap) > 0.001)) {
       outputAmount = solFromSwap;
+      nativeOutput = true;
+    } else if (outIsSol) {
+      nativeOutput = true;
     }
   } else if (solFromSwap < -0.001) {
     const outIsSol = outputMint === WSOL;
@@ -350,8 +362,12 @@ function heliusSwapToTrade(
     if (!outIsSol && !inIsSol) {
       inputMint = WSOL;
       inputAmount = need;
+      nativeInput = true;
     } else if (inIsSol && ((inputAmount ?? 0) < 0.001 || Math.abs((inputAmount ?? 0) - need) > 0.001)) {
       inputAmount = need;
+      nativeInput = true;
+    } else if (inIsSol) {
+      nativeInput = true;
     }
   }
 
@@ -390,6 +406,12 @@ function heliusSwapToTrade(
     sourceRef: htx.signature,
     walletAddress,
     chain: 'solana',
+    raw: {
+      inputMint,
+      outputMint,
+      heliusNativeInput: nativeInput,
+      heliusNativeOutput: nativeOutput
+    },
     notes: htx.description || `Swapped ${inputSymbol} for ${outputSymbol} on ${htx.source}`,
     flags: ['missing_cost_basis'] as FlagReason[],
     isInternalTransfer: false
