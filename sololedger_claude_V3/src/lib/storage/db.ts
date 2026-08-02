@@ -895,11 +895,14 @@ export async function filterAlreadyImported(transactions: Transaction[]): Promis
     existing.map((t) => transactionExchangeKey(t)).filter(Boolean) as string[]
   );
   const fullHistoryEconomicKeys = new Set<string>();
+  const existingApiEconomicKeys = new Set<string>();
   const reservedApiIds = new Set<string>();
   const existingApiIds = new Set<string>();
   for (const row of existing) {
     const apiIdentity = binanceApiIdentity(row);
     if (apiIdentity) existingApiIds.add(apiIdentity);
+    const apiEconomicKey = row.source === 'binance_api' ? binanceEconomicKey(row) : null;
+    if (apiEconomicKey) existingApiEconomicKeys.add(apiEconomicKey);
     const fullHistoryKey = row.source === 'binance' ? binanceEconomicKey(row) : null;
     if (fullHistoryKey) fullHistoryEconomicKeys.add(fullHistoryKey);
     if (row.source === 'binance' && row.dedupMatchedApiId) reservedApiIds.add(row.dedupMatchedApiId);
@@ -922,7 +925,7 @@ export async function filterAlreadyImported(transactions: Transaction[]): Promis
     }
     if (
       t.source === 'binance' && economicKey &&
-      existing.some((row) => row.source === 'binance_api' && binanceEconomicKey(row) === economicKey)
+      existingApiEconomicKeys.has(economicKey)
     ) return true;
     const exKey = exactExchangeKey;
     if (exKey && existingExchangeKeys.has(exKey)) return false;

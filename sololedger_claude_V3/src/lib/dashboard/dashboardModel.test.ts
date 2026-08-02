@@ -959,7 +959,7 @@ describe('reconcileHoldings', () => {
     expect(result.holdings[0]).toMatchObject({ asset: 'BTC', amount: 2, costBasis: 100 });
   });
 
-  it('preserves Binance derivatives and Options beside authoritative spot custody', () => {
+  it('replaces exchange-wide Binance custody while preserving derivatives and Options', () => {
     const txs = [
       tx({ id: 'spot', type: 'buy', asset: 'USDT', amount: 100, source: 'binance', raw: { buy: { Account: 'Spot' } } }),
       tx({ id: 'funding', type: 'transfer_in', asset: 'USDT', amount: 4, source: 'binance', raw: { Account: 'Funding' } }),
@@ -971,9 +971,27 @@ describe('reconcileHoldings', () => {
       exchangeBalanceRow({ asset: 'USDT', amount: 10 })
     ]);
     expect(result.holdings).toHaveLength(1);
-    // Spot 100 is replaced by 10. Funding, Margin, Futures and Options are
-    // separate scopes that Binance's spot fetchBalance does not authorize.
-    expect(result.holdings[0]).toMatchObject({ asset: 'USDT', amount: 29 });
+    // Spot/Funding/Margin are one centralized-custody journal and are replaced
+    // by the current API snapshot. Futures PnL and Options remain additive.
+    expect(result.holdings[0]).toMatchObject({ asset: 'USDT', amount: 20 });
+  });
+
+  it('does not revive gross Transaction History account movements beside API authority', () => {
+    const txs = [
+      tx({ id: 'api-uni', type: 'buy', asset: 'UNI', amount: 120.0014, source: 'binance_api', importBatchId: 'conn1' }),
+      tx({ id: 'history-usdt', type: 'transfer_in', asset: 'USDT', amount: 188_126.0707, source: 'binance', raw: { Account: 'Funding' } }),
+      tx({ id: 'history-sol', type: 'transfer_in', asset: 'SOL', amount: 969.9634, source: 'binance', raw: { Account: 'Cross Margin' } }),
+      tx({ id: 'history-busd', type: 'transfer_in', asset: 'BUSD', amount: 120_473.93, source: 'binance', raw: { Account: 'Spot' } }),
+      tx({ id: 'options-usdt', type: 'transfer_in', asset: 'USDT', amount: 119.5193, source: 'binance_options' })
+    ];
+    const result = reconcileHoldings(buildPortfolioHoldings(txs), txs, [], [
+      exchangeBalanceRow({ asset: 'UNI', amount: 120.0014 })
+    ]);
+    expect(result.holdings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ asset: 'UNI', amount: 120.0014, qtySource: 'exchange-api' }),
+      expect.objectContaining({ asset: 'USDT', amount: 119.5193 })
+    ]));
+    expect(result.holdings.map((holding) => holding.asset)).not.toEqual(expect.arrayContaining(['SOL', 'BUSD']));
   });
 
   it('wallet and exchange slices reconcile independently within one holding', () => {

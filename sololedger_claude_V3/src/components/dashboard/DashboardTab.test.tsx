@@ -22,6 +22,7 @@ const SEED = vi.hoisted(() => {
     fiatCurrency: string; fiatValue?: number; source: string; chain?: string;
     walletAddress?: string; flags: string[]; isInternalTransfer: boolean;
     importBatchId?: string; sourceRef?: string; category?: string;
+    raw?: Record<string, unknown>; instrumentClass?: string;
   }> = [
     // FY 2025-26 (IN) — excluded from the default FY-period money strip.
     {
@@ -385,6 +386,48 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       SEED.txs.splice(0, SEED.txs.length, ...txBackup);
       SEED.exchangeBalanceRows.length = 0;
       SEED.exchangeConns.length = 0;
+    }
+  });
+
+  it('combines API authority and Options without reviving full-history Funding/Margin balances', async () => {
+    const txBackup = [...SEED.txs];
+    SEED.txs.length = 0;
+    SEED.txs.push(
+      { id: 'api-uni', timestamp: Date.UTC(2025, 0, 1), type: 'buy', asset: 'UNI', amount: 1,
+        fiatCurrency: 'INR', source: 'binance_api', importBatchId: 'conn1', flags: [], isInternalTransfer: false },
+      { id: 'history-usdt', timestamp: Date.UTC(2024, 0, 1), type: 'transfer_in', asset: 'USDT', amount: 188_126.0707,
+        fiatCurrency: 'INR', source: 'binance', raw: { Account: 'Funding' }, flags: [], isInternalTransfer: false },
+      { id: 'history-sol', timestamp: Date.UTC(2024, 0, 2), type: 'transfer_in', asset: 'SOL', amount: 969.9634,
+        fiatCurrency: 'INR', source: 'binance', raw: { buy: { Account: 'Cross Margin' } }, flags: [], isInternalTransfer: false },
+      { id: 'history-busd', timestamp: Date.UTC(2024, 0, 3), type: 'transfer_in', asset: 'BUSD', amount: 120_473.93,
+        fiatCurrency: 'INR', source: 'binance', raw: { Account: 'Spot' }, flags: [], isInternalTransfer: false },
+      { id: 'options', timestamp: Date.UTC(2025, 0, 2), type: 'transfer_in', asset: 'USDT', amount: 119.5193,
+        fiatCurrency: 'INR', source: 'binance_options', flags: [], isInternalTransfer: false }
+    );
+    SEED.exchangeConns.push({ id: 'conn1', exchange: 'binance', label: 'Binance API', lastSyncAt: Date.now() } as never);
+    SEED.exchangeBalanceRows.push({ id: 'conn1:UNI', connectionId: 'conn1', exchange: 'binance', asset: 'UNI',
+      amount: 1, asOf: Date.now(), source: 'exchange_api' });
+    SEED.priceRows.push(
+      { key: 'spot:sym:UNI:INR', price: 63_285.01, fetchedAt: Date.now() },
+      { key: 'spot:sym:USDT:INR', price: 95.31, fetchedAt: Date.now() }
+    );
+
+    try {
+      await renderTab();
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹74,676');
+      const holdings = screen.getByTestId('dashboard-holdings');
+      expect(within(holdings).getByText('2 assets')).toBeInTheDocument();
+      expect(within(holdings).queryByText('SOL')).not.toBeInTheDocument();
+      expect(within(holdings).queryByText('BUSD')).not.toBeInTheDocument();
+      const usdt = within(holdings).getAllByRole('button', { expanded: false })
+        .find((button) => button.textContent?.includes('USDT'))!;
+      fireEvent.click(usdt);
+      expect(within(screen.getByTestId('holding-expansion')).getByText('Binance Options')).toBeInTheDocument();
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
+      SEED.exchangeConns.length = 0;
+      SEED.exchangeBalanceRows.length = 0;
+      SEED.priceRows.length = 0;
     }
   });
 });

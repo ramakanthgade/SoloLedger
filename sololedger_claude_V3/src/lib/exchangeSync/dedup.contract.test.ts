@@ -267,6 +267,25 @@ describe('dedup contract — full Binance Transaction History authority', () => 
     await db.transactions.clear();
   });
 
+  it('accepts an API-overlapping full-history batch after indexing existing economic keys', async () => {
+    const csv = Array.from({ length: 400 }, (_, index) => {
+      const row = stitchedIdenticalBuys(1)[0];
+      return {
+        ...row,
+        id: `csv-indexed-${index}`,
+        timestamp: row.timestamp + index * 1_000,
+        sourceRef: `binance:${row.timestamp + index * 1_000}:trade:BTC:0.010000#h${index}`,
+        importBatchId: 'full-history'
+      };
+    });
+    await db.transactions.bulkPut(apiTwins(csv));
+
+    // CSV authority must still enter for one-to-one pairing. This scale guard
+    // also pins the API-first path to precomputed key membership rather than
+    // scanning every existing API row for every incoming CSV row.
+    expect(await filterAlreadyImported(csv)).toHaveLength(csv.length);
+  });
+
   it('preserves #h/~n CSV occurrences and removes matching API rows one-to-one', async () => {
     const csv = stitchedIdenticalBuys(2).map((row, index) => ({ ...row, importBatchId: 'full-history', id: `csv-${index + 1}` }));
     expect(csv).toHaveLength(2);
