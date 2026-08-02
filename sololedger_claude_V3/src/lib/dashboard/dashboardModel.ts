@@ -15,7 +15,12 @@
  */
 import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
 import type { CsvImportRow, ExchangeBalanceRow, LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
-import { canonicalWalletAddress, canonicalWalletChainScope } from '@/lib/ledger/chainNamespace';
+import type { ExchangeConnectionRow } from '@/lib/storage/db';
+import {
+  canonicalWalletAddress,
+  canonicalWalletChainScope,
+  EVM_CHAIN_NUMERIC_IDS
+} from '@/lib/ledger/chainNamespace';
 import { assetKey as canonicalAssetKey } from '@/lib/ledger/assetKey';
 import {
   buildPortfolioHoldings,
@@ -28,6 +33,13 @@ import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
 import { brandLabel, chainIconId, parserIconId } from '@/components/connections/brandIcons';
+import type { DerivedPosting } from '@/lib/ledger/derivedPostings';
+import {
+  type PreparedPostingAggregation
+} from '@/lib/ledger/postingBalances';
+import type { HoldingSourceVerification } from '@/lib/portfolio/holdingsProjection';
+import { buildCustodyCostSamples } from './chartCostIndex';
+import { buildDisplayCostSamples } from '@/lib/portfolio/displayCostProjection';
 import { getCurrentFy, getFyBoundaries, IST_OFFSET_MS } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
@@ -153,6 +165,8 @@ export interface ValuedHolding extends PortfolioHolding {
   qtySource?: 'on-chain' | 'exchange-api' | 'tx-history';
   /** Pre-reconciliation tx-derived qty, when reconciliation ran. */
   txDerivedAmount?: number;
+  verificationStatus?: 'verified_authority' | 'posting_fallback' | 'mixed';
+  sourceVerification?: HoldingSourceVerification[];
   /** Latest cached close for this asset, if any. */
   priceNow: number | null;
   /** UTC ms of that close's day (for "prices as of …" honesty captions). */
@@ -283,6 +297,10 @@ export interface ChartPoint {
   unpricedCount: number;
 }
 
+const EVM_CHAIN_BY_NUMERIC_ID: ReadonlyMap<string, string> = new Map(
+  Object.entries(EVM_CHAIN_NUMERIC_IDS).map(([chain, numericId]) => [numericId, chain])
+);
+
 export function buildChartSeries(
   transactions: Transaction[],
   index: PriceIndex,
@@ -327,6 +345,99 @@ export function buildChartSeries(
     points.push({ t: ts, cost, market: pricedAny ? market : null, unpricedCount });
   }
   return points;
+}
+
+function postingDisplayIdentity(posting: DerivedPosting): Pick<PortfolioHolding, 'asset' | 'chain' | 'contractAddress'> {
+  const key = posting.assetKey;
+  if (key === 'solana:native') return { asset: posting.asset, chain: 'solana' };
+  if (key.startsWith('solana:')) return { asset: posting.asset, chain: 'solana', contractAddress: key.slice(7) };
+  if (key === 'bitcoin:native') return { asset: posting.asset, chain: 'bitcoin' };
+  if (key.startsWith('bitcoin:')) return { asset: posting.asset, chain: 'bitcoin', contractAddress: key.slice(8) };
+  if (key === 'starknet:native') return { asset: posting.asset, chain: 'starknet' };
+  if (key.startsWith('starknet:')) {
+    return { asset: posting.asset, chain: 'starknet', contractAddress: key.slice('starknet:'.length) };
+  }
+  const evm = /^evm:([^:]+):(.+)$/.exec(key);
+  if (evm) {
+    const chain = EVM_CHAIN_BY_NUMERIC_ID.get(evm[1]) ?? evm[1];
+    return { asset: posting.asset, chain, contractAddress: evm[2] === 'native' ? undefined : evm[2] };
+  }
+  return { asset: posting.asset };
+}
+
+/**
+ * Chart series whose quantity/market line comes from the projection's immutable
+ * prepared posting order. Cost uses the same custody average-cost overlay as
+ * the legacy portfolio chart, with both sides indexed in chronological passes.
+ */
+export function buildPostingChartSeries(
+  transactions: Transaction[],
+  postings: readonly DerivedPosting[],
+  preparedPostings: PreparedPostingAggregation,
+  index: PriceIndex,
+  start: number,
+  end: number,
+  maxSamples = 72,
+  measurePreparation?: <T>(callback: () => T) => T
+): ChartPoint[] {
+  if (transactions.length === 0 || end <= start) return [];
+  // The measured boundary includes all cost/posting indexes and all 72 sample
+  // preparations; it does not report only the already-fast posting subcall.
+  const prepare = measurePreparation ?? ((callback) => callback());
+  return prepare(() => {
+    const span = end - start;
+    const samples = Math.max(2, Math.min(maxSamples, Math.floor(span / DAY_MS) + 1));
+    const times = Array.from({ length: samples }, (_, sample) =>
+      sample === samples - 1 ? end : Math.round(start + (span * sample) / (samples - 1))
+    );
+    const costSeries = postings.some((posting) => posting.role === 'opening_balance')
+      ? buildDisplayCostSamples({ transactions, postings, preparedPostings }, times)
+      : buildCustodyCostSamples(transactions, times);
+    if (preparedPostings.source !== postings) {
+      throw new Error('prepared posting aggregation source mismatch');
+    }
+    const representativeByAsset = new Map<string, DerivedPosting>();
+    for (const posting of postings) {
+      if (!representativeByAsset.has(posting.assetKey)) {
+        representativeByAsset.set(posting.assetKey, posting);
+      }
+    }
+    const historyByAsset = new Map<string, PricePoint[] | null>();
+    for (const [assetKey, posting] of representativeByAsset) {
+      historyByAsset.set(assetKey, priceHistoryFor(postingDisplayIdentity(posting), index));
+    }
+    const accountBalances = new Map<string, number>();
+    const assetBalances = new Map<string, number>();
+    const ordered = preparedPostings.ordered;
+    let postingCursor = 0;
+    return costSeries.map((point) => {
+      while (postingCursor < ordered.length && Math.floor(ordered[postingCursor].effectiveAt) <= point.t) {
+        const posting = ordered[postingCursor];
+        const balanceKey = preparedPostings.keys[postingCursor];
+        const previous = accountBalances.get(balanceKey) ?? 0;
+        const next = posting.role === 'opening_balance'
+          ? posting.signedQuantity
+          : previous + posting.signedQuantity;
+        accountBalances.set(balanceKey, next);
+        assetBalances.set(posting.assetKey, (assetBalances.get(posting.assetKey) ?? 0) + next - previous);
+        postingCursor++;
+      }
+      let market = 0;
+      let pricedAny = false;
+      let unpricedCount = 0;
+      for (const [assetKey, quantity] of assetBalances) {
+        if (Math.abs(quantity) <= 1e-9) continue;
+        const history = historyByAsset.get(assetKey);
+        const price = history ? priceAt(history, point.t) : null;
+        if (price == null) unpricedCount++;
+        else {
+          market += quantity * price;
+          pricedAny = true;
+        }
+      }
+      return { ...point, market: pricedAny ? market : null, unpricedCount };
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -391,6 +502,97 @@ export interface SourceSlice {
   iconId?: string;
   /** Net quantity of the holding's asset attributed to this source. */
   qty: number;
+  verificationStatus?: HoldingSourceVerification['verificationStatus'];
+  fallbackReason?: HoldingSourceVerification['fallbackReason'];
+}
+
+export interface SourceVisualSlice extends SourceSlice {
+  /** Visual allocation uses magnitude; signed `qty` remains unchanged. */
+  sharePct: number;
+  isDeficit: boolean;
+}
+
+/**
+ * Builds truthful visual shares for signed source quantities. A deficit is a
+ * real source slice, so its magnitude participates in the denominator rather
+ * than shrinking the signed total and making positive slices exceed 100%.
+ */
+export function sourceVisualShares(slices: readonly SourceSlice[]): SourceVisualSlice[] {
+  const absoluteTotal = slices.reduce((sum, slice) => sum + Math.abs(slice.qty), 0);
+  return slices.map((slice) => ({
+    ...slice,
+    sharePct: absoluteTotal > 0 ? (Math.abs(slice.qty) / absoluteTotal) * 100 : 0,
+    isDeficit: slice.qty < 0
+  }));
+}
+
+function accountClassLabel(accountClass: HoldingSourceVerification['accountClass']): string {
+  return accountClass.charAt(0).toUpperCase() + accountClass.slice(1);
+}
+
+/** Labels the projection's exact source slices without recomputing quantity. */
+export function projectionSourceBreakdown(
+  verification: readonly HoldingSourceVerification[],
+  wallets: LookupAddressRow[],
+  exchangeConnections: ExchangeConnectionRow[],
+  csvImports: CsvImportRow[],
+  transactions: readonly Transaction[] = []
+): SourceSlice[] {
+  const exchanges = new Map(exchangeConnections.map((connection) => [connection.id, connection]));
+  const files = new Map(csvImports.map((file) => [file.id, file]));
+  const transactionsById = new Map(transactions.map((transaction) => [transaction.id, transaction]));
+  const result = new Map<string, SourceSlice>();
+  for (const slice of verification) {
+      if (Math.abs(slice.quantity) <= 1e-9) continue;
+      let name: string;
+      let iconId: string | undefined;
+      let displayKey = `${slice.scopeId}:${slice.accountClass}`;
+      if (slice.scopeId.startsWith('exchange:')) {
+        const connection = exchanges.get(slice.scopeId.slice('exchange:'.length));
+        iconId = parserIconId(connection?.exchange ?? '');
+        const base = connection?.label ?? (iconId ? brandLabel(iconId) : 'Exchange');
+        name = `${base} ${accountClassLabel(slice.accountClass)}`;
+      } else if (slice.scopeId.startsWith('wallet:')) {
+        const identity = slice.scopeId.slice('wallet:'.length);
+        const wallet = wallets.find((row) => walletAuthorityIdentity(row.chain, row.address) === identity);
+        const chain = identity.split(':')[0];
+        iconId = chainIconId(chain);
+        name = wallet?.label ?? (wallet ? `${wallet.address.slice(0, 6)}…${wallet.address.slice(-4)}` : 'Wallet');
+      } else if (slice.scopeId.startsWith('file:')) {
+        const fileId = slice.scopeId.slice('file:'.length, -(slice.accountClass.length + 1));
+        const file = files.get(fileId);
+        iconId = parserIconId(file?.parserId ?? '');
+        name = file?.fileName ?? (iconId ? brandLabel(iconId) : 'Imported file');
+        if (slice.accountClass !== 'manual' && slice.accountClass !== 'unknown') {
+          name += ` · ${accountClassLabel(slice.accountClass)}`;
+        }
+      } else if (slice.scopeId === 'manual') {
+        name = 'Manual entry';
+      } else {
+        const transaction = slice.scopeId.startsWith('unresolved:')
+          ? transactionsById.get(slice.scopeId.slice('unresolved:'.length))
+          : undefined;
+        iconId = parserIconId(transaction?.source ?? '');
+        name = transaction?.source === 'binance_options'
+          ? 'Binance Options'
+          : iconId ? brandLabel(iconId) : transaction ? prettifySource(transaction.source)
+            : `${accountClassLabel(slice.accountClass)} · unverified source`;
+        displayKey = `unverified:${transaction?.source ?? slice.scopeId}:${slice.accountClass}`;
+      }
+      const existing = result.get(displayKey);
+      if (existing) {
+        existing.qty += slice.quantity;
+        if (existing.fallbackReason !== slice.fallbackReason) existing.fallbackReason = undefined;
+      } else {
+        result.set(displayKey, {
+          key: displayKey, name, iconId, qty: slice.quantity,
+          verificationStatus: slice.verificationStatus, fallbackReason: slice.fallbackReason
+        });
+      }
+  }
+  return [...result.values()]
+    .filter((slice) => Math.abs(slice.qty) > 1e-9)
+    .sort((left, right) => Math.abs(right.qty) - Math.abs(left.qty));
 }
 
 function prettifySource(source: string): string {

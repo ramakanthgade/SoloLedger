@@ -6,6 +6,7 @@ import { buildPortfolioHoldings } from '@/lib/portfolio/portfolioCompute';
 import {
   allocationSlices,
   buildChartSeries,
+  buildPostingChartSeries,
   buildInsights,
   buildPriceIndex,
   formatRelativeTime,
@@ -13,11 +14,17 @@ import {
   latestSyncAt,
   moneyStrip,
   periodRange,
+  projectionSourceBreakdown,
+  sourceVisualShares,
   priceAt,
   reconcileHoldings,
   sourceBreakdown,
   valueHoldings
 } from './dashboardModel';
+import { derivePostings } from '@/lib/ledger/derivedPostings';
+import { preparePostingAggregation } from '@/lib/ledger/postingBalances';
+import { buildPortfolioDcaContext } from '@/lib/portfolio/portfolioHoldings';
+import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
 
 const DAY = 86_400_000;
 const day = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d, 12, 0, 0);
@@ -210,6 +217,346 @@ describe('buildChartSeries', () => {
     const last = series[series.length - 1];
     expect(last.market).toBeCloseTo(1.5 * 300);
     expect(last.unpricedCount).toBe(0);
+  });
+
+  it('uses the chronological posting cursor for quantity market values, including counter legs', () => {
+    const rows = [tx({
+      id: 'trade', timestamp: day(2026, 4, 2), type: 'trade', asset: 'BTC', amount: 1,
+      counterAsset: 'USDT', counterAmount: 50, source: 'manual'
+    })];
+    const postings = derivePostings(rows, { exchangeConnections: [] });
+    const prepared = preparePostingAggregation(postings);
+    const index = buildPriceIndex([
+      priceRow(`sym:USDT:${keyDate(day(2026, 4, 2))}:INR`, 2)
+    ], 'INR');
+    const series = buildPostingChartSeries(
+      rows, postings, prepared, index, day(2026, 4, 1), day(2026, 4, 3), 3
+    );
+    expect(series[series.length - 1]?.market).toBe(100);
+  });
+
+  it.each([
+    ['Ethereum', 'ethereum', 'ethereum', '0xabc'],
+    ['Starknet', 'starknet', 'starknet', '0xdef']
+  ] as const)('uses %s contract history instead of a colliding symbol fallback', (
+    _label, chain, platform, contractAddress
+  ) => {
+    const rows = [tx({
+      id: `contract-${chain}`, timestamp: day(2026, 4, 2), type: 'transfer_in',
+      asset: 'USDC', amount: 2, chain, contractAddress, source: 'manual'
+    })];
+    const postings = derivePostings(rows, { exchangeConnections: [] });
+    const index = buildPriceIndex([
+      priceRow(`sym:USDC:${keyDate(day(2026, 4, 2))}:INR`, 999),
+      priceRow(`ctr:${platform}:${contractAddress}:${keyDate(day(2026, 4, 2))}:INR`, 7)
+    ], 'INR');
+    const series = buildPostingChartSeries(
+      rows, postings, preparePostingAggregation(postings), index,
+      day(2026, 4, 1), day(2026, 4, 3), 3
+    );
+    expect(series[series.length - 1]?.market).toBe(14);
+  });
+
+  it('preserves account-level opening-balance resets while aggregating assets', () => {
+    const rows = [tx({
+      id: 'after-opening', timestamp: day(2026, 4, 3), type: 'transfer_in',
+      asset: 'BTC', amount: 1, source: 'manual'
+    })];
+    const postings = derivePostings(rows, {
+      exchangeConnections: [],
+      openingBalances: [{
+        id: 'opening-1', logicalKey: 'manual-btc-1', scopeId: 'manual', accountClass: 'manual',
+        assetKey: 'asset:BTC', asset: 'BTC', absoluteQuantity: 5, effectiveAt: day(2026, 4, 1),
+        provenance: 'user_confirmed', createdAt: 1, updatedAt: 1
+      }, {
+        id: 'opening-2', logicalKey: 'manual-btc-2', scopeId: 'manual', accountClass: 'manual',
+        assetKey: 'asset:BTC', asset: 'BTC', absoluteQuantity: 2, effectiveAt: day(2026, 4, 2),
+        provenance: 'user_confirmed', createdAt: 2, updatedAt: 2
+      }]
+    });
+    const series = buildPostingChartSeries(
+      rows, postings, preparePostingAggregation(postings),
+      buildPriceIndex([priceRow(`sym:BTC:${keyDate(day(2026, 4, 1))}:INR`, 10)], 'INR'),
+      day(2026, 4, 1), day(2026, 4, 3), 3
+    );
+    expect(series.map((point) => point.market)).toEqual([50, 20, 30]);
+  });
+
+  it.each([
+    ['internal transfer', [
+      tx({ id: 'internal-buy', timestamp: day(2026, 4, 1), amount: 2, fiatValue: 200 }),
+      tx({ id: 'internal-out', timestamp: day(2026, 4, 2), type: 'transfer_out', amount: 1,
+        source: 'binance', importBatchId: 'internal', isInternalTransfer: true, notes: 'custody move',
+        raw: { Account: 'Spot' } }),
+      tx({ id: 'internal-in', timestamp: day(2026, 4, 2) + 1_000, type: 'transfer_in', amount: 1,
+        source: 'binance', importBatchId: 'internal', isInternalTransfer: true, notes: 'custody move',
+        raw: { Account: 'Funding' } })
+    ]],
+    ['fee overlay', [
+      tx({ id: 'fee-buy', timestamp: day(2026, 4, 1), amount: 2, fiatValue: 200 }),
+      tx({ id: 'fee-row', timestamp: day(2026, 4, 2), type: 'fee', amount: 0.5, fiatValue: 10 })
+    ]],
+    ['trade overlay', [
+      tx({ id: 'trade-buy', timestamp: day(2026, 4, 1), amount: 1, fiatValue: 100 }),
+      tx({ id: 'trade-row', timestamp: day(2026, 4, 2), type: 'trade', amount: 0.5,
+        counterAsset: 'ETH', counterAmount: 2, fiatValue: 80 })
+    ]],
+    ['Binance Options signed journal', [
+      tx({ id: 'option-paid', timestamp: day(2026, 4, 1), type: 'fee', asset: 'USDT', amount: 100,
+        fiatValue: 100, source: 'binance_options', category: 'options_premium' }),
+      tx({ id: 'option-received', timestamp: day(2026, 4, 2), type: 'income', asset: 'USDT', amount: 120,
+        fiatValue: 120, source: 'binance_options', category: 'options_premium' })
+    ]],
+    ['native SOL trade and fee', [
+      tx({ id: 'sol-buy', timestamp: day(2026, 4, 1), type: 'buy', asset: 'SOL', amount: 2,
+        fiatValue: 200, chain: 'solana' }),
+      tx({ id: 'sol-trade', timestamp: day(2026, 4, 2), type: 'trade', asset: 'SOL', amount: 0.5,
+        counterAsset: 'USDC', counterAmount: 50, fiatValue: 50, chain: 'solana', feeAsset: 'SOL', feeAmount: 0.01 })
+    ]],
+    ['classified DCA deposit and fills', [
+      tx({ id: 'dca-buy', timestamp: day(2026, 4, 1), asset: 'DBT', amount: 10, fiatValue: 100,
+        chain: 'solana' }),
+      tx({ id: 'dca-deposit', timestamp: day(2026, 4, 2), type: 'transfer_out', asset: 'DBT', amount: 10,
+        chain: 'solana', isInternalTransfer: true, notes: 'DCA deposit — non-taxable escrow' }),
+      tx({ id: 'dca-fill-1', timestamp: day(2026, 4, 3), type: 'trade', asset: 'DBT', amount: 2,
+        counterAsset: 'USDC', counterAmount: 3, fiatValue: 30, chain: 'solana', notes: 'DCA fill' }),
+      tx({ id: 'dca-fill-2', timestamp: day(2026, 4, 4), type: 'trade', asset: 'DBT', amount: 2,
+        counterAsset: 'USDC', counterAmount: 4, fiatValue: 40, chain: 'solana', notes: 'DCA fill' })
+    ]],
+    ['detected DCA deposit and counterparty fills', [
+      tx({ id: 'dca-buy', timestamp: day(2026, 4, 1), asset: 'DBT', amount: 10, fiatValue: 100,
+        chain: 'solana' }),
+      tx({ id: 'dca-deposit', timestamp: day(2026, 4, 2), type: 'transfer_out', asset: 'DBT', amount: 10,
+        chain: 'solana', source: 'rpc:helius', walletAddress: 'wallet', counterpartyAddress: 'vault' }),
+      tx({ id: 'dca-fill-1', timestamp: day(2026, 4, 3), type: 'transfer_in', asset: 'USDC', amount: 3,
+        chain: 'solana', source: 'rpc:helius', walletAddress: 'wallet', counterpartyAddress: 'vault' }),
+      tx({ id: 'dca-fill-2', timestamp: day(2026, 4, 4), type: 'transfer_in', asset: 'USDC', amount: 4,
+        chain: 'solana', source: 'rpc:helius', walletAddress: 'wallet', counterpartyAddress: 'vault' })
+    ]],
+    ['unordered rows with spam', [
+      tx({ id: 'late', timestamp: day(2026, 4, 3), asset: 'BTC', amount: 2, fiatValue: 200 }),
+      tx({ id: 'spam', timestamp: day(2026, 4, 1), asset: 'BTC', amount: 100,
+        fiatValue: 10_000, isSpam: true }),
+      tx({ id: 'early', timestamp: day(2026, 4, 2), asset: 'BTC', amount: 1, fiatValue: 100 })
+    ]]
+  ] as const)('matches legacy chart costs exactly for %s', (_name, rows) => {
+    const transactions = [...rows] as Transaction[];
+    const postings = derivePostings(transactions, { exchangeConnections: [] });
+    const start = day(2026, 4, 1);
+    const end = day(2026, 4, 6);
+    const legacy = buildChartSeries(transactions, buildPriceIndex([], 'INR'), start, end, 6);
+    const indexed = buildPostingChartSeries(
+      transactions, postings, preparePostingAggregation(postings), buildPriceIndex([], 'INR'), start, end, 6
+    );
+    expect(indexed.map((point) => point.cost)).toEqual(legacy.map((point) => point.cost));
+  });
+
+  it.each([
+    ['partial and full SOL buys', [
+      tx({ id: 'sol-buy-1', timestamp: day(2026, 4, 1), type: 'buy', asset: 'SOL', amount: 2,
+        counterAsset: 'INR', counterAmount: 200, fiatValue: 200, chain: 'solana' }),
+      tx({ id: 'sol-buy-2', timestamp: day(2026, 4, 2), type: 'buy', asset: 'SOL', amount: 1,
+        counterAsset: 'INR', counterAmount: 120, fiatValue: 120, chain: 'solana' })
+    ]],
+    ['SOL transfers and fee', [
+      tx({ id: 'sol-in', timestamp: day(2026, 4, 1), type: 'transfer_in', asset: 'SOL', amount: 3,
+        fiatValue: 0, chain: 'solana' }),
+      tx({ id: 'sol-out', timestamp: day(2026, 4, 2), type: 'transfer_out', asset: 'SOL', amount: 1,
+        chain: 'solana', feeAsset: 'SOL', feeAmount: 0.01 }),
+      tx({ id: 'sol-fee', timestamp: day(2026, 4, 3), type: 'fee', asset: 'SOL', amount: 0.02,
+        chain: 'solana' })
+    ]],
+    ['SOL sold and received through trades', [
+      tx({ id: 'sol-buy', timestamp: day(2026, 4, 1), type: 'buy', asset: 'SOL', amount: 3,
+        fiatValue: 300, chain: 'solana' }),
+      tx({ id: 'sol-sell-trade', timestamp: day(2026, 4, 2), type: 'trade', asset: 'SOL', amount: 1,
+        counterAsset: 'USDC', counterAmount: 100, fiatValue: 100, chain: 'solana', feeAsset: 'SOL', feeAmount: 0.01 }),
+      tx({ id: 'sol-buy-trade', timestamp: day(2026, 4, 3), type: 'trade', asset: 'USDC', amount: 50,
+        counterAsset: 'SOL', counterAmount: 0.5, fiatValue: 50, chain: 'solana' })
+    ]],
+    ['full SOL drain and reacquire', [
+      tx({ id: 'sol-first-buy', timestamp: day(2026, 4, 1), type: 'buy', asset: 'SOL', amount: 2,
+        fiatValue: 200, chain: 'solana' }),
+      tx({ id: 'sol-drain', timestamp: day(2026, 4, 2), type: 'sell', asset: 'SOL', amount: 2,
+        chain: 'solana' }),
+      tx({ id: 'sol-reacquire', timestamp: day(2026, 4, 3), type: 'buy', asset: 'SOL', amount: 1,
+        counterAsset: 'INR', counterAmount: 150, fiatValue: 150, chain: 'solana' })
+    ]]
+  ] as const)('matches legacy native SOL chart semantics for %s', (_name, rows) => {
+    const transactions = [...rows] as Transaction[];
+    const postings = derivePostings(transactions, { exchangeConnections: [] });
+    const start = day(2026, 4, 1);
+    const end = day(2026, 4, 4);
+    const legacy = buildChartSeries(transactions, buildPriceIndex([], 'INR'), start, end, 4);
+    const indexed = buildPostingChartSeries(
+      transactions, postings, preparePostingAggregation(postings), buildPriceIndex([], 'INR'), start, end, 4
+    );
+    expect(indexed.map((point) => point.cost)).toEqual(legacy.map((point) => point.cost));
+  });
+
+  it('indexes 30k adversarial DCA counterparty rows with linear candidate work', () => {
+    const groups = 10_000;
+    const rows = new Array<Transaction>(groups * 3);
+    for (let index = 0; index < groups; index++) {
+      const timestamp = index * 1_000_000;
+      const common = {
+        chain: 'solana', source: 'rpc:helius', walletAddress: `wallet-${index}`,
+        counterpartyAddress: `vault-${index}`
+      } as const;
+      rows[index * 3] = tx({
+        ...common, id: `deposit-${index}`, timestamp, type: 'transfer_out', asset: 'DBT', amount: 2
+      });
+      rows[index * 3 + 1] = tx({
+        ...common, id: `fill-a-${index}`, timestamp: timestamp + 1, type: 'transfer_in', asset: 'USDC', amount: 1
+      });
+      rows[index * 3 + 2] = tx({
+        ...common, id: `fill-b-${index}`, timestamp: timestamp + 2, type: 'transfer_in', asset: 'USDC', amount: 1
+      });
+    }
+    const metrics = { candidateVisits: 0 };
+    const context = buildPortfolioDcaContext(rows, metrics);
+    expect(context.internalDepositIds.size).toBe(groups);
+    expect(context.dcaFillIds.size).toBe(groups * 2);
+    expect(context.internalDepositIds.has('deposit-9999')).toBe(true);
+    expect(context.dcaFillIds.has('fill-b-9999')).toBe(true);
+    expect(metrics.candidateVisits).toBeLessThanOrEqual(rows.length);
+  });
+
+  it('bounds same-wallet deposit visits across many fill-only output groups', () => {
+    const groups = 4_000;
+    const firstFillTimestamp = groups * 1_000 + 1;
+    const rows = new Array<Transaction>(groups * 3);
+    for (let index = 0; index < groups; index++) {
+      const common = {
+        chain: 'solana', source: 'rpc:helius', walletAddress: 'shared-wallet'
+      } as const;
+      rows[index * 3] = tx({
+        ...common, id: `fill-only-deposit-${index}`, timestamp: index * 1_000,
+        type: 'transfer_out', asset: 'DBT', amount: 2
+      });
+      rows[index * 3 + 1] = tx({
+        ...common, id: `fill-only-a-${index}`, timestamp: firstFillTimestamp + index * 10,
+        type: 'transfer_in', asset: 'USDC', amount: 1,
+        counterpartyAddress: `fill-only-vault-${index}`
+      });
+      rows[index * 3 + 2] = tx({
+        ...common, id: `fill-only-b-${index}`, timestamp: firstFillTimestamp + index * 10 + 1,
+        type: 'transfer_in', asset: 'USDC', amount: 1,
+        counterpartyAddress: `fill-only-vault-${index}`
+      });
+    }
+
+    const metrics = { candidateVisits: 0 };
+    const context = buildPortfolioDcaContext(rows, metrics);
+    // Every densely-overlapping group chooses the same nearest deposit.
+    expect(context.internalDepositIds.size).toBe(1);
+    expect(context.dcaFillIds.size).toBe(groups * 2);
+    expect(context.internalDepositIds.has('fill-only-deposit-3999')).toBe(true);
+    expect(metrics.candidateVisits).toBeLessThanOrEqual(rows.length);
+  });
+
+  it('assigns dense same-wallet trade fills once to the nearest deposit with linear visits', () => {
+    const groups = 4_000;
+    const firstFillTimestamp = groups * 1_000 + 1;
+    const rows = new Array<Transaction>(groups * 3);
+    for (let index = 0; index < groups; index++) {
+      const common = {
+        chain: 'solana', source: 'rpc:helius', walletAddress: 'shared-swap-wallet'
+      } as const;
+      rows[index * 3] = tx({
+        ...common, id: `swap-deposit-${index}`, timestamp: index * 1_000,
+        type: 'transfer_out', asset: 'DBT', amount: 2,
+        counterpartyAddress: `swap-vault-${index}`
+      });
+      rows[index * 3 + 1] = tx({
+        ...common, id: `swap-fill-a-${index}`, timestamp: firstFillTimestamp + index * 10,
+        type: 'trade', asset: 'DBT', amount: 1,
+        counterAsset: 'USDC', counterAmount: 1
+      });
+      rows[index * 3 + 2] = tx({
+        ...common, id: `swap-fill-b-${index}`, timestamp: firstFillTimestamp + index * 10 + 1,
+        type: 'trade', asset: 'DBT', amount: 1,
+        counterAsset: 'USDC', counterAmount: 1,
+        notes: index === 0 ? 'DCA fill: previously classified' : undefined
+      });
+    }
+
+    const metrics = { candidateVisits: 0 };
+    const detected = detectDcaGroups(rows, metrics);
+    expect(detected).toHaveLength(1);
+    expect(detected[0].depositTx.id).toBe('swap-deposit-3999');
+    expect(detected[0].fillTxs).toHaveLength(groups * 2);
+    expect(detected[0].fillTxs[0].id).toBe('swap-fill-a-0');
+    expect(detected[0].fillTxs[groups * 2 - 1].id).toBe('swap-fill-b-3999');
+    expect(detected[0].unclassifiedFillTxs).toHaveLength(groups * 2 - 1);
+    expect(detected[0].unclassifiedFillTxs.some((fill) => fill.id === 'swap-fill-b-0')).toBe(false);
+    expect(metrics.candidateVisits).toBeLessThanOrEqual(rows.length);
+  });
+});
+
+describe('projectionSourceBreakdown', () => {
+  it('uses projection quantities, joins labels, preserves Spot/Options, and agrees with the holding', () => {
+    const verification = [
+      { scopeId: 'exchange:c1', accountClass: 'spot' as const, quantity: 7, postingQuantity: 50,
+        authorityQuantity: 7, verificationStatus: 'verified_authority' as const,
+        authorityStatus: 'current' as const, coverageStatus: 'complete' as const, scopeStatus: 'resolved' as const },
+      { scopeId: 'exchange:c1', accountClass: 'options' as const, quantity: 3, postingQuantity: 3,
+        verificationStatus: 'posting_fallback' as const, fallbackReason: 'missing_authority' as const,
+        authorityStatus: 'missing' as const, coverageStatus: 'missing' as const, scopeStatus: 'resolved' as const }
+    ];
+    const slices = projectionSourceBreakdown(verification, [], [{
+      id: 'c1', exchange: 'binance', label: 'Primary Binance', createdAt: 1, cursors: {}, status: 'ok'
+    }], []);
+    expect(slices.map((slice) => [slice.name, slice.qty])).toEqual([
+      ['Primary Binance Spot', 7], ['Primary Binance Options', 3]
+    ]);
+    expect(slices.reduce((sum, slice) => sum + slice.qty, 0)).toBe(10);
+  });
+
+  it('labels wallet contracts and timestamp-less CSV postings without recalculating quantities', () => {
+    const slices = projectionSourceBreakdown([
+      { scopeId: 'wallet:solana:solana:Base58Wallet', accountClass: 'wallet', quantity: 2,
+        postingQuantity: 2, verificationStatus: 'posting_fallback', fallbackReason: 'missing_authority',
+        authorityStatus: 'missing', coverageStatus: 'missing', scopeStatus: 'resolved' },
+      { scopeId: 'file:csv-no-time:manual', accountClass: 'manual', quantity: 4,
+        postingQuantity: 4, verificationStatus: 'posting_fallback', fallbackReason: 'non_comparable_authority',
+        authorityStatus: 'non_comparable', coverageStatus: 'complete', scopeStatus: 'resolved' }
+    ], [{
+      id: 'solana:Base58Wallet', chain: 'solana', address: 'Base58Wallet', label: 'Contract wallet',
+      lastSyncedAt: 1, txCount: 1
+    }], [], [{
+      id: 'csv-no-time', fileName: 'balances-without-timestamp.csv', importedAt: 0,
+      txCount: 1, parserId: null
+    }]);
+    expect(slices.map((slice) => slice.name)).toEqual([
+      'balances-without-timestamp.csv', 'Contract wallet'
+    ]);
+    expect(slices.reduce((sum, slice) => sum + slice.qty, 0)).toBe(6);
+  });
+
+  it('uses absolute quantities for mixed-sign visual shares without changing signed totals', () => {
+    const slices = [
+      { key: 'positive', name: 'Positive', qty: 10 },
+      { key: 'deficit', name: 'Deficit source', qty: -4 }
+    ];
+    const visual = sourceVisualShares(slices);
+    expect(visual.map((slice) => slice.sharePct)).toEqual([
+      expect.closeTo((10 / 14) * 100), expect.closeTo((4 / 14) * 100)
+    ]);
+    expect(visual.map((slice) => slice.isDeficit)).toEqual([false, true]);
+    expect(visual.reduce((sum, slice) => sum + slice.sharePct, 0)).toBeCloseTo(100);
+    expect(visual.reduce((sum, slice) => sum + slice.qty, 0)).toBe(6);
+  });
+
+  it('gives all-negative holdings meaningful shares totaling 100%', () => {
+    const visual = sourceVisualShares([
+      { key: 'one', name: 'One', qty: -2 },
+      { key: 'two', name: 'Two', qty: -3 }
+    ]);
+    expect(visual.map((slice) => slice.sharePct)).toEqual([40, 60]);
+    expect(visual.every((slice) => slice.isDeficit)).toBe(true);
+    expect(visual.reduce((sum, slice) => sum + slice.sharePct, 0)).toBe(100);
+    expect(visual.reduce((sum, slice) => sum + slice.qty, 0)).toBe(-5);
   });
 });
 

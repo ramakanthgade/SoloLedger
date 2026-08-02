@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-holdings-perf/
 server/data/
 server/.env
 *.local

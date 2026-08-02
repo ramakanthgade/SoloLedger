@@ -7,9 +7,7 @@ import { cn, formatCompactAmount, formatCurrency } from '@/lib/utils';
 import {
   db,
   getSettings,
-  type ExchangeBalanceRow,
-  type PriceCacheRow,
-  type WalletBalanceRow
+  type PriceCacheRow
 } from '@/lib/storage/db';
 import type { TaxSettings, Transaction } from '@/types/transaction';
 import { syncNow, useExchangeSyncJob } from '@/lib/exchangeSync';
@@ -19,17 +17,22 @@ import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import { getMode } from '@/lib/saas/mode';
 import { useAuth } from '@/lib/saas/authContext';
 import { CHAINS } from '@/lib/rpc/providers';
-import { buildPortfolioHoldings } from '@/lib/portfolio/portfolioCompute';
+import { buildHoldingsProjection, type ProjectedPortfolioHolding } from '@/lib/portfolio/holdingsProjection';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import {
   buildPriceIndex,
-  applyExchangeBalanceAuthority,
   currentPriceFor,
   valueHoldings
 } from '@/lib/dashboard/dashboardModel';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
 import { BrandIcon } from './brandIcons';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import { resolveAccountScope, type ExchangeSourceIdentity } from '@/lib/ledger/derivedPostings';
+import type {
+  AuthorityBalanceFallbackReason,
+  AuthorityBalanceVerificationStatus
+} from '@/lib/reconcile/authorityBalanceModel';
+import { associateSourceCoverageScope } from '@/lib/reconcile/sourceCoverage';
 import {
   relativeTime,
   shortAddress,
@@ -38,8 +41,7 @@ import {
 
 const NO_TXS: Transaction[] = [];
 const NO_PRICE_ROWS: PriceCacheRow[] = [];
-const NO_BALANCE_ROWS: WalletBalanceRow[] = [];
-const NO_EXCHANGE_BALANCE_ROWS: ExchangeBalanceRow[] = [];
+const NO_ROWS: never[] = [];
 
 function chainLabel(chainId: string): string {
   return CHAINS.find((c) => c.id === chainId)?.label ?? chainId;
@@ -47,6 +49,18 @@ function chainLabel(chainId: string): string {
 
 function plural(n: number, noun: string): string {
   return `${n.toLocaleString()} ${noun}${n === 1 ? '' : 's'}`;
+}
+
+function walletFallbackLabel(reason: AuthorityBalanceFallbackReason | undefined): string {
+  switch (reason) {
+    case 'stale_authority': return 'source balance is stale';
+    case 'missing_authority': return 'no source balance is available';
+    case 'incomplete_coverage': return 'source coverage is incomplete';
+    case 'non_comparable_authority': return 'source balance is not comparable';
+    case 'unresolved_scope': return 'source scope is unresolved';
+    case 'source_deleted': return 'source connection was deleted';
+    default: return 'source balance could not verify quantity';
+  }
 }
 
 /**
@@ -69,6 +83,9 @@ interface WalletAssetView {
   value: number | null;
   /** True when valued at tx-derived per-unit cost (no cached live price). */
   atCost: boolean;
+  verificationStatus: AuthorityBalanceVerificationStatus;
+  fallbackReason?: AuthorityBalanceFallbackReason;
+  authorityAsOf?: number;
 }
 
 interface AddressGroupView {
@@ -85,9 +102,8 @@ interface AddressGroupView {
  * source logo, name, Added date, Sync now (the same entries the card menu
  * uses), the read-only auto-sync status line, and the last-synced line.
  * Count chips summarise the connection's own transactions. The holdings
- * panel is on-chain-balance-first for watched wallets (walletBalances,
- * grouped per address) and tx-derived for exchanges/files, valued through
- * the same price cache as the dashboard with an honest at-cost fallback.
+ * panel uses the shared custody projection for every source kind, valued
+ * through the same price cache as the dashboard with an honest at-cost fallback.
  */
 export function ConnectionDetail({
   card,
@@ -96,20 +112,18 @@ export function ConnectionDetail({
   card: ConnectionCardData;
   onBack: () => void;
 }) {
-  const [spotRefreshTick, setSpotRefreshTick] = useState(0);
+  const [spotRefreshTick, setSpotRefreshTick] = useState(Date.now);
   useEffect(() => {
-    const timer = window.setInterval(() => setSpotRefreshTick((tick) => tick + 1), 5 * 60_000);
+    const timer = window.setInterval(() => setSpotRefreshTick(Date.now()), 5 * 60_000);
     return () => window.clearInterval(timer);
   }, []);
   const transactions = useLiveQuery(() => db.transactions.toArray(), []);
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
-  const balanceRows = useLiveQuery(() => db.walletBalances.toArray(), []) ?? NO_BALANCE_ROWS;
-  const exchangeBalanceRows = useLiveQuery(
-    () => card.kind === 'exchange-api' && card.exchange
-      ? db.exchangeBalances.where('connectionId').equals(card.exchange.id).toArray()
-      : [],
-    [card.kind, card.kind === 'exchange-api' ? card.exchange?.id : null]
-  ) ?? NO_EXCHANGE_BALANCE_ROWS;
+  const authoritySnapshots = useLiveQuery(() => db.authoritySnapshots.toArray(), []) ?? NO_ROWS;
+  const authorityAssets = useLiveQuery(() => db.authorityAssets.toArray(), []) ?? NO_ROWS;
+  const sourceCoverage = useLiveQuery(() => db.sourceCoverage.toArray(), []) ?? NO_ROWS;
+  const openingBalances = useLiveQuery(() => db.openingBalances.toArray(), []) ?? NO_ROWS;
+  const exchangeConnectionRows = useLiveQuery(() => db.exchangeConnections.toArray(), []) ?? NO_ROWS;
   // Live sync stamps — the `card` prop is a snapshot, so without these the
   // last-synced line stayed stale after Sync now until a remount (D-4).
   const liveWalletRows = useLiveQuery(() => db.lookupAddresses.toArray(), []);
@@ -149,6 +163,12 @@ export function ConnectionDetail({
     [card.walletRows]
   );
 
+  // Only the non-secret source identity fields enter custody scope resolution.
+  const redactedExchangeSources = useMemo<ExchangeSourceIdentity[]>(
+    () => exchangeConnectionRows.map(({ id, exchange }) => ({ id, exchange })),
+    [exchangeConnectionRows]
+  );
+
   /** Transactions attributable to THIS connection only (spam excluded). */
   const connTxs = useMemo(() => {
     const all = (transactions ?? NO_TXS).filter((t) => !t.isSpam);
@@ -170,6 +190,58 @@ export function ConnectionDetail({
     return [];
   }, [transactions, card, walletIdentities]);
 
+  const projectionScopeIds = useMemo(() => {
+    if (card.kind === 'exchange-api' && card.exchange) return [`exchange:${card.exchange.id}`];
+    if (card.kind === 'wallet') {
+      return (card.walletRows ?? []).map((row) => `wallet:${canonicalWalletIdentity(row.chain, row.address)}`);
+    }
+    if (card.kind !== 'file' || !card.csvImport) return [];
+
+    const importId = card.csvImport.id;
+    const scopeIds = new Set<string>();
+    for (const transaction of connTxs) {
+      scopeIds.add(resolveAccountScope(transaction, {
+        exchangeConnections: redactedExchangeSources
+      }).accountScopeId);
+    }
+    for (const coverage of sourceCoverage) {
+      if (coverage.sourceIdentityId !== importId) continue;
+      scopeIds.add(associateSourceCoverageScope(coverage, redactedExchangeSources).accountScopeId);
+    }
+    for (const opening of openingBalances) {
+      if (opening.scopeId.startsWith(`file:${importId}:`)) scopeIds.add(opening.scopeId);
+    }
+    return [...scopeIds];
+  }, [card, connTxs, openingBalances, redactedExchangeSources, sourceCoverage]);
+
+  const fileComparisonAt = useMemo(() => {
+    if (card.kind !== 'file' || !card.csvImport) return undefined;
+    const importId = card.csvImport.id;
+    const authorityTimes = authoritySnapshots
+      .filter((row) => row.sourceIdentityId === importId && row.asOf != null)
+      .map((row) => row.asOf!);
+    if (authorityTimes.length > 0) return Math.max(...authorityTimes);
+    if (connTxs.length > 0) return Math.max(...connTxs.map((row) => row.timestamp));
+    return card.csvImport.importedAt;
+  }, [authoritySnapshots, card, connTxs]);
+
+  // Reuse the price refresh cadence so mounted authority can become stale.
+  const projectionNow = spotRefreshTick;
+  const projection = useMemo(() => buildHoldingsProjection({
+    transactions: (transactions ?? NO_TXS).filter((transaction) => !transaction.isSpam),
+    exchangeConnections: redactedExchangeSources,
+    openingBalances,
+    snapshots: authoritySnapshots,
+    assets: authorityAssets,
+    coverage: sourceCoverage,
+    now: projectionNow,
+    comparisonAt: fileComparisonAt,
+    scopeFilter: { scopeIds: projectionScopeIds }
+  }), [
+    transactions, redactedExchangeSources, openingBalances, authoritySnapshots, authorityAssets,
+    sourceCoverage, projectionNow, fileComparisonAt, projectionScopeIds
+  ]);
+
   const counts = useMemo(() => {
     let deposits = 0;
     let withdrawals = 0;
@@ -182,55 +254,56 @@ export function ConnectionDetail({
     return { total: connTxs.length, deposits, withdrawals, trades, transfers: deposits + withdrawals };
   }, [connTxs]);
 
-  /**
-   * Wallet holdings: authoritative on-chain balances grouped per address,
-   * valued by the cached price (contract-keyed first) with a tx-derived
-   * per-unit-cost fallback. Value null → row shows "—" and is excluded
-   * from the total with a disclosure note.
-   */
+  const projectedByAsset = useMemo(
+    () => new Map(projection.holdings.map((holding) => [holding.assetKey, holding])),
+    [projection.holdings]
+  );
+
+  /** Wallet projection slices stay grouped by their exact canonical address scope. */
   const addressGroups = useMemo<AddressGroupView[]>(() => {
     if (card.kind !== 'wallet') return [];
-    const rows = balanceRows.filter((b) =>
-      walletIdentities.has(canonicalWalletIdentity(b.chain, b.address))
-    );
-    if (rows.length === 0) return [];
-    const txHoldings = buildPortfolioHoldings(connTxs);
-    const perUnitCost = (b: WalletBalanceRow): number | null => {
-      const h = txHoldings.find(
-        (x) =>
-          (x.chain ?? '') === b.chain &&
-          (b.contractAddress
-            ? x.contractAddress?.toLowerCase() === b.contractAddress.toLowerCase()
-            : !x.contractAddress && x.asset.toUpperCase() === b.asset.toUpperCase())
-      );
-      return h && h.amount > 1e-9 && h.costBasis > 0 ? h.costBasis / h.amount : null;
-    };
-    const views: WalletAssetView[] = rows.map((b) => {
+    const cardRowsByScope = new Map((card.walletRows ?? []).map((row) => [
+      `wallet:${canonicalWalletIdentity(row.chain, row.address)}`, row
+    ]));
+    const views: WalletAssetView[] = projection.slices.flatMap((slice): WalletAssetView[] => {
+      const row = cardRowsByScope.get(slice.scopeId);
+      if (!row) return [];
+      const projected = projectedByAsset.get(slice.assetKey);
+      const aggregateQuantity = projected?.quantity ?? 0;
+      const costBasis = projected && aggregateQuantity > 1e-9
+        ? projected.costBasis * (slice.quantity / aggregateQuantity)
+        : 0;
       const current = currentPriceFor(
-        { asset: b.asset, contractAddress: b.contractAddress, chain: b.chain },
+        {
+          asset: projected?.asset ?? slice.asset,
+          contractAddress: projected?.contractAddress,
+          chain: projected?.chain ?? row.chain
+        },
         priceIndex
       );
       let value: number | null = null;
       let atCost = false;
       if (current) {
-        value = b.amount * current.price;
-      } else {
-        const puc = perUnitCost(b);
-        if (puc != null) {
-          value = b.amount * puc;
-          atCost = true;
-        }
+        value = slice.quantity * current.price;
+      } else if (costBasis > 0) {
+        value = costBasis;
+        atCost = true;
+      } else if (slice.quantity === 0) {
+        value = 0;
       }
-      return {
-        key: b.id,
-        address: b.address,
-        chain: b.chain,
-        asset: b.asset,
-        contractAddress: b.contractAddress,
-        amount: b.amount,
+      return [{
+        key: `${slice.scopeId}:${slice.accountClass}:${slice.assetKey}`,
+        address: row.address,
+        chain: projected?.chain ?? row.chain,
+        asset: projected?.asset ?? slice.asset,
+        contractAddress: projected?.contractAddress,
+        amount: slice.quantity,
         value,
-        atCost
-      };
+        atCost,
+        verificationStatus: slice.verificationStatus,
+        fallbackReason: slice.fallbackReason,
+        authorityAsOf: slice.authorityAsOf
+      }];
     });
     const byAddr = new Map<string, WalletAssetView[]>();
     for (const v of views) {
@@ -251,31 +324,33 @@ export function ConnectionDetail({
         };
       })
       .sort((a, b) => b.total - a.total);
-  }, [card.kind, balanceRows, walletIdentities, connTxs, priceIndex]);
+  }, [card, priceIndex, projectedByAsset, projection.slices]);
 
-  /** Exchange/file holdings: tx-derived, valued through the price cache. */
-  const sourcePortfolioHoldings = useMemo(() => {
+  const sourcePortfolioHoldings = useMemo<ProjectedPortfolioHolding[]>(() => {
     if (card.kind === 'wallet') return [];
-    if (card.kind === 'exchange-api') {
-      return applyExchangeBalanceAuthority(connTxs, exchangeBalanceRows).holdings;
+    const holdings = [...projection.holdings];
+    const heldKeys = new Set(holdings.map((holding) => holding.assetKey));
+    for (const slice of projection.slices) {
+      if (slice.quantity !== 0 || heldKeys.has(slice.assetKey)) continue;
+      holdings.push({
+        assetKey: slice.assetKey,
+        asset: slice.asset,
+        quantity: 0,
+        amount: 0,
+        costBasis: 0,
+        verificationStatus: slice.verificationStatus,
+        sourceVerification: []
+      });
+      heldKeys.add(slice.assetKey);
     }
-    return buildPortfolioHoldings(connTxs, card.csvImport ? [card.csvImport] : []);
-  }, [card.kind, card.csvImport, connTxs, exchangeBalanceRows]);
+    return holdings;
+  }, [card.kind, projection.holdings, projection.slices]);
 
   const holdingsNeedingCurrentMarks = useMemo(() => {
-    if (card.kind !== 'wallet') return sourcePortfolioHoldings;
-    return balanceRows
-      .filter((row) =>
-        walletIdentities.has(canonicalWalletIdentity(row.chain, row.address)) && row.amount > 1e-9
-      )
-      .map((row) => ({
-        asset: row.asset,
-        amount: row.amount,
-        costBasis: 0,
-        chain: row.chain,
-        contractAddress: row.contractAddress
-      }));
-  }, [card.kind, sourcePortfolioHoldings, balanceRows, walletIdentities]);
+    return card.kind === 'wallet'
+      ? projection.holdings.filter((holding) => holding.amount > 1e-9)
+      : sourcePortfolioHoldings;
+  }, [card.kind, projection.holdings, sourcePortfolioHoldings]);
 
   useEffect(() => {
     if (holdingsNeedingCurrentMarks.length === 0) return;
@@ -330,14 +405,28 @@ export function ConnectionDetail({
           })()
         : null;
 
-  const latestBalanceAsOf =
-    addressGroups.length > 0
-      ? Math.max(
-          ...balanceRows
-            .filter((b) => walletIdentities.has(canonicalWalletIdentity(b.chain, b.address)))
-            .map((b) => b.asOf)
-        )
-      : null;
+  const walletSlices = card.kind === 'wallet' ? projection.slices : [];
+  const walletHasPostingFallback = walletSlices.some(
+    (slice) => slice.verificationStatus === 'posting_fallback'
+  );
+  const walletFallbackReasons = [...new Set(walletSlices
+    .filter((slice) => slice.verificationStatus === 'posting_fallback')
+    .map((slice) => walletFallbackLabel(slice.fallbackReason)))];
+  const walletAllCurrentAuthority = walletSlices.length > 0 && walletSlices.every(
+    (slice) => slice.verificationStatus === 'verified_authority'
+  );
+  const latestCurrentBalanceAsOf = walletSlices.reduce<number | null>(
+    (latest, slice) => slice.verificationStatus === 'verified_authority' &&
+      slice.authorityAsOf != null && (latest == null || slice.authorityAsOf > latest)
+      ? slice.authorityAsOf : latest,
+    null
+  );
+  const latestStaleEvidenceAsOf = walletSlices.reduce<number | null>(
+    (latest, slice) => slice.fallbackReason === 'stale_authority' &&
+      slice.authorityAsOf != null && (latest == null || slice.authorityAsOf > latest)
+      ? slice.authorityAsOf : latest,
+    null
+  );
 
   // ── Sync actions (same entries the card menu uses) ──
   const [walletSyncing, setWalletSyncing] = useState(false);
@@ -489,11 +578,27 @@ export function ConnectionDetail({
                   ? fm(sourceTotal)
                   : '—'}
             </p>
-            {card.kind === 'wallet' && latestBalanceAsOf != null && (
-              <p className="mt-0.5 text-[0.6875rem] text-faint">
+            {card.kind === 'wallet' && walletAllCurrentAuthority && latestCurrentBalanceAsOf != null && (
+              <p
+                className="mt-0.5 text-[0.6875rem] text-faint"
+                data-testid="detail-wallet-authority-status"
+              >
                 {plural(walletAssetCount, 'asset')} · on-chain balances as of{' '}
-                {relativeTime(latestBalanceAsOf)}
+                {relativeTime(latestCurrentBalanceAsOf)}
               </p>
+            )}
+            {card.kind === 'wallet' && walletHasPostingFallback && (
+              <div className="mt-0.5 text-[0.6875rem] text-warn" data-testid="detail-wallet-fallback-status">
+                <p>
+                  {plural(walletAssetCount, 'asset')} · Includes quantities estimated from ledger postings.
+                </p>
+                <p>Reason: {walletFallbackReasons.join('; ')}.</p>
+                {latestStaleEvidenceAsOf != null && (
+                  <p>
+                    A balance snapshot from {relativeTime(latestStaleEvidenceAsOf)} is stale evidence and is not used as the quantity source.
+                  </p>
+                )}
+              </div>
             )}
           </div>
           <div className="text-right text-[0.6875rem] leading-relaxed text-faint">
@@ -563,6 +668,23 @@ export function ConnectionDetail({
                         <div className="min-w-0 flex-1">
                           <p className="truncate text-sm font-bold text-hi">{a.asset}</p>
                           <p className="text-xs capitalize text-low">{chainLabel(a.chain)}</p>
+                          <p
+                            className={cn(
+                              'text-[0.6875rem]',
+                              a.verificationStatus === 'verified_authority' ? 'text-faint' : 'text-warn'
+                            )}
+                            data-testid="detail-wallet-row-source"
+                          >
+                            {a.verificationStatus === 'verified_authority'
+                              ? 'Current on-chain balance'
+                              : 'Estimated from ledger postings'}
+                            {a.verificationStatus === 'posting_fallback'
+                              ? ` · ${walletFallbackLabel(a.fallbackReason)}`
+                              : ''}
+                            {a.fallbackReason === 'stale_authority' && a.authorityAsOf != null
+                              ? ` · stale snapshot ${relativeTime(a.authorityAsOf)} not used for quantity`
+                              : ''}
+                          </p>
                         </div>
                         <div className="text-right">
                           <p className="text-sm font-semibold tabular-figures text-hi">
@@ -597,7 +719,7 @@ export function ConnectionDetail({
         ) : (
           <ul>
             {sourceHoldings.map((h) => {
-              const value = h.valueNow ?? (h.costBasis > 0 ? h.costBasis : null);
+              const value = h.valueNow ?? (h.costBasis > 0 ? h.costBasis : h.amount === 0 ? 0 : null);
               const atCost = h.valueNow == null && h.costBasis > 0;
               return (
                 <li

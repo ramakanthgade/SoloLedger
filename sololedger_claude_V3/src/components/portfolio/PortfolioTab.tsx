@@ -12,7 +12,12 @@ import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import type { Jurisdiction } from '@/types/transaction';
 import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
-import { buildPortfolioHoldings, portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import {
+  buildHoldingsProjection,
+  type HoldingsProjection,
+  type ProjectedPortfolioHolding
+} from '@/lib/portfolio/holdingsProjection';
 import {
   ALL_WALLETS,
   checkLedgerIntegrity,
@@ -112,14 +117,103 @@ function formatShare(sharePct: number | null): string {
   return `${sharePct.toFixed(1)}%`;
 }
 
+const QUANTITY_FALLBACK_REASON: Record<
+  NonNullable<ProjectedPortfolioHolding['sourceVerification'][number]['fallbackReason']>,
+  string
+> = {
+  stale_authority: 'stale authority',
+  incomplete_coverage: 'incomplete source coverage',
+  unresolved_scope: 'unresolved source',
+  missing_authority: 'no current authority',
+  non_comparable_authority: 'non-comparable authority',
+  source_deleted: 'deleted source'
+};
+
+function quantitySourceLabel(holding: ProjectedPortfolioHolding): {
+  status: string;
+  detail: string;
+  tone: string;
+} {
+  if (holding.verificationStatus === 'verified_authority') {
+    return {
+      status: 'Verified current authority',
+      detail: 'quantity source only',
+      tone: 'text-gain'
+    };
+  }
+  const reasons = Array.from(new Set(holding.sourceVerification.flatMap((source) =>
+    source.verificationStatus === 'posting_fallback' && source.fallbackReason
+      ? [QUANTITY_FALLBACK_REASON[source.fallbackReason]]
+      : []
+  )));
+  const reason = reasons.length > 0 ? reasons.join(', ') : 'no current authority';
+  return holding.verificationStatus === 'mixed'
+    ? {
+        status: 'Partly verified',
+        detail: `quantity source only · remainder posting-derived · ${reason}`,
+        tone: 'text-warn'
+      }
+    : {
+        status: 'Unverified posting-derived',
+        detail: `quantity source only · ${reason}`,
+        tone: 'text-low'
+      };
+}
+
+function QuantitySourceIndicator({ holding }: { holding: ProjectedPortfolioHolding }) {
+  const source = quantitySourceLabel(holding);
+  return (
+    <p className="mt-1 text-[0.6875rem] leading-snug text-faint" data-testid="holding-quantity-source">
+      <span className={cn('font-semibold', source.tone)}>{source.status}</span>
+      {' · '}{source.detail}
+    </p>
+  );
+}
+
+/** Aggregate one exact authority scope without re-running transaction quantity arithmetic. */
+function holdingsForProjectionScope(
+  projection: HoldingsProjection,
+  scopeId: string
+): ProjectedPortfolioHolding[] {
+  const displayByAsset = new Map(projection.holdings.map((holding) => [holding.assetKey, holding]));
+  const quantities = new Map<string, number>();
+  for (const slice of projection.slices) {
+    if (slice.scopeId !== scopeId) continue;
+    quantities.set(slice.assetKey, (quantities.get(slice.assetKey) ?? 0) + slice.quantity);
+  }
+  return Array.from(quantities, ([assetKey, quantity]) => {
+    const display = displayByAsset.get(assetKey);
+    const solanaContract = assetKey.startsWith('solana:') && assetKey !== 'solana:native'
+      ? assetKey.slice('solana:'.length)
+      : undefined;
+    return {
+      assetKey,
+      asset: display?.asset ?? projection.slices.find((slice) =>
+        slice.scopeId === scopeId && slice.assetKey === assetKey)?.asset ?? assetKey,
+      quantity,
+      amount: quantity,
+      costBasis: 0,
+      chain: display?.chain ?? (assetKey.startsWith('solana:') ? 'solana' : undefined),
+      contractAddress: display?.contractAddress ?? solanaContract,
+      verificationStatus: display?.verificationStatus ?? 'posting_fallback',
+      sourceVerification: display?.sourceVerification ?? []
+    };
+  }).filter((holding) => holding.quantity !== 0);
+}
+
 export function PortfolioTab() {
   const { goToImport } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
-  const csvImports = useLiveQuery(() => db.csvImports.toArray(), []) ?? [];
+  const exchangeConnections = useLiveQuery(() => db.exchangeConnections.toArray(), []) ?? [];
+  const openingBalances = useLiveQuery(() => db.openingBalances.toArray(), []) ?? [];
+  const authoritySnapshots = useLiveQuery(() => db.authoritySnapshots.toArray(), []) ?? [];
+  const authorityAssets = useLiveQuery(() => db.authorityAssets.toArray(), []) ?? [];
+  const sourceCoverage = useLiveQuery(() => db.sourceCoverage.toArray(), []) ?? [];
   const [reportingCurrency, setReportingCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selectedFy, setSelectedFy] = useState<number | null>(null);
   const [selectedWallet, setSelectedWallet] = useState<string>(ALL_WALLETS);
+  const [projectionNow, setProjectionNow] = useState(Date.now);
   const lookupAddresses = useLiveQuery(() => getLookupAddresses(), []) ?? [];
   const [liveByWallet, setLiveByWallet] = useState<Map<string, Map<string, number>>>(new Map());
   const [liveBalanceStatus, setLiveBalanceStatus] = useState<'idle' | 'loading' | 'ready' | 'unavailable'>('idle');
@@ -128,6 +222,14 @@ export function PortfolioTab() {
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
   const repairInFlight = useRef(false);
   const periodPillRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => setProjectionNow(Date.now()),
+      5 * 60_000
+    );
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -317,10 +419,31 @@ export function PortfolioTab() {
     return txs;
   }, [transactions, selectedWallet, selectedFy, jurisdiction]);
 
-  const holdings = useMemo(
-    () => buildPortfolioHoldings(filteredTxs, csvImports),
-    [filteredTxs, csvImports]
-  );
+  const projection = useMemo(() => buildHoldingsProjection({
+    transactions,
+    exchangeConnections,
+    openingBalances,
+    snapshots: authoritySnapshots,
+    assets: authorityAssets,
+    coverage: sourceCoverage,
+    now: projectionNow,
+    comparisonAt: selectedFy == null ? undefined : getFyBoundaries(selectedFy, jurisdiction).end,
+    scopeFilter: selectedWallet === ALL_WALLETS
+      ? undefined
+      : { scopeIds: [`wallet:${selectedWallet}`] }
+  }), [
+    transactions,
+    exchangeConnections,
+    openingBalances,
+    authoritySnapshots,
+    authorityAssets,
+    sourceCoverage,
+    selectedWallet,
+    selectedFy,
+    jurisdiction,
+    projectionNow
+  ]);
+  const holdings = projection.holdings;
 
   const integrityIssues = useMemo(
     () => checkLedgerIntegrity(holdings, sourceSummary),
@@ -360,9 +483,7 @@ export function PortfolioTab() {
       const all: ReturnType<typeof compareHoldingsToLive> = [];
       for (const w of lookupAddresses.filter((l) => l.chain === 'solana')) {
         const walletKey = canonicalWalletIdentity(w.chain, w.address);
-        const wTxs = nonSpamTxs.filter((t) => t.walletAddress != null &&
-          canonicalWalletIdentity(t.chain ?? '', t.walletAddress) === walletKey);
-        const wHoldings = buildPortfolioHoldings(wTxs);
+        const wHoldings = holdingsForProjectionScope(projection, `wallet:${walletKey}`);
         const liveMap = liveByWallet.get(walletKey);
         if (!liveMap) continue;
         all.push(...compareHoldingsToLive(wHoldings, liveMap, portfolioHoldingKey, w.address));
@@ -382,12 +503,12 @@ export function PortfolioTab() {
     return compareHoldingsToLive(holdings, liveMap, portfolioHoldingKey);
   }, [
     holdings,
+    projection,
     liveByWallet,
     liveBalanceStatus,
     selectedFy,
     crossCheckMode,
     lookupAddresses,
-    nonSpamTxs,
     selectedWallet
   ]);
 
@@ -478,7 +599,7 @@ export function PortfolioTab() {
     doc.save('sololedger-portfolio-holdings.pdf');
   };
 
-  if (transactions.length === 0) {
+  if (transactions.length === 0 && holdings.length === 0) {
     return (
       <div className="space-y-6">
         <PageHeader
@@ -718,11 +839,16 @@ export function PortfolioTab() {
       ) : (
         <section aria-label="Holdings" className="data-panel" data-testid="portfolio-holdings">
           <div className="data-panel-head flex-wrap gap-3">
-            <div className="flex items-center gap-2.5">
-              <h3 className="text-sm font-semibold tracking-tight text-hi">Holdings</h3>
-              <Badge tone="neutral" className="tabular-figures">
-                {holdings.length} asset{holdings.length === 1 ? '' : 's'}
-              </Badge>
+            <div>
+              <div className="flex items-center gap-2.5">
+                <h3 className="text-sm font-semibold tracking-tight text-hi">Holdings</h3>
+                <Badge tone="neutral" className="tabular-figures">
+                  {holdings.length} asset{holdings.length === 1 ? '' : 's'}
+                </Badge>
+              </div>
+              <p className="mt-1 text-[0.6875rem] text-faint">
+                Indicators describe quantity source only — not reconciliation or tax correctness.
+              </p>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="hidden text-xs text-low lg:inline">
@@ -796,6 +922,7 @@ export function PortfolioTab() {
                             {h.chain && (
                               <p className="text-xs capitalize text-low">{h.chain}</p>
                             )}
+                            <QuantitySourceIndicator holding={h} />
                           </div>
                         </div>
                       </td>
@@ -853,6 +980,7 @@ export function PortfolioTab() {
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-hi">{label}</p>
                       {h.chain && <p className="text-xs capitalize text-low">{h.chain}</p>}
+                      <QuantitySourceIndicator holding={h} />
                     </div>
                     <p className="text-sm font-semibold tabular-figures text-hi">
                       {formatCurrency(h.costBasis, reportingCurrency)}
