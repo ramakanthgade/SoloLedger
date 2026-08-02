@@ -1,4 +1,5 @@
-import { assetKey, normalizeAssetSymbol, transactionLegAssetKey } from '@/lib/ledger/assetKey';
+import { resolveAssetLabel } from '@/lib/assets/solanaMints';
+import { transactionLegAssetKey } from '@/lib/ledger/assetKey';
 import {
   derivePostings,
   type AccountClass,
@@ -19,10 +20,8 @@ import {
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
-import { buildPortfolioHoldings, type PortfolioHolding } from './portfolioCompute';
 import {
-  buildDisplayCostProjection,
-  buildUnresolvedDisplayCostProjection
+  buildDisplayCostProjections
 } from './displayCostProjection';
 
 export interface HoldingsScopeFilter {
@@ -88,7 +87,6 @@ interface DisplayIdentity {
   contractAddress?: string;
 }
 
-const SOLANA_WRAPPED_NATIVE_MINT = 'So11111111111111111111111111111111111111112';
 const CUSTOM_EVM_KEY_PREFIX = 'evm:custom:';
 
 function customEvmIdentityFromCanonicalKey(key: string): Pick<DisplayIdentity, 'chain' | 'contractAddress'> | undefined {
@@ -139,42 +137,69 @@ function transactionLegIdentity(
   canonicalKey: string,
   asset: string
 ): DisplayIdentity {
+  const legAsset = role === 'principal'
+    ? transaction.asset
+    : role === 'counter'
+      ? transaction.counterAsset ?? asset
+      : transaction.feeAsset ?? transaction.asset;
   const rawContract = role === 'principal'
     ? transaction.contractAddress
     : rawString(transaction, role === 'counter'
         ? ['counterContractAddress', 'counterMint', 'outputMint', 'toMint']
         : ['feeContractAddress', 'feeMint']);
+  const chain = transaction.chain ?? chainFromCanonicalKey(canonicalKey);
+  const contractAddress = rawContract ?? contractFromCanonicalKey(canonicalKey);
   return {
-    asset,
-    chain: transaction.chain ?? chainFromCanonicalKey(canonicalKey),
-    contractAddress: rawContract ?? contractFromCanonicalKey(canonicalKey)
+    asset: resolveAssetLabel(legAsset, contractAddress, chain),
+    chain,
+    contractAddress
   };
 }
 
 function displayIdentities(
   transactions: readonly Transaction[],
   postings: readonly DerivedPosting[],
-  slices: readonly AuthorityBalanceSlice[]
+  slices: readonly AuthorityBalanceSlice[],
+  comparisonAt?: number
 ): Map<string, DisplayIdentity> {
   const transactionsById = new Map(transactions.map((transaction) => [transaction.id, transaction]));
   const result = new Map<string, DisplayIdentity>();
-  for (const posting of postings) {
+  // The forward implementation overwrote each canonical key, so only its
+  // newest posting supplied display metadata. Walk backward and stop once all
+  // projected assets are resolved instead of revisiting every historical leg.
+  const unresolvedKeys = new Set(slices.map((slice) => slice.assetKey));
+  const selectedScopeClasses = new Set(
+    slices.map((slice) => `${slice.scopeId}\u001f${slice.accountClass}`)
+  );
+  const openingFallbacks = new Map<string, DisplayIdentity>();
+  for (let index = postings.length - 1; index >= 0 && unresolvedKeys.size > 0; index--) {
+    const posting = postings[index];
+    if (
+      !unresolvedKeys.has(posting.assetKey) ||
+      (comparisonAt != null && posting.effectiveAt > comparisonAt) ||
+      !selectedScopeClasses.has(`${posting.accountScopeId}\u001f${posting.accountClass}`)
+    ) continue;
     const transaction = posting.transactionId ? transactionsById.get(posting.transactionId) : undefined;
-    if (transaction && posting.role !== 'opening_balance') {
-      // Re-check the leg key before attaching transaction metadata. This avoids
-      // leaking a principal contract onto a counter/fee asset with the same symbol.
-      if (transactionLegAssetKey(transaction, posting.role) === posting.assetKey) {
-        result.set(posting.assetKey, transactionLegIdentity(
-          transaction, posting.role, posting.assetKey, posting.asset
-        ));
-      }
-    } else if (!result.has(posting.assetKey)) {
-      result.set(posting.assetKey, {
+    if (
+      transaction && posting.role !== 'opening_balance' &&
+      transactionLegAssetKey(transaction, posting.role) === posting.assetKey
+    ) {
+      result.set(posting.assetKey, transactionLegIdentity(
+        transaction, posting.role, posting.assetKey, posting.asset
+      ));
+      unresolvedKeys.delete(posting.assetKey);
+    } else if (posting.role === 'opening_balance' && !openingFallbacks.has(posting.assetKey)) {
+      // A transaction identity always won over an opening row in the forward
+      // implementation, even when the opening was chronologically newer.
+      openingFallbacks.set(posting.assetKey, {
         asset: posting.asset,
         chain: chainFromCanonicalKey(posting.assetKey),
         contractAddress: contractFromCanonicalKey(posting.assetKey)
       });
     }
+  }
+  for (const [key, identity] of openingFallbacks) {
+    if (!result.has(key)) result.set(key, identity);
   }
   for (const slice of slices) {
     if (result.has(slice.assetKey)) continue;
@@ -191,27 +216,6 @@ function matchesScope(slice: AuthorityBalanceSlice, filter?: HoldingsScopeFilter
   if (filter?.scopeIds && !filter.scopeIds.includes(slice.scopeId)) return false;
   if (filter?.accountClasses && !filter.accountClasses.includes(slice.accountClass)) return false;
   return true;
-}
-
-function legacyHoldingKey(
-  holding: PortfolioHolding,
-  projectedKeys: ReadonlySet<string>
-): string | undefined {
-  const symbol = normalizeAssetSymbol(holding.asset);
-  if (
-    holding.chain === 'solana' && symbol === 'SOL' &&
-    holding.contractAddress === SOLANA_WRAPPED_NATIVE_MINT && projectedKeys.has('solana:native')
-  ) return 'solana:native';
-  try {
-    const key = assetKey({
-      asset: holding.asset,
-      chain: holding.chain,
-      contractAddress: holding.contractAddress
-    });
-    return projectedKeys.has(key) ? key : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 function sourceVerification(slice: AuthorityBalanceSlice): HoldingSourceVerification {
@@ -234,8 +238,8 @@ function sourceVerification(slice: AuthorityBalanceSlice): HoldingSourceVerifica
 
 /**
  * Pure consumer adapter from transactions/evidence to one authoritative holdings
- * view. Quantity always comes from the authority model; the legacy portfolio
- * calculator contributes display metadata and a positive per-unit cost only.
+ * view. Quantity always comes from the authority model; transaction legs
+ * contribute display metadata and the posting projection contributes display cost.
  */
 export function buildHoldingsProjection(input: HoldingsProjectionInput): HoldingsProjection {
   const postings = derivePostings(input.transactions, {
@@ -254,19 +258,7 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     preparedPostings
   });
   const slices = allSlices.filter((slice) => matchesScope(slice, input.scopeFilter));
-  const selectedScopeClasses = new Set(
-    slices.map((slice) => `${slice.scopeId}\u001f${slice.accountClass}`)
-  );
-  const selectedTransactionIds = new Set(
-    postings
-      .filter((posting) =>
-        (input.comparisonAt == null || posting.effectiveAt <= input.comparisonAt) &&
-        selectedScopeClasses.has(`${posting.accountScopeId}\u001f${posting.accountClass}`))
-      .flatMap((posting) => posting.transactionId ? [posting.transactionId] : [])
-  );
-  const legacyTransactions = input.transactions.filter((transaction) => selectedTransactionIds.has(transaction.id));
-  const legacyHoldings = buildPortfolioHoldings(legacyTransactions);
-  const identities = displayIdentities(input.transactions, postings, slices);
+  const identities = displayIdentities(input.transactions, postings, slices, input.comparisonAt);
 
   const slicesByAsset = new Map<string, AuthorityBalanceSlice[]>();
   for (const slice of slices) {
@@ -274,46 +266,22 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     rows.push(slice);
     slicesByAsset.set(slice.assetKey, rows);
   }
-  const projectedKeys = new Set(slicesByAsset.keys());
-  const legacyOverlay = new Map<string, { display: DisplayIdentity }>();
-  for (const legacy of legacyHoldings) {
-    const key = legacyHoldingKey(legacy, projectedKeys);
-    if (!key) continue;
-    legacyOverlay.set(key, {
-      display: {
-        asset: legacy.asset,
-        chain: legacy.chain,
-        contractAddress: key.endsWith(':native') ? undefined : legacy.contractAddress
-      }
-    });
-  }
-  const displayCosts = buildDisplayCostProjection({
+  const displayCostProjections = buildDisplayCostProjections({
     transactions: input.transactions,
     postings,
     preparedPostings,
     asOf: input.comparisonAt
   });
-  const unresolvedDisplayCosts = buildUnresolvedDisplayCostProjection({
-    transactions: input.transactions,
-    postings,
-    preparedPostings,
-    asOf: input.comparisonAt
-  });
-  const openingAffected = new Set(postings
-    .filter((posting) => posting.role === 'opening_balance')
-    .map(postingBalanceKey));
+  const displayCosts = displayCostProjections.exact;
+  const unresolvedDisplayCosts = displayCostProjections.unresolved;
+  const openingAffected = displayCostProjections.openingAffected;
 
   const holdings: ProjectedPortfolioHolding[] = [];
   for (const [canonicalKey, assetSlices] of slicesByAsset) {
     const quantity = assetSlices.reduce((sum, slice) => sum + slice.quantity, 0);
     if (quantity === 0) continue;
     const canonicalIdentity = identities.get(canonicalKey) ?? { asset: assetSlices[0].asset };
-    const legacy = legacyOverlay.get(canonicalKey);
-    const identity: DisplayIdentity = {
-      asset: legacy?.display.asset ?? canonicalIdentity.asset,
-      chain: canonicalIdentity.chain ?? legacy?.display.chain,
-      contractAddress: canonicalIdentity.contractAddress ?? legacy?.display.contractAddress
-    };
+    const identity = canonicalIdentity;
     const statuses = new Set(assetSlices.map((slice) => slice.verificationStatus));
     let unresolvedQuantity = 0;
     const exactCost = assetSlices.reduce((sum, slice) => {

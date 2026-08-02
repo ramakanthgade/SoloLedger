@@ -153,6 +153,80 @@ describe('buildHoldingsProjection', () => {
     });
   });
 
+  it('does not leak display metadata from a filtered-out custody scope', () => {
+    const contractAddress = '0x00000000000000000000000000000000000000ab';
+    const result = buildHoldingsProjection(input({
+      exchangeConnections: [
+        { id: 'c1', exchange: 'binance' },
+        { id: 'c2', exchange: 'binance' }
+      ],
+      transactions: [
+        apiTx({
+          id: 'selected', asset: 'SELECTED', chain: 'ethereum', contractAddress,
+          importBatchId: 'c1', timestamp: NOW - 2_000
+        }),
+        apiTx({
+          id: 'excluded-newer', asset: 'EXCLUDED', chain: 'ethereum', contractAddress,
+          importBatchId: 'c2', timestamp: NOW - 1_000
+        })
+      ],
+      scopeFilter: { scopeIds: ['exchange:c1'] }
+    }));
+    expect(result.holdings[0]).toMatchObject({
+      asset: 'SELECTED', assetKey: `evm:1:${contractAddress}`, contractAddress
+    });
+  });
+
+  it('does not leak display metadata from a posting after the comparison cutoff', () => {
+    const contractAddress = '0x00000000000000000000000000000000000000ac';
+    const result = buildHoldingsProjection(input({
+      exchangeConnections: [],
+      transactions: [
+        tx({
+          id: 'included', asset: 'AT-CUTOFF', chain: 'ethereum', contractAddress,
+          timestamp: NOW - 2_000
+        }),
+        tx({
+          id: 'future', asset: 'FUTURE', chain: 'ethereum', contractAddress,
+          timestamp: NOW
+        })
+      ],
+      comparisonAt: NOW - 1_000
+    }));
+    expect(result.holdings[0]).toMatchObject({ asset: 'AT-CUTOFF', quantity: 2, contractAddress });
+  });
+
+  it('does not attach standalone fee-leg metadata when its posting uses the principal key', () => {
+    const usdcMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const wrappedSolMint = 'So11111111111111111111111111111111111111112';
+    const result = buildHoldingsProjection(input({
+      exchangeConnections: [],
+      transactions: [tx({
+        id: 'standalone-fee', type: 'fee', asset: 'EPjF…TDt1v', amount: 1,
+        source: 'rpc:helius', chain: 'solana', walletAddress: 'WalletAddress',
+        contractAddress: usdcMint, feeAsset: 'SOL', raw: { feeMint: wrappedSolMint }
+      })]
+    }));
+    expect(result.holdings[0]).toMatchObject({
+      assetKey: `solana:${usdcMint}`, contractAddress: usdcMint, quantity: -1
+    });
+    expect(result.holdings[0].asset).not.toBe('SOL');
+  });
+
+  it('resolves a known Solana mint label while preserving its export identity', () => {
+    const usdcMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const result = buildHoldingsProjection(input({
+      exchangeConnections: [],
+      transactions: [tx({
+        id: 'known-mint', asset: 'EPjF…TDt1v', source: 'rpc:helius', chain: 'solana',
+        walletAddress: 'WalletAddress', contractAddress: usdcMint
+      })]
+    }));
+    expect(result.holdings[0]).toMatchObject({
+      asset: 'USDC', assetKey: `solana:${usdcMint}`, chain: 'solana', contractAddress: usdcMint
+    });
+  });
+
   it('includes authority-only assets with canonical metadata and zero cost basis', () => {
     const result = buildHoldingsProjection(input({
       snapshots: [snapshot()],

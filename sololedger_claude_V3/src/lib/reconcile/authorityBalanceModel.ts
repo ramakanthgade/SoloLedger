@@ -1,7 +1,5 @@
 import type { AccountClass, DerivedPosting, ExchangeSourceIdentity } from '@/lib/ledger/derivedPostings';
 import {
-  postingBalanceKey,
-  postingBalances,
   preparePostingAggregation,
   type PreparedPostingAggregation
 } from '@/lib/ledger/postingBalances';
@@ -93,8 +91,8 @@ interface ProjectedCoverage {
 
 interface PostingScopeIndex {
   rows: DerivedPosting[];
-  representatives: Map<string, DerivedPosting>;
   assets: Map<string, string>;
+  balances: Map<string, number>;
 }
 
 const KEY_SEPARATOR = '\u001f';
@@ -212,14 +210,10 @@ function fallbackReason(
  */
 export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): AuthorityBalanceSlice[] {
   const metrics = input.metrics;
-  const postingMetrics = metrics == null ? undefined : { postingVisits: 0 };
   const preparedPostings = input.preparedPostings ?? preparePostingAggregation(input.postings);
-  const balances = postingBalances(
-    input.postings,
-    { asOf: input.comparisonAt, metrics: postingMetrics },
-    preparedPostings
-  );
-  if (metrics && postingMetrics) metrics.postingBalanceVisits += postingMetrics.postingVisits;
+  if (preparedPostings.source !== input.postings) {
+    throw new Error('prepared posting aggregation source mismatch');
+  }
   const deletedSourceIds = new Set(input.exchangeConnections
     .filter((source) => source.deletedAt != null)
     .map((source) => source.id));
@@ -255,19 +249,33 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
     scopes.set(scopeKey(scopeId, accountClass), { scopeId, accountClass });
   };
   const postingsByScope = new Map<string, PostingScopeIndex>();
-  for (const posting of input.postings) {
-    if (metrics) metrics.postingIndexVisits += 1;
-    if (input.comparisonAt != null && posting.effectiveAt > input.comparisonAt) continue;
+  for (let postingIndex = 0; postingIndex < preparedPostings.ordered.length; postingIndex++) {
+    const posting = preparedPostings.ordered[postingIndex];
+    if (metrics) {
+      metrics.postingIndexVisits += 1;
+      metrics.postingBalanceVisits += 1;
+    }
+    if (input.comparisonAt != null && posting.effectiveAt > input.comparisonAt) {
+      // The former source-index pass inspected (and skipped) all future rows,
+      // while postingBalances stopped at the first one. Preserve those metrics.
+      if (metrics) metrics.postingIndexVisits += preparedPostings.ordered.length - postingIndex - 1;
+      break;
+    }
     const key = scopeKey(posting.accountScopeId, posting.accountClass);
     let index = postingsByScope.get(key);
     if (index == null) {
-      index = { rows: [], representatives: new Map(), assets: new Map() };
+      index = { rows: [], assets: new Map(), balances: new Map() };
       postingsByScope.set(key, index);
       addScope(posting.accountScopeId, posting.accountClass);
     }
     index.rows.push(posting);
-    if (!index.representatives.has(posting.assetKey)) index.representatives.set(posting.assetKey, posting);
     index.assets.set(posting.assetKey, posting.asset);
+    index.balances.set(
+      posting.assetKey,
+      posting.role === 'opening_balance'
+        ? posting.signedQuantity
+        : (index.balances.get(posting.assetKey) ?? 0) + posting.signedQuantity
+    );
   }
   const coverageByScope = new Map<string, ProjectedCoverage[]>();
   for (const coverage of projectedCoverage) {
@@ -321,8 +329,7 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
     selectedRows.forEach((row) => assets.set(row.assetKey, row.asset));
 
     for (const [assetKey, asset] of assets) {
-      const representative = postingIndex?.representatives.get(assetKey);
-      const postingQuantity = representative == null ? 0 : balances.get(postingBalanceKey(representative)) ?? 0;
+      const postingQuantity = postingIndex?.balances.get(assetKey) ?? 0;
       const authorityRow = selectedByAsset.get(assetKey);
       const exhaustiveAbsence = authorityRow == null &&
         selection.selectedSnapshot?.endpointProof.exhaustiveBalances === true;

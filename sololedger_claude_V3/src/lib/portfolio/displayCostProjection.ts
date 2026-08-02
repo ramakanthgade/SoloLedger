@@ -31,6 +31,12 @@ export interface CanonicalDisplayCostBalance {
   costBasis: number;
 }
 
+export interface DisplayCostProjections {
+  exact: Map<PostingBalanceKey, DisplayCostBalance>;
+  unresolved: Map<string, CanonicalDisplayCostBalance>;
+  openingAffected: Set<PostingBalanceKey>;
+}
+
 function acquisitionCost(posting: DerivedPosting, transaction: Transaction | undefined): number {
   if (!transaction || posting.signedQuantity <= 0) return 0;
   const fiatValue = transaction.fiatValue ?? 0;
@@ -155,6 +161,50 @@ export function buildUnresolvedDisplayCostProjection(
     balances.set(posting.assetKey, balance);
   }
   return balances;
+}
+
+/**
+ * Builds the exact and unresolved compatibility views in one chronological
+ * pass. Consumers that need both avoid rebuilding the transaction index and
+ * revisiting every posting a second time.
+ */
+export function buildDisplayCostProjections(
+  input: DisplayCostProjectionInput
+): DisplayCostProjections {
+  const prepared = input.preparedPostings ?? preparePostingAggregation(input.postings);
+  if (prepared.source !== input.postings) {
+    throw new Error('prepared posting aggregation source mismatch');
+  }
+  const transactions = new Map(input.transactions.map((transaction) => [transaction.id, transaction]));
+  const openingAffected = openingAffectedKeys(input.postings);
+  const exact = new Map<PostingBalanceKey, DisplayCostBalance>();
+  const unresolved = new Map<string, CanonicalDisplayCostBalance>();
+
+  for (let index = 0; index < prepared.ordered.length; index++) {
+    const posting = prepared.ordered[index];
+    if (input.asOf != null && posting.effectiveAt > input.asOf) break;
+    const transaction = posting.transactionId ? transactions.get(posting.transactionId) : undefined;
+    const key = prepared.keys[index];
+    const exactBalance = exact.get(key) ?? {
+      scopeId: posting.accountScopeId,
+      accountClass: posting.accountClass,
+      assetKey: posting.assetKey,
+      amount: 0,
+      costBasis: 0
+    };
+    applyDisplayCost(exactBalance, posting, transaction);
+    exact.set(key, exactBalance);
+
+    if (!unresolvedPostingEligible(posting, openingAffected)) continue;
+    const unresolvedBalance = unresolved.get(posting.assetKey) ?? {
+      assetKey: posting.assetKey,
+      amount: 0,
+      costBasis: 0
+    };
+    applyDisplayCost(unresolvedBalance, posting, transaction);
+    unresolved.set(posting.assetKey, unresolvedBalance);
+  }
+  return { exact, unresolved, openingAffected };
 }
 
 /** Opening-aware chart costs in one chronological posting pass. */
