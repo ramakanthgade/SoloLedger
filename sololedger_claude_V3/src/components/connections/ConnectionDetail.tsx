@@ -29,6 +29,7 @@ import {
 } from '@/lib/dashboard/dashboardModel';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
 import { BrandIcon } from './brandIcons';
+import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import {
   relativeTime,
   shortAddress,
@@ -71,6 +72,7 @@ interface WalletAssetView {
 }
 
 interface AddressGroupView {
+  key: string;
   address: string;
   assets: WalletAssetView[];
   total: number;
@@ -141,9 +143,9 @@ export function ConnectionDetail({
     [priceRows, currency, spotRefreshTick]
   );
 
-  /** Watched addresses of this card's wallet group (lowercase). */
-  const walletAddrs = useMemo(
-    () => new Set((card.walletRows ?? []).map((r) => r.address.toLowerCase())),
+  /** Exact chain-scoped wallet identities represented by this connection card. */
+  const walletIdentities = useMemo(
+    () => new Set((card.walletRows ?? []).map((r) => canonicalWalletIdentity(r.chain, r.address))),
     [card.walletRows]
   );
 
@@ -160,11 +162,13 @@ export function ConnectionDetail({
     }
     if (card.kind === 'wallet') {
       return all.filter(
-        (t) => t.walletAddress != null && walletAddrs.has(t.walletAddress.toLowerCase())
+        (t) => t.walletAddress != null && walletIdentities.has(
+          canonicalWalletIdentity(t.chain ?? '', t.walletAddress)
+        )
       );
     }
     return [];
-  }, [transactions, card, walletAddrs]);
+  }, [transactions, card, walletIdentities]);
 
   const counts = useMemo(() => {
     let deposits = 0;
@@ -186,7 +190,9 @@ export function ConnectionDetail({
    */
   const addressGroups = useMemo<AddressGroupView[]>(() => {
     if (card.kind !== 'wallet') return [];
-    const rows = balanceRows.filter((b) => walletAddrs.has(b.address.toLowerCase()));
+    const rows = balanceRows.filter((b) =>
+      walletIdentities.has(canonicalWalletIdentity(b.chain, b.address))
+    );
     if (rows.length === 0) return [];
     const txHoldings = buildPortfolioHoldings(connTxs);
     const perUnitCost = (b: WalletBalanceRow): number | null => {
@@ -228,7 +234,7 @@ export function ConnectionDetail({
     });
     const byAddr = new Map<string, WalletAssetView[]>();
     for (const v of views) {
-      const k = v.address.toLowerCase();
+      const k = canonicalWalletIdentity(v.chain, v.address);
       const g = byAddr.get(k) ?? [];
       g.push(v);
       byAddr.set(k, g);
@@ -237,6 +243,7 @@ export function ConnectionDetail({
       .map((assets) => {
         assets.sort((a, b) => (b.value ?? -1) - (a.value ?? -1) || b.amount - a.amount);
         return {
+          key: canonicalWalletIdentity(assets[0].chain, assets[0].address),
           address: assets[0].address,
           assets,
           total: assets.reduce((s, a) => s + (a.value ?? 0), 0),
@@ -244,7 +251,7 @@ export function ConnectionDetail({
         };
       })
       .sort((a, b) => b.total - a.total);
-  }, [card.kind, balanceRows, walletAddrs, connTxs, priceIndex]);
+  }, [card.kind, balanceRows, walletIdentities, connTxs, priceIndex]);
 
   /** Exchange/file holdings: tx-derived, valued through the price cache. */
   const sourcePortfolioHoldings = useMemo(() => {
@@ -258,7 +265,9 @@ export function ConnectionDetail({
   const holdingsNeedingCurrentMarks = useMemo(() => {
     if (card.kind !== 'wallet') return sourcePortfolioHoldings;
     return balanceRows
-      .filter((row) => walletAddrs.has(row.address.toLowerCase()) && row.amount > 1e-9)
+      .filter((row) =>
+        walletIdentities.has(canonicalWalletIdentity(row.chain, row.address)) && row.amount > 1e-9
+      )
       .map((row) => ({
         asset: row.asset,
         amount: row.amount,
@@ -266,7 +275,7 @@ export function ConnectionDetail({
         chain: row.chain,
         contractAddress: row.contractAddress
       }));
-  }, [card.kind, sourcePortfolioHoldings, balanceRows, walletAddrs]);
+  }, [card.kind, sourcePortfolioHoldings, balanceRows, walletIdentities]);
 
   useEffect(() => {
     if (holdingsNeedingCurrentMarks.length === 0) return;
@@ -311,10 +320,10 @@ export function ConnectionDetail({
       : card.kind === 'wallet'
         ? (() => {
             const own = new Set(
-              (card.walletRows ?? []).map((r) => `${r.chain}:${r.address.toLowerCase()}`)
+              (card.walletRows ?? []).map((r) => canonicalWalletIdentity(r.chain, r.address))
             );
             const rows = (liveWalletRows ?? card.walletRows ?? []).filter((r) =>
-              own.has(`${r.chain}:${r.address.toLowerCase()}`)
+              own.has(canonicalWalletIdentity(r.chain, r.address))
             );
             const stamps = rows.map((r) => r.lastSyncedAt);
             return stamps.length > 0 ? Math.max(...stamps) : 0;
@@ -325,7 +334,7 @@ export function ConnectionDetail({
     addressGroups.length > 0
       ? Math.max(
           ...balanceRows
-            .filter((b) => walletAddrs.has(b.address.toLowerCase()))
+            .filter((b) => walletIdentities.has(canonicalWalletIdentity(b.chain, b.address)))
             .map((b) => b.asOf)
         )
       : null;
@@ -533,7 +542,7 @@ export function ConnectionDetail({
           ) : (
             <div>
               {addressGroups.map((group) => (
-                <div key={group.address.toLowerCase()} data-testid="detail-address-group">
+                <div key={group.key} data-testid="detail-address-group">
                   {addressGroups.length > 1 && (
                     <div className="flex items-center justify-between gap-3 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5">
                       <p className="truncate font-mono text-xs text-low">

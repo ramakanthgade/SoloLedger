@@ -20,6 +20,7 @@ import { Toast, ToastViewport } from '@/components/ui/toast';
 import { AlertTriangle, Check, Eye, RefreshCw } from 'lucide-react';
 import { syncCoinGeckoRewardRegistryInBackground } from '@/lib/assets/coingeckoRewardRegistry';
 import { BrandIcon, chainIconId } from './brandIcons';
+import { canonicalWalletAddress } from '@/lib/ledger/chainNamespace';
 
 const inputCls =
   'mt-1 block w-full rounded-lg border border-hi/10 bg-elev-1 px-3.5 py-2.5 text-sm text-hi shadow-xs transition-colors placeholder:text-faint hover:border-hi/20 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30';
@@ -169,7 +170,8 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   // row for it on EVERY supported EVM chain (the chains detection would find).
   const enabledEvmChainIds = EVM_CHAIN_IDS.filter((id) => CHAINS.some((c) => c.id === id));
   const isImportedOn = (address: string, cid: ChainId) =>
-    lookedUp.some((r) => r.chain === cid && r.address.toLowerCase() === address.toLowerCase());
+    lookedUp.some((row) => row.chain === cid &&
+      canonicalWalletAddress(cid, row.address) === canonicalWalletAddress(cid, address));
   const importedOnEveryEvmChain = (address: string) =>
     enabledEvmChainIds.length > 0 && enabledEvmChainIds.every((cid) => isImportedOn(address, cid));
   /** Every parsed address is already imported on every applicable chain. */
@@ -319,10 +321,14 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   const missingAlchemyKey = needsAlchemyKey && !hasWalletLookupKeys(settings);
 
   const alreadyImported = parsedAddresses.filter((a) =>
-    lookedUp.some((r) => r.chain === chainId && r.address.toLowerCase() === a.toLowerCase())
+    lookedUp.some((r) =>
+      r.chain === chainId && canonicalWalletAddress(chainId, r.address) === canonicalWalletAddress(chainId, a)
+    )
   );
   const freshAddresses = parsedAddresses.filter((a) =>
-    !lookedUp.some((r) => r.chain === chainId && r.address.toLowerCase() === a.toLowerCase())
+    !lookedUp.some((r) =>
+      r.chain === chainId && canonicalWalletAddress(chainId, r.address) === canonicalWalletAddress(chainId, a)
+    )
   );
 
   // Multi-chain picker flow (EVM addresses with successful detection).
@@ -335,7 +341,9 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     (total, cid) =>
       total +
       evmAddresses.filter(
-        (a) => !lookedUp.some((r) => r.chain === cid && r.address.toLowerCase() === a.toLowerCase())
+        (a) => !lookedUp.some((r) =>
+          r.chain === cid && canonicalWalletAddress(cid, r.address) === canonicalWalletAddress(cid, a)
+        )
       ).length,
     0
   );
@@ -346,7 +354,9 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   // button still reads sensibly next to the "already imported" note.
   const multiFreshWallets = evmAddresses.filter((a) =>
     selectedChains.some(
-      (cid) => !lookedUp.some((r) => r.chain === cid && r.address.toLowerCase() === a.toLowerCase())
+      (cid) => !lookedUp.some((r) =>
+        r.chain === cid && canonicalWalletAddress(cid, r.address) === canonicalWalletAddress(cid, a)
+      )
     )
   );
   const multiImportWalletCount =
@@ -358,7 +368,10 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     if (!label) return;
     for (const addr of addresses) {
       for (const cid of chains) {
-        void updateWalletLabel(`${cid}:${addr}`, label).catch(() => undefined);
+        void updateWalletLabel(
+          `${cid}:${canonicalWalletAddress(cid, addr)}`,
+          label
+        ).catch(() => undefined);
       }
     }
   };

@@ -3,6 +3,7 @@ import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import { batchClassifyNoves } from '@/lib/rpc/noves';
 import { classifyRewardIncome, isKnownRewardToken } from '@/lib/assets/rewardRegistry';
 import type { Transaction, FlagReason } from '@/types/transaction';
+import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 
 /**
  * Classify all unclassified reward-token `transfer_in` rows as income.
@@ -116,7 +117,8 @@ export async function reprocessSwapDetectionInDb(
 
   const byRef = new Map<string, Transaction[]>();
   for (const t of rpcTransfers) {
-    const key = `${t.chain ?? 'unknown'}:${t.sourceRef!}`;
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    if (!key) continue;
     const group = byRef.get(key) ?? [];
     group.push(t);
     byRef.set(key, group);
@@ -135,9 +137,8 @@ export async function reprocessSwapDetectionInDb(
   }
 
   const items = [...byRef.entries()].map(([key, txs]) => {
-    const colonIdx = key.indexOf(':');
-    const chain = key.slice(0, colonIdx);
-    const txHash = key.slice(colonIdx + 1);
+    const chain = txs[0]!.chain!;
+    const txHash = txs[0]!.sourceRef!;
     const walletAddress = txs[0]?.walletAddress;
     return { key, chain, txHash, walletAddress, txs };
   });

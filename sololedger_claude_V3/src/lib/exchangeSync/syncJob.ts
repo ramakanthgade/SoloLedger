@@ -15,7 +15,7 @@
 import { useEffect, useState } from 'react';
 import { filterAlreadyImported } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
-import { getConnectionRow } from './connections';
+import { connectionSourceToken, getConnectionRow } from './connections';
 import type { UnifiedBalance } from './ccxtLoader';
 import { persistSyncedRows, syncConnection, type SyncEngineDeps } from './engine';
 import { exchangeLabel } from './ccxtLoader';
@@ -48,6 +48,9 @@ interface StagedMeta {
   knownSymbols?: string[];
   /** Private current-balance authority fetched with the staged rows. */
   balance: UnifiedBalance;
+  /** Non-secret source revision/state token captured with operation evidence. */
+  sourceToken: string;
+  operation: import('./engine').SyncOperationEvidence;
 }
 
 type Listener = (state: ExchangeSyncJobState) => void;
@@ -176,6 +179,12 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Something went wrong while syncing — please try again.';
 }
 
+function requireReady(row: { credentialsState?: 'ready' | 'reauthorization_required' }): void {
+  if ((row.credentialsState ?? 'ready') !== 'ready') {
+    throw new Error('Reauthorize this connection before syncing.');
+  }
+}
+
 /** Guard: one sync at a time (active → no-op + warning). */
 function guardIdle(): void {
   if (exchangeSyncJob.get().active) {
@@ -241,6 +250,7 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
   try {
     const row = await getConnectionRow(id);
     if (!row) throw new Error('Connection not found — it may have been removed.');
+    requireReady(row);
     const warnings: string[] = [];
     discardStagedPreview(warnings);
     exchangeSyncJob._begin(id, labelFor(row), warnings);
@@ -260,6 +270,9 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
       allWarnings,
       duplicatesSkipped
     );
+    const stagedSource = await getConnectionRow(id);
+    if (!stagedSource) throw new Error('Connection not found — it may have been removed.');
+    requireReady(stagedSource);
     exchangeSyncJob._stage(
       preview,
       {
@@ -273,7 +286,9 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
           total: Object.fromEntries(
             flattenBalanceTotals(outcome.balance).map(({ asset, amount }) => [asset, amount])
           )
-        }
+        },
+        sourceToken: connectionSourceToken(stagedSource),
+        operation: outcome.operation
       },
       allWarnings
     );
@@ -296,6 +311,13 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
   try {
     const row = await getConnectionRow(id);
     if (!row) throw new Error('Connection not found — it may have been removed.');
+    requireReady(row);
+    if (
+      !staged.meta ||
+      connectionSourceToken(row) !== staged.meta.sourceToken
+    ) {
+      throw new Error('Connection changed after this preview was staged — run the first sync again.');
+    }
     exchangeSyncJob._begin(id, labelFor(row), []);
     const result = await persistSyncedRows({
       connectionId: id,
@@ -304,6 +326,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       knownAssets: staged.meta?.knownAssets,
       knownSymbols: staged.meta?.knownSymbols,
       balance: staged.meta?.balance,
+      operation: staged.meta.operation,
       hooks: hooks(),
       deps
     });
@@ -334,6 +357,12 @@ export async function syncNow(id: string, deps: SyncEngineDeps = {}): Promise<vo
   const row = await getConnectionRow(id);
   if (!row) {
     exchangeSyncJob._error('Connection not found — it may have been removed.');
+    return;
+  }
+  try {
+    requireReady(row);
+  } catch (err) {
+    exchangeSyncJob._error(errorMessage(err));
     return;
   }
   const warnings: string[] = [];

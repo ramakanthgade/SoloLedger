@@ -30,6 +30,11 @@ describe('Binance Options transaction history', () => {
     expect(result.transactions).toHaveLength(11);
     expect(result.skippedRows).toBe(0);
     expect(result.optionsBalanceIncluded).toBe(true);
+    expect(result.evidence?.finalBalanceSnapshots?.[0]).toMatchObject({
+      asOf: undefined, accountClass: 'options'
+    });
+    expect(result.evidence?.finalBalanceSnapshots?.[0].balances.USDT).toBeCloseTo(119.51929316, 8);
+    expect(result.evidence?.declaredHistory).toBeUndefined();
     expect(result.transactions.filter((t) => t.category === 'options_collateral')).toHaveLength(3);
     expect(result.transactions.filter((t) => t.category === 'options_premium')).toHaveLength(4);
     expect(result.transactions.filter((t) => t.category === 'options_fee')).toHaveLength(4);
@@ -54,6 +59,22 @@ describe('Binance Options transaction history', () => {
       }
     ]);
     expect(combined.find((h) => h.asset === 'USDT')?.amount).toBeCloseTo(129.51929316, 8);
+  });
+
+  it('creates comparable snapshot evidence only from explicit export as-of and account-class metadata', async () => {
+    const explicit = `Complete History,Yes
+Snapshot As Of,2023-03-22 18:38:25
+Account Class,Options
+Time,Type,Amount,Asset
+2023-03-22 17:00:00,transfer,100,USDT
+2023-03-22 18:38:25,premium,-25,USDT`;
+    const result = await parseCsvFile(new File([explicit], 'options-with-metadata.csv'));
+    expect(result.evidence?.declaredHistory?.completeHistory).toBe(true);
+    expect(result.evidence?.finalBalanceSnapshots).toEqual([{
+      asOf: Date.UTC(2023, 2, 22, 18, 38, 25),
+      accountClass: 'options',
+      balances: { USDT: 75 }
+    }]);
   });
 
   it('does not claim an ordinary four-column transfer file without option cash-flow rows', () => {

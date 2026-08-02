@@ -1,7 +1,69 @@
 import type { Transaction, TxType } from '@/types/transaction';
+import type { AccountClass } from '@/lib/ledger/derivedPostings';
 
 /** A required import field a file was missing — drives actionable fix-the-file guidance. */
 export type MissingField = 'type' | 'amount' | 'asset' | 'timestamp' | 'preamble';
+
+export interface ImportCountReason {
+  reason: string;
+  count: number;
+}
+
+export interface RequiredImportOutcome {
+  id: string;
+  /** Parser that produced this sheet/outcome; retained through composite workbooks. */
+  parserId?: string;
+  accountClass: AccountClass;
+  required: boolean;
+  status: 'complete' | 'partial' | 'failed' | 'skipped' | 'unknown';
+  reason?: string;
+  recognizedCount?: number;
+  parsedCount?: number;
+  excludedCount?: number;
+  skippedCount?: number;
+  failedCount?: number;
+  exclusionReasons?: ImportCountReason[];
+  skippedReasons?: ImportCountReason[];
+  failureReasons?: ImportCountReason[];
+  /** Parsed source rows grouped by the stitched transaction that consumed them. */
+  parsedTransactionRows?: Array<{ transactionId: string; sourceRowCount: number }>;
+}
+
+/** Metadata stated by the export itself, never inferred from row timestamps. */
+export interface SourceDeclaredHistory {
+  start?: number;
+  end?: number;
+  completeHistory?: boolean;
+}
+
+/** An absolute final balance whose instant and account scope are source-declared. */
+export interface SourceDeclaredBalanceSnapshot {
+  /** Missing when the parser found a final balance but the source did not timestamp it. */
+  asOf?: number;
+  accountClass: AccountClass;
+  balances: Record<string, number>;
+}
+
+/**
+ * Structured parser evidence carried through import and finalized after DB
+ * dedup. Missing source declarations intentionally remain missing: callers
+ * must never substitute importedAt or the latest parsed transaction.
+ */
+export interface CsvImportEvidence {
+  declaredHistory?: SourceDeclaredHistory;
+  /** Parser final balances; `asOf` exists only when explicitly source-declared. */
+  finalBalanceSnapshots?: SourceDeclaredBalanceSnapshot[];
+  coveredAccountClasses: AccountClass[];
+  requiredOutcomes: RequiredImportOutcome[];
+  recognizedCount: number;
+  parsedCount: number;
+  excludedCount: number;
+  skippedCount: number;
+  failedCount: number;
+  exclusionReasons: ImportCountReason[];
+  skippedReasons: ImportCountReason[];
+  failureReasons: ImportCountReason[];
+}
 
 export interface ParseResult {
   transactions: Transaction[];
@@ -27,6 +89,8 @@ export interface ParseResult {
    * "assume To" guess. Lets a non-local caller optionally confirm/flip it.
    */
   addressColumnAmbiguous?: boolean;
+  /** Structural evidence for reconciliation; finalized with dedup counts at save time. */
+  evidence?: CsvImportEvidence;
 }
 
 /**
@@ -39,6 +103,10 @@ export interface SheetContext {
   impliedType?: TxType;
   /** Raw sheet/report title that produced `impliedType`, for provenance. */
   sheetTitle?: string;
+  /** Explicit metadata found above the transaction table header. */
+  sourceDeclaredHistory?: SourceDeclaredHistory;
+  sourceDeclaredSnapshotAsOf?: number;
+  sourceDeclaredAccountClasses?: AccountClass[];
 }
 
 export interface ExchangeParser {

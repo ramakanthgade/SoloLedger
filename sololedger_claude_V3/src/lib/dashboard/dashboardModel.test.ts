@@ -1042,4 +1042,56 @@ describe('sourceBreakdown with on-chain balances', () => {
     expect(slices).toHaveLength(1);
     expect(slices[0].qty).toBeCloseTo(32.65574623, 8);
   });
+
+  it('explains chainless manual native SOL together with a same-chain wallet outflow', () => {
+    const address = 'PhantomCase111111111111111111111111111';
+    const transactions = [
+      tx({ id: 'manual-sol', type: 'transfer_in', asset: 'SOL', amount: 10, source: 'manual' }),
+      tx({
+        id: 'wallet-send', type: 'transfer_out', asset: 'SOL', amount: 2.5,
+        source: 'rpc:helius', chain: 'solana', walletAddress: address
+      })
+    ];
+    const slices = sourceBreakdown(
+      transactions,
+      { asset: 'SOL', chain: 'solana' },
+      [{ id: `solana:${address}`, chain: 'solana', address, label: 'Phantom', lastSyncedAt: 1, txCount: 1 }]
+    );
+
+    expect(slices).toEqual([
+      expect.objectContaining({ key: 'source:manual', qty: 10 }),
+      expect.objectContaining({ key: `wallet:solana:solana:${address}`, name: 'Phantom', qty: -2.5 })
+    ]);
+    expect(slices.reduce((sum, slice) => sum + slice.qty, 0)).toBe(7.5);
+  });
+
+  it('uses chain-scoped wallet authority for the same EVM address regardless of transaction order', () => {
+    const address = '0x1111111111111111111111111111111111111111';
+    const transactions = [
+      tx({ id: 'eth', type: 'transfer_in', asset: 'ETH', amount: 1, chain: 'ethereum', walletAddress: address, source: 'rpc:alchemy' }),
+      tx({ id: 'base', type: 'transfer_in', asset: 'ETH', amount: 2, chain: 'base', walletAddress: address, source: 'rpc:alchemy' }),
+      tx({ id: 'arb', type: 'transfer_in', asset: 'ETH', amount: 3, chain: 'arbitrum', walletAddress: address, source: 'rpc:alchemy' })
+    ];
+    const wallets = [
+      { id: `ethereum:${address}`, chain: 'ethereum', address, label: 'Main', lastSyncedAt: 1, txCount: 1 },
+      { id: `base:${address}`, chain: 'base', address, label: 'Main', lastSyncedAt: 1, txCount: 1 },
+      { id: `arbitrum:${address}`, chain: 'arbitrum', address, label: 'Main', lastSyncedAt: 1, txCount: 1 }
+    ];
+    const balances = [
+      balanceRow({ id: 'eth-balance', chain: 'ethereum', address, asset: 'ETH', amount: 10 }),
+      balanceRow({ id: 'base-balance', chain: 'base', address, asset: 'ETH', amount: 20 }),
+      balanceRow({ id: 'arb-balance', chain: 'arbitrum', address, asset: 'ETH', amount: 30 })
+    ];
+    for (const ordered of [transactions, [...transactions].reverse()]) {
+      expect(sourceBreakdown(ordered, { asset: 'ETH', chain: 'ethereum' }, wallets, balances)).toEqual([
+        expect.objectContaining({ key: `wallet:evm:1:${address}`, qty: 10 })
+      ]);
+      expect(sourceBreakdown(ordered, { asset: 'ETH', chain: 'base' }, wallets, balances)).toEqual([
+        expect.objectContaining({ key: `wallet:evm:8453:${address}`, qty: 20 })
+      ]);
+      expect(sourceBreakdown(ordered, { asset: 'ETH', chain: 'arbitrum' }, wallets, balances)).toEqual([
+        expect.objectContaining({ key: `wallet:evm:42161:${address}`, qty: 30 })
+      ]);
+    }
+  });
 });

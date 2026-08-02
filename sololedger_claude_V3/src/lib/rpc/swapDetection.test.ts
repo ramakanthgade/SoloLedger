@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { detectDexSwaps, isLikelyNativeFee } from './swapDetection';
+import { countPotentialSwapPairs, detectDexSwaps, isLikelyNativeFee } from './swapDetection';
 import type { Transaction } from '@/types/transaction';
 
 let seq = 0;
@@ -14,6 +14,8 @@ function tx(p: Partial<Transaction>): Transaction {
     fiatCurrency: 'USD',
     source: 'rpc:solana',
     sourceRef: 'sig1',
+    chain: 'solana',
+    walletAddress: 'Base58Case',
     flags: ['possible_internal_transfer'],
     isInternalTransfer: false,
     ...p
@@ -59,6 +61,69 @@ describe('detectDexSwaps — multi-hop / split-route merge (C1)', () => {
     expect(tradesCreated).toBe(1);
     const trade = transactions.find((t) => t.type === 'trade')!;
     expect(trade.counterAsset).toBe('SOL');
+  });
+});
+
+describe('detectDexSwaps wallet-scoped signatures', () => {
+  it('does not cross-pair case-distinct Solana wallets sharing a signature', () => {
+    const rows = [
+      tx({ id: 'wallet-a-out', type: 'transfer_out', asset: 'USDC', sourceRef: 'shared' }),
+      tx({
+        id: 'wallet-b-in', type: 'transfer_in', asset: 'BONK', sourceRef: 'shared',
+        walletAddress: 'base58Case'
+      })
+    ];
+
+    const result = detectDexSwaps(rows);
+    expect(result.tradesCreated).toBe(0);
+    expect(result.removedIds).toEqual([]);
+    expect(result.transactions.map((row) => row.id)).toEqual(['wallet-a-out', 'wallet-b-in']);
+    expect(countPotentialSwapPairs(rows)).toBe(0);
+  });
+
+  it('detects each case-distinct wallet pair independently', () => {
+    const rows = [
+      tx({ id: 'a-out', type: 'transfer_out', asset: 'USDC', sourceRef: 'shared' }),
+      tx({ id: 'a-in', type: 'transfer_in', asset: 'BONK', sourceRef: 'shared' }),
+      tx({
+        id: 'b-out', type: 'transfer_out', asset: 'SOL', amount: 1,
+        sourceRef: 'shared', walletAddress: 'base58Case'
+      }),
+      tx({
+        id: 'b-in', type: 'transfer_in', asset: 'JUP', sourceRef: 'shared',
+        walletAddress: 'base58Case'
+      })
+    ];
+
+    const result = detectDexSwaps(rows);
+    expect(result.tradesCreated).toBe(2);
+    expect(new Set(result.removedIds)).toEqual(new Set(['a-in', 'b-in']));
+    expect(result.transactions.filter((row) => row.type === 'trade').map((row) => row.id)).toEqual([
+      'a-out', 'b-out'
+    ]);
+    expect(countPotentialSwapPairs(rows)).toBe(2);
+  });
+
+  it('folds EVM address case only within the same canonical chain scope', () => {
+    const sameChainPair = [
+      tx({
+        id: 'eth-out', type: 'transfer_out', asset: 'USDC', sourceRef: 'evm-shared',
+        source: 'rpc:ethereum', chain: 'ethereum', walletAddress: '0xAbC'
+      }),
+      tx({
+        id: 'eth-in', type: 'transfer_in', asset: 'ETH', amount: 1, sourceRef: 'evm-shared',
+        source: 'rpc:ethereum', chain: 'ethereum', walletAddress: '0xabc'
+      })
+    ];
+    const crossChainLeg = tx({
+      id: 'base-in', type: 'transfer_in', asset: 'ETH', amount: 2, sourceRef: 'evm-shared',
+      source: 'rpc:base', chain: 'base', walletAddress: '0xabc'
+    });
+
+    const result = detectDexSwaps([...sameChainPair, crossChainLeg]);
+    expect(result.tradesCreated).toBe(1);
+    expect(result.removedIds).toEqual(['eth-in']);
+    expect(result.transactions.find((row) => row.id === 'base-in')?.type).toBe('transfer_in');
   });
 });
 

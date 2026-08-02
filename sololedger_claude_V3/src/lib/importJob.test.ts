@@ -93,10 +93,14 @@ vi.mock('@/lib/pricing/autoFetch', () => ({
 
 // Minimal in-memory DB stub so we don't depend on the full Dexie schema.
 const store = new Map<string, Transaction>();
+let lookupRows: Array<{ id: string; chain: string; address: string; lastSyncedSignature?: string }> = [];
 vi.mock('@/lib/storage/db', () => ({
   db: {
     lookupAddresses: {
-      get: async () => undefined
+      get: async (id: string) => lookupRows.find((row) => row.id === id),
+      filter: (predicate: (row: typeof lookupRows[number]) => boolean) => ({
+        first: async () => lookupRows.find(predicate)
+      })
     },
     transactions: {
       toArray: async () => Array.from(store.values()),
@@ -104,10 +108,12 @@ vi.mock('@/lib/storage/db', () => ({
       bulkPut: async (txs: Transaction[]) => {
         for (const t of txs) store.set(t.id, t);
       },
-      filter: () => ({ toArray: async () => [] })
+      filter: (predicate: (row: Transaction) => boolean) => ({
+        toArray: async () => Array.from(store.values()).filter(predicate)
+      })
     }
   },
-  getLookupAddresses: vi.fn(async () => []),
+  getLookupAddresses: vi.fn(async () => lookupRows),
   upsertLookupAddress: vi.fn(async () => {}),
   deduplicateTransactions: vi.fn(async () => 0),
   filterAlreadyImported: vi.fn(async (txs: Transaction[]) => txs)
@@ -120,6 +126,7 @@ import { runWalletImport, importJob } from '@/lib/importJob';
 import { detectDcaGroups, applyDcaClassification } from '@/lib/rpc/dcaDetection';
 import { isSaasMode } from '@/lib/saas/config';
 import { upsertLookupAddress } from '@/lib/storage/db';
+import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 
 const CHAIN: ChainDef = {
   id: 'ethereum',
@@ -129,6 +136,13 @@ const CHAIN: ChainDef = {
   needsKey: true
 };
 const CONFIG = {} as LookupConfig;
+const SOL_CHAIN: ChainDef = {
+  id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true
+};
+
+beforeEach(() => {
+  lookupRows = [];
+});
 
 function settings(overrides: Partial<TaxSettings> = {}): TaxSettings {
   return {
@@ -144,6 +158,8 @@ function settings(overrides: Partial<TaxSettings> = {}): TaxSettings {
 describe('runWalletImport auto-pricing gate', () => {
   beforeEach(() => {
     store.clear();
+    lookupRows = [];
+    vi.mocked(isAbsorbedTradeLeg).mockReturnValue(false);
     fetchMissingPricesForAllTransactions.mockClear();
     applyDefiLlamaRewardSuggestions.mockClear();
     importJob.reset();
@@ -329,6 +345,49 @@ describe('runWalletImport post-dedup imported count', () => {
   });
 });
 
+describe('runWalletImport trade protection identity', () => {
+  beforeEach(() => {
+    store.clear();
+    lookupRows = [];
+    importJob.reset();
+    vi.mocked(isAbsorbedTradeLeg).mockReturnValue(false);
+  });
+
+  it('does not let a trade suppress a case-distinct Solana wallet with the same signature', async () => {
+    store.set('wallet-a-trade', {
+      ...importedTx,
+      id: 'wallet-a-trade',
+      type: 'trade',
+      asset: 'USDC',
+      counterAsset: 'BONK',
+      counterAmount: 10,
+      chain: 'solana',
+      walletAddress: 'Base58Case',
+      source: 'rpc:helius',
+      sourceRef: 'shared-signature'
+    });
+    const walletBTransfer: Transaction = {
+      ...importedTx,
+      id: 'wallet-b-transfer',
+      type: 'transfer_in',
+      asset: 'BONK',
+      chain: 'solana',
+      walletAddress: 'base58Case',
+      source: 'rpc:helius',
+      sourceRef: 'shared-signature'
+    };
+    vi.mocked(isAbsorbedTradeLeg).mockReturnValue(true);
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [walletBTransfer], warnings: [], failed: [],
+      perAddress: [{ address: 'base58Case', count: 1 }]
+    });
+
+    await runWalletImport(['base58Case'], SOL_CHAIN, settings(), CONFIG);
+
+    expect(store.get('wallet-b-transfer')).toEqual(walletBTransfer);
+  });
+});
+
 describe('runWalletImport wallet-registry gating (Item 5g — never persist failed wallets)', () => {
   beforeEach(() => {
     store.clear();
@@ -385,6 +444,39 @@ describe('runWalletImport wallet-registry gating (Item 5g — never persist fail
     expect(upsertLookupAddress).toHaveBeenCalled();
     const upsertedAddresses = vi.mocked(upsertLookupAddress).mock.calls.map((c) => c[1]);
     expect(new Set(upsertedAddresses)).toEqual(new Set(['0xabc']));
+  });
+
+  it('does not skip a case-distinct Base58 wallet that is already registered', async () => {
+    lookupRows = [{ id: 'solana:Base58Case', chain: 'solana', address: 'Base58Case' }];
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [], warnings: [], failed: [], perAddress: [{ address: 'base58Case', count: 0 }]
+    });
+    await runWalletImport(['base58Case'], SOL_CHAIN, settings(), CONFIG);
+    expect(lookupManyAddresses).toHaveBeenCalledWith(['base58Case'], expect.anything(), expect.any(Function));
+    expect(upsertLookupAddress).toHaveBeenCalledWith('solana', 'base58Case', 0);
+  });
+
+  it('keeps incremental cursors and skip signatures scoped to exact chain/address identity', async () => {
+    store.set('exact', {
+      ...importedTx, id: 'exact', chain: 'solana', walletAddress: 'Base58Case',
+      source: 'rpc:helius', sourceRef: 'exact-sig', timestamp: 20
+    });
+    store.set('case-other', {
+      ...importedTx, id: 'case-other', chain: 'solana', walletAddress: 'base58Case',
+      source: 'rpc:helius', sourceRef: 'other-case-sig', timestamp: 30
+    });
+    store.set('chain-other', {
+      ...importedTx, id: 'chain-other', chain: 'ethereum', walletAddress: 'Base58Case',
+      source: 'rpc:ethereum', sourceRef: 'other-chain-sig', timestamp: 40
+    });
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [], warnings: [], failed: [], perAddress: [{ address: 'Base58Case', count: 0 }]
+    });
+    await runWalletImport(['Base58Case'], SOL_CHAIN, settings(), CONFIG, true);
+    const calls = vi.mocked(lookupManyAddresses).mock.calls;
+    const passedConfig = calls[calls.length - 1]?.[1];
+    expect(passedConfig).toMatchObject({ afterSignature: 'exact-sig', incrementalOnly: true });
+    expect([...(passedConfig?.skipSignatures ?? [])]).toEqual(['exact-sig']);
   });
 });
 

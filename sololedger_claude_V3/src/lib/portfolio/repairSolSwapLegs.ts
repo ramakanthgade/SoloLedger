@@ -12,6 +12,10 @@ import {
   tokenMintDelta,
   walletSolDelta
 } from '@/lib/rpc/solanaRpc';
+import {
+  canonicalWalletIdentity,
+  canonicalWalletSourceRefKey
+} from '@/lib/ledger/chainNamespace';
 
 const MIN_SOL_LEG = 0.001;
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -40,7 +44,8 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
 
   const bySig = new Map<string, Transaction>();
   for (const t of candidates) {
-    const key = `${t.walletAddress!.toLowerCase()}|${t.sourceRef!}`;
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    if (!key) continue;
     const prev = bySig.get(key);
     if (!prev) {
       bySig.set(key, t);
@@ -55,8 +60,8 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
 
   const solCovered = new Set<string>();
   for (const t of allSolana) {
-    if (!t.walletAddress || !t.sourceRef) continue;
-    const key = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    if (!key) continue;
     if (tradeTouchesSolFully(t)) solCovered.add(key);
     if (
       isNativeSolAsset(t.asset) &&
@@ -75,7 +80,8 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
       (t.counterAmount ?? 0) > 0 &&
       (t.counterAmount ?? 0) < MIN_SOL_LEG
     ) {
-      const key = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
+      const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+      if (!key) continue;
       solCovered.delete(key);
       bySig.set(key, t);
     }
@@ -121,8 +127,7 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
           (t) =>
             t.type === 'fee' &&
             t.asset === 'SOL' &&
-            t.sourceRef === sig &&
-            t.walletAddress?.toLowerCase() === wallet.toLowerCase()
+            canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef) === key
         );
         if (!hasFee) {
           // eslint-disable-next-line no-await-in-loop
@@ -150,18 +155,20 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
 
   // Second pass: any signature with a large on-chain SOL credit and no ledger SOL credit at all.
   const sigsByWallet = new Map<string, Set<string>>();
+  const walletByIdentity = new Map<string, string>();
   for (const t of allSolana) {
     if (!t.walletAddress || !t.sourceRef) continue;
-    const w = t.walletAddress.toLowerCase();
-    if (!sigsByWallet.has(w)) sigsByWallet.set(w, new Set());
-    sigsByWallet.get(w)!.add(t.sourceRef);
+    const walletIdentity = canonicalWalletIdentity(t.chain ?? 'solana', t.walletAddress);
+    walletByIdentity.set(walletIdentity, t.walletAddress);
+    if (!sigsByWallet.has(walletIdentity)) sigsByWallet.set(walletIdentity, new Set());
+    sigsByWallet.get(walletIdentity)!.add(t.sourceRef);
   }
 
-  for (const [walletLower, sigs] of sigsByWallet) {
-    const wallet = allSolana.find((t) => t.walletAddress?.toLowerCase() === walletLower)?.walletAddress;
+  for (const [walletIdentity, sigs] of sigsByWallet) {
+    const wallet = walletByIdentity.get(walletIdentity);
     if (!wallet) continue;
     for (const sig of sigs) {
-      const key = `${walletLower}|${sig}`;
+      const key = canonicalWalletSourceRefKey('solana', wallet, sig)!;
       if (solCovered.has(key)) continue;
       // eslint-disable-next-line no-await-in-loop
       const tx = await getSolanaTransaction(sig);
@@ -172,15 +179,14 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
       // No ledger SOL credit for this sig — insert transfer_in.
       const hasSolIn = allSolana.some(
         (t) =>
-          t.sourceRef === sig &&
-          t.walletAddress?.toLowerCase() === walletLower &&
+          canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef) === key &&
           t.asset === 'SOL' &&
           (t.type === 'transfer_in' || t.type === 'income' || (t.type === 'trade' && tradeTouchesSolFully(t)))
       );
       if (hasSolIn) continue;
 
       const base = allSolana.find(
-        (t) => t.sourceRef === sig && t.walletAddress?.toLowerCase() === walletLower
+        (t) => canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef) === key
       );
       // eslint-disable-next-line no-await-in-loop
       await db.transactions.add({
@@ -223,7 +229,8 @@ export async function repairUsdcOvercount(_alchemyApiKey?: string): Promise<numb
 
   const bySig = new Map<string, Transaction[]>();
   for (const t of usdcRows) {
-    const key = `${t.walletAddress!.toLowerCase()}|${t.sourceRef!}`;
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    if (!key) continue;
     const list = bySig.get(key) ?? [];
     list.push(t);
     bySig.set(key, list);

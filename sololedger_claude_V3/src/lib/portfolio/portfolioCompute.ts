@@ -15,6 +15,7 @@ import {
 } from '@/lib/portfolio/portfolioHoldings';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
+import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 
 export interface PortfolioHolding {
   amount: number;
@@ -77,7 +78,8 @@ function collapseForPortfolio(txs: Transaction[]): Transaction[] {
   const tradesByRef = new Map<string, Transaction>();
   for (const t of txs) {
     if (t.type !== 'trade' || !t.sourceRef || !t.walletAddress) continue;
-    tradesByRef.set(`${t.walletAddress.toLowerCase()}|${t.sourceRef}`, t);
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    if (key) tradesByRef.set(key, t);
   }
 
   const best = new Map<string, Transaction>();
@@ -96,7 +98,8 @@ function collapseForPortfolio(txs: Transaction[]): Transaction[] {
     const sk = transactionSourceKey(t);
     if (sk && best.get(sk) !== t) return false;
     if (t.sourceRef && t.walletAddress) {
-      const trade = tradesByRef.get(`${t.walletAddress.toLowerCase()}|${t.sourceRef}`);
+      const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+      const trade = key ? tradesByRef.get(key) : undefined;
       if (trade && isAbsorbedTradeLeg(t, trade)) return false;
     }
     return true;
@@ -119,9 +122,7 @@ function applyTxToHoldings(
     appliedSourceKeys.add(sourceKey);
   }
 
-  const ref = t.sourceRef && t.walletAddress
-    ? `${t.walletAddress.toLowerCase()}|${t.sourceRef}`
-    : null;
+  const ref = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
 
   if (
     ref &&
@@ -303,7 +304,8 @@ export function buildPortfolioHoldings(
 
   for (const t of ledgerTxs) {
     if (t.type !== 'trade' || !t.counterAsset || !t.counterAmount || !t.sourceRef || !t.walletAddress) continue;
-    const ref = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
+    const ref = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    if (!ref) continue;
     tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
     tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);
     if (isNativeSolAsset(t.asset) || isNativeSolAsset(t.counterAsset)) {

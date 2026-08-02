@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
+import type { ExchangeConnectionView } from '@/lib/exchangeSync';
 
 /**
  * AddDataDrawer — the 3-step rail routing (1 What → 2 Which → 3 Connect),
@@ -7,9 +8,48 @@ import { render, screen, fireEvent } from '@testing-library/react';
  * guided mode. Step bodies are stubbed so the routing contract is pinned
  * without their heavy deps.
  */
+const mocks = vi.hoisted(() => ({ runInitialSync: vi.fn() }));
+
+vi.mock('@/lib/exchangeSync', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/exchangeSync')>();
+  return { ...actual, runInitialSync: mocks.runInitialSync };
+});
+
 vi.mock('./ExchangeConnectStep', () => ({
-  ExchangeConnectStep: ({ exchangeId }: { exchangeId: string }) => (
-    <div data-testid="step-exchange-api" data-exchange={exchangeId} />
+  ExchangeConnectStep: ({
+    exchangeId,
+    mode = 'connect',
+    existingId,
+    onConnected
+  }: {
+    exchangeId: string;
+    mode?: 'connect' | 'reauthorize';
+    existingId?: string;
+    onConnected: (connection: ExchangeConnectionView) => void;
+  }) => (
+    <div
+      data-testid="step-exchange-api"
+      data-exchange={exchangeId}
+      data-mode={mode}
+      data-existing-id={existingId ?? ''}
+    >
+      <button
+        type="button"
+        onClick={() =>
+          onConnected({
+            id: existingId ?? 'new-source',
+            exchange: exchangeId,
+            createdAt: Date.now(),
+            lastSyncAt: null,
+            txCount: 0,
+            lastError: null,
+            credentialsState: 'ready'
+          } as ExchangeConnectionView)
+        }
+      >
+        Complete exchange form
+      </button>
+    </div>
   )
 }));
 vi.mock('./WalletAddressForm', () => ({
@@ -221,6 +261,38 @@ describe('AddDataDrawer — step routing', () => {
 });
 
 describe('AddDataDrawer — deep links & guided mode', () => {
+  it('opens a stable existing source in exact-exchange reauthorization mode without recreating or relabeling it', () => {
+    const props = renderDrawer({
+      reauthorizationTarget: {
+        id: 'existing-kucoin',
+        exchange: 'kucoin',
+        label: 'Long-term vault',
+        createdAt: 1,
+        lastSyncAt: 2,
+        txCount: 42,
+        lastError: null,
+        credentialsState: 'reauthorization_required'
+      }
+    });
+
+    expect(screen.getByRole('dialog', { name: 'Reauthorize KuCoin' })).toBeInTheDocument();
+    expect(screen.getByText('Existing connection · label and history stay unchanged')).toBeInTheDocument();
+    const form = screen.getByTestId('step-exchange-api');
+    expect(form).toHaveAttribute('data-mode', 'reauthorize');
+    expect(form).toHaveAttribute('data-existing-id', 'existing-kucoin');
+    expect(form).toHaveAttribute('data-exchange', 'kucoin');
+    expect(screen.queryByText(/Step 3 of 3/)).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Complete exchange form' }));
+    expect(props.onClose).toHaveBeenCalledTimes(1);
+    expect(props.onToast).toHaveBeenCalledWith({
+      tone: 'gain',
+      title: 'KuCoin reauthorized',
+      description: 'Connection restored — syncing is available again.'
+    });
+    expect(mocks.runInitialSync).not.toHaveBeenCalled();
+  });
+
   it('initialFlow "file" opens straight at the file Connect step', () => {
     renderDrawer({ initialFlow: 'file' });
     expect(screen.getByTestId('step-file-flow')).toBeInTheDocument();

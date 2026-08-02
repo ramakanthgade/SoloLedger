@@ -39,6 +39,17 @@ function opts(over: Partial<RowFilterOptions> = {}): RowFilterOptions {
 }
 
 describe('filterRows', () => {
+  it('keeps case-distinct Base58 wallet filters separate while folding EVM case', () => {
+    const rows = [
+      tx({ id: 'upper', chain: 'solana', walletAddress: 'Base58Case' }),
+      tx({ id: 'lower', chain: 'solana', walletAddress: 'base58Case' }),
+      tx({ id: 'evm', chain: 'ethereum', walletAddress: '0xAbC' })
+    ];
+    expect(filterRows(rows, opts({ walletFilter: 'solana:solana:Base58Case' })).map((t) => t.id))
+      .toEqual(['upper']);
+    expect(filterRows(rows, opts({ walletFilter: 'evm:1:0xabc' })).map((t) => t.id))
+      .toEqual(['evm']);
+  });
   it("flagFilter='spam' returns spam rows even when showSpam is false", () => {
     const spam = tx({ fiatValue: 100, isSpam: true });
     const clean = tx({ fiatValue: 100, isSpam: false });

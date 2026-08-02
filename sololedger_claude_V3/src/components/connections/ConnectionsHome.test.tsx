@@ -117,6 +117,7 @@ vi.mock('@/lib/rpc/providers', () => ({
   CHAINS: [
     { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true },
     { id: 'ethereum', label: 'Ethereum', asset: 'ETH', provider: 'alchemy_evm', needsKey: true },
+    { id: 'polygon', label: 'Polygon', asset: 'POL', provider: 'alchemy_evm', needsKey: true },
     { id: 'bitcoin', label: 'Bitcoin', asset: 'BTC', provider: 'blockstream', needsKey: false }
   ],
   DROPDOWN_HIDDEN_CHAINS: new Set(['fantom'])
@@ -130,6 +131,7 @@ vi.mock('./AddDataDrawer', () => ({
     initialFlow: string | null;
     apiExchangeStates: Record<string, string>;
     fileImportedSlugs: string[];
+    reauthorizationTarget?: ExchangeConnectionView | null;
   }) =>
     props.open ? (
       <div
@@ -138,6 +140,8 @@ vi.mock('./AddDataDrawer', () => ({
         data-initial-flow={props.initialFlow ?? 'null'}
         data-api-states={JSON.stringify(props.apiExchangeStates)}
         data-file-imported={props.fileImportedSlugs.join(',')}
+        data-reauthorization-id={props.reauthorizationTarget?.id ?? ''}
+        data-reauthorization-exchange={props.reauthorizationTarget?.exchange ?? ''}
       />
     ) : null
 }));
@@ -166,6 +170,7 @@ function conn(over: Partial<ExchangeConnectionView> = {}): ExchangeConnectionVie
     lastSyncAt: Date.now() - 2 * 3_600_000,
     txCount: 1284,
     lastError: null,
+    credentialsState: 'ready',
     // Full data-range coverage by default — the coverage chip is opt-out at 100%.
     cursors: { trades: Date.now(), deposits: Date.now(), withdrawals: Date.now() },
     ...over
@@ -360,7 +365,7 @@ describe('ConnectionsHome — cards', () => {
     mocks.wallets.current = [
       // Two chains enabled on one address; only one has a completed sync.
       wallet({ id: 'ethereum:0xAAA', chain: 'ethereum', address: '0xAAA', label: 'MetaMask' }),
-      wallet({ id: 'solana:0xAAA', chain: 'solana', address: '0xAAA', lastSyncedAt: 0 })
+      wallet({ id: 'polygon:0xaaa', chain: 'polygon', address: '0xaaa', lastSyncedAt: 0 })
     ];
     render(<ConnectionsHome />);
 
@@ -453,6 +458,62 @@ describe('ConnectionsHome — exchange actions', () => {
     expect(mocks.syncNow.mock.calls[1][0]).toBe('exc_2');
   });
 
+  it('syncs only ready connections and hides Sync all when every source needs reauthorization', async () => {
+    mocks.connections.current = [
+      conn({ id: 'ready-source' }),
+      conn({ id: 'paused-source', exchange: 'okx', credentialsState: 'reauthorization_required' })
+    ];
+    const { rerender } = render(<ConnectionsHome />);
+    fireEvent.click(screen.getByTestId('sync-all'));
+
+    await waitFor(() => expect(mocks.syncNow).toHaveBeenCalledTimes(1));
+    expect(mocks.syncNow).toHaveBeenCalledWith('ready-source');
+
+    mocks.connections.current = [
+      conn({ id: 'paused-source', credentialsState: 'reauthorization_required' })
+    ];
+    rerender(<ConnectionsHome />);
+    expect(screen.queryByTestId('sync-all')).not.toBeInTheDocument();
+  });
+
+  it('replaces ordinary sync and detail actions with exact-source reauthorization until ready', () => {
+    mocks.connections.current = [
+      conn({
+        id: 'restored-source',
+        exchange: 'kucoin',
+        label: 'Vault',
+        credentialsState: 'reauthorization_required',
+        lastError: 'old error'
+      })
+    ];
+    const { rerender } = render(<ConnectionsHome />);
+
+    expect(screen.getByText('Reauthorization required')).toBeInTheDocument();
+    expect(
+      screen.getByText('Reconnect KuCoin with a new read-only API key to resume syncing.')
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'KuCoin · Vault actions' }));
+    expect(screen.queryByRole('menuitem', { name: /sync now/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Reauthorize' }));
+    expect(screen.getByTestId('add-data-drawer')).toHaveAttribute(
+      'data-reauthorization-id',
+      'restored-source'
+    );
+    expect(screen.getByTestId('add-data-drawer')).toHaveAttribute(
+      'data-reauthorization-exchange',
+      'kucoin'
+    );
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+
+    mocks.connections.current = [
+      conn({ id: 'restored-source', exchange: 'kucoin', label: 'Vault', credentialsState: 'ready' })
+    ];
+    rerender(<ConnectionsHome />);
+    fireEvent.click(screen.getByRole('button', { name: 'KuCoin · Vault actions' }));
+    expect(screen.getByRole('menuitem', { name: /sync now/i })).toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: 'Reauthorize' })).not.toBeInTheDocument();
+  });
+
   it('kebab Sync now syncs that connection; disabled while a sync runs', () => {
     mocks.connections.current = [conn()];
     mocks.exchangeJob.current = { ...IDLE_JOB, active: true, connectionId: 'exc_9', connectionLabel: 'OKX' };
@@ -511,8 +572,8 @@ describe('ConnectionsHome — file actions', () => {
 describe('ConnectionsHome — wallet actions', () => {
   it('kebab Sync runs an incremental import per chain row of the group', async () => {
     mocks.wallets.current = [
-      wallet({ id: 'solana:addr1', chain: 'solana' }),
-      wallet({ id: 'ethereum:addr1', chain: 'ethereum', label: undefined })
+      wallet({ id: 'ethereum:0xAAA', chain: 'ethereum', address: '0xAAA' }),
+      wallet({ id: 'polygon:0xaaa', chain: 'polygon', address: '0xaaa', label: undefined })
     ];
     render(<ConnectionsHome />);
     kebab('Phantom main', /^sync$/i);
@@ -520,18 +581,18 @@ describe('ConnectionsHome — wallet actions', () => {
     await waitFor(() => expect(mocks.runWalletImport).toHaveBeenCalledTimes(2));
     const [addrs1, chain1, , , isSync1] = mocks.runWalletImport.mock.calls[0];
     const [addrs2, chain2, , , isSync2] = mocks.runWalletImport.mock.calls[1];
-    expect(addrs1).toEqual(['addr1']);
-    expect(chain1.id).toBe('solana');
+    expect(addrs1).toEqual(['0xAAA']);
+    expect(chain1.id).toBe('ethereum');
     expect(isSync1).toBe(true);
-    expect(addrs2).toEqual(['addr1']);
-    expect(chain2.id).toBe('ethereum');
+    expect(addrs2).toEqual(['0xaaa']);
+    expect(chain2.id).toBe('polygon');
     expect(isSync2).toBe(true);
   });
 
   it('kebab Rename edits the label inline and saves it to every row of the group', async () => {
     mocks.wallets.current = [
-      wallet({ id: 'solana:addr1', chain: 'solana' }),
-      wallet({ id: 'ethereum:addr1', chain: 'ethereum' })
+      wallet({ id: 'ethereum:0xAAA', chain: 'ethereum', address: '0xAAA' }),
+      wallet({ id: 'polygon:0xaaa', chain: 'polygon', address: '0xaaa' })
     ];
     render(<ConnectionsHome />);
     kebab('Phantom main', /rename/i);
@@ -542,8 +603,8 @@ describe('ConnectionsHome — wallet actions', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save nickname' }));
 
     await waitFor(() => expect(mocks.updateWalletLabel).toHaveBeenCalledTimes(2));
-    expect(mocks.updateWalletLabel).toHaveBeenCalledWith('solana:addr1', 'Vault');
-    expect(mocks.updateWalletLabel).toHaveBeenCalledWith('ethereum:addr1', 'Vault');
+    expect(mocks.updateWalletLabel).toHaveBeenCalledWith('ethereum:0xAAA', 'Vault');
+    expect(mocks.updateWalletLabel).toHaveBeenCalledWith('polygon:0xaaa', 'Vault');
     expect(await screen.findByText('Wallet renamed')).toBeInTheDocument();
   });
 
@@ -571,6 +632,19 @@ describe('ConnectionsHome — wallet actions', () => {
       expect(mocks.deleteLookupAddressAndTransactions).toHaveBeenCalledWith('solana:addr1')
     );
     expect(await screen.findByText('Wallet removed')).toBeInTheDocument();
+  });
+
+  it('removes only the selected exact case-sensitive Base58 wallet group', async () => {
+    mocks.wallets.current = [
+      wallet({ id: 'solana:Base58Case', address: 'Base58Case', label: 'Upper wallet' }),
+      wallet({ id: 'solana:base58Case', address: 'base58Case', label: 'Lower wallet' })
+    ];
+    render(<ConnectionsHome />);
+    kebab('Upper wallet', /^remove$/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove wallet' }));
+    await waitFor(() => expect(mocks.deleteLookupAddressAndTransactions)
+      .toHaveBeenCalledWith('solana:Base58Case'));
+    expect(mocks.deleteLookupAddressAndTransactions).not.toHaveBeenCalledWith('solana:base58Case');
   });
 });
 
@@ -748,10 +822,10 @@ describe('ConnectionsHome — per-connection detail (round 4)', () => {
   it('clicking a wallet card body opens the detail view', () => {
     mocks.wallets.current = [wallet()];
     render(<ConnectionsHome />);
-    fireEvent.click(screen.getByTestId('connection-card-wallet:addr1'));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Phantom main details' }));
     expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute(
       'data-card-id',
-      'wallet:addr1'
+      'wallet:solana:solana:addr1'
     );
   });
 

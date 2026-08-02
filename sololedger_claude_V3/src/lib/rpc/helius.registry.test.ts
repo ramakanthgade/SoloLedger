@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fetchHeliusSolana, type HeliusTransaction } from './helius';
+import { transactionSourceKey } from '@/lib/storage/db';
 
 const wallet = '8eznVreusXAyh4HZirLWNjMxgoQdxzqfTi9Uw8gEL2RE';
 const sender = 'Sender11111111111111111111111111111111111111';
@@ -73,5 +74,38 @@ describe('Helius unified owner-level classification', () => {
     expect(rows.find((row) => row.sourceRef === 'genuine-wsol')?.raw).toMatchObject({
       inputMint: wsolMint, heliusNativeInput: false, heliusNativeOutput: false
     });
+  });
+
+  it('keeps Solana owner, native account, fee payer, mint, and source-key casing exact', async () => {
+    const caseDistinctWallet = wallet.toLowerCase();
+    const caseDistinctMint = mint.toLowerCase();
+    const payload: HeliusTransaction = {
+      signature: 'case-sensitive', slot: 2, timestamp: 1_700_000_001,
+      type: 'TRANSFER', source: 'SYSTEM_PROGRAM', description: 'case identities',
+      fee: 5000, feePayer: caseDistinctWallet,
+      tokenTransfers: [{ fromUserAccount: sender, toUserAccount: wallet, tokenAmount: 2, mint }],
+      nativeTransfers: [],
+      accountData: [
+        {
+          account: caseDistinctWallet,
+          nativeBalanceChange: 1_000_000_000,
+          tokenBalanceChanges: [
+            { mint: caseDistinctMint, owner: wallet, rawTokenAmount: { tokenAmount: '300', decimals: 2 } },
+            { mint, owner: caseDistinctWallet, rawTokenAmount: { tokenAmount: '900', decimals: 2 } },
+            { mint, owner: wallet, rawTokenAmount: { tokenAmount: '200', decimals: 2 } }
+          ]
+        }
+      ]
+    };
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify([payload]), { status: 200 }));
+
+    const rows = (await fetchHeliusSolana(wallet, 'helius-key', 1)).transactions;
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.contractAddress).filter(Boolean)).toEqual([caseDistinctMint, mint]);
+    expect(rows.some((row) => row.asset === 'SOL')).toBe(false);
+    expect(rows.some((row) => row.type === 'fee')).toBe(false);
+    expect(transactionSourceKey(rows[0])).not.toBe(transactionSourceKey(rows[1]));
+    expect(transactionSourceKey(rows[0])).toContain(caseDistinctMint);
+    expect(transactionSourceKey(rows[1])).toContain(mint);
   });
 });

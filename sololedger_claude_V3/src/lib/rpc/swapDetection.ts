@@ -1,4 +1,5 @@
 import type { Transaction, FlagReason } from '@/types/transaction';
+import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 
 /**
  * Last-resort fixed thresholds for native-asset dust, used ONLY when neither a
@@ -163,13 +164,14 @@ export function detectDexSwaps(transactions: Transaction[]): SwapDetectionResult
   let tradesCreated = 0;
 
   for (const tx of transactions) {
-    if (!tx.sourceRef || !tx.source.startsWith('rpc:')) {
+    const key = canonicalWalletSourceRefKey(tx.chain, tx.walletAddress, tx.sourceRef);
+    if (!key || !tx.source.startsWith('rpc:')) {
       standalone.push(tx);
       continue;
     }
-    const group = byRef.get(tx.sourceRef) ?? [];
+    const group = byRef.get(key) ?? [];
     group.push(tx);
-    byRef.set(tx.sourceRef, group);
+    byRef.set(key, group);
   }
 
   for (const group of byRef.values()) {
@@ -262,10 +264,11 @@ export function detectDexSwaps(transactions: Transaction[]): SwapDetectionResult
 export function countPotentialSwapPairs(transactions: Transaction[]): number {
   const byRef = new Map<string, Transaction[]>();
   for (const tx of transactions) {
-    if (!tx.sourceRef || !tx.source.startsWith('rpc:') || tx.type === 'trade') continue;
-    const group = byRef.get(tx.sourceRef) ?? [];
+    const key = canonicalWalletSourceRefKey(tx.chain, tx.walletAddress, tx.sourceRef);
+    if (!key || !tx.source.startsWith('rpc:') || tx.type === 'trade') continue;
+    const group = byRef.get(key) ?? [];
     group.push(tx);
-    byRef.set(tx.sourceRef, group);
+    byRef.set(key, group);
   }
   let count = 0;
   for (const group of byRef.values()) {

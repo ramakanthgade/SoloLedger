@@ -29,6 +29,8 @@ export interface AuthoritySnapshotRow {
   status: 'complete' | 'partial' | 'failed';
   supersedesSnapshotId?: string;
   declaredCurrentThrough?: number;
+  /** Restore metadata; restored evidence is retained verbatim but cannot assert current custody. */
+  restoredAt?: number;
 }
 
 export interface AuthorityAssetRow {
@@ -73,6 +75,7 @@ function snapshotIsCoherent(snapshot: AuthoritySnapshotRow, assets: readonly Aut
 
 function freshness(snapshot: AuthoritySnapshotRow, now: number, comparisonAt?: number): AuthorityStatus {
   if (snapshot.asOf == null || !Number.isFinite(snapshot.asOf)) return 'non_comparable';
+  if (snapshot.restoredAt != null) return 'stale';
   if (snapshot.authorityKind === 'csv') {
     if (comparisonAt == null || !Number.isFinite(comparisonAt) || comparisonAt < snapshot.asOf) return 'non_comparable';
     return comparisonAt === snapshot.asOf ? 'current' : 'stale';

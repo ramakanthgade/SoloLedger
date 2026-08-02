@@ -32,6 +32,15 @@ export interface NewConnectionInput {
   passphrase?: string;
 }
 
+export type ExchangeCredentialsState = 'ready' | 'reauthorization_required';
+
+/** Candidate credentials are accepted only by validation/persistence boundaries. */
+export interface ExchangeCredentials {
+  apiKey: string;
+  secret: string;
+  passphrase?: string;
+}
+
 /**
  * Classified sync error kinds. `not_hosted` means the app is in local/BYOK
  * mode (auto-sync needs Hosted mode); `relay_*` kinds come from the tunnel's
@@ -68,6 +77,8 @@ export interface ExchangeConnectionView {
   lastSyncAt: number | null;
   txCount: number;
   lastError: string | null;
+  /** Redacted lifecycle state; credential values are never part of this view. */
+  credentialsState?: ExchangeCredentialsState;
   /**
    * Per-kind ms cursors (trades/deposits/withdrawals) — timestamps only, no
    * credentials. Drives the honest data-range coverage chip on connection

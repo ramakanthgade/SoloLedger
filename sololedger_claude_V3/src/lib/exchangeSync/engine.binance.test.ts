@@ -56,6 +56,9 @@ beforeEach(async () => {
   await db.transactions.clear();
   await db.exchangeConnections.clear();
   await db.exchangeBalances.clear();
+  await db.authoritySnapshots.clear();
+  await db.authorityAssets.clear();
+  await db.sourceCoverage.clear();
   exchangeSyncJob.reset();
   apiFetchMock.mockReset();
   installBinanceFixtureServer(apiFetchMock);
@@ -99,6 +102,10 @@ describe('Binance full replay through the tunnel', () => {
 
   it('commitInitialSync persists staged rows with importBatchId=connectionId and writes cursors post-save', async () => {
     const id = await seedConnection();
+    await db.exchangeBalances.put({
+      id: `${id}:DOGE`, connectionId: id, exchange: 'binance', asset: 'DOGE', amount: 42,
+      asOf: NOW - 1, source: 'exchange_api'
+    });
     await runInitialSync(id, binanceReplayDeps());
     const { saved } = await commitInitialSync(id, binanceReplayDeps());
     expect(saved).toBe(6);
@@ -117,7 +124,8 @@ describe('Binance full replay through the tunnel', () => {
         .sort((a, b) => a.asset.localeCompare(b.asset))
     ).toEqual([
       { asset: 'BNB', amount: 0.3 },
-      { asset: 'BTC', amount: 0.01 },
+        { asset: 'BTC', amount: 0.01 },
+        { asset: 'DOGE', amount: 0 },
       { asset: 'ETH', amount: 0.5 },
       { asset: 'USDT', amount: 120.5 }
     ]);
@@ -149,6 +157,62 @@ describe('Binance full replay through the tunnel', () => {
     });
     expect(row.knownAssets).toEqual(['BNB', 'BTC', 'ETH', 'USDT']);
     expect(row.knownSymbols).toEqual(['BTC/USDT', 'ETH/BTC', 'ETH/USDT']);
+    expect(row).toMatchObject({ authorityGeneration: 1, revision: 2 });
+
+    const snapshots = await db.authoritySnapshots.where('sourceIdentityId').equals(id).toArray();
+    expect(snapshots).toEqual([
+      expect.objectContaining({
+        generation: 1,
+        scopeId: `exchange:${id}`,
+        accountClass: 'spot',
+        coveredAccountClasses: ['spot'],
+        asOf: NOW,
+        capturedAt: NOW,
+        endpointProof: expect.objectContaining({
+          provider: 'binance',
+          operation: 'ccxt.fetchBalance',
+          parametersClass: 'defaultType=spot',
+          exhaustiveBalances: true
+        })
+      })
+    ]);
+    expect((await db.authorityAssets.where('snapshotId').equals(snapshots[0].snapshotId).toArray())
+      .map(({ asset, quantity }) => ({ asset, quantity })).sort((a, b) => a.asset.localeCompare(b.asset)))
+      .toEqual([
+        { asset: 'BNB', quantity: 0.3 },
+        { asset: 'BTC', quantity: 0.01 },
+        { asset: 'DOGE', quantity: 0 },
+        { asset: 'ETH', quantity: 0.5 },
+        { asset: 'USDT', quantity: 120.5 }
+      ]);
+    const coverageRows = await db.sourceCoverage.where('sourceIdentityId').equals(id).toArray();
+    expect(coverageRows).toEqual([
+      expect.objectContaining({
+        generation: 1,
+        authoritySnapshotId: snapshots[0].snapshotId,
+        authorityAsOf: NOW,
+        status: 'partial',
+        recognizedCount: 8,
+        parsedCount: 6,
+        dedupedCount: 0,
+        endpoints: ['balance', 'deposits', 'withdrawals', 'trades']
+      })
+    ]);
+    expect(coverageRows[0].endpointOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        endpoint: 'deposits', status: 'partial', paginationExhausted: false,
+        skippedCount: 1, exclusionReasons: ['unsettled_transfer'],
+        observedStart: 1699900000000, observedEnd: 1700000000000
+      }),
+      expect.objectContaining({
+        endpoint: 'withdrawals', status: 'partial', paginationExhausted: false,
+        skippedCount: 1, exclusionReasons: ['unsettled_transfer'],
+        observedStart: 1699617600000, observedEnd: 1699781400000
+      }),
+      expect.objectContaining({
+        endpoint: 'trades', observedStart: 1700000000123, observedEnd: 1700259200111
+      })
+    ]));
 
     // Job result banner state.
     const state = exchangeSyncJob.get();
@@ -181,6 +245,32 @@ describe('Binance full replay through the tunnel', () => {
     const row = (await db.exchangeConnections.get(id))!;
     expect(row.cursors).toEqual({}); // never written
     expect(row.status).toBe('idle');
+  });
+
+  it('rolls back transactions, cursors, legacy balances, authority, and coverage when the atomic commit fails', async () => {
+    const id = await seedConnection();
+    await runInitialSync(id, binanceReplayDeps());
+    const failAuthority = () => { throw new Error('authority write failed'); };
+    db.authoritySnapshots.hook('creating', failAuthority);
+    try {
+      await expect(commitInitialSync(id, binanceReplayDeps())).rejects.toThrow('authority write failed');
+    } finally {
+      db.authoritySnapshots.hook('creating').unsubscribe(failAuthority);
+    }
+
+    expect(await db.transactions.count()).toBe(0);
+    expect(await db.exchangeBalances.count()).toBe(0);
+    expect(await db.authoritySnapshots.count()).toBe(0);
+    expect(await db.authorityAssets.count()).toBe(0);
+    expect(await db.sourceCoverage.toArray()).toEqual([
+      expect.objectContaining({ generation: 1, status: 'failed', failureKind: 'unknown' })
+    ]);
+    expect(await db.exchangeConnections.get(id)).toMatchObject({
+      authorityGeneration: 1,
+      revision: 1,
+      cursors: {},
+      status: 'error'
+    });
   });
 
   it('a second runInitialSync discards the previous staged preview (single-slot rule)', async () => {

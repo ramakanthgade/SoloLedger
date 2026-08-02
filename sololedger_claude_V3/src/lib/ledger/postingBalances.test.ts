@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 import { derivePostings } from './derivedPostings';
-import { buildChartPrefixIndex, buildRunningBalanceIndex, postingBalances } from './postingBalances';
+import {
+  buildChartPrefixIndex, buildRunningBalanceIndex, postingBalances, preparePostingAggregation
+} from './postingBalances';
 import { buildPostingPerformanceFixtures, runPostingPerformanceScenario } from './postingBalances.performanceFixture';
 
 function transaction(id: string, timestamp: number, amount: number): Transaction {
@@ -43,5 +45,46 @@ describe('posting indexes', () => {
     });
     expect(result.reconciliation.ledgerQuantity).toBeCloseTo(-3003);
     expect(result.reconciliation.delta).toBeCloseTo(3003);
+  });
+
+  it('keeps same-asset aggregation linear across thousands of unique scopes', () => {
+    const count = 8_000;
+    const postings = derivePostings(
+      Array.from({ length: count }, (_, index) => ({
+        ...transaction(`unresolved-${index}`, index, 1),
+        source: 'unrecognized'
+      })),
+      { exchangeConnections: [] }
+    );
+    const metrics = { postingVisits: 0 };
+    const balances = postingBalances(postings, { metrics });
+    const running = buildRunningBalanceIndex(postings, metrics);
+    const chart = buildChartPrefixIndex(postings, 'day', metrics);
+
+    expect(postings).toHaveLength(count);
+    expect(metrics.postingVisits).toBe(count * 3);
+    expect(balances.size).toBe(count);
+    expect(running.byBalanceKey.size).toBe(count);
+    expect(chart.byBalanceKey.size).toBe(count);
+    expect(balances.get('unresolved:unresolved-0|unknown|asset:BTC')).toBe(1);
+    expect(balances.get(`unresolved:unresolved-${count - 1}|unknown|asset:BTC`)).toBe(1);
+    expect(running.byBalanceKey.get('unresolved:unresolved-4000|unknown|asset:BTC')).toEqual([
+      { postingId: 'unresolved-4000:10:0:asset:BTC', effectiveAt: 4000, balance: 1 }
+    ]);
+  });
+
+  it('reuses an explicit aggregation snapshot without caching mutable caller input', () => {
+    const postings = derivePostings([
+      transaction('b', 20, -0.5), transaction('a', 10, 2)
+    ], { exchangeConnections: [] });
+    const prepared = preparePostingAggregation(postings);
+
+    expect(postingBalances(postings, {}, prepared)).toEqual(postingBalances(postings));
+    expect(buildRunningBalanceIndex(postings, undefined, prepared)).toEqual(buildRunningBalanceIndex(postings));
+    expect(buildChartPrefixIndex(postings, 'day', undefined, prepared)).toEqual(buildChartPrefixIndex(postings, 'day'));
+    expect(() => postingBalances([...postings], {}, prepared)).toThrow('source mismatch');
+
+    postings[0].signedQuantity = 7;
+    expect([...postingBalances(postings).values()]).toEqual([6.5]);
   });
 });

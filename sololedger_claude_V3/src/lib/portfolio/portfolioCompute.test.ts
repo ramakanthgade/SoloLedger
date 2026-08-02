@@ -136,4 +136,21 @@ describe('buildPortfolioHoldings custody conservation', () => {
     expect(holdings.find((h) => h.asset === 'USDT')?.amount).toBe(48);
     expect(holdings.find((h) => h.asset === 'BTC')?.amount).toBe(1);
   });
+
+  it('does not let one Solana wallet trade absorb another case-distinct wallet leg', () => {
+    const holdings = buildPortfolioHoldings([
+      tx({
+        id: 'a-trade', type: 'trade', asset: 'USDC', amount: 5,
+        counterAsset: 'BONK', counterAmount: 10, source: 'rpc:helius',
+        sourceRef: 'shared', chain: 'solana', walletAddress: 'Base58Case'
+      }),
+      tx({
+        id: 'b-credit', type: 'transfer_in', asset: 'BONK', amount: 7,
+        source: 'rpc:helius', sourceRef: 'shared', chain: 'solana',
+        walletAddress: 'base58Case'
+      })
+    ]);
+
+    expect(holdings.find((holding) => holding.asset === 'BONK')?.amount).toBe(17);
+  });
 });

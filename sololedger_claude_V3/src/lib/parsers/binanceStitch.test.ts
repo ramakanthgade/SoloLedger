@@ -92,4 +92,72 @@ describe('Binance Transaction-History stitch (C1)', () => {
     expect(transactions[0].flags).toContain('missing_cost_basis');
     expect(transactions[0].flags).not.toContain('possible_internal_transfer');
   });
+
+  it('reports structured parsed, excluded, skipped, and failed row evidence without inventing history bounds', () => {
+    const rows: Record<string, string>[] = [
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Spot', Operation: 'Deposit', Coin: 'BTC', Change: '1' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Spot', Operation: 'Margin Loan', Coin: 'BTC', Change: '1' },
+      { UTC_Time: '2025-01-01 00:02:00', Account: 'Spot', Operation: 'Future New Operation', Coin: 'BTC', Change: '1' },
+      { UTC_Time: '', Account: 'Spot', Operation: 'Deposit', Coin: 'ETH', Change: '1' }
+    ];
+    const result = stitchBinanceTransactionHistory(rows);
+    expect(result.evidence).toMatchObject({
+      coveredAccountClasses: ['spot', 'unknown'],
+      recognizedCount: 2,
+      parsedCount: 1,
+      excludedCount: 1,
+      skippedCount: 1,
+      failedCount: 1
+    });
+    expect(result.evidence.declaredHistory).toBeUndefined();
+    expect(result.balanceSnapshot).toEqual({ BTC: 3 });
+    // parseImportFile promotes this parser-level final balance into immutable
+    // finalBalanceSnapshots after it has the parser-declared account class.
+    expect(result.evidence.finalBalanceSnapshots).toBeUndefined();
+    expect(result.evidence.exclusionReasons).toHaveLength(1);
+    expect(result.evidence.skippedReasons).toHaveLength(1);
+    expect(result.evidence.failureReasons).toHaveLength(1);
+  });
+
+  it('keeps recognized and failed counts scoped to each declared account class', () => {
+    const result = stitchBinanceTransactionHistory([
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Spot', Operation: 'Deposit', Coin: 'BTC', Change: '1' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Funding', Operation: 'Deposit', Coin: 'USDT', Change: '2' },
+      { UTC_Time: '2025-01-01 00:02:00', Account: 'Funding', Operation: 'Future New Operation', Coin: 'ETH', Change: '3' }
+    ]);
+
+    const spot = result.evidence.requiredOutcomes.find((outcome) => outcome.accountClass === 'spot');
+    const funding = result.evidence.requiredOutcomes.find((outcome) => outcome.accountClass === 'funding');
+    expect(spot).toMatchObject({ parsedCount: 1, failedCount: 0, status: 'complete' });
+    expect(funding).toMatchObject({ parsedCount: 1, failedCount: 1, status: 'partial' });
+  });
+
+  it('accounts every consumed Funding/Margin trade row and keeps unrecognized rows in their class', () => {
+    const result = stitchBinanceTransactionHistory([
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Funding', Operation: 'Transaction Buy', Coin: 'BTC', Change: '0.1' },
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Funding', Operation: 'Transaction Spend', Coin: 'USDT', Change: '-5000' },
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Funding', Operation: 'Transaction Fee', Coin: 'BTC', Change: '-0.001' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Funding', Operation: 'Future New Operation', Coin: 'ETH', Change: '1' },
+      { UTC_Time: '2025-01-01 00:02:00', Account: 'Margin', Operation: 'Transaction Buy', Coin: 'ETH', Change: '2' },
+      { UTC_Time: '2025-01-01 00:02:00', Account: 'Margin', Operation: 'Transaction Spend', Coin: 'USDT', Change: '-4000' },
+      { UTC_Time: '2025-01-01 00:02:00', Account: 'Margin', Operation: 'Transaction Fee', Coin: 'ETH', Change: '-0.002' }
+    ]);
+
+    expect(result.transactions).toHaveLength(2);
+    expect(result.sourceRowAccounting).toHaveLength(7);
+    expect(result.sourceRowAccounting.filter((row) => row.accountClass === 'funding')).toHaveLength(4);
+    expect(result.sourceRowAccounting.filter((row) => row.accountClass === 'margin')).toHaveLength(3);
+    expect(result.evidence.requiredOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        accountClass: 'funding', recognizedCount: 3, parsedCount: 3,
+        failedCount: 1, status: 'partial',
+        parsedTransactionRows: [expect.objectContaining({ sourceRowCount: 3 })]
+      }),
+      expect.objectContaining({
+        accountClass: 'margin', recognizedCount: 3, parsedCount: 3,
+        failedCount: 0, status: 'complete',
+        parsedTransactionRows: [expect.objectContaining({ sourceRowCount: 3 })]
+      })
+    ]));
+  });
 });

@@ -28,14 +28,17 @@ describe('Dexie v8 — exchangeConnections', () => {
   });
 
   it('opens at the current version with the exchangeConnections table', async () => {
-    // v9 added walletBalances (round-4 balance reconciliation); v10 added
-    // exchangeBalances (reconciliation engine truth anchor). The
+    // v9 added walletBalances; v10 added exchangeBalances; v11 added coherent
+    // reconciliation evidence stores. The
     // exchangeConnections schema below is unchanged since v8.
-    expect(db.verno).toBe(10);
+    expect(db.verno).toBe(11);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
     expect(tableNames).toContain('exchangeBalances');
+    for (const table of ['authoritySnapshots', 'authorityAssets', 'sourceCoverage', 'openingBalances']) {
+      expect(tableNames).toContain(table);
+    }
     // All v7 tables carried over unchanged.
     for (const t of [
       'transactions',

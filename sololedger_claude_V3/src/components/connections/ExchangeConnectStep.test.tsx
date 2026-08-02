@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   isExchangeSyncEnabled: vi.fn(),
   testConnection: vi.fn(),
   addConnection: vi.fn(),
+  reauthorizeConnection: vi.fn(),
   mode: { current: 'hosted' as 'local' | 'byok' | 'hosted' },
   job: { current: null as unknown as ExchangeSyncJobState }
 }));
@@ -55,6 +56,7 @@ vi.mock('@/lib/exchangeSync', async (importOriginal) => {
     ...actual,
     testConnection: mocks.testConnection,
     addConnection: mocks.addConnection,
+    reauthorizeConnection: mocks.reauthorizeConnection,
     useExchangeSyncJob: () => mocks.job.current
   };
 });
@@ -68,13 +70,24 @@ const savedView: ExchangeConnectionView = {
   createdAt: Date.now(),
   lastSyncAt: null,
   txCount: 0,
-  lastError: null
+  lastError: null,
+  credentialsState: 'ready'
 };
 
-async function renderForm(exchangeId: 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' = 'binance') {
+async function renderForm(
+  exchangeId: 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' = 'binance',
+  props: { mode?: 'connect' | 'reauthorize'; existingId?: string } = {}
+) {
   const onConnected = vi.fn();
   const onUseFile = vi.fn();
-  render(<ExchangeConnectStep exchangeId={exchangeId} onConnected={onConnected} onUseFile={onUseFile} />);
+  render(
+    <ExchangeConnectStep
+      exchangeId={exchangeId}
+      onConnected={onConnected}
+      onUseFile={onUseFile}
+      {...props}
+    />
+  );
   // Hosted + flag resolves async — wait for the form.
   await screen.findByTestId('exchange-connect');
   return { onConnected, onUseFile };
@@ -92,6 +105,7 @@ beforeEach(() => {
   mocks.isExchangeSyncEnabled.mockResolvedValue(true);
   mocks.testConnection.mockResolvedValue({ ok: true });
   mocks.addConnection.mockResolvedValue(savedView);
+  mocks.reauthorizeConnection.mockResolvedValue(savedView);
 });
 
 describe('ExchangeConnectStep — mode gating (ported from AutoSyncPanel)', () => {
@@ -290,6 +304,61 @@ describe('ExchangeConnectStep — connect', () => {
 
     await screen.findByText('relay offline');
     expect(onConnected).not.toHaveBeenCalled();
+  });
+});
+
+describe('ExchangeConnectStep — reauthorization', () => {
+  it('preserves the existing source and saves only the exact tested credentials', async () => {
+    const { onConnected } = await renderForm('binance', {
+      mode: 'reauthorize',
+      existingId: 'restored-source'
+    });
+
+    expect(screen.queryByLabelText(/Label/)).not.toBeInTheDocument();
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByText(/Connected — read-only access confirmed/);
+
+    const save = screen.getByRole('button', { name: /reauthorize securely/i });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() => expect(onConnected).toHaveBeenCalledWith(savedView));
+
+    expect(mocks.reauthorizeConnection).toHaveBeenCalledWith('restored-source', {
+      apiKey: 'key-123',
+      secret: 'secret-456',
+      passphrase: undefined
+    });
+    expect(mocks.addConnection).not.toHaveBeenCalled();
+  });
+
+  it('invalidates authorization when a tested credential is edited', async () => {
+    await renderForm('binance', { mode: 'reauthorize', existingId: 'restored-source' });
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByText(/Connected — read-only access confirmed/);
+
+    const save = screen.getByRole('button', { name: /reauthorize securely/i });
+    expect(save).toBeEnabled();
+    fireEvent.change(screen.getByLabelText('API secret'), { target: { value: 'edited' } });
+    expect(save).toBeDisabled();
+    expect(mocks.reauthorizeConnection).not.toHaveBeenCalled();
+  });
+
+  it('reports honestly when the existing source was deleted before credentials were saved', async () => {
+    mocks.reauthorizeConnection.mockRejectedValueOnce(
+      new Error('Connection not found — it may have been removed.')
+    );
+    await renderForm('binance', { mode: 'reauthorize', existingId: 'deleted-source' });
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByText(/Connected — read-only access confirmed/);
+    fireEvent.click(screen.getByRole('button', { name: /reauthorize securely/i }));
+
+    expect(
+      await screen.findByText('Connection not found — it may have been removed.')
+    ).toBeInTheDocument();
+    expect(mocks.addConnection).not.toHaveBeenCalled();
   });
 });
 

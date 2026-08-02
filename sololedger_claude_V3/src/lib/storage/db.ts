@@ -1,6 +1,28 @@
 import Dexie, { type Table } from 'dexie';
 import type { Transaction, Lot, Disposal, TaxSettings } from '@/types/transaction';
+import { derivePostings, type AccountClass, type OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
+import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
+import {
+  assertValidSourceCoverageRow,
+  associateSourceCoverageScope,
+  type CoverageExchangeSourceIdentity,
+  type EndpointCoverageOutcome,
+  type SourceCoverageRow,
+  type SourceCoverageScopeAssociation
+} from '@/lib/reconcile/sourceCoverage';
+import { assetKey as canonicalAssetKey } from '@/lib/ledger/assetKey';
+import {
+  canonicalWalletAddress,
+  canonicalWalletChainScope,
+  chainNamespace,
+  walletAddressEquals
+} from '@/lib/ledger/chainNamespace';
 import { binanceApiIdentity, binanceEconomicKey } from './binanceEconomicDedup';
+
+function newSourceIncarnation(): string {
+  return globalThis.crypto?.randomUUID?.() ??
+    `inc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
+}
 
 /**
  * The entire app's data lives in this IndexedDB database, scoped to the
@@ -25,6 +47,12 @@ export interface LookupAddressRow {
   txCount: number;
   /** Newest on-chain signature seen for this wallet (Helius incremental sync cursor). */
   lastSyncedSignature?: string;
+  /** Monotonic evidence generation; initialized by the v11 migration. */
+  authorityGeneration?: number;
+  /** Compare-and-save revision for future atomic source updates. */
+  revision?: number;
+  /** Durable random identity lifetime token; deletion and re-addition creates a new incarnation. */
+  sourceIncarnation?: string;
 }
 
 export interface CsvImportRow {
@@ -41,6 +69,10 @@ export interface CsvImportRow {
   optionsBalanceIncluded?: boolean;
   /** Latest Options activity timestamp represented by this import. */
   optionsCoverageThrough?: number;
+  /** Monotonic evidence generation; initialized by the v11 migration. */
+  authorityGeneration?: number;
+  /** Compare-and-save revision for source lifecycle changes. */
+  revision?: number;
 }
 
 /**
@@ -53,9 +85,15 @@ export interface ExchangeConnectionRow {
   id: string;           // makeId('exc')
   exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin')
   label?: string;       // user-assigned friendly name, e.g. "My Binance"
-  apiKey: string;
-  secret: string;
+  apiKey?: string;
+  secret?: string;
   passphrase?: string;  // OKX / KuCoin only (ccxt `password`)
+  /** Legacy rows migrate to ready; redacted restores use reauthorization_required. */
+  credentialsState?: 'ready' | 'reauthorization_required';
+  /** Monotonic authority/coverage source-operation generation. */
+  authorityGeneration?: number;
+  /** Compare-and-save revision for credential/source lifecycle changes. */
+  revision?: number;
   createdAt: number;
   /** Per-kind ms cursors — written ONLY after a successful save (see exchangeSync/engine). */
   cursors: { trades?: number; deposits?: number; withdrawals?: number };
@@ -129,6 +167,10 @@ class SoloLedgerDB extends Dexie {
   exchangeConnections!: Table<ExchangeConnectionRow, string>;
   walletBalances!: Table<WalletBalanceRow, string>;
   exchangeBalances!: Table<ExchangeBalanceRow, string>;
+  authoritySnapshots!: Table<AuthoritySnapshotRow, string>;
+  authorityAssets!: Table<AuthorityAssetRow, string>;
+  sourceCoverage!: Table<SourceCoverageRow, string>;
+  openingBalances!: Table<OpeningBalanceRow, string>;
 
   constructor(name: string) {
     super(name);
@@ -235,12 +277,151 @@ class SoloLedgerDB extends Dexie {
       walletBalances: 'id, chain, address, asset',
       exchangeBalances: 'id, connectionId, exchange, asset'
     });
+    // v11: coherent immutable authority generations, structural source
+    // coverage, and absolute non-taxable opening-balance evidence. The v10
+    // balance stores stay intact because existing holdings consumers continue
+    // to read them until the later consumer migration.
+    this.version(11).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName',
+      exchangeConnections: 'id, exchange, lastSyncAt',
+      walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset',
+      authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+      authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+      sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+      openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]'
+    }).upgrade(async (tx) => {
+      await tx.table<ExchangeConnectionRow, string>('exchangeConnections').toCollection().modify((row) => {
+        row.credentialsState ??= 'ready';
+        row.authorityGeneration ??= 0;
+        row.revision ??= 0;
+      });
+      await tx.table<LookupAddressRow, string>('lookupAddresses').toCollection().modify((row) => {
+        row.authorityGeneration ??= 0;
+        row.revision ??= 0;
+        row.sourceIncarnation ??= newSourceIncarnation();
+      });
+      await tx.table<CsvImportRow, string>('csvImports').toCollection().modify((row) => {
+        row.authorityGeneration ??= 0;
+        row.revision ??= 0;
+      });
+
+      const snapshots = tx.table<AuthoritySnapshotRow, string>('authoritySnapshots');
+      const assets = tx.table<AuthorityAssetRow, string>('authorityAssets');
+      const exchangeIdentityIds = new Set(
+        (await tx.table<ExchangeConnectionRow, string>('exchangeConnections').toArray()).map((row) => row.id)
+      );
+      const exchangeRows = await tx.table<ExchangeBalanceRow, string>('exchangeBalances').toArray();
+      const exchanges = new Map<string, ExchangeBalanceRow[]>();
+      for (const row of exchangeRows) {
+        const group = exchanges.get(row.connectionId) ?? [];
+        group.push(row);
+        exchanges.set(row.connectionId, group);
+      }
+      for (const [connectionId, rows] of exchanges) {
+        if (!exchangeIdentityIds.has(connectionId)) continue;
+        const asOf = coherentLegacyAsOf(rows);
+        const capturedAt = latestFiniteTimestamp(rows);
+        const snapshotId = `legacy:exchange:${connectionId}:1`;
+        await snapshots.add({
+          snapshotId, generation: 1, scopeId: `exchange:${connectionId}`,
+          authorityKind: 'api', authorityClass: 'exchange_balance', accountClass: 'spot',
+          coveredAccountClasses: ['spot'], asOf, capturedAt,
+          sourceIdentityId: connectionId,
+          endpointProof: {
+            authorityKind: 'api', provider: rows[0]?.exchange ?? 'unknown', operation: 'legacy.exchangeBalances',
+            parametersClass: 'v10-unproven-account-endpoint', requestedAccountClasses: ['spot'],
+            provenAccountClasses: ['spot'], exhaustiveBalances: asOf != null
+          },
+          // A legacy set can be structurally complete while lacking one exact
+          // comparable instant. Missing asOf + non-exhaustive proof makes the
+          // authority selector return non_comparable rather than missing.
+          status: 'complete'
+        });
+        if (asOf != null) {
+          await assets.bulkAdd(rows.map((row) => ({
+            id: `${snapshotId}:${row.asset.toUpperCase()}`, snapshotId, generation: 1,
+            scopeId: `exchange:${connectionId}`, accountClass: 'spot' as const,
+            assetKey: `asset:${row.asset.toUpperCase()}`, asset: row.asset.toUpperCase(), quantity: row.amount,
+            sourceRef: row.id
+          })));
+        }
+        await tx.table<ExchangeConnectionRow, string>('exchangeConnections').update(connectionId, {
+          authorityGeneration: 1
+        });
+      }
+
+      const walletRows = await tx.table<WalletBalanceRow, string>('walletBalances').toArray();
+      const walletIdentityIds = new Set(
+        (await tx.table<LookupAddressRow, string>('lookupAddresses').toArray()).map((row) => row.id)
+      );
+      const wallets = new Map<string, WalletBalanceRow[]>();
+      for (const row of walletRows) {
+        const sourceId = `${row.chain}:${row.address}`;
+        const group = wallets.get(sourceId) ?? [];
+        group.push(row);
+        wallets.set(sourceId, group);
+      }
+      for (const [sourceIdentityId, rows] of wallets) {
+        if (!walletIdentityIds.has(sourceIdentityId)) continue;
+        const asOf = coherentLegacyAsOf(rows);
+        const capturedAt = latestFiniteTimestamp(rows);
+        const scopeId = `wallet:${canonicalWalletChainScope(rows[0].chain)}:${canonicalWalletAddress(rows[0].chain, rows[0].address)}`;
+        const snapshotId = `legacy:wallet:${sourceIdentityId}:1`;
+        await snapshots.add({
+          snapshotId, generation: 1, scopeId, authorityKind: 'rpc', authorityClass: 'wallet_balance',
+          accountClass: 'wallet', coveredAccountClasses: ['wallet'], asOf,
+          capturedAt, sourceIdentityId,
+          endpointProof: {
+            authorityKind: 'rpc', provider: rows[0].chain, operation: 'legacy.walletBalances',
+            parametersClass: 'v10-address-balance-set', requestedAccountClasses: ['wallet'],
+            provenAccountClasses: ['wallet'], exhaustiveBalances: asOf != null
+          },
+          status: 'complete'
+        });
+        if (asOf != null) {
+          await assets.bulkAdd(rows.map((row) => {
+            const key = canonicalAssetKey({
+              asset: row.asset, chain: row.chain, contractAddress: row.contractAddress
+            });
+            return {
+              id: `${snapshotId}:${key}`, snapshotId, generation: 1, scopeId,
+              accountClass: 'wallet' as const, assetKey: key, asset: row.asset.toUpperCase(),
+              quantity: row.amount, sourceRef: row.id
+            };
+          }));
+        }
+        await tx.table<LookupAddressRow, string>('lookupAddresses').update(sourceIdentityId, {
+          authorityGeneration: 1
+        });
+      }
+    });
   }
+}
+
+function coherentLegacyAsOf(rows: readonly { asOf: number }[]): number | undefined {
+  if (rows.length === 0 || !Number.isFinite(rows[0].asOf)) return undefined;
+  return rows.every((row) => Number.isFinite(row.asOf) && row.asOf === rows[0].asOf)
+    ? rows[0].asOf : undefined;
+}
+
+function latestFiniteTimestamp(rows: readonly { asOf: number }[]): number {
+  const finite = rows.map((row) => row.asOf).filter(Number.isFinite);
+  // Zero is an explicit migration sentinel for malformed legacy sets. It is
+  // capturedAt metadata only and is never promoted to comparable `asOf`.
+  return finite.length > 0 ? Math.max(...finite) : 0;
 }
 
 const LOCAL_DB_NAME = 'sololedger_local';
 
-function createDb(name: string): SoloLedgerDB {
+export function createDb(name: string): SoloLedgerDB {
   return new SoloLedgerDB(name);
 }
 
@@ -304,7 +485,7 @@ export async function seedSettingsIfAbsent(seed: TaxSettings): Promise<boolean> 
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.settings],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -316,6 +497,10 @@ export async function clearAllData(): Promise<void> {
       await db.exchangeConnections.clear();
       await db.walletBalances.clear();
       await db.exchangeBalances.clear();
+      await db.authoritySnapshots.clear();
+      await db.authorityAssets.clear();
+      await db.sourceCoverage.clear();
+      await db.openingBalances.clear();
       // "Delete all data" promises to remove everything — reset settings to defaults too.
       await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
     }
@@ -443,18 +628,26 @@ function normalizeImportAmount(amount: number): string {
 }
 
 /** Stable asset key for dedup — prefer mint/contract over display symbol. */
-function transactionAssetKey(t: Pick<Transaction, 'asset' | 'contractAddress'>): string {
-  return t.contractAddress?.toLowerCase() || t.asset.toUpperCase();
+function transactionAssetKey(t: Pick<Transaction, 'asset' | 'contractAddress' | 'chain'>): string {
+  return t.chain
+    ? canonicalAssetKey({ asset: t.asset, chain: t.chain, contractAddress: t.contractAddress })
+    : t.contractAddress?.toLowerCase() || t.asset.toUpperCase();
+}
+
+function transactionWalletIdentity(t: Pick<Transaction, 'walletAddress' | 'chain'>): string {
+  return t.chain
+    ? canonicalWalletAddress(t.chain, t.walletAddress!)
+    : t.walletAddress!.toLowerCase();
 }
 
 /** Dedup key for on-chain rows — intentionally excludes `type` so re-imported transfer_in rows match reclassified income. */
 export function transactionImportKey(
-  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount' | 'contractAddress'>
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'amount' | 'contractAddress' | 'chain'>
 ): string | null {
   if (!t.sourceRef || !t.walletAddress) return null;
   return [
     t.sourceRef,
-    t.walletAddress.toLowerCase(),
+    transactionWalletIdentity(t),
     transactionAssetKey(t),
     normalizeImportAmount(t.amount)
   ].join('|');
@@ -462,20 +655,20 @@ export function transactionImportKey(
 
 /** wallet + on-chain tx hash + asset/mint — catches sync re-fetches even when float amount differs slightly. */
 export function transactionSourceKey(
-  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'contractAddress'>
+  t: Pick<Transaction, 'sourceRef' | 'walletAddress' | 'asset' | 'contractAddress' | 'chain'>
 ): string | null {
   if (!t.sourceRef || !t.walletAddress) return null;
-  return [t.walletAddress.toLowerCase(), t.sourceRef, transactionAssetKey(t)].join('|');
+  return [transactionWalletIdentity(t), t.sourceRef, transactionAssetKey(t)].join('|');
 }
 
 /** Newest sourceRef stored for a wallet (by transaction timestamp). */
 export async function newestStoredSignature(chain: string, address: string): Promise<string | undefined> {
-  const addrLower = address.toLowerCase();
+  const canonicalAddress = canonicalWalletAddress(chain, address);
   const txs = await db.transactions
     .filter(
       (t) =>
         t.chain === chain &&
-        t.walletAddress?.toLowerCase() === addrLower &&
+        t.walletAddress != null && canonicalWalletAddress(chain, t.walletAddress) === canonicalAddress &&
         !!t.sourceRef
     )
     .toArray();
@@ -485,13 +678,13 @@ export async function newestStoredSignature(chain: string, address: string): Pro
 
 /** Count transactions stored for a wallet on a chain. */
 export async function countWalletTransactions(chain: string, address: string): Promise<number> {
-  const addrLower = address.toLowerCase();
+  const canonicalAddress = canonicalWalletAddress(chain, address);
   return db.transactions
     .filter(
       (t) =>
         t.chain === chain &&
         t.walletAddress != null &&
-        t.walletAddress.toLowerCase() === addrLower
+        canonicalWalletAddress(chain, t.walletAddress) === canonicalAddress
     )
     .count();
 }
@@ -502,18 +695,27 @@ export async function upsertLookupAddress(
   _importedCount: number,
   lastSyncedSignature?: string
 ): Promise<void> {
-  const id = `${chain}:${address}`;
-  const existing = await db.lookupAddresses.get(id);
-  const txCount = await countWalletTransactions(chain, address);
-  const newestInDb = await newestStoredSignature(chain, address);
+  const canonicalAddress = canonicalWalletAddress(chain, address);
+  const canonicalId = `${chain}:${canonicalAddress}`;
+  const exact = await db.lookupAddresses.get(canonicalId);
+  const compatibleLegacy = exact ? [] : await db.lookupAddresses.filter((row) =>
+    row.chain === chain && walletAddressEquals(chain, row.address, canonicalAddress)).toArray();
+  const existing = exact ?? (compatibleLegacy.length === 1 ? compatibleLegacy[0] : undefined);
+  const id = existing?.id ?? canonicalId;
+  const storedAddress = existing?.address ?? canonicalAddress;
+  const txCount = await countWalletTransactions(chain, storedAddress);
+  const newestInDb = await newestStoredSignature(chain, storedAddress);
   await db.lookupAddresses.put({
     ...(existing ?? {}),
     id,
     chain,
-    address,
+    address: storedAddress,
     lastSyncedAt: Date.now(),
     txCount,
-    lastSyncedSignature: lastSyncedSignature ?? newestInDb ?? existing?.lastSyncedSignature
+    lastSyncedSignature: lastSyncedSignature ?? newestInDb ?? existing?.lastSyncedSignature,
+    authorityGeneration: existing?.authorityGeneration ?? 0,
+    revision: existing?.revision ?? 0,
+    sourceIncarnation: existing?.sourceIncarnation ?? newSourceIncarnation()
   });
 }
 
@@ -531,41 +733,43 @@ export async function deleteLookupAddress(id: string): Promise<void> {
 }
 
 export async function deleteLookupAddressAndTransactions(id: string): Promise<number> {
-  const row = await db.lookupAddresses.get(id);
-  if (!row) return 0;
-
-  const addrLower = row.address.toLowerCase();
-  const toDelete = await db.transactions
-    .filter(
-      (t) =>
-        t.chain === row.chain &&
-        t.walletAddress != null &&
-        t.walletAddress.toLowerCase() === addrLower
-    )
-    .toArray();
-
-  await db.transaction('rw', db.transactions, db.lookupAddresses, db.specIdHints, db.walletBalances, async () => {
+  return db.transaction('rw', [db.transactions, db.lots, db.disposals, db.lookupAddresses, db.specIdHints, db.walletBalances,
+    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances], async () => {
+    const row = await db.lookupAddresses.get(id);
+    if (!row) return 0;
+    const canonicalAddress = canonicalWalletAddress(row.chain, row.address);
+    const scopeId = `wallet:${canonicalWalletChainScope(row.chain)}:${canonicalAddress}`;
+    const toDelete = await db.transactions.filter((t) =>
+      t.chain === row.chain && t.walletAddress != null && walletAddressEquals(row.chain, t.walletAddress, row.address)
+    ).toArray();
+    const snapshots = await db.authoritySnapshots.where('sourceIdentityId').equals(id).toArray();
+    const ownedScopes = new Set([scopeId, ...snapshots.map((snapshot) => snapshot.scopeId)]);
     if (toDelete.length > 0) {
+      await deleteDependentTaxArtifacts(toDelete.map((t) => t.id));
       await db.transactions.bulkDelete(toDelete.map((t) => t.id));
+      await db.specIdHints.bulkDelete(toDelete.map((t) => t.id));
     }
-    await db.lookupAddresses.delete(id);
-    for (const t of toDelete) {
-      await db.specIdHints.delete(t.id);
+    const snapshotIds = snapshots.map((snapshot) => snapshot.snapshotId);
+    if (snapshotIds.length > 0) {
+      await db.authorityAssets.where('snapshotId').anyOf(snapshotIds).delete();
+      await db.authoritySnapshots.bulkDelete(snapshotIds);
     }
-    // On-chain balance rows for this (chain, address) go too.
+    await db.sourceCoverage.where('sourceIdentityId').equals(id).delete();
+    for (const ownedScope of ownedScopes) await db.openingBalances.where('scopeId').equals(ownedScope).delete();
     const balanceIds = (await db.walletBalances
-      .filter((b) => b.chain === row.chain && b.address.toLowerCase() === addrLower)
+      .filter((b) => b.chain === row.chain && walletAddressEquals(row.chain, b.address, row.address))
       .toArray()).map((b) => b.id);
     if (balanceIds.length > 0) await db.walletBalances.bulkDelete(balanceIds);
+    await db.lookupAddresses.delete(id);
+    return toDelete.length;
   });
-
-  return toDelete.length;
 }
 
 /** Resolve a wallet address to its user-assigned label, or return a truncated address. */
 export async function getWalletLabel(address: string): Promise<string | undefined> {
   const rows = await db.lookupAddresses
-    .filter((r) => r.address.toLowerCase() === address.toLowerCase())
+    .filter((row) => row.address === address ||
+      (chainNamespace(row.chain) === 'evm' && walletAddressEquals(row.chain, row.address, address)))
     .toArray();
   return rows[0]?.label;
 }
@@ -574,8 +778,8 @@ export async function getWalletLabel(address: string): Promise<string | undefine
 
 /** Stable balance-row id. Token rows key on the contract/mint so same-symbol tokens never collide. */
 export function walletBalanceId(chain: string, address: string, asset: string, contractAddress?: string): string {
-  const assetKey = contractAddress ? contractAddress.toLowerCase() : asset.toUpperCase();
-  return `${chain}:${address}:${assetKey}`;
+  const identity = canonicalAssetKey({ asset, chain, contractAddress });
+  return `${chain}:${canonicalWalletAddress(chain, address)}:${identity}`;
 }
 
 /**
@@ -593,7 +797,7 @@ export async function replaceWalletBalances(
   const fresh: WalletBalanceRow[] = rows.map((r) => ({
     id: walletBalanceId(chain, address, r.asset, r.contractAddress),
     chain,
-    address,
+    address: canonicalWalletAddress(chain, address),
     asset: r.asset,
     contractAddress: r.contractAddress,
     amount: r.amount,
@@ -602,7 +806,7 @@ export async function replaceWalletBalances(
   }));
   await db.transaction('rw', db.walletBalances, async () => {
     const existing = await db.walletBalances
-      .filter((b) => b.chain === chain && b.address.toLowerCase() === address.toLowerCase())
+      .filter((b) => b.chain === chain && walletAddressEquals(chain, b.address, address))
       .toArray();
     const freshIds = new Set(fresh.map((r) => r.id));
     // Assets absent from the new fetch collapse to an explicit zero row.
@@ -610,6 +814,271 @@ export async function replaceWalletBalances(
       .filter((e) => !freshIds.has(e.id))
       .map((e) => ({ ...e, amount: 0, asOf }));
     await db.walletBalances.bulkPut([...fresh, ...zeroed]);
+  });
+}
+
+export interface WalletBalanceOperationReservation {
+  sourceIdentityId: string;
+  chain: string;
+  address: string;
+  scopeId: string;
+  generation: number;
+  expectedRevision: number;
+  sourceIncarnation: string;
+  startedAt: number;
+}
+
+export interface CommitWalletBalanceOperationInput {
+  operation: WalletBalanceOperationReservation;
+  rows: Array<Pick<WalletBalanceRow, 'asset' | 'contractAddress' | 'amount'>>;
+  provider: string;
+  operationName: string;
+  endpointOutcomes: EndpointCoverageOutcome[];
+  status: 'complete' | 'partial';
+  asOf: number;
+  capturedAt: number;
+  warnings?: string[];
+}
+
+function walletScope(chain: string, address: string): string {
+  return `wallet:${canonicalWalletChainScope(chain)}:${canonicalWalletAddress(chain, address)}`;
+}
+
+function matchesWalletOperation(
+  row: LookupAddressRow | undefined,
+  operation: WalletBalanceOperationReservation
+): row is LookupAddressRow {
+  return !!row && row.id === operation.sourceIdentityId && row.chain === operation.chain &&
+    walletAddressEquals(row.chain, row.address, operation.address) &&
+    row.sourceIncarnation === operation.sourceIncarnation &&
+    walletScope(row.chain, row.address) === operation.scopeId &&
+    (row.authorityGeneration ?? 0) === operation.generation &&
+    (row.revision ?? 0) === operation.expectedRevision;
+}
+
+/** Reserve one wallet refresh generation before any provider requests begin. */
+export async function reserveWalletBalanceOperation(
+  chain: string,
+  address: string,
+  startedAt = Date.now()
+): Promise<WalletBalanceOperationReservation> {
+  return db.transaction('rw', db.lookupAddresses, async () => {
+    const canonicalId = `${chain}:${canonicalWalletAddress(chain, address)}`;
+    const exactId = `${chain}:${address}`;
+    let current = await db.lookupAddresses.get(canonicalId) ?? await db.lookupAddresses.get(exactId);
+    if (!current) {
+      const compatibleLegacy = await db.lookupAddresses.filter((row) =>
+        row.chain === chain && walletAddressEquals(chain, row.address, address)).toArray();
+      if (compatibleLegacy.length === 1) current = compatibleLegacy[0];
+    }
+    if (!current || current.chain !== chain || !walletAddressEquals(chain, current.address, address)) {
+      throw new Error('Wallet source identity not found — it may have been removed.');
+    }
+    const sourceIdentityId = current.id;
+    const sourceIncarnation = current.sourceIncarnation ?? newSourceIncarnation();
+    const generation = Math.max(0, current.authorityGeneration ?? 0) + 1;
+    const expectedRevision = Math.max(0, current.revision ?? 0) + 1;
+    await db.lookupAddresses.update(sourceIdentityId, {
+      authorityGeneration: generation,
+      revision: expectedRevision,
+      sourceIncarnation
+    });
+    return {
+      sourceIdentityId, chain, address: current.address, scopeId: walletScope(chain, current.address),
+      generation, expectedRevision, sourceIncarnation, startedAt
+    };
+  });
+}
+
+function validateWalletOperationResult(input: CommitWalletBalanceOperationInput): void {
+  if (!Number.isFinite(input.asOf) || !Number.isFinite(input.capturedAt) ||
+    input.capturedAt < input.operation.startedAt || input.asOf > input.capturedAt) {
+    throw new Error('wallet authority operation timestamps are invalid');
+  }
+  if (!input.provider.trim() || !input.operationName.trim() || input.endpointOutcomes.length === 0) {
+    throw new Error('wallet authority endpoint proof is required');
+  }
+  if (input.rows.some((row) => !row.asset.trim() || !Number.isFinite(row.amount))) {
+    throw new Error('wallet authority balance is invalid');
+  }
+  const required = input.endpointOutcomes.filter((outcome) => outcome.required);
+  const everyRequestComplete = required.length === input.endpointOutcomes.length &&
+    required.every((outcome) => outcome.accountClass === 'wallet' && outcome.status === 'complete');
+  if ((input.status === 'complete') !== everyRequestComplete) {
+    throw new Error('wallet complete authority requires every configured request to succeed');
+  }
+}
+
+/**
+ * Atomically finish a reserved wallet refresh. Complete operations dual-write
+ * v10 balances (including vanished-asset zeroes); partial operations retain
+ * the prior v10 set and append only their coherent immutable v11 evidence.
+ */
+export async function commitWalletBalanceOperation(
+  input: CommitWalletBalanceOperationInput
+): Promise<boolean> {
+  validateWalletOperationResult(input);
+  return db.transaction('rw', [db.lookupAddresses, db.walletBalances, db.authoritySnapshots,
+    db.authorityAssets, db.sourceCoverage], async () => {
+    const source = await db.lookupAddresses.get(input.operation.sourceIdentityId);
+    if (!matchesWalletOperation(source, input.operation)) return false;
+
+    const snapshotId = `${input.operation.sourceIdentityId}:rpc:${input.operation.generation}`;
+    const existingBalances = await db.walletBalances
+      .filter((row) => row.chain === input.operation.chain &&
+        walletAddressEquals(row.chain, row.address, input.operation.address))
+      .toArray();
+    const coalesced = new Map<string, Pick<WalletBalanceRow, 'asset' | 'contractAddress' | 'amount'>>();
+    for (const row of input.rows) {
+      const key = canonicalAssetKey({
+        asset: row.asset, chain: input.operation.chain, contractAddress: row.contractAddress
+      });
+      const prior = coalesced.get(key);
+      coalesced.set(key, prior ? { ...prior, amount: prior.amount + row.amount } : { ...row });
+    }
+    const fresh: WalletBalanceRow[] = [...coalesced.values()].map((row) => ({
+      id: walletBalanceId(input.operation.chain, input.operation.address, row.asset, row.contractAddress),
+      chain: input.operation.chain,
+      address: canonicalWalletAddress(input.operation.chain, input.operation.address), asset: row.asset,
+      contractAddress: row.contractAddress, amount: row.amount, asOf: input.asOf, source: 'rpc'
+    }));
+    const freshAssetKeys = new Set(coalesced.keys());
+    const freshIdByAssetKey = new Map(fresh.map((row) => [canonicalAssetKey({
+      asset: row.asset, chain: row.chain, contractAddress: row.contractAddress
+    }), row.id]));
+    const shadowedExistingIds = existingBalances.filter((row) => {
+      const key = canonicalAssetKey({ asset: row.asset, chain: row.chain, contractAddress: row.contractAddress });
+      return freshIdByAssetKey.has(key) && freshIdByAssetKey.get(key) !== row.id;
+    }).map((row) => row.id);
+    const zeroed = existingBalances.filter((row) => !freshAssetKeys.has(canonicalAssetKey({
+      asset: row.asset, chain: row.chain, contractAddress: row.contractAddress
+    }))).map((row) => ({
+      ...row, amount: 0, asOf: input.asOf
+    }));
+    const authorityBalances = [...new Map(
+      (input.status === 'complete' ? [...fresh, ...zeroed] : fresh).map((row) => [canonicalAssetKey({
+        asset: row.asset, chain: row.chain, contractAddress: row.contractAddress
+      }), row])
+    ).values()];
+    const priorComplete = (await db.authoritySnapshots
+      .where('sourceIdentityId').equals(input.operation.sourceIdentityId).toArray())
+      .filter((snapshot) => snapshot.scopeId === input.operation.scopeId && snapshot.accountClass === 'wallet' &&
+        snapshot.status === 'complete')
+      .sort((a, b) => b.generation - a.generation)[0];
+    const snapshot: AuthoritySnapshotRow = {
+      snapshotId,
+      generation: input.operation.generation,
+      scopeId: input.operation.scopeId,
+      authorityKind: 'rpc',
+      authorityClass: 'wallet_balance',
+      accountClass: 'wallet',
+      coveredAccountClasses: ['wallet'],
+      asOf: input.asOf,
+      capturedAt: input.capturedAt,
+      sourceIdentityId: input.operation.sourceIdentityId,
+      endpointProof: {
+        authorityKind: 'rpc',
+        provider: input.provider,
+        operation: input.operationName,
+        parametersClass: `chain=${input.operation.chain};account=${input.operation.address};requests=${input.endpointOutcomes.map((row) => row.endpoint).join(',')}`,
+        requestedAccountClasses: ['wallet'],
+        provenAccountClasses: ['wallet'],
+        exhaustiveBalances: input.status === 'complete'
+      },
+      status: input.status,
+      supersedesSnapshotId: input.status === 'complete' ? priorComplete?.snapshotId : undefined
+    };
+    const assets: AuthorityAssetRow[] = authorityBalances.map((row) => {
+      const assetKey = canonicalAssetKey({
+        asset: row.asset, chain: row.chain, contractAddress: row.contractAddress
+      });
+      return {
+        id: `${snapshotId}:${assetKey}`,
+        snapshotId,
+        generation: input.operation.generation,
+        scopeId: input.operation.scopeId,
+        accountClass: 'wallet',
+        assetKey,
+        asset: row.asset.toUpperCase(),
+        quantity: row.amount,
+        sourceRef: row.id
+      };
+    });
+    validateAuthorityGeneration(snapshot, assets);
+
+    const coverage: SourceCoverageRow = {
+      id: `${input.operation.sourceIdentityId}:rpc-coverage:${input.operation.generation}`,
+      generation: input.operation.generation,
+      scopeId: input.operation.scopeId,
+      sourceIdentityId: input.operation.sourceIdentityId,
+      evidenceId: `rpc:${input.operation.generation}`,
+      kind: 'rpc',
+      accountClasses: ['wallet'],
+      endpoints: input.endpointOutcomes.map((outcome) => outcome.endpoint),
+      authoritySnapshotId: snapshotId,
+      authorityAsOf: input.asOf,
+      startedAt: input.operation.startedAt,
+      completedAt: input.capturedAt,
+      status: input.status,
+      endpointOutcomes: input.endpointOutcomes,
+      failedCount: input.endpointOutcomes.filter((outcome) => outcome.status === 'failed').length,
+      warnings: input.warnings?.length ? [...input.warnings] : undefined
+    };
+    assertValidSourceCoverageRow(coverage);
+    if (await db.authoritySnapshots.get(snapshotId) || await db.sourceCoverage.get(coverage.id)) {
+      throw new Error('wallet operation evidence is immutable');
+    }
+
+    if (input.status === 'complete') {
+      if (shadowedExistingIds.length > 0) await db.walletBalances.bulkDelete(shadowedExistingIds);
+      await db.walletBalances.bulkPut([...fresh, ...zeroed]);
+    }
+    await db.authoritySnapshots.add(snapshot);
+    if (assets.length > 0) await db.authorityAssets.bulkAdd(assets);
+    await db.sourceCoverage.add(coverage);
+    await db.lookupAddresses.update(input.operation.sourceIdentityId, {
+      revision: input.operation.expectedRevision + 1
+    });
+    return true;
+  });
+}
+
+/** Append a failed refresh journal only while its reservation still owns the wallet. */
+export async function appendFailedWalletBalanceCoverage(args: {
+  operation: WalletBalanceOperationReservation;
+  endpointOutcomes: EndpointCoverageOutcome[];
+  completedAt: number;
+  failureKind: string;
+  message: string;
+}): Promise<boolean> {
+  return db.transaction('rw', [db.lookupAddresses, db.sourceCoverage], async () => {
+    const source = await db.lookupAddresses.get(args.operation.sourceIdentityId);
+    if (!matchesWalletOperation(source, args.operation)) return false;
+    const outcomes = args.endpointOutcomes.length > 0 ? args.endpointOutcomes : [{
+      endpoint: `${args.operation.chain}:wallet:balance`, accountClass: 'wallet' as const,
+      required: true, status: 'failed' as const, warning: args.message
+    }];
+    const coverage: SourceCoverageRow = {
+      id: `${args.operation.sourceIdentityId}:rpc-coverage:${args.operation.generation}`,
+      generation: args.operation.generation,
+      scopeId: args.operation.scopeId,
+      sourceIdentityId: args.operation.sourceIdentityId,
+      evidenceId: `rpc:${args.operation.generation}`,
+      kind: 'rpc',
+      accountClasses: ['wallet'],
+      endpoints: outcomes.map((outcome) => outcome.endpoint),
+      startedAt: args.operation.startedAt,
+      completedAt: args.completedAt,
+      status: 'failed',
+      endpointOutcomes: outcomes,
+      failedCount: outcomes.filter((outcome) => outcome.status === 'failed').length || 1,
+      failureKind: args.failureKind,
+      warnings: [args.message]
+    };
+    assertValidSourceCoverageRow(coverage);
+    if (await db.sourceCoverage.get(coverage.id)) return false;
+    await db.sourceCoverage.add(coverage);
+    return true;
   });
 }
 
@@ -668,17 +1137,404 @@ export async function getExchangeBalancesForConnection(connectionId: string): Pr
   return db.exchangeBalances.where('connectionId').equals(connectionId).toArray();
 }
 
+// ---- Reconciliation authority generations (v11) ----
+
+type GenerationSourceRow = {
+  id: string;
+  authorityGeneration?: number;
+  revision?: number;
+};
+
+/**
+ * Reserve the next monotonic operation generation on a persisted source
+ * identity. A generation is never reused, including when the later source
+ * operation fails and writes coverage only.
+ */
+export async function reserveAuthorityGeneration(sourceIdentityId: string): Promise<number> {
+  const sourceTables = [db.exchangeConnections, db.lookupAddresses, db.csvImports] as const;
+  return db.transaction('rw', [...sourceTables], async () => {
+    for (const table of sourceTables) {
+      const row = await table.get(sourceIdentityId) as GenerationSourceRow | undefined;
+      if (!row) continue;
+      const generation = Math.max(0, row.authorityGeneration ?? 0) + 1;
+      await table.update(sourceIdentityId, {
+        authorityGeneration: generation,
+        revision: Math.max(0, row.revision ?? 0) + 1
+      });
+      return generation;
+    }
+    throw new Error(`source identity not found: ${sourceIdentityId}`);
+  });
+}
+
+function validateAuthorityGeneration(
+  snapshot: AuthoritySnapshotRow,
+  rows: readonly AuthorityAssetRow[]
+): void {
+  if (!snapshot.snapshotId.trim()) throw new Error('snapshotId is required');
+  if (!Number.isSafeInteger(snapshot.generation) || snapshot.generation < 1) {
+    throw new Error('generation must be a positive safe integer');
+  }
+  if (!snapshot.scopeId.trim() || !snapshot.sourceIdentityId.trim()) throw new Error('authority scope/source is required');
+  if (!Number.isFinite(snapshot.capturedAt) || (snapshot.asOf != null && !Number.isFinite(snapshot.asOf))) {
+    throw new Error('authority timestamps must be finite');
+  }
+  if (snapshot.endpointProof.authorityKind !== snapshot.authorityKind) {
+    throw new Error('endpoint proof kind does not match snapshot');
+  }
+  const ids = new Set<string>();
+  const assetKeys = new Set<string>();
+  for (const row of rows) {
+    if (
+      row.snapshotId !== snapshot.snapshotId || row.generation !== snapshot.generation ||
+      row.scopeId !== snapshot.scopeId || row.accountClass !== snapshot.accountClass
+    ) throw new Error('authority asset is not coherent with its snapshot');
+    if (!row.id.trim() || !row.assetKey.trim() || !row.asset.trim() || !Number.isFinite(row.quantity)) {
+      throw new Error('authority asset is invalid');
+    }
+    if (ids.has(row.id) || assetKeys.has(row.assetKey)) throw new Error('duplicate authority asset');
+    ids.add(row.id);
+    assetKeys.add(row.assetKey);
+  }
+  if (snapshot.status === 'complete' && rows.length === 0 && snapshot.endpointProof.exhaustiveBalances !== true) {
+    throw new Error('empty complete authority requires exhaustive zero-balance proof');
+  }
+}
+
+/** Atomically append one immutable coherent snapshot and all of its assets. */
+export async function saveAuthorityGeneration(
+  snapshot: AuthoritySnapshotRow,
+  rows: readonly AuthorityAssetRow[]
+): Promise<void> {
+  validateAuthorityGeneration(snapshot, rows);
+  await db.transaction('rw', db.authoritySnapshots, db.authorityAssets, async () => {
+    if (await db.authoritySnapshots.get(snapshot.snapshotId)) throw new Error('authority snapshot is immutable');
+    if (rows.length > 0) {
+      const existing = (await db.authorityAssets.bulkGet(rows.map((row) => row.id))).some(Boolean);
+      if (existing) throw new Error('authority asset is immutable');
+    }
+    await db.authoritySnapshots.add(snapshot);
+    if (rows.length > 0) await db.authorityAssets.bulkAdd([...rows]);
+  });
+}
+
+export const saveAuthoritySnapshot = saveAuthorityGeneration;
+
+export async function getAuthoritySnapshotsForScope(
+  scopeId: string,
+  accountClass: AccountClass
+): Promise<AuthoritySnapshotRow[]> {
+  return db.authoritySnapshots.where('[scopeId+accountClass]').equals([scopeId, accountClass]).toArray();
+}
+
+export async function getAuthorityAssetsForSnapshot(snapshotId: string): Promise<AuthorityAssetRow[]> {
+  return db.authorityAssets.where('snapshotId').equals(snapshotId).toArray();
+}
+
+/** Append one immutable structural coverage outcome. */
+export async function saveSourceCoverage(row: SourceCoverageRow): Promise<void> {
+  assertValidSourceCoverageRow(row);
+  try {
+    await db.sourceCoverage.add(row);
+  } catch (error) {
+    if (await db.sourceCoverage.get(row.id)) {
+      const immutableError = new Error('source coverage is immutable') as Error & { cause?: unknown };
+      immutableError.cause = error;
+      throw immutableError;
+    }
+    throw error;
+  }
+}
+
+export async function getSourceCoverageForScope(scopeId: string): Promise<SourceCoverageRow[]> {
+  return db.sourceCoverage.where('scopeId').equals(scopeId).toArray();
+}
+
+/** Query persisted provenance through the same live-source scope adapter as postings. */
+export async function getSourceCoverageAssociationsForScope(
+  scopeId: string,
+  accountClass: AccountClass,
+  exchangeConnections: readonly CoverageExchangeSourceIdentity[]
+): Promise<SourceCoverageScopeAssociation[]> {
+  const rows = await db.sourceCoverage.toArray();
+  return rows.map((row) => associateSourceCoverageScope(row, exchangeConnections))
+    .filter((association) => association.scopeStatus === 'resolved' &&
+      association.accountScopeId === scopeId && association.accountClass === accountClass);
+}
+
+export async function getSourceCoverageForGeneration(
+  sourceIdentityId: string,
+  generation: number
+): Promise<SourceCoverageRow[]> {
+  return db.sourceCoverage.where('[sourceIdentityId+generation]')
+    .equals([sourceIdentityId, generation]).toArray();
+}
+
+// ---- Absolute opening balances (v11; custody evidence, never tax input) ----
+
+export type OpeningBalanceInput = Pick<
+  OpeningBalanceRow,
+  'scopeId' | 'accountClass' | 'assetKey' | 'asset' | 'absoluteQuantity' | 'effectiveAt' | 'provenance'
+> & Pick<Partial<OpeningBalanceRow>, 'evidenceRef' | 'note'>;
+
+export function openingBalanceLogicalKey(
+  row: Pick<OpeningBalanceRow, 'scopeId' | 'accountClass' | 'assetKey' | 'effectiveAt'>
+): string {
+  return [row.scopeId, row.accountClass, row.assetKey, String(row.effectiveAt)].join('\u001f');
+}
+
+function stableOpeningHash(value: string): string {
+  // Two independent 32-bit FNV-1a streams provide a deterministic browser-
+  // portable id without depending on random ids or mutable row content.
+  let left = 0x811c9dc5;
+  let right = 0x9e3779b9;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    left = Math.imul(left ^ code, 0x01000193);
+    right = Math.imul(right ^ (code + index), 0x85ebca6b);
+  }
+  return `${(left >>> 0).toString(16).padStart(8, '0')}${(right >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+export function openingBalanceId(
+  row: Pick<OpeningBalanceRow, 'scopeId' | 'accountClass' | 'assetKey' | 'effectiveAt'>
+): string {
+  return `opening:${stableOpeningHash(openingBalanceLogicalKey(row))}`;
+}
+
+export function validateOpeningBalanceInput(input: OpeningBalanceInput): void {
+  const unsafe = input as OpeningBalanceInput & {
+    delta?: unknown;
+    authorityQuantity?: unknown;
+    ledgerQuantity?: unknown;
+  };
+  if (unsafe.delta != null || unsafe.authorityQuantity != null || unsafe.ledgerQuantity != null) {
+    throw new Error('opening balance must be an absolute source/user snapshot, not an inferred delta');
+  }
+  if (!Number.isFinite(input.absoluteQuantity) || input.absoluteQuantity < 0) {
+    throw new Error('opening balance quantity must be finite and non-negative');
+  }
+  if (!['spot', 'funding', 'margin', 'futures', 'options', 'wallet', 'manual', 'unknown'].includes(input.accountClass)) {
+    throw new Error('opening balance account class is invalid');
+  }
+  if (input.provenance !== 'source_snapshot' && input.provenance !== 'user_confirmed') {
+    throw new Error('opening balance provenance is invalid');
+  }
+  if (!Number.isFinite(input.effectiveAt) || !Number.isSafeInteger(input.effectiveAt)) {
+    throw new Error('opening balance effectiveAt must be a finite integer');
+  }
+  if (
+    !input.scopeId.trim() || input.scopeId.includes('\u001f') ||
+    input.scopeId.startsWith('unresolved:') || input.scopeId.startsWith('deleted:')
+  ) {
+    throw new Error('opening balance requires a resolved live scope');
+  }
+  if (!input.asset.trim() || !input.assetKey.trim() || input.assetKey.includes('\u001f')) {
+    throw new Error('opening balance asset is required');
+  }
+  const normalizedAsset = input.asset.trim().toUpperCase();
+  if (input.assetKey.startsWith('asset:') && input.assetKey !== `asset:${normalizedAsset}`) {
+    throw new Error('opening balance assetKey does not match asset');
+  }
+  if (input.scopeId.startsWith('wallet:') !== (input.accountClass === 'wallet')) {
+    throw new Error('opening balance account class does not match wallet scope');
+  }
+  if (input.scopeId === 'manual' && input.accountClass !== 'manual') {
+    throw new Error('opening balance account class does not match manual scope');
+  }
+  if (input.scopeId.startsWith('exchange:') && (input.accountClass === 'wallet' || input.accountClass === 'manual')) {
+    throw new Error('opening balance account class does not match exchange scope');
+  }
+}
+
+export interface OpeningBalanceSourceContext {
+  exchangeConnections: readonly Pick<ExchangeConnectionRow, 'id' | 'exchange'>[];
+  csvImports: readonly Pick<CsvImportRow, 'id'>[];
+  lookupAddresses: readonly Pick<LookupAddressRow, 'id' | 'chain' | 'address'>[];
+}
+
+const EXCHANGE_OPENING_CLASSES: ReadonlySet<AccountClass> = new Set([
+  'spot', 'funding', 'margin', 'futures', 'options'
+]);
+
+/** Require one exact, live persisted source identity for a non-manual opening scope. */
+export function validateOpeningBalanceSource(
+  input: Pick<OpeningBalanceRow, 'scopeId' | 'accountClass'>,
+  context: OpeningBalanceSourceContext
+): void {
+  if (input.scopeId === 'manual') {
+    if (input.accountClass !== 'manual') throw new Error('opening balance manual source class is inconsistent');
+    return;
+  }
+  const exchange = /^exchange:([^:]+)$/.exec(input.scopeId);
+  if (exchange) {
+    if (!EXCHANGE_OPENING_CLASSES.has(input.accountClass)) {
+      throw new Error('opening balance exchange source class is inconsistent');
+    }
+    if (!context.exchangeConnections.some((row) => row.id === exchange[1])) {
+      throw new Error('opening balance exchange source is not live');
+    }
+    return;
+  }
+  const file = /^file:([^:]+):([^:]+)$/.exec(input.scopeId);
+  if (file) {
+    if (!EXCHANGE_OPENING_CLASSES.has(input.accountClass) || file[2] !== input.accountClass) {
+      throw new Error('opening balance file source class is inconsistent');
+    }
+    if (!context.csvImports.some((row) => row.id === file[1])) {
+      throw new Error('opening balance CSV source is not live');
+    }
+    return;
+  }
+  if (input.scopeId.startsWith('wallet:')) {
+    if (input.accountClass !== 'wallet') throw new Error('opening balance wallet source class is inconsistent');
+    const exists = context.lookupAddresses.some((row) =>
+      input.scopeId === `wallet:${canonicalWalletChainScope(row.chain)}:${canonicalWalletAddress(row.chain, row.address)}`
+    );
+    if (!exists) throw new Error('opening balance wallet source is not live');
+    return;
+  }
+  throw new Error('opening balance source scope is not exact or live');
+}
+
+async function rejectEqualTimeSourceActivity(input: OpeningBalanceInput): Promise<void> {
+  const sameTime = await db.transactions.where('timestamp').equals(input.effectiveAt).toArray();
+  if (sameTime.length === 0) return;
+  const exchangeConnections = (await db.exchangeConnections.toArray()).map((row) => ({
+    id: row.id, exchange: row.exchange
+  }));
+  const postings = derivePostings(sameTime, { exchangeConnections });
+  if (postings.some((posting) =>
+    posting.accountScopeId === input.scopeId && posting.accountClass === input.accountClass &&
+    posting.assetKey === input.assetKey && posting.effectiveAt === input.effectiveAt
+  )) throw new Error('opening balance instant conflicts with source activity');
+}
+
+async function rebuildOpeningSupersession(
+  scopeId: string,
+  accountClass: AccountClass,
+  assetKey: string
+): Promise<void> {
+  const rows = await db.openingBalances.where('[scopeId+accountClass+assetKey]')
+    .equals([scopeId, accountClass, assetKey]).sortBy('effectiveAt');
+  for (let index = 0; index < rows.length; index++) {
+    const supersededAt = rows[index + 1]?.effectiveAt;
+    if (rows[index].supersededAt !== supersededAt) {
+      await db.openingBalances.update(rows[index].id, { supersededAt });
+    }
+  }
+}
+
+export async function upsertOpeningBalance(
+  input: OpeningBalanceInput,
+  now = Date.now()
+): Promise<OpeningBalanceRow> {
+  validateOpeningBalanceInput(input);
+  if (!Number.isFinite(now)) throw new Error('opening balance update time must be finite');
+  const logicalKey = openingBalanceLogicalKey(input);
+  const id = openingBalanceId(input);
+  return db.transaction('rw', [db.openingBalances, db.transactions, db.exchangeConnections,
+    db.csvImports, db.lookupAddresses], async () => {
+    validateOpeningBalanceSource(input, {
+      exchangeConnections: await db.exchangeConnections.toArray(),
+      csvImports: await db.csvImports.toArray(),
+      lookupAddresses: await db.lookupAddresses.toArray()
+    });
+    await rejectEqualTimeSourceActivity(input);
+    const existing = await db.openingBalances.where('logicalKey').equals(logicalKey).first();
+    const cleanNote = input.note?.trim() || undefined;
+    if (existing) {
+      const unchanged = existing.absoluteQuantity === input.absoluteQuantity &&
+        existing.provenance === input.provenance && existing.evidenceRef === input.evidenceRef &&
+        existing.note === cleanNote;
+      if (!unchanged) {
+        await db.openingBalances.update(existing.id, {
+          absoluteQuantity: input.absoluteQuantity, provenance: input.provenance,
+          evidenceRef: input.evidenceRef, note: cleanNote, updatedAt: now
+        });
+      }
+      return (await db.openingBalances.get(existing.id))!;
+    }
+    const row: OpeningBalanceRow = {
+      ...input, asset: input.asset.trim().toUpperCase(), note: cleanNote,
+      id, logicalKey, createdAt: now, updatedAt: now
+    };
+    await db.openingBalances.add(row);
+    await rebuildOpeningSupersession(input.scopeId, input.accountClass, input.assetKey);
+    return (await db.openingBalances.get(id))!;
+  });
+}
+
+export async function listOpeningBalances(
+  scopeId?: string,
+  accountClass?: AccountClass,
+  assetKey?: string
+): Promise<OpeningBalanceRow[]> {
+  if (scopeId != null && accountClass != null && assetKey != null) {
+    return db.openingBalances.where('[scopeId+accountClass+assetKey]')
+      .equals([scopeId, accountClass, assetKey]).sortBy('effectiveAt');
+  }
+  if (scopeId != null) return db.openingBalances.where('scopeId').equals(scopeId).sortBy('effectiveAt');
+  return db.openingBalances.orderBy('[scopeId+accountClass+assetKey+effectiveAt]').toArray();
+}
+
+export async function selectOpeningBalance(
+  scopeId: string,
+  accountClass: AccountClass,
+  assetKey: string,
+  cutoff: number
+): Promise<OpeningBalanceRow | undefined> {
+  if (!Number.isFinite(cutoff)) throw new Error('opening balance cutoff must be finite');
+  const rows = await db.openingBalances.where('[scopeId+accountClass+assetKey+effectiveAt]')
+    .between([scopeId, accountClass, assetKey, Dexie.minKey], [scopeId, accountClass, assetKey, cutoff], true, true)
+    .reverse().sortBy('effectiveAt');
+  return rows[0];
+}
+
+export async function deleteOpeningBalance(idOrLogicalKey: string): Promise<boolean> {
+  const row = await db.openingBalances.get(idOrLogicalKey) ??
+    await db.openingBalances.where('logicalKey').equals(idOrLogicalKey).first();
+  if (!row) return false;
+  await db.transaction('rw', db.openingBalances, async () => {
+    await db.openingBalances.delete(row.id);
+    await rebuildOpeningSupersession(row.scopeId, row.accountClass, row.assetKey);
+  });
+  return true;
+}
+
 /** All stored balance rows for one address (any chain), newest schema. */
-export async function getWalletBalancesForAddress(address: string): Promise<WalletBalanceRow[]> {
-  const lower = address.toLowerCase();
-  return db.walletBalances.filter((b) => b.address.toLowerCase() === lower).toArray();
+export async function getWalletBalancesForAddress(address: string, chain?: string): Promise<WalletBalanceRow[]> {
+  return db.walletBalances.filter((row) => chain != null
+    ? row.chain === chain && walletAddressEquals(chain, row.address, address)
+    : row.address === address || (chainNamespace(row.chain) === 'evm' && walletAddressEquals(row.chain, row.address, address))
+  ).toArray();
 }
 
 /** Drop balances for a removed wallet (all its chain rows). */
-export async function deleteWalletBalancesForAddress(address: string): Promise<void> {
-  const lower = address.toLowerCase();
-  const rows = await db.walletBalances.filter((b) => b.address.toLowerCase() === lower).toArray();
+export async function deleteWalletBalancesForAddress(address: string, chain?: string): Promise<void> {
+  const rows = await db.walletBalances.filter((row) => chain != null
+    ? row.chain === chain && walletAddressEquals(chain, row.address, address)
+    : row.address === address || (chainNamespace(row.chain) === 'evm' && walletAddressEquals(row.chain, row.address, address))
+  ).toArray();
   await db.walletBalances.bulkDelete(rows.map((r) => r.id));
+}
+
+/** Remove tax artifacts made invalid by deleting their source transactions. Must run in the caller's rw transaction. */
+export async function deleteDependentTaxArtifacts(transactionIds: readonly string[]): Promise<void> {
+  if (transactionIds.length === 0) return;
+  const lots = await db.lots.where('sourceTxId').anyOf([...transactionIds]).toArray();
+  const lotIds = new Set(lots.map((lot) => lot.id));
+  const directDisposals = await db.disposals.where('sourceTxId').anyOf([...transactionIds]).toArray();
+  const dependentDisposals = lotIds.size === 0 ? [] : await db.disposals
+    .filter((row) => row.lotConsumption.some((consumption) => lotIds.has(consumption.lotId))).toArray();
+  const disposalIds = [...new Set([...directDisposals, ...dependentDisposals].map((row) => row.id))];
+  if (disposalIds.length > 0) await db.disposals.bulkDelete(disposalIds);
+  if (lotIds.size > 0) {
+    await db.lots.bulkDelete([...lotIds]);
+    await db.specIdHints.toCollection().modify((row) => {
+      row.preferredLotIds = row.preferredLotIds.filter((lotId) => !lotIds.has(lotId));
+    });
+  }
 }
 
 export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
@@ -688,11 +1544,14 @@ export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
   const wallets = new Map<string, { chain: string; address: string }>();
   for (const t of rows) {
     if (t.walletAddress && t.chain) {
-      wallets.set(`${t.chain}:${t.walletAddress.toLowerCase()}`, { chain: t.chain, address: t.walletAddress });
+      wallets.set(`${t.chain}:${canonicalWalletAddress(t.chain, t.walletAddress)}`, {
+        chain: t.chain, address: t.walletAddress
+      });
     }
   }
 
-  await db.transaction('rw', db.transactions, db.specIdHints, async () => {
+  await db.transaction('rw', [db.transactions, db.lots, db.disposals, db.specIdHints], async () => {
+    await deleteDependentTaxArtifacts(ids);
     await db.transactions.bulkDelete(ids);
     for (const id of ids) {
       await db.specIdHints.delete(id);
@@ -733,12 +1592,16 @@ export async function upsertCsvImport(
   txCount: number,
   metadata?: Pick<CsvImportRow, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>
 ): Promise<void> {
+  const existing = await db.csvImports.get(id);
   await db.csvImports.put({
+    ...existing,
     id,
     fileName,
     parserId,
     importedAt: Date.now(),
     txCount,
+    authorityGeneration: existing?.authorityGeneration ?? 0,
+    revision: existing?.revision ?? 0,
     ...metadata
   });
 }
@@ -747,21 +1610,147 @@ export async function countCsvImportTransactions(importId: string): Promise<numb
   return db.transactions.filter((t) => t.importBatchId === importId).count();
 }
 
+export interface CsvImportGenerationRows {
+  snapshots: AuthoritySnapshotRow[];
+  assets: AuthorityAssetRow[];
+  coverage: SourceCoverageRow[];
+  /** Legacy consumer metadata; only comparable source-declared snapshots belong here. */
+  legacyBalanceSnapshot?: Record<string, number>;
+  optionsBalanceIncluded?: boolean;
+}
+
+export interface CommitCsvImportInput {
+  id: string;
+  fileName: string;
+  parserId: string | null;
+  transactions: Transaction[];
+  metadata?: Pick<CsvImportRow, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>;
+  completedAt?: number;
+  buildGeneration: (context: {
+    generation: number;
+    savedAfterDedup: number;
+    savedTransactions: Transaction[];
+    completedAt: number;
+  }) => CsvImportGenerationRows;
+}
+
+/**
+ * Atomically commit one complete post-conversion CSV operation. Transaction
+ * rows, global dedup effects, source revision/generation, final-balance
+ * evidence, and structural coverage either all commit or all roll back.
+ */
+export async function commitCsvImportGeneration(input: CommitCsvImportInput): Promise<number> {
+  const tables = [
+    db.transactions, db.csvImports, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage
+  ];
+  return db.transaction('rw', tables, async () => {
+    const existing = await db.csvImports.get(input.id);
+    const generation = Math.max(0, existing?.authorityGeneration ?? 0) + 1;
+    const revision = Math.max(0, existing?.revision ?? 0) + 1;
+    const completedAt = input.completedAt ?? Date.now();
+
+    await db.transactions.bulkPut(input.transactions);
+    await deduplicateTransactions();
+    const savedTransactions = await db.transactions.filter((t) => t.importBatchId === input.id).toArray();
+    const savedAfterDedup = savedTransactions.length;
+    const rows = input.buildGeneration({ generation, savedAfterDedup, savedTransactions, completedAt });
+
+    const snapshotLogicalKeys = rows.snapshots.map((snapshot) =>
+      `${snapshot.sourceIdentityId}\u001f${snapshot.generation}\u001f${snapshot.scopeId}\u001f${snapshot.accountClass}`);
+    if (new Set(snapshotLogicalKeys).size !== snapshotLogicalKeys.length) {
+      throw new Error('CSV authority snapshot source, generation, scope, and class must be unique');
+    }
+    const existingGenerationSnapshots = await db.authoritySnapshots
+      .where('[sourceIdentityId+generation]').equals([input.id, generation]).toArray();
+    for (const snapshot of rows.snapshots) {
+      if (snapshot.sourceIdentityId !== input.id || snapshot.generation !== generation ||
+        snapshot.scopeId !== `file:${input.id}:${snapshot.accountClass}`) {
+        throw new Error('CSV authority snapshot is not class-scoped to its source generation');
+      }
+      if (existingGenerationSnapshots.some((existingSnapshot) =>
+        existingSnapshot.scopeId === snapshot.scopeId && existingSnapshot.accountClass === snapshot.accountClass)) {
+        throw new Error('CSV authority snapshot source, generation, scope, and class must be unique');
+      }
+      const assets = rows.assets.filter((asset) => asset.snapshotId === snapshot.snapshotId);
+      validateAuthorityGeneration(snapshot, assets);
+      if (await db.authoritySnapshots.get(snapshot.snapshotId)) throw new Error('authority snapshot is immutable');
+    }
+    if (rows.assets.length > 0 && (await db.authorityAssets.bulkGet(rows.assets.map((row) => row.id))).some(Boolean)) {
+      throw new Error('authority asset is immutable');
+    }
+    if (rows.coverage.length === 0) throw new Error('CSV generation requires coverage');
+    if (new Set(rows.coverage.map((row) => row.id)).size !== rows.coverage.length ||
+      new Set(rows.coverage.map((row) => row.evidenceId)).size !== rows.coverage.length ||
+      new Set(rows.coverage.map((row) => row.accountClasses[0])).size !== rows.coverage.length) {
+      throw new Error('CSV coverage identities and class scopes must be unique');
+    }
+    if ((await db.sourceCoverage.bulkGet(rows.coverage.map((row) => row.id))).some(Boolean)) {
+      throw new Error('source coverage is immutable');
+    }
+    for (const coverage of rows.coverage) {
+      assertValidSourceCoverageRow(coverage);
+      if (coverage.accountClasses.length !== 1 || coverage.scopeId !== `file:${input.id}:${coverage.accountClasses[0]}` ||
+        coverage.sourceIdentityId !== input.id || coverage.generation !== generation) {
+        throw new Error('CSV coverage is not class-scoped to its source generation');
+      }
+      if (coverage.authoritySnapshotId != null && !rows.snapshots.some((snapshot) =>
+        snapshot.snapshotId === coverage.authoritySnapshotId && snapshot.scopeId === coverage.scopeId &&
+        snapshot.sourceIdentityId === coverage.sourceIdentityId && snapshot.generation === coverage.generation)) {
+        throw new Error('CSV coverage is inconsistent with its authority snapshot');
+      }
+    }
+
+    await db.csvImports.put({
+      ...existing,
+      id: input.id,
+      fileName: input.fileName,
+      parserId: input.parserId,
+      importedAt: completedAt,
+      txCount: savedAfterDedup,
+      authorityGeneration: generation,
+      revision,
+      balanceSnapshot: savedAfterDedup === input.transactions.length
+        ? input.metadata?.balanceSnapshot : undefined,
+      optionsBalanceUnavailable: input.metadata?.optionsBalanceUnavailable,
+      optionsBalanceIncluded: savedAfterDedup === input.transactions.length
+        ? input.metadata?.optionsBalanceIncluded : undefined,
+      optionsCoverageThrough: input.metadata?.optionsCoverageThrough
+    });
+    if (rows.snapshots.length > 0) await db.authoritySnapshots.bulkAdd(rows.snapshots);
+    if (rows.assets.length > 0) await db.authorityAssets.bulkAdd(rows.assets);
+    await db.sourceCoverage.bulkAdd(rows.coverage);
+    return savedAfterDedup;
+  });
+}
+
 export async function deleteCsvImportAndTransactions(importId: string): Promise<number> {
-  const toDelete = await db.transactions.filter((t) => t.importBatchId === importId).toArray();
-  await db.transaction('rw', db.transactions, db.csvImports, db.specIdHints, async () => {
+  return db.transaction('rw', [db.transactions, db.lots, db.disposals, db.csvImports, db.specIdHints,
+    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances], async () => {
+    const toDelete = await db.transactions.filter((t) => t.importBatchId === importId).toArray();
+    const snapshots = await db.authoritySnapshots.where('sourceIdentityId').equals(importId).toArray();
     const recoverableApiRows = toDelete
       .map((t) => t.dedupMatchedApiRow)
       .filter((t): t is Transaction => !!t)
       .map((t) => ({ ...t, dedupMatchedApiId: undefined, dedupMatchedApiRow: undefined }));
     if (recoverableApiRows.length > 0) await db.transactions.bulkPut(recoverableApiRows);
     if (toDelete.length > 0) {
+      await deleteDependentTaxArtifacts(toDelete.map((t) => t.id));
       await db.transactions.bulkDelete(toDelete.map((t) => t.id));
-      for (const t of toDelete) await db.specIdHints.delete(t.id);
+      await db.specIdHints.bulkDelete(toDelete.map((t) => t.id));
     }
+    const snapshotIds = snapshots.map((snapshot) => snapshot.snapshotId);
+    if (snapshotIds.length > 0) {
+      await db.authorityAssets.where('snapshotId').anyOf(snapshotIds).delete();
+      await db.authoritySnapshots.bulkDelete(snapshotIds);
+    }
+    await db.sourceCoverage.where('sourceIdentityId').equals(importId).delete();
+    const ownedOpenings = await db.openingBalances
+      .filter((row) => row.scopeId.startsWith(`file:${importId}:`) ||
+        snapshots.some((snapshot) => snapshot.scopeId === row.scopeId)).toArray();
+    if (ownedOpenings.length > 0) await db.openingBalances.bulkDelete(ownedOpenings.map((row) => row.id));
     await db.csvImports.delete(importId);
+    return toDelete.length;
   });
-  return toDelete.length;
 }
 
 /**
@@ -777,11 +1766,12 @@ export async function deduplicateTransactions(): Promise<number> {
   const csvByEconomicKey = new Map<string, Transaction[]>();
   const apiByEconomicKey = new Map<string, Transaction[]>();
   const durableReservations = new Set(
-    all.map((row) => row.source === 'binance' ? row.dedupMatchedApiId : undefined).filter(Boolean)
+    all.map((row) => row.dedupMatchedApiId).filter(Boolean)
   );
   for (const row of all) {
     const key = binanceEconomicKey(row);
     if (!key) continue;
+    if (row.deletedSourceEvidence) continue;
     const target = row.source === 'binance' ? csvByEconomicKey : apiByEconomicKey;
     const bucket = target.get(key) ?? [];
     bucket.push(row);
@@ -818,6 +1808,8 @@ export async function deduplicateTransactions(): Promise<number> {
   const specializedCsvByRef = new Map<string, Transaction[]>();
   for (const row of all) {
     if (row.source !== 'binance_spot' && row.source !== 'binance_transfers') continue;
+    if (row.deletedSourceEvidence) continue;
+    if (row.dedupMatchedApiId || row.dedupMatchedApiRow) continue;
     if (!row.sourceRef) continue;
     const bucket = specializedCsvByRef.get(row.sourceRef) ?? [];
     bucket.push(row);
@@ -826,10 +1818,17 @@ export async function deduplicateTransactions(): Promise<number> {
   for (const api of all) {
     if (api.source !== 'binance_api' || !api.sourceRef || toDelete.includes(api.id)) continue;
     const csv = specializedCsvByRef.get(api.sourceRef)?.shift();
-    if (csv) toDelete.push(api.id);
+    if (!csv) continue;
+    const identity = binanceApiIdentity(api);
+    if (!identity) continue;
+    csv.dedupMatchedApiId = identity;
+    csv.dedupMatchedApiRow = api;
+    reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
+    toDelete.push(api.id);
   }
 
   const score = (row: Transaction) =>
+    (row.deletedSourceEvidence ? 16 : 0) +
     (row.dedupMatchedApiId ? 8 : 0) +
     (row.fiatValue != null ? 4 : 0) +
     (row.type === 'income' || row.type === 'trade' ? 2 : 0) +

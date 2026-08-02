@@ -23,9 +23,15 @@ import {
   deduplicateTransactions,
   filterAlreadyImported,
   getSettings,
-  replaceExchangeBalances,
+  exchangeBalanceId,
   type ExchangeConnectionRow
 } from '@/lib/storage/db';
+import { binanceSpotEndpointProof, type AuthorityAssetRow, type AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
+import {
+  assertValidSourceCoverageRow,
+  type EndpointCoverageOutcome,
+  type SourceCoverageRow
+} from '@/lib/reconcile/sourceCoverage';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import { quoteToFiatCurrency } from '@/lib/parsers/pairUtils';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
@@ -122,6 +128,164 @@ export interface SyncHooks {
   onProgress?: (progress: { done: number; total: number } | null) => void;
 }
 
+export interface SyncOperationEvidence {
+  generation: number;
+  expectedRevision: number;
+  startedAt: number;
+  asOf: number;
+  coverage: SourceCoverageRow;
+}
+
+const REAUTHORIZE_ERROR = 'Reauthorize this connection before syncing.';
+
+function hasRequiredCredentials(row: ExchangeConnectionRow): boolean {
+  if ((row.credentialsState ?? 'ready') !== 'ready') return false;
+  if (!row.apiKey?.trim() || !row.secret?.trim()) return false;
+  return (row.exchange !== 'okx' && row.exchange !== 'kucoin') || !!row.passphrase?.trim();
+}
+
+/** Engine-boundary authorization plus one monotonic generation reservation. */
+async function reserveExchangeOperation(
+  connectionId: string
+): Promise<{ row: ExchangeConnectionRow; generation: number; expectedRevision: number }> {
+  return db.transaction('rw', db.exchangeConnections, async () => {
+    const current = await db.exchangeConnections.get(connectionId);
+    if (!current) throw new Error('Connection not found — it may have been removed.');
+    if (!hasRequiredCredentials(current)) throw new Error(REAUTHORIZE_ERROR);
+    const generation = Math.max(0, current.authorityGeneration ?? 0) + 1;
+    const expectedRevision = Math.max(0, current.revision ?? 0) + 1;
+    const row = { ...current, authorityGeneration: generation, revision: expectedRevision, status: 'syncing' as const };
+    await db.exchangeConnections.put(row);
+    return { row, generation, expectedRevision };
+  });
+}
+
+function matchesReservation(
+  row: ExchangeConnectionRow | undefined,
+  expectedRevision: number,
+  generation: number
+): row is ExchangeConnectionRow {
+  return !!row && (row.revision ?? 0) === expectedRevision &&
+    (row.authorityGeneration ?? 0) === generation;
+}
+
+async function compareAndSetOperationStatus(args: {
+  connectionId: string;
+  expectedRevision: number;
+  generation: number;
+  status: 'idle' | 'error';
+  lastError?: string;
+}): Promise<boolean> {
+  return db.transaction('rw', db.exchangeConnections, async () => {
+    const current = await db.exchangeConnections.get(args.connectionId);
+    if (!matchesReservation(current, args.expectedRevision, args.generation)) return false;
+    await db.exchangeConnections.update(args.connectionId, {
+      status: args.status,
+      lastError: args.lastError
+    });
+    return true;
+  });
+}
+
+function operationCoverage(args: {
+  connectionId: string;
+  generation: number;
+  startedAt: number;
+  completedAt: number;
+  status: 'complete' | 'partial';
+  endpointOutcomes: EndpointCoverageOutcome[];
+  warnings: string[];
+  requestedStart: number;
+  requestedEnd: number;
+  discoveryUniverseCount?: number;
+  discoveredCount?: number;
+  skippedCount: number;
+  recognizedCount: number;
+  parsedCount: number;
+  failedCount: number;
+  exclusionReasons?: string[];
+}): SourceCoverageRow {
+  const endpoints = [...new Set(args.endpointOutcomes.map((outcome) => outcome.endpoint))];
+  const observedStarts = args.endpointOutcomes
+    .map((outcome) => outcome.observedStart).filter((value): value is number => value != null);
+  const observedEnds = args.endpointOutcomes
+    .map((outcome) => outcome.observedEnd).filter((value): value is number => value != null);
+  const retentionFloors = Object.fromEntries(args.endpointOutcomes
+    .filter((outcome) => outcome.retentionFloor != null)
+    .map((outcome) => [outcome.endpoint, outcome.retentionFloor!]));
+  return {
+    id: `${args.connectionId}:sync:${args.generation}`,
+    generation: args.generation,
+    scopeId: `exchange:${args.connectionId}`,
+    sourceIdentityId: args.connectionId,
+    evidenceId: `sync:${args.generation}`,
+    kind: 'api',
+    accountClasses: ['spot'],
+    endpoints,
+    requestedHistoryStart: args.requestedStart,
+    requestedHistoryEnd: args.requestedEnd,
+    startedAt: args.startedAt,
+    completedAt: args.completedAt,
+    status: args.status,
+    endpointOutcomes: args.endpointOutcomes,
+    paginationExhausted: args.status === 'complete',
+    observedHistoryStart: observedStarts.length > 0 ? Math.min(...observedStarts) : undefined,
+    observedHistoryEnd: observedEnds.length > 0 ? Math.max(...observedEnds) : undefined,
+    retentionFloors: Object.keys(retentionFloors).length > 0 ? retentionFloors : undefined,
+    discoveryUniverseCount: args.discoveryUniverseCount,
+    discoveredCount: args.discoveredCount,
+    skippedCount: args.skippedCount,
+    recognizedCount: args.recognizedCount,
+    parsedCount: args.parsedCount,
+    failedCount: args.failedCount,
+    exclusionReasons: args.exclusionReasons,
+    warnings: args.warnings.length > 0 ? [...args.warnings] : undefined
+  };
+}
+
+async function appendFailedCoverage(args: {
+  connectionId: string;
+  generation: number;
+  expectedRevision: number;
+  startedAt: number;
+  completedAt: number;
+  kind: SyncErrorKind;
+  message: string;
+}): Promise<boolean> {
+  return db.transaction('rw', [db.exchangeConnections, db.sourceCoverage], async () => {
+    const source = await db.exchangeConnections.get(args.connectionId);
+    if (!matchesReservation(source, args.expectedRevision, args.generation)) return false;
+    const coverage: SourceCoverageRow = {
+      id: `${args.connectionId}:sync:${args.generation}`,
+      generation: args.generation,
+      scopeId: `exchange:${args.connectionId}`,
+      sourceIdentityId: args.connectionId,
+      evidenceId: `sync:${args.generation}`,
+      kind: 'api',
+      accountClasses: ['spot'],
+      endpoints: ['balance', 'deposits', 'withdrawals', 'trades'],
+      startedAt: args.startedAt,
+      completedAt: args.completedAt,
+      status: 'failed',
+      failureKind: args.kind,
+      warnings: [args.message],
+      endpointOutcomes: [
+        { endpoint: 'balance', accountClass: 'spot', required: true, status: 'failed', warning: args.message },
+        { endpoint: 'deposits', accountClass: 'spot', required: true, status: 'failed', warning: args.message },
+        { endpoint: 'withdrawals', accountClass: 'spot', required: true, status: 'failed', warning: args.message },
+        { endpoint: 'trades', accountClass: 'spot', required: true, status: 'failed', warning: args.message }
+      ]
+    };
+    assertValidSourceCoverageRow(coverage);
+    await db.sourceCoverage.add(coverage);
+    await db.exchangeConnections.update(args.connectionId, {
+      status: 'error',
+      lastError: args.message
+    });
+    return true;
+  });
+}
+
 // ---- Retry helper ----
 
 async function withRetries<T>(fn: () => Promise<T>, sleep: (ms: number) => Promise<void>): Promise<T> {
@@ -153,6 +317,7 @@ export interface PaginateResult<T> {
   /** MAX_PAGES tripped — proceed with what we have, cursor = max ts seen. */
   partial: boolean;
   pages: number;
+  termination: 'exhausted' | 'page_budget' | 'empty_hop_budget' | 'nonadvancing';
 }
 
 function maxTimestamp<T extends PageRow>(rows: T[]): number | null {
@@ -163,6 +328,39 @@ function maxTimestamp<T extends PageRow>(rows: T[]): number | null {
     }
   }
   return max;
+}
+
+function observedBounds<T extends PageRow>(rows: readonly T[]): { observedStart?: number; observedEnd?: number } {
+  const timestamps = rows.map((row) => row.timestamp).filter((value): value is number =>
+    value != null && Number.isFinite(value));
+  return timestamps.length === 0
+    ? {}
+    : { observedStart: Math.min(...timestamps), observedEnd: Math.max(...timestamps) };
+}
+
+function endpointOutcome(
+  endpoint: string,
+  requestedStart: number,
+  requestedEnd: number,
+  outcome: FetchPlanOutcome<PageRow>,
+  extras: Partial<EndpointCoverageOutcome> = {}
+): EndpointCoverageOutcome {
+  const partial = outcome.partial || outcome.termination === 'nonadvancing' ||
+    outcome.termination === 'retention_truncated' || outcome.termination === 'full_page_truncated';
+  return {
+    endpoint,
+    accountClass: 'spot',
+    required: true,
+    status: partial ? 'partial' : 'complete',
+    requestedStart,
+    requestedEnd,
+    ...observedBounds(outcome.rows),
+    paginationRequired: true,
+    paginationExhausted: !partial && (outcome.termination == null || outcome.termination === 'exhausted'),
+    retentionFloor: outcome.retentionFloor,
+    ...(partial && outcome.termination ? { warning: outcome.termination } : {}),
+    ...extras
+  };
 }
 
 /**
@@ -205,7 +403,8 @@ export async function paginatePhase<T extends PageRow>(args: {
 
   for (;;) {
     if (dataPages >= maxPages || emptyHops >= maxEmptyHops) {
-      return { rows, maxTs: maxTimestamp(rows), partial: true, pages: fetches };
+      return { rows, maxTs: maxTimestamp(rows), partial: true, pages: fetches,
+        termination: dataPages >= maxPages ? 'page_budget' : 'empty_hop_budget' };
     }
     const until = Math.min(windowStart + args.windowMs, args.now);
     const page = await args.fetchPage(fetches, windowStart, until);
@@ -221,7 +420,7 @@ export async function paginatePhase<T extends PageRow>(args: {
     if (page.length === 0) {
       emptyHops += 1;
       if (until >= args.now) {
-        return { rows, maxTs: maxTimestamp(rows), partial: false, pages: fetches };
+        return { rows, maxTs: maxTimestamp(rows), partial: false, pages: fetches, termination: 'exhausted' };
       }
       windowStart = until; // empty window — hop to the next one
       continue;
@@ -237,14 +436,14 @@ export async function paginatePhase<T extends PageRow>(args: {
       const pageMax = maxTimestamp(page);
       if (pageMax == null || pageMax <= windowStart) {
         // Max ts not advancing — stop rather than loop forever.
-        return { rows, maxTs: maxTimestamp(rows), partial: false, pages: fetches };
+        return { rows, maxTs: maxTimestamp(rows), partial: true, pages: fetches, termination: 'nonadvancing' };
       }
       windowStart = pageMax;
       continue;
     }
     // Short page — this window is fully fetched.
     if (until >= args.now) {
-      return { rows, maxTs: maxTimestamp(rows), partial: false, pages: fetches };
+      return { rows, maxTs: maxTimestamp(rows), partial: false, pages: fetches, termination: 'exhausted' };
     }
     windowStart = until;
   }
@@ -252,10 +451,14 @@ export async function paginatePhase<T extends PageRow>(args: {
 
 // ---- Per-exchange fetch plans ----
 
-interface FetchPlanOutcome<T> {
+interface FetchPlanOutcome<T extends PageRow> {
   rows: T[];
   maxTs: number | null;
   partial: boolean;
+  termination?: PaginateResult<T>['termination'] | 'retention_truncated' | 'full_page_truncated' |
+    'currency_universe_unproven';
+  retentionFloor?: number;
+  unclassifiedCount?: number;
 }
 
 function sinceFromCursor(cursor: number | undefined, overlapMs: number): number {
@@ -299,16 +502,22 @@ async function fetchTransferKind(
     if (!fetchDeposits) return { rows: [], maxTs: null, partial: false }; // collected with deposits
     const rows: UnifiedTransfer[] = [];
     const seenIds = new Set<string>();
+    let truncated = false;
+    let unclassifiedCount = 0;
     for (const code of coinbaseCurrencies) {
       if (quoteToFiatCurrency(code)) continue; // fiat legs are not crypto transfers
       const batch = await client.fetchDeposits(code, since, 100, { currencyType: 'crypto' });
       if (batch.length >= 100) {
+        truncated = true;
         warnings.push(
           `Coinbase returned a full page of ${code} transfers — older ones may be missing. A one-time CSV import covers the gap.`
         );
       }
       for (const row of batch) {
-        if (!isCoinbaseChainTransfer(row)) continue; // v2 buys/sells are not transfers
+        if (!isCoinbaseChainTransfer(row)) {
+          unclassifiedCount += 1;
+          continue; // v2 buys/sells are not transfers
+        }
         const key = row.id != null ? String(row.id) : null;
         if (key != null) {
           if (seenIds.has(key)) continue;
@@ -317,7 +526,11 @@ async function fetchTransferKind(
         rows.push(row);
       }
     }
-    return { rows, maxTs: maxTimestamp(rows), partial: false };
+    return {
+      rows, maxTs: maxTimestamp(rows), partial: truncated,
+      termination: truncated ? 'full_page_truncated' : 'exhausted',
+      unclassifiedCount
+    };
   }
   if (exchange === 'binance') {
     // ccxt auto-caps endTime at since+90d; the engine drives 89d windows
@@ -494,6 +707,8 @@ export interface SyncFetchOutcome {
    * snapshot without making a second signed request.
    */
   balance: UnifiedBalance;
+  /** Reserved generation and candidate evidence committed with staged rows. */
+  operation: SyncOperationEvidence;
   /** Set when the connection row no longer exists mid-run. */
 }
 
@@ -520,14 +735,13 @@ export async function syncConnection(
   hooks: SyncHooks = {},
   deps: SyncEngineDeps = {}
 ): Promise<{ mode: 'stage'; outcome: SyncFetchOutcome } | { mode: 'commit'; outcome: SyncCommitOutcome }> {
-  const row = await db.exchangeConnections.get(connectionId);
-  if (!row) throw new Error('Connection not found — it may have been removed.');
-  const exchange = row.exchange as ExchangeId;
   const createClient = deps.createClient ?? createExchangeClient;
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = deps.now ?? (() => Date.now());
-
-  await db.exchangeConnections.update(connectionId, { status: 'syncing' });
+  const startedAt = now();
+  const reservation = await reserveExchangeOperation(connectionId);
+  const row = reservation.row;
+  const exchange = row.exchange as ExchangeId;
 
   const warnings: string[] = [];
   let phase: 'validating' | 'fetching' = 'validating';
@@ -549,22 +763,65 @@ export async function syncConnection(
     // Transfers first — their currencies feed Binance symbol discovery (§B-4).
     const transferAssets = new Set<string>();
     const transferRows: UnifiedTransfer[] = [];
+    const transferOutcomes = new Map<'deposits' | 'withdrawals', FetchPlanOutcome<UnifiedTransfer>>();
     const newCursors: ExchangeSyncCursors = { ...oldCursors };
     let partialHistory = false;
+    let sharedTransferUnclassified = 0;
+    let discoveryUniverseCount: number | undefined;
+    let discoveredCount: number | undefined;
 
     // Floors the initial (cursorless) scan — no data can predate launch.
     const launchFloor = EXCHANGE_LAUNCH_MS[exchange];
+    const transferRequestedStarts = {
+      deposits: Math.max(sinceFromCursor(oldCursors.deposits, TRANSFER_OVERLAP_MS), launchFloor),
+      withdrawals: Math.max(sinceFromCursor(oldCursors.withdrawals, TRANSFER_OVERLAP_MS), launchFloor)
+    };
+    const coinbaseSharedTransferStart = Math.min(
+      transferRequestedStarts.deposits,
+      transferRequestedStarts.withdrawals
+    );
 
     for (const kind of ['deposits', 'withdrawals'] as const) {
-      const since = Math.max(
-        sinceFromCursor(oldCursors[kind], TRANSFER_OVERLAP_MS),
-        launchFloor
-      );
+      const since = exchange === 'coinbase'
+        ? coinbaseSharedTransferStart
+        : transferRequestedStarts[kind];
       const cbAssets = [...new Set([...balanceAssets, ...(row.knownAssets ?? [])])];
-      const outcome = await withRetries(
-        () => fetchTransferKind(client, exchange, kind, since, nowMs, cbAssets, warnings),
-        sleep
-      );
+      let outcome: FetchPlanOutcome<UnifiedTransfer>;
+      if (exchange === 'coinbase' && kind === 'withdrawals') {
+        outcome = transferOutcomes.get('withdrawals')!;
+      } else {
+        outcome = await withRetries(
+          () => fetchTransferKind(client, exchange, kind, since, nowMs, cbAssets, warnings),
+          sleep
+        );
+        if (exchange === 'coinbase') {
+          const receives = outcome.rows.filter((item) => item.info?.type === 'receive');
+          const sends = outcome.rows.filter((item) => item.info?.type === 'send');
+          const unknownCount = (outcome.unclassifiedCount ?? 0) +
+            outcome.rows.length - receives.length - sends.length;
+          sharedTransferUnclassified = unknownCount;
+          const sharedTermination = outcome.termination === 'full_page_truncated'
+            ? 'full_page_truncated' : 'currency_universe_unproven';
+          const semantic = (rows: UnifiedTransfer[]): FetchPlanOutcome<UnifiedTransfer> => ({
+            rows,
+            maxTs: maxTimestamp(rows),
+            partial: true,
+            termination: sharedTermination,
+            unclassifiedCount: unknownCount
+          });
+          transferOutcomes.set('deposits', semantic(receives));
+          transferOutcomes.set('withdrawals', semantic(sends));
+          if (unknownCount > 0) {
+            warnings.push(`Coinbase returned ${unknownCount} transfer row(s) without send/receive direction — skipped.`);
+          }
+          warnings.push(
+            'Coinbase transfer coverage is limited to current and previously known asset accounts.'
+          );
+          outcome = transferOutcomes.get(kind)!;
+        } else {
+          transferOutcomes.set(kind, outcome);
+        }
+      }
       transferRows.push(...outcome.rows);
       for (const t of outcome.rows) {
         if (t.currency) transferAssets.add(t.currency.toUpperCase());
@@ -578,7 +835,9 @@ export async function syncConnection(
     // ---- trades ----
     const tradeSince = Math.max(sinceFromCursor(oldCursors.trades, TRADE_OVERLAP_MS), launchFloor);
     const tradeRows: UnifiedTrade[] = [];
+    const tradeOutcomes: FetchPlanOutcome<UnifiedTrade>[] = [];
     let newKnownSymbols: string[] | undefined;
+    let skippedSymbols = 0;
 
     if (exchange === 'binance') {
       // §B-4 symbol discovery.
@@ -605,6 +864,7 @@ export async function syncConnection(
             markets,
             row.knownSymbols ?? []
           );
+      discoveryUniverseCount = symbols.length;
       const symbolHits = new Set<string>();
       let done = 0;
       hooks.onProgress?.({ done: 0, total: symbols.length });
@@ -624,12 +884,14 @@ export async function syncConnection(
           if (hasErrorName(err, 'BadSymbol', 'InvalidSymbol')) {
             // Delisted mid-run — skip it and stop offering it in future syncs.
             warnings.push(`${symbol}: market no longer available on Binance — skipped.`);
+            skippedSymbols += 1;
             done += 1;
             hooks.onProgress?.({ done, total: symbols.length });
             continue;
           }
           throw err;
         }
+        tradeOutcomes.push(outcome);
         if (outcome.rows.length > 0) symbolHits.add(symbol);
         tradeRows.push(...outcome.rows);
         fetchedCount += outcome.rows.length;
@@ -641,8 +903,10 @@ export async function syncConnection(
       newKnownSymbols = [
         ...new Set([...(row.knownSymbols ?? []).filter((s) => symbols.includes(s)), ...symbolHits])
       ].sort();
+      discoveredCount = done;
     } else if (exchange === 'kraken') {
       const outcome = await withRetries(() => fetchKrakenTrades(client, tradeSince, nowMs), sleep);
+      tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
       if (outcome.partial) partialHistory = true;
@@ -651,6 +915,13 @@ export async function syncConnection(
         () => fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs),
         sleep
       );
+      if (exchange === 'okx' && oldCursors.trades == null) {
+        const retentionFloor = nowMs - 90 * 86_400_000;
+        outcome.partial = true;
+        outcome.termination = 'retention_truncated';
+        outcome.retentionFloor = retentionFloor;
+      }
+      tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
       if (outcome.partial) partialHistory = true;
@@ -669,12 +940,14 @@ export async function syncConnection(
 
     // ---- normalize (pure) ----
     const transactions: Transaction[] = [];
+    let tradeNormalizationDrops = 0;
     if (exchange === 'kraken') {
       const { transactions: krakenTxs, skipped: krakenSkipped } = normalizeKrakenTradesByOrder(
         tradeRows,
         markets
       );
       transactions.push(...krakenTxs);
+      tradeNormalizationDrops = krakenSkipped;
       if (krakenSkipped > 0) {
         warnings.push(`Skipped ${krakenSkipped} Kraken fill(s) with missing market/amount data.`);
       }
@@ -683,14 +956,21 @@ export async function syncConnection(
         const market = resolveMarket(markets, trade.symbol);
         const tx = normalizeTrade(exchange, trade, market);
         if (tx) transactions.push(tx);
+        else tradeNormalizationDrops += 1;
       }
     }
-    let skippedUnsettled = 0;
-    for (const transfer of transferRows) {
-      const tx = normalizeTransfer(exchange, transfer);
-      if (tx) transactions.push(tx);
-      else skippedUnsettled += 1;
+    const skippedTransfersByKind: Record<'deposits' | 'withdrawals', number> = {
+      deposits: 0,
+      withdrawals: 0
+    };
+    for (const kind of ['deposits', 'withdrawals'] as const) {
+      for (const transfer of transferOutcomes.get(kind)?.rows ?? []) {
+        const tx = normalizeTransfer(exchange, transfer);
+        if (tx) transactions.push(tx);
+        else skippedTransfersByKind[kind] += 1;
+      }
     }
+    const skippedUnsettled = skippedTransfersByKind.deposits + skippedTransfersByKind.withdrawals;
     if (skippedUnsettled > 0) {
       warnings.push(
         `Skipped ${skippedUnsettled} transfer${skippedUnsettled === 1 ? '' : 's'} that ${
@@ -699,17 +979,88 @@ export async function syncConnection(
       );
     }
 
-    const newKnownAssets =
-      exchange === 'binance'
-        ? [
-            ...new Set([
-              ...balanceAssets,
-              ...transferAssets,
-              ...(row.knownAssets ?? [])
-            ])
-          ].sort()
-        : undefined;
+    const newKnownAssets = [
+      ...new Set([...balanceAssets, ...transferAssets, ...(row.knownAssets ?? [])])
+    ].sort();
 
+    const completedAt = now();
+    const requestedStarts = [
+      exchange === 'coinbase' ? coinbaseSharedTransferStart : transferRequestedStarts.deposits,
+      exchange === 'coinbase' ? coinbaseSharedTransferStart : transferRequestedStarts.withdrawals,
+      tradeSince
+    ];
+    const tradeStructuralFailure = tradeOutcomes.find((outcome) =>
+      outcome.termination && outcome.termination !== 'exhausted');
+    const endpointOutcomes: EndpointCoverageOutcome[] = [
+      { endpoint: 'balance', accountClass: 'spot', required: true, status: 'complete' },
+      endpointOutcome('deposits', requestedStarts[0], nowMs, transferOutcomes.get('deposits')!,
+        skippedTransfersByKind.deposits > 0 || (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0) > 0 ? {
+          status: 'partial', paginationExhausted: false,
+          skippedCount: skippedTransfersByKind.deposits + (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0),
+          exclusionReasons: [
+            ...(skippedTransfersByKind.deposits > 0 ? ['unsettled_transfer'] : []),
+            ...((transferOutcomes.get('deposits')?.unclassifiedCount ?? 0) > 0 ? ['unknown_transfer_direction'] : [])
+          ]
+        } : {}),
+      endpointOutcome('withdrawals', requestedStarts[1], nowMs, transferOutcomes.get('withdrawals')!,
+        skippedTransfersByKind.withdrawals > 0 || (transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0) > 0 ? {
+          status: 'partial', paginationExhausted: false,
+          skippedCount: skippedTransfersByKind.withdrawals + (transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0),
+          exclusionReasons: [
+            ...(skippedTransfersByKind.withdrawals > 0 ? ['unsettled_transfer'] : []),
+            ...((transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0) > 0 ? ['unknown_transfer_direction'] : [])
+          ]
+        } : {}),
+      endpointOutcome('trades', requestedStarts[2], nowMs, {
+        rows: tradeRows,
+        maxTs: maxTimestamp(tradeRows),
+        partial: tradeOutcomes.some((outcome) => outcome.partial) || skippedSymbols > 0 ||
+          tradeNormalizationDrops > 0,
+        termination: tradeStructuralFailure?.termination,
+        retentionFloor: tradeStructuralFailure?.retentionFloor
+      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 ? {
+        status: 'partial',
+        paginationExhausted: false,
+        skippedCount: skippedSymbols + tradeNormalizationDrops,
+        failedCount: tradeNormalizationDrops,
+        exclusionReasons: [
+          ...(skippedSymbols > 0 ? ['binance_symbol_unavailable'] : []),
+          ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
+        ],
+        warning: tradeNormalizationDrops > 0 ? 'trade_normalization_failed' : 'binance_symbol_unavailable'
+      } : {})
+    ];
+    const structuralPartial = endpointOutcomes.some((outcome) => outcome.status !== 'complete');
+    const rawTransferCount = [...transferOutcomes.values()]
+      .reduce((count, outcome) => count + outcome.rows.length, 0) + sharedTransferUnclassified;
+    const transferNormalizationDrops = skippedUnsettled + sharedTransferUnclassified;
+    const recognizedCount = tradeRows.length + rawTransferCount;
+    const parsedCount = recognizedCount - tradeNormalizationDrops - transferNormalizationDrops;
+    const coverage = operationCoverage({
+      connectionId,
+      generation: reservation.generation,
+      startedAt,
+      completedAt,
+      status: structuralPartial || skippedUnsettled > 0 ? 'partial' : 'complete',
+      endpointOutcomes,
+      warnings,
+      requestedStart: Math.min(...requestedStarts),
+      requestedEnd: nowMs,
+      discoveryUniverseCount,
+      discoveredCount,
+      skippedCount: skippedUnsettled + sharedTransferUnclassified + skippedSymbols + tradeNormalizationDrops,
+      recognizedCount,
+      parsedCount,
+      failedCount: tradeNormalizationDrops,
+      exclusionReasons: tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : undefined
+    });
+    const operation: SyncOperationEvidence = {
+      generation: reservation.generation,
+      expectedRevision: reservation.expectedRevision,
+      startedAt,
+      asOf: nowMs,
+      coverage
+    };
     const fetchOutcome: SyncFetchOutcome = {
       rows: transactions,
       warnings,
@@ -717,13 +1068,20 @@ export async function syncConnection(
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
       skippedUnsettled,
-      balance
+      balance,
+      operation
     };
 
     if (options.mode === 'stage') {
       // NOTHING persisted — the row goes back to idle, cursors stay at their
       // last-saved values (discard has nothing to roll back).
-      await db.exchangeConnections.update(connectionId, { status: 'idle' });
+      const released = await compareAndSetOperationStatus({
+        connectionId,
+        expectedRevision: reservation.expectedRevision,
+        generation: reservation.generation,
+        status: 'idle'
+      });
+      if (!released) throw new Error('Connection changed while the preview was being staged.');
       return { mode: 'stage', outcome: fetchOutcome };
     }
 
@@ -735,6 +1093,7 @@ export async function syncConnection(
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
       balance,
+      operation,
       hooks,
       deps
     });
@@ -756,7 +1115,19 @@ export async function syncConnection(
         ? `Could not connect to ${label}.`
         : `Sync failed while fetching (${fetchedCount} rows fetched so far).`;
     const message = `${detail} ${syncErrorMessage(kind, exchange)} Nothing was saved — sync again to retry.`;
-    await db.exchangeConnections.update(connectionId, { status: 'error', lastError: message });
+    try {
+      await appendFailedCoverage({
+        connectionId,
+        generation: reservation.generation,
+        expectedRevision: reservation.expectedRevision,
+        startedAt,
+        completedAt: now(),
+        kind,
+        message
+      });
+    } catch {
+      // Preserve the original sync failure if evidence persistence itself is unavailable.
+    }
     // ES2020 target: no Error options bag — attach cause manually.
     const wrapped = new Error(message) as Error & { cause?: unknown };
     wrapped.cause = err;
@@ -781,19 +1152,19 @@ export async function persistSyncedRows(args: {
   knownSymbols?: string[];
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
+  /** Reserved generation and source revision/state captured by this operation. */
+  operation: SyncOperationEvidence;
   hooks?: SyncHooks;
   deps?: SyncEngineDeps;
 }): Promise<{ saved: number; pricesUpdated: number; warnings: string[] }> {
   const warnings: string[] = [];
-  const now = args.deps?.now ?? (() => Date.now());
   args.hooks?.onPhase?.('saving');
 
   const settings = await getSettings();
   const { priceApiEnabled } = await getEffectiveSettings();
 
   const scopedRows = args.rows.map((t) => ({ ...t, importBatchId: args.connectionId }));
-  const fresh = await filterAlreadyImported(scopedRows);
-  const stamped = fresh.map((t) => ({
+  const stamped = scopedRows.map((t) => ({
     ...t,
     fiatValue: normalizeFiatMagnitude(t.fiatValue),
     feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
@@ -803,41 +1174,125 @@ export async function persistSyncedRows(args: {
     settings,
     priceApiEnabled
   );
-  if (converted.length > 0) {
-    await db.transactions.bulkPut(converted);
+  const flat = args.balance ? flattenBalanceTotals(args.balance) : [];
+  let committedIds: string[] = [];
+  let dupsRemoved = 0;
+  let alreadyImported = 0;
+  let operationDupsRemoved = 0;
+  try {
+    await db.transaction(
+      'rw',
+      [db.transactions, db.exchangeConnections, db.exchangeBalances, db.authoritySnapshots,
+        db.authorityAssets, db.sourceCoverage],
+      async () => {
+      const connection = await db.exchangeConnections.get(args.connectionId);
+      if (!connection || !hasRequiredCredentials(connection) ||
+        (connection.revision ?? 0) !== args.operation.expectedRevision ||
+        (connection.authorityGeneration ?? 0) !== args.operation.generation) {
+        throw new Error('Connection changed after this operation started — sync again.');
+      }
+
+      const fresh = await filterAlreadyImported(converted);
+      alreadyImported = converted.length - fresh.length;
+      if (fresh.length > 0) await db.transactions.bulkPut(fresh);
+      dupsRemoved = await deduplicateTransactions();
+      committedIds = fresh.map((row) => row.id);
+      operationDupsRemoved = (await db.transactions.bulkGet(committedIds)).filter((row) => row == null).length;
+
+      const asOf = args.operation.asOf;
+      let authorityBalances: Array<{ asset: string; amount: number }> = [];
+      if (args.balance) {
+        const freshBalances = flat.map(({ asset, amount }) => ({
+          id: exchangeBalanceId(args.connectionId, asset), connectionId: args.connectionId,
+          exchange: connection.exchange, asset: asset.toUpperCase(), amount, asOf,
+          source: 'exchange_api' as const
+        }));
+        const existing = await db.exchangeBalances.where('connectionId').equals(args.connectionId).toArray();
+        const freshIds = new Set(freshBalances.map((row) => row.id));
+        const zeroed = existing.filter((row) => !freshIds.has(row.id)).map((row) => ({ ...row, amount: 0, asOf }));
+        const dualWriteRows = [...freshBalances, ...zeroed];
+        authorityBalances = dualWriteRows.map(({ asset, amount }) => ({ asset, amount }));
+        await db.exchangeBalances.bulkPut(dualWriteRows);
+      }
+
+      let authoritySnapshotId: string | undefined;
+      if (connection.exchange === 'binance' && args.balance) {
+        const snapshotId = `${args.connectionId}:authority:${args.operation.generation}`;
+        authoritySnapshotId = snapshotId;
+        const snapshot: AuthoritySnapshotRow = {
+          snapshotId,
+          generation: args.operation.generation,
+          scopeId: `exchange:${args.connectionId}`,
+          authorityKind: 'api',
+          authorityClass: 'exchange_balance',
+          accountClass: 'spot',
+          coveredAccountClasses: ['spot'],
+          asOf,
+          capturedAt: asOf,
+          sourceIdentityId: args.connectionId,
+          endpointProof: binanceSpotEndpointProof(),
+          status: 'complete'
+        };
+        const assets: AuthorityAssetRow[] = authorityBalances.map(({ asset, amount }) => {
+          const normalized = asset.toUpperCase();
+          const assetKey = `asset:${normalized}`;
+          return {
+            id: `${snapshotId}:${assetKey}`,
+            snapshotId,
+            generation: args.operation.generation,
+            scopeId: snapshot.scopeId,
+            accountClass: 'spot',
+            assetKey,
+            asset: normalized,
+            quantity: amount,
+            sourceRef: exchangeBalanceId(args.connectionId, normalized)
+          };
+        });
+        await db.authoritySnapshots.add(snapshot);
+        if (assets.length > 0) await db.authorityAssets.bulkAdd(assets);
+      }
+
+      const coverage: SourceCoverageRow = {
+        ...args.operation.coverage,
+        dedupedCount: alreadyImported + operationDupsRemoved,
+        authoritySnapshotId,
+        authorityAsOf: authoritySnapshotId ? asOf : undefined
+      };
+      assertValidSourceCoverageRow(coverage);
+      await db.sourceCoverage.add(coverage);
+      await db.exchangeConnections.update(args.connectionId, {
+        cursors: args.cursors,
+        knownAssets: args.knownAssets,
+        knownSymbols: args.knownSymbols,
+        lastSyncAt: asOf,
+        status: 'ok',
+        lastError: undefined,
+        authorityGeneration: args.operation.generation,
+        revision: args.operation.expectedRevision + 1
+      });
+      }
+    );
+  } catch (error) {
+    try {
+      await appendFailedCoverage({
+        connectionId: args.connectionId,
+        generation: args.operation.generation,
+        expectedRevision: args.operation.expectedRevision,
+        startedAt: args.operation.startedAt,
+        completedAt: args.operation.asOf,
+        kind: classifySyncError(error),
+        message: error instanceof Error ? error.message : 'Atomic exchange sync commit failed.'
+      });
+    } catch {
+      // A duplicate failure journal may already have been appended by the caller.
+    }
+    throw error;
   }
-  const dupsRemoved = await deduplicateTransactions();
+
   if (dupsRemoved > 0) {
     warnings.push(
       `Removed ${dupsRemoved} duplicate transaction${dupsRemoved === 1 ? '' : 's'} (overlap with existing rows).`
     );
-  }
-
-  // Cursors are written ONLY here — after the rows are safely stored.
-  await db.exchangeConnections.update(args.connectionId, {
-    cursors: args.cursors,
-    knownAssets: args.knownAssets,
-    knownSymbols: args.knownSymbols,
-    lastSyncAt: now(),
-    status: 'ok',
-    lastError: undefined
-  });
-
-  // Exchange balance truth anchor — persist the fetchBalance() result the
-  // sync ALREADY fetched (no new network call) so the Dashboard can anchor
-  // display quantity to authority and the reconciliation engine can
-  // cross-check ledger-implied vs authority qty. Written post-save, same
-  // cursor-safety invariant as cursors. Failure here must not strand a sync.
-  if (args.balance) {
-    try {
-      const conn = await db.exchangeConnections.get(args.connectionId);
-      const flat = flattenBalanceTotals(args.balance);
-      await replaceExchangeBalances(args.connectionId, conn?.exchange ?? 'unknown', flat, now());
-    } catch (err) {
-      warnings.push(
-        `Balance snapshot failed (${err instanceof Error ? err.message : 'unknown error'}) — transactions are saved; balance anchor updates next sync.`
-      );
-    }
   }
 
   // Pricing — gated on the EFFECTIVE flag; failure degrades to a warning.
@@ -863,7 +1318,7 @@ export async function persistSyncedRows(args: {
   }
 
   // Honest post-dedup count of the rows this run staged (importJob pattern).
-  const saved = (await db.transactions.bulkGet(converted.map((t) => t.id))).filter(
+  const saved = (await db.transactions.bulkGet(committedIds)).filter(
     (t) => t != null
   ).length;
   return { saved, pricesUpdated, warnings };

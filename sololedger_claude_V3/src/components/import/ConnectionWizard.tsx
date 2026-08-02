@@ -10,7 +10,9 @@ import {
 } from 'lucide-react';
 import {
   parseImportFile,
+  buildCsvImportEvidenceGeneration,
   isSpreadsheetFile,
+  type CsvImportEvidence,
   type FileParseOutcome
 } from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
@@ -18,11 +20,9 @@ import { confirmAddressOrientation, confirmSheetOrientations } from '@/lib/parse
 import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
 import {
   db,
+  commitCsvImportGeneration,
   getSettings,
   hashFileContent,
-  upsertCsvImport,
-  countCsvImportTransactions,
-  deduplicateTransactions
 } from '@/lib/storage/db';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -71,6 +71,7 @@ interface PreviewData {
   optionsBalanceUnavailable?: boolean;
   optionsBalanceIncluded?: boolean;
   optionsCoverageThrough?: number;
+  evidence?: CsvImportEvidence;
   /** Rows missing a fiat value — surfaced so the user knows before confirming. */
   missingPriceCount: number;
   distinctAssets: number;
@@ -221,7 +222,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
       file: { name: string; size: number },
       warnings: string[],
       aiIncomplete: boolean,
-      metadata?: Pick<PreviewData, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>
+      metadata?: Pick<PreviewData, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough' | 'evidence'>
     ) => {
       const distinctAssets = new Set(transactions.map((t) => t.asset)).size;
       const missingPriceCount = transactions.filter(
@@ -270,7 +271,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         const hash = await hashFileContent(hashInput);
 
         const existing = await db.csvImports.get(hash);
-        if (existing) {
+        if (existing && existing.txCount > 0) {
           if (queue.length > 0) {
             // Batch mode: skip an already-imported file instead of stranding
             // the queue — note it and chain straight into the next file.
@@ -303,6 +304,20 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         setAiAvailable(aiOn);
 
         if (result.transactions.length === 0) {
+          try {
+            await commitCsvImportGeneration({
+              id: hash, fileName: file.name, parserId: result.detectedParser, transactions: [],
+              buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
+                buildCsvImportEvidenceGeneration({
+                  sourceIdentityId: hash, parserId: result.detectedParser, parsedBeforeDedup: 0,
+                  savedAfterDedup, savedTransactions, evidence: result.evidence, warnings: result.warnings,
+                  generation, completedAt
+                })
+            });
+          } catch {
+            setError(`"${file.name}" couldn't be recorded — no partial data was kept. Try again.`);
+            return;
+          }
           // Do NOT auto-run AI mapping — that would relay headers + sample rows
           // before the user sees the disclosure. Surface actionable
           // fix-the-file guidance and keep the parsed rows around so an explicit
@@ -341,7 +356,8 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
             balanceSnapshot: result.balanceSnapshot,
             optionsBalanceUnavailable: result.optionsBalanceUnavailable,
             optionsBalanceIncluded: result.optionsBalanceIncluded,
-            optionsCoverageThrough: result.optionsCoverageThrough
+            optionsCoverageThrough: result.optionsCoverageThrough,
+            evidence: result.evidence
           }
         );
       } catch {
@@ -511,18 +527,30 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           settings,
           priceApiEnabled
         );
-        await db.transactions.bulkPut(converted);
-        await deduplicateTransactions();
-        // Post-dedup rows attributable to this file — NOT the parsed preview
-        // count. Overlapping re-exports (new hash, same rows) dedupe away, and
-        // the banner must not claim those rows were saved.
-        savedNow = await countCsvImportTransactions(preview.hash);
-        const completeImport = savedNow === converted.length;
-        await upsertCsvImport(preview.hash, preview.fileName, preview.parserId, savedNow, {
-          balanceSnapshot: completeImport ? preview.balanceSnapshot : undefined,
-          optionsBalanceUnavailable: preview.optionsBalanceUnavailable,
-          optionsBalanceIncluded: completeImport ? preview.optionsBalanceIncluded : undefined,
-          optionsCoverageThrough: preview.optionsCoverageThrough
+        savedNow = await commitCsvImportGeneration({
+          id: preview.hash,
+          fileName: preview.fileName,
+          parserId: preview.parserId,
+          transactions: converted,
+          metadata: {
+            balanceSnapshot: preview.balanceSnapshot,
+            optionsBalanceUnavailable: preview.optionsBalanceUnavailable,
+            optionsBalanceIncluded: preview.optionsBalanceIncluded,
+            optionsCoverageThrough: preview.optionsCoverageThrough
+          },
+          buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
+            buildCsvImportEvidenceGeneration({
+              sourceIdentityId: preview.hash,
+              parserId: preview.parserId,
+              parsedBeforeDedup: converted.length,
+              savedAfterDedup,
+              savedTransactions,
+              evidence: preview.evidence,
+              warnings: preview.warnings,
+              optionsBalanceIncluded: preview.optionsBalanceIncluded,
+              generation,
+              completedAt
+            })
         });
       } catch {
         setError(`"${preview.fileName}" couldn't be saved — Confirm again to retry.`);

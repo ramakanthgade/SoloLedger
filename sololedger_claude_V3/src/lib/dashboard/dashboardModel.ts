@@ -15,6 +15,8 @@
  */
 import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
 import type { CsvImportRow, ExchangeBalanceRow, LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
+import { canonicalWalletAddress, canonicalWalletChainScope } from '@/lib/ledger/chainNamespace';
+import { assetKey as canonicalAssetKey } from '@/lib/ledger/assetKey';
 import {
   buildPortfolioHoldings,
   journalAuthority,
@@ -398,6 +400,10 @@ function prettifySource(source: string): string {
   return base.charAt(0).toUpperCase() + base.slice(1);
 }
 
+function walletAuthorityIdentity(chain: string, address: string): string {
+  return `${canonicalWalletChainScope(chain)}:${canonicalWalletAddress(chain, address)}`;
+}
+
 function holdingMatches(
   holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
   asset: string | undefined,
@@ -406,7 +412,12 @@ function holdingMatches(
 ): boolean {
   if (!asset) return false;
   if (holding.contractAddress && contractAddress) {
-    return contractAddress.toLowerCase() === holding.contractAddress.toLowerCase();
+    const identityChain = chain ?? holding.chain;
+    return identityChain
+      ? canonicalAssetKey({ asset, chain: identityChain, contractAddress }) === canonicalAssetKey({
+        asset: holding.asset, chain: identityChain, contractAddress: holding.contractAddress
+      })
+      : contractAddress.toLowerCase() === holding.contractAddress.toLowerCase();
   }
   return (
     resolveAssetLabel(asset, contractAddress, chain).toUpperCase() === holding.asset.toUpperCase()
@@ -478,11 +489,14 @@ export function sourceBreakdown(
   csvImports: CsvImportRow[] = [],
   exchangeBalances: ExchangeBalanceRow[] = []
 ): SourceSlice[] {
-  const walletByAddress = new Map(wallets.map((w) => [w.address.toLowerCase(), w]));
+  const walletByAddress = new Map(wallets.map((wallet) => [
+    walletAuthorityIdentity(wallet.chain, wallet.address), wallet
+  ]));
   const slices = new Map<string, SourceSlice>();
   const walletChain = new Map<string, string>();
   const pairedInternalIds = pairedInternalTransferIds(transactions);
   const balanceExchanges = new Set(exchangeBalances.map((row) => row.exchange.toLowerCase()));
+  const mergesChainlessNativeSol = holding.chain === 'solana' && isNativeSolAsset(holding.asset);
 
   const upsert = (key: string, name: string, iconId: string | undefined, delta: number) => {
     const existing = slices.get(key);
@@ -495,6 +509,8 @@ export function sourceBreakdown(
 
   for (const t of transactions) {
     if (t.isSpam || pairedInternalIds.has(t.id)) continue;
+    const chainlessNativeSol = mergesChainlessNativeSol && !t.chain;
+    if (holding.chain && t.chain !== holding.chain && !chainlessNativeSol) continue;
     if (
       t.isInternalTransfer &&
       (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent')
@@ -512,13 +528,13 @@ export function sourceBreakdown(
         delta
       );
     } else if (t.walletAddress) {
-      const addrLower = t.walletAddress.toLowerCase();
-      const wallet = walletByAddress.get(addrLower);
+      const addressIdentity = walletAuthorityIdentity(t.chain ?? '', t.walletAddress);
+      const wallet = walletByAddress.get(addressIdentity);
       const name =
         wallet?.label ??
         `${t.walletAddress.slice(0, 6)}…${t.walletAddress.slice(-4)}`;
-      upsert(`wallet:${addrLower}`, name, chainIconId(t.chain ?? ''), delta);
-      if (t.chain && !walletChain.has(addrLower)) walletChain.set(addrLower, t.chain);
+      upsert(`wallet:${addressIdentity}`, name, chainIconId(t.chain ?? ''), delta);
+      if (t.chain && !walletChain.has(addressIdentity)) walletChain.set(addressIdentity, t.chain);
     } else {
       const iconId = parserIconId(t.source);
       upsert(
@@ -592,16 +608,16 @@ export function sourceBreakdown(
   if (balances && balances.length > 0) {
     for (const slice of slices.values()) {
       if (!slice.key.startsWith('wallet:')) continue;
-      const addrLower = slice.key.slice('wallet:'.length);
-      const chain = walletChain.get(addrLower);
+      const addressIdentity = slice.key.slice('wallet:'.length);
+      const chain = walletChain.get(addressIdentity);
       if (!chain) continue;
-      const row = balanceRowFor(balances, chain, addrLower, holding);
+      const row = balanceRowFor(balances, chain, addressIdentity, holding);
       if (row) slice.qty = Math.max(0, row.amount);
     }
   }
 
   return Array.from(slices.values())
-    .filter((s) => s.qty > 1e-9)
+    .filter((s) => mergesChainlessNativeSol ? Math.abs(s.qty) > 1e-9 : s.qty > 1e-9)
     .sort((a, b) => b.qty - a.qty);
 }
 
@@ -736,11 +752,11 @@ export function applyExchangeBalanceAuthority(
 export function balanceRowFor(
   balances: WalletBalanceRow[],
   chain: string,
-  addressLower: string,
+  addressIdentity: string,
   holding: Pick<PortfolioHolding, 'asset' | 'contractAddress'>
 ): WalletBalanceRow | undefined {
   return balances.find((b) => {
-    if (b.chain !== chain || b.address.toLowerCase() !== addressLower) return false;
+    if (b.chain !== chain || walletAuthorityIdentity(chain, b.address) !== addressIdentity) return false;
     // Native SOL: the holding carries the wrapped-SOL mint while the stored
     // native balance row is contract-less — match on the asset label instead.
     if (
@@ -751,11 +767,9 @@ export function balanceRowFor(
       return b.asset.toUpperCase() === holding.asset.toUpperCase();
     }
     if (holding.contractAddress || b.contractAddress) {
-      return (
-        !!holding.contractAddress &&
-        !!b.contractAddress &&
-        holding.contractAddress.toLowerCase() === b.contractAddress.toLowerCase()
-      );
+      return !!holding.contractAddress && !!b.contractAddress &&
+        canonicalAssetKey({ asset: holding.asset, chain, contractAddress: holding.contractAddress }) ===
+        canonicalAssetKey({ asset: b.asset, chain, contractAddress: b.contractAddress });
     }
     return b.asset.toUpperCase() === holding.asset.toUpperCase();
   });
@@ -878,9 +892,9 @@ export function reconcileHoldings(
       const delta = txDeltaFor(t, h);
       if (Math.abs(delta) < 1e-12) continue;
       if (t.walletAddress) {
-        const addrLower = t.walletAddress.toLowerCase();
-        addrDeltas.set(addrLower, (addrDeltas.get(addrLower) ?? 0) + delta);
-        if (t.chain && !addrChain.has(addrLower)) addrChain.set(addrLower, t.chain);
+        const addressIdentity = walletAuthorityIdentity(t.chain ?? '', t.walletAddress);
+        addrDeltas.set(addressIdentity, (addrDeltas.get(addressIdentity) ?? 0) + delta);
+        if (t.chain && !addrChain.has(addressIdentity)) addrChain.set(addressIdentity, t.chain);
       } else if (t.importBatchId && t.source) {
         // API transaction sources use `<exchange>_api`, while authority rows
         // store the bare exchange id. Normalize before building lookup keys.
@@ -898,9 +912,9 @@ export function reconcileHoldings(
     let qty = Math.max(0, nonWalletDelta);
     let reconciledAny = false;
     let exchangeApiAny = false;
-    for (const [addrLower, delta] of addrDeltas) {
-      const chain = addrChain.get(addrLower);
-      const row = chain ? balanceRowFor(balances, chain, addrLower, h) : undefined;
+    for (const [addressIdentity, delta] of addrDeltas) {
+      const chain = addrChain.get(addressIdentity);
+      const row = chain ? balanceRowFor(balances, chain, addressIdentity, h) : undefined;
       if (row) {
         qty += Math.max(0, row.amount); // on-chain truth (0 drains a phantom)
         reconciledAny = true;

@@ -20,8 +20,8 @@ const mocks = vi.hoisted(() => ({
   parseImportFile: vi.fn(),
   hashFileContent: vi.fn(),
   csvImportsGet: vi.fn(),
-  bulkPut: vi.fn(async () => undefined),
-  upsertCsvImport: vi.fn(async () => undefined),
+  bulkPut: vi.fn(async (..._args: unknown[]) => undefined),
+  upsertCsvImport: vi.fn(async (..._args: unknown[]) => undefined),
   countCsvImportTransactions: vi.fn(async (_hash: string) => 1),
   deduplicateTransactions: vi.fn(async () => 0),
   getSettings: vi.fn(async () => ({ reportingCurrency: 'USD' })),
@@ -30,12 +30,21 @@ const mocks = vi.hoisted(() => ({
   getEffectiveSettings: vi.fn(async () => ({ priceApiEnabled: false })),
   isAiMappingAvailable: vi.fn(async () => false),
   confirmSheetOrientations: vi.fn(async (_sheets: unknown, txs: Transaction[]) => txs),
+  persistCsvImportEvidence: vi.fn(async (..._args: unknown[]) => undefined),
+  buildCsvImportEvidenceGeneration: vi.fn((input: unknown) => input),
+  commitCsvImportGeneration: vi.fn(),
   onComplete: vi.fn()
 }));
 
 vi.mock('@/lib/parsers', () => ({
   parseImportFile: mocks.parseImportFile,
-  isSpreadsheetFile: () => false
+  isSpreadsheetFile: () => false,
+  buildCsvImportEvidenceGeneration: mocks.buildCsvImportEvidenceGeneration,
+  hasSourceDeclaredHistory: (evidence: { declaredHistory?: { completeHistory?: boolean; start?: number; end?: number } } | undefined) =>
+    evidence?.declaredHistory?.completeHistory === true ||
+    (evidence?.declaredHistory?.start != null && evidence.declaredHistory.end != null),
+  declaredLegacyBalanceSnapshot: (evidence: { declaredSnapshots?: { balances: Record<string, number> }[] } | undefined) =>
+    evidence?.declaredSnapshots?.length === 1 ? evidence.declaredSnapshots[0].balances : undefined
 }));
 
 vi.mock('@/lib/parsers/generic', () => ({ parseWithMapping: vi.fn() }));
@@ -52,6 +61,7 @@ vi.mock('@/lib/storage/db', () => ({
     csvImports: { get: mocks.csvImportsGet },
     transactions: { bulkPut: mocks.bulkPut }
   },
+  commitCsvImportGeneration: mocks.commitCsvImportGeneration,
   getSettings: mocks.getSettings,
   hashFileContent: mocks.hashFileContent,
   upsertCsvImport: mocks.upsertCsvImport,
@@ -127,7 +137,7 @@ beforeEach(() => {
     async (hash: string) => savedCounts[hash] ?? 1
   );
   mocks.csvImportsGet.mockImplementation(async (hash: string) =>
-    duplicateHashes.has(hash) ? { hash, fileName: 'older import' } : undefined
+    duplicateHashes.has(hash) ? { hash, fileName: 'older import', txCount: 1 } : undefined
   );
   // Pricing defaults: disabled, and a no-op when enabled — individual tests
   // opt into pricing (and its failure modes) explicitly. clearAllMocks keeps
@@ -146,6 +156,22 @@ beforeEach(() => {
       headers: [],
       missingFields: []
     };
+  });
+  mocks.commitCsvImportGeneration.mockImplementation(async (input: {
+    id: string; fileName: string; parserId: string | null; transactions: Transaction[];
+    metadata?: Record<string, unknown>;
+    buildGeneration: (context: { generation: number; savedAfterDedup: number; completedAt: number }) => unknown;
+  }) => {
+    await mocks.bulkPut(input.transactions);
+    const saved = savedCounts[input.id] ?? 1;
+    const generation = input.buildGeneration({ generation: 1, savedAfterDedup: saved, completedAt: 100 });
+    await mocks.persistCsvImportEvidence(generation);
+    await mocks.upsertCsvImport(input.id, input.fileName, input.parserId, saved, {
+      ...input.metadata,
+      balanceSnapshot: saved === input.transactions.length ? input.metadata?.balanceSnapshot : undefined,
+      optionsBalanceIncluded: saved === input.transactions.length ? input.metadata?.optionsBalanceIncluded : undefined
+    });
+    return saved;
   });
 });
 
@@ -247,6 +273,33 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     expect(screen.queryByText(/Saved \d+ transaction/)).not.toBeInTheDocument();
     expect(mocks.onComplete).toHaveBeenCalledTimes(1);
     expect(mocks.onComplete).toHaveBeenCalledWith(0);
+  });
+
+  it('persists the same final CSV evidence contract after dedup as the direct file flow', async () => {
+    const evidence = {
+      coveredAccountClasses: ['spot'],
+      requiredOutcomes: [{ id: 'history', accountClass: 'spot', required: true, status: 'complete' }],
+      recognizedCount: 2, parsedCount: 2, excludedCount: 0, skippedCount: 0, failedCount: 0,
+      exclusionReasons: [], skippedReasons: [], failureReasons: []
+    };
+    mocks.parseImportFile.mockResolvedValueOnce({
+      transactions: [makeTx('a#0'), makeTx('a#1')], detectedParser: 'test_parser',
+      warnings: [], sheets: [], rows: [], headers: [], missingFields: [],
+      balanceSnapshot: { BTC: 1 }, evidence
+    });
+    savedCounts = { 'hash:aaa': 1 };
+    await dropFiles([makeFile('a.csv', 'aaa')]);
+    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+
+    await screen.findByText(/Saved 1 transaction to your local ledger/);
+    expect(mocks.persistCsvImportEvidence).toHaveBeenCalledTimes(1);
+    expect(mocks.persistCsvImportEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      sourceIdentityId: 'hash:aaa', parsedBeforeDedup: 2, savedAfterDedup: 1, evidence
+    }));
+    expect(mocks.upsertCsvImport).toHaveBeenCalledWith(
+      'hash:aaa', 'a.csv', 'test_parser', 1,
+      expect.objectContaining({ balanceSnapshot: undefined })
+    );
   });
 
   it('Item 2: a file whose parse throws mid-batch is skipped and the rest still import', async () => {

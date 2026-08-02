@@ -13,6 +13,7 @@
  * so this module stays free of Dexie/RPC imports.
  */
 import type { FlagReason, Transaction, TxType } from '@/types/transaction';
+import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { matchesFlagFilter } from '@/lib/review/displayFlags';
 
 export interface RowFilterOptions {
@@ -48,7 +49,8 @@ export function filterRows(txs: Transaction[], opts: RowFilterOptions): Transact
     if (opts.flagFilter !== 'all' && !matchesFlagFilter(t, opts.flagFilter)) return false;
     if (
       opts.walletFilter !== 'all' &&
-      t.walletAddress?.toLowerCase() !== opts.walletFilter.toLowerCase()
+      (t.walletAddress == null ||
+        canonicalWalletIdentity(t.chain ?? '', t.walletAddress) !== opts.walletFilter)
     )
       return false;
     if (opts.fyBounds && (t.timestamp < opts.fyBounds.start || t.timestamp > opts.fyBounds.end))
