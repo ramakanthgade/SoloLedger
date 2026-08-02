@@ -25,6 +25,39 @@ export interface ImportSource {
   note?: string;
 }
 
+/**
+ * Restrained guidance for parser-backed formats whose vendor export path has
+ * not been verified. The parser contract is real; the UI deliberately avoids
+ * inventing menu paths, date-range coverage, or vendor-specific guarantees.
+ */
+function schemaCompatibleCsvSource(config: {
+  id: string;
+  label: string;
+  monogram: string;
+  reportType: string;
+  expectedColumns: string;
+  formatHint?: string;
+  coverageNote?: string;
+}): ImportSource {
+  const { id, label, monogram, reportType, expectedColumns, formatHint, coverageNote } = config;
+  return {
+    id,
+    label,
+    monogram,
+    formatHint: formatHint ?? `${reportType} CSV · schema-compatible beta`,
+    region: 'global',
+    steps: [
+      `Export the ${reportType} report from ${label} as CSV. The exact vendor menu path has not been verified.`,
+      `Use the schema-compatible format with these expected columns: ${expectedColumns}.`,
+      'Drop the CSV into the next step; SoloLedger will verify its columns before importing.'
+    ],
+    path: [reportType, 'CSV', 'Schema-compatible beta'],
+    note:
+      coverageNote ??
+      `Supports this ${label} report schema, not every export the exchange may offer. Review the import preview before saving.`
+  };
+}
+
 export const IMPORT_SOURCES: ImportSource[] = [
   {
     id: 'coindcx',
@@ -129,6 +162,96 @@ export const IMPORT_SOURCES: ImportSource[] = [
     ],
     path: ['Settings', 'Reports', 'Transaction history', 'CSV'],
     note: 'Use the transaction history export, not the tax-only summary, for a complete ledger.'
+  },
+  schemaCompatibleCsvSource({
+    id: 'kraken',
+    label: 'Kraken',
+    monogram: 'KR',
+    reportType: 'Ledger History',
+    expectedColumns: 'txid, refid, time, type, subtype, asset, amount, fee, balance',
+    formatHint: 'Ledger History CSV · schema-compatible beta',
+    coverageNote: 'Use Kraken Ledger History, not a trades-only export. The ledger schema supports trades, transfers and staking rows.'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'kucoin',
+    label: 'KuCoin',
+    monogram: 'KC',
+    reportType: 'trade/order history',
+    expectedColumns: 'time, tradeId, symbol, side, price, size, funds, fee, feeCurrency'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'cryptocom',
+    label: 'Crypto.com',
+    monogram: 'CC',
+    reportType: 'transaction history',
+    expectedColumns: 'Timestamp (UTC), Transaction Kind, Transaction Description, Currency, Amount, Native Amount, Native Currency, Transaction Hash',
+    coverageNote: 'The transaction-history schema supports deposits, withdrawals, purchases, sales, exchanges and supported reward kinds.'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'bybit',
+    label: 'Bybit',
+    monogram: 'BY',
+    reportType: 'trade/order history',
+    expectedColumns: 'Time, Symbol, Side, Volume, Price, Total, Fee, Fee Currency, Order ID',
+    coverageNote: 'This parser covers buy and sell fills in the matching order-history schema; it does not claim deposit or withdrawal coverage.'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'okx',
+    label: 'OKX',
+    monogram: 'OK',
+    reportType: 'fills/order history',
+    expectedColumns: 'time, type, pair, side, fillSz, fillPx, fee, feeCcy, ordId'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'gateio',
+    label: 'Gate.io',
+    monogram: 'GT',
+    reportType: 'trade history',
+    expectedColumns: 'ID, Time, Pair, Type, Amount, Fee, Fee Currency, Total'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'bitfinex',
+    label: 'Bitfinex',
+    monogram: 'BF',
+    reportType: 'trade history',
+    expectedColumns: '#, Date, Pair, Amount, Price, Fee, Fee Currency'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'gemini',
+    label: 'Gemini',
+    monogram: 'GM',
+    reportType: 'transaction history',
+    expectedColumns: 'Date, Time (UTC), Type, Symbol, Quantity, Price, Fee, Total'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'htx',
+    label: 'HTX',
+    monogram: 'HX',
+    reportType: 'order history',
+    expectedColumns: 'time, id, symbol, type, amount, price, filled, fee, fee-asset, order-id'
+  }),
+  schemaCompatibleCsvSource({
+    id: 'coinspot',
+    label: 'CoinSpot',
+    monogram: 'CS',
+    reportType: 'transaction history',
+    expectedColumns: 'Date, Action, Coin, Amount, Rate, AUD, AUD Fee',
+    coverageNote: 'The matching CoinSpot schema supports buys, sells, deposits, withdrawals, sends and receives with AUD values.'
+  }),
+  {
+    id: 'hyperliquid',
+    label: 'Hyperliquid',
+    monogram: 'HL',
+    formatHint: 'Two CSV reports · schema-compatible beta',
+    region: 'global',
+    steps: [
+      'Export the Hyperliquid Trade History CSV for perpetual fills, fees and closed PnL.',
+      'Separately export the Deposits / Withdrawals CSV for collateral movements.',
+      'Trade History expects time, coin, dir, px, sz and closedPnl; Deposits / Withdrawals expects time, action, accountValueChange and source or destination.',
+      'Drop both files together for complete supported derivative and collateral history; each file is detected independently.'
+    ],
+    path: ['Trade History CSV', 'Deposits / Withdrawals CSV', 'Schema-compatible beta'],
+    note: 'Trade History alone does not include collateral deposits and withdrawals. Import both supported files for complete derivative/collateral coverage.'
   },
   {
     id: 'other',

@@ -1,5 +1,5 @@
 import 'fake-indexeddb/auto';
-import { describe, it, expect, beforeEach, beforeAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import App from '@/App';
 import { AuthProvider } from '@/lib/saas/authContext';
@@ -57,15 +57,11 @@ const seedTx: Transaction = {
 };
 
 describe('App tab navigation (a11y)', () => {
-  beforeAll(async () => {
-    // Seed one transaction so the empty-ledger onboarding gate does not show,
-    // leaving the tablist as the deterministic first view of MainApp.
-    await db.transactions.put(seedTx);
-  });
-
-  beforeEach(() => {
+  beforeEach(async () => {
     sessionStorage.clear();
     localStorage.clear();
+    await db.transactions.clear();
+    await db.transactions.put(seedTx);
     // Skip the background dedup effect (it churns the table on every mount);
     // this test only drives the tablist a11y, not dedup.
     sessionStorage.setItem('sololedger_dedup_session_local', '1');
@@ -175,6 +171,25 @@ describe('App tab navigation (a11y)', () => {
     expect(screen.getByTestId('panel-dashboard')).toBeInTheDocument();
     expect(headerTabs()[0]).toHaveAccessibleName('Dashboard');
     expect(headerTabs()[0]).toHaveAttribute('id', 'tab-dashboard');
+  });
+
+  it('opens Connections for an empty ledger without flashing Dashboard while the count loads', async () => {
+    await db.transactions.clear();
+    render(
+      <ModeProvider>
+        <AuthProvider>
+          <App />
+        </AuthProvider>
+      </ModeProvider>
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /start locally/i }));
+    expect(screen.queryByTestId('panel-dashboard')).not.toBeInTheDocument();
+    expect(screen.getByText('Loading your workspace…')).toBeInTheDocument();
+
+    await waitFor(() => expect(screen.getByTestId('panel-import')).toBeInTheDocument());
+    expect(headerTabs()[1]).toHaveAttribute('aria-selected', 'true');
+    expect(screen.queryByTestId('panel-dashboard')).not.toBeInTheDocument();
   });
 
   it('offers a skip link to the main content as the first stop', async () => {

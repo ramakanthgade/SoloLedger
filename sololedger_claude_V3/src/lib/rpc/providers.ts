@@ -103,14 +103,16 @@ export interface ChainDef {
 }
 
 /**
- * Chains hidden from the import chain dropdown. Fantom is removed
+ * Chains hidden from actionable import choices. Fantom is removed
  * (2026-07-21, user decision): no wallet-data provider serves it — Moralis
  * dropped it product-wide, Alchemy never offered fantom-mainnet, Etherscan
  * V2 has no chainid 250. The CHAINS registry entry STAYS so legacy Fantom
  * data still classifies/prices, and a legacy Fantom wallet hitting Sync gets
  * a calm "not available yet" message (see lookupOneAddress in providers.ts).
+ * StarkNet is also hidden because its registry entry is pricing/display-only:
+ * no non-EVM wallet-history provider is wired yet.
  */
-export const DROPDOWN_HIDDEN_CHAINS: ReadonlySet<ChainId> = new Set(['fantom']);
+export const DROPDOWN_HIDDEN_CHAINS: ReadonlySet<ChainId> = new Set(['fantom', 'starknet']);
 
 export const CHAINS: ChainDef[] = [
   { id: 'bitcoin', label: 'Bitcoin', asset: 'BTC', provider: 'blockstream', needsKey: false },
@@ -180,6 +182,11 @@ export const CHAINS: ChainDef[] = [
   { id: 'katana', label: 'Katana', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'katana-mainnet', needsKey: true }, // Alchemy RPC-only; Etherscan V2 fallback (verified 2026-07-21)
   { id: 'custom_evm', label: 'Other EVM chain (Etherscan-compatible)', asset: '', provider: 'etherscan_compatible', needsKey: true }
 ];
+
+/** Registry-derived EVM classification shared by catalog/form behavior. */
+export function isEvmChain(chain: Pick<ChainDef, 'provider'>): boolean {
+  return chain.provider === 'alchemy_evm' || chain.provider === 'etherscan_compatible';
+}
 
 /** CoinGecko "asset platform" slugs, for contract-address price lookups. */
 export const COINGECKO_PLATFORM: Partial<Record<ChainId, string>> = {

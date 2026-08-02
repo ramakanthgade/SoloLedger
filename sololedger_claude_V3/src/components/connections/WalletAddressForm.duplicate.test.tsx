@@ -71,7 +71,9 @@ vi.mock('@/lib/rpc/providers', () => ({
     { id: 'fantom', label: 'Fantom', asset: 'FTM', provider: 'alchemy_evm', needsKey: true },
     { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true }
   ],
-  DROPDOWN_HIDDEN_CHAINS: new Set(['fantom'])
+  DROPDOWN_HIDDEN_CHAINS: new Set(['fantom']),
+  isEvmChain: (chain: { provider: string }) =>
+    chain.provider === 'alchemy_evm' || chain.provider === 'etherscan_compatible'
 }));
 
 vi.mock('@/lib/rpc/moralis', () => ({

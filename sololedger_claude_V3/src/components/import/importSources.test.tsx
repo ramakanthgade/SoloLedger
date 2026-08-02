@@ -2,6 +2,28 @@ import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { IMPORT_SOURCES, getImportSource } from './importSources';
 import { ConnectionWizard } from './ConnectionWizard';
+import { PARSERS } from '@/lib/parsers';
+
+const NAMED_EXCHANGE_PARSERS: Record<string, string[]> = {
+  binance: ['binance', 'binance_spot', 'binance_transfers', 'binance_options'],
+  coinbase: ['coinbase'],
+  coindcx: ['coindcx'],
+  coinswitch: ['coinswitch'],
+  zebpay: ['zebpay'],
+  wazirx: ['wazirx_trades', 'wazirx_deposits', 'wazirx_ledger'],
+  mudrex: ['mudrex'],
+  kraken: ['kraken'],
+  kucoin: ['kucoin'],
+  cryptocom: ['cryptocom'],
+  bybit: ['bybit'],
+  okx: ['okx'],
+  gateio: ['gateio'],
+  bitfinex: ['bitfinex'],
+  gemini: ['gemini'],
+  htx: ['htx'],
+  coinspot: ['coinspot'],
+  hyperliquid: ['hyperliquid_trades', 'hyperliquid_deposits']
+};
 
 describe('IMPORT_SOURCES — "Other / any exchange" catalog entry', () => {
   it('includes an "other" entry rendered last with exchange-agnostic steps', () => {
@@ -18,9 +40,40 @@ describe('IMPORT_SOURCES — "Other / any exchange" catalog entry', () => {
 
   it('keeps the named-exchange tiles alongside the generic option', () => {
     const ids = IMPORT_SOURCES.map((s) => s.id);
-    expect(ids).toContain('coindcx');
-    expect(ids).toContain('binance');
-    expect(ids).toContain('other');
+    expect(new Set(ids)).toEqual(new Set([...Object.keys(NAMED_EXCHANGE_PARSERS), 'other']));
+    expect(ids[ids.length - 1]).toBe('other');
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
+  it('keeps every named file-import entry backed by its registered native parser(s)', () => {
+    const parserIds = new Set(PARSERS.map((parser) => parser.id));
+    for (const [exchangeId, requiredParserIds] of Object.entries(NAMED_EXCHANGE_PARSERS)) {
+      expect(getImportSource(exchangeId), `${exchangeId} is visible in the file catalog`).toBeDefined();
+      for (const parserId of requiredParserIds) {
+        expect(parserIds.has(parserId), `${exchangeId} uses registered parser ${parserId}`).toBe(true);
+      }
+    }
+  });
+
+  it('describes parser-specific report schemas without inventing vendor paths', () => {
+    const kraken = getImportSource('kraken')!;
+    expect(kraken.formatHint).toMatch(/Ledger History CSV/i);
+    expect(kraken.steps.join(' ')).toMatch(/txid, refid, time, type, subtype, asset, amount, fee, balance/i);
+    expect(kraken.note).toMatch(/not a trades-only export/i);
+    expect(kraken.steps.join(' ')).toMatch(/exact vendor menu path has not been verified/i);
+
+    const bybit = getImportSource('bybit')!;
+    expect(bybit.steps.join(' ')).toMatch(/Time, Symbol, Side, Volume, Price, Total, Fee, Fee Currency, Order ID/i);
+    expect(bybit.note).toMatch(/does not claim deposit or withdrawal coverage/i);
+  });
+
+  it('requires both supported Hyperliquid report types for derivative and collateral coverage', () => {
+    const hyperliquid = getImportSource('hyperliquid')!;
+    const guidance = `${hyperliquid.steps.join(' ')} ${hyperliquid.note}`;
+    expect(guidance).toMatch(/Trade History CSV/i);
+    expect(guidance).toMatch(/Deposits \/ Withdrawals CSV/i);
+    expect(guidance).toMatch(/drop both files together/i);
+    expect(guidance).toMatch(/complete supported derivative and collateral history/i);
   });
 });
 

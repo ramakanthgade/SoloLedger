@@ -3,8 +3,6 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { LocalOnlyBadge } from '@/components/LocalOnlyBadge';
 import { BrandLogo } from '@/components/BrandLogo';
 import { db, deduplicateTransactions } from '@/lib/storage/db';
-import { OnboardingFlow } from '@/components/onboarding/OnboardingFlow';
-import { shouldShowOnboarding } from '@/components/onboarding/onboardingPredicate';
 import { TabNavProvider } from '@/lib/tabNav';
 import { DashboardTab } from '@/components/dashboard/DashboardTab';
 import { ImportTab } from '@/components/import/ImportTab';
@@ -67,29 +65,31 @@ function LoadingScreen({ message }: { message: string }) {
 
 function MainApp() {
   const { user, dbReady } = useAuth();
+  const txCount = useLiveQuery(() => db.transactions.count(), []);
+
+  // Dexie's initial undefined result is a loading state, not evidence of a
+  // populated ledger. Resolve the route before mounting the shell so an empty
+  // user never sees Dashboard flash before Connections.
+  if (!dbReady || txCount === undefined) {
+    return <LoadingScreen message="Loading your workspace…" />;
+  }
+
+  return (
+    <WorkspaceApp
+      key={user?.id ?? 'guest'}
+      initialActive={txCount === 0 ? 'import' : 'dashboard'}
+    />
+  );
+}
+
+function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
+  const { user, dbReady } = useAuth();
   const tabs = user?.role === 'admin' ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS;
-  const [active, setActive] = useState<TabId>('dashboard');
+  const [active, setActive] = useState<TabId>(initialActive);
   const ActiveComponent = tabs.find((t) => t.id === active)!.component;
   const importState = useImportJob();
   const [deduping, setDeduping] = useState(false);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-
-  // First-run onboarding gate (Task T3): show onboarding whenever the local
-  // ledger is empty (0 transactions), not behind a one-time flag — so a
-  // returning-but-empty user still gets help. `onboardingDismissed` lets a user
-  // who exits the flow without importing reach the main app for this session.
-  const txCount = useLiveQuery(() => db.transactions.count(), []);
-  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
-  // Latch: once the empty-ledger gate opens onboarding, keep it mounted until
-  // the user finishes or skips. The guided wizard's multi-file batch saves the
-  // FIRST file before the last — flipping txCount 0→N — and a reactive gate
-  // would unmount the wizard mid-batch, silently stranding the queued files
-  // (only the first file landed in the ledger). The wizard defers its
-  // onComplete to the end of the batch precisely so this latch can hold.
-  const [onboardingActive, setOnboardingActive] = useState(false);
-  useEffect(() => {
-    if (shouldShowOnboarding(txCount)) setOnboardingActive(true);
-  }, [txCount]);
 
   useEffect(() => {
     const key = `sololedger_dedup_session_${user?.id ?? 'local'}`;
@@ -124,26 +124,6 @@ function MainApp() {
     setActive(nextTab.id);
     tabRefs.current[next]?.focus();
   };
-
-  if (!dbReady) {
-    return <LoadingScreen message="Loading your workspace…" />;
-  }
-
-  if (!onboardingDismissed && onboardingActive) {
-    return (
-      <OnboardingFlow
-        onDone={() => {
-          setOnboardingActive(false);
-          setOnboardingDismissed(true);
-        }}
-        onSkip={() => {
-          setActive('dashboard');
-          setOnboardingActive(false);
-          setOnboardingDismissed(true);
-        }}
-      />
-    );
-  }
 
   return (
     <TabNavProvider

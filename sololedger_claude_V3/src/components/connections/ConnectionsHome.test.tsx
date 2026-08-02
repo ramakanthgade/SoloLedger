@@ -422,10 +422,10 @@ describe('ConnectionsHome — drawer entry points', () => {
     expect(screen.getByTestId('add-data-drawer')).toHaveAttribute('data-guided', 'false');
   });
 
-  it('the guided-setup ribbon opens the drawer in guided mode', () => {
+  it('does not expose the optional guided-setup ribbon', () => {
     render(<ConnectionsHome />);
-    fireEvent.click(screen.getByRole('button', { name: /not sure where to start/i }));
-    expect(screen.getByTestId('add-data-drawer')).toHaveAttribute('data-guided', 'true');
+    expect(screen.queryByRole('button', { name: /not sure where to start/i })).not.toBeInTheDocument();
+    expect(screen.queryByText(/start guided setup/i)).not.toBeInTheDocument();
   });
 
   it('the manual card opens the drawer straight into the manual flow (no kebab)', () => {

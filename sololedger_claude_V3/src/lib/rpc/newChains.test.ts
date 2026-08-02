@@ -137,8 +137,8 @@ describe('plan v7.1 — auto-detect probes', () => {
 });
 
 describe('plan v7.1 — import dropdown', () => {
-  it('still hides only fantom; all 27 new chains stay visible', () => {
-    expect([...DROPDOWN_HIDDEN_CHAINS]).toEqual(['fantom']);
+  it('hides legacy Fantom and unsupported StarkNet; all 27 wired new chains stay visible', () => {
+    expect([...DROPDOWN_HIDDEN_CHAINS]).toEqual(['fantom', 'starknet']);
     for (const id of NEW_IDS) {
       expect(DROPDOWN_HIDDEN_CHAINS.has(id)).toBe(false);
     }
@@ -147,5 +147,6 @@ describe('plan v7.1 — import dropdown', () => {
     const visible = CHAINS.filter((c) => !DROPDOWN_HIDDEN_CHAINS.has(c.id)).map((c) => c.id);
     for (const id of NEW_IDS) expect(visible).toContain(id);
     expect(visible).not.toContain('fantom');
+    expect(visible).not.toContain('starknet');
   });
 });
