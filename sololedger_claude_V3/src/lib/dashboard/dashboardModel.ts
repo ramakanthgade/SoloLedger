@@ -637,20 +637,14 @@ function transactionMatchesExchangeCustody(t: Transaction, exchange: string): bo
   if (normalized === `${id}_api` || normalized === `${id}_spot` || normalized === `${id}_transfers`) {
     return true;
   }
-  if (normalized !== id) return false;
-  const accounts: string[] = [];
-  const collectAccounts = (value: unknown) => {
-    if (!value || typeof value !== 'object') return;
-    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-      if (key.toLowerCase() === 'account' && typeof nested === 'string') {
-        accounts.push(nested.toLowerCase());
-      } else if (nested && typeof nested === 'object') {
-        collectAccounts(nested);
-      }
-    }
-  };
-  collectAccounts(t.raw);
-  return accounts.length === 0 || accounts.every((account) => account.includes('spot'));
+  // Binance Transaction History is an exchange-wide custody journal. Its
+  // Funding/Margin/Spot account labels describe internal Binance scopes, not
+  // independent wallets that may be added to the aggregate. Letting those
+  // historical legs escape authority recreates gross deposits/transfers as
+  // current holdings when the full-history CSV is added after API sync.
+  // Explicit derivatives and the separately parsed Options journal remain
+  // additive via the exclusions above.
+  return normalized === id;
 }
 
 export interface ExchangeAuthorityPortfolio {

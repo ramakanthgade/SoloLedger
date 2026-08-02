@@ -73,6 +73,43 @@ export interface AutoFetchResult {
   total: number;
 }
 
+interface PricingPatch {
+  id: string;
+  fiatValue: number | undefined;
+  fiatCurrency: string;
+  removeMissingCostBasis?: boolean;
+  onlyIfUnpriced?: boolean;
+  expectedFiatValue?: number;
+  expectedFiatCurrency?: string;
+}
+
+async function applyPricingPatches(patches: PricingPatch[]): Promise<void> {
+  if (patches.length === 0) return;
+  await db.transaction('rw', db.transactions, async () => {
+    const current = await db.transactions.bulkGet(patches.map((patch) => patch.id));
+    const merged: Transaction[] = [];
+    for (let index = 0; index < patches.length; index++) {
+      const row = current[index];
+      if (!row) continue;
+      const patch = patches[index];
+      if (patch.onlyIfUnpriced && row.fiatValue != null) continue;
+      if (
+        patch.expectedFiatCurrency != null &&
+        (row.fiatValue !== patch.expectedFiatValue || row.fiatCurrency !== patch.expectedFiatCurrency)
+      ) continue;
+      merged.push({
+        ...row,
+        fiatValue: patch.fiatValue,
+        fiatCurrency: patch.fiatCurrency,
+        flags: patch.removeMissingCostBasis
+          ? (row.flags ?? []).filter((flag) => flag !== 'missing_cost_basis') as FlagReason[]
+          : row.flags
+      });
+    }
+    if (merged.length > 0) await db.transactions.bulkPut(merged);
+  });
+}
+
 /**
  * Fetch prices for all transactions in the DB that are missing a fiat value.
  * Skips spam, internal custody movements, and anything already priced.
@@ -107,16 +144,25 @@ export async function fetchMissingPricesForAllTransactions(
   if (needsConversion.length > 0) {
     const { transactions: converted, converted: nConv, failed: nFail } =
       await convertTransactionsToReportingCurrency(needsConversion, settings);
-    for (const t of converted) {
-      if (t.fiatCurrency.toUpperCase() === settings.reportingCurrency.toUpperCase()) {
-        // eslint-disable-next-line no-await-in-loop
-        await db.transactions.update(t.id, {
-          fiatValue: t.fiatValue,
-          fiatCurrency: t.fiatCurrency,
-          flags: t.flags
-        });
-      }
-    }
+    const convertedRows = converted.filter(
+      (t) => t.fiatCurrency.toUpperCase() === settings.reportingCurrency.toUpperCase()
+    );
+    const conversionOriginalById = new Map(needsConversion.map((row) => [row.id, row]));
+    // One IndexedDB commit avoids invalidating every live query once per row.
+    // On large Binance imports those repeated full-ledger renders made even
+    // scrolling stall while optional prices were being saved.
+    await applyPricingPatches(convertedRows.map((row) => {
+      const original = conversionOriginalById.get(row.id)!;
+      return {
+        id: row.id,
+        fiatValue: row.fiatValue,
+        fiatCurrency: row.fiatCurrency,
+        removeMissingCostBasis:
+          original.flags.includes('missing_cost_basis') && !row.flags.includes('missing_cost_basis'),
+        expectedFiatValue: original.fiatValue,
+        expectedFiatCurrency: original.fiatCurrency
+      };
+    }));
     updated += nConv;
     failed += nFail;
   }
@@ -130,22 +176,25 @@ export async function fetchMissingPricesForAllTransactions(
       onProgress
     );
 
+    const pricedRows: PricingPatch[] = [];
     for (let i = 0; i < results.length; i++) {
       const r = results[i];
       const { tx, useCounterAmount } = items[i];
       if (r.price != null) {
         const qty = useCounterAmount ? (tx.counterAmount ?? tx.amount) : tx.amount;
-        // eslint-disable-next-line no-await-in-loop
-        await db.transactions.update(tx.id, {
+        pricedRows.push({
+          id: tx.id,
           fiatValue: r.price * qty,
           fiatCurrency: r.currency,
-          flags: (tx.flags ?? []).filter((f) => f !== 'missing_cost_basis') as FlagReason[]
+          removeMissingCostBasis: true,
+          onlyIfUnpriced: true
         });
         updated++;
       } else {
         failed++;
       }
     }
+    await applyPricingPatches(pricedRows);
   }
 
   return { updated, failed, total: needsPrice.length + needsConversion.length };
