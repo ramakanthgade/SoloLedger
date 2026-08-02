@@ -14,7 +14,7 @@ const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 describe('assetKey', () => {
   it('rejects blank unchained symbols on optimized leg paths', () => {
     const base = {
-      id: 'blank', timestamp: 1, type: 'trade', amount: 1, fiatCurrency: 'INR',
+      id: 'blank', timestamp: 1, type: 'trade', asset: 'BTC', amount: 1, fiatCurrency: 'INR',
       source: 'manual', flags: [], isInternalTransfer: false
     } as Transaction;
     expect(() => transactionAssetKey({ ...base, asset: '   ' })).toThrow('asset is required');
