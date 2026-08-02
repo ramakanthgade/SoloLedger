@@ -161,6 +161,6 @@ export default defineConfig({
     // scope Vitest's default glob sweeps `server/**` too and the client job
     // fails to resolve server-only imports.
     include: ['src/**/*.test.{ts,tsx}'],
-    exclude: [...configDefaults.exclude, 'server/**']
+    exclude: [...configDefaults.exclude, 'server/**', 'src/**/*.perf.test.ts']
   }
 });

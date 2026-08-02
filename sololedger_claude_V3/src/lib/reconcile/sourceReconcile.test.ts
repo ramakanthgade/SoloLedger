@@ -8,7 +8,16 @@
 import { describe, expect, it } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 import type { ExchangeBalanceRow } from '@/lib/storage/db';
-import { ledgerImpliedQty, reconcileSource } from './sourceReconcile';
+import { derivePostings } from '@/lib/ledger/derivedPostings';
+import type { AuthoritySelection } from './authoritySelection';
+import {
+  coverageStatusFromEvidence,
+  deriveReconPresentation,
+  ledgerImpliedQty,
+  reconcileDerivedPostings,
+  reconcileSource,
+  type ReconciliationResult
+} from './sourceReconcile';
 
 const CONN = 'conn-binance-1';
 
@@ -70,9 +79,177 @@ describe('ledgerImpliedQty', () => {
     ]);
     expect(qty.get('USDT') ?? 0).toBeCloseTo(0);
   });
+
+  it('preserves legacy behavior by skipping a one-sided internal transfer', () => {
+    const qty = ledgerImpliedQty([
+      tx({ type: 'transfer_out', asset: 'USDT', amount: 5000, isInternalTransfer: true })
+    ]);
+    expect(qty.get('USDT')).toBeUndefined();
+  });
+});
+
+function selectedAuthority(asOf: number, quantity = 2): AuthoritySelection {
+  return {
+    authorityStatus: 'current',
+    selectedSnapshot: {
+      snapshotId: 'snapshot-1', generation: 7, scopeId: `exchange:${CONN}`,
+      authorityKind: 'api', authorityClass: 'exchange_balance', accountClass: 'spot',
+      coveredAccountClasses: ['spot'], asOf, capturedAt: asOf, sourceIdentityId: CONN,
+      endpointProof: {
+        authorityKind: 'api', provider: 'binance', operation: 'fetchBalance', parametersClass: 'spot',
+        requestedAccountClasses: ['spot'], provenAccountClasses: ['spot'], exhaustiveBalances: true
+      }, status: 'complete'
+    },
+    selectedAssets: [{
+      id: 'asset-1', snapshotId: 'snapshot-1', generation: 7, scopeId: `exchange:${CONN}`,
+      accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', quantity
+    }],
+    diagnostics: []
+  };
+}
+
+function reconResult(partial: Partial<ReconciliationResult> = {}): ReconciliationResult {
+  return {
+    scopeId: `exchange:${CONN}`, accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC',
+    balanceStatus: 'reconciled', authorityStatus: 'current', coverageStatus: 'complete',
+    scopeStatus: 'resolved', postingEvidenceCount: 1, authorityEvidenceCount: 1, ...partial
+  };
+}
+
+describe('four-axis custody reconciliation', () => {
+  it('uses only postings at or before the selected coherent cutoff', () => {
+    const postings = derivePostings([
+      tx({ id: 'before', timestamp: 99, type: 'transfer_in', asset: 'BTC', amount: 1, source: 'binance_api' }),
+      tx({ id: 'equal', timestamp: 100, type: 'transfer_in', asset: 'BTC', amount: 1, source: 'binance_api' }),
+      tx({ id: 'after', timestamp: 101, type: 'transfer_in', asset: 'BTC', amount: 20, source: 'binance_api' })
+    ], { exchangeConnections: [{ id: CONN, exchange: 'binance' }] });
+    const result = reconcileDerivedPostings({
+      scopeId: `exchange:${CONN}`, accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC',
+      postings, authority: selectedAuthority(100), coverage: { status: 'complete' }, scopeStatus: 'resolved'
+    });
+    expect(result).toMatchObject({
+      balanceStatus: 'reconciled', authorityStatus: 'current', coverageStatus: 'complete',
+      scopeStatus: 'resolved', ledgerQuantity: 2, authorityQuantity: 2, delta: 0,
+      selectedSnapshotId: 'snapshot-1', selectedGeneration: 7
+    });
+  });
+
+  it('does not produce quantities or delta for missing/non-comparable authority or unresolved scope', () => {
+    for (const partial of [
+      { authorityStatus: 'missing' as const, selectedSnapshot: undefined },
+      { authorityStatus: 'non_comparable' as const, selectedSnapshot: undefined }
+    ]) {
+      const result = reconcileDerivedPostings({
+        scopeId: `exchange:${CONN}`, accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', postings: [],
+        authority: { ...selectedAuthority(100), ...partial, selectedAssets: [] },
+        coverage: { status: 'unknown' }, scopeStatus: 'resolved'
+      });
+      expect(result.balanceStatus).toBe('not_compared');
+      expect(result).not.toHaveProperty('delta');
+    }
+  });
+
+  it('infers an absent asset as zero only from exhaustive balance proof', () => {
+    const postings = derivePostings([
+      tx({ id: 'btc', timestamp: 100, type: 'transfer_in', asset: 'BTC', amount: 2, source: 'binance_api' })
+    ], { exchangeConnections: [{ id: CONN, exchange: 'binance' }] });
+    const exhaustive = selectedAuthority(100);
+    exhaustive.selectedAssets = [];
+    const confirmedZero = reconcileDerivedPostings({
+      scopeId: `exchange:${CONN}`, accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC',
+      postings, authority: exhaustive, coverage: { status: 'complete' }, scopeStatus: 'resolved'
+    });
+    expect(confirmedZero).toMatchObject({
+      authorityStatus: 'current', balanceStatus: 'ledger_over', authorityQuantity: 0,
+      ledgerQuantity: 2, delta: -2
+    });
+
+    const nonExhaustive = selectedAuthority(100);
+    nonExhaustive.selectedSnapshot = {
+      ...nonExhaustive.selectedSnapshot!,
+      endpointProof: { ...nonExhaustive.selectedSnapshot!.endpointProof, exhaustiveBalances: false }
+    };
+    nonExhaustive.selectedAssets = [{
+      id: 'eth-only', snapshotId: 'snapshot-1', generation: 7, scopeId: `exchange:${CONN}`,
+      accountClass: 'spot', assetKey: 'asset:ETH', asset: 'ETH', quantity: 3
+    }];
+    const absentUnknown = reconcileDerivedPostings({
+      scopeId: `exchange:${CONN}`, accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC',
+      postings, authority: nonExhaustive, coverage: { status: 'complete' }, scopeStatus: 'resolved'
+    });
+    expect(absentUnknown).toMatchObject({
+      authorityStatus: 'non_comparable', balanceStatus: 'not_compared'
+    });
+    expect(absentUnknown).not.toHaveProperty('authorityQuantity');
+    expect(absentUnknown).not.toHaveProperty('delta');
+  });
+
+  it('requires opening balance only from complete bounded evidence and approved conditions', () => {
+    const bounds = { provenHistoryStart: 10, authorityAsOf: 100 };
+    for (const status of ['partial', 'unknown', 'failed'] as const) {
+      expect(coverageStatusFromEvidence({
+        status, ...bounds, firstMovement: { effectiveAt: 10, signedQuantity: -1 }
+      })).toBe(status);
+    }
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, firstMovement: { effectiveAt: 10, signedQuantity: 1 }
+    })).toBe('complete');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, firstMovement: { effectiveAt: 10, signedQuantity: -1 }
+    })).toBe('opening_balance_required');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, minimumPrefixQuantity: -0.0000001, negativeTolerance: 0.000001
+    })).toBe('complete');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, minimumPrefixQuantity: -0.01, negativeTolerance: 0.000001
+    })).toBe('opening_balance_required');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, declaredOpeningSnapshot: { effectiveAt: 10, quantity: 0 }
+    })).toBe('complete');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, declaredOpeningSnapshot: { effectiveAt: 10, quantity: 5 }
+    })).toBe('opening_balance_required');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, declaredOpeningSnapshot: { effectiveAt: 20, quantity: 5 },
+      earliestExplainingAcquisitionAt: 20
+    })).toBe('complete');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, declaredOpeningSnapshot: { effectiveAt: 20, quantity: 5 },
+      earliestExplainingAcquisitionAt: 19
+    })).toBe('complete');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, declaredOpeningSnapshot: { effectiveAt: 20, quantity: 5 },
+      earliestExplainingAcquisitionAt: 21
+    })).toBe('opening_balance_required');
+    expect(coverageStatusFromEvidence({
+      status: 'complete', ...bounds, firstMovement: { effectiveAt: 10, signedQuantity: -1 },
+      hasEvidenceBackedOpeningBalance: true
+    })).toBe('complete');
+  });
+
+  it.each([
+    [{ authorityStatus: 'stale', balanceStatus: 'ledger_under' }, 'refresh_authority', 'info'],
+    [{ coverageStatus: 'partial', balanceStatus: 'reconciled' }, 'complete_source_history', 'warning'],
+    [{ authorityStatus: 'missing', coverageStatus: 'unknown', balanceStatus: 'not_compared' }, 'add_timestamped_authority', 'warning'],
+    [{ authorityStatus: 'non_comparable', coverageStatus: 'complete', balanceStatus: 'not_compared' }, 'capture_coherent_authority', 'blocked'],
+    [{ scopeStatus: 'source_deleted', authorityStatus: 'stale', balanceStatus: 'not_compared' }, 'reconnect_source', 'blocked'],
+    [{ coverageStatus: 'failed', balanceStatus: 'ledger_over' }, 'retry_source_operation', 'error'],
+    [{ coverageStatus: 'opening_balance_required', authorityStatus: 'missing', balanceStatus: 'not_compared' }, 'add_timestamped_authority', 'warning']
+  ] as const)('applies deterministic status precedence for %o', (partial, remediation, severity) => {
+    expect(deriveReconPresentation(reconResult(partial))).toMatchObject({
+      primaryRemediation: remediation, severity
+    });
+  });
 });
 
 describe('reconcileSource', () => {
+  it('keeps legacy consumers unchanged by skipping confirmed internal rows', () => {
+    const internalOut = tx({
+      type: 'transfer_out', asset: 'BTC', amount: 2, isInternalTransfer: true
+    });
+    expect(reconcileSource(CONN, 'binance', [bal('BTC', 0)], [internalOut]).assets[0])
+      .toMatchObject({ ledgerQty: 0, authorityQty: 0, delta: 0, status: 'reconciled' });
+  });
   it('marks exact matches reconciled (UNI/ROSE case)', () => {
     const balances = [bal('UNI', 120.001444), bal('ROSE', 11454.8)];
     const txs = [

@@ -41,6 +41,9 @@ jobs:
       - name: Test
         run: npm run test
 
+      - name: Ledger performance gate
+        run: npm run test:ledger-perf
+
       - name: Build
         run: npm run build
 

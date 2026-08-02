@@ -1,5 +1,123 @@
 # Reconciliation Engine — Design Doc
 
+## PR1 custody-ledger contracts (2026-08-02)
+
+PR1 adds a **pure, derived custody model**. It does not persist postings or
+authority generations and does not change Dashboard, Holdings, tax reports,
+imports, sync, Dexie, or UI behavior. `Transaction[]` remains the sole tax-engine
+input. Production consumers stay on their existing paths until later migration
+PRs.
+
+`DerivedPosting` contains quantity, exact custody identity, ordering, and evidence
+only. It deliberately has no fiat value, price, proceeds, cost basis, gain,
+jurisdiction, or tax-treatment fields. Its `taxableEffect` only points back to the
+source transaction; a posting is never an alternate tax row.
+
+### Posting and identity rules
+
+- Buy/NFT buy: `+asset`, optional `-counter`, `-fee`.
+- Sell/NFT sell: `-asset`, optional `+counter`, `-fee`.
+- Trade: `-asset`, `+counter`, `-fee`.
+- Transfer in, income, gift received, NFT mint, DeFi withdraw: `+asset`.
+- Transfer out, gift sent, fee, DeFi deposit: `-asset`.
+- A standalone `type: fee` row emits one fee-role debit from `amount`; a copied
+  `feeAmount`/`feeAsset` on that same row never creates a second debit.
+- Ignored/other/spam rows have no principal custody effect.
+- Internal-transfer flags remain tax classifications, not custody erasers. Two
+  same-scope legs net arithmetically; a one-sided or cross-scope leg stays visible.
+
+Ordering is `(effectiveAt, taxEventId, postingPhase, ordinal, id)`. Phases are
+opening `0`, principal `10`, counter `20`, and fee `30`. IDs derive from tax event,
+phase, ordinal, and exact asset key; no random value is used. A Binance CSV survivor
+with a reserved API twin emits one posting set with both evidence references.
+Reservations remain exact and one-to-one, so repeated equal fills are not collapsed.
+
+Custody joins use canonical `assetKey`, never display symbol: `asset:USDT`,
+`bitcoin:native`, `evm:1:0x…`, `evm:1:native`, `solana:<mint>`,
+`solana:native`, `starknet:<contract>`, or an explicit
+`unsupported:<chain>:<identity>` namespace. Runtime classification is locked to the
+pure chain/provider registry without importing network providers into projection. A
+contract requires chain identity, preventing same-symbol assets on different
+chains/contracts from reconciling together.
+
+Each transaction leg resolves independently. A counter leg without mint/contract
+proof is native only when its symbol is the registered native asset for that chain;
+otherwise it receives a stable `unresolved:<namespace>:<chain>:token:<symbol>` key.
+Named/numeric EVM aliases share the registry-derived numeric identity. A
+`custom_evm` wallet requires explicit custom network identity or remains unresolved.
+
+Every fixed-identity EVM chain in the provider registry has a mainnet numeric
+identity in the pure custody registry, independent of Etherscan support. For
+example, `ronin` and `2020` produce identical asset keys and wallet scopes.
+`custom_evm` remains the deliberate exception because its numeric identity must
+come from source evidence.
+
+Helius uses the wrapped-SOL mint as a transport sentinel for native swap legs.
+The parser records explicit `heliusNativeInput` / `heliusNativeOutput` evidence
+per leg. Custody projection maps `SOL` plus that mint to `solana:native` only
+when the matching evidence flag is true; genuine WSOL without native-leg
+evidence remains mint-scoped.
+
+Scope resolution uses direct API connection proof, an exact suppressed twin,
+wallet chain+address, or an exactly-one-live-Binance fallback for eligible Binance
+CSV rows. Multiple Binance connections, missing ownership proof, and deleted
+provenance are not guessed. Spot, Funding, Margin, Futures, and Options are separate
+account classes. Current Binance `ccxt.fetchBalance(defaultType=spot)` proves Spot
+only.
+
+### Authority and reconciliation rules
+
+Authority selection uses one immutable `snapshotId` and generation. Different
+snapshots/generations are never summed and no minimum-timestamp synthetic cutoff is
+created. Missing `asOf` is evidence but non-comparable. Compatible API authority
+precedes CSV, then the newest successful generation; non-selected candidates remain
+diagnostics. Only exact scope/class/asset postings with
+`effectiveAt <= authority.asOf` enter comparison.
+
+Snapshot kind, scope, authority class, and endpoint proof must agree. RPC authority
+is wallet-only, exchange API authority is exchange-only, CSV journal authority uses
+an exchange/file scope, and `provenAccountClasses` must include the requested class.
+
+An empty authority generation confirms zero only when endpoint proof declares an
+exhaustive balance response. A non-exhaustive empty generation is non-comparable.
+For non-empty non-exhaustive generations, an omitted asset remains unknown rather
+than becoming an implicit zero or producing a holdings-draining delta.
+
+Freshness is clock-injected. Exchange API and wallet RPC authority expire after 24
+hours. CSV comparison uses an explicit `comparisonAt`: before `asOf` is
+non-comparable, equal is current, and later is stale. Declared export coverage is
+validated separately and does not masquerade as freshness.
+
+Reconciliation preserves four independent axes: balance, authority, coverage, and
+scope. Presentation precedence is scope, non-comparable authority, missing
+authority, failed coverage, incomplete/unknown/opening-required coverage, stale
+authority, then balance divergence. Lower-priority findings remain secondary.
+Scope/authority blockers force `balanceStatus = not_compared` and omit quantities
+and delta.
+
+`opening_balance_required` occurs only for complete, bounded evidence when either
+the first movement/prefix is negative beyond tolerance, or a declared nonzero
+opening snapshot lacks an acquisition at or before that instant. Partial, unknown,
+and failed evidence remain unchanged. The engine never infers an opening from
+`authority - ledger`. Openings are absolute resets immediately after their
+timestamp. Cutoff aggregation chooses the latest opening at or before that cutoff,
+so historical cutoffs retain older openings; equal-timestamp source activity is
+rejected as ambiguous.
+
+The legacy `ledgerImpliedQty`/`reconcileSource` path remains behavior-compatible for
+current consumers, including skipping confirmed internal transfers. Custody-correct
+one-sided movement is exposed only through the new posting APIs until consumer
+migration.
+
+Balances, running points, and chart prefixes use linear aggregation over stable
+posting order. The running index stores per-key points rather than cloning a full
+balance map per event. A 30,000-event projection/index gate enforces the PR1 Node
+budget. The normal parallel suite retains 30,000-event correctness and
+linear-size index assertions without a contention-sensitive clock. The unchanged
+`< 250 ms` wall-clock contract runs separately through `npm run test:ledger-perf`:
+one warm-up followed by five measured runs in a single-worker config, with the
+slowest measured run required to pass.
+
 **Status:** UPDATED 2026-07-27 — fetch-completeness is the PRIMARY bug (proven
 with the user's real Binance CSV exports); reconciliation is the detection
 layer. Phase ordering revised accordingly.
