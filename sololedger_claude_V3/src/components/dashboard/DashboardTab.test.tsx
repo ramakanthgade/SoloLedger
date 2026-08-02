@@ -200,7 +200,12 @@ describe('DashboardTab — hero honesty', () => {
     const inserted = {
       ...SEED.txs[3], id: 'holdings-live-1', timestamp: 4_000
     } as Transaction;
-    const updated = projectViews([inserted, ...first]);
+    const freshRows = first.map((transaction) => ({
+      ...transaction,
+      flags: [...transaction.flags],
+      raw: transaction.raw ? structuredClone(transaction.raw) : undefined
+    }));
+    const updated = projectViews([inserted, ...freshRows]);
 
     expect(updated.nonSpam.map((transaction) => transaction.id)).toEqual([
       'holdings-live-1', 'p-0', 'p-1', 'p-2'
@@ -214,6 +219,13 @@ describe('DashboardTab — hero honesty', () => {
     const changedFinal = { ...first[2], raw: { nested: { changed: true } } };
     const rebuiltViews = rejectChangedRemainder([inserted, first[0], first[1], changedFinal]);
     expect(rebuiltViews.nonSpam[3]).toBe(changedFinal);
+    expect(rebuiltViews.appendProof).toBeUndefined();
+
+    const rejectScalarEdit = createTransactionViewsProjector();
+    rejectScalarEdit(first);
+    const changedFirst = { ...first[0], amount: first[0].amount + 1 };
+    expect(rejectScalarEdit([inserted, changedFirst, first[1], first[2]]).appendProof)
+      .toBeUndefined();
 
     const appendProjection = vi.fn((
       _previous: HoldingsProjection,
@@ -225,9 +237,22 @@ describe('DashboardTab — hero honesty', () => {
       exchangeConnections: [], openingBalances: [], snapshots: [], assets: [], coverage: [], now: 5_000
     } satisfies Omit<HoldingsProjectionInput, 'transactions'>;
     projectHoldings({ ...staticInput, transactions: initial.projection });
-    projectHoldings({ ...staticInput, transactions: updated.projection });
+    projectHoldings({ ...staticInput, transactions: updated.projection }, updated.appendProof);
     expect(appendProjection).toHaveBeenCalledTimes(1);
     expect(appendProjection.mock.calls[0][2]).toBe(inserted);
+
+    const rejectRemovedRestriction = vi.fn(() => undefined);
+    const projectRestrictedHoldings = createHoldingsProjector(rejectRemovedRestriction);
+    projectRestrictedHoldings({
+      ...staticInput,
+      transactions: initial.projection,
+      comparisonAt: 3_000
+    });
+    projectRestrictedHoldings({
+      ...staticInput,
+      transactions: updated.projection
+    }, updated.appendProof);
+    expect(rejectRemovedRestriction).not.toHaveBeenCalled();
   });
 
   it('preserves same-timestamp sell/buy order for deferred tax consumers', async () => {

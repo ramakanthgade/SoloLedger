@@ -472,10 +472,10 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
       coverage: sourceCoverageRows,
       now: nowMs
     };
-    return projectHoldings(input);
+    return projectHoldings(input, transactionViews.appendProof);
   }, [
-    projectHoldings, projectionTransactions, exchangeConns, openingBalances, authoritySnapshots,
-    authorityAssets, sourceCoverageRows, nowMs
+    projectHoldings, projectionTransactions, transactionViews.appendProof, exchangeConns,
+    openingBalances, authoritySnapshots, authorityAssets, sourceCoverageRows, nowMs
   ]);
   const holdings = projection.holdings;
   const ledgerRevision = useMemo(() => ({
