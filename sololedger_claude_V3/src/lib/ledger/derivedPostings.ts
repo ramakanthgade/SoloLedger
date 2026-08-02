@@ -279,6 +279,13 @@ function transactionEvidence(transaction: Transaction): EvidenceRef[] {
   }];
 }
 
+function directTransactionEvidence(transaction: Transaction): EvidenceRef[] {
+  return [{
+    kind: 'transaction', transactionId: transaction.id, role: 'direct', source: transaction.source,
+    sourceRef: transaction.sourceRef, importBatchId: transaction.importBatchId
+  }];
+}
+
 const POSITIVE_PRINCIPAL_TYPES = new Set<Transaction['type']>(
   ['buy', 'transfer_in', 'income', 'gift_received', 'nft_mint', 'nft_buy', 'defi_withdraw']
 );
@@ -383,15 +390,45 @@ function appendTransactionPostings(
   liveBinanceConnections: readonly ExchangeSourceIdentity[]
 ): void {
   if (transaction.isSpam) return;
-  const scope = resolveAccountScope(transaction, context, connectionById, liveBinanceConnections);
-  const evidence = transaction.deletedSourceEvidence
-    ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
-    : transactionEvidence(transaction);
+  const simpleManual = transaction.source === 'manual' && transaction.raw == null &&
+    transaction.parserAccountClass == null &&
+    transaction.deletedSourceEvidence == null && transaction.dedupMatchedApiRow == null &&
+    transaction.walletAddress == null && transaction.chain == null && transaction.category == null &&
+    transaction.instrumentClass !== 'derivative';
+  const scope: AccountScopeResolution = simpleManual
+    ? {
+        scopeStatus: 'resolved',
+        accountScopeId: transaction.importBatchId
+          ? `file:${transaction.importBatchId}:manual`
+          : 'manual',
+        accountClass: 'manual'
+      }
+    : resolveAccountScope(transaction, context, connectionById, liveBinanceConnections);
+  const evidence = simpleManual
+    ? directTransactionEvidence(transaction)
+    : transaction.deletedSourceEvidence
+      ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
+      : transactionEvidence(transaction);
   if (transaction.type === 'fee') {
     const quantity = -Math.abs(transaction.amount);
     if (quantity !== 0 && Number.isFinite(quantity)) {
       appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
         normalizeAssetSymbol(transaction.asset), transactionLegAssetKey(transaction, 'principal'), quantity);
+    }
+    return;
+  }
+  if (transaction.type === 'transfer_in' || transaction.type === 'transfer_out') {
+    const quantity = transaction.type === 'transfer_in'
+      ? Math.abs(transaction.amount)
+      : -Math.abs(transaction.amount);
+    if (quantity !== 0 && Number.isFinite(quantity)) {
+      appendDerivedPosting(target, transaction, scope, evidence, 'principal', 10,
+        normalizeAssetSymbol(transaction.asset), transactionLegAssetKey(transaction, 'principal'), quantity);
+    }
+    if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
+      appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
+        normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset), transactionLegAssetKey(transaction, 'fee'),
+        -Math.abs(transaction.feeAmount));
     }
     return;
   }
