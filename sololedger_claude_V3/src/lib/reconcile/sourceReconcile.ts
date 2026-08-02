@@ -1,7 +1,6 @@
 import type { Transaction } from '@/types/transaction';
 import type { ExchangeBalanceRow } from '@/lib/storage/db';
 import type { DerivedPosting } from '@/lib/ledger/derivedPostings';
-import { postingBalances, postingBalanceKey } from '@/lib/ledger/postingBalances';
 import type {
   AuthorityAssetRow,
   AuthoritySelection,
@@ -218,8 +217,11 @@ export function reconcileDerivedPostings(input: ReconcileDerivedPostingsInput): 
     input.authority.selectedSnapshot?.asOf == null;
   const relevantEvidence = new Set<string>();
   const visitedEvidence = new Set<DerivedPosting['evidence'][number]>();
+  const asOf = input.authority.selectedSnapshot?.asOf;
+  let ledgerQuantity = 0;
   for (const posting of input.postings) {
     if (posting.accountScopeId !== input.scopeId || posting.accountClass !== input.accountClass || posting.assetKey !== input.assetKey) continue;
+    if (asOf != null && posting.effectiveAt <= asOf) ledgerQuantity += posting.signedQuantity;
     for (const evidence of posting.evidence) {
       // Multiple legs from one transaction intentionally share evidence objects.
       // Preserve structural de-duplication while avoiding repeated serialization.
@@ -240,13 +242,6 @@ export function reconcileDerivedPostings(input: ReconcileDerivedPostingsInput): 
   };
   if (blocked) return base;
 
-  const asOf = input.authority.selectedSnapshot!.asOf!;
-  const probe: Pick<DerivedPosting, 'accountScopeId' | 'accountClass' | 'assetKey'> = {
-    accountScopeId: input.scopeId, accountClass: input.accountClass, assetKey: input.assetKey
-  };
-  const ledgerQuantity = postingBalances(input.postings, {
-    asOf, scopeId: input.scopeId, accountClass: input.accountClass
-  }).get(postingBalanceKey(probe)) ?? 0;
   const sourceQuantity = authorityQuantity(input.authority.selectedAssets, input.assetKey);
   const delta = sourceQuantity - ledgerQuantity;
   const tolerance = epsilon(sourceQuantity);
