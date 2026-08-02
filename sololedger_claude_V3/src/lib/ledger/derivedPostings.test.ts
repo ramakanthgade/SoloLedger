@@ -328,6 +328,38 @@ describe('resolveAccountScope', () => {
   });
 });
 
+describe('derivePostings manual scope shortcut', () => {
+  it.each([
+    ['raw Account', { Account: 'Funding' }, 'funding'],
+    ['raw buy Account', { buy: { Account: 'Margin' } }, 'margin'],
+    ['raw spend Account', { spend: { Account: 'Options' } }, 'options']
+  ] as const)('preserves %s classification and file scope', (_label, raw, accountClass) => {
+    const [posting] = derivePostings([tx({
+      id: `manual-${accountClass}`, source: 'manual', importBatchId: 'manual-batch',
+      type: 'transfer_in', raw
+    })], context);
+    expect(posting).toMatchObject({
+      accountClass,
+      accountScopeId: `file:manual-batch:${accountClass}`,
+      signedQuantity: 2
+    });
+  });
+
+  it.each([
+    ['without a batch', undefined, 'manual'],
+    ['with a batch', 'manual-batch', 'file:manual-batch:manual']
+  ] as const)('preserves the fast manual path %s', (_label, importBatchId, accountScopeId) => {
+    const [posting] = derivePostings([tx({
+      id: `simple-${importBatchId ?? 'manual'}`, source: 'manual', importBatchId,
+      type: 'transfer_out', raw: undefined
+    })], context);
+    expect(posting).toMatchObject({ accountClass: 'manual', accountScopeId, signedQuantity: -2 });
+    expect(posting.evidence).toEqual([
+      expect.objectContaining({ kind: 'transaction', role: 'direct' })
+    ]);
+  });
+});
+
 describe('opening balances and internal custody', () => {
   it('keeps the bulk derivation path identical to per-transaction derivation', () => {
     const transactions = [
