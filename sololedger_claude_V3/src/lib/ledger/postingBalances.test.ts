@@ -44,4 +44,30 @@ describe('posting indexes', () => {
     expect(result.reconciliation.ledgerQuantity).toBeCloseTo(-3003);
     expect(result.reconciliation.delta).toBeCloseTo(3003);
   });
+
+  it('keeps same-asset aggregation linear across thousands of unique scopes', () => {
+    const count = 8_000;
+    const postings = derivePostings(
+      Array.from({ length: count }, (_, index) => ({
+        ...transaction(`unresolved-${index}`, index, 1),
+        source: 'unrecognized'
+      })),
+      { exchangeConnections: [] }
+    );
+    const metrics = { postingVisits: 0 };
+    const balances = postingBalances(postings, { metrics });
+    const running = buildRunningBalanceIndex(postings, metrics);
+    const chart = buildChartPrefixIndex(postings, 'day', metrics);
+
+    expect(postings).toHaveLength(count);
+    expect(metrics.postingVisits).toBe(count * 3);
+    expect(balances.size).toBe(count);
+    expect(running.byBalanceKey.size).toBe(count);
+    expect(chart.byBalanceKey.size).toBe(count);
+    expect(balances.get('unresolved:unresolved-0|unknown|asset:BTC')).toBe(1);
+    expect(balances.get(`unresolved:unresolved-${count - 1}|unknown|asset:BTC`)).toBe(1);
+    expect(running.byBalanceKey.get('unresolved:unresolved-4000|unknown|asset:BTC')).toEqual([
+      { postingId: 'unresolved-4000:10:0:asset:BTC', effectiveAt: 4000, balance: 1 }
+    ]);
+  });
 });

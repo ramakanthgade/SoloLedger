@@ -105,9 +105,15 @@ function parsedAccountClass(transaction: Transaction): AccountClass {
   if (transaction.parserAccountClass) return transaction.parserAccountClass;
   if (transaction.source === 'binance_options' || transaction.category?.startsWith('options_')) return 'options';
   if (transaction.instrumentClass === 'derivative' || transaction.category?.startsWith('perp')) return 'futures';
-  const rawAccount = transaction.raw?.Account;
-  const buyAccount = (transaction.raw?.buy as Record<string, unknown> | undefined)?.Account;
-  const spendAccount = (transaction.raw?.spend as Record<string, unknown> | undefined)?.Account;
+  const raw = transaction.raw;
+  if (raw == null) {
+    if (transaction.source.endsWith('_api')) return 'spot';
+    if (transaction.source === 'manual') return 'manual';
+    return 'unknown';
+  }
+  const rawAccount = raw.Account;
+  const buyAccount = (raw.buy as Record<string, unknown> | undefined)?.Account;
+  const spendAccount = (raw.spend as Record<string, unknown> | undefined)?.Account;
   const account = typeof rawAccount === 'string' ? rawAccount
     : typeof buyAccount === 'string' ? buyAccount
       : typeof spendAccount === 'string' ? spendAccount : '';
@@ -240,20 +246,30 @@ interface PostingLeg {
   position: number;
 }
 
-function transactionEvidence(transaction: Transaction): EvidenceRef[] {
-  const twin = transaction.dedupMatchedApiRow;
-  const deletedSource = transaction.deletedSourceEvidence;
+function deletedTransactionEvidence(
+  transaction: Transaction,
+  deletedSource: NonNullable<Transaction['deletedSourceEvidence']>
+): EvidenceRef[] {
   const direct: TransactionEvidenceRef = {
     kind: 'transaction', transactionId: transaction.id,
-    role: twin || deletedSource ? 'survivor' : 'direct', source: transaction.source,
+    role: 'survivor', source: transaction.source,
     sourceRef: transaction.sourceRef, importBatchId: transaction.importBatchId
   };
-  if (deletedSource) return [direct, {
+  return [direct, {
     kind: 'deleted_source', sourceIdentityId: deletedSource.sourceIdentityId,
     transactionId: deletedSource.transactionId, source: deletedSource.source,
     sourceRef: deletedSource.sourceRef, apiIdentity: deletedSource.apiIdentity,
     deletedAt: deletedSource.deletedAt
   }];
+}
+
+function transactionEvidence(transaction: Transaction): EvidenceRef[] {
+  const twin = transaction.dedupMatchedApiRow;
+  const direct: TransactionEvidenceRef = {
+    kind: 'transaction', transactionId: transaction.id,
+    role: twin ? 'survivor' : 'direct', source: transaction.source,
+    sourceRef: transaction.sourceRef, importBatchId: transaction.importBatchId
+  };
   if (!twin?.importBatchId) return [direct];
   const apiIdentity = binanceApiIdentity(twin);
   if (!apiIdentity) return [direct];
@@ -322,7 +338,9 @@ export function deriveTransactionPostings(
   context: DerivedPostingContext
 ): DerivedPosting[] {
   const scope = resolveAccountScope(transaction, context);
-  const evidence = transactionEvidence(transaction);
+  const evidence = transaction.deletedSourceEvidence
+    ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
+    : transactionEvidence(transaction);
   const legs = legsFor(transaction);
   const postings: DerivedPosting[] = [];
   let previousPhase: PostingPhase | undefined;
@@ -366,7 +384,9 @@ function appendTransactionPostings(
 ): void {
   if (transaction.isSpam) return;
   const scope = resolveAccountScope(transaction, context, connectionById, liveBinanceConnections);
-  const evidence = transactionEvidence(transaction);
+  const evidence = transaction.deletedSourceEvidence
+    ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
+    : transactionEvidence(transaction);
   if (transaction.type === 'fee') {
     const quantity = -Math.abs(transaction.amount);
     if (quantity !== 0 && Number.isFinite(quantity)) {
@@ -406,7 +426,12 @@ export function comparePostings(a: DerivedPosting, b: DerivedPosting): number {
 
 function sortPostingsIfNeeded(postings: DerivedPosting[]): DerivedPosting[] {
   for (let index = 1; index < postings.length; index++) {
-    if (comparePostings(postings[index - 1], postings[index]) > 0) return postings.sort(comparePostings);
+    const previous = postings[index - 1];
+    const current = postings[index];
+    if (
+      previous.effectiveAt > current.effectiveAt ||
+      (previous.effectiveAt === current.effectiveAt && comparePostings(previous, current) > 0)
+    ) return postings.sort(comparePostings);
   }
   return postings;
 }

@@ -15,9 +15,40 @@ export function postingBalanceKey(posting: Pick<DerivedPosting, 'accountScopeId'
   return `${posting.accountScopeId}|${posting.accountClass}|${posting.assetKey}`;
 }
 
+type PostingKeyCache = Map<
+  string,
+  Map<DerivedPosting['accountClass'], Map<string, PostingBalanceKey>>
+>;
+
+function cachedPostingBalanceKey(
+  posting: DerivedPosting,
+  cache: PostingKeyCache
+): PostingBalanceKey {
+  let byAccountClass = cache.get(posting.assetKey);
+  if (byAccountClass == null) {
+    byAccountClass = new Map();
+    cache.set(posting.assetKey, byAccountClass);
+  }
+  let byScope = byAccountClass.get(posting.accountClass);
+  if (byScope == null) {
+    byScope = new Map();
+    byAccountClass.set(posting.accountClass, byScope);
+  }
+  const cached = byScope.get(posting.accountScopeId);
+  if (cached != null) return cached;
+  const key = postingBalanceKey(posting);
+  byScope.set(posting.accountScopeId, key);
+  return key;
+}
+
 function orderedPostings(postings: readonly DerivedPosting[]): readonly DerivedPosting[] {
   for (let index = 1; index < postings.length; index++) {
-    if (comparePostings(postings[index - 1], postings[index]) > 0) return [...postings].sort(comparePostings);
+    const previous = postings[index - 1];
+    const current = postings[index];
+    if (
+      previous.effectiveAt > current.effectiveAt ||
+      (previous.effectiveAt === current.effectiveAt && comparePostings(previous, current) > 0)
+    ) return [...postings].sort(comparePostings);
   }
   return postings;
 }
@@ -27,13 +58,14 @@ export function postingBalances(
   options: PostingBalanceOptions = {}
 ): Map<PostingBalanceKey, number> {
   const balances = new Map<PostingBalanceKey, number>();
+  const keyCache: PostingKeyCache = new Map();
   const { asOf, scopeId, accountClass, metrics } = options;
   for (const posting of orderedPostings(postings)) {
     if (metrics) metrics.postingVisits += 1;
     if (asOf != null && posting.effectiveAt > asOf) break;
     if (scopeId != null && posting.accountScopeId !== scopeId) continue;
     if (accountClass != null && posting.accountClass !== accountClass) continue;
-    const key = postingBalanceKey(posting);
+    const key = cachedPostingBalanceKey(posting, keyCache);
     balances.set(key, posting.role === 'opening_balance'
       ? posting.signedQuantity
       : (balances.get(key) ?? 0) + posting.signedQuantity);
@@ -61,10 +93,11 @@ export function buildRunningBalanceIndex(
   const orderedPostingIds: string[] = [];
   const byBalanceKey = new Map<PostingBalanceKey, RunningBalancePoint[]>();
   const postingPosition = new Map<string, number>();
+  const keyCache: PostingKeyCache = new Map();
   for (let position = 0; position < ordered.length; position++) {
     if (metrics) metrics.postingVisits += 1;
     const posting = ordered[position];
-    const key = postingBalanceKey(posting);
+    const key = cachedPostingBalanceKey(posting, keyCache);
     let points = byBalanceKey.get(key);
     if (points == null) {
       points = [];
@@ -101,9 +134,10 @@ export function buildChartPrefixIndex(
   const ordered = orderedPostings(postings);
   const byBalanceKey = new Map<PostingBalanceKey, ChartPrefixPoint[]>();
   const running = new Map<PostingBalanceKey, number>();
+  const keyCache: PostingKeyCache = new Map();
   for (const posting of ordered) {
     if (metrics) metrics.postingVisits += 1;
-    const key = postingBalanceKey(posting);
+    const key = cachedPostingBalanceKey(posting, keyCache);
     const bucketStart = Math.floor(posting.effectiveAt / bucketMs) * bucketMs;
     const balance = posting.role === 'opening_balance'
       ? posting.signedQuantity
