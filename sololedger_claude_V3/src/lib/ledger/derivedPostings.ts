@@ -93,12 +93,13 @@ export type AccountScopeResolution =
 function parsedAccountClass(transaction: Transaction): AccountClass {
   if (transaction.source === 'binance_options' || transaction.category?.startsWith('options_')) return 'options';
   if (transaction.instrumentClass === 'derivative' || transaction.category?.startsWith('perp')) return 'futures';
-  const candidates = [
-    transaction.raw?.Account,
-    (transaction.raw?.buy as Record<string, unknown> | undefined)?.Account,
-    (transaction.raw?.spend as Record<string, unknown> | undefined)?.Account
-  ];
-  const value = candidates.find((candidate): candidate is string => typeof candidate === 'string')?.toLowerCase() ?? '';
+  const rawAccount = transaction.raw?.Account;
+  const buyAccount = (transaction.raw?.buy as Record<string, unknown> | undefined)?.Account;
+  const spendAccount = (transaction.raw?.spend as Record<string, unknown> | undefined)?.Account;
+  const account = typeof rawAccount === 'string' ? rawAccount
+    : typeof buyAccount === 'string' ? buyAccount
+      : typeof spendAccount === 'string' ? spendAccount : '';
+  const value = account.toLowerCase();
   if (value.includes('funding')) return 'funding';
   if (value.includes('margin')) return 'margin';
   if (value.includes('future')) return 'futures';
@@ -129,12 +130,16 @@ function connectionResolution(
 
 export function resolveAccountScope(
   transaction: Transaction,
-  context: DerivedPostingContext
+  context: DerivedPostingContext,
+  connectionById?: ReadonlyMap<string, ExchangeSourceIdentity>,
+  liveBinanceConnections?: readonly ExchangeSourceIdentity[]
 ): AccountScopeResolution {
   const accountClass = parsedAccountClass(transaction);
   const directId = transaction.source.endsWith('_api') ? transaction.importBatchId : undefined;
   if (directId) {
-    const connection = context.exchangeConnections.find((row) => row.id === directId);
+    const connection = connectionById
+      ? connectionById.get(directId)
+      : context.exchangeConnections.find((row) => row.id === directId);
     if (connection) {
       const proven = connection.provenAccountClasses ?? (transaction.source === 'binance_api' ? ['spot'] : []);
       const directClass = proven.includes(accountClass)
@@ -150,7 +155,9 @@ export function resolveAccountScope(
 
   const twinId = transaction.dedupMatchedApiRow?.importBatchId;
   if (twinId) {
-    const connection = context.exchangeConnections.find((row) => row.id === twinId);
+    const connection = connectionById
+      ? connectionById.get(twinId)
+      : context.exchangeConnections.find((row) => row.id === twinId);
     if (connection) return connectionResolution(connection, accountClass === 'unknown' ? 'spot' : accountClass);
     return {
       scopeStatus: 'source_deleted', accountScopeId: `exchange:${twinId}`,
@@ -169,9 +176,11 @@ export function resolveAccountScope(
     return { scopeStatus: 'resolved', accountScopeId: wallet, accountClass: 'wallet' };
   }
 
-  const eligibleBinanceCsv = ['binance', 'binance_spot', 'binance_transfers'].includes(transaction.source);
+  const eligibleBinanceCsv = transaction.source === 'binance' || transaction.source === 'binance_spot' ||
+    transaction.source === 'binance_transfers';
   if (eligibleBinanceCsv) {
-    const live = context.exchangeConnections.filter((row) => row.exchange === 'binance' && row.deletedAt == null);
+    const live = liveBinanceConnections ??
+      context.exchangeConnections.filter((row) => row.exchange === 'binance' && row.deletedAt == null);
     if (live.length === 1) return connectionResolution(live[0], accountClass === 'unknown' ? 'spot' : accountClass);
     if (live.length > 1) {
       return { scopeStatus: 'unresolved', accountScopeId: `unresolved:${transaction.id}`, accountClass, reason: 'multiple_binance_connections' };
@@ -219,9 +228,17 @@ function transactionEvidence(transaction: Transaction): EvidenceRef[] {
   }];
 }
 
+const POSITIVE_PRINCIPAL_TYPES = new Set<Transaction['type']>(
+  ['buy', 'transfer_in', 'income', 'gift_received', 'nft_mint', 'nft_buy', 'defi_withdraw']
+);
+const NEGATIVE_PRINCIPAL_TYPES = new Set<Transaction['type']>(
+  ['sell', 'transfer_out', 'gift_sent', 'fee', 'nft_sell', 'defi_deposit', 'trade']
+);
+const COUNTER_LEG_TYPES = new Set<Transaction['type']>(['buy', 'sell', 'trade', 'nft_buy', 'nft_sell']);
+
 function signedPrincipal(transaction: Transaction): number {
-  if (['buy', 'transfer_in', 'income', 'gift_received', 'nft_mint', 'nft_buy', 'defi_withdraw'].includes(transaction.type)) return Math.abs(transaction.amount);
-  if (['sell', 'transfer_out', 'gift_sent', 'fee', 'nft_sell', 'defi_deposit', 'trade'].includes(transaction.type)) return -Math.abs(transaction.amount);
+  if (POSITIVE_PRINCIPAL_TYPES.has(transaction.type)) return Math.abs(transaction.amount);
+  if (NEGATIVE_PRINCIPAL_TYPES.has(transaction.type)) return -Math.abs(transaction.amount);
   return 0;
 }
 
@@ -247,7 +264,7 @@ function legsFor(transaction: Transaction): PostingLeg[] {
   }
   if (
     transaction.counterAsset && transaction.counterAmount != null && Number.isFinite(transaction.counterAmount) &&
-    ['buy', 'sell', 'trade', 'nft_buy', 'nft_sell'].includes(transaction.type)
+    COUNTER_LEG_TYPES.has(transaction.type)
   ) {
     const sign = transaction.type === 'buy' || transaction.type === 'nft_buy' ? -1 : 1;
     legs.push({
@@ -290,6 +307,58 @@ export function deriveTransactionPostings(
   return postings;
 }
 
+function appendDerivedPosting(
+  target: DerivedPosting[], transaction: Transaction, scope: AccountScopeResolution, evidence: EvidenceRef[],
+  role: Exclude<PostingRole, 'opening_balance'>, phase: Exclude<PostingPhase, 0>,
+  asset: string, assetKey: string, quantity: number
+): void {
+  target.push({
+    id: `${transaction.id}:${phase}:0:${assetKey}`,
+    taxEventId: transaction.id, transactionId: transaction.id,
+    accountScopeId: scope.accountScopeId, accountClass: scope.accountClass,
+    assetKey, asset, signedQuantity: quantity,
+    role, postingPhase: phase, ordinal: 0, effectiveAt: transaction.timestamp,
+    evidence, taxableEffect: 'source_transaction_only'
+  });
+}
+
+function appendTransactionPostings(
+  target: DerivedPosting[],
+  transaction: Transaction,
+  context: DerivedPostingContext,
+  connectionById: ReadonlyMap<string, ExchangeSourceIdentity>,
+  liveBinanceConnections: readonly ExchangeSourceIdentity[]
+): void {
+  if (transaction.isSpam) return;
+  const scope = resolveAccountScope(transaction, context, connectionById, liveBinanceConnections);
+  const evidence = transactionEvidence(transaction);
+  if (transaction.type === 'fee') {
+    const quantity = -Math.abs(transaction.amount);
+    if (quantity !== 0 && Number.isFinite(quantity)) {
+      appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
+        normalizeAssetSymbol(transaction.asset), transactionLegAssetKey(transaction, 'principal'), quantity);
+    }
+    return;
+  }
+  const principal = signedPrincipal(transaction);
+  if (principal !== 0 && Number.isFinite(principal)) {
+    appendDerivedPosting(target, transaction, scope, evidence, 'principal', 10,
+      normalizeAssetSymbol(transaction.asset), transactionLegAssetKey(transaction, 'principal'), principal);
+  }
+  if (transaction.counterAsset && transaction.counterAmount != null && Number.isFinite(transaction.counterAmount) &&
+    COUNTER_LEG_TYPES.has(transaction.type)) {
+    const sign = transaction.type === 'buy' || transaction.type === 'nft_buy' ? -1 : 1;
+    appendDerivedPosting(target, transaction, scope, evidence, 'counter', 20,
+      normalizeAssetSymbol(transaction.counterAsset), transactionLegAssetKey(transaction, 'counter'),
+      sign * Math.abs(transaction.counterAmount));
+  }
+  if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
+    appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
+      normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset), transactionLegAssetKey(transaction, 'fee'),
+      -Math.abs(transaction.feeAmount));
+  }
+}
+
 function compareText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -327,8 +396,12 @@ export function derivePostings(
   context: DerivedPostingContext
 ): DerivedPosting[] {
   const sourcePostings: DerivedPosting[] = [];
+  const connectionById = new Map(context.exchangeConnections.map((connection) => [connection.id, connection]));
+  const liveBinanceConnections = context.exchangeConnections.filter(
+    (connection) => connection.exchange === 'binance' && connection.deletedAt == null
+  );
   for (const transaction of transactions) {
-    sourcePostings.push(...deriveTransactionPostings(transaction, context));
+    appendTransactionPostings(sourcePostings, transaction, context, connectionById, liveBinanceConnections);
   }
   const openings = context.openingBalances ?? [];
   if (openings.length === 0) return sortPostingsIfNeeded(sourcePostings);

@@ -101,6 +101,13 @@ function legIdentity(
 export function transactionAssetKey(
   transaction: Transaction
 ): string {
+  // The common exchange/manual case has no chain-qualified identity. Avoid
+  // constructing an AssetIdentity and running chain normalization for it.
+  if (!transaction.chain && !transaction.contractAddress) {
+    const asset = normalizeAssetSymbol(transaction.asset);
+    if (!asset) throw new Error('asset is required');
+    return `asset:${asset}`;
+  }
   const contractAddress = heliusNativeSolContract(
     transaction, 'principal', transaction.asset, transaction.contractAddress
   );
@@ -116,6 +123,18 @@ export function transactionLegAssetKey(
     ? transaction.counterAsset
     : transaction.feeAsset ?? transaction.asset;
   if (!asset) throw new Error(`${leg} asset is required`);
+
+  if (!transaction.chain && !transaction.contractAddress) {
+    const raw = transaction.raw;
+    const hasLegContract = leg === 'counter'
+      ? raw?.counterContractAddress != null || raw?.counterMint != null || raw?.outputMint != null || raw?.toMint != null
+      : raw?.feeContractAddress != null || raw?.feeMint != null;
+    if (!hasLegContract) {
+      const normalizedAsset = normalizeAssetSymbol(asset);
+      if (!normalizedAsset) throw new Error(`${leg} asset is required`);
+      return `asset:${normalizedAsset}`;
+    }
+  }
 
   const rawAddress = rawString(transaction, leg === 'counter'
     ? ['counterContractAddress', 'counterMint', 'outputMint', 'toMint']

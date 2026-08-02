@@ -61,20 +61,18 @@ export function buildRunningBalanceIndex(
   const orderedPostingIds: string[] = [];
   const byBalanceKey = new Map<PostingBalanceKey, RunningBalancePoint[]>();
   const postingPosition = new Map<string, number>();
-  const balances = new Map<PostingBalanceKey, number>();
   for (let position = 0; position < ordered.length; position++) {
     if (metrics) metrics.postingVisits += 1;
     const posting = ordered[position];
     const key = postingBalanceKey(posting);
-    const balance = posting.role === 'opening_balance'
-      ? posting.signedQuantity
-      : (balances.get(key) ?? 0) + posting.signedQuantity;
-    balances.set(key, balance);
     let points = byBalanceKey.get(key);
     if (points == null) {
       points = [];
       byBalanceKey.set(key, points);
     }
+    const balance = posting.role === 'opening_balance'
+      ? posting.signedQuantity
+      : (points.length === 0 ? 0 : points[points.length - 1].balance) + posting.signedQuantity;
     points.push({ postingId: posting.id, effectiveAt: posting.effectiveAt, balance });
     orderedPostingIds.push(posting.id);
     postingPosition.set(posting.id, position);
@@ -101,7 +99,7 @@ export function buildChartPrefixIndex(
 ): ChartPrefixIndex {
   const bucketMs = bucketMilliseconds(bucket);
   const ordered = orderedPostings(postings);
-  const bucketBalances = new Map<PostingBalanceKey, Map<number, number>>();
+  const byBalanceKey = new Map<PostingBalanceKey, ChartPrefixPoint[]>();
   const running = new Map<PostingBalanceKey, number>();
   for (const posting of ordered) {
     if (metrics) metrics.postingVisits += 1;
@@ -111,17 +109,14 @@ export function buildChartPrefixIndex(
       ? posting.signedQuantity
       : (running.get(key) ?? 0) + posting.signedQuantity;
     running.set(key, balance);
-    let values = bucketBalances.get(key);
-    if (values == null) {
-      values = new Map<number, number>();
-      bucketBalances.set(key, values);
+    let points = byBalanceKey.get(key);
+    if (points == null) {
+      points = [];
+      byBalanceKey.set(key, points);
     }
-    values.set(bucketStart, balance);
-  }
-  const byBalanceKey = new Map<PostingBalanceKey, ChartPrefixPoint[]>();
-  for (const [key, values] of bucketBalances) {
-    const points = [...values.entries()].map(([bucketStart, balance]) => ({ bucketStart, balance }));
-    byBalanceKey.set(key, points);
+    const last = points[points.length - 1];
+    if (last?.bucketStart === bucketStart) last.balance = balance;
+    else points.push({ bucketStart, balance });
   }
   return { bucketMs, byBalanceKey };
 }

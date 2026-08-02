@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { CHAINS, ETHERSCAN_V2_CHAIN_IDS, isEvmChain } from '@/lib/rpc/providers';
 import type { Transaction } from '@/types/transaction';
-import { assetKey, transactionLegAssetKey } from './assetKey';
+import { assetKey, transactionAssetKey, transactionLegAssetKey } from './assetKey';
 import {
   canonicalWalletChainScope,
   CHAIN_NATIVE_ASSETS,
@@ -12,6 +12,18 @@ import {
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 
 describe('assetKey', () => {
+  it('rejects blank unchained symbols on optimized leg paths', () => {
+    const base = {
+      id: 'blank', timestamp: 1, type: 'trade', amount: 1, fiatCurrency: 'INR',
+      source: 'manual', flags: [], isInternalTransfer: false
+    } as Transaction;
+    expect(() => transactionAssetKey({ ...base, asset: '   ' })).toThrow('asset is required');
+    expect(() => transactionLegAssetKey({ ...base, asset: 'BTC', counterAsset: '   ' }, 'counter'))
+      .toThrow('counter asset is required');
+    expect(() => transactionLegAssetKey({ ...base, asset: 'BTC', feeAsset: '   ' }, 'fee'))
+      .toThrow('fee asset is required');
+  });
+
   it('normalizes exchange/manual symbols', () => {
     expect(assetKey({ asset: ' usdt ' })).toBe('asset:USDT');
   });

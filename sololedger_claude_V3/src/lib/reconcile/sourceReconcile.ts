@@ -217,9 +217,16 @@ export function reconcileDerivedPostings(input: ReconcileDerivedPostingsInput): 
     effectiveAuthorityStatus === 'missing' || effectiveAuthorityStatus === 'non_comparable' ||
     input.authority.selectedSnapshot?.asOf == null;
   const relevantEvidence = new Set<string>();
+  const visitedEvidence = new Set<DerivedPosting['evidence'][number]>();
   for (const posting of input.postings) {
     if (posting.accountScopeId !== input.scopeId || posting.accountClass !== input.accountClass || posting.assetKey !== input.assetKey) continue;
-    for (const evidence of posting.evidence) relevantEvidence.add(`${evidence.kind}:${JSON.stringify(evidence)}`);
+    for (const evidence of posting.evidence) {
+      // Multiple legs from one transaction intentionally share evidence objects.
+      // Preserve structural de-duplication while avoiding repeated serialization.
+      if (visitedEvidence.has(evidence)) continue;
+      visitedEvidence.add(evidence);
+      relevantEvidence.add(`${evidence.kind}:${JSON.stringify(evidence)}`);
+    }
   }
   const base: ReconciliationResult = {
     scopeId: input.scopeId, accountClass: input.accountClass, assetKey: input.assetKey, asset: input.asset,

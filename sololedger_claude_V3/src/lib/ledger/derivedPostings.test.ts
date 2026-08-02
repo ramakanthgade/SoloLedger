@@ -167,6 +167,20 @@ describe('resolveAccountScope', () => {
 });
 
 describe('opening balances and internal custody', () => {
+  it('keeps the bulk derivation path identical to per-transaction derivation', () => {
+    const transactions = [
+      tx({ id: 'api-trade', timestamp: 1, source: 'binance_api', importBatchId: 'conn-1', type: 'trade',
+        asset: 'ETH', counterAsset: 'USDC', counterAmount: 2_000, feeAsset: 'ETH', feeAmount: 0.01 }),
+      tx({ id: 'csv', timestamp: 2, source: 'binance', raw: { Account: 'Funding' }, type: 'transfer_in' }),
+      tx({ id: 'wallet', timestamp: 3, source: 'rpc:moralis', chain: 'ethereum', walletAddress: '0xABC', type: 'transfer_out' }),
+      tx({ id: 'fee', timestamp: 4, source: 'manual', type: 'fee' }),
+      tx({ id: 'spam', timestamp: 5, source: 'manual', isSpam: true })
+    ];
+    expect(derivePostings(transactions, context)).toEqual(
+      transactions.flatMap((transaction) => deriveTransactionPostings(transaction, context))
+    );
+  });
+
   it('selects absolute openings by cutoff and retains historical openings', () => {
     const rows = derivePostings([
       tx({ id: 'before', timestamp: 10, source: 'binance_api', importBatchId: 'conn-1', amount: 2 }),
