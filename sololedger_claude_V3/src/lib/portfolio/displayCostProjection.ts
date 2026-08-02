@@ -165,6 +165,45 @@ function applyDisplayCost(
   }
 }
 
+/** Extend a finished chronological projection without revisiting historical postings. */
+export function appendDisplayCostProjections(
+  previous: DisplayCostProjections,
+  transaction: Transaction,
+  postings: readonly DerivedPosting[]
+): DisplayCostProjections {
+  const exact = new Map(previous.exact);
+  const unresolved = new Map(previous.unresolved);
+  for (const posting of postings) {
+    const key = postingBalanceKey(posting);
+    const priorExact = exact.get(key);
+    const exactBalance: DisplayCostBalance = priorExact
+      ? { ...priorExact }
+      : {
+          scopeId: posting.accountScopeId,
+          accountClass: posting.accountClass,
+          assetKey: posting.assetKey,
+          amount: 0,
+          costBasis: 0
+        };
+    applyDisplayCost(exactBalance, posting, transaction);
+    exact.set(key, exactBalance);
+    if (!posting.accountScopeId.startsWith('unresolved:') || previous.openingAffected.has(key)) continue;
+    const priorUnresolved = unresolved.get(posting.assetKey);
+    const unresolvedBalance: CanonicalDisplayCostBalance = priorUnresolved
+      ? { ...priorUnresolved }
+      : { assetKey: posting.assetKey, amount: 0, costBasis: 0 };
+    applyDisplayCost(unresolvedBalance, posting, transaction);
+    unresolved.set(posting.assetKey, unresolvedBalance);
+  }
+  return {
+    exact,
+    unresolved,
+    openingAffected: previous.openingAffected,
+    chartPostingCostsEquivalent: previous.chartPostingCostsEquivalent &&
+      !requiresCustodyChartCostSemantics(transaction)
+  };
+}
+
 /** Fast path for callers that prove transactions/postings are chronological and have no openings. */
 export function createDisplayCostProjectionAccumulator(): DisplayCostProjectionAccumulator {
   const exact = new Map<PostingBalanceKey, DisplayCostBalance>();

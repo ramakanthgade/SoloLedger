@@ -2,6 +2,7 @@ import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { transactionLegAssetKey } from '@/lib/ledger/assetKey';
 import {
   derivePostings,
+  deriveTransactionPostings,
   type AccountClass,
   type DerivedPosting,
   type ExchangeSourceIdentity,
@@ -9,6 +10,7 @@ import {
 } from '@/lib/ledger/derivedPostings';
 import {
   postingBalanceKey,
+  appendPreparedPostingAggregation,
   preparePostingAggregation,
   type PreparedPostingAggregation
 } from '@/lib/ledger/postingBalances';
@@ -22,8 +24,10 @@ import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
 import {
   buildDisplayCostProjections,
+  appendDisplayCostProjections,
   createDisplayCostProjectionAccumulator
 } from './displayCostProjection';
+import type { DisplayCostProjections } from './displayCostProjection';
 
 export interface HoldingsScopeFilter {
   scopeIds?: readonly string[];
@@ -82,9 +86,13 @@ export interface HoldingsProjection {
   preparedPostings: PreparedPostingAggregation;
   /** Whether chart costs can use the faster posting-equivalent implementation. */
   chartPostingCostsEquivalent: boolean;
+  /** Internal immutable state used by a proven chronological append. */
+  displayCostProjections: DisplayCostProjections;
+  /** Internal canonical metadata for every projected key, including zero balances. */
+  displayIdentityIndex: ReadonlyMap<string, DisplayIdentity>;
 }
 
-interface DisplayIdentity {
+export interface DisplayIdentity {
   asset: string;
   chain?: string;
   contractAddress?: string;
@@ -352,6 +360,116 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     holdings,
     postings,
     preparedPostings,
-    chartPostingCostsEquivalent: displayCostProjections.chartPostingCostsEquivalent
+    chartPostingCostsEquivalent: displayCostProjections.chartPostingCostsEquivalent,
+    displayCostProjections,
+    displayIdentityIndex: identities
+  };
+}
+
+/**
+ * Re-project one strictly chronological transaction while retaining Transaction[]
+ * as the source ledger. Callers must separately prove the historical prefix did
+ * not change; all authority selection and holding assembly still run normally.
+ */
+export function appendHoldingsProjection(
+  previous: HoldingsProjection,
+  input: HoldingsProjectionInput,
+  transaction: Transaction
+): HoldingsProjection | undefined {
+  if (input.comparisonAt != null || input.scopeFilter != null || input.openingBalances.length !== 0) return undefined;
+  const finalInputIndex = input.transactions.length - 1;
+  if (finalInputIndex < 0 || input.transactions[finalInputIndex] !== transaction) return undefined;
+  const precedingTransaction = input.transactions[finalInputIndex - 1];
+  if (precedingTransaction && transaction.timestamp <= precedingTransaction.timestamp) return undefined;
+  const appended = deriveTransactionPostings(transaction, {
+    exchangeConnections: [...input.exchangeConnections]
+  });
+  if (appended.length === 0) return undefined;
+  const postings = [...previous.postings, ...appended];
+  const preparedPostings = appendPreparedPostingAggregation(
+    previous.preparedPostings, postings, appended
+  );
+  const displayCostProjections = appendDisplayCostProjections(
+    previous.displayCostProjections, transaction, appended
+  );
+  const allSlices = buildAuthorityBalanceModel({
+    postings,
+    snapshots: input.snapshots,
+    assets: input.assets,
+    coverage: input.coverage,
+    exchangeConnections: input.exchangeConnections,
+    now: input.now,
+    preparedPostings
+  });
+  const identities = new Map(previous.displayIdentityIndex);
+  for (const posting of appended) {
+    if (posting.role !== 'opening_balance' &&
+        transactionLegAssetKey(transaction, posting.role) === posting.assetKey) {
+      identities.set(posting.assetKey, transactionLegIdentity(
+        transaction, posting.role, posting.assetKey, posting.asset
+      ));
+    }
+  }
+  for (const slice of allSlices) {
+    if (!identities.has(slice.assetKey)) {
+      identities.set(slice.assetKey, {
+        asset: slice.asset,
+        chain: chainFromCanonicalKey(slice.assetKey),
+        contractAddress: contractFromCanonicalKey(slice.assetKey)
+      });
+    }
+  }
+  const slicesByAsset = new Map<string, AuthorityBalanceSlice[]>();
+  for (const slice of allSlices) {
+    const rows = slicesByAsset.get(slice.assetKey) ?? [];
+    rows.push(slice);
+    slicesByAsset.set(slice.assetKey, rows);
+  }
+  const holdings: ProjectedPortfolioHolding[] = [];
+  for (const [canonicalKey, assetSlices] of slicesByAsset) {
+    const quantity = assetSlices.reduce((sum, slice) => sum + slice.quantity, 0);
+    if (quantity === 0) continue;
+    const identity = identities.get(canonicalKey) ?? { asset: assetSlices[0].asset };
+    const statuses = new Set(assetSlices.map((slice) => slice.verificationStatus));
+    let unresolvedQuantity = 0;
+    const exactCost = assetSlices.reduce((sum, slice) => {
+      const key = postingBalanceKey({
+        accountScopeId: slice.scopeId, accountClass: slice.accountClass, assetKey: slice.assetKey
+      });
+      if (slice.verificationStatus === 'posting_fallback' && slice.scopeStatus === 'unresolved' &&
+          !displayCostProjections.openingAffected.has(key)) {
+        unresolvedQuantity += slice.quantity;
+        return sum;
+      }
+      const displayCost = displayCostProjections.exact.get(key);
+      const perUnitCost = displayCost && displayCost.amount > 0 && displayCost.costBasis > 0
+        ? displayCost.costBasis / displayCost.amount : 0;
+      return sum + Math.max(0, slice.quantity) * perUnitCost;
+    }, 0);
+    const unresolvedCost = displayCostProjections.unresolved.get(canonicalKey);
+    const unresolvedPerUnit = unresolvedCost && unresolvedCost.amount > 0 && unresolvedCost.costBasis > 0
+      ? unresolvedCost.costBasis / unresolvedCost.amount : 0;
+    holdings.push({
+      assetKey: canonicalKey,
+      asset: identity.asset,
+      quantity,
+      amount: quantity,
+      costBasis: quantity > 0 ? exactCost + Math.max(0, unresolvedQuantity) * unresolvedPerUnit : 0,
+      chain: identity.chain,
+      contractAddress: identity.contractAddress,
+      verificationStatus: statuses.size === 1 ? [...statuses][0] : 'mixed',
+      sourceVerification: assetSlices.map(sourceVerification)
+    });
+  }
+  holdings.sort((left, right) => right.costBasis - left.costBasis ||
+    left.assetKey.localeCompare(right.assetKey));
+  return {
+    slices: allSlices,
+    holdings,
+    postings,
+    preparedPostings,
+    chartPostingCostsEquivalent: displayCostProjections.chartPostingCostsEquivalent,
+    displayCostProjections,
+    displayIdentityIndex: identities
   };
 }

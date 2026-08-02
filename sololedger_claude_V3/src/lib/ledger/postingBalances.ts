@@ -128,6 +128,51 @@ export function preparePostingAggregation(
   return { source: postings, ordered, keys, scopes: mutableScopes, representativeByAsset };
 }
 
+/** Extend an immutable aggregation when callers have proved every new posting is later. */
+export function appendPreparedPostingAggregation(
+  prepared: PreparedPostingAggregation,
+  postings: readonly DerivedPosting[],
+  appended: readonly DerivedPosting[]
+): PreparedPostingAggregation {
+  if (appended.length === 0 || postings.length !== prepared.source.length + appended.length) {
+    throw new Error('invalid prepared posting append');
+  }
+  const previousLast = prepared.ordered[prepared.ordered.length - 1];
+  if (previousLast && comparePostings(previousLast, appended[0]) > 0) {
+    throw new Error('prepared posting append is not ordered');
+  }
+  for (let index = 1; index < appended.length; index++) {
+    if (comparePostings(appended[index - 1], appended[index]) > 0) {
+      throw new Error('prepared posting append is not ordered');
+    }
+  }
+
+  const keys = [...prepared.keys];
+  const scopes = new Map(prepared.scopes);
+  const representativeByAsset = new Map(prepared.representativeByAsset);
+  for (const posting of appended) {
+    const key = postingBalanceKey(posting);
+    keys.push(key);
+    if (!representativeByAsset.has(posting.assetKey)) representativeByAsset.set(posting.assetKey, posting);
+    const scopeKey = postingScopeAggregationKey(posting.accountScopeId, posting.accountClass);
+    const previous = scopes.get(scopeKey);
+    const balances = new Map(previous?.balances);
+    const assets = new Map(previous?.assets);
+    assets.set(posting.assetKey, posting.asset);
+    balances.set(posting.assetKey, posting.role === 'opening_balance'
+      ? posting.signedQuantity
+      : (balances.get(posting.assetKey) ?? 0) + posting.signedQuantity);
+    scopes.set(scopeKey, {
+      scopeId: posting.accountScopeId,
+      accountClass: posting.accountClass,
+      postingCount: (previous?.postingCount ?? 0) + 1,
+      balances,
+      assets
+    });
+  }
+  return { source: postings, ordered: postings, keys, scopes, representativeByAsset };
+}
+
 function aggregationSnapshot(
   postings: readonly DerivedPosting[],
   prepared?: PreparedPostingAggregation

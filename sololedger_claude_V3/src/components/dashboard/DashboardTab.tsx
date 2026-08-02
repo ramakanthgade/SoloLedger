@@ -12,13 +12,13 @@ import type { CsvImportRow, ExchangeBalanceRow, ExchangeConnectionRow, PriceCach
 import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
-import type { TaxSettings, Transaction } from '@/types/transaction';
+import type { TaxSettings } from '@/types/transaction';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
-import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
+import type { HoldingsProjectionInput } from '@/lib/portfolio/holdingsProjection';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
@@ -30,6 +30,7 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { useTabNav } from '@/lib/tabNav';
 import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
+import { createHoldingsProjector, createTransactionViewsProjector } from './dashboardProjectionCache';
 import {
   cn,
   formatCurrency,
@@ -76,18 +77,6 @@ import {
 
 const PRIVACY_KEY = 'sololedger_dashboard_privacy';
 const DISMISS_KEY = 'sololedger_dashboard_dismissed_insights';
-
-function chronologicallyOrderedProjectionTransactions(
-  transactions: Transaction[]
-): Transaction[] {
-  for (let index = 1; index < transactions.length; index++) {
-    if (transactions[index - 1].timestamp > transactions[index].timestamp) {
-      // Stable sort preserves source order when timestamps are equal.
-      return [...transactions].sort((left, right) => left.timestamp - right.timestamp);
-    }
-  }
-  return transactions;
-}
 
 function readDismissed(): string[] {
   try {
@@ -451,6 +440,8 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
   const [spotRefreshTick, setSpotRefreshTick] = useState(Date.now);
   const nowMs = spotRefreshTick;
   const autoPriceAttemptedRef = useRef(false);
+  const [projectTransactionViews] = useState(createTransactionViewsProjector);
+  const [projectHoldings] = useState(createHoldingsProjector);
 
   useEffect(() => {
     const timer = window.setInterval(() => setSpotRefreshTick(Date.now()), 5 * 60_000);
@@ -464,28 +455,27 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
   const currency = settings?.reportingCurrency ?? 'INR';
   const jurisdiction = settings?.jurisdiction ?? 'IN';
 
-  const nonSpamTxs = useMemo(
-    () => (transactions ?? []).filter((t) => !t.isSpam),
-    [transactions]
-  );
-  // Keep the shared consumer array untouched because FIFO and custody charts
-  // preserve input order for same-timestamp rows.
-  const projectionTransactions = useMemo(
-    () => chronologicallyOrderedProjectionTransactions(nonSpamTxs),
-    [nonSpamTxs]
-  );
+  const transactionViews = useMemo(() => {
+    const source = transactions ?? [];
+    return projectTransactionViews(source);
+  }, [projectTransactionViews, transactions]);
+  const nonSpamTxs = transactionViews.nonSpam;
+  const projectionTransactions = transactionViews.projection;
 
-  const projection = useMemo(() => buildHoldingsProjection({
-    transactions: projectionTransactions,
-    exchangeConnections: exchangeConns,
-    openingBalances,
-    snapshots: authoritySnapshots,
-    assets: authorityAssets,
-    coverage: sourceCoverageRows,
-    now: nowMs
-  }), [
-    projectionTransactions, exchangeConns, openingBalances, authoritySnapshots, authorityAssets,
-    sourceCoverageRows, nowMs
+  const projection = useMemo(() => {
+    const input: HoldingsProjectionInput = {
+      transactions: projectionTransactions,
+      exchangeConnections: exchangeConns,
+      openingBalances,
+      snapshots: authoritySnapshots,
+      assets: authorityAssets,
+      coverage: sourceCoverageRows,
+      now: nowMs
+    };
+    return projectHoldings(input);
+  }, [
+    projectHoldings, projectionTransactions, exchangeConns, openingBalances, authoritySnapshots,
+    authorityAssets, sourceCoverageRows, nowMs
   ]);
   const holdings = projection.holdings;
   const ledgerRevision = useMemo(() => ({
