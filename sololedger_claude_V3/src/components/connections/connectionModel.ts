@@ -20,6 +20,9 @@ import { getAutoSyncExchange } from '@/components/import/autoSyncExchanges';
 import { getImportSource } from '@/components/import/importSources';
 import { CHAINS } from '@/lib/rpc/providers';
 import { brandLabel, chainIconId, parserIconId, WALLET_APP_NAMES } from './brandIcons';
+import {
+  walletConnectionGroupKey
+} from '@/lib/ledger/chainNamespace';
 
 export type PillFilter = 'all' | 'exchanges' | 'wallets' | 'chains' | 'manual';
 export type CardLane = Exclude<PillFilter, 'all'>;
@@ -48,6 +51,8 @@ export interface ConnectionCardData {
   txLine?: string;
   /** Attention line shown under the meta block (exchange lastError). */
   error?: string | null;
+  /** This source must be reauthorized before any sync action is reachable. */
+  requiresReauthorization?: boolean;
   /**
    * Honest sync-completeness chip (live-feedback round, item 8), derived from
    * ACTUAL sync state only — never an invented health score. Wallets: chains
@@ -99,11 +104,11 @@ export function relativeTime(ts: number | null | undefined, now: number = Date.n
   return new Date(ts).toLocaleDateString();
 }
 
-/** Group lookup rows by address (case-insensitive) into wallet cards. */
+/** Group EVM rows across chains; preserve exact non-EVM chain/address identities. */
 export function groupWallets(rows: LookupAddressRow[]): WalletGroup[] {
   const byAddress = new Map<string, LookupAddressRow[]>();
   for (const row of rows) {
-    const key = row.address.toLowerCase();
+    const key = walletConnectionGroupKey(row.chain, row.address);
     const group = byAddress.get(key) ?? [];
     group.push(row);
     byAddress.set(key, group);
@@ -226,6 +231,7 @@ export function buildCards(input: BuildCardsInput): ConnectionCardData[] {
   for (const c of input.connections) {
     const meta = getAutoSyncExchange(c.exchange);
     const syncing = input.syncActive && input.syncingConnectionId === c.id;
+    const requiresReauthorization = c.credentialsState === 'reauthorization_required';
     cards.push({
       id: `exchange:${c.id}`,
       kind: 'exchange-api',
@@ -235,15 +241,24 @@ export function buildCards(input: BuildCardsInput): ConnectionCardData[] {
       title: c.label?.trim() ? `${meta?.label ?? c.exchange} · ${c.label.trim()}` : (meta?.label ?? c.exchange),
       subtitle: 'API auto-sync',
       tags: ['Exchange', 'API auto-sync'],
-      status: syncing
+      status: requiresReauthorization
+        ? { tone: 'warn', label: 'Reauthorization required' }
+        : syncing
         ? { tone: 'primary', label: 'Syncing' }
         : c.lastError != null
           ? { tone: 'warn', label: 'Needs attention' }
           : { tone: 'gain', label: 'Synced' },
-      metaLine: c.lastSyncAt != null ? `Synced ${relativeTime(c.lastSyncAt)}` : 'Not synced yet',
+      metaLine: requiresReauthorization
+        ? 'Sync paused'
+        : c.lastSyncAt != null
+          ? `Synced ${relativeTime(c.lastSyncAt)}`
+          : 'Not synced yet',
       txLine: `${c.txCount.toLocaleString()} transaction${c.txCount === 1 ? '' : 's'}`,
-      error: c.lastError,
-      syncChip: exchangeCoverageChip(c),
+      error: requiresReauthorization
+        ? `Reconnect ${meta?.label ?? c.exchange} with a new read-only API key to resume syncing.`
+        : c.lastError,
+      requiresReauthorization,
+      syncChip: requiresReauthorization ? undefined : exchangeCoverageChip(c),
       exchange: c
     });
   }

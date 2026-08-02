@@ -421,6 +421,40 @@ describe('ConnectionDetail — wallet kind', () => {
     render(<ConnectionDetail card={walletCard()} onBack={() => {}} />);
     expect(screen.getByTestId('detail-lastsync-line')).toHaveTextContent('Last synced just now');
   });
+
+  it('scopes transactions, balances and live timestamps to an exact Base58 wallet identity', () => {
+    const upper = 'Base58Case111111111111111111111111111';
+    const lower = 'base58Case111111111111111111111111111';
+    const upperSyncedAt = day(2026, 3, 15);
+    mocks.txs.current = [
+      makeTx({ id: 'upper', type: 'transfer_in', asset: 'SOL', amount: 1, chain: 'solana', walletAddress: upper, source: 'rpc:helius' }),
+      makeTx({ id: 'lower', type: 'transfer_in', asset: 'SOL', amount: 9, chain: 'solana', walletAddress: lower, source: 'rpc:helius' })
+    ];
+    mocks.balanceRows.current = [
+      bal(upper, 'SOL', 1, { id: `solana:${upper}:SOL`, chain: 'solana' }),
+      bal(lower, 'SOL', 9, { id: `solana:${lower}:SOL`, chain: 'solana' })
+    ];
+    mocks.lookupRows.current = [
+      { id: `solana:${upper}`, chain: 'solana', address: upper, lastSyncedAt: upperSyncedAt },
+      { id: `solana:${lower}`, chain: 'solana', address: lower, lastSyncedAt: Date.now() }
+    ];
+    const card = walletCard({
+      id: `wallet:solana:${upper}`,
+      title: 'Upper Phantom',
+      walletRows: [{
+        id: `solana:${upper}`, chain: 'solana', address: upper,
+        label: 'Upper Phantom', lastSyncedAt: upperSyncedAt, txCount: 1
+      }]
+    });
+
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+
+    expect(within(screen.getByTestId('detail-count-chips')).getByText('1 transaction')).toBeInTheDocument();
+    expect(screen.getAllByTestId('detail-address-group')).toHaveLength(1);
+    expect(screen.getByText('SOL').closest('li')).toHaveTextContent('1');
+    expect(screen.getByText('SOL').closest('li')).not.toHaveTextContent('9');
+    expect(screen.getByTestId('detail-lastsync-line')).not.toHaveTextContent('just now');
+  });
 });
 
 describe('ConnectionDetail — exchange kind', () => {

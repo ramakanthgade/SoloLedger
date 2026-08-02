@@ -39,6 +39,7 @@ import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
+import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 
 async function runPortfolioLedgerRepairs(): Promise<string> {
   await reprocessSwapDetectionInDb();
@@ -218,7 +219,7 @@ export function PortfolioTab() {
       let scoped = solWallets;
       if (crossCheckMode === 'scoped_wallet_live') {
         scoped = solWallets.filter(
-          (w) => w.address.toLowerCase() === selectedWallet.toLowerCase()
+          (w) => canonicalWalletIdentity(w.chain, w.address) === selectedWallet
         );
       } else if (crossCheckMode === 'single_wallet_live') {
         scoped = solWallets.slice(0, 1);
@@ -234,7 +235,7 @@ export function PortfolioTab() {
           if (mintKey) wm.set(mintKey, (wm.get(mintKey) ?? 0) + b.amount);
           wm.set(symKey, (wm.get(symKey) ?? 0) + b.amount);
         }
-        next.set(w.address.toLowerCase(), wm);
+        next.set(canonicalWalletIdentity(w.chain, w.address), wm);
       }
 
       if (!cancelled) {
@@ -253,9 +254,14 @@ export function PortfolioTab() {
     [transactions, jurisdiction]
   );
   const availableWallets = useMemo(() => {
-    const ws = new Set<string>();
-    for (const t of transactions) if (t.walletAddress) ws.add(t.walletAddress);
-    return Array.from(ws);
+    const ws = new Map<string, { key: string; address: string; chain: string }>();
+    for (const t of transactions) {
+      if (!t.walletAddress) continue;
+      const chain = t.chain ?? '';
+      const key = canonicalWalletIdentity(chain, t.walletAddress);
+      if (!ws.has(key)) ws.set(key, { key, address: t.walletAddress, chain });
+    }
+    return Array.from(ws.values());
   }, [transactions]);
 
   // Period filter rendered as segmented pills (dashboard hero period-toggle
@@ -302,7 +308,8 @@ export function PortfolioTab() {
   const filteredTxs = useMemo(() => {
     let txs = transactions.filter((t) => !t.isSpam);
     if (selectedWallet !== ALL_WALLETS)
-      txs = txs.filter((t) => t.walletAddress?.toLowerCase() === selectedWallet.toLowerCase());
+      txs = txs.filter((t) => t.walletAddress != null &&
+        canonicalWalletIdentity(t.chain ?? '', t.walletAddress) === selectedWallet);
     if (selectedFy != null) {
       const { end } = getFyBoundaries(selectedFy, jurisdiction);
       txs = txs.filter((t) => t.timestamp <= end);
@@ -352,10 +359,11 @@ export function PortfolioTab() {
     if (crossCheckMode === 'per_wallet_live') {
       const all: ReturnType<typeof compareHoldingsToLive> = [];
       for (const w of lookupAddresses.filter((l) => l.chain === 'solana')) {
-        const wLower = w.address.toLowerCase();
-        const wTxs = nonSpamTxs.filter((t) => t.walletAddress?.toLowerCase() === wLower);
+        const walletKey = canonicalWalletIdentity(w.chain, w.address);
+        const wTxs = nonSpamTxs.filter((t) => t.walletAddress != null &&
+          canonicalWalletIdentity(t.chain ?? '', t.walletAddress) === walletKey);
         const wHoldings = buildPortfolioHoldings(wTxs);
-        const liveMap = liveByWallet.get(wLower);
+        const liveMap = liveByWallet.get(walletKey);
         if (!liveMap) continue;
         all.push(...compareHoldingsToLive(wHoldings, liveMap, portfolioHoldingKey, w.address));
       }
@@ -364,8 +372,11 @@ export function PortfolioTab() {
 
     const walletKey =
       crossCheckMode === 'scoped_wallet_live'
-        ? selectedWallet.toLowerCase()
-        : lookupAddresses.find((w) => w.chain === 'solana')?.address.toLowerCase();
+        ? selectedWallet
+        : (() => {
+            const wallet = lookupAddresses.find((w) => w.chain === 'solana');
+            return wallet ? canonicalWalletIdentity(wallet.chain, wallet.address) : undefined;
+          })();
     const liveMap = walletKey ? liveByWallet.get(walletKey) : undefined;
     if (!liveMap) return [];
     return compareHoldingsToLive(holdings, liveMap, portfolioHoldingKey);
@@ -546,8 +557,12 @@ export function PortfolioTab() {
               className="sl-select max-w-[220px] truncate"
             >
               <option value={ALL_WALLETS}>{ALL_WALLETS}</option>
-              {availableWallets.map((w) => (
-                <option key={w} value={w}>{w.length > 20 ? `${w.slice(0, 8)}…${w.slice(-6)}` : w}</option>
+              {availableWallets.map((wallet) => (
+                <option key={wallet.key} value={wallet.key}>
+                  {wallet.address.length > 20
+                    ? `${wallet.address.slice(0, 8)}…${wallet.address.slice(-6)}`
+                    : wallet.address}
+                </option>
               ))}
             </select>
           </div>

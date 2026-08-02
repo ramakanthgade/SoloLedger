@@ -4,6 +4,7 @@
  */
 import { db } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
+import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 
 export async function collapseDuplicateTradeTransferLegs(): Promise<number> {
   const all = await db.transactions
@@ -12,14 +13,16 @@ export async function collapseDuplicateTradeTransferLegs(): Promise<number> {
   const trades = all.filter((t) => t.type === 'trade' && t.counterAsset && (t.counterAmount ?? 0) > 0);
   const tradeByRef = new Map<string, Transaction>();
   for (const t of trades) {
-    tradeByRef.set(`${t.walletAddress!.toLowerCase()}|${t.sourceRef!}`, t);
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    if (key) tradeByRef.set(key, t);
   }
 
   const toDelete: string[] = [];
   for (const t of all) {
     if (t.type !== 'transfer_in' && t.type !== 'transfer_out' && t.type !== 'income') continue;
     if (t.asset.toUpperCase() === 'SOL') continue;
-    const trade = tradeByRef.get(`${t.walletAddress!.toLowerCase()}|${t.sourceRef!}`);
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    const trade = key ? tradeByRef.get(key) : undefined;
     if (!trade) continue;
     const legs = new Set(
       [trade.asset, trade.counterAsset].filter(Boolean).map((a) => a!.toUpperCase())

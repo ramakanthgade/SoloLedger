@@ -12,6 +12,7 @@
  */
 import { db, transactionSourceKey } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
+import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 
 /** Tolerance for SOL mismatch warning (~1 main-wallet tx fee). */
 export const SOL_MAIN_WALLET_TOLERANCE = 0.00005;
@@ -78,7 +79,8 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
   for (const t of txs) {
     if (t.isSpam || !t.sourceRef || !t.walletAddress) continue;
     // Key by wallet|sig only (not asset) so USDC→SOL trades mark the sig as covered.
-    const sigKey = `${t.walletAddress.toLowerCase()}|${t.sourceRef}`;
+    const sigKey = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    if (!sigKey) continue;
     if (t.type === 'fee' && isNativeSolAsset(t.asset)) feeKeys.add(sigKey);
     if (tradeTouchesSol(t)) tradeKeys.add(sigKey);
   }
@@ -97,10 +99,7 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
     // Non-SOL rows (including USDC→SOL trades) always pass through.
     if (!isNativeSolAsset(t.asset)) return true;
     if (t.type === 'fee' || t.type === 'trade') return true;
-    const sigKey =
-      t.sourceRef && t.walletAddress
-        ? `${t.walletAddress.toLowerCase()}|${t.sourceRef}`
-        : null;
+    const sigKey = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
     const sk = transactionSourceKey(t);
     // Swap txs already encode SOL legs on the trade row — skip redundant transfers.
     if (sigKey && tradeKeys.has(sigKey)) return false;

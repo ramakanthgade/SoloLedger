@@ -44,6 +44,7 @@ function exchangeConn(over: Partial<ExchangeConnectionView> = {}): ExchangeConne
     lastSyncAt: NOW - 2 * 3_600_000,
     txCount: 1284,
     lastError: null,
+    credentialsState: 'ready',
     // Full data-range coverage by default — the coverage chip is opt-out at 100%.
     cursors: { trades: NOW - 3_600_000, deposits: NOW - 3_600_000, withdrawals: NOW - 3_600_000 },
     ...over
@@ -117,12 +118,22 @@ describe('groupWallets', () => {
     ]);
 
     expect(groups).toHaveLength(2);
-    const evm = groups.find((g) => g.key === '0xaaa')!;
+    const evm = groups.find((g) => g.key === 'evm:0xaaa')!;
     expect(evm.chains).toEqual(['ethereum', 'polygon']);
     expect(evm.txCount).toBe(105);
     expect(evm.lastSyncedAt).toBe(20);
     expect(evm.label).toBe('Main');
     expect(evm.rows).toHaveLength(2);
+  });
+
+  it('keeps case-distinct Base58 addresses as separate exact wallet groups', () => {
+    const groups = groupWallets([
+      walletRow({ id: 'solana:Base58Case', chain: 'solana', address: 'Base58Case', label: 'Upper' }),
+      walletRow({ id: 'solana:base58Case', chain: 'solana', address: 'base58Case', label: 'Lower' })
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.address).sort()).toEqual(['Base58Case', 'base58Case']);
+    expect(groups.every((group) => group.rows.length === 1 && group.chains.length === 1)).toBe(true);
   });
 });
 
@@ -212,6 +223,30 @@ describe('buildCards', () => {
       input({ connections: [exchangeConn()], syncingConnectionId: 'exc_2', syncActive: true })
     );
     expect(other.status.label).toBe('Synced');
+  });
+
+  it('maps required reauthorization to a clear paused state instead of an ordinary sync state', () => {
+    const [card] = buildCards(
+      input({
+        connections: [
+          exchangeConn({
+            credentialsState: 'reauthorization_required',
+            lastError: 'stale internal error',
+            cursors: { trades: NOW }
+          })
+        ],
+        syncingConnectionId: 'exc_1',
+        syncActive: true
+      })
+    );
+
+    expect(card).toMatchObject({
+      status: { tone: 'warn', label: 'Reauthorization required' },
+      metaLine: 'Sync paused',
+      error: 'Reconnect Binance with a new read-only API key to resume syncing.',
+      requiresReauthorization: true
+    });
+    expect(card.syncChip).toBeUndefined();
   });
 
   it('maps a file import to a CSV imported card titled by brand, sublined by file name', () => {
@@ -332,8 +367,9 @@ describe('exchangeCoverageChip', () => {
 
 describe('walletChainChip', () => {
   const group = (stamps: number[]) => {
+    const chains = ['ethereum', 'polygon', 'base'];
     const rows = stamps.map((lastSyncedAt, i) =>
-      walletRow({ id: `c${i}:0xAAA`, chain: `c${i}`, lastSyncedAt })
+      walletRow({ id: `${chains[i]}:0xAAA`, chain: chains[i], lastSyncedAt })
     );
     const [g] = groupWallets(rows);
     return g;

@@ -12,6 +12,7 @@ import { ExchangeConnectStep } from './ExchangeConnectStep';
 import { WalletAddressForm } from './WalletAddressForm';
 import { FileImportFlow } from './FileImportFlow';
 import { BrandIcon, chainIconId } from './brandIcons';
+import { getAutoSyncExchange } from '@/components/import/autoSyncExchanges';
 
 interface AddDataDrawerProps {
   open: boolean;
@@ -22,6 +23,8 @@ interface AddDataDrawerProps {
   /** Independent exchange status sources for the Which step. */
   apiExchangeStates: ApiExchangeStates;
   fileImportedSlugs: string[];
+  /** Existing source to restore in place; its id and exchange stay fixed. */
+  reauthorizationTarget?: ExchangeConnectionView | null;
   onClose: () => void;
   onToast: (t: { tone: 'gain' | 'loss' | 'warn' | 'primary'; title: string; description?: string }) => void;
 }
@@ -98,12 +101,16 @@ export function AddDataDrawer({
   initialFlow,
   apiExchangeStates,
   fileImportedSlugs,
+  reauthorizationTarget = null,
   onClose,
   onToast
 }: AddDataDrawerProps) {
   const [flow, setFlow] = useState<FlowKind | null>(initialFlow);
   const [which, setWhich] = useState<WhichSelection | null>(null);
   const [guidedMode, setGuidedMode] = useState(guided);
+  const [reauthorizing, setReauthorizing] = useState<ExchangeConnectionView | null>(
+    reauthorizationTarget
+  );
 
   // Fresh state every time the drawer opens.
   useEffect(() => {
@@ -111,11 +118,18 @@ export function AddDataDrawer({
       setFlow(initialFlow);
       setWhich(null);
       setGuidedMode(guided);
+      setReauthorizing(reauthorizationTarget);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
-  const step: 1 | 2 | 3 = flow === null ? 1 : needsWhich(flow) && which === null ? 2 : 3;
+  const step: 1 | 2 | 3 = reauthorizing
+    ? 3
+    : flow === null
+      ? 1
+      : needsWhich(flow) && which === null
+        ? 2
+        : 3;
   const whichSkipped = step === 3 && !needsWhich(flow);
 
   const goBack = () => {
@@ -126,6 +140,10 @@ export function AddDataDrawer({
       setFlow(null);
     }
   };
+
+  const reauthorizationLabel = reauthorizing
+    ? (getAutoSyncExchange(reauthorizing.exchange)?.label ?? reauthorizing.exchange)
+    : null;
 
   // ── Titles / drawer aria-labels ──
   /** "a" / "an" by the label's first letter — "Watch an Ethereum address". */
@@ -145,11 +163,41 @@ export function AddDataDrawer({
     return 'Import a file';
   })();
 
-  const title = guidedMode ? 'Guided setup' : step === 1 ? 'Add data' : step === 2 ? step2Title : step3Title;
+  const title = reauthorizing
+    ? `Reauthorize ${reauthorizationLabel}`
+    : guidedMode
+      ? 'Guided setup'
+      : step === 1
+        ? 'Add data'
+        : step === 2
+          ? step2Title
+          : step3Title;
   const drawerLabel = guidedMode ? 'Guided setup' : step === 2 ? 'Add data — choose source' : title;
 
   // ── Step-3 body ──
   const renderConnect = () => {
+    if (reauthorizing) {
+      return (
+        <ExchangeConnectStep
+          exchangeId={reauthorizing.exchange}
+          mode="reauthorize"
+          existingId={reauthorizing.id}
+          onConnected={() => {
+            onClose();
+            onToast({
+              tone: 'gain',
+              title: `${reauthorizationLabel} reauthorized`,
+              description: 'Connection restored — syncing is available again.'
+            });
+          }}
+          onUseFile={() => {
+            setReauthorizing(null);
+            setFlow('file');
+            setWhich(null);
+          }}
+        />
+      );
+    }
     if (flow === 'exchange' && which?.kind === 'exchange-api') {
       return (
         <ExchangeConnectStep
@@ -204,6 +252,9 @@ export function AddDataDrawer({
 
   /** Brand/lucide icon chip in the Connect-step header. */
   const connectIcon = (() => {
+    if (reauthorizing) {
+      return <BrandIcon id={reauthorizing.exchange} fallback={reauthorizationLabel ?? ''} size={36} />;
+    }
     if (flow === 'exchange' && which?.kind === 'exchange-api') {
       return <BrandIcon id={which.id} fallback={which.label} size={36} />;
     }
@@ -275,14 +326,16 @@ export function AddDataDrawer({
       ) : (
         <div className="flex h-full flex-col sm:flex-row">
           {/* Step rail: horizontal strip on mobile, vertical aside on sm+ */}
-          <aside className="shrink-0 border-b border-hi/10 px-4 py-3 sm:w-[136px] sm:border-b-0 sm:border-r sm:py-5">
-            <StepRail step={step} whichSkipped={whichSkipped} />
-          </aside>
+          {!reauthorizing && (
+            <aside className="shrink-0 border-b border-hi/10 px-4 py-3 sm:w-[136px] sm:border-b-0 sm:border-r sm:py-5">
+              <StepRail step={step} whichSkipped={whichSkipped} />
+            </aside>
+          )}
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col">
             {/* dhead */}
             <div className="flex shrink-0 items-center gap-2 border-b border-hi/10 px-4 py-3.5">
-              {step > 1 && (
+              {step > 1 && !reauthorizing && (
                 <button
                   type="button"
                   aria-label="Back"
@@ -295,7 +348,9 @@ export function AddDataDrawer({
               {step === 3 && connectIcon}
               <div className="min-w-0 flex-1">
                 <h2 className="truncate text-[15px] font-bold text-hi">{title}</h2>
-                <p className="text-xs text-low">Step {step} of 3</p>
+                <p className="text-xs text-low">
+                  {reauthorizing ? 'Existing connection · label and history stay unchanged' : `Step ${step} of 3`}
+                </p>
               </div>
               <button
                 type="button"

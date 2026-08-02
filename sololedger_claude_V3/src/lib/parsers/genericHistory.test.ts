@@ -2,8 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import * as XLSX from 'xlsx';
 import { genericHistoryParser, detectMissingFields } from './genericHistory';
-import { parseImportFile } from './index';
+import { parseImportFile, parseWorkbookFile } from './index';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -114,6 +115,9 @@ describe('parseImportFile — full extract→detect→parse on a Binance deposit
     // The dedicated binance_transfers parser now claims this Coin+Network+TXID
     // layout ahead of the generic fallback (same transfer_in rows, richer fields).
     expect(outcome.detectedParser).toBe('binance_transfers');
+    expect(outcome.evidence?.requiredOutcomes).toEqual([
+      expect.objectContaining({ parserId: 'binance_transfers' })
+    ]);
     expect(outcome.transactions.length).toBeGreaterThan(0);
     for (const t of outcome.transactions) expect(t.type).toBe('transfer_in');
 
@@ -132,6 +136,53 @@ describe('parser specificity — a specific parser still wins over generic_histo
     const outcome = await parseImportFile(file);
     expect(outcome.detectedParser).toBe('hyperliquid_deposits');
     expect(outcome.detectedParser).not.toBe('generic_history');
+    expect(outcome.evidence?.coveredAccountClasses).toEqual(['futures']);
+    expect(outcome.evidence?.requiredOutcomes).toEqual([
+      expect.objectContaining({ accountClass: 'futures', parsedCount: 1, status: 'complete' })
+    ]);
+  });
+});
+
+describe('parseWorkbookFile — structural evidence for every useful sheet', () => {
+  it('retains successful, unrecognized, claimed-empty, and fully failed outcomes independently', async () => {
+    const workbook = XLSX.utils.book_new();
+    const append = (name: string, rows: string[][]) => {
+      XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), name);
+    };
+    append('Successful', [
+      ['Time', 'Coin', 'Network', 'Amount', 'Address', 'TXID', 'Status'],
+      ['2024-03-08 12:48:31', 'USDT', 'ETH', '300', '0xabc', '0xdef', 'Completed']
+    ]);
+    append('Unrecognized', [
+      ['Date', 'Coin', 'Status'],
+      ['2024-01-01', 'BTC', 'Completed']
+    ]);
+    append('Claimed empty', [
+      ['Date', 'Asset', 'Amount', 'Type'],
+      ['2024-01-01', 'ETH', '1', 'unsupported-event']
+    ]);
+    append('Fully failed', [
+      ['UTC_Time', 'Account', 'Operation', 'Coin', 'Change'],
+      ['2025-01-01 00:00:00', 'Spot', 'Future New Operation', 'BTC', '1']
+    ]);
+    const bytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
+    const file = new File([bytes], 'mixed-evidence.xlsx', {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    });
+
+    const outcome = await parseWorkbookFile(file);
+    const required = outcome.evidence?.requiredOutcomes ?? [];
+
+    expect(outcome.transactions).toHaveLength(1);
+    expect(outcome.sheets).toHaveLength(4);
+    expect(required).toHaveLength(4);
+    expect(required).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: expect.stringContaining('Successful'), status: 'complete', parsedCount: 1 }),
+      expect.objectContaining({ id: expect.stringContaining('Unrecognized'), status: 'failed', failedCount: 1 }),
+      expect.objectContaining({ id: expect.stringContaining('Claimed empty'), status: 'failed', parsedCount: 0 }),
+      expect.objectContaining({ id: expect.stringContaining('Fully failed'), status: 'failed', failedCount: 1 })
+    ]));
+    expect(outcome.evidence).toMatchObject({ parsedCount: 1, failedCount: 3 });
   });
 });
 

@@ -119,9 +119,9 @@ describe('Dexie v8 → v9 migration (walletBalances truth anchor)', () => {
 describe('walletBalances storage helpers', () => {
   it('walletBalanceId keys tokens by contract, natives by symbol', async () => {
     const { walletBalanceId } = await import('@/lib/storage/db');
-    expect(walletBalanceId('bitcoin', '1abc', 'BTC')).toBe('bitcoin:1abc:BTC');
+    expect(walletBalanceId('bitcoin', '1abc', 'BTC')).toBe('bitcoin:1abc:bitcoin:native');
     expect(walletBalanceId('ethereum', '0xA', 'wbtc', '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599'))
-      .toBe('ethereum:0xA:0x2260fac5e5542a773aa44fbcfedf7c193bc2c599');
+      .toBe('ethereum:0xa:evm:1:0x2260fac5e5542a773aa44fbcfedf7c193bc2c599');
   });
 
   it('replaceWalletBalances upserts fresh rows and zeroes vanished assets', async () => {
@@ -143,5 +143,106 @@ describe('walletBalances storage helpers', () => {
     const byAsset = new Map(rows.map((r) => [r.asset, r]));
     expect(byAsset.get('ETH')).toMatchObject({ amount: 0.5, asOf: 400 });
     expect(byAsset.get('WBTC')).toMatchObject({ amount: 0, asOf: 400 });
+  });
+});
+
+const V10_STORES = {
+  ...V8_STORES,
+  walletBalances: 'id, chain, address, asset',
+  exchangeBalances: 'id, connectionId, exchange, asset'
+};
+
+describe('Dexie v10 → v11 reconciliation evidence migration', () => {
+  it('preserves legacy consumers and migrates only exact coherent asOf sets', async () => {
+    const name = `migration_v11_test_${Math.random().toString(36).slice(2)}`;
+    const legacy = new Dexie(name);
+    legacy.version(10).stores(V10_STORES);
+    await legacy.open();
+    await legacy.table('transactions').put(makeTx('untouched'));
+    await legacy.table('exchangeConnections').bulkPut([
+      {
+        id: 'coherent', exchange: 'binance', apiKey: 'k', secret: 's', createdAt: 1,
+        cursors: {}, status: 'idle'
+      },
+      {
+        id: 'mixed', exchange: 'binance', apiKey: 'k', secret: 's', createdAt: 1,
+        cursors: {}, status: 'idle'
+      }
+    ]);
+    await legacy.table('exchangeBalances').bulkPut([
+      { id: 'coherent:BTC', connectionId: 'coherent', exchange: 'binance', asset: 'BTC', amount: 1, asOf: 100, source: 'exchange_api' },
+      { id: 'coherent:ETH', connectionId: 'coherent', exchange: 'binance', asset: 'ETH', amount: 2, asOf: 100, source: 'exchange_api' },
+      { id: 'mixed:BTC', connectionId: 'mixed', exchange: 'binance', asset: 'BTC', amount: 3, asOf: 100, source: 'exchange_api' },
+      { id: 'mixed:ETH', connectionId: 'mixed', exchange: 'binance', asset: 'ETH', amount: 4, asOf: 101, source: 'exchange_api' }
+    ]);
+    await legacy.table('lookupAddresses').bulkPut([
+      { id: 'bitcoin:bc1qcoherent', chain: 'bitcoin', address: 'bc1qcoherent', lastSyncedAt: 100, txCount: 0 },
+      { id: 'ethereum:0xMixed', chain: 'ethereum', address: '0xMixed', lastSyncedAt: 101, txCount: 0 }
+    ]);
+    await legacy.table('walletBalances').bulkPut([
+      { id: 'bitcoin:bc1qcoherent:BTC', chain: 'bitcoin', address: 'bc1qcoherent', asset: 'BTC', amount: 1, asOf: 200, source: 'rpc' },
+      { id: 'ethereum:0xMixed:ETH', chain: 'ethereum', address: '0xMixed', asset: 'ETH', amount: 2, asOf: 200, source: 'rpc' },
+      { id: 'ethereum:0xMixed:USDC', chain: 'ethereum', address: '0xMixed', asset: 'USDC', contractAddress: '0xToken', amount: 3, asOf: 201, source: 'rpc' }
+    ]);
+    legacy.close();
+
+    const { createDb } = await import('@/lib/storage/db');
+    const upgraded = createDb(name);
+    await upgraded.open();
+
+    expect(upgraded.verno).toBe(11);
+    expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
+    expect(await upgraded.table('exchangeBalances').count()).toBe(4);
+    const connection = await upgraded.table('exchangeConnections').get('coherent');
+    expect(connection).toMatchObject({ credentialsState: 'ready', authorityGeneration: 1, revision: 0 });
+    expect((await upgraded.table('lookupAddresses').get('bitcoin:bc1qcoherent')).sourceIncarnation)
+      .toEqual(expect.any(String));
+
+    const coherent = await upgraded.table('authoritySnapshots').get('legacy:exchange:coherent:1');
+    expect(coherent).toMatchObject({ asOf: 100, status: 'complete', generation: 1 });
+    expect(await upgraded.table('authorityAssets').where('snapshotId').equals(coherent.snapshotId).count()).toBe(2);
+
+    const mixed = await upgraded.table('authoritySnapshots').get('legacy:exchange:mixed:1');
+    expect(mixed).toMatchObject({ status: 'complete' });
+    expect(mixed.asOf).toBeUndefined();
+    expect(await upgraded.table('authorityAssets').where('snapshotId').equals(mixed.snapshotId).count()).toBe(0);
+    const { selectAuthoritySnapshot } = await import('@/lib/reconcile/authoritySelection');
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:mixed', accountClass: 'spot',
+      snapshots: [mixed], assets: [], now: 200
+    }).authorityStatus).toBe('non_comparable');
+
+    const coherentWallet = await upgraded.table('authoritySnapshots').get('legacy:wallet:bitcoin:bc1qcoherent:1');
+    expect(coherentWallet).toMatchObject({
+      scopeId: 'wallet:bitcoin:bitcoin:bc1qcoherent', accountClass: 'wallet', asOf: 200, status: 'complete'
+    });
+    expect(await upgraded.table('authorityAssets').where('snapshotId').equals(coherentWallet.snapshotId).first())
+      .toMatchObject({ assetKey: 'bitcoin:native', quantity: 1 });
+    const mixedWallet = await upgraded.table('authoritySnapshots').get('legacy:wallet:ethereum:0xMixed:1');
+    expect(mixedWallet).toMatchObject({ status: 'complete' });
+    expect(mixedWallet.asOf).toBeUndefined();
+    expect(await upgraded.table('authorityAssets').where('snapshotId').equals(mixedWallet.snapshotId).count()).toBe(0);
+
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+
+  it('declares the exact v11 primary keys and compound indexes', async () => {
+    const { createDb } = await import('@/lib/storage/db');
+    const name = `schema_v11_test_${Math.random().toString(36).slice(2)}`;
+    const current = createDb(name);
+    await current.open();
+    expect(current.authoritySnapshots.schema.primKey.name).toBe('snapshotId');
+    expect(current.authoritySnapshots.schema.indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+      'generation', 'scopeId', 'sourceIdentityId', '[scopeId+accountClass]', '[sourceIdentityId+generation]'
+    ]));
+    expect(current.authorityAssets.schema.indexes.map((index) => index.name)).toContain('[snapshotId+assetKey]');
+    expect(current.sourceCoverage.schema.indexes.map((index) => index.name)).toContain('[scopeId+generation]');
+    expect(current.openingBalances.schema.indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+      'logicalKey', '[scopeId+accountClass+assetKey]', '[scopeId+accountClass+assetKey+effectiveAt]'
+    ]));
+    expect(current.openingBalances.schema.indexes.find((index) => index.name === 'logicalKey')?.unique).toBe(true);
+    current.close();
+    await Dexie.delete(name);
   });
 });

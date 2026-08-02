@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   fetchActiveChains: vi.fn(),
   runSequential: vi.fn(),
   runWalletImport: vi.fn(async () => {}),
+  updateWalletLabel: vi.fn(async () => {}),
   syncRegistry: vi.fn(),
   hasKeys: vi.fn(() => true)
 }));
@@ -49,7 +50,7 @@ vi.mock('dexie-react-hooks', () => ({
 vi.mock('@/lib/storage/db', () => ({
   getLookupAddresses: vi.fn(async () => lookupRows),
   deleteLookupAddressAndTransactions: vi.fn(async () => {}),
-  updateWalletLabel: vi.fn(async () => {})
+  updateWalletLabel: mocks.updateWalletLabel
 }));
 
 vi.mock('@/lib/saas/effectiveSettings', () => ({
@@ -210,6 +211,32 @@ describe('WalletAddressForm — duplicate-wallet short-circuit', () => {
     expect(toast).toHaveTextContent('This wallet is already imported.');
     expect(screen.getByRole('button', { name: 'Import wallets' })).toBeDisabled();
     expect(mocks.fetchActiveChains).not.toHaveBeenCalled();
+  });
+
+  it('does not treat a case-distinct Solana Base58 address as a duplicate', async () => {
+    lookupRows = [row('solana', SOL_A)];
+    await renderWithAddress(SOL_A.replace('V', 'v'));
+    expect(screen.queryByTestId('duplicate-wallet-warning')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import 1 wallet' })).toBeEnabled();
+  });
+
+  it('saves a checksummed EVM wallet nickname under each canonical lookup key', async () => {
+    const checksummed = '0xAbCdEf0000000000000000000000000000000000';
+    mocks.fetchActiveChains.mockResolvedValueOnce({ active: ['ethereum', 'polygon'], incomingOnly: [] });
+    render(<WalletAddressForm preselectChain="ethereum" defaultLabel="Main EVM" />);
+    fireEvent.change(await screen.findByRole('textbox', { name: /wallet address/i }), {
+      target: { value: checksummed }
+    });
+    fireEvent.click(await screen.findByRole('button', { name: 'Import 1 wallet on 2 chains' }, DETECT_TIMEOUT));
+    await waitFor(() => expect(mocks.updateWalletLabel).toHaveBeenCalledTimes(2));
+    expect(mocks.updateWalletLabel).toHaveBeenCalledWith(
+      `ethereum:${checksummed.toLowerCase()}`,
+      'Main EVM'
+    );
+    expect(mocks.updateWalletLabel).toHaveBeenCalledWith(
+      `polygon:${checksummed.toLowerCase()}`,
+      'Main EVM'
+    );
   });
 
   it('mixed single-chain paste: skip note, fresh count on the button, no callout', async () => {

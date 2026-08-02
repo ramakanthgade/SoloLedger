@@ -24,8 +24,16 @@ import { geminiParser } from './gemini';
 import { htxParser } from './htx';
 import { coinspotParser } from './coinspot';
 import { genericHistoryParser, detectMissingFields } from './genericHistory';
-import type { ExchangeParser, MissingField, ParseResult, SheetContext } from './types';
+import type {
+  CsvImportEvidence,
+  ExchangeParser,
+  MissingField,
+  ParseResult,
+  SheetContext
+} from './types';
+import { safeTimestampUtc } from './types';
 import type { TxType } from '@/types/transaction';
+import type { AccountClass } from '@/lib/ledger/derivedPostings';
 import { extractTableFromMatrix, isUsefulTransactionTable, cleanCell } from './tableExtract';
 import { isSpreadsheetFile, readWorkbookSheets } from './workbook';
 import type { Transaction } from '@/types/transaction';
@@ -97,6 +105,7 @@ export interface SheetParseOutcome {
    * rows — a multi-sheet workbook may mix ambiguous and clearly-named sheets.
    */
   addressColumnAmbiguous?: boolean;
+  evidence?: CsvImportEvidence;
 }
 
 export interface FileParseOutcome extends ParseResult {
@@ -114,19 +123,146 @@ export interface FileParseOutcome extends ParseResult {
  */
 function detectSheetContext(matrix: string[][], headerRowIndex: number): SheetContext {
   const limit = Math.max(0, headerRowIndex);
+  const context: SheetContext = {};
   for (let i = 0; i < limit; i++) {
+    const cells = (matrix[i] ?? []).map(cleanCell).filter(Boolean);
+    const line = cells.join(' ').trim();
+    const declaredValue = (label: RegExp): string | undefined => {
+      const match = line.match(label);
+      return match?.[1]?.trim() || undefined;
+    };
+    const start = declaredValue(/^(?:export|history)\s+(?:history\s+)?(?:start|from)\s*[:=]?\s*(.+)$/i);
+    const end = declaredValue(/^(?:export|history)\s+(?:history\s+)?(?:end|to)\s*[:=]?\s*(.+)$/i);
+    const complete = declaredValue(/^complete\s+history\s*[:=]?\s*(.+)$/i);
+    const snapshotAsOf = declaredValue(/^(?:balance\s+)?snapshot\s+as\s+of\s*[:=]?\s*(.+)$/i);
+    const accountClasses = declaredValue(/^(?:covered\s+)?account\s+class(?:es)?\s*[:=]?\s*(.+)$/i);
+    if (start || end || complete) {
+      context.sourceDeclaredHistory ??= {};
+      if (start) {
+        const timestamp = safeTimestampUtc(start);
+        if (Number.isFinite(timestamp)) context.sourceDeclaredHistory.start = timestamp;
+      }
+      if (end) {
+        const timestamp = safeTimestampUtc(end);
+        if (Number.isFinite(timestamp)) context.sourceDeclaredHistory.end = timestamp;
+      }
+      if (complete && /^(?:yes|true|complete|all)$/i.test(complete)) {
+        context.sourceDeclaredHistory.completeHistory = true;
+      }
+    }
+    if (snapshotAsOf) {
+      const timestamp = safeTimestampUtc(snapshotAsOf);
+      if (Number.isFinite(timestamp)) context.sourceDeclaredSnapshotAsOf = timestamp;
+    }
+    if (accountClasses) {
+      const allowed = new Set<AccountClass>([
+        'spot', 'funding', 'margin', 'futures', 'options', 'wallet', 'manual', 'unknown'
+      ]);
+      const parsed = accountClasses.split(/[,/|]+/).map((value) => value.trim().toLowerCase())
+        .filter((value): value is AccountClass => allowed.has(value as AccountClass));
+      if (parsed.length > 0) context.sourceDeclaredAccountClasses = [...new Set(parsed)];
+    }
     for (const cell of matrix[i] ?? []) {
       const text = cleanCell(cell);
       if (!text) continue;
       if (/deposit\s+history/i.test(text)) {
-        return { impliedType: 'transfer_in' as TxType, sheetTitle: text };
+        context.impliedType = 'transfer_in' as TxType;
+        context.sheetTitle = text;
       }
       if (/withdraw(al)?\s+history/i.test(text)) {
-        return { impliedType: 'transfer_out' as TxType, sheetTitle: text };
+        context.impliedType = 'transfer_out' as TxType;
+        context.sheetTitle = text;
       }
     }
   }
-  return {};
+  return context;
+}
+
+function parserAccountClass(parserId: string | null): AccountClass {
+  if (parserId === 'binance_options') return 'options';
+  if (parserId?.startsWith('hyperliquid')) return 'futures';
+  if (parserId === 'manual_mapping' || parserId === 'ai_mapping' || parserId === 'generic_history') return 'manual';
+  return parserId ? 'spot' : 'unknown';
+}
+
+function transactionAccountClass(transaction: Transaction, parserId: string): AccountClass {
+  if (transaction.parserAccountClass) return transaction.parserAccountClass;
+  if (transaction.source === 'binance_options' || transaction.category?.startsWith('options_')) return 'options';
+  if (transaction.instrumentClass === 'derivative' || transaction.category?.startsWith('perp') ||
+    parserId.startsWith('hyperliquid')) return 'futures';
+  const rawAccount = typeof transaction.raw?.Account === 'string' ? transaction.raw.Account.toLowerCase() : '';
+  if (rawAccount.includes('funding')) return 'funding';
+  if (rawAccount.includes('margin')) return 'margin';
+  if (rawAccount.includes('future')) return 'futures';
+  if (rawAccount.includes('option')) return 'options';
+  return parserAccountClass(parserId);
+}
+
+function evidenceForSheet(
+  parserId: string,
+  sheetName: string,
+  result: ParseResult,
+  ctx: SheetContext
+): CsvImportEvidence {
+  const transactionClasses = [...new Set(result.transactions.map((transaction) =>
+    transactionAccountClass(transaction, parserId)))];
+  const accountClasses = transactionClasses.length > 0 ? transactionClasses : [parserAccountClass(parserId)];
+  const classCounts = new Map<AccountClass, number>();
+  for (const transaction of result.transactions) {
+    const accountClass = transactionAccountClass(transaction, parserId);
+    classCounts.set(accountClass, (classCounts.get(accountClass) ?? 0) + 1);
+  }
+  const base = result.evidence ?? {
+    coveredAccountClasses: accountClasses,
+    requiredOutcomes: accountClasses.map((accountClass) => ({
+      id: `${sheetName}:${accountClass}`, accountClass, required: true,
+      status: result.transactions.length === 0 ? 'failed' as const
+        : result.skippedRows > 0 ? 'partial' as const : 'complete' as const,
+      reason: result.transactions.length === 0 ? 'Parser produced no transactions.'
+        : result.skippedRows > 0 ? 'Parser skipped source rows.' : undefined,
+      recognizedCount: classCounts.get(accountClass) ?? 0,
+      parsedCount: classCounts.get(accountClass) ?? 0,
+      skippedCount: accountClasses.length === 1 ? result.skippedRows : 0,
+      failedCount: result.transactions.length === 0 ? Math.max(1, result.skippedRows) : 0,
+      skippedReasons: result.skippedRows > 0 && accountClasses.length === 1
+        ? [{ reason: 'Parser skipped source rows.', count: result.skippedRows }] : [],
+      failureReasons: result.transactions.length === 0
+        ? [{ reason: 'Parser produced no transactions.', count: Math.max(1, result.skippedRows) }] : []
+    })),
+    recognizedCount: result.transactions.length,
+    parsedCount: result.transactions.length,
+    excludedCount: 0,
+    skippedCount: result.skippedRows,
+    failedCount: result.transactions.length === 0 ? Math.max(1, result.skippedRows) : 0,
+    exclusionReasons: [],
+    skippedReasons: result.skippedRows > 0
+      ? [{ reason: 'Parser skipped source rows.', count: result.skippedRows }]
+      : [],
+    failureReasons: result.transactions.length === 0
+      ? [{ reason: 'Parser produced no transactions.', count: Math.max(1, result.skippedRows) }] : []
+  };
+  const declaredClasses = ctx.sourceDeclaredAccountClasses;
+  const snapshotClass = declaredClasses?.length === 1 && base.coveredAccountClasses.includes(declaredClasses[0])
+    ? declaredClasses[0]
+    : base.coveredAccountClasses.length === 1 ? base.coveredAccountClasses[0] : 'unknown';
+  const finalBalanceSnapshots = result.balanceSnapshot
+      ? [{
+          asOf: ctx.sourceDeclaredSnapshotAsOf,
+          accountClass: snapshotClass,
+          balances: result.balanceSnapshot
+        }]
+      : undefined;
+  return {
+    ...base,
+    requiredOutcomes: base.requiredOutcomes.map((outcome, index) => ({
+      ...outcome,
+      parserId,
+      id: `${sheetName}:${outcome.id}:${index}`
+    })),
+    declaredHistory: ctx.sourceDeclaredHistory,
+    finalBalanceSnapshots,
+    coveredAccountClasses: base.coveredAccountClasses
+  };
 }
 
 function parseSheetMatrix(
@@ -196,11 +332,25 @@ function parseSheetMatrix(
         `Could not auto-detect format for sheet “${sheetName}”.`
       ],
       headerScore: extracted.headerScore,
-      missingFields: missing.length > 0 ? missing : undefined
+      missingFields: missing.length > 0 ? missing : undefined,
+      evidence: {
+        coveredAccountClasses: ['unknown'],
+        requiredOutcomes: [{
+          id: `${sheetName}:unrecognized`, accountClass: 'unknown', required: true,
+          status: 'failed', reason: 'No parser recognized this useful sheet.',
+          recognizedCount: 0, parsedCount: 0, excludedCount: 0, skippedCount: 0,
+          failedCount: extracted.rows.length,
+          failureReasons: [{ reason: 'No parser recognized this useful sheet.', count: extracted.rows.length }]
+        }],
+        recognizedCount: 0, parsedCount: 0, excludedCount: 0, skippedCount: 0,
+        failedCount: extracted.rows.length, exclusionReasons: [], skippedReasons: [],
+        failureReasons: [{ reason: 'No parser recognized this useful sheet.', count: extracted.rows.length }]
+      }
     };
   }
 
   const result = matched.parse(extracted.rows, ctx);
+  const evidence = evidenceForSheet(matched.id, sheetName, result, ctx);
   // Tag raw with sheet name for provenance
   const txs = result.transactions.map((t) => ({
     ...t,
@@ -226,7 +376,8 @@ function parseSheetMatrix(
     ],
     headerScore: extracted.headerScore,
     missingFields: result.missingFields,
-    addressColumnAmbiguous: result.addressColumnAmbiguous
+    addressColumnAmbiguous: result.addressColumnAmbiguous,
+    evidence
   };
 }
 
@@ -254,6 +405,24 @@ function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): Fil
     optionsSheets.every((s) => s.optionsBalanceIncluded === true) &&
     skippedRows === 0 &&
     unrecognized.length === 0;
+  const evidenceParts = useful.map((sheet) => sheet.evidence).filter(Boolean) as CsvImportEvidence[];
+  const coveredAccountClasses = [...new Set(evidenceParts.flatMap((part) => part.coveredAccountClasses))];
+  const declaredHistories = evidenceParts.map((part) => part.declaredHistory).filter(Boolean);
+  const finalBalanceSnapshots = evidenceParts.flatMap((part) => part.finalBalanceSnapshots ?? []);
+  const evidence: CsvImportEvidence | undefined = evidenceParts.length > 0 ? {
+    declaredHistory: declaredHistories.length === 1 ? declaredHistories[0] : undefined,
+    finalBalanceSnapshots: finalBalanceSnapshots.length > 0 ? finalBalanceSnapshots : undefined,
+    coveredAccountClasses: coveredAccountClasses.length > 0 ? coveredAccountClasses : ['unknown'],
+    requiredOutcomes: evidenceParts.flatMap((part) => part.requiredOutcomes),
+    recognizedCount: evidenceParts.reduce((sum, part) => sum + part.recognizedCount, 0),
+    parsedCount: transactions.length,
+    excludedCount: evidenceParts.reduce((sum, part) => sum + part.excludedCount, 0),
+    skippedCount: evidenceParts.reduce((sum, part) => sum + part.skippedCount, 0),
+    failedCount: evidenceParts.reduce((sum, part) => sum + part.failedCount, 0),
+    exclusionReasons: evidenceParts.flatMap((part) => part.exclusionReasons),
+    skippedReasons: evidenceParts.flatMap((part) => part.skippedReasons),
+    failureReasons: evidenceParts.flatMap((part) => part.failureReasons)
+  } : undefined;
 
   // Aggregate structured missing-field hints from empty sheets so callers can
   // render actionable fix-the-file guidance instead of a generic dead-end.
@@ -313,6 +482,7 @@ function mergeSheetOutcomes(sheets: SheetParseOutcome[], fileLabel: string): Fil
     optionsBalanceUnavailable: optionsBalanceUnavailable || undefined,
     optionsBalanceIncluded: optionsBalanceIncluded || undefined,
     optionsCoverageThrough: Number.isFinite(optionsCoverageThrough) ? optionsCoverageThrough : undefined,
+    evidence,
     missingFields: missingFields.length > 0 ? missingFields : undefined,
     // Convenience "any sheet ambiguous" flag for gating; the per-sheet flag on
     // each SheetParseOutcome is authoritative for WHICH rows to orient.
@@ -344,8 +514,10 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
       if (matched) {
         const result = matched.parse(extracted.rows, ctx);
         if (result.transactions.length > 0) {
+          const evidence = evidenceForSheet(matched.id, file.name || 'CSV', result, ctx);
           return {
             ...result,
+            evidence,
             detectedParser: matched.id,
             headers: extracted.headers,
             rows: extracted.rows,
@@ -365,7 +537,8 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
                 optionsBalanceIncluded: result.optionsBalanceIncluded,
                 optionsCoverageThrough: result.optionsCoverageThrough,
                 headerScore: extracted.headerScore,
-                addressColumnAmbiguous: result.addressColumnAmbiguous
+                addressColumnAmbiguous: result.addressColumnAmbiguous,
+                evidence
               }
             ]
           };
@@ -385,7 +558,8 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
               skippedRows: result.skippedRows,
               warnings: result.warnings,
               headerScore: extracted.headerScore,
-              missingFields: result.missingFields
+              missingFields: result.missingFields,
+              evidence: evidenceForSheet(matched.id, file.name || 'CSV', result, ctx)
             }
           ],
           file.name
@@ -407,7 +581,20 @@ export async function parseCsvFile(file: File): Promise<FileParseOutcome> {
             missingFields: (() => {
               const missing = detectMissingFields(extracted.headers, ctx);
               return missing.length > 0 ? missing : undefined;
-            })()
+            })(),
+            evidence: {
+              coveredAccountClasses: ['unknown'],
+              requiredOutcomes: [{
+                id: `${file.name || 'CSV'}:unrecognized`, accountClass: 'unknown', required: true,
+                status: 'failed', reason: 'No parser recognized this useful sheet.',
+                recognizedCount: 0, parsedCount: 0, excludedCount: 0, skippedCount: 0,
+                failedCount: extracted.rows.length,
+                failureReasons: [{ reason: 'No parser recognized this useful sheet.', count: extracted.rows.length }]
+              }],
+              recognizedCount: 0, parsedCount: 0, excludedCount: 0, skippedCount: 0,
+              failedCount: extracted.rows.length, exclusionReasons: [], skippedReasons: [],
+              failureReasons: [{ reason: 'No parser recognized this useful sheet.', count: extracted.rows.length }]
+            }
           }
         ],
         file.name
@@ -455,4 +642,5 @@ export { krakenParser, kucoinParser, cryptocomParser, bybitParser, okxParser };
 export { gateioParser, bitfinexParser, geminiParser, htxParser, coinspotParser };
 export { isSpreadsheetFile, isCsvLikeFile } from './workbook';
 export * from './types';
+export * from './importEvidence';
 export * from './generic';

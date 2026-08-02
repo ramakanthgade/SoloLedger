@@ -198,6 +198,55 @@ describe('detectDcaGroups — hardened against the phantom-trade false positive'
     ];
     expect(detectDcaGroups(rows)).toEqual([]);
   });
+
+  it('keeps the same EVM wallet and vault on different chains in separate groups', () => {
+    const evmWallet = '0xAbC';
+    const evmVault = '0xDeF';
+    const chainRows = (chain: 'ethereum' | 'base', prefix: string) => [
+      tx({
+        id: `${prefix}-dep`, timestamp: T - HOUR, type: 'transfer_out', asset: 'USDC',
+        chain, walletAddress: evmWallet, counterpartyAddress: evmVault, sourceRef: `${prefix}-dep`
+      }),
+      tx({
+        id: `${prefix}-f1`, type: 'transfer_in', asset: 'TOKEN', chain,
+        walletAddress: evmWallet.toLowerCase(), counterpartyAddress: evmVault.toUpperCase(),
+        sourceRef: `${prefix}-f1`
+      }),
+      tx({
+        id: `${prefix}-f2`, timestamp: T + DAY, type: 'transfer_in', asset: 'TOKEN', chain,
+        walletAddress: evmWallet, counterpartyAddress: evmVault, sourceRef: `${prefix}-f2`
+      })
+    ];
+
+    const groups = detectDcaGroups([
+      ...chainRows('ethereum', 'eth'),
+      ...chainRows('base', 'base')
+    ]);
+    expect(groups).toHaveLength(2);
+    expect(new Set(groups.map((group) => group.chain))).toEqual(new Set(['ethereum', 'base']));
+    for (const group of groups) {
+      expect(new Set(group.fillTxs.map((fill) => fill.chain))).toEqual(new Set([group.chain]));
+    }
+  });
+
+  it('keeps case-distinct Solana wallets and vaults in separate groups', () => {
+    const rows = [
+      tx({ id: 'a-dep', timestamp: T - HOUR, type: 'transfer_out', asset: 'DBT', walletAddress: 'Base58Case', counterpartyAddress: 'VaultCase', sourceRef: 'a-dep' }),
+      tx({ id: 'a-f1', type: 'transfer_in', asset: 'USDC', walletAddress: 'Base58Case', counterpartyAddress: 'VaultCase', sourceRef: 'a-f1' }),
+      tx({ id: 'a-f2', timestamp: T + DAY, type: 'transfer_in', asset: 'USDC', walletAddress: 'Base58Case', counterpartyAddress: 'VaultCase', sourceRef: 'a-f2' }),
+      tx({ id: 'b-dep', timestamp: T - HOUR, type: 'transfer_out', asset: 'DBT', walletAddress: 'base58Case', counterpartyAddress: 'vaultCase', sourceRef: 'b-dep' }),
+      tx({ id: 'b-f1', type: 'transfer_in', asset: 'USDC', walletAddress: 'base58Case', counterpartyAddress: 'vaultCase', sourceRef: 'b-f1' }),
+      tx({ id: 'b-f2', timestamp: T + DAY, type: 'transfer_in', asset: 'USDC', walletAddress: 'base58Case', counterpartyAddress: 'vaultCase', sourceRef: 'b-f2' })
+    ];
+
+    const groups = detectDcaGroups(rows);
+    expect(groups).toHaveLength(2);
+    expect(groups.map((group) => group.depositTx.id).sort()).toEqual(['a-dep', 'b-dep']);
+    expect(groups.map((group) => group.fillTxs.map((fill) => fill.id).sort())).toEqual([
+      ['a-f1', 'a-f2'],
+      ['b-f1', 'b-f2']
+    ]);
+  });
 });
 
 // ---- applyDcaClassification ----
@@ -332,14 +381,76 @@ describe('applyDcaClassification — Jupiter verification (Solana)', () => {
     expect(f1.flags).toContain('needs_review');
   });
 
-  it('skips a Solana group with no wallet address (cannot verify)', async () => {
+  it('does not form a DCA group without canonical wallet identity', async () => {
     const rows = genuineGroupRows().map((t) => ({ ...t, walletAddress: undefined }));
     store = rows;
     const groups = detectDcaGroups(rows);
-    expect(groups).toHaveLength(1);
+    expect(groups).toHaveLength(0);
     const r = await applyDcaClassification(groups as DcaGroup[], undefined);
     expect(r.applied).toBe(0);
-    expect(r.skipped).toBe(1);
+    expect(r.skipped).toBe(0);
     expect(fetchJupiterRecurringHistory).not.toHaveBeenCalled();
+  });
+
+  it('scopes other deposits and tiny SOL mutations to the exact wallet operation', async () => {
+    store = genuineGroupRows();
+    const groups = detectDcaGroups(store);
+    expect(groups).toHaveLength(1);
+    store.push(
+      tx({
+        id: 'same-scope-other-deposit', timestamp: T - 2 * HOUR, type: 'transfer_out',
+        asset: 'DBT', amount: 25, counterpartyAddress: VAULT, sourceRef: 'other-dep'
+      }),
+      tx({
+        id: 'other-chain-deposit', timestamp: T - 2 * HOUR, type: 'transfer_out',
+        asset: 'DBT', amount: 25, chain: 'ethereum', walletAddress: '0xAbC',
+        counterpartyAddress: VAULT, sourceRef: 'other-dep'
+      }),
+      tx({
+        id: 'other-wallet-same-signature', type: 'transfer_out', asset: 'SOL', amount: 0.002,
+        walletAddress: WALLET.toLowerCase(), sourceRef: 'dep-sig'
+      }),
+      tx({
+        id: 'deposit-rent', type: 'transfer_out', asset: 'SOL', amount: 0.002,
+        sourceRef: 'dep-sig'
+      }),
+      tx({
+        id: 'fill-rent', type: 'transfer_out', asset: 'SOL', amount: 0.003,
+        sourceRef: 'fill-sig-1'
+      }),
+      tx({
+        id: 'explicit-refund', type: 'transfer_in', asset: 'SOL', amount: 0.004,
+        sourceRef: 'fill-sig-2'
+      }),
+      tx({
+        id: 'unrelated-tiny-inbound', type: 'transfer_in', asset: 'SOL', amount: 0.005,
+        sourceRef: 'unrelated-signature', flags: ['missing_cost_basis']
+      })
+    );
+    fetchJupiterRecurringHistory.mockResolvedValueOnce(
+      jupiterResult({ fills: { 'fill-sig-1': 40, 'fill-sig-2': 60 } })
+    );
+
+    await applyDcaClassification(groups);
+
+    expect(store.find((row) => row.id === 'same-scope-other-deposit')).toMatchObject({
+      isInternalTransfer: true
+    });
+    expect(store.find((row) => row.id === 'other-chain-deposit')).toMatchObject({
+      isInternalTransfer: false
+    });
+    expect(store.find((row) => row.id === 'deposit-rent')).toMatchObject({
+      type: 'fee', notes: 'Token account rent (Jupiter DCA setup) — reduces wallet SOL balance'
+    });
+    expect(store.find((row) => row.id === 'fill-rent')).toMatchObject({ type: 'fee' });
+    expect(store.find((row) => row.id === 'other-wallet-same-signature')?.type).toBe('transfer_out');
+    expect(store.find((row) => row.id === 'other-wallet-same-signature')?.notes).toBeUndefined();
+    expect(store.find((row) => row.id === 'explicit-refund')).toMatchObject({
+      type: 'transfer_in', notes: 'Token account rent refund (DCA account close)'
+    });
+    expect(store.find((row) => row.id === 'unrelated-tiny-inbound')).toMatchObject({
+      type: 'transfer_in', flags: ['missing_cost_basis']
+    });
+    expect(store.find((row) => row.id === 'unrelated-tiny-inbound')?.notes).toBeUndefined();
   });
 });

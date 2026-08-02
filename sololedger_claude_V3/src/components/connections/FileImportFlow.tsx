@@ -1,15 +1,18 @@
 import { useCallback, useRef, useState } from 'react';
-import { parseImportFile, isSpreadsheetFile, type FileParseOutcome } from '@/lib/parsers';
+import {
+  buildCsvImportEvidenceGeneration,
+  parseImportFile,
+  isSpreadsheetFile,
+  type FileParseOutcome
+} from '@/lib/parsers';
 import { parseWithMapping } from '@/lib/parsers/generic';
 import { confirmAddressOrientation, confirmSheetOrientations } from '@/lib/parsers/addressOrientation';
 import { suggestCsvMappingWithAi } from '@/lib/ai/csvMapping';
 import {
   db,
+  commitCsvImportGeneration,
   getSettings,
   hashFileContent,
-  upsertCsvImport,
-  countCsvImportTransactions,
-  deduplicateTransactions
 } from '@/lib/storage/db';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -37,6 +40,8 @@ type FileHandleOutcome =
     }
   | { kind: 'duplicate' }
   | { kind: 'manual' };
+
+class CsvSaveError extends Error {}
 
 /**
  * Shared note builders — the single-file path (persistTransactions) and the
@@ -102,7 +107,7 @@ export function FileImportFlow() {
     parserId: string | null,
     hash: string,
     name: string,
-    metadata?: Pick<FileParseOutcome, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>
+    metadata?: Pick<FileParseOutcome, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough' | 'evidence' | 'warnings'>
   ): Promise<{ converted: number; failed: number; pricesUpdated: number; pricesFailed: number; warnings: string[]; saved: number }> => {
     setConversionNote(null);
     setPriceFetchNote(null);
@@ -129,15 +134,36 @@ export function FileImportFlow() {
       setConversionNote(conversionNoteText(nConverted, nFailed, settings.reportingCurrency));
     }
 
-    await db.transactions.bulkPut(converted);
-    await deduplicateTransactions();
-    const count = await countCsvImportTransactions(hash);
-    await upsertCsvImport(hash, name, parserId, count, {
-      balanceSnapshot: count === converted.length ? metadata?.balanceSnapshot : undefined,
-      optionsBalanceUnavailable: metadata?.optionsBalanceUnavailable,
-      optionsBalanceIncluded: count === converted.length ? metadata?.optionsBalanceIncluded : undefined,
-      optionsCoverageThrough: metadata?.optionsCoverageThrough
-    });
+    let count: number;
+    try {
+      count = await commitCsvImportGeneration({
+      id: hash,
+      fileName: name,
+      parserId,
+      transactions: converted,
+      metadata: {
+        balanceSnapshot: metadata?.balanceSnapshot,
+        optionsBalanceUnavailable: metadata?.optionsBalanceUnavailable,
+        optionsBalanceIncluded: metadata?.optionsBalanceIncluded,
+        optionsCoverageThrough: metadata?.optionsCoverageThrough
+      },
+      buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
+        buildCsvImportEvidenceGeneration({
+          sourceIdentityId: hash,
+          parserId,
+          parsedBeforeDedup: converted.length,
+          savedAfterDedup,
+          savedTransactions,
+          evidence: metadata?.evidence,
+          warnings: metadata?.warnings,
+          optionsBalanceIncluded: metadata?.optionsBalanceIncluded,
+          generation,
+          completedAt
+        })
+      });
+    } catch (error) {
+      throw new CsvSaveError(error instanceof Error ? error.message : 'CSV persistence failed');
+    }
 
     // Auto price fetch only when Live price lookup is enabled (network egress).
     let pricesUpdated = 0;
@@ -191,12 +217,27 @@ export function FileImportFlow() {
       setFileHash(hash);
 
       const existing = await db.csvImports.get(hash);
-      if (existing) {
+      if (existing && existing.txCount > 0) {
         setDuplicateBlocked(true);
         return { kind: 'duplicate' };
       }
 
       const result = await parseImportFile(file);
+      if (result.transactions.length === 0) {
+        try {
+          await commitCsvImportGeneration({
+            id: hash, fileName: file.name, parserId: result.detectedParser, transactions: [],
+            buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
+              buildCsvImportEvidenceGeneration({
+                sourceIdentityId: hash, parserId: result.detectedParser, parsedBeforeDedup: 0,
+                savedAfterDedup, savedTransactions, evidence: result.evidence, warnings: result.warnings,
+                generation, completedAt
+              })
+          });
+        } catch (error) {
+          throw new CsvSaveError(error instanceof Error ? error.message : 'CSV evidence persistence failed');
+        }
+      }
       const sheetSummary = result.sheets
         .filter((s) => !s.skipped && s.detectedParser && s.transactions.length > 0)
         .map((s) => `“${s.sheetName}”: ${s.transactions.length} via ${s.detectedParser}`)
@@ -229,7 +270,9 @@ export function FileImportFlow() {
             balanceSnapshot: result.balanceSnapshot,
             optionsBalanceUnavailable: result.optionsBalanceUnavailable,
             optionsBalanceIncluded: result.optionsBalanceIncluded,
-            optionsCoverageThrough: result.optionsCoverageThrough
+            optionsCoverageThrough: result.optionsCoverageThrough,
+            evidence: result.evidence,
+            warnings: result.warnings
           });
           setImportWarnings([...result.warnings, ...persisted.warnings]);
           setFileName('');
@@ -286,6 +329,7 @@ export function FileImportFlow() {
       let duplicates = 0;
       let manual = 0;
       let failed = 0;
+      let saveFailed = 0;
       let noNew = 0;
       // Pricing/conversion tallies accumulated across the whole batch — the
       // per-file notes are last-wins, so a multi-file drop replaces them with
@@ -302,9 +346,10 @@ export function FileImportFlow() {
         try {
           // eslint-disable-next-line no-await-in-loop
           outcome = await handleFile(file);
-        } catch {
+        } catch (error) {
           // A corrupt/unreadable file must not strand the rest of the batch.
-          failed += 1;
+          if (error instanceof CsvSaveError) saveFailed += 1;
+          else failed += 1;
           lastOutcome = null;
           continue;
         }
@@ -358,6 +403,7 @@ export function FileImportFlow() {
                 }`
               : null,
             failed > 0 ? `${failed} could not be read — skipped` : null,
+            saveFailed > 0 ? `${saveFailed} could not be saved — no partial data was kept` : null,
             noNew > 0
               ? `${noNew} had no new rows — everything already in your ledger`
               : null
@@ -369,6 +415,10 @@ export function FileImportFlow() {
         // Single-file drop that threw: nothing else surfaced, so say so.
         setBatchNote(
           `"${files[0].name}" could not be read — the file may be corrupt or in an unexpected format.`
+        );
+      } else if (saveFailed > 0) {
+        setBatchNote(
+          `"${files[0].name}" could not be saved — no partial transactions or evidence were kept.`
         );
       } else if (noNew > 0) {
         // Single file parsed fine but row-level dedup dropped every row.

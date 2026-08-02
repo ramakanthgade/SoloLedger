@@ -7,6 +7,7 @@
  */
 import type { Transaction } from '@/types/transaction';
 import type { LookupAddressRow } from '@/lib/storage/db';
+import { canonicalWalletAddress, canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { SOL_MAIN_WALLET_TOLERANCE } from '@/lib/portfolio/solBalance';
 
 export const ALL_WALLETS = 'All wallets';
@@ -98,10 +99,15 @@ export function summarizePortfolioSources(
 }
 
 /** True when every tx tagged to this wallet is from an on-chain import. */
-export function walletHasOnlyRpcTxs(transactions: Transaction[], walletAddress: string): boolean {
-  const lower = walletAddress.toLowerCase();
+export function walletHasOnlyRpcTxs(
+  transactions: Transaction[],
+  chain: string,
+  walletAddress: string
+): boolean {
+  const identity = canonicalWalletIdentity(chain, walletAddress);
   const walletTxs = transactions.filter(
-    (t) => !t.isSpam && t.walletAddress?.toLowerCase() === lower
+    (t) => !t.isSpam && t.walletAddress != null &&
+      canonicalWalletIdentity(t.chain ?? '', t.walletAddress) === identity
   );
   if (walletTxs.length === 0) return false;
   return walletTxs.every((t) => isRpcSourced(t.source));
@@ -117,10 +123,11 @@ export function resolveCrossCheckMode(
   const solanaWallets = lookupAddresses.filter((w) => w.chain === 'solana');
 
   if (selectedWallet !== ALL_WALLETS) {
-    const inLookup = solanaWallets.some(
-      (w) => w.address.toLowerCase() === selectedWallet.toLowerCase()
+    const selected = solanaWallets.find((w) =>
+      canonicalWalletIdentity(w.chain, w.address) === selectedWallet ||
+      canonicalWalletAddress(w.chain, w.address) === canonicalWalletAddress(w.chain, selectedWallet)
     );
-    if (inLookup && walletHasOnlyRpcTxs(transactions, selectedWallet)) {
+    if (selected && walletHasOnlyRpcTxs(transactions, selected.chain, selected.address)) {
       return 'scoped_wallet_live';
     }
     return 'ledger_integrity_only';

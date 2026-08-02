@@ -6,6 +6,8 @@ import type { Transaction } from '@/types/transaction';
 
 export type {
   ExchangeId,
+  ExchangeCredentials,
+  ExchangeCredentialsState,
   NewConnectionInput,
   ExchangeConnectionView,
   InitialSyncPreview,
@@ -16,6 +18,7 @@ export { SYNC_EXCHANGES } from './types';
 export {
   listConnections,
   addConnection,
+  reauthorizeConnection,
   deleteConnectionAndTransactions
 } from './connections';
 export { testConnection } from './engine';

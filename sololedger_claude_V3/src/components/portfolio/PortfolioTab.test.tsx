@@ -2,6 +2,13 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within, act } from '@testing-library/react';
 import { getAvailableFys, getCurrentFy, getFyLabel } from '@/lib/utils';
 
+const utilityMocks = vi.hoisted(() => ({ downloadBlob: vi.fn() }));
+
+vi.mock('@/lib/utils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/utils')>()),
+  downloadBlob: utilityMocks.downloadBlob
+}));
+
 /**
  * Portfolio tab — Ember & Slate restyle. The Dexie layer is replaced with a
  * synchronous in-memory stub (the real `useLiveQuery` effect chains never
@@ -208,6 +215,45 @@ describe('PortfolioTab (Ember & Slate)', () => {
     expect(screen.getByRole('button', { name: 'JSON' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'PDF' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Re-run ledger repair' })).toBeInTheDocument();
+  });
+
+  it('selects and exports case-distinct Base58 wallets independently', async () => {
+    const originalTxCount = SEED.txs.length;
+    const originalAddressCount = SEED.emptyAddresses.length;
+    SEED.txs.push(
+      {
+        id: 'sol-upper', timestamp: Date.UTC(2026, 5, 1), type: 'transfer_in', asset: 'SOL',
+        amount: 1, fiatCurrency: 'INR', source: 'rpc:helius', chain: 'solana',
+        walletAddress: 'Base58Case', flags: [], isInternalTransfer: false
+      } as never,
+      {
+        id: 'sol-lower', timestamp: Date.UTC(2026, 5, 2), type: 'transfer_in', asset: 'SOL',
+        amount: 2, fiatCurrency: 'INR', source: 'rpc:helius', chain: 'solana',
+        walletAddress: 'base58Case', flags: [], isInternalTransfer: false
+      } as never
+    );
+    SEED.emptyAddresses.push(
+      { chain: 'solana', address: 'Base58Case' },
+      { chain: 'solana', address: 'base58Case' }
+    );
+    try {
+      await renderTab();
+      const walletFilter = screen.getByRole('combobox', { name: 'Wallet filter' });
+      expect(within(walletFilter).getByRole('option', { name: 'Base58Case' })).toBeInTheDocument();
+      expect(within(walletFilter).getByRole('option', { name: 'base58Case' })).toBeInTheDocument();
+
+      fireEvent.change(walletFilter, { target: { value: 'solana:solana:base58Case' } });
+      fireEvent.click(screen.getByRole('button', { name: 'JSON' }));
+      expect(utilityMocks.downloadBlob).toHaveBeenCalledTimes(1);
+      const exported = JSON.parse(utilityMocks.downloadBlob.mock.calls[0][0] as string);
+      expect(exported.wallet).toBe('solana:solana:base58Case');
+      expect(exported.holdings).toEqual([
+        expect.objectContaining({ asset: 'SOL', amount: 2, chain: 'solana' })
+      ]);
+    } finally {
+      SEED.txs.splice(originalTxCount);
+      SEED.emptyAddresses.splice(originalAddressCount);
+    }
   });
 
   it('shows the empty state when the ledger is empty', async () => {

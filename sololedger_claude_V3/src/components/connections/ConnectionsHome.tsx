@@ -5,6 +5,7 @@ import {
   CheckCircle2,
   Compass,
   Loader2,
+  KeyRound,
   Pencil,
   Plus,
   RefreshCw,
@@ -90,6 +91,7 @@ interface DrawerState {
   open: boolean;
   guided: boolean;
   initialFlow: FlowKind | null;
+  reauthorizationTarget: ExchangeConnectionView | null;
 }
 
 /**
@@ -113,7 +115,12 @@ export function ConnectionsHome() {
   const pillRefs = useRef<Array<HTMLButtonElement | null>>([]);
   /** Open per-connection detail view (round 4) — null shows the cards grid. */
   const [detail, setDetail] = useState<ConnectionCardData | null>(null);
-  const [drawer, setDrawer] = useState<DrawerState>({ open: false, guided: false, initialFlow: null });
+  const [drawer, setDrawer] = useState<DrawerState>({
+    open: false,
+    guided: false,
+    initialFlow: null,
+    reauthorizationTarget: null
+  });
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastId = useRef(0);
   const [syncAllActive, setSyncAllActive] = useState(false);
@@ -138,12 +145,17 @@ export function ConnectionsHome() {
   );
   const counts = useMemo(() => pillCounts(cards), [cards]);
   const visibleCards = pill === 'all' ? cards : cards.filter((c) => c.lane === pill);
+  const readyConnections = useMemo(
+    () => connections.filter((c) => c.credentialsState !== 'reauthorization_required'),
+    [connections]
+  );
 
   const apiExchangeStates = useMemo<ApiExchangeStates>(() => {
     const states: ApiExchangeStates = {};
     const priority: Record<ApiExchangeState, number> = { connected: 1, synced: 2, attention: 3 };
     for (const connection of connections) {
-      const next: ApiExchangeState = connection.lastError
+      const next: ApiExchangeState =
+        connection.credentialsState === 'reauthorization_required' || connection.lastError
         ? 'attention'
         : connection.lastSyncAt == null
           ? 'connected'
@@ -162,7 +174,20 @@ export function ConnectionsHome() {
   );
 
   const openDrawer = (opts?: { initialFlow?: FlowKind | null }) =>
-    setDrawer({ open: true, guided: false, initialFlow: opts?.initialFlow ?? null });
+    setDrawer({
+      open: true,
+      guided: false,
+      initialFlow: opts?.initialFlow ?? null,
+      reauthorizationTarget: null
+    });
+
+  const openReauthorization = (connection: ExchangeConnectionView) =>
+    setDrawer({
+      open: true,
+      guided: false,
+      initialFlow: null,
+      reauthorizationTarget: connection
+    });
 
   const pushToast = (t: Omit<ToastItem, 'id'>) => {
     const id = ++toastId.current;
@@ -189,7 +214,7 @@ export function ConnectionsHome() {
   const handleSyncAll = async () => {
     setSyncAllActive(true);
     try {
-      for (const c of connections) {
+      for (const c of readyConnections) {
         await syncNow(c.id).catch(() => undefined);
       }
     } finally {
@@ -224,6 +249,27 @@ export function ConnectionsHome() {
   const menuItemsFor = (card: ConnectionCardData): CardMenuItem[] | undefined => {
     if (card.kind === 'exchange-api' && card.exchange) {
       const c = card.exchange;
+      if (card.requiresReauthorization) {
+        return [
+          {
+            label: 'Reauthorize',
+            icon: <KeyRound className="h-4 w-4" aria-hidden="true" />,
+            disabled: exchangeJob.active,
+            onSelect: () => openReauthorization(c)
+          },
+          {
+            label: 'Import file',
+            icon: <Upload className="h-4 w-4" aria-hidden="true" />,
+            onSelect: () => openDrawer({ initialFlow: 'file' })
+          },
+          {
+            label: 'Remove',
+            icon: <Trash2 className="h-4 w-4" aria-hidden="true" />,
+            danger: true,
+            onSelect: () => setRemoveExchange(c)
+          }
+        ];
+      }
       return [
         {
           label: 'Sync now',
@@ -307,7 +353,7 @@ export function ConnectionsHome() {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          {connections.length > 0 && (
+          {readyConnections.length > 0 && (
             <Button
               variant="secondary"
               onClick={() => void handleSyncAll()}
@@ -504,7 +550,11 @@ export function ConnectionsHome() {
               onClick={
                 card.kind === 'manual' ? () => openDrawer({ initialFlow: 'manual' }) : undefined
               }
-              onOpenDetail={card.kind === 'manual' ? undefined : () => setDetail(card)}
+              onOpenDetail={
+                card.kind === 'manual' || card.requiresReauthorization
+                  ? undefined
+                  : () => setDetail(card)
+              }
               renaming={
                 renaming?.cardId === card.id ? (
                   <div className="flex items-center gap-1.5">
@@ -557,6 +607,7 @@ export function ConnectionsHome() {
         initialFlow={drawer.initialFlow}
         apiExchangeStates={apiExchangeStates}
         fileImportedSlugs={fileImportedSlugs}
+        reauthorizationTarget={drawer.reauthorizationTarget}
         onClose={() => setDrawer((d) => ({ ...d, open: false }))}
         onToast={pushToast}
       />

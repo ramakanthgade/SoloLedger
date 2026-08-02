@@ -30,6 +30,7 @@ import {
   TRADE_OVERLAP_MS,
   TRANSFER_OVERLAP_MS,
   paginatePhase,
+  persistSyncedRows,
   syncConnection,
   type SyncEngineDeps
 } from './engine';
@@ -44,6 +45,7 @@ function makeRow(over: Partial<ExchangeConnectionRow> = {}): ExchangeConnectionR
     exchange: 'okx',
     apiKey: 'key',
     secret: 'secret',
+    passphrase: 'passphrase',
     createdAt: NOW - 30 * DAY,
     cursors: { trades: NOW - 10 * DAY, deposits: NOW - 20 * DAY, withdrawals: NOW - 20 * DAY },
     knownAssets: ['BTC'],
@@ -130,6 +132,10 @@ function trade(id: string, ts: number): UnifiedTrade {
 beforeEach(async () => {
   await db.transactions.clear();
   await db.exchangeConnections.clear();
+  await db.exchangeBalances.clear();
+  await db.authoritySnapshots.clear();
+  await db.authorityAssets.clear();
+  await db.sourceCoverage.clear();
 });
 
 describe('paginatePhase — scripted pages', () => {
@@ -150,6 +156,7 @@ describe('paginatePhase — scripted pages', () => {
     expect(result.rows.map((r) => r.id)).toEqual(['a', 'b', 'c', 'd']);
     expect(result.maxTs).toBe(4000);
     expect(result.partial).toBe(false);
+    expect(result.termination).toBe('exhausted');
     expect(result.pages).toBe(3);
   });
 
@@ -205,7 +212,8 @@ describe('paginatePhase — scripted pages', () => {
     });
     expect(calls).toBe(1);
     expect(result.rows).toHaveLength(2);
-    expect(result.partial).toBe(false);
+    expect(result.partial).toBe(true);
+    expect(result.termination).toBe('nonadvancing');
   });
 
   it('MAX_PAGES trips → partial result with the rows fetched so far', async () => {
@@ -275,6 +283,225 @@ describe('paginatePhase — scripted pages', () => {
 });
 
 describe('syncConnection — cursor safety with a fake client', () => {
+  it('does not let a stale stage completion or failure overwrite a newer reservation state', async () => {
+    for (const failAfterAdvance of [false, true]) {
+      await db.exchangeConnections.put(makeRow({ cursors: {} }));
+      const { client } = fakeClient();
+      client.fetchBalance = async () => {
+        await db.exchangeConnections.update('exc_cursor_test', {
+          revision: 2, authorityGeneration: 2, status: 'ok', lastError: 'newer operation'
+        });
+        if (failAfterAdvance) throw new Error('older operation failed');
+        return { total: {} };
+      };
+
+      await expect(syncConnection('exc_cursor_test', { mode: 'stage' }, {}, deps(client))).rejects.toThrow();
+      expect(await db.exchangeConnections.get('exc_cursor_test')).toMatchObject({
+        revision: 2, authorityGeneration: 2, status: 'ok', lastError: 'newer operation'
+      });
+      expect(await db.sourceCoverage.count()).toBe(0);
+      await db.exchangeConnections.clear();
+    }
+  });
+
+  it('never appends failed coverage after the reserved source is deleted', async () => {
+    await db.exchangeConnections.put(makeRow());
+    const { client } = fakeClient();
+    client.fetchBalance = async () => {
+      await db.exchangeConnections.delete('exc_cursor_test');
+      throw new Error('deleted during operation');
+    };
+
+    await expect(syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client))).rejects.toThrow();
+    expect(await db.exchangeConnections.get('exc_cursor_test')).toBeUndefined();
+    expect(await db.sourceCoverage.count()).toBe(0);
+  });
+
+  it('rechecks staged revision and generation inside the atomic commit transaction', async () => {
+    await db.exchangeConnections.put(makeRow({ cursors: {} }));
+    const { client } = fakeClient({ trades: [[trade('staged', NOW - DAY)]] });
+    const staged = await syncConnection('exc_cursor_test', { mode: 'stage' }, {}, deps(client));
+    expect(staged.mode).toBe('stage');
+    if (staged.mode !== 'stage') return;
+    await db.exchangeConnections.update('exc_cursor_test', {
+      revision: staged.outcome.operation.expectedRevision + 1,
+      authorityGeneration: staged.outcome.operation.generation + 1,
+      status: 'ok',
+      lastError: 'newer operation won'
+    });
+
+    await expect(persistSyncedRows({
+      connectionId: 'exc_cursor_test', rows: staged.outcome.rows, cursors: staged.outcome.cursors,
+      knownAssets: staged.outcome.knownAssets, knownSymbols: staged.outcome.knownSymbols,
+      balance: staged.outcome.balance, operation: staged.outcome.operation, deps: deps(client)
+    })).rejects.toThrow('Connection changed after this operation started');
+    expect(await db.transactions.count()).toBe(0);
+    expect(await db.sourceCoverage.count()).toBe(0);
+    expect(await db.exchangeConnections.get('exc_cursor_test')).toMatchObject({
+      status: 'ok', lastError: 'newer operation won'
+    });
+  });
+
+  it('records OKX initial retention as endpoint-level partial evidence', async () => {
+    await db.exchangeConnections.put(makeRow({ cursors: {} }));
+    const { client } = fakeClient();
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    const coverage = (await db.sourceCoverage.toArray())[0];
+    expect(coverage.status).toBe('partial');
+    expect(coverage.retentionFloors?.trades).toBe(NOW - 90 * DAY);
+    expect(coverage.endpointOutcomes.find((outcome) => outcome.endpoint === 'trades')).toMatchObject({
+      status: 'partial', paginationExhausted: false,
+      retentionFloor: NOW - 90 * DAY, warning: 'retention_truncated'
+    });
+  });
+
+  it('records Coinbase full-page transfer truncation instead of claiming completeness', async () => {
+    await db.exchangeConnections.put(makeRow({ exchange: 'coinbase', passphrase: undefined, cursors: {} }));
+    const { client } = fakeClient();
+    client.fetchBalance = async () => ({ total: { BTC: 1 } });
+    client.fetchDeposits = async () => Array.from({ length: 100 }, (_, index) => ({
+      id: `deposit-${index}`, timestamp: NOW - index, currency: 'BTC', amount: 1,
+      status: index === 0 || index === 50 ? 'pending' : 'ok',
+      info: { type: index < 50 ? 'receive' : 'send' }
+    }));
+    let withdrawalCalls = 0;
+    client.fetchWithdrawals = async () => {
+      withdrawalCalls += 1;
+      return [];
+    };
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    const outcomes = (await db.sourceCoverage.toArray())[0].endpointOutcomes;
+    const deposits = outcomes.find((outcome) => outcome.endpoint === 'deposits');
+    const withdrawals = outcomes.find((outcome) => outcome.endpoint === 'withdrawals');
+    expect(deposits).toMatchObject({
+      status: 'partial', paginationExhausted: false, warning: 'full_page_truncated',
+      skippedCount: 1, exclusionReasons: ['unsettled_transfer'],
+      observedStart: NOW - 49, observedEnd: NOW
+    });
+    expect(withdrawals).toMatchObject({
+      status: 'partial', paginationExhausted: false, warning: 'full_page_truncated',
+      skippedCount: 1, exclusionReasons: ['unsettled_transfer'],
+      observedStart: NOW - 99, observedEnd: NOW - 50
+    });
+    expect(withdrawalCalls).toBe(0);
+  });
+
+  it('queries and retains known Coinbase assets and attributes shared sends to withdrawals', async () => {
+    await db.exchangeConnections.put(makeRow({
+      exchange: 'coinbase', passphrase: undefined, cursors: {}, knownAssets: ['DOGE']
+    }));
+    const { client } = fakeClient();
+    client.fetchBalance = async () => ({ total: { BTC: 1 } });
+    const queried: string[] = [];
+    client.fetchDeposits = async (currency?: string) => {
+      queried.push(currency ?? '');
+      return currency === 'DOGE' ? [{
+        id: 'doge-send', timestamp: NOW - DAY, currency: 'DOGE', amount: 5,
+        status: 'ok', info: { type: 'send' }
+      }] : [];
+    };
+    client.fetchWithdrawals = async () => { throw new Error('synthetic withdrawal query must not run'); };
+
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    expect(queried.sort()).toEqual(['BTC', 'DOGE']);
+    expect((await db.exchangeConnections.get('exc_cursor_test'))?.knownAssets).toEqual(['BTC', 'DOGE']);
+    expect(await db.transactions.toArray()).toEqual([
+      expect.objectContaining({ asset: 'DOGE', type: 'transfer_out' })
+    ]);
+    const coverage = (await db.sourceCoverage.toArray())[0];
+    expect(coverage.status).toBe('partial');
+    expect(coverage.endpointOutcomes.find((outcome) => outcome.endpoint === 'deposits')).toMatchObject({
+      status: 'partial', paginationExhausted: false, warning: 'currency_universe_unproven'
+    });
+    expect(coverage.endpointOutcomes.find((outcome) => outcome.endpoint === 'withdrawals')).toMatchObject({
+      status: 'partial', paginationExhausted: false, warning: 'currency_universe_unproven',
+      observedStart: NOW - DAY, observedEnd: NOW - DAY
+    });
+  });
+
+  it('uses the earlier divergent Coinbase transfer cursor start for the shared request and both outcomes', async () => {
+    const depositCursor = NOW - 5 * DAY;
+    const withdrawalCursor = NOW - 20 * DAY;
+    await db.exchangeConnections.put(makeRow({
+      exchange: 'coinbase', passphrase: undefined,
+      cursors: { deposits: depositCursor, withdrawals: withdrawalCursor, trades: NOW - DAY }
+    }));
+    const { client } = fakeClient();
+    client.fetchBalance = async () => ({ total: { BTC: 1 } });
+    const actualSince: number[] = [];
+    client.fetchDeposits = async (_currency?: string, since?: number) => {
+      actualSince.push(since!);
+      return [];
+    };
+    client.fetchWithdrawals = async () => { throw new Error('shared response only'); };
+
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    const expectedSharedStart = withdrawalCursor - TRANSFER_OVERLAP_MS;
+    expect(actualSince).toEqual([expectedSharedStart]);
+    const outcomes = (await db.sourceCoverage.toArray())[0].endpointOutcomes;
+    expect(outcomes.find((outcome) => outcome.endpoint === 'deposits')?.requestedStart)
+      .toBe(expectedSharedStart);
+    expect(outcomes.find((outcome) => outcome.endpoint === 'withdrawals')?.requestedStart)
+      .toBe(expectedSharedStart);
+  });
+
+  it('keeps transfer-only resync recognized, parsed, skipped, and deduped populations coherent', async () => {
+    await db.exchangeConnections.put(makeRow({
+      exchange: 'coinbase', passphrase: undefined, cursors: {}, knownAssets: ['DOGE']
+    }));
+    const { client } = fakeClient();
+    client.fetchBalance = async () => ({ total: {} });
+    client.fetchDeposits = async () => [{
+      id: 'doge-transfer', timestamp: NOW - DAY, currency: 'DOGE', amount: 5,
+      status: 'ok', info: { type: 'send' }
+    }];
+    client.fetchWithdrawals = async () => { throw new Error('shared response only'); };
+
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    const coverage = (await db.sourceCoverage.orderBy('generation').toArray())[1];
+    expect(coverage).toMatchObject({
+      recognizedCount: 1,
+      parsedCount: 1,
+      skippedCount: 0,
+      failedCount: 0,
+      dedupedCount: 1
+    });
+    expect(await db.transactions.count()).toBe(1);
+  });
+
+  it('marks non-Kraken raw fills dropped by normalization as failed partial trade evidence', async () => {
+    await db.exchangeConnections.put(makeRow());
+    const { client } = fakeClient({ trades: [[trade('valid', NOW - DAY), { ...trade('bad', NOW), amount: 0 }]] });
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    const coverage = (await db.sourceCoverage.toArray())[0];
+    expect(coverage).toMatchObject({
+      status: 'partial', recognizedCount: 2, parsedCount: 1, skippedCount: 1,
+      failedCount: 1, exclusionReasons: ['trade_normalization_failed']
+    });
+    expect(coverage.endpointOutcomes.find((outcome) => outcome.endpoint === 'trades')).toMatchObject({
+      status: 'partial', paginationExhausted: false, skippedCount: 1, failedCount: 1,
+      exclusionReasons: ['trade_normalization_failed']
+    });
+  });
+
+  it('marks Kraken raw fills dropped during order normalization as failed partial trade evidence', async () => {
+    await db.exchangeConnections.put(makeRow({ exchange: 'kraken', passphrase: undefined }));
+    const valid = { ...trade('valid', NOW - DAY), order: 'order-valid' };
+    const invalid = { ...trade('invalid', NOW), order: 'order-invalid', amount: 0 };
+    const { client } = fakeClient({ trades: [[valid, invalid]] });
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    const coverage = (await db.sourceCoverage.toArray())[0];
+    expect(coverage).toMatchObject({
+      status: 'partial', recognizedCount: 2, parsedCount: 1, skippedCount: 1,
+      failedCount: 1, exclusionReasons: ['trade_normalization_failed']
+    });
+    expect(coverage.endpointOutcomes.find((outcome) => outcome.endpoint === 'trades')).toMatchObject({
+      status: 'partial', skippedCount: 1, failedCount: 1,
+      exclusionReasons: ['trade_normalization_failed']
+    });
+  });
+
   it('commit mode persists rows, then writes cursors/knownAssets/knownSymbols/lastSyncAt post-save', async () => {
     await db.exchangeConnections.put(makeRow());
     const { client, calls } = fakeClient({
@@ -344,6 +571,23 @@ describe('syncConnection — cursor safety with a fake client', () => {
       withdrawals: NOW - 20 * DAY
     });
     expect(await db.transactions.count()).toBe(0);
+    expect(await db.authoritySnapshots.count()).toBe(0);
+    expect(await db.sourceCoverage.where('sourceIdentityId').equals('exc_cursor_test').toArray())
+      .toEqual([expect.objectContaining({ generation: 1, status: 'failed', failureKind: 'network' })]);
+  });
+
+  it('enforces ready non-empty credentials and exchange passphrase at the engine boundary', async () => {
+    for (const invalid of [
+      makeRow({ credentialsState: 'reauthorization_required' }),
+      makeRow({ secret: '   ' }),
+      makeRow({ passphrase: undefined })
+    ]) {
+      await db.exchangeConnections.put(invalid);
+      await expect(syncConnection(invalid.id, { mode: 'commit' }, {}, deps(fakeClient().client)))
+        .rejects.toThrow('Reauthorize this connection before syncing.');
+      expect(await db.sourceCoverage.count()).toBe(0);
+      await db.exchangeConnections.clear();
+    }
   });
 
   it('retries rate_limit/network with backoff, then succeeds', async () => {

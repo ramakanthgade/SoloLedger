@@ -49,6 +49,15 @@ export interface LedgerRow {
   orderId?: string;
 }
 
+export interface LedgerSourceRowAccounting {
+  index: number;
+  account: string;
+  operation: string;
+  status: 'parsed' | 'excluded' | 'failed';
+  transactionId?: string;
+  failureReason?: 'unrecognized_operation' | 'unconsumed_recognized_row';
+}
+
 /**
  * Declarative per-exchange operation map. Every operation string the export
  * can contain should appear in exactly ONE list. Anything unlisted is reported
@@ -535,7 +544,7 @@ function stitchCryptoTrades(
       feeAsset: feeRow?.coin,
       sourceRef: srcRef(ctx, buy.timestamp, 'trade', buy.coin, amount),
       notes: 'Crypto-for-crypto trade',
-      raw: { buy: buy.raw, spend: spendRow?.raw }
+      raw: { buy: buy.raw, spend: spendRow?.raw, fee: feeRow?.raw }
     });
   });
 }
@@ -1178,6 +1187,7 @@ export function stitchLedger(
   balanceSnapshot?: Record<string, number>;
   optionsBalanceUnavailable?: boolean;
   optionsCoverageThrough?: number;
+  sourceRowAccounting: LedgerSourceRowAccounting[];
 } {
   const normalized = normalizeLedgerRows(rows, cfg);
   const skippedRows = rows.length - normalized.length;
@@ -1301,6 +1311,38 @@ export function stitchLedger(
 
   transactions.sort((a, b) => a.timestamp - b.timestamp);
 
+  // Many export rows can produce one Transaction. Preserve exact consumed-row
+  // accounting from the original raw object identities instead of guessing
+  // from the stitched transaction's top-level raw shape.
+  const transactionByRaw = new Map<Record<string, string>, string>();
+  const normalizedRaw = new Set(normalized.map((row) => row.raw));
+  const visitRaw = (value: unknown, transactionId: string): void => {
+    if (!value || typeof value !== 'object') return;
+    const object = value as Record<string, unknown>;
+    if (normalizedRaw.has(object as Record<string, string>)) {
+      transactionByRaw.set(object as Record<string, string>, transactionId);
+      return;
+    }
+    for (const nested of Object.values(object)) visitRaw(nested, transactionId);
+  };
+  for (const transaction of transactions) visitRaw(transaction.raw, transaction.id);
+  const known = recognizedOps(cfg.ops);
+  const sourceRowAccounting: LedgerSourceRowAccounting[] = normalized.map((row) => {
+    const operation = row.operation.toLowerCase();
+    const transactionId = transactionByRaw.get(row.raw);
+    const excluded = ctx.sets.skip.has(operation) || ctx.sets.internalExclude.has(operation) ||
+      (ctx.sets.clawback.has(operation) && row.change >= 0);
+    return {
+      index: row.index,
+      account: row.account,
+      operation: row.operation,
+      status: transactionId ? 'parsed' : excluded ? 'excluded' : 'failed',
+      transactionId,
+      failureReason: transactionId || excluded ? undefined
+        : known.has(operation) ? 'unconsumed_recognized_row' : 'unrecognized_operation'
+    };
+  });
+
   const withFiat = transactions.filter((t) => t.fiatValue != null && t.fiatValue > 0).length;
   const buysSells = transactions.filter((t) => t.type === 'buy' || t.type === 'sell').length;
   if (skippedRows > 0) {
@@ -1349,7 +1391,7 @@ export function stitchLedger(
     );
   }
 
-  if (cfg.exchange !== 'binance') return { transactions, skippedRows, warnings };
+  if (cfg.exchange !== 'binance') return { transactions, skippedRows, warnings, sourceRowAccounting };
 
   // Binance Transaction History is a signed custody journal. Keep its final
   // non-Options quantities as batch-level parser metadata: this never becomes
@@ -1363,6 +1405,7 @@ export function stitchLedger(
     transactions,
     skippedRows,
     warnings,
+    sourceRowAccounting,
     balanceSnapshot,
     optionsBalanceUnavailable: optionRows > 0,
     optionsCoverageThrough: optionRows > 0

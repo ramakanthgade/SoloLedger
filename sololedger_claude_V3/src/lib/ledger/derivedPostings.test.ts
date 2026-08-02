@@ -7,6 +7,9 @@ import {
   type DerivedPostingContext
 } from './derivedPostings';
 import { postingBalances } from './postingBalances';
+import { stitchBinanceTransactionHistory } from '@/lib/parsers/binanceStitch';
+import { buildCsvImportEvidenceGeneration } from '@/lib/parsers/importEvidence';
+import { associateSourceCoverageScope } from '@/lib/reconcile/sourceCoverage';
 
 function tx(partial: Partial<Transaction> = {}): Transaction {
   return {
@@ -140,6 +143,143 @@ describe('resolveAccountScope', () => {
     expect(resolveAccountScope(tx({ source: 'binance', raw: { Account } }), context).accountClass).toBe(accountClass);
   });
 
+  it('uses parser class provenance for sell/convert/dust while live Binance ownership controls scope', () => {
+    const parsed = stitchBinanceTransactionHistory([
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Funding', Operation: 'Transaction Sold', Coin: 'BTC', Change: '-0.1' },
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Funding', Operation: 'Transaction Revenue', Coin: 'USDT', Change: '5000' },
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Funding', Operation: 'Transaction Fee', Coin: 'USDT', Change: '-1' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Margin', Operation: 'Sell', Coin: 'ETH', Change: '-2' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Margin', Operation: 'Buy', Coin: 'USDT', Change: '4000' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Margin', Operation: 'Fee', Coin: 'USDT', Change: '-1' },
+      { UTC_Time: '2025-01-01 00:02:00', Account: 'Funding', Operation: 'Binance Convert', Coin: 'BTC', Change: '-1' },
+      { UTC_Time: '2025-01-01 00:02:00', Account: 'Funding', Operation: 'Binance Convert', Coin: 'ETH', Change: '10' },
+      { UTC_Time: '2025-01-01 00:03:00', Account: 'Margin', Operation: 'Small Assets Exchange BNB', Coin: 'SOL', Change: '-1', Remark: 'dust' },
+      { UTC_Time: '2025-01-01 00:03:00', Account: 'Margin', Operation: 'Small Assets Exchange BNB', Coin: 'BNB', Change: '0.1', Remark: 'dust' }
+    ]);
+    const imported = parsed.transactions.map((transaction) => ({
+      ...transaction,
+      importBatchId: 'csv-classes'
+    }));
+    const generation = buildCsvImportEvidenceGeneration({
+      sourceIdentityId: 'csv-classes', parserId: 'binance', parsedBeforeDedup: imported.length,
+      savedAfterDedup: imported.length, savedTransactions: imported,
+      evidence: { ...parsed.evidence, declaredHistory: { completeHistory: true } },
+      completedAt: 100, generation: 1
+    });
+
+    expect(imported.map((transaction) => transaction.parserAccountClass)).toEqual([
+      'funding', 'margin', 'funding', 'margin'
+    ]);
+    expect(imported.map((transaction) => Object.keys(transaction.raw ?? {})[0])).toEqual([
+      'sold', 'sell', 'out', 'spent'
+    ]);
+    const withoutConnection = derivePostings(imported, { exchangeConnections: [] });
+    expect(new Set(withoutConnection.map((posting) => posting.accountScopeId))).toEqual(new Set([
+      'file:csv-classes:funding', 'file:csv-classes:margin'
+    ]));
+    expect(new Set(withoutConnection.map((posting) => posting.accountScopeId))).toEqual(
+      new Set(generation.coverage.map((coverage) => coverage.scopeId))
+    );
+
+    const oneConnection = [{ id: 'live-binance', exchange: 'binance', provenAccountClasses: ['spot' as const] }];
+    const linked = derivePostings(imported, { exchangeConnections: oneConnection });
+    expect(new Set(linked.map((posting) => posting.accountScopeId))).toEqual(new Set(['exchange:live-binance']));
+    expect(new Set(linked.map((posting) => posting.accountClass))).toEqual(new Set(['funding', 'margin']));
+    const associatedCoverage = generation.coverage.map((coverage) =>
+      associateSourceCoverageScope(coverage, oneConnection));
+    expect(associatedCoverage.every((association) => association.scopeStatus === 'resolved' &&
+      association.accountScopeId === 'exchange:live-binance')).toBe(true);
+    expect(generation.coverage.map((coverage) => coverage.scopeId)).toEqual([
+      'file:csv-classes:funding', 'file:csv-classes:margin'
+    ]);
+
+    const multipleConnections = [
+      ...oneConnection,
+      { id: 'other-binance', exchange: 'binance', provenAccountClasses: ['spot' as const] }
+    ];
+    expect(imported.map((transaction) => resolveAccountScope(transaction, {
+      exchangeConnections: multipleConnections
+    }))).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scopeStatus: 'unresolved', accountClass: 'funding', reason: 'multiple_binance_connections' }),
+      expect.objectContaining({ scopeStatus: 'unresolved', accountClass: 'margin', reason: 'multiple_binance_connections' })
+    ]));
+    expect(generation.coverage.map((coverage) => associateSourceCoverageScope(coverage, multipleConnections)))
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({ scopeStatus: 'unresolved', accountClass: 'funding' }),
+        expect.objectContaining({ scopeStatus: 'unresolved', accountClass: 'margin' })
+      ]));
+  });
+
+  it('retains explicit unknown class when unique live Binance ownership resolves exchange scope', () => {
+    expect(resolveAccountScope(tx({
+      source: 'binance', importBatchId: 'csv-unknown', parserAccountClass: 'unknown'
+    }), context)).toMatchObject({
+      accountScopeId: 'exchange:conn-1', accountClass: 'unknown'
+    });
+  });
+
+  it('keeps Options file-scoped while an ordinary Binance class in the same workbook follows live ownership', () => {
+    const ordinary = tx({
+      id: 'ordinary-sell', source: 'binance', importBatchId: 'mixed-book', parserAccountClass: 'funding'
+    });
+    const options = tx({
+      id: 'options-sell', source: 'binance_options', importBatchId: 'mixed-book', parserAccountClass: 'options'
+    });
+    const generation = buildCsvImportEvidenceGeneration({
+      sourceIdentityId: 'mixed-book', parserId: 'binance+binance_options', parsedBeforeDedup: 2,
+      savedAfterDedup: 2, savedTransactions: [ordinary, options], completedAt: 100, generation: 1,
+      evidence: {
+        declaredHistory: { completeHistory: true }, coveredAccountClasses: ['funding', 'options'],
+        requiredOutcomes: [
+          { id: 'journal', parserId: 'binance', accountClass: 'funding', required: true, status: 'complete',
+            recognizedCount: 1, parsedCount: 1, parsedTransactionRows: [{ transactionId: ordinary.id, sourceRowCount: 1 }] },
+          { id: 'options', parserId: 'binance_options', accountClass: 'options', required: true, status: 'complete',
+            recognizedCount: 1, parsedCount: 1, parsedTransactionRows: [{ transactionId: options.id, sourceRowCount: 1 }] }
+        ],
+        recognizedCount: 2, parsedCount: 2, excludedCount: 0, skippedCount: 0, failedCount: 0,
+        exclusionReasons: [], skippedReasons: [], failureReasons: []
+      }
+    });
+    const fundingCoverage = generation.coverage.find((row) => row.accountClasses[0] === 'funding')!;
+    const optionsCoverage = generation.coverage.find((row) => row.accountClasses[0] === 'options')!;
+    const contexts = [
+      { exchangeConnections: [] },
+      { exchangeConnections: [{ id: 'only', exchange: 'binance' }] },
+      { exchangeConnections: [{ id: 'one', exchange: 'binance' }, { id: 'two', exchange: 'binance' }] }
+    ] satisfies DerivedPostingContext[];
+
+    expect(contexts.map((scopeContext) => resolveAccountScope(ordinary, scopeContext))).toEqual([
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'file:mixed-book:funding', accountClass: 'funding' }),
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'exchange:only', accountClass: 'funding' }),
+      expect.objectContaining({ scopeStatus: 'unresolved', accountClass: 'funding', reason: 'multiple_binance_connections' })
+    ]);
+    expect(contexts.map((scopeContext) => resolveAccountScope(options, scopeContext))).toEqual([
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'file:mixed-book:options', accountClass: 'options' }),
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'file:mixed-book:options', accountClass: 'options' }),
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'file:mixed-book:options', accountClass: 'options' })
+    ]);
+    expect(resolveAccountScope({
+      ...options,
+      dedupMatchedApiRow: tx({ source: 'binance_api', importBatchId: 'only' })
+    }, contexts[1])).toMatchObject({
+      scopeStatus: 'resolved', accountScopeId: 'exchange:only', accountClass: 'options'
+    });
+    expect(contexts.map((scopeContext) => associateSourceCoverageScope(
+      fundingCoverage, scopeContext.exchangeConnections
+    ))).toEqual([
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'file:mixed-book:funding' }),
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'exchange:only' }),
+      expect.objectContaining({ scopeStatus: 'unresolved', reason: 'multiple_binance_connections' })
+    ]);
+    expect(contexts.map((scopeContext) => associateSourceCoverageScope(
+      optionsCoverage, scopeContext.exchangeConnections
+    ))).toEqual([
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'file:mixed-book:options' }),
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'file:mixed-book:options' }),
+      expect.objectContaining({ scopeStatus: 'resolved', accountScopeId: 'file:mixed-book:options' })
+    ]);
+  });
+
   it('marks deleted direct provenance instead of falling back', () => {
     expect(resolveAccountScope(tx({ source: 'binance_api', importBatchId: 'gone' }), context))
       .toMatchObject({ scopeStatus: 'source_deleted', accountScopeId: 'exchange:gone' });
@@ -148,6 +288,28 @@ describe('resolveAccountScope', () => {
     }), context)).toMatchObject({
       scopeStatus: 'source_deleted', accountScopeId: 'exchange:gone', sourceIdentityId: 'gone'
     });
+  });
+
+  it('keeps tombstoned survivor provenance deleted even when the same connection id is reused', () => {
+    const survivor = tx({
+      id: 'csv-tombstone', source: 'binance', importBatchId: 'csv-file',
+      parserAccountClass: 'unknown',
+      deletedSourceEvidence: {
+        kind: 'deleted_exchange_source', sourceIdentityId: 'conn-1', transactionId: 'old-api',
+        source: 'binance_api', sourceRef: 'native-1', apiIdentity: 'identity-1', deletedAt: 99
+      }
+    });
+    expect(resolveAccountScope(survivor, context)).toMatchObject({
+      scopeStatus: 'source_deleted', accountScopeId: 'exchange:conn-1', accountClass: 'unknown',
+      sourceIdentityId: 'conn-1'
+    });
+    expect(derivePostings([survivor], context)[0].evidence).toEqual([
+      expect.objectContaining({ kind: 'transaction', role: 'survivor' }),
+      expect.objectContaining({
+        kind: 'deleted_source', sourceIdentityId: 'conn-1', transactionId: 'old-api',
+        apiIdentity: 'identity-1', deletedAt: 99
+      })
+    ]);
   });
 
   it('uses the canonical chain namespace in wallet scope identity', () => {

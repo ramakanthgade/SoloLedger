@@ -1,7 +1,7 @@
 import type { Transaction } from '@/types/transaction';
 import { binanceApiIdentity } from '@/lib/storage/binanceEconomicDedup';
 import { normalizeAssetSymbol, transactionLegAssetKey } from './assetKey';
-import { canonicalWalletChainScope } from './chainNamespace';
+import { canonicalWalletAddress, canonicalWalletChainScope } from './chainNamespace';
 
 export type AccountClass =
   | 'spot' | 'funding' | 'margin' | 'futures' | 'options'
@@ -27,6 +27,16 @@ export interface SuppressedTwinEvidenceRef {
   apiIdentity: string;
 }
 
+export interface DeletedSourceEvidenceRef {
+  kind: 'deleted_source';
+  sourceIdentityId: string;
+  transactionId: string;
+  source: string;
+  sourceRef?: string;
+  apiIdentity: string;
+  deletedAt: number;
+}
+
 export interface OpeningBalanceEvidenceRef {
   kind: 'opening_balance';
   openingBalanceId: string;
@@ -37,6 +47,7 @@ export interface OpeningBalanceEvidenceRef {
 export type EvidenceRef =
   | TransactionEvidenceRef
   | SuppressedTwinEvidenceRef
+  | DeletedSourceEvidenceRef
   | OpeningBalanceEvidenceRef;
 
 export interface DerivedPosting {
@@ -91,6 +102,7 @@ export type AccountScopeResolution =
   | { scopeStatus: 'source_deleted'; accountScopeId: string; accountClass: AccountClass; sourceIdentityId: string };
 
 function parsedAccountClass(transaction: Transaction): AccountClass {
+  if (transaction.parserAccountClass) return transaction.parserAccountClass;
   if (transaction.source === 'binance_options' || transaction.category?.startsWith('options_')) return 'options';
   if (transaction.instrumentClass === 'derivative' || transaction.category?.startsWith('perp')) return 'futures';
   const rawAccount = transaction.raw?.Account;
@@ -115,7 +127,7 @@ function walletScope(transaction: Transaction): string | undefined {
   const customNetworkId = typeof transaction.raw?.customNetworkId === 'string'
     ? transaction.raw.customNetworkId
     : typeof transaction.raw?.chainId === 'string' ? transaction.raw.chainId : undefined;
-  return `wallet:${canonicalWalletChainScope(transaction.chain, customNetworkId)}:${transaction.walletAddress.trim().toLowerCase()}`;
+  return `wallet:${canonicalWalletChainScope(transaction.chain, customNetworkId)}:${canonicalWalletAddress(transaction.chain, transaction.walletAddress)}`;
 }
 
 function connectionResolution(
@@ -135,6 +147,15 @@ export function resolveAccountScope(
   liveBinanceConnections?: readonly ExchangeSourceIdentity[]
 ): AccountScopeResolution {
   const accountClass = parsedAccountClass(transaction);
+  const explicitParserClass = transaction.parserAccountClass != null;
+  const deletedSource = transaction.deletedSourceEvidence;
+  if (deletedSource) {
+    return {
+      scopeStatus: 'source_deleted', accountScopeId: `exchange:${deletedSource.sourceIdentityId}`,
+      accountClass: !explicitParserClass && accountClass === 'unknown' ? 'spot' : accountClass,
+      sourceIdentityId: deletedSource.sourceIdentityId
+    };
+  }
   const directId = transaction.source.endsWith('_api') ? transaction.importBatchId : undefined;
   if (directId) {
     const connection = connectionById
@@ -158,10 +179,11 @@ export function resolveAccountScope(
     const connection = connectionById
       ? connectionById.get(twinId)
       : context.exchangeConnections.find((row) => row.id === twinId);
-    if (connection) return connectionResolution(connection, accountClass === 'unknown' ? 'spot' : accountClass);
+    const twinClass = !explicitParserClass && accountClass === 'unknown' ? 'spot' : accountClass;
+    if (connection) return connectionResolution(connection, twinClass);
     return {
       scopeStatus: 'source_deleted', accountScopeId: `exchange:${twinId}`,
-      accountClass: accountClass === 'unknown' ? 'spot' : accountClass, sourceIdentityId: twinId
+      accountClass: twinClass, sourceIdentityId: twinId
     };
   }
 
@@ -181,9 +203,15 @@ export function resolveAccountScope(
   if (eligibleBinanceCsv) {
     const live = liveBinanceConnections ??
       context.exchangeConnections.filter((row) => row.exchange === 'binance' && row.deletedAt == null);
-    if (live.length === 1) return connectionResolution(live[0], accountClass === 'unknown' ? 'spot' : accountClass);
+    if (live.length === 1) return connectionResolution(live[0], accountClass);
     if (live.length > 1) {
       return { scopeStatus: 'unresolved', accountScopeId: `unresolved:${transaction.id}`, accountClass, reason: 'multiple_binance_connections' };
+    }
+    if (transaction.importBatchId) {
+      return {
+        scopeStatus: 'resolved', accountScopeId: `file:${transaction.importBatchId}:${accountClass}`,
+        accountClass
+      };
     }
   }
 
@@ -214,11 +242,18 @@ interface PostingLeg {
 
 function transactionEvidence(transaction: Transaction): EvidenceRef[] {
   const twin = transaction.dedupMatchedApiRow;
+  const deletedSource = transaction.deletedSourceEvidence;
   const direct: TransactionEvidenceRef = {
     kind: 'transaction', transactionId: transaction.id,
-    role: twin ? 'survivor' : 'direct', source: transaction.source,
+    role: twin || deletedSource ? 'survivor' : 'direct', source: transaction.source,
     sourceRef: transaction.sourceRef, importBatchId: transaction.importBatchId
   };
+  if (deletedSource) return [direct, {
+    kind: 'deleted_source', sourceIdentityId: deletedSource.sourceIdentityId,
+    transactionId: deletedSource.transactionId, source: deletedSource.source,
+    sourceRef: deletedSource.sourceRef, apiIdentity: deletedSource.apiIdentity,
+    deletedAt: deletedSource.deletedAt
+  }];
   if (!twin?.importBatchId) return [direct];
   const apiIdentity = binanceApiIdentity(twin);
   if (!apiIdentity) return [direct];

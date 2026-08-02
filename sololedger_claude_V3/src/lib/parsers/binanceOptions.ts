@@ -70,8 +70,23 @@ export const binanceOptionsParser: ExchangeParser = {
     const transactions: Transaction[] = [];
     const refOccurrences = new Map<string, number>();
     let skippedRows = 0;
+    let failedRows = 0;
+    let malformedRows = 0;
     let firstSupportedType: string | null = null;
-    if (rows.length === 0) return { transactions, skippedRows, warnings: ['Sheet has no data rows.'] };
+    if (rows.length === 0) return {
+      transactions,
+      skippedRows,
+      warnings: ['Sheet has no data rows.'],
+      evidence: {
+        coveredAccountClasses: ['options'],
+        requiredOutcomes: [{
+          id: 'binance_options:options', accountClass: 'options', required: true,
+          status: 'failed', reason: 'Sheet has no data rows.'
+        }],
+        recognizedCount: 0, parsedCount: 0, excludedCount: 0, skippedCount: 0, failedCount: 1,
+        exclusionReasons: [], skippedReasons: [], failureReasons: [{ reason: 'Sheet has no data rows.', count: 1 }]
+      }
+    };
 
     const map = headerMap(Object.keys(rows[0]));
     const timeCol = col(map, 'time');
@@ -82,7 +97,18 @@ export const binanceOptionsParser: ExchangeParser = {
       return {
         transactions,
         skippedRows: rows.length,
-        warnings: ['Binance Options columns not found (need Time, Type, Amount, Asset).']
+        warnings: ['Binance Options columns not found (need Time, Type, Amount, Asset).'],
+        evidence: {
+          coveredAccountClasses: ['options'],
+          requiredOutcomes: [{
+            id: 'binance_options:options', accountClass: 'options', required: true,
+            status: 'failed', reason: 'Required Binance Options columns are missing.'
+          }],
+          recognizedCount: 0, parsedCount: 0, excludedCount: 0, skippedCount: rows.length,
+          failedCount: 1, exclusionReasons: [],
+          skippedReasons: [{ reason: 'Required Binance Options columns are missing.', count: rows.length }],
+          failureReasons: [{ reason: 'Required Binance Options sheet could not be parsed.', count: 1 }]
+        }
       };
     }
 
@@ -94,7 +120,13 @@ export const binanceOptionsParser: ExchangeParser = {
       const signedAmount = safeNumber(row[amountCol]);
       const asset = (row[assetCol] ?? '').trim().toUpperCase();
       const shape = txShape(rawType, signedAmount > 0);
-      if (!shape || !Number.isFinite(timestamp) || !asset || signedAmount === 0) {
+      if (!shape) {
+        failedRows += 1;
+        skippedRows += 1;
+        continue;
+      }
+      if (!Number.isFinite(timestamp) || !asset || signedAmount === 0) {
+        malformedRows += 1;
         skippedRows += 1;
         continue;
       }
@@ -126,17 +158,56 @@ export const binanceOptionsParser: ExchangeParser = {
       });
     }
 
+    const optionsBalanceIncluded =
+      transactions.length > 0 && skippedRows === 0 && firstSupportedType === 'opening_transfer';
+    const balanceSnapshot = transactions.reduce<Record<string, number>>((balances, transaction) => {
+      const signed = Number((transaction.raw as Record<string, unknown> | undefined)?._signedAmount);
+      if (Number.isFinite(signed)) balances[transaction.asset] = (balances[transaction.asset] ?? 0) + signed;
+      return balances;
+    }, {});
     return {
       transactions,
       skippedRows,
       warnings: skippedRows > 0 ? [`${skippedRows} unsupported Binance Options row(s) skipped.`] : [],
+      balanceSnapshot,
       // A journal can establish an absolute balance only when it begins with
       // funding, not an arbitrary period outflow from an unknown prior balance.
-      optionsBalanceIncluded:
-        transactions.length > 0 && skippedRows === 0 && firstSupportedType === 'opening_transfer',
+      optionsBalanceIncluded,
       optionsCoverageThrough: transactions.length > 0
         ? Math.max(...transactions.map((t) => t.timestamp))
-        : undefined
+        : undefined,
+      evidence: {
+        coveredAccountClasses: ['options'],
+        requiredOutcomes: [{
+          id: 'binance_options:options', accountClass: 'options', required: true,
+          status: optionsBalanceIncluded ? 'complete' : failedRows > 0 ? 'failed' : 'partial',
+          reason: optionsBalanceIncluded
+            ? undefined
+            : failedRows > 0 ? 'Unsupported Binance Options row types were present.'
+              : 'The journal does not establish its opening balance.',
+          recognizedCount: transactions.length,
+          parsedCount: transactions.length,
+          excludedCount: 0,
+          skippedCount: malformedRows,
+          failedCount: failedRows,
+          skippedReasons: malformedRows > 0
+            ? [{ reason: 'Missing time, asset, or non-zero amount.', count: malformedRows }] : [],
+          failureReasons: failedRows > 0
+            ? [{ reason: 'Unsupported Binance Options row type.', count: failedRows }] : []
+        }],
+        recognizedCount: transactions.length,
+        parsedCount: transactions.length,
+        excludedCount: 0,
+        skippedCount: malformedRows,
+        failedCount: failedRows,
+        exclusionReasons: [],
+        skippedReasons: malformedRows > 0
+          ? [{ reason: 'Missing time, asset, or non-zero amount.', count: malformedRows }]
+          : [],
+        failureReasons: failedRows > 0
+          ? [{ reason: 'Unsupported Binance Options row type.', count: failedRows }]
+          : []
+      }
     };
   }
 };

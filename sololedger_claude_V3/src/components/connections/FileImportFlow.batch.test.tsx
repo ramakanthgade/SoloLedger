@@ -22,8 +22,8 @@ const mocks = vi.hoisted(() => ({
   hashFileContent: vi.fn(),
   csvImportsGet: vi.fn(async () => undefined),
   getCsvImports: vi.fn(async () => []),
-  bulkPut: vi.fn(async () => undefined),
-  upsertCsvImport: vi.fn(async () => undefined),
+  bulkPut: vi.fn(async (..._args: unknown[]) => undefined),
+  upsertCsvImport: vi.fn(async (..._args: unknown[]) => undefined),
   countCsvImportTransactions: vi.fn(async (_hash: string) => 1),
   deduplicateTransactions: vi.fn(async () => 0),
   getSettings: vi.fn(async () => ({ reportingCurrency: 'USD' })),
@@ -35,12 +35,21 @@ const mocks = vi.hoisted(() => ({
   fetchMissingPrices: vi.fn(async () => ({ updated: 0, failed: 0 })),
   getEffectiveSettings: vi.fn(async () => ({ priceApiEnabled: false })),
   isAiMappingAvailable: vi.fn(async () => false),
-  confirmSheetOrientations: vi.fn(async (_sheets: unknown, txs: Transaction[]) => txs)
+  confirmSheetOrientations: vi.fn(async (_sheets: unknown, txs: Transaction[]) => txs),
+  persistCsvImportEvidence: vi.fn(async (..._args: unknown[]) => undefined),
+  buildCsvImportEvidenceGeneration: vi.fn((input: unknown) => input),
+  commitCsvImportGeneration: vi.fn()
 }));
 
 vi.mock('@/lib/parsers', () => ({
   parseImportFile: mocks.parseImportFile,
-  isSpreadsheetFile: () => false
+  isSpreadsheetFile: () => false,
+  buildCsvImportEvidenceGeneration: mocks.buildCsvImportEvidenceGeneration,
+  hasSourceDeclaredHistory: (evidence: { declaredHistory?: { completeHistory?: boolean; start?: number; end?: number } } | undefined) =>
+    evidence?.declaredHistory?.completeHistory === true ||
+    (evidence?.declaredHistory?.start != null && evidence.declaredHistory.end != null),
+  declaredLegacyBalanceSnapshot: (evidence: { declaredSnapshots?: { balances: Record<string, number> }[] } | undefined) =>
+    evidence?.declaredSnapshots?.length === 1 ? evidence.declaredSnapshots[0].balances : undefined
 }));
 
 vi.mock('@/lib/parsers/generic', () => ({ parseWithMapping: vi.fn() }));
@@ -57,6 +66,7 @@ vi.mock('@/lib/storage/db', () => ({
     csvImports: { get: mocks.csvImportsGet },
     transactions: { bulkPut: mocks.bulkPut }
   },
+  commitCsvImportGeneration: mocks.commitCsvImportGeneration,
   getCsvImports: mocks.getCsvImports,
   getSettings: mocks.getSettings,
   hashFileContent: mocks.hashFileContent,
@@ -161,6 +171,22 @@ beforeEach(() => {
     converted: 0,
     failed: 0
   }));
+  mocks.commitCsvImportGeneration.mockImplementation(async (input: {
+    id: string; fileName: string; parserId: string | null; transactions: Transaction[];
+    metadata?: Record<string, unknown>;
+    buildGeneration: (context: { generation: number; savedAfterDedup: number; completedAt: number }) => unknown;
+  }) => {
+    await mocks.bulkPut(input.transactions);
+    const saved = savedCounts[input.id] ?? 1;
+    const generation = input.buildGeneration({ generation: 1, savedAfterDedup: saved, completedAt: 100 });
+    await mocks.persistCsvImportEvidence(generation);
+    await mocks.upsertCsvImport(input.id, input.fileName, input.parserId, saved, {
+      ...input.metadata,
+      balanceSnapshot: saved === input.transactions.length ? input.metadata?.balanceSnapshot : undefined,
+      optionsBalanceIncluded: saved === input.transactions.length ? input.metadata?.optionsBalanceIncluded : undefined
+    });
+    return saved;
+  });
 });
 
 describe('FileImportFlow — multi-file batch handling', () => {
@@ -401,6 +427,30 @@ describe('FileImportFlow — multi-file batch handling', () => {
       'binance_options',
       1,
       expect.objectContaining({ optionsBalanceIncluded: undefined })
+    );
+  });
+
+  it('persists one post-dedup CSV evidence generation and does not promote an undeclared snapshot', async () => {
+    const evidence = {
+      coveredAccountClasses: ['spot'],
+      requiredOutcomes: [{ id: 'history', accountClass: 'spot', required: true, status: 'complete' }],
+      recognizedCount: 2, parsedCount: 2, excludedCount: 0, skippedCount: 0, failedCount: 0,
+      exclusionReasons: [], skippedReasons: [], failureReasons: []
+    };
+    mocks.parseImportFile.mockResolvedValue({
+      ...recognized(2, 'history.csv'), balanceSnapshot: { BTC: 1 }, evidence
+    });
+    savedCounts = { 'hash:aaa': 1 };
+    render(<FileImportFlow />);
+
+    fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('history.csv', 'aaa')] } });
+    await waitFor(() => expect(mocks.persistCsvImportEvidence).toHaveBeenCalledTimes(1));
+    expect(mocks.persistCsvImportEvidence).toHaveBeenCalledWith(expect.objectContaining({
+      sourceIdentityId: 'hash:aaa', parsedBeforeDedup: 2, savedAfterDedup: 1, evidence
+    }));
+    expect(mocks.upsertCsvImport).toHaveBeenCalledWith(
+      'hash:aaa', 'history.csv', 'test_parser', 1,
+      expect.objectContaining({ balanceSnapshot: undefined })
     );
   });
 });

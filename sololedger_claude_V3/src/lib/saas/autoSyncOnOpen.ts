@@ -33,6 +33,7 @@ import { Toast, ToastViewport } from '@/components/ui/toast';
 import { listConnections, syncNow, type ExchangeConnectionView } from '@/lib/exchangeSync';
 import { exchangeSyncJob } from '@/lib/exchangeSync/syncJob';
 import { importJob, runWalletImport } from '@/lib/importJob';
+import { walletConnectionGroupKey } from '@/lib/ledger/chainNamespace';
 import { getLookupAddresses, type LookupAddressRow } from '@/lib/storage/db';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
@@ -70,7 +71,13 @@ export interface AutoSyncOnOpenDeps {
 export interface AutoSyncOnOpenResult {
   /** True when a sync pass actually ran (even if some connections failed). */
   ran: boolean;
-  reason?: 'already-ran' | 'not-hosted' | 'no-user' | 'not-paid' | 'no-connections';
+  reason?:
+    | 'already-ran'
+    | 'not-hosted'
+    | 'no-user'
+    | 'not-paid'
+    | 'no-connections'
+    | 'reauthorization-required';
   total?: number;
   synced?: number;
   failed?: number;
@@ -168,11 +175,11 @@ async function defaultSyncWalletGroup(rows: LookupAddressRow[]): Promise<SyncUni
   return { imported, failed };
 }
 
-/** Watched wallets group one connection card per address (case-insensitive). */
+/** Match Connections grouping: EVM spans chains; non-EVM identity stays exact. */
 function groupWalletRows(rows: LookupAddressRow[]): LookupAddressRow[][] {
   const byAddress = new Map<string, LookupAddressRow[]>();
   for (const row of rows) {
-    const key = row.address.toLowerCase();
+    const key = walletConnectionGroupKey(row.chain, row.address);
     const group = byAddress.get(key) ?? [];
     group.push(row);
     byAddress.set(key, group);
@@ -219,9 +226,23 @@ export async function maybeAutoSyncOnOpen(
     listExchanges().catch(() => [] as ExchangeConnectionView[]),
     listWallets().catch(() => [] as LookupAddressRow[])
   ]);
+  // A restored source without usable credentials is intentionally not a sync
+  // unit. Connections owns the reachable Reauthorize action; attempting it
+  // here would turn an expected paused state into a misleading failed sync.
+  const readyExchanges = exchanges.filter(
+    (connection) => connection.credentialsState !== 'reauthorization_required'
+  );
   const walletGroups = groupWalletRows(walletRows);
-  const total = exchanges.length + walletGroups.length;
-  if (total === 0) return { ran: false, reason: 'no-connections' };
+  const total = readyExchanges.length + walletGroups.length;
+  if (total === 0) {
+    return {
+      ran: false,
+      reason:
+        exchanges.some((connection) => connection.credentialsState === 'reauthorization_required')
+          ? 'reauthorization-required'
+          : 'no-connections'
+    };
+  }
 
   toast({
     tone: 'primary',
@@ -232,7 +253,7 @@ export async function maybeAutoSyncOnOpen(
   let failed = 0;
   let newTransactions = 0;
   const units: Array<() => Promise<SyncUnitOutcome>> = [
-    ...exchanges.map((c) => () => syncExchange(c.id)),
+    ...readyExchanges.map((c) => () => syncExchange(c.id)),
     ...walletGroups.map((rows) => () => syncWalletGroup(rows))
   ];
   for (const unit of units) {

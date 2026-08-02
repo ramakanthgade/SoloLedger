@@ -32,9 +32,11 @@ import { apiFetch } from '@/lib/saas/api';
 import { db } from '@/lib/storage/db';
 import { addConnection } from './connections';
 import { commitInitialSync, exchangeSyncJob, runInitialSync } from './syncJob';
+import { syncConnection } from './engine';
 import { REPLAY_NOW, binanceReplayDeps, fakeResponse } from './__fixtures__/binanceReplay';
 
 const apiFetchMock = vi.mocked(apiFetch);
+let unavailableSymbol: string | null = null;
 
 // Balance: ONLY USDT (HNT fully sold → zero, omitted entirely like a real
 // fetchBalance which omits zero balances).
@@ -82,6 +84,9 @@ function installBlindSpotFixtureServer(): void {
     if (p.includes('/api/v3/myTrades')) {
       const q = new URLSearchParams(p.split('?')[1] ?? '');
       const symbol = q.get('symbol') ?? '';
+      if (symbol === unavailableSymbol) {
+        return fakeResponse(400, JSON.stringify({ code: -1121, msg: 'Invalid symbol.' }));
+      }
       const fromId = Number(q.get('fromId') ?? 0);
       const rows = (MY_TRADES[symbol] ?? []) as { id: number }[];
       // fromId pagination: serve only rows with id >= fromId so the engine's
@@ -108,8 +113,13 @@ async function seedConnection(): Promise<string> {
 beforeEach(async () => {
   await db.transactions.clear();
   await db.exchangeConnections.clear();
+  await db.exchangeBalances.clear();
+  await db.authoritySnapshots.clear();
+  await db.authorityAssets.clear();
+  await db.sourceCoverage.clear();
   exchangeSyncJob.reset();
   apiFetchMock.mockReset();
+  unavailableSymbol = null;
   installBlindSpotFixtureServer();
 });
 
@@ -150,5 +160,20 @@ describe('initial sync — full spot-symbol scan (blind-spot fix)', () => {
     } as never;
     const out = candidateSpotSymbols(['USDT'], markets, ['HNT/USDT', 'NPXS/USDT']);
     expect(out).toEqual(['HNT/USDT', 'NPXS/USDT']);
+  });
+
+  it('records a Binance symbol skipped mid-scan as partial structural coverage', async () => {
+    const id = await seedConnection();
+    unavailableSymbol = 'NPXSUSDT';
+    const result = await syncConnection(id, { mode: 'stage' }, {}, binanceReplayDeps());
+    expect(result.mode).toBe('stage');
+    if (result.mode !== 'stage') return;
+    const trades = result.outcome.operation.coverage.endpointOutcomes
+      .find((outcome) => outcome.endpoint === 'trades');
+    expect(result.outcome.operation.coverage.status).toBe('partial');
+    expect(trades).toMatchObject({
+      status: 'partial', paginationExhausted: false, skippedCount: 1,
+      exclusionReasons: ['binance_symbol_unavailable']
+    });
   });
 });

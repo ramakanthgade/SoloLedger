@@ -77,7 +77,8 @@ describe('ReviewTab — item 10: richer rows + click-anywhere details', () => {
 
   it('resolves wallet names live from the lookup-address table (renames update rows in place)', () => {
     expect(source).toContain('useLiveQuery(() => getLookupAddresses(), [])');
-    expect(source).toContain('walletLabels.get(addr.toLowerCase())');
+    expect(source).toContain('buildWalletLabelMap(lookupRowsLive ?? [])');
+    expect(source).toContain('walletLabelFor(walletLabels, t, addr)');
   });
 });
 

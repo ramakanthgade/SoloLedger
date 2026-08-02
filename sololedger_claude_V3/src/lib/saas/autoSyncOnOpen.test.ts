@@ -75,7 +75,10 @@ function walletRow(chain: string, address: string): LookupAddressRow {
   return { id: `${chain}:${address}`, chain, address, lastSyncedAt: 1, txCount: 1 };
 }
 
-const EX = (id: string) => ({ id, exchange: 'binance', label: id }) as never;
+const EX = (
+  id: string,
+  credentialsState: 'ready' | 'reauthorization_required' = 'ready'
+) => ({ id, exchange: 'binance', label: id, credentialsState }) as never;
 
 interface Harness {
   deps: AutoSyncOnOpenDeps;
@@ -142,6 +145,28 @@ describe('maybeAutoSyncOnOpen', () => {
       title: 'Synced 4 connections · 6 new transactions'
     });
     expect(h.toasts).toHaveLength(2);
+  });
+
+  it('keeps case-distinct Base58 wallets as separate auto-sync units while folding EVM case', async () => {
+    const h = makeHarness();
+    h.deps.listExchangeConnections = async () => [];
+    h.deps.listWalletRows = async () => [
+      walletRow('solana', 'Base58Case'),
+      walletRow('solana', 'base58Case'),
+      walletRow('ethereum', '0xAbC'),
+      walletRow('polygon', '0xabc')
+    ];
+
+    const result = await maybeAutoSyncOnOpen(userOf('pro', true), h.deps);
+
+    expect(result).toMatchObject({ ran: true, total: 3, synced: 3 });
+    expect(h.syncWalletGroup.mock.calls.map(([rows]) =>
+      rows.map((row: LookupAddressRow) => `${row.chain}:${row.address}`)
+    )).toEqual([
+      ['solana:Base58Case'],
+      ['solana:base58Case'],
+      ['ethereum:0xAbC', 'polygon:0xabc']
+    ]);
   });
 
   it('free plan (local tier) → no sync calls, no toasts', async () => {
@@ -228,6 +253,45 @@ describe('maybeAutoSyncOnOpen', () => {
 
     expect(result).toEqual({ ran: false, reason: 'no-connections' });
     expect(h.toasts).toHaveLength(0);
+  });
+
+  it('mixed ready and paused exchanges count and sync only ready units', async () => {
+    const h = makeHarness();
+    h.deps.listExchangeConnections = async () => [
+      EX('ready-1'),
+      EX('paused', 'reauthorization_required'),
+      EX('ready-2')
+    ];
+    h.deps.listWalletRows = async () => [walletRow('solana', 'SoLAddr')];
+
+    const result = await maybeAutoSyncOnOpen(userOf('pro', true), h.deps);
+
+    expect(result).toEqual({ ran: true, total: 3, synced: 3, failed: 0, newTransactions: 5 });
+    expect(h.sequence).toEqual(['ex:ready-1', 'ex:ready-2', 'w:solana:SoLAddr']);
+    expect(h.syncExchange).not.toHaveBeenCalledWith('paused');
+    expect(h.toasts[0]).toEqual({ tone: 'primary', title: 'Syncing 3 connections…' });
+    expect(h.toasts[1]).toEqual({
+      tone: 'gain',
+      title: 'Synced 3 connections · 5 new transactions'
+    });
+  });
+
+  it('all-paused exchanges do not start a run or invoke the default syncNow', async () => {
+    mocks.listConnections.mockResolvedValue([
+      EX('paused-1', 'reauthorization_required'),
+      EX('paused-2', 'reauthorization_required')
+    ]);
+    const toasts: AutoSyncToast[] = [];
+
+    const result = await maybeAutoSyncOnOpen(userOf('pro', true), {
+      hosted: true,
+      listWalletRows: async () => [],
+      toast: (toast) => toasts.push(toast)
+    });
+
+    expect(result).toEqual({ ran: false, reason: 'reauthorization-required' });
+    expect(mocks.syncNow).not.toHaveBeenCalled();
+    expect(toasts).toEqual([]);
   });
 
   it('runs once per boot — a second call collapses onto the latch', async () => {

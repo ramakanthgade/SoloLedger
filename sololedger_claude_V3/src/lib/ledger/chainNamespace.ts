@@ -84,6 +84,39 @@ export function canonicalWalletChainScope(chain: string, customNetworkId?: strin
   return `${namespace}:${canonicalChainIdentity(chain, customNetworkId)}`;
 }
 
+/** EVM account identity is case-insensitive; Base58 and other namespaces are not. */
+export function canonicalWalletAddress(chain: string, address: string): string {
+  const trimmed = address.trim();
+  return chainNamespace(chain) === 'evm' ? trimmed.toLowerCase() : trimmed;
+}
+
+/** Exact wallet authority/membership identity, including canonical chain scope. */
+export function canonicalWalletIdentity(chain: string, address: string): string {
+  return `${canonicalWalletChainScope(chain)}:${canonicalWalletAddress(chain, address)}`;
+}
+
+/** One on-chain operation within one exact wallet authority scope. */
+export function canonicalWalletSourceRefKey(
+  chain: string | null | undefined,
+  address: string | null | undefined,
+  sourceRef: string | null | undefined
+): string | null {
+  if (!chain?.trim() || !address?.trim() || !sourceRef?.trim()) return null;
+  return `${canonicalWalletIdentity(chain, address)}|${sourceRef}`;
+}
+
+/** Connection/auto-sync grouping: EVM accounts span chains; other wallets do not. */
+export function walletConnectionGroupKey(chain: string, address: string): string {
+  const canonicalAddress = canonicalWalletAddress(chain, address);
+  return chainNamespace(chain) === 'evm'
+    ? `evm:${canonicalAddress}`
+    : canonicalWalletIdentity(chain, canonicalAddress);
+}
+
+export function walletAddressEquals(chain: string, left: string, right: string): boolean {
+  return canonicalWalletAddress(chain, left) === canonicalWalletAddress(chain, right);
+}
+
 export function isCanonicalNativeAsset(chain: string, asset: string): boolean {
   const normalized = normalizeChainIdentity(chain);
   return (CHAIN_NATIVE_ASSETS[normalized] ?? NATIVE_ASSET_BY_EVM_ID[normalized]) === asset.trim().toUpperCase();

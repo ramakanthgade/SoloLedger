@@ -28,6 +28,17 @@ export type FlagReason =
   | 'unrecognized_asset'
   | 'needs_review';
 
+/** Immutable audit evidence retained when a live API source identity is deleted. */
+export interface DeletedSourceEvidence {
+  kind: 'deleted_exchange_source';
+  sourceIdentityId: string;
+  transactionId: string;
+  source: string;
+  sourceRef?: string;
+  apiIdentity: string;
+  deletedAt: number;
+}
+
 export interface Transaction {
   id: string;                 // stable local id (uuid), never sent anywhere
   timestamp: number;          // epoch ms, UTC
@@ -47,6 +58,8 @@ export interface Transaction {
   dedupMatchedApiId?: string;
   /** Recoverable API twin, restored if the authoritative CSV import is deleted. */
   dedupMatchedApiRow?: Transaction;
+  /** Tombstone replacing live twin binding when its source identity is deleted. */
+  deletedSourceEvidence?: DeletedSourceEvidence;
   walletAddress?: string;       // the queried address this row belongs to (RPC lookups)
   counterpartyAddress?: string; // the other side of a transfer, when derivable
   contractAddress?: string;     // token contract (EVM) or mint address (Solana), for price lookups
@@ -68,6 +81,8 @@ export interface Transaction {
    * Undefined → treated as spot unless source/category heuristics say otherwise.
    */
   instrumentClass?: 'spot' | 'derivative';
+  /** Explicit account class supplied by a structured parser; never inferred from raw row keys. */
+  parserAccountClass?: 'spot' | 'funding' | 'margin' | 'futures' | 'options' | 'wallet' | 'manual' | 'unknown';
   importBatchId?: string;       // links row to a CSV import batch (file hash) OR an exchange-connection id (Exchange Auto-Sync)
   /**
    * India TDS (Section 194S — 1% on VDA transfers) withheld on this transaction.

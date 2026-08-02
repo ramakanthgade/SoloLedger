@@ -17,6 +17,7 @@ import { useAppMode } from '@/lib/saas/modeContext';
 import { isExchangeSyncEnabled } from '@/lib/saas/effectiveSettings';
 import {
   addConnection,
+  reauthorizeConnection,
   testConnection,
   useExchangeSyncJob,
   AUTO_SYNC_HOSTED_ONLY,
@@ -27,6 +28,8 @@ import { getAutoSyncExchange } from '@/components/import/autoSyncExchanges';
 
 interface ExchangeConnectStepProps {
   exchangeId: ExchangeId;
+  mode?: 'connect' | 'reauthorize';
+  existingId?: string;
   /** Saved + first sync kicked off — the drawer closes and toasts. */
   onConnected: (connection: ExchangeConnectionView) => void;
   /** "Import a file instead" — the drawer switches to the file flow. */
@@ -48,7 +51,13 @@ const inputCls =
  * hosted-only explainer; hosted with the server flag off shows the
  * "temporarily unavailable" note.
  */
-export function ExchangeConnectStep({ exchangeId, onConnected, onUseFile }: ExchangeConnectStepProps) {
+export function ExchangeConnectStep({
+  exchangeId,
+  mode: formMode = 'connect',
+  existingId,
+  onConnected,
+  onUseFile
+}: ExchangeConnectStepProps) {
   const { mode, selectMode } = useAppMode();
   const hosted = mode === 'hosted';
   const job = useExchangeSyncJob();
@@ -89,6 +98,7 @@ export function ExchangeConnectStep({ exchangeId, onConnected, onUseFile }: Exch
   /** Connect unlocks only when the CURRENT values are exactly the tested ones. */
   const tested = testedFingerprint === fingerprint;
   const busy = testing || saving;
+  const reauthorizing = formMode === 'reauthorize';
 
   const connectionInput = () => ({
     exchange: exchangeId,
@@ -118,7 +128,17 @@ export function ExchangeConnectStep({ exchangeId, onConnected, onUseFile }: Exch
     setSaving(true);
     setError(null);
     try {
-      const view = await addConnection(connectionInput());
+      if (reauthorizing && !existingId) {
+        throw new Error('Connection not found — reopen reauthorization and try again.');
+      }
+      const input = connectionInput();
+      const view = reauthorizing
+        ? await reauthorizeConnection(existingId!, {
+            apiKey: input.apiKey,
+            secret: input.secret,
+            passphrase: input.passphrase
+          })
+        : await addConnection(input);
       onConnected(view);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the connection — try again.');
@@ -199,19 +219,21 @@ export function ExchangeConnectStep({ exchangeId, onConnected, onUseFile }: Exch
         </a>
       </div>
 
-      <div>
-        <label htmlFor="ecx-label" className="text-xs font-semibold text-mid">
-          Label <span className="font-normal text-faint">(optional)</span>
-        </label>
-        <input
-          id="ecx-label"
-          autoComplete="off"
-          placeholder="e.g. Main account"
-          className={cn(inputCls, 'mt-1')}
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-        />
-      </div>
+      {!reauthorizing && (
+        <div>
+          <label htmlFor="ecx-label" className="text-xs font-semibold text-mid">
+            Label <span className="font-normal text-faint">(optional)</span>
+          </label>
+          <input
+            id="ecx-label"
+            autoComplete="off"
+            placeholder="e.g. Main account"
+            className={cn(inputCls, 'mt-1')}
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+        </div>
+      )}
 
       {/* Credentials with show/hide eyes */}
       <div>
@@ -338,17 +360,20 @@ export function ExchangeConnectStep({ exchangeId, onConnected, onUseFile }: Exch
         >
           {saving ? (
             <>
-              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> Connecting…
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+              {reauthorizing ? ' Reauthorizing…' : ' Connecting…'}
             </>
           ) : (
             <>
-              <Lock className="h-4 w-4" aria-hidden="true" /> Connect securely
+              <Lock className="h-4 w-4" aria-hidden="true" />
+              {reauthorizing ? ' Reauthorize securely' : ' Connect securely'}
             </>
           )}
         </Button>
         {job.active && (
           <p className="mt-2 text-xs text-low">
-            A sync is already running — wait for it to finish before adding a connection.
+            A sync is already running — wait for it to finish before{' '}
+            {reauthorizing ? 'reauthorizing' : 'adding'} a connection.
           </p>
         )}
         <p className="mt-3 flex items-start gap-2 text-xs leading-relaxed text-low">

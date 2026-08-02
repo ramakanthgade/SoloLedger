@@ -91,15 +91,13 @@ function ownerNetByMintFromAccountData(
   const netByMint = new Map<string, number>();
   const mintsWithData = new Set<string>();
 
-  const walletLower = walletAddress.toLowerCase();
-
   for (const acct of accountData ?? []) {
     for (const ch of acct.tokenBalanceChanges ?? []) {
       const mint: string | undefined = ch.mint ?? ch.tokenMint;
       const userAcct: string | undefined = ch.userAccount ?? ch.owner;
       if (!mint) continue;
       // Only count balance changes explicitly owned by this wallet (ignore orphan ATA rows).
-      if (!userAcct || userAcct.toLowerCase() !== walletLower) continue;
+      if (userAcct !== walletAddress) continue;
 
       const signed = parseSignedTokenBalanceChange(ch);
       if (signed == null || Math.abs(signed) < 1e-12) continue;
@@ -164,6 +162,7 @@ function pushSplBalanceRow(
 
   const asset = resolveSymbol(mint);
   const sourceKey = transactionSourceKey({
+    chain: 'solana',
     sourceRef: htx.signature,
     walletAddress,
     asset,
@@ -215,9 +214,8 @@ function walletNativeSolDelta(
   htx: HeliusTransaction,
   walletAddress: string
 ): { delta: number; counterpartyOut?: string; counterpartyIn?: string } {
-  const walletLower = walletAddress.toLowerCase();
   for (const acct of htx.accountData ?? []) {
-    if (acct.account?.toLowerCase() === walletLower && acct.nativeBalanceChange != null) {
+    if (acct.account === walletAddress && acct.nativeBalanceChange != null) {
       return { delta: acct.nativeBalanceChange / 1e9 };
     }
   }
@@ -245,7 +243,7 @@ function pushSolanaNetworkFeeRow(
   htx: HeliusTransaction,
   walletAddress: string
 ): void {
-  if (htx.feePayer?.toLowerCase() !== walletAddress.toLowerCase()) return;
+  if (htx.feePayer !== walletAddress) return;
   const feeSol = (htx.fee ?? 0) / 1e9;
   if (feeSol < 1e-9) return;
   if (rows.some((r) => r.type === 'fee' && r.asset === 'SOL' && r.sourceRef === htx.signature)) return;
@@ -317,7 +315,7 @@ function heliusSwapToTrade(
   const WSOL = 'So11111111111111111111111111111111111111112';
   const { delta: solDelta } = walletNativeSolDelta(htx, walletAddress);
   const feeSol =
-    htx.feePayer?.toLowerCase() === walletAddress.toLowerCase() ? (htx.fee ?? 0) / 1e9 : 0;
+    htx.feePayer === walletAddress ? (htx.fee ?? 0) / 1e9 : 0;
   const solFromSwap = solDelta + feeSol;
 
   const normalizeNativeSolAmount = (raw: number | undefined): number | undefined => {

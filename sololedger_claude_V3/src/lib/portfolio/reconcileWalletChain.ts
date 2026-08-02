@@ -13,6 +13,10 @@ import {
   walletSolDelta
 } from '@/lib/rpc/solanaRpc';
 import { resolveSolanaMintAddress } from '@/lib/assets/solanaMints';
+import {
+  canonicalWalletIdentity,
+  canonicalWalletSourceRefKey
+} from '@/lib/ledger/chainNamespace';
 
 const MIN_SOL = 0.001;
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -80,15 +84,16 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
 
   for (const w of wallets) {
     const wallet = w.address;
-    const walletLower = wallet.toLowerCase();
+    const walletIdentity = canonicalWalletIdentity('solana', wallet);
     // eslint-disable-next-line no-await-in-loop
     const sigs = await getSignaturesForAddress(wallet);
     const bySig = new Map<string, Transaction[]>();
     for (const t of allTxs) {
-      if (t.walletAddress?.toLowerCase() !== walletLower || !t.sourceRef) continue;
-      const list = bySig.get(t.sourceRef) ?? [];
+      if (!t.walletAddress || canonicalWalletIdentity(t.chain ?? 'solana', t.walletAddress) !== walletIdentity || !t.sourceRef) continue;
+      const key = canonicalWalletSourceRefKey(t.chain ?? 'solana', t.walletAddress, t.sourceRef)!;
+      const list = bySig.get(key) ?? [];
       list.push(t);
-      bySig.set(t.sourceRef, list);
+      bySig.set(key, list);
     }
 
     for (const s of sigs) {
@@ -99,7 +104,7 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
       if (!tx) continue;
 
       const chainSol = walletSolDelta(tx, wallet);
-      const rows = bySig.get(sig) ?? [];
+      const rows = bySig.get(canonicalWalletSourceRefKey('solana', wallet, sig)!) ?? [];
       const ledgerSol = ledgerSolForSig(rows);
 
       if (chainSol != null && Math.abs(chainSol - ledgerSol) > MIN_SOL) {

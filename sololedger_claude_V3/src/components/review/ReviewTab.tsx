@@ -8,6 +8,8 @@ import type { TxType, Transaction, FlagReason, Jurisdiction, TaxSettings } from 
 import { cn, formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
+import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import { buildWalletLabelMap, walletLabelFor } from './walletLabels';
 import { explorerTxUrl } from '@/lib/parsers/explorer';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { looksLikeTruncatedMint, resolveTokenSymbolFromContract } from '@/lib/assets/tokenSymbols';
@@ -467,11 +469,10 @@ export function ReviewTab() {
   // Wallet labels from Connections — a LIVE query so renaming a wallet in
   // Connections updates every row's name resolution in place.
   const lookupRowsLive = useLiveQuery(() => getLookupAddresses(), []);
-  const walletLabels = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const r of lookupRowsLive ?? []) if (r.label) map.set(r.address.toLowerCase(), r.label);
-    return map;
-  }, [lookupRowsLive]);
+  const walletLabels = useMemo(
+    () => buildWalletLabelMap(lookupRowsLive ?? []),
+    [lookupRowsLive]
+  );
 
   // Load jurisdiction on mount
   useEffect(() => {
@@ -485,9 +486,13 @@ export function ReviewTab() {
     [transactions, jurisdiction]
   );
   const availableWallets = useMemo(() => {
-    const ws = new Set<string>();
-    for (const t of transactions) if (t.walletAddress) ws.add(t.walletAddress);
-    return Array.from(ws);
+    const ws = new Map<string, { key: string; address: string }>();
+    for (const t of transactions) {
+      if (!t.walletAddress) continue;
+      const key = canonicalWalletIdentity(t.chain ?? '', t.walletAddress);
+      if (!ws.has(key)) ws.set(key, { key, address: t.walletAddress });
+    }
+    return Array.from(ws.values());
   }, [transactions]);
 
   /** Distinct import sources present in the ledger, for the "All sources" chip. */
@@ -1233,7 +1238,7 @@ export function ReviewTab() {
     const timeUtc = new Date(t.timestamp).toISOString().slice(11, 16);
     const dateUtc = formatGroupDateLabel(new Date(t.timestamp).toISOString().slice(0, 10));
     const spam = t.isSpam === true;
-    const resolveWallet = (addr: string) => walletLabels.get(addr.toLowerCase());
+    const resolveWallet = (addr: string) => walletLabelFor(walletLabels, t, addr);
     // Cost basis / gain only surface once the disposal is priced.
     const pricedDisposal = disposal && t.fiatValue != null ? disposal : null;
     const flow = txFlow(t, { assetLabel, counterLabel, fromAddr, toAddr, resolveWallet, disposal: pricedDisposal });
@@ -1256,7 +1261,7 @@ export function ReviewTab() {
      * account side when no address was recorded. */
     const endpointFact = (addr: string | undefined, isOwnSide: boolean) => {
       if (addr) {
-        const name = walletLabels.get(addr.toLowerCase());
+        const name = walletLabelFor(walletLabels, t, addr);
         return (
           <>
             {name && (
@@ -1876,8 +1881,10 @@ export function ReviewTab() {
         {availableWallets.length > 1 && (
           <ChipSelect value={walletFilter} onChange={setWalletFilter} ariaLabel="Wallet filter" active={walletFilter !== 'all'} className="max-w-[180px]">
             <option value="all">All wallets</option>
-            {availableWallets.map((w) => (
-              <option key={w} value={w}>{walletLabels.get(w.toLowerCase()) ?? `${w.slice(0, 8)}…`}</option>
+            {availableWallets.map((wallet) => (
+              <option key={wallet.key} value={wallet.key}>
+                {walletLabels.get(wallet.key) ?? `${wallet.address.slice(0, 8)}…`}
+              </option>
             ))}
           </ChipSelect>
         )}

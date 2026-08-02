@@ -13,24 +13,31 @@ let store: Transaction[] = [];
 
 vi.mock('@/lib/storage/db', () => ({
   db: {
+    transaction: vi.fn(async (_mode: string, _table: unknown, callback: () => Promise<void>) => callback()),
     transactions: {
       toArray: vi.fn(async () => store),
       update: vi.fn(async (id: string, changes: Partial<Transaction>) => {
         const i = store.findIndex((t) => t.id === id);
         if (i >= 0) store[i] = { ...store[i], ...changes };
         return 1;
+      }),
+      bulkDelete: vi.fn(async (ids: string[]) => {
+        store = store.filter((row) => !ids.includes(row.id));
+      }),
+      bulkPut: vi.fn(async (rows: Transaction[]) => {
+        for (const row of rows) {
+          const index = store.findIndex((candidate) => candidate.id === row.id);
+          if (index >= 0) store[index] = row;
+          else store.push(row);
+        }
       })
     }
   }
 }));
 
-// These are imported by reprocessSwaps.ts but not exercised by reprocessRewardIncome.
-vi.mock('@/lib/rpc/swapDetection', () => ({
-  detectDexSwaps: vi.fn(() => ({ transactions: [], removedIds: [], tradesCreated: 0 }))
-}));
 vi.mock('@/lib/rpc/noves', () => ({ batchClassifyNoves: vi.fn(async () => []) }));
 
-import { reprocessRewardIncome } from '@/lib/rpc/reprocessSwaps';
+import { reprocessRewardIncome, reprocessSwapDetectionInDb } from '@/lib/rpc/reprocessSwaps';
 
 let seq = 0;
 function tx(over: Partial<Transaction>): Transaction {
@@ -291,5 +298,34 @@ describe('reprocessRewardIncome', () => {
     const afterFirstPass = JSON.stringify(store);
     expect(await reprocessRewardIncome()).toBe(0);
     expect(JSON.stringify(store)).toBe(afterFirstPass);
+  });
+});
+
+describe('reprocessSwapDetectionInDb wallet-scoped mutations', () => {
+  beforeEach(() => {
+    store = [];
+    seq = 0;
+  });
+
+  it('does not delete or convert rows across case-distinct Solana wallets sharing a signature', async () => {
+    store = [
+      tx({
+        id: 'wallet-a-out', type: 'transfer_out', asset: 'USDC', sourceRef: 'shared',
+        chain: 'solana', walletAddress: 'Base58Case'
+      }),
+      tx({
+        id: 'wallet-b-in', type: 'transfer_in', asset: 'BONK', sourceRef: 'shared',
+        chain: 'solana', walletAddress: 'base58Case'
+      })
+    ];
+
+    const result = await reprocessSwapDetectionInDb();
+
+    expect(result.tradesCreated).toBe(0);
+    expect(store).toHaveLength(2);
+    expect(store.map((row) => [row.id, row.type])).toEqual([
+      ['wallet-a-out', 'transfer_out'],
+      ['wallet-b-in', 'transfer_in']
+    ]);
   });
 });

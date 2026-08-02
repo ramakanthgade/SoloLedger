@@ -31,6 +31,8 @@ import { db } from '@/lib/storage/db';
 import {
   fetchJupiterRecurringHistory,
   toHumanAmount,
+  type JupiterFill,
+  type JupiterRecurringOrder,
   type JupiterRecurringResult
 } from '@/lib/rpc/jupiterDca';
 import { isSaasMode } from '@/lib/saas/config';
@@ -40,6 +42,11 @@ import { DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
 import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
+import {
+  canonicalWalletAddress,
+  canonicalWalletIdentity,
+  canonicalWalletSourceRefKey
+} from '@/lib/ledger/chainNamespace';
 
 export interface DcaGroup {
   vaultAddress: string;
@@ -78,6 +85,41 @@ const ORDERING_SKEW_MS = 5 * 60 * 1000;
 const MIN_TOTAL_FILLS = 2;
 
 const NATIVE_CHAIN_ASSETS = new Set(['SOL', 'ETH', 'BTC', 'BNB', 'MATIC', 'AVAX', 'ADA', 'DOT']);
+
+function dcaScopeKey(
+  chain: string | null | undefined,
+  walletAddress: string | null | undefined,
+  vaultAddress: string | null | undefined
+): string | null {
+  if (!chain?.trim() || !walletAddress?.trim() || !vaultAddress?.trim()) return null;
+  return `${canonicalWalletIdentity(chain, walletAddress)}|vault:${canonicalWalletAddress(chain, vaultAddress)}`;
+}
+
+function sameDcaScope(
+  group: Pick<DcaGroup, 'chain' | 'depositTx' | 'vaultAddress'>,
+  row: Transaction
+): boolean {
+  return dcaScopeKey(group.chain, group.depositTx.walletAddress, group.vaultAddress) ===
+    dcaScopeKey(row.chain, row.walletAddress, row.counterpartyAddress);
+}
+
+type JupiterFillEvidence = { order: JupiterRecurringOrder; fill: JupiterFill };
+
+function scopedJupiterFills(
+  group: DcaGroup,
+  jupiter: JupiterRecurringResult
+): Map<string, JupiterFillEvidence> {
+  const scoped = new Map<string, JupiterFillEvidence>();
+  for (const [sourceRef, evidence] of jupiter.fillsByTxId) {
+    const key = canonicalWalletSourceRefKey(
+      group.chain,
+      group.depositTx.walletAddress,
+      sourceRef
+    );
+    if (key) scoped.set(key, evidence);
+  }
+  return scoped;
+}
 
 /** Fill already classified by a previous run (never re-processed). */
 export function isClassifiedDcaFill(t: Transaction): boolean {
@@ -172,22 +214,36 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
   const groups: DcaGroup[] = [];
   const pool = transactions.filter((t) => !t.isSpam);
   const ownWallets = new Set(
-    pool.map((t) => t.walletAddress?.toLowerCase()).filter(Boolean) as string[]
+    pool.flatMap((t) =>
+      t.chain && t.walletAddress ? [canonicalWalletIdentity(t.chain, t.walletAddress)] : []
+    )
   );
 
   // Pass 1: counterpartyAddress match — supports multiple deposits to the same vault.
   // Include already-classified DCA deposits (isInternalTransfer) so fill IDs stay discoverable.
-  const byVault = new Map<string, { outs: Transaction[]; ins: Transaction[] }>();
+  const byVault = new Map<
+    string,
+    { chain: string; walletAddress: string; vaultAddress: string; outs: Transaction[]; ins: Transaction[] }
+  >();
   for (const t of pool) {
     const vault = t.counterpartyAddress;
-    if (!vault || !t.source.startsWith('rpc:')) continue;
+    const scopeKey = dcaScopeKey(t.chain, t.walletAddress, vault);
+    if (!scopeKey || !t.chain || !t.walletAddress || !vault || !t.source.startsWith('rpc:')) continue;
     if (t.isInternalTransfer && !isClassifiedDcaDeposit(t)) continue;
-    if (!byVault.has(vault)) byVault.set(vault, { outs: [], ins: [] });
-    if (t.type === 'transfer_out') byVault.get(vault)!.outs.push(t);
-    if (isDcaFillRow(t)) byVault.get(vault)!.ins.push(t);
+    if (!byVault.has(scopeKey)) {
+      byVault.set(scopeKey, {
+        chain: t.chain,
+        walletAddress: t.walletAddress,
+        vaultAddress: vault,
+        outs: [],
+        ins: []
+      });
+    }
+    if (t.type === 'transfer_out') byVault.get(scopeKey)!.outs.push(t);
+    if (isDcaFillRow(t)) byVault.get(scopeKey)!.ins.push(t);
   }
 
-  for (const [vaultAddress, { outs, ins }] of byVault) {
+  for (const { chain, vaultAddress, outs, ins } of byVault.values()) {
     if (outs.length === 0) continue;
     // Recurrence: at least MIN_TOTAL_FILLS fills at this vault (classified or not).
     if (ins.length < MIN_TOTAL_FILLS) continue;
@@ -199,7 +255,7 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     );
     if (outputAssets.size !== 1) continue;
     const outputAsset = [...outputAssets][0];
-    if (ownWallets.has(vaultAddress.toLowerCase())) continue;
+    if (ownWallets.has(canonicalWalletIdentity(chain, vaultAddress))) continue;
 
     for (let i = 0; i < sortedOuts.length; i++) {
       const deposit = sortedOuts[i];
@@ -238,7 +294,7 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
   // Pass 2: fill-side only (works when deposit has no counterpartyAddress)
   const fillOnlyGroups = new Map<
     string,
-    { vaultAddr: string; walletAddr: string; outputAsset: string; fillTxs: Transaction[] }
+    { chain: string; vaultAddr: string; walletAddr: string; outputAsset: string; fillTxs: Transaction[] }
   >();
 
   for (const t of pool) {
@@ -248,17 +304,19 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     // token lives on counterAsset, so derive the output asset per row.
     const isCandidate =
       (t.type === 'transfer_in' && !t.isInternalTransfer) || isClassifiedDcaFill(t);
-    if (!isCandidate || !t.counterpartyAddress || !t.source.startsWith('rpc:')) continue;
-    if (ownWallets.has(t.counterpartyAddress.toLowerCase())) continue;
+    if (!isCandidate || !t.chain || !t.walletAddress || !t.counterpartyAddress || !t.source.startsWith('rpc:')) continue;
+    if (ownWallets.has(canonicalWalletIdentity(t.chain, t.counterpartyAddress))) continue;
     const outAsset = t.type === 'trade' ? t.counterAsset! : t.asset;
     // Native chain assets (SOL, ETH) are never DCA output fills — only tokens are
     if (NATIVE_CHAIN_ASSETS.has(outAsset.toUpperCase())) continue;
 
-    const key = `${t.counterpartyAddress.toLowerCase()}:${outAsset.toUpperCase()}:${t.walletAddress?.toLowerCase() ?? ''}`;
+    const scopeKey = dcaScopeKey(t.chain, t.walletAddress, t.counterpartyAddress)!;
+    const key = `${scopeKey}|output:${outAsset.toUpperCase()}`;
     if (!fillOnlyGroups.has(key)) {
       fillOnlyGroups.set(key, {
+        chain: t.chain,
         vaultAddr: t.counterpartyAddress,
-        walletAddr: t.walletAddress ?? '',
+        walletAddr: t.walletAddress,
         outputAsset: outAsset,
         fillTxs: []
       });
@@ -266,12 +324,13 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     fillOnlyGroups.get(key)!.fillTxs.push(t);
   }
 
-  for (const [, { vaultAddr, walletAddr, outputAsset, fillTxs }] of fillOnlyGroups) {
+  for (const { chain, vaultAddr, walletAddr, outputAsset, fillTxs } of fillOnlyGroups.values()) {
     // Recurrence: single fills are indistinguishable from ordinary transfers.
     if (fillTxs.length < MIN_TOTAL_FILLS) continue;
     const unclassifiedFillTxs = fillTxs.filter((t) => t.type === 'transfer_in');
     if (unclassifiedFillTxs.length < 1) continue;
-    if (groups.some((g) => g.vaultAddress.toLowerCase() === vaultAddr.toLowerCase())) continue;
+    const scopeKey = dcaScopeKey(chain, walletAddr, vaultAddr)!;
+    if (groups.some((g) => dcaScopeKey(g.chain, g.depositTx.walletAddress, g.vaultAddress) === scopeKey)) continue;
 
     const firstFillTime = Math.min(...fillTxs.map((f) => f.timestamp));
     const depositCandidates = pool.filter(
@@ -279,7 +338,9 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
         t.type === 'transfer_out' &&
         !NATIVE_CHAIN_ASSETS.has(t.asset.toUpperCase()) &&
         t.asset.toUpperCase() !== outputAsset.toUpperCase() &&
-        t.walletAddress?.toLowerCase() === walletAddr.toLowerCase() &&
+        !!t.chain &&
+        !!t.walletAddress &&
+        canonicalWalletIdentity(t.chain, t.walletAddress) === canonicalWalletIdentity(chain, walletAddr) &&
         t.source.startsWith('rpc:') &&
         (!t.isInternalTransfer || isClassifiedDcaDeposit(t)) &&
         // ORDERING: the deposit funds the fills — it cannot come AFTER them
@@ -330,11 +391,12 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     if (deposit.isInternalTransfer && !isClassifiedDcaDeposit(deposit)) {
       continue;
     }
-    const vaultLower = deposit.counterpartyAddress.toLowerCase();
+    const scopeKey = dcaScopeKey(deposit.chain, deposit.walletAddress, deposit.counterpartyAddress);
+    if (!scopeKey || !deposit.chain || !deposit.walletAddress) continue;
     if (groups.some((g) => g.depositTx.id === deposit.id)) continue;
-    if (ownWallets.has(vaultLower)) continue;
+    if (ownWallets.has(canonicalWalletIdentity(deposit.chain, deposit.counterpartyAddress))) continue;
 
-    const walletLower = deposit.walletAddress?.toLowerCase() ?? '';
+    const walletIdentity = canonicalWalletIdentity(deposit.chain, deposit.walletAddress);
     const inputAsset = deposit.asset.toUpperCase();
 
     const tradeFills = pool.filter(
@@ -343,7 +405,9 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
         t.counterAsset &&
         !NATIVE_CHAIN_ASSETS.has(t.counterAsset.toUpperCase()) &&
         (t.asset.toUpperCase() === inputAsset || isClassifiedDcaFill(t)) &&
-        t.walletAddress?.toLowerCase() === walletLower &&
+        !!t.chain &&
+        !!t.walletAddress &&
+        canonicalWalletIdentity(t.chain, t.walletAddress) === walletIdentity &&
         t.source.startsWith('rpc:') &&
         t.timestamp >= deposit.timestamp - ORDERING_SKEW_MS &&
         t.timestamp <= deposit.timestamp + ONE_WEEK_MS
@@ -390,11 +454,9 @@ async function getExactDbtPerFillFromChain(
 
   const allPre: any[] = tx.meta?.preTokenBalances ?? [];
   const allPost: any[] = tx.meta?.postTokenBalances ?? [];
-  const vaultLower = vaultAddress.toLowerCase();
-
   const sumUi = (balances: any[]) =>
     balances
-      .filter((b: any) => b.mint === dbtMint && b.owner?.toLowerCase() === vaultLower)
+      .filter((b: any) => b.mint === dbtMint && b.owner === vaultAddress)
       .reduce((s, b) => s + (b.uiTokenAmount?.uiAmount ?? 0), 0);
 
   const consumed = sumUi(allPre) - sumUi(allPost);
@@ -407,9 +469,12 @@ async function getExactDbtPerFillFromChain(
  * account address, or (c) the input+output mints of an order.
  */
 function jupiterConfirmsGroup(g: DcaGroup, jupiter: JupiterRecurringResult): boolean {
-  if (g.fillTxs.some((f) => f.sourceRef && jupiter.fillsByTxId.has(f.sourceRef))) return true;
-  const vaultLower = g.vaultAddress.toLowerCase();
-  if (jupiter.orders.some((o) => o.orderKey.toLowerCase() === vaultLower)) return true;
+  const fillsByOperation = scopedJupiterFills(g, jupiter);
+  if (g.fillTxs.some((fill) => {
+    const key = canonicalWalletSourceRefKey(fill.chain, fill.walletAddress, fill.sourceRef);
+    return key != null && fillsByOperation.has(key);
+  })) return true;
+  if (jupiter.orders.some((o) => o.orderKey === canonicalWalletAddress('solana', g.vaultAddress))) return true;
   const inputMint = g.inputContractAddress ?? g.depositTx.contractAddress;
   const outputMint = g.fillTxs.find((f) => f.type === 'transfer_in')?.contractAddress;
   return jupiter.orders.some((o) => {
@@ -447,11 +512,12 @@ export async function applyDcaClassification(
 
   // Jupiter results are per-wallet — fetch once and reuse across groups.
   const jupiterByWallet = new Map<string, JupiterRecurringResult>();
-  const jupiterFor = async (walletAddress: string): Promise<JupiterRecurringResult> => {
-    const cached = jupiterByWallet.get(walletAddress);
+  const jupiterFor = async (chain: string, walletAddress: string): Promise<JupiterRecurringResult> => {
+    const walletKey = canonicalWalletIdentity(chain, walletAddress);
+    const cached = jupiterByWallet.get(walletKey);
     if (cached) return cached;
     const fresh = await fetchJupiterRecurringHistory(walletAddress);
-    jupiterByWallet.set(walletAddress, fresh);
+    jupiterByWallet.set(walletKey, fresh);
     return fresh;
   };
 
@@ -465,6 +531,7 @@ export async function applyDcaClassification(
 
     // --- Solana verification gate (fail CLOSED on confirmation, OPEN on outage) ---
     let jupiterData: JupiterRecurringResult = { orders: [], fillsByTxId: new Map(), reachable: false };
+    let jupiterFillsByOperation = new Map<string, JupiterFillEvidence>();
     if (isSolana) {
       if (!walletAddress) {
         result.skipped++;
@@ -474,7 +541,7 @@ export async function applyDcaClassification(
         continue;
       }
       // eslint-disable-next-line no-await-in-loop
-      jupiterData = await jupiterFor(walletAddress);
+      jupiterData = await jupiterFor(g.chain ?? 'solana', walletAddress);
       if (!jupiterData.reachable) {
         result.skipped++;
         result.skipReasons.push(
@@ -489,6 +556,7 @@ export async function applyDcaClassification(
         );
         continue;
       }
+      jupiterFillsByOperation = scopedJupiterFills(g, jupiterData);
     }
 
     // Mark deposit as non-taxable escrow (idempotent).
@@ -511,7 +579,8 @@ export async function applyDcaClassification(
         (t) =>
           t.type === 'transfer_out' &&
           !t.isInternalTransfer &&
-          t.counterpartyAddress?.toLowerCase() === g.vaultAddress.toLowerCase()
+          t.source.startsWith('rpc:') &&
+          sameDcaScope(g, t)
       )
       .toArray();
     for (const dep of otherVaultDeposits) {
@@ -528,10 +597,12 @@ export async function applyDcaClassification(
     // These are rent deposits for token accounts created by Jupiter DCA (Solana only).
     if (isSolana) {
       const TINY_SOL_THRESHOLD = 0.01;
-      const depositSourceRefs = [
-        g.depositTx.sourceRef,
-        ...otherVaultDeposits.map((d) => d.sourceRef)
-      ].filter(Boolean) as string[];
+      const operationKeys = new Set(
+        [g.depositTx, ...otherVaultDeposits, ...g.fillTxs].flatMap((row) => {
+          const key = canonicalWalletSourceRefKey(row.chain, row.walletAddress, row.sourceRef);
+          return key ? [key] : [];
+        })
+      );
 
       const tinySOLTxs = await db.transactions
         .filter(
@@ -545,8 +616,10 @@ export async function applyDcaClassification(
         .toArray();
 
       for (const sol of tinySOLTxs) {
+        const operationKey = canonicalWalletSourceRefKey(sol.chain, sol.walletAddress, sol.sourceRef);
+        if (!operationKey || !operationKeys.has(operationKey)) continue;
         // Rent leaves main wallet (Phantom balance) — record as fee, not internal skip.
-        if (sol.sourceRef && depositSourceRefs.includes(sol.sourceRef) && sol.type === 'transfer_out') {
+        if (sol.type === 'transfer_out') {
           // eslint-disable-next-line no-await-in-loop
           await db.transactions.update(sol.id, {
             type: 'fee',
@@ -557,7 +630,7 @@ export async function applyDcaClassification(
           continue;
         }
         // Rent refund when DCA vault/token accounts close.
-        if (sol.type === 'transfer_in' && sol.sourceRef) {
+        if (sol.type === 'transfer_in') {
           // eslint-disable-next-line no-await-in-loop
           await db.transactions.update(sol.id, {
             isInternalTransfer: false,
@@ -572,7 +645,14 @@ export async function applyDcaClassification(
     const inputMint = dbtMint ?? g.depositTx.contractAddress ?? DBT_TOKEN_MINT;
 
     for (const fill of g.unclassifiedFillTxs) {
-      const jupFill = fill.sourceRef ? jupiterData.fillsByTxId.get(fill.sourceRef) : null;
+      const fillOperationKey = canonicalWalletSourceRefKey(
+        fill.chain,
+        fill.walletAddress,
+        fill.sourceRef
+      );
+      const jupFill = fillOperationKey
+        ? jupiterFillsByOperation.get(fillOperationKey)
+        : undefined;
       const outputReceived = fill.type === 'trade' ? (fill.counterAmount ?? fill.amount) : fill.amount;
       let inputAmountPerFill: number;
       let amountSource: string;

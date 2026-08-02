@@ -17,6 +17,7 @@ import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import type { TaxSettings } from '@/types/transaction';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
+import { canonicalWalletAddress, canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 
 // ---- State shape ----
 
@@ -107,13 +108,17 @@ export function useImportJob(): ImportJobState {
 
 /** Resolve the Helius after-signature cursor for incremental sync. */
 async function resolveSyncCursor(chainId: string, address: string): Promise<string | undefined> {
-  const row = await db.lookupAddresses.get(`${chainId}:${address}`);
+  const identity = canonicalWalletAddress(chainId, address);
+  const row = await db.lookupAddresses.get(`${chainId}:${identity}`) ??
+    (await db.lookupAddresses.filter((candidate) => candidate.chain === chainId &&
+      canonicalWalletAddress(chainId, candidate.address) === identity).first());
   if (row?.lastSyncedSignature) return row.lastSyncedSignature;
 
   const existingTxs = await db.transactions
     .filter(
       (t) =>
-        t.walletAddress?.toLowerCase() === address.toLowerCase() &&
+        t.chain === chainId && t.walletAddress != null &&
+        canonicalWalletAddress(chainId, t.walletAddress) === identity &&
         !!t.sourceRef &&
         t.source.startsWith('rpc:')
     )
@@ -149,7 +154,8 @@ export async function runWalletImport(
   isSync = false
 ): Promise<void> {
   const existing = await getLookupAddresses();
-  const existingIds = new Set(existing.map((r) => `${r.chain}:${r.address.toLowerCase()}`));
+  const existingIds = new Set(existing.map((row) =>
+    `${row.chain}:${canonicalWalletAddress(row.chain, row.address)}`));
 
   let fresh: string[];
   const warnings: string[] = [];
@@ -159,8 +165,10 @@ export async function runWalletImport(
     // Find the most recent transaction signature for each address.
     fresh = addresses;
   } else {
-    const alreadyKnown = addresses.filter((a) => existingIds.has(`${chain.id}:${a.toLowerCase()}`));
-    fresh = addresses.filter((a) => !existingIds.has(`${chain.id}:${a.toLowerCase()}`));
+    const alreadyKnown = addresses.filter((address) =>
+      existingIds.has(`${chain.id}:${canonicalWalletAddress(chain.id, address)}`));
+    fresh = addresses.filter((address) =>
+      !existingIds.has(`${chain.id}:${canonicalWalletAddress(chain.id, address)}`));
     for (const a of alreadyKnown) {
       warnings.push(`${a.slice(0, 8)}…${a.slice(-4)}: already imported — use Sync to refresh.`);
     }
@@ -187,7 +195,8 @@ export async function runWalletImport(
     const existingTxs = await db.transactions
       .filter(
         (t) =>
-          t.walletAddress?.toLowerCase() === addr.toLowerCase() &&
+          t.chain === chain.id && t.walletAddress != null &&
+          canonicalWalletAddress(chain.id, t.walletAddress) === canonicalWalletAddress(chain.id, addr) &&
           !!t.sourceRef &&
           t.source.startsWith('rpc:')
       )
@@ -232,11 +241,15 @@ export async function runWalletImport(
       .filter((t) => t.type === 'trade' && !!t.sourceRef)
       .toArray();
     const tradeBySourceRef = new Map(
-      existingTrades.map((t) => [t.sourceRef!, t] as const)
+      existingTrades.flatMap((t) => {
+        const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+        return key ? [[key, t] as const] : [];
+      })
     );
     txsToStore = transactions.filter((t) => {
-      if (!t.sourceRef) return true;
-      const trade = tradeBySourceRef.get(t.sourceRef);
+      const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+      if (!key) return true;
+      const trade = tradeBySourceRef.get(key);
       if (!trade) return true;
       if (t.type === 'fee' || t.type === 'income') return true;
       if (t.type === 'trade') return false;
@@ -260,8 +273,10 @@ export async function runWalletImport(
   // registry — a failed first import must stay retryable instead of getting
   // stuck behind "already imported — use Sync". (Sync of an existing wallet
   // keeps its row either way; a failed sync simply doesn't refresh it.)
-  const failedAddrs = new Set(failed.map((f) => f.address.trim().toLowerCase()));
-  const succeeded = fresh.filter((addr) => !failedAddrs.has(addr.trim().toLowerCase()));
+  const failedAddrs = new Set(failed.map((failure) =>
+    `${chain.id}:${canonicalWalletAddress(chain.id, failure.address)}`));
+  const succeeded = fresh.filter((address) =>
+    !failedAddrs.has(`${chain.id}:${canonicalWalletAddress(chain.id, address)}`));
 
   await Promise.all(
     succeeded.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount))

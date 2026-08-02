@@ -27,10 +27,12 @@ export function loadFixtureRows(relativePath: string): Record<string, string>[] 
  */
 export function normalizeForSnapshot(txs: Transaction[]): Omit<Transaction, 'id' | 'raw'>[] {
   return txs
-    .map(({ id: _id, raw: _raw, ...rest }) => ({
-      ...rest,
-      flags: [...(rest.flags ?? [])].sort()
-    }))
+    .map(({ id: _id, raw: _raw, ...rest }) => Object.fromEntries(
+      Object.entries({
+        ...rest,
+        flags: [...(rest.flags ?? [])].sort()
+      }).filter(([, value]) => value !== undefined)
+    ) as Omit<Transaction, 'id' | 'raw'>)
     .sort((a, b) =>
       a.timestamp - b.timestamp ||
       a.type.localeCompare(b.type) ||
