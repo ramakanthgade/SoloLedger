@@ -65,6 +65,22 @@ const SEED = vi.hoisted(() => {
   };
 });
 
+const COST_BASIS_INPUTS = vi.hoisted(() => [] as string[][]);
+
+vi.mock('@/lib/costBasis/engine', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/costBasis/engine')>();
+  return {
+    ...actual,
+    calculateCostBasis: (transactions: Parameters<typeof actual.calculateCostBasis>[0], ...args: unknown[]) => {
+      COST_BASIS_INPUTS.push(transactions.map((transaction) => transaction.id));
+      return actual.calculateCostBasis(
+        transactions,
+        ...args as Parameters<typeof actual.calculateCostBasis> extends [unknown, ...infer Rest] ? Rest : never
+      );
+    }
+  };
+});
+
 vi.mock('dexie-react-hooks', () => ({
   // Run the querier synchronously against the stubbed db below.
   useLiveQuery: (querier: () => unknown) => querier()
@@ -158,11 +174,34 @@ beforeEach(() => {
   SEED.authorityAssets.length = 0;
   SEED.sourceCoverage.length = 0;
   SEED.openingBalances.length = 0;
+  COST_BASIS_INPUTS.length = 0;
   // Reset the tx list to the base seed (some tests append wallet rows).
   SEED.txs.length = 4;
 });
 
 describe('DashboardTab — hero honesty', () => {
+  it('preserves same-timestamp sell/buy order for deferred tax consumers', async () => {
+    const backup = [...SEED.txs];
+    const timestamp = Date.UTC(2026, 6, 1, 12, 0, 0);
+    SEED.txs.splice(0, SEED.txs.length,
+      {
+        id: 'z-sell', timestamp, type: 'sell', asset: 'BTC', amount: 1,
+        fiatCurrency: 'INR', fiatValue: 100, source: 'manual', flags: [], isInternalTransfer: false
+      },
+      {
+        id: 'a-buy', timestamp, type: 'buy', asset: 'BTC', amount: 1,
+        fiatCurrency: 'INR', fiatValue: 80, source: 'manual', flags: [], isInternalTransfer: false
+      }
+    );
+    try {
+      await renderTab();
+      expect(SEED.txs.map((transaction) => transaction.id)).toEqual(['z-sell', 'a-buy']);
+      expect(COST_BASIS_INPUTS).toContainEqual(['z-sell', 'a-buy']);
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
+  });
+
   it('values everything at cost and says so when no prices are cached', async () => {
     await renderTab();
     const hero = screen.getByTestId('dashboard-hero');

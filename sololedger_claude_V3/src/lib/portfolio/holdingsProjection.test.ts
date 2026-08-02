@@ -355,4 +355,54 @@ describe('buildHoldingsProjection', () => {
     });
     expect(result.holdings.reduce((sum, holding) => sum + holding.costBasis, 0)).toBe(25_000);
   });
+
+  it('uses the ordered single-pass cost path without changing unordered projection semantics', () => {
+    const rows = [
+      tx({ id: 'buy', timestamp: NOW - 2_000, type: 'buy', amount: 2, fiatValue: 200 }),
+      tx({ id: 'sell', timestamp: NOW - 1_000, type: 'sell', amount: 0.5, fiatValue: 80 })
+    ];
+    const ordered = buildHoldingsProjection(input({ transactions: rows }));
+    const unordered = buildHoldingsProjection(input({ transactions: [...rows].reverse() }));
+    expect(ordered.holdings).toEqual(unordered.holdings);
+    expect(ordered.chartPostingCostsEquivalent).toBe(true);
+  });
+
+  it('keeps special custody chart semantics off the posting-cost fast path', () => {
+    const result = buildHoldingsProjection(input({
+      transactions: [tx({ isInternalTransfer: true })]
+    }));
+    expect(result.chartPostingCostsEquivalent).toBe(false);
+  });
+
+  it('keeps account-scoped and ordering-sensitive costs on the custody chart path', () => {
+    const scoped = buildHoldingsProjection(input({
+      transactions: [tx({ importBatchId: 'batch-1' })]
+    }));
+    const sameInstantTrade = buildHoldingsProjection(input({
+      transactions: [tx({ type: 'trade', counterAsset: 'ETH', counterAmount: 2 })]
+    }));
+    expect(scoped.chartPostingCostsEquivalent).toBe(false);
+    expect(sameInstantTrade.chartPostingCostsEquivalent).toBe(false);
+  });
+
+  it.each([
+    ['negative', -1],
+    ['NaN', Number.NaN],
+    ['positive infinity', Number.POSITIVE_INFINITY]
+  ])('rejects %s fiat values from posting-cost chart equivalence', (_label, fiatValue) => {
+    const result = buildHoldingsProjection(input({
+      transactions: [tx({ type: 'buy', fiatValue })]
+    }));
+    expect(result.chartPostingCostsEquivalent).toBe(false);
+  });
+
+  it('rejects same-timestamp input whose custody ordering can differ from posting ordering', () => {
+    const result = buildHoldingsProjection(input({
+      transactions: [
+        tx({ id: 'z-sell', timestamp: NOW, type: 'sell', amount: 1 }),
+        tx({ id: 'a-buy', timestamp: NOW, type: 'buy', amount: 1, fiatValue: 100 })
+      ]
+    }));
+    expect(result.chartPostingCostsEquivalent).toBe(false);
+  });
 });

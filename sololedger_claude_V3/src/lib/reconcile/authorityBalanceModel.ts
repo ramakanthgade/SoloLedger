@@ -1,5 +1,6 @@
 import type { AccountClass, DerivedPosting, ExchangeSourceIdentity } from '@/lib/ledger/derivedPostings';
 import {
+  postingScopeAggregationKey,
   preparePostingAggregation,
   type PreparedPostingAggregation
 } from '@/lib/ledger/postingBalances';
@@ -90,9 +91,9 @@ interface ProjectedCoverage {
 }
 
 interface PostingScopeIndex {
-  rows: DerivedPosting[];
-  assets: Map<string, string>;
-  balances: Map<string, number>;
+  postingCount: number;
+  assets: ReadonlyMap<string, string>;
+  balances: ReadonlyMap<string, number>;
 }
 
 const KEY_SEPARATOR = '\u001f';
@@ -249,33 +250,47 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
     scopes.set(scopeKey(scopeId, accountClass), { scopeId, accountClass });
   };
   const postingsByScope = new Map<string, PostingScopeIndex>();
-  for (let postingIndex = 0; postingIndex < preparedPostings.ordered.length; postingIndex++) {
-    const posting = preparedPostings.ordered[postingIndex];
-    if (metrics) {
-      metrics.postingIndexVisits += 1;
-      metrics.postingBalanceVisits += 1;
+  if (input.comparisonAt == null && metrics == null) {
+    for (const preparedScope of preparedPostings.scopes.values()) {
+      const key = postingScopeAggregationKey(preparedScope.scopeId, preparedScope.accountClass);
+      postingsByScope.set(key, {
+        postingCount: preparedScope.postingCount,
+        assets: preparedScope.assets,
+        balances: preparedScope.balances
+      });
+      addScope(preparedScope.scopeId, preparedScope.accountClass);
     }
-    if (input.comparisonAt != null && posting.effectiveAt > input.comparisonAt) {
-      // The former source-index pass inspected (and skipped) all future rows,
-      // while postingBalances stopped at the first one. Preserve those metrics.
-      if (metrics) metrics.postingIndexVisits += preparedPostings.ordered.length - postingIndex - 1;
-      break;
+  } else {
+    for (let postingPosition = 0; postingPosition < preparedPostings.ordered.length; postingPosition++) {
+      const posting = preparedPostings.ordered[postingPosition];
+      if (metrics) {
+        metrics.postingIndexVisits += 1;
+        metrics.postingBalanceVisits += 1;
+      }
+      if (input.comparisonAt != null && posting.effectiveAt > input.comparisonAt) {
+        if (metrics) metrics.postingIndexVisits += preparedPostings.ordered.length - postingPosition - 1;
+        break;
+      }
+      const key = scopeKey(posting.accountScopeId, posting.accountClass);
+      let scopeIndex = postingsByScope.get(key) as {
+        postingCount: number;
+        assets: Map<string, string>;
+        balances: Map<string, number>;
+      } | undefined;
+      if (scopeIndex == null) {
+        scopeIndex = { postingCount: 0, assets: new Map(), balances: new Map() };
+        postingsByScope.set(key, scopeIndex);
+        addScope(posting.accountScopeId, posting.accountClass);
+      }
+      scopeIndex.postingCount += 1;
+      scopeIndex.assets.set(posting.assetKey, posting.asset);
+      scopeIndex.balances.set(
+        posting.assetKey,
+        posting.role === 'opening_balance'
+          ? posting.signedQuantity
+          : (scopeIndex.balances.get(posting.assetKey) ?? 0) + posting.signedQuantity
+      );
     }
-    const key = scopeKey(posting.accountScopeId, posting.accountClass);
-    let index = postingsByScope.get(key);
-    if (index == null) {
-      index = { rows: [], assets: new Map(), balances: new Map() };
-      postingsByScope.set(key, index);
-      addScope(posting.accountScopeId, posting.accountClass);
-    }
-    index.rows.push(posting);
-    index.assets.set(posting.assetKey, posting.asset);
-    index.balances.set(
-      posting.assetKey,
-      posting.role === 'opening_balance'
-        ? posting.signedQuantity
-        : (index.balances.get(posting.assetKey) ?? 0) + posting.signedQuantity
-    );
   }
   const coverageByScope = new Map<string, ProjectedCoverage[]>();
   for (const coverage of projectedCoverage) {
@@ -300,7 +315,7 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
     const authorities = authoritiesByScope.get(key) ?? [];
     const scopedCoverage = coverageByScope.get(key) ?? [];
     const postingIndex = postingsByScope.get(key);
-    if (metrics && postingIndex) metrics.scopedPostingVisits += postingIndex.rows.length;
+    if (metrics && postingIndex) metrics.scopedPostingVisits += postingIndex.postingCount;
     const selection = selectAuthoritySnapshot({
       scopeId: scope.scopeId,
       accountClass: scope.accountClass,

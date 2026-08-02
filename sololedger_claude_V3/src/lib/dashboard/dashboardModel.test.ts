@@ -235,6 +235,22 @@ describe('buildChartSeries', () => {
     expect(series[series.length - 1]?.market).toBe(100);
   });
 
+  it('keeps the conservative posting-cost fast path equivalent for an ordinary ledger', () => {
+    const rows = [
+      tx({ id: 'buy', timestamp: day(2026, 4, 1), type: 'buy', amount: 2, fiatValue: 200 }),
+      tx({ id: 'sell', timestamp: day(2026, 4, 2), type: 'sell', amount: 0.5, fiatValue: 80 })
+    ];
+    const postings = derivePostings(rows, { exchangeConnections: [] });
+    const prepared = preparePostingAggregation(postings);
+    const args = [
+      rows, postings, prepared, buildPriceIndex([], 'INR'),
+      day(2026, 4, 1), day(2026, 4, 3), 3
+    ] as const;
+    const custody = buildPostingChartSeries(...args);
+    const posting = buildPostingChartSeries(...args, undefined, true);
+    expect(posting).toEqual(custody);
+  });
+
   it.each([
     ['Ethereum', 'ethereum', 'ethereum', '0xabc'],
     ['Starknet', 'starknet', 'starknet', '0xdef']

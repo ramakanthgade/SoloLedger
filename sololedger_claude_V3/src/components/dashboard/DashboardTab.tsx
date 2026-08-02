@@ -12,7 +12,7 @@ import type { CsvImportRow, ExchangeBalanceRow, ExchangeConnectionRow, PriceCach
 import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
-import type { TaxSettings } from '@/types/transaction';
+import type { TaxSettings, Transaction } from '@/types/transaction';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
@@ -76,6 +76,18 @@ import {
 
 const PRIVACY_KEY = 'sololedger_dashboard_privacy';
 const DISMISS_KEY = 'sololedger_dashboard_dismissed_insights';
+
+function chronologicallyOrderedProjectionTransactions(
+  transactions: Transaction[]
+): Transaction[] {
+  for (let index = 1; index < transactions.length; index++) {
+    if (transactions[index - 1].timestamp > transactions[index].timestamp) {
+      // Stable sort preserves source order when timestamps are equal.
+      return [...transactions].sort((left, right) => left.timestamp - right.timestamp);
+    }
+  }
+  return transactions;
+}
 
 function readDismissed(): string[] {
   try {
@@ -456,9 +468,15 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
     () => (transactions ?? []).filter((t) => !t.isSpam),
     [transactions]
   );
+  // Keep the shared consumer array untouched because FIFO and custody charts
+  // preserve input order for same-timestamp rows.
+  const projectionTransactions = useMemo(
+    () => chronologicallyOrderedProjectionTransactions(nonSpamTxs),
+    [nonSpamTxs]
+  );
 
   const projection = useMemo(() => buildHoldingsProjection({
-    transactions: nonSpamTxs,
+    transactions: projectionTransactions,
     exchangeConnections: exchangeConns,
     openingBalances,
     snapshots: authoritySnapshots,
@@ -466,7 +484,7 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
     coverage: sourceCoverageRows,
     now: nowMs
   }), [
-    nonSpamTxs, exchangeConns, openingBalances, authoritySnapshots, authorityAssets,
+    projectionTransactions, exchangeConns, openingBalances, authoritySnapshots, authorityAssets,
     sourceCoverageRows, nowMs
   ]);
   const holdings = projection.holdings;
@@ -559,7 +577,8 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
       range.start,
       range.end,
       72,
-      instrumentation?.measureChartPreparation
+      instrumentation?.measureChartPreparation,
+      deferredProjection.chartPostingCostsEquivalent
     ),
     [deferredTransactions, deferredProjection, instrumentation, priceIndex, range]
   );

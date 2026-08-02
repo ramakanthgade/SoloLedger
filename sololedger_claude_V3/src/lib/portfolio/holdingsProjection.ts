@@ -21,7 +21,8 @@ import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/au
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
 import {
-  buildDisplayCostProjections
+  buildDisplayCostProjections,
+  createDisplayCostProjectionAccumulator
 } from './displayCostProjection';
 
 export interface HoldingsScopeFilter {
@@ -79,6 +80,8 @@ export interface HoldingsProjection {
   /** One immutable posting projection, useful to downstream chart consumers. */
   postings: readonly DerivedPosting[];
   preparedPostings: PreparedPostingAggregation;
+  /** Whether chart costs can use the faster posting-equivalent implementation. */
+  chartPostingCostsEquivalent: boolean;
 }
 
 interface DisplayIdentity {
@@ -242,11 +245,25 @@ function sourceVerification(slice: AuthorityBalanceSlice): HoldingSourceVerifica
  * contribute display metadata and the posting projection contributes display cost.
  */
 export function buildHoldingsProjection(input: HoldingsProjectionInput): HoldingsProjection {
+  const chronologicallyAppendable = input.comparisonAt == null && input.openingBalances.length === 0 &&
+    input.transactions.every((transaction, index) =>
+      index === 0 || input.transactions[index - 1].timestamp < transaction.timestamp ||
+      (input.transactions[index - 1].timestamp === transaction.timestamp &&
+        input.transactions[index - 1].id <= transaction.id));
+  const costAccumulator = chronologicallyAppendable
+    ? createDisplayCostProjectionAccumulator()
+    : undefined;
   const postings = derivePostings(input.transactions, {
     exchangeConnections: [...input.exchangeConnections],
-    openingBalances: [...input.openingBalances]
+    openingBalances: [...input.openingBalances],
+    onTransactionPostings: costAccumulator
+      ? (transaction, transactionPostings, start) => {
+          costAccumulator.addTransaction(transaction);
+          costAccumulator.addPostings(transaction, transactionPostings, start);
+        }
+      : undefined
   });
-  const preparedPostings = preparePostingAggregation(postings);
+  const preparedPostings = preparePostingAggregation(postings, chronologicallyAppendable);
   const allSlices = buildAuthorityBalanceModel({
     postings,
     snapshots: input.snapshots,
@@ -266,12 +283,13 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     rows.push(slice);
     slicesByAsset.set(slice.assetKey, rows);
   }
-  const displayCostProjections = buildDisplayCostProjections({
-    transactions: input.transactions,
-    postings,
-    preparedPostings,
-    asOf: input.comparisonAt
-  });
+  const displayCostProjections = costAccumulator?.finish() ??
+    buildDisplayCostProjections({
+      transactions: input.transactions,
+      postings,
+      preparedPostings,
+      asOf: input.comparisonAt
+    });
   const displayCosts = displayCostProjections.exact;
   const unresolvedDisplayCosts = displayCostProjections.unresolved;
   const openingAffected = displayCostProjections.openingAffected;
@@ -329,5 +347,11 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
   }
   holdings.sort((left, right) =>
     right.costBasis - left.costBasis || left.assetKey.localeCompare(right.assetKey));
-  return { slices, holdings, postings, preparedPostings };
+  return {
+    slices,
+    holdings,
+    postings,
+    preparedPostings,
+    chartPostingCostsEquivalent: displayCostProjections.chartPostingCostsEquivalent
+  };
 }

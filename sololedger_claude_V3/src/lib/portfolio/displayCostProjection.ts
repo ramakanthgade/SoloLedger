@@ -6,6 +6,7 @@ import {
   type PreparedPostingAggregation
 } from '@/lib/ledger/postingBalances';
 import type { Transaction } from '@/types/transaction';
+import { isNativeSolAsset } from './solBalance';
 
 export interface DisplayCostBalance {
   scopeId: string;
@@ -35,6 +36,39 @@ export interface DisplayCostProjections {
   exact: Map<PostingBalanceKey, DisplayCostBalance>;
   unresolved: Map<string, CanonicalDisplayCostBalance>;
   openingAffected: Set<PostingBalanceKey>;
+  /** True when the posting cost model exactly matches the custody chart model. */
+  chartPostingCostsEquivalent: boolean;
+}
+
+export interface DisplayCostProjectionAccumulator {
+  addTransaction: (transaction: Transaction) => void;
+  addPostings: (
+    transaction: Transaction,
+    postings: readonly DerivedPosting[],
+    start?: number
+  ) => void;
+  finish: () => DisplayCostProjections;
+}
+
+const SIMPLE_MANUAL_CHART_TYPES = new Set<Transaction['type']>([
+  'buy', 'sell', 'transfer_in', 'transfer_out', 'income', 'gift_received', 'gift_sent'
+]);
+
+function requiresCustodyChartCostSemantics(transaction: Transaction): boolean {
+  return Boolean(
+    transaction.isSpam || transaction.isInternalTransfer ||
+    !SIMPLE_MANUAL_CHART_TYPES.has(transaction.type) ||
+    transaction.source !== 'manual' || transaction.importBatchId != null ||
+    transaction.raw != null || transaction.parserAccountClass != null ||
+    transaction.deletedSourceEvidence != null || transaction.dedupMatchedApiRow != null ||
+    transaction.walletAddress != null || transaction.chain != null ||
+    transaction.contractAddress != null || transaction.category != null ||
+    transaction.instrumentClass === 'derivative' ||
+    (transaction.fiatValue != null &&
+      (!Number.isFinite(transaction.fiatValue) || transaction.fiatValue < 0)) ||
+    isNativeSolAsset(transaction.asset) || isNativeSolAsset(transaction.counterAsset) ||
+    isNativeSolAsset(transaction.feeAsset)
+  );
 }
 
 function acquisitionCost(posting: DerivedPosting, transaction: Transaction | undefined): number {
@@ -131,6 +165,55 @@ function applyDisplayCost(
   }
 }
 
+/** Fast path for callers that prove transactions/postings are chronological and have no openings. */
+export function createDisplayCostProjectionAccumulator(): DisplayCostProjectionAccumulator {
+  const exact = new Map<PostingBalanceKey, DisplayCostBalance>();
+  const unresolved = new Map<string, CanonicalDisplayCostBalance>();
+  let chartPostingCostsEquivalent = true;
+  let previousTimestamp: number | undefined;
+  return {
+    addTransaction(transaction) {
+      if (chartPostingCostsEquivalent && (
+        transaction.timestamp === previousTimestamp || requiresCustodyChartCostSemantics(transaction)
+      )) {
+        chartPostingCostsEquivalent = false;
+      }
+      previousTimestamp = transaction.timestamp;
+    },
+    addPostings(transaction, postings, start = 0) {
+      for (let index = start; index < postings.length; index++) {
+        const posting = postings[index];
+        const key = postingBalanceKey(posting);
+        const exactBalance = exact.get(key) ?? {
+          scopeId: posting.accountScopeId,
+          accountClass: posting.accountClass,
+          assetKey: posting.assetKey,
+          amount: 0,
+          costBasis: 0
+        };
+        applyDisplayCost(exactBalance, posting, transaction);
+        exact.set(key, exactBalance);
+        if (!posting.accountScopeId.startsWith('unresolved:')) continue;
+        const unresolvedBalance = unresolved.get(posting.assetKey) ?? {
+          assetKey: posting.assetKey,
+          amount: 0,
+          costBasis: 0
+        };
+        applyDisplayCost(unresolvedBalance, posting, transaction);
+        unresolved.set(posting.assetKey, unresolvedBalance);
+      }
+    },
+    finish() {
+      return {
+        exact,
+        unresolved,
+        openingAffected: new Set(),
+        chartPostingCostsEquivalent
+      };
+    }
+  };
+}
+
 /**
  * Legacy-compatible fallback for transactions whose ownership cannot be
  * resolved: independent `unresolved:<txId>` scopes are folded only by their
@@ -175,7 +258,18 @@ export function buildDisplayCostProjections(
   if (prepared.source !== input.postings) {
     throw new Error('prepared posting aggregation source mismatch');
   }
-  const transactions = new Map(input.transactions.map((transaction) => [transaction.id, transaction]));
+  const transactions = new Map<string, Transaction>();
+  let chartPostingCostsEquivalent = true;
+  const seenTimestamps = new Set<number>();
+  for (const transaction of input.transactions) {
+    transactions.set(transaction.id, transaction);
+    if (chartPostingCostsEquivalent && (
+      seenTimestamps.has(transaction.timestamp) || requiresCustodyChartCostSemantics(transaction)
+    )) {
+      chartPostingCostsEquivalent = false;
+    }
+    seenTimestamps.add(transaction.timestamp);
+  }
   const openingAffected = openingAffectedKeys(input.postings);
   const exact = new Map<PostingBalanceKey, DisplayCostBalance>();
   const unresolved = new Map<string, CanonicalDisplayCostBalance>();
@@ -204,7 +298,7 @@ export function buildDisplayCostProjections(
     applyDisplayCost(unresolvedBalance, posting, transaction);
     unresolved.set(posting.assetKey, unresolvedBalance);
   }
-  return { exact, unresolved, openingAffected };
+  return { exact, unresolved, openingAffected, chartPostingCostsEquivalent };
 }
 
 /** Opening-aware chart costs in one chronological posting pass. */

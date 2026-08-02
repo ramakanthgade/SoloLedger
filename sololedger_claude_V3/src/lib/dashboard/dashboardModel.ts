@@ -378,7 +378,8 @@ export function buildPostingChartSeries(
   start: number,
   end: number,
   maxSamples = 72,
-  measurePreparation?: <T>(callback: () => T) => T
+  measurePreparation?: <T>(callback: () => T) => T,
+  postingCostsEquivalent = false
 ): ChartPoint[] {
   if (transactions.length === 0 || end <= start) return [];
   // The measured boundary includes all cost/posting indexes and all 72 sample
@@ -390,20 +391,14 @@ export function buildPostingChartSeries(
     const times = Array.from({ length: samples }, (_, sample) =>
       sample === samples - 1 ? end : Math.round(start + (span * sample) / (samples - 1))
     );
-    const costSeries = postings.some((posting) => posting.role === 'opening_balance')
+    const costSeries = postingCostsEquivalent || postings.some((posting) => posting.role === 'opening_balance')
       ? buildDisplayCostSamples({ transactions, postings, preparedPostings }, times)
       : buildCustodyCostSamples(transactions, times);
     if (preparedPostings.source !== postings) {
       throw new Error('prepared posting aggregation source mismatch');
     }
-    const representativeByAsset = new Map<string, DerivedPosting>();
-    for (const posting of postings) {
-      if (!representativeByAsset.has(posting.assetKey)) {
-        representativeByAsset.set(posting.assetKey, posting);
-      }
-    }
     const historyByAsset = new Map<string, PricePoint[] | null>();
-    for (const [assetKey, posting] of representativeByAsset) {
+    for (const [assetKey, posting] of preparedPostings.representativeByAsset) {
       historyByAsset.set(assetKey, priceHistoryFor(postingDisplayIdentity(posting), index));
     }
     const accountBalances = new Map<string, number>();

@@ -87,4 +87,22 @@ describe('posting indexes', () => {
     postings[0].signedQuantity = 7;
     expect([...postingBalances(postings).values()]).toEqual([6.5]);
   });
+
+  it('prepares final scope balances with opening resets in the existing ordered pass', () => {
+    const postings = derivePostings(
+      [transaction('before', 10, 5), transaction('after', 30, 2)],
+      {
+        exchangeConnections: [],
+        openingBalances: [{
+          id: 'opening', logicalKey: 'opening', scopeId: 'manual', accountClass: 'manual',
+          assetKey: 'asset:BTC', asset: 'BTC', absoluteQuantity: 3, effectiveAt: 20,
+          provenance: 'user_confirmed', createdAt: 1, updatedAt: 1
+        }]
+      }
+    );
+    const prepared = preparePostingAggregation(postings);
+    expect(prepared.scopes.get('manual\u001fmanual')).toMatchObject({ postingCount: 3 });
+    expect(prepared.scopes.get('manual\u001fmanual')?.balances.get('asset:BTC')).toBe(5);
+    expect(prepared.representativeByAsset.get('asset:BTC')?.transactionId).toBe('before');
+  });
 });
