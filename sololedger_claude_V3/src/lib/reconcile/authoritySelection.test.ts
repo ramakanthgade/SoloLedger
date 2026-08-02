@@ -3,6 +3,7 @@ import {
   binanceSpotEndpointProof,
   selectAuthoritySnapshot,
   type AuthorityAssetRow,
+  type AuthoritySelectionMetrics,
   type AuthoritySnapshotRow,
   type EndpointProof
 } from './authoritySelection';
@@ -94,10 +95,98 @@ describe('selectAuthoritySnapshot', () => {
     }).authorityStatus).toBe('non_comparable');
   });
 
+  it('rejects duplicate snapshot identity instead of revisiting one asset generation', () => {
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot',
+      snapshots: [snapshot(), snapshot({ generation: 2 })], assets: [asset()], now: NOW
+    }).authorityStatus).toBe('non_comparable');
+  });
+
   it('uses injected clocks: API/RPC expire at 24h', () => {
     expect(selectAuthoritySnapshot({
       scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot({ asOf: NOW - 86_400_001 })], assets: [asset()], now: NOW
     }).authorityStatus).toBe('stale');
+  });
+
+  it('rejects API/RPC evidence after comparisonAt and permits exact or past evidence', () => {
+    const cases = [
+      {
+        scopeId: 'exchange:c1', accountClass: 'spot' as const,
+        authority: snapshot({ asOf: NOW - 1_000 }), row: asset()
+      },
+      {
+        scopeId: 'wallet:evm:1:0xabc', accountClass: 'wallet' as const,
+        authority: snapshot({
+          scopeId: 'wallet:evm:1:0xabc', authorityKind: 'rpc', authorityClass: 'wallet_balance',
+          accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+          endpointProof: {
+            authorityKind: 'rpc', provider: 'alchemy', operation: 'balance', parametersClass: 'wallet',
+            requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true
+          }
+        }),
+        row: asset({ scopeId: 'wallet:evm:1:0xabc', accountClass: 'wallet' })
+      }
+    ];
+    for (const testCase of cases) {
+      expect(selectAuthoritySnapshot({
+        scopeId: testCase.scopeId, accountClass: testCase.accountClass,
+        snapshots: [testCase.authority], assets: [testCase.row], now: NOW,
+        comparisonAt: testCase.authority.asOf! - 1
+      }).authorityStatus).toBe('non_comparable');
+      expect(selectAuthoritySnapshot({
+        scopeId: testCase.scopeId, accountClass: testCase.accountClass,
+        snapshots: [testCase.authority], assets: [testCase.row], now: NOW,
+        comparisonAt: testCase.authority.asOf
+      }).authorityStatus).toBe('current');
+      expect(selectAuthoritySnapshot({
+        scopeId: testCase.scopeId, accountClass: testCase.accountClass,
+        snapshots: [testCase.authority], assets: [testCase.row], now: NOW,
+        comparisonAt: testCase.authority.asOf! + 1
+      }).authorityStatus).toBe('current');
+    }
+  });
+
+  it('selects eligible past evidence instead of a newer generation from after comparisonAt', () => {
+    const past = snapshot({ snapshotId: 'past', generation: 1, asOf: NOW - 2 * 86_400_000 });
+    const future = snapshot({ snapshotId: 'future', generation: 2, asOf: NOW });
+    const selected = selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [future, past],
+      assets: [
+        asset({ id: 'future-row', snapshotId: 'future', generation: 2, quantity: 0 }),
+        asset({ id: 'past-row', snapshotId: 'past', generation: 1, quantity: 2 })
+      ],
+      now: NOW, comparisonAt: NOW - 86_400_000
+    });
+    expect(selected).toMatchObject({
+      authorityStatus: 'stale', selectedSnapshot: { snapshotId: 'past' },
+      selectedAssets: [expect.objectContaining({ quantity: 2 })]
+    });
+  });
+
+  it('indexes many authority generations once and selects with linear work', () => {
+    const count = 5_000;
+    const snapshots = Array.from({ length: count }, (_, index) => snapshot({
+      snapshotId: `snapshot-${index}`, generation: index + 1, capturedAt: NOW + index
+    }));
+    const assets = snapshots.map((row, index) => asset({
+      id: `asset-${index}`, snapshotId: row.snapshotId, generation: row.generation, quantity: index
+    }));
+    const metrics: AuthoritySelectionMetrics = {
+      assetIndexVisits: 0, snapshotVisits: 0, coherenceAssetVisits: 0, candidateComparisons: 0
+    };
+
+    const selected = selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots, assets, now: NOW, metrics
+    });
+
+    expect(selected.selectedSnapshot?.generation).toBe(count);
+    expect(selected.selectedAssets[0].quantity).toBe(count - 1);
+    expect(metrics).toEqual({
+      assetIndexVisits: count,
+      snapshotVisits: count,
+      coherenceAssetVisits: count,
+      candidateComparisons: count - 1
+    });
   });
 
   it.each([

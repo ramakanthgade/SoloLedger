@@ -1,13 +1,24 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import {
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent
+} from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
-import type { CsvImportRow, ExchangeBalanceRow, ExchangeConnectionRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
-import type { TaxSettings } from '@/types/transaction';
+import type { CsvImportRow, ExchangeBalanceRow, ExchangeConnectionRow, PriceCacheRow } from '@/lib/storage/db';
+import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
+import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
+import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
+import type { TaxSettings, Transaction } from '@/types/transaction';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
-import { buildPortfolioHoldings, portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
@@ -30,16 +41,16 @@ import {
 import {
   DASHBOARD_PERIODS,
   allocationSlices,
-  buildChartSeries,
+  buildPostingChartSeries,
   buildInsights,
   buildPriceIndex,
   formatRelativeTime,
   latestSyncAt,
   moneyStrip,
   periodRange,
-  reconcileHoldings,
+  projectionSourceBreakdown,
+  sourceVisualShares,
   shortDateLabel,
-  sourceBreakdown,
   valueHoldings,
   type DashboardPeriod,
   type Insight,
@@ -65,6 +76,18 @@ import {
 
 const PRIVACY_KEY = 'sololedger_dashboard_privacy';
 const DISMISS_KEY = 'sololedger_dashboard_dismissed_insights';
+
+function chronologicallyOrderedProjectionTransactions(
+  transactions: Transaction[]
+): Transaction[] {
+  for (let index = 1; index < transactions.length; index++) {
+    if (transactions[index - 1].timestamp > transactions[index].timestamp) {
+      // Stable sort preserves source order when timestamps are equal.
+      return [...transactions].sort((left, right) => left.timestamp - right.timestamp);
+    }
+  }
+  return transactions;
+}
 
 function readDismissed(): string[] {
   try {
@@ -96,6 +119,45 @@ function sliceColor(asset: string, index: number): string {
 }
 
 const eyebrowClass = 'text-[0.6875rem] font-bold uppercase tracking-wider text-low';
+
+function usePostPaintDeferredValue<T>(
+  value: T,
+  adoptImmediately: (current: T, next: T) => boolean
+): T {
+  const [deferredValue, setDeferredValue] = useState(value);
+  const shouldAdoptImmediately = adoptImmediately(deferredValue, value);
+
+  useEffect(() => {
+    if (Object.is(value, deferredValue)) return;
+    if (shouldAdoptImmediately) {
+      setDeferredValue(value);
+      return;
+    }
+    let secondFrame = 0;
+    let deferredTimer = 0;
+    const firstFrame = requestAnimationFrame(() => {
+      secondFrame = requestAnimationFrame(() => {
+        // Start the historical render in the next task so it cannot consume
+        // the urgent commit's two-frame paint tail.
+        deferredTimer = window.setTimeout(() => {
+          startTransition(() => setDeferredValue(value));
+        }, 0);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame) cancelAnimationFrame(secondFrame);
+      if (deferredTimer) window.clearTimeout(deferredTimer);
+    };
+  }, [deferredValue, shouldAdoptImmediately, value]);
+
+  return shouldAdoptImmediately ? value : deferredValue;
+}
+
+const adoptFirstLedgerRevision = (
+  current: { transactionCount: number },
+  next: { transactionCount: number }
+) => current.transactionCount === 0 && next.transactionCount > 0;
 
 function HeroStat({
   label,
@@ -176,18 +238,17 @@ function HoldingExpansion({
   holding,
   slices,
   currency,
-  mask,
-  totalQty
+  mask
 }: {
   holding: ValuedHolding;
-  slices: ReturnType<typeof sourceBreakdown>;
+  slices: ReturnType<typeof projectionSourceBreakdown>;
   currency: string;
   mask: boolean;
-  totalQty: number;
 }) {
   const fm = (v: number) => (mask ? '••••' : formatCurrency(v, currency));
   const valueOf = (qty: number) =>
     holding.priceNow != null ? qty * holding.priceNow : qty * holding.avgCost;
+  const visualSlices = sourceVisualShares(slices);
   return (
     <div className="border-t border-hi/10 bg-elev-1/70 px-5 py-4" data-testid="holding-expansion">
       <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
@@ -227,48 +288,63 @@ function HoldingExpansion({
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
         <p className={eyebrowClass}>Where it lives</p>
         <p className="text-[0.6875rem] text-faint" data-testid="holding-qty-caption">
-          {holding.qtySource === 'on-chain'
-            ? 'Reconciled to on-chain balance'
-            : holding.qtySource === 'exchange-api'
-              ? 'Reconciled to exchange balance'
-              : 'Estimated from transaction history'}
+          {holding.sourceVerification?.every((slice) => slice.verificationStatus === 'verified_authority')
+            ? 'Verified from current source balances'
+            : holding.sourceVerification?.some((slice) => slice.verificationStatus === 'verified_authority')
+              ? 'Partly verified · remaining quantities use ledger postings'
+              : 'Unverified · estimated from ledger postings'}
         </p>
       </div>
+      {visualSlices.some((slice) => slice.isDeficit) && (
+        <p className="mt-1 text-[0.6875rem] text-faint" data-testid="source-allocation-caption">
+          Shares use absolute quantities; deficits are negative source balances.
+        </p>
+      )}
 
       {slices.length === 0 ? (
         <p className="mt-2 text-xs text-low">No source breakdown available for this asset yet.</p>
       ) : (
         <>
           <div className="mt-2.5 flex h-2.5 overflow-hidden rounded-full bg-elev-3" aria-hidden="true">
-            {slices.map((s, i) => (
+            {visualSlices.map((s, i) => (
               <span
                 key={s.key}
-                className="block h-full"
+                className={cn('block h-full', s.isDeficit && 'opacity-55')}
+                data-testid={`source-allocation-bar-${s.key}`}
                 style={{
-                  width: `${Math.max(2, (s.qty / totalQty) * 100)}%`,
-                  backgroundColor: FALLBACK_SLICE_COLORS[i % FALLBACK_SLICE_COLORS.length]
+                  width: `${s.sharePct}%`,
+                  backgroundColor: s.isDeficit
+                    ? '#B91C1C'
+                    : FALLBACK_SLICE_COLORS[i % FALLBACK_SLICE_COLORS.length]
                 }}
               />
             ))}
           </div>
           <div className="mt-3 space-y-2">
-            {slices.map((s) => {
-              const pct = totalQty > 0 ? (s.qty / totalQty) * 100 : 0;
+            {visualSlices.map((s) => {
               return (
                 <div
                   key={s.key}
-                  className="flex items-center gap-3 rounded-xl border border-hi/10 bg-elev-2 px-3.5 py-2.5"
+                  data-testid={`source-allocation-${s.key}`}
+                  className={cn(
+                    'flex items-center gap-3 rounded-xl border bg-elev-2 px-3.5 py-2.5',
+                    s.isDeficit ? 'border-loss/30' : 'border-hi/10'
+                  )}
                 >
                   <BrandIcon id={s.iconId} size={24} fallback={s.name} />
                   <span className="min-w-0 truncate text-xs font-bold text-hi">{s.name}</span>
+                  {s.isDeficit && <Badge tone="loss">Deficit</Badge>}
                   <span className="text-xs tabular-figures text-low">
                     {mask ? '••••' : `${formatCompactAmount(s.qty)} ${holding.asset}`}
                   </span>
-                  <span className="ml-auto text-xs font-bold tabular-figures text-hi">
+                  <span className={cn(
+                    'ml-auto text-xs font-bold tabular-figures',
+                    s.isDeficit ? 'text-loss' : 'text-hi'
+                  )}>
                     {fm(valueOf(s.qty))}
                   </span>
                   <Badge tone="neutral" className="tabular-figures">
-                    {pct < 0.1 ? '<0.1%' : `${pct.toFixed(0)}%`}
+                    {s.sharePct < 0.1 ? '<0.1%' : `${s.sharePct.toFixed(1)}%`}
                   </Badge>
                 </div>
               );
@@ -332,18 +408,28 @@ const NO_WALLETS: Awaited<ReturnType<typeof getLookupAddresses>> = [];
 const NO_CSV_IMPORTS: CsvImportRow[] = [];
 const NO_EXCHANGE_CONNS: ExchangeConnectionRow[] = [];
 const NO_PRICE_ROWS: PriceCacheRow[] = [];
-const NO_BALANCE_ROWS: WalletBalanceRow[] = [];
 const NO_EXCHANGE_BALANCES: ExchangeBalanceRow[] = [];
+const NO_AUTHORITY_SNAPSHOTS: AuthoritySnapshotRow[] = [];
+const NO_AUTHORITY_ASSETS: AuthorityAssetRow[] = [];
+const NO_SOURCE_COVERAGE: SourceCoverageRow[] = [];
+const NO_OPENING_BALANCES: OpeningBalanceRow[] = [];
 
-export function DashboardTab() {
+export interface DashboardInstrumentation {
+  measureChartPreparation?: <T>(callback: () => T) => T;
+}
+
+export function DashboardTab({ instrumentation }: { instrumentation?: DashboardInstrumentation } = {}) {
   const { goToImport, goTo } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []);
   const wallets = useLiveQuery(() => getLookupAddresses(), []) ?? NO_WALLETS;
   const csvImports = useLiveQuery(() => db.csvImports.toArray(), []) ?? NO_CSV_IMPORTS;
   const exchangeConns = useLiveQuery(() => db.exchangeConnections.toArray(), []) ?? NO_EXCHANGE_CONNS;
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
-  const balanceRows = useLiveQuery(() => db.walletBalances.toArray(), []) ?? NO_BALANCE_ROWS;
   const exchangeBalanceRows = useLiveQuery(() => db.exchangeBalances.toArray(), []) ?? NO_EXCHANGE_BALANCES;
+  const authoritySnapshots = useLiveQuery(() => db.authoritySnapshots.toArray(), []) ?? NO_AUTHORITY_SNAPSHOTS;
+  const authorityAssets = useLiveQuery(() => db.authorityAssets.toArray(), []) ?? NO_AUTHORITY_ASSETS;
+  const sourceCoverageRows = useLiveQuery(() => db.sourceCoverage.toArray(), []) ?? NO_SOURCE_COVERAGE;
+  const openingBalances = useLiveQuery(() => db.openingBalances.toArray(), []) ?? NO_OPENING_BALANCES;
   const activeExchangeBalanceRows = useMemo(() => {
     const activeIds = new Set(exchangeConns.map((connection) => connection.id));
     return exchangeBalanceRows.filter((row) => activeIds.has(row.connectionId));
@@ -361,13 +447,13 @@ export function DashboardTab() {
   const [dismissed, setDismissed] = useState<string[]>(readDismissed);
   const [expanded, setExpanded] = useState<string | null>(null);
   const pillRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  // Stable "now" per mount so memoized series don't rebuild on every render.
-  const [nowMs] = useState(() => Date.now());
-  const [spotRefreshTick, setSpotRefreshTick] = useState(0);
+  // The existing price tick also carries projection time forward every five minutes.
+  const [spotRefreshTick, setSpotRefreshTick] = useState(Date.now);
+  const nowMs = spotRefreshTick;
   const autoPriceAttemptedRef = useRef(false);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setSpotRefreshTick((tick) => tick + 1), 5 * 60_000);
+    const timer = window.setInterval(() => setSpotRefreshTick(Date.now()), 5 * 60_000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -382,11 +468,40 @@ export function DashboardTab() {
     () => (transactions ?? []).filter((t) => !t.isSpam),
     [transactions]
   );
-
-  const holdings = useMemo(
-    () => buildPortfolioHoldings(nonSpamTxs, csvImports),
-    [nonSpamTxs, csvImports]
+  // Keep the shared consumer array untouched because FIFO and custody charts
+  // preserve input order for same-timestamp rows.
+  const projectionTransactions = useMemo(
+    () => chronologicallyOrderedProjectionTransactions(nonSpamTxs),
+    [nonSpamTxs]
   );
+
+  const projection = useMemo(() => buildHoldingsProjection({
+    transactions: projectionTransactions,
+    exchangeConnections: exchangeConns,
+    openingBalances,
+    snapshots: authoritySnapshots,
+    assets: authorityAssets,
+    coverage: sourceCoverageRows,
+    now: nowMs
+  }), [
+    projectionTransactions, exchangeConns, openingBalances, authoritySnapshots, authorityAssets,
+    sourceCoverageRows, nowMs
+  ]);
+  const holdings = projection.holdings;
+  const ledgerRevision = useMemo(() => ({
+    transactionCount: transactions?.length ?? 0,
+    transactions: nonSpamTxs,
+    projection
+  }), [transactions?.length, nonSpamTxs, projection]);
+  // Holdings and valued totals stay in the urgent render. Historical chart,
+  // FIFO/tax, and ledger insights may reuse the previous committed revision
+  // while React schedules their more expensive follow-up render.
+  const deferredLedgerRevision = usePostPaintDeferredValue(
+    ledgerRevision,
+    adoptFirstLedgerRevision
+  );
+  const deferredTransactions = deferredLedgerRevision.transactions;
+  const deferredProjection = deferredLedgerRevision.projection;
 
   useEffect(() => {
     let cancelled = false;
@@ -413,23 +528,19 @@ export function DashboardTab() {
       .map((row) => row.optionsCoverageThrough ?? Number.POSITIVE_INFINITY)
   );
   const optionsBalanceUnavailable = unavailableThrough > includedThrough;
-  // Round 4: reconcile tx-history holdings against stored authority balances —
-  // a drained wallet/exchange reports its true (often zero) balance instead of
-  // a phantom left by missed spends. `adjustments` feeds the data-health rail.
-  // Exchange slices are anchored to the persisted fetchBalance rows (db v10).
-  const reconciliation = useMemo(
-    () => reconcileHoldings(holdings, nonSpamTxs, balanceRows, activeExchangeBalanceRows),
-    [holdings, nonSpamTxs, balanceRows, activeExchangeBalanceRows]
-  );
+  const adjustedDownCount = projection.slices.filter((slice) =>
+    slice.verificationStatus === 'verified_authority' &&
+    slice.authorityQuantity != null && slice.authorityQuantity < slice.postingQuantity - 1e-9
+  ).length;
   const priceIndex = useMemo(
     () => buildPriceIndex(priceRows, currency),
     [priceRows, currency, spotRefreshTick]
   );
   const valued = useMemo(
-    () => valueHoldings(reconciliation.holdings, priceIndex).sort(
+    () => valueHoldings(holdings, priceIndex).sort(
       (a, b) => (b.valueNow ?? b.costBasis) - (a.valueNow ?? a.costBasis) || Math.abs(b.amount) - Math.abs(a.amount)
     ),
-    [reconciliation.holdings, priceIndex]
+    [holdings, priceIndex]
   );
 
   const totalCost = valued.reduce((s, h) => s + h.costBasis, 0);
@@ -443,14 +554,14 @@ export function DashboardTab() {
   );
 
   const disposals = useMemo(
-    () => (transactions ? calculateCostBasis(transactions, { method: 'FIFO' }).disposals : []),
-    [transactions]
+    () => calculateCostBasis(deferredTransactions, { method: 'FIFO' }).disposals,
+    [deferredTransactions]
   );
 
   const firstTxMs = useMemo(() => {
-    if (nonSpamTxs.length === 0) return null;
-    return Math.min(...nonSpamTxs.map((t) => t.timestamp));
-  }, [nonSpamTxs]);
+    if (deferredTransactions.length === 0) return null;
+    return Math.min(...deferredTransactions.map((t) => t.timestamp));
+  }, [deferredTransactions]);
 
   const range = useMemo(
     () => periodRange(period, jurisdiction, nowMs, firstTxMs),
@@ -458,13 +569,23 @@ export function DashboardTab() {
   );
 
   const series = useMemo(
-    () => buildChartSeries(nonSpamTxs, priceIndex, range.start, range.end),
-    [nonSpamTxs, priceIndex, range]
+    () => buildPostingChartSeries(
+      deferredTransactions,
+      deferredProjection.postings,
+      deferredProjection.preparedPostings,
+      priceIndex,
+      range.start,
+      range.end,
+      72,
+      instrumentation?.measureChartPreparation,
+      deferredProjection.chartPostingCostsEquivalent
+    ),
+    [deferredTransactions, deferredProjection, instrumentation, priceIndex, range]
   );
 
   const strip = useMemo(
-    () => moneyStrip(nonSpamTxs, disposals, range.start, range.end),
-    [nonSpamTxs, disposals, range]
+    () => moneyStrip(deferredTransactions, disposals, range.start, range.end),
+    [deferredTransactions, disposals, range]
   );
 
   const startValue = useMemo(() => {
@@ -472,6 +593,10 @@ export function DashboardTab() {
     const first = series[0];
     return marketMode ? (first.market ?? first.cost) : first.cost;
   }, [series, marketMode]);
+  const chartEndpoint = series.length > 0 ? series[series.length - 1] : null;
+  const btcQuantity = holdings
+    .filter((holding) => holding.asset.toUpperCase() === 'BTC')
+    .reduce((sum, holding) => sum + holding.amount, 0);
   const changeAbs = netWorth - startValue;
   const changePct = startValue > 0 ? (changeAbs / startValue) * 100 : null;
 
@@ -487,14 +612,17 @@ export function DashboardTab() {
 
   // Internal custody movements do not need historical tax cost basis.
   const needsPriceCount = useMemo(
-    () => nonSpamTxs.filter((t) => !t.isInternalTransfer && t.fiatValue == null).length,
-    [nonSpamTxs]
+    () => deferredTransactions.filter((t) => !t.isInternalTransfer && t.fiatValue == null).length,
+    [deferredTransactions]
   );
-  const needsReviewCount = useMemo(() => countNeedsReview(nonSpamTxs), [nonSpamTxs]);
+  const needsReviewCount = useMemo(
+    () => countNeedsReview(deferredTransactions),
+    [deferredTransactions]
+  );
 
   const tds = useMemo(
-    () => aggregateTds(transactions ?? [], currentFy, jurisdiction),
-    [transactions, currentFy, jurisdiction]
+    () => aggregateTds(deferredTransactions, currentFy, jurisdiction),
+    [deferredTransactions, currentFy, jurisdiction]
   );
 
   const biggestLoss = useMemo(() => {
@@ -540,6 +668,27 @@ export function DashboardTab() {
 
   const alloc = useMemo(() => allocationSlices(valued, marketMode), [valued, marketMode]);
   const allocTotal = alloc.reduce((s, a) => s + a.value, 0);
+  const chartContent = useMemo(() => (
+    <>
+      {series.length > 1 ? (
+        <NetWorthChart
+          points={series}
+          mode={marketMode ? 'market' : 'cost'}
+          currency={currency}
+          mask={hideBalances}
+        />
+      ) : (
+        <p className="px-3 py-8 text-sm text-low">
+          Chart appears once your transactions span more than a moment.
+        </p>
+      )}
+      {!marketMode && series.length > 1 && (
+        <p className="px-3 pb-1 text-[0.6875rem] text-low" data-testid="chart-honesty-note">
+          Cost basis over time — enable live prices for market value.
+        </p>
+      )}
+    </>
+  ), [currency, hideBalances, marketMode, series]);
 
   const fm = (v: number) => (hideBalances ? '••••' : formatCurrency(v, currency));
   const fmtPct = (v: number) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(1)}%`;
@@ -612,7 +761,7 @@ export function DashboardTab() {
     );
   }
 
-  if (transactions.length === 0) {
+  if (transactions.length === 0 && openingBalances.length === 0) {
     return <DashboardEmpty onAddSource={goToImport} />;
   }
 
@@ -626,7 +775,9 @@ export function DashboardTab() {
     const value = h.valueNow ?? h.costBasis;
     const sharePct = netWorth > 0 ? (value / netWorth) * 100 : null;
     const slices = isOpen
-      ? sourceBreakdown(nonSpamTxs, h, wallets, balanceRows, csvImports, activeExchangeBalanceRows)
+      ? projectionSourceBreakdown(
+        h.sourceVerification ?? [], wallets, exchangeConns, csvImports, nonSpamTxs
+      )
       : [];
     const toggle = () => setExpanded(isOpen ? null : key);
 
@@ -742,7 +893,6 @@ export function DashboardTab() {
               slices={slices}
               currency={currency}
               mask={hideBalances}
-              totalQty={slices.reduce((sum, s) => sum + s.qty, 0) || h.amount}
             />
           </div>
         )}
@@ -752,6 +902,28 @@ export function DashboardTab() {
 
   return (
     <div className="space-y-5">
+      <output
+        className="sr-only"
+        data-testid="dashboard-holdings-generation"
+        data-transaction-count={ledgerRevision.transactionCount}
+        data-projection-revision={`${ledgerRevision.transactionCount}:${projection.postings.length}`}
+        data-net-worth={netWorth}
+        data-btc-quantity={btcQuantity}
+      >
+        Holdings projection revision {ledgerRevision.transactionCount}
+      </output>
+      <output
+        className="sr-only"
+        data-testid="dashboard-deferred-generation"
+        data-transaction-count={deferredLedgerRevision.transactionCount}
+        data-chart-point-count={series.length}
+        data-chart-end-t={chartEndpoint?.t ?? 'none'}
+        data-chart-end-cost={chartEndpoint?.cost ?? 'none'}
+        data-chart-end-market={chartEndpoint?.market ?? 'none'}
+        data-chart-revision={`${deferredLedgerRevision.transactionCount}:${series.length}:${chartEndpoint?.t ?? 'none'}:${chartEndpoint?.cost ?? 'none'}`}
+      >
+        Historical models revision {deferredLedgerRevision.transactionCount}
+      </output>
       {/* 1 — page head */}
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
@@ -889,23 +1061,7 @@ export function DashboardTab() {
         </div>
 
         <div className="mt-4 px-3 sm:px-5">
-          {series.length > 1 ? (
-            <NetWorthChart
-              points={series}
-              mode={marketMode ? 'market' : 'cost'}
-              currency={currency}
-              mask={hideBalances}
-            />
-          ) : (
-            <p className="px-3 py-8 text-sm text-low">
-              Chart appears once your transactions span more than a moment.
-            </p>
-          )}
-          {!marketMode && series.length > 1 && (
-            <p className="px-3 pb-1 text-[0.6875rem] text-low" data-testid="chart-honesty-note">
-              Cost basis over time — enable live prices for market value.
-            </p>
-          )}
+          {chartContent}
         </div>
 
         {/* 3 — money strip */}
@@ -1176,13 +1332,13 @@ export function DashboardTab() {
                   {sync != null ? `Last sync ${formatRelativeTime(sync, nowMs)}` : 'Not synced yet'}
                 </span>
               </li>
-              {reconciliation.adjustedDownCount > 0 && (
+              {adjustedDownCount > 0 && (
                 <li className="flex items-center gap-2.5" data-testid="reconciled-down-line">
                   <RefreshCw className="h-4 w-4 shrink-0 text-primary" aria-hidden="true" />
                   <span className="text-hi">
-                    {reconciliation.adjustedDownCount} asset
-                    {reconciliation.adjustedDownCount === 1 ? '' : 's'} adjusted to on-chain
-                    balance{reconciliation.adjustedDownCount === 1 ? '' : 's'}
+                    {adjustedDownCount} asset
+                    {adjustedDownCount === 1 ? '' : 's'} adjusted to current source
+                    balance{adjustedDownCount === 1 ? '' : 's'}
                   </span>
                 </li>
               )}
@@ -1215,7 +1371,7 @@ export function DashboardTab() {
               <DataHealthRecon
                 connections={exchangeConns}
                 exchangeBalances={activeExchangeBalanceRows}
-                transactions={nonSpamTxs}
+                transactions={deferredTransactions}
               />
             </ul>
           </section>

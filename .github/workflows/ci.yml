@@ -44,6 +44,12 @@ jobs:
       - name: Ledger performance gate
         run: npm run test:ledger-perf
 
+      - name: Install Chromium for holdings performance gate
+        run: npx playwright install --with-deps chromium
+
+      - name: Chromium holdings performance gate
+        run: npm run test:holdings-browser-perf
+
       - name: Build
         run: npm run build
 

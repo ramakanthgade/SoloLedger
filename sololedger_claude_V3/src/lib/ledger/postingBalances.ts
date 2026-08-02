@@ -29,6 +29,25 @@ export interface PreparedPostingAggregation {
   readonly source: readonly DerivedPosting[];
   readonly ordered: readonly DerivedPosting[];
   readonly keys: readonly PostingBalanceKey[];
+  /** Final no-cutoff balances and labels, grouped for authority consumers. */
+  readonly scopes: ReadonlyMap<string, PreparedPostingScopeAggregation>;
+  /** First posting per canonical asset, for stable historical display identity. */
+  readonly representativeByAsset: ReadonlyMap<string, DerivedPosting>;
+}
+
+export interface PreparedPostingScopeAggregation {
+  readonly scopeId: string;
+  readonly accountClass: DerivedPosting['accountClass'];
+  readonly postingCount: number;
+  readonly balances: ReadonlyMap<string, number>;
+  readonly assets: ReadonlyMap<string, string>;
+}
+
+export function postingScopeAggregationKey(
+  scopeId: string,
+  accountClass: DerivedPosting['accountClass']
+): string {
+  return `${scopeId}\u001f${accountClass}`;
 }
 
 function cachedPostingBalanceKey(
@@ -65,15 +84,48 @@ function orderedPostings(postings: readonly DerivedPosting[]): readonly DerivedP
 }
 
 export function preparePostingAggregation(
-  postings: readonly DerivedPosting[]
+  postings: readonly DerivedPosting[],
+  alreadyOrdered = false
 ): PreparedPostingAggregation {
-  const ordered = orderedPostings(postings);
+  const ordered = alreadyOrdered ? postings : orderedPostings(postings);
   const keyCache: PostingKeyCache = new Map();
   const keys = new Array<PostingBalanceKey>(ordered.length);
+  const mutableScopes = new Map<string, {
+    scopeId: string;
+    accountClass: DerivedPosting['accountClass'];
+    postingCount: number;
+    balances: Map<string, number>;
+    assets: Map<string, string>;
+  }>();
+  const representativeByAsset = new Map<string, DerivedPosting>();
   for (let index = 0; index < ordered.length; index++) {
-    keys[index] = cachedPostingBalanceKey(ordered[index], keyCache);
+    const posting = ordered[index];
+    if (!representativeByAsset.has(posting.assetKey)) {
+      representativeByAsset.set(posting.assetKey, posting);
+    }
+    keys[index] = cachedPostingBalanceKey(posting, keyCache);
+    const scopeKey = postingScopeAggregationKey(posting.accountScopeId, posting.accountClass);
+    let scope = mutableScopes.get(scopeKey);
+    if (scope == null) {
+      scope = {
+        scopeId: posting.accountScopeId,
+        accountClass: posting.accountClass,
+        postingCount: 0,
+        balances: new Map(),
+        assets: new Map()
+      };
+      mutableScopes.set(scopeKey, scope);
+    }
+    scope.postingCount += 1;
+    scope.assets.set(posting.assetKey, posting.asset);
+    scope.balances.set(
+      posting.assetKey,
+      posting.role === 'opening_balance'
+        ? posting.signedQuantity
+        : (scope.balances.get(posting.assetKey) ?? 0) + posting.signedQuantity
+    );
   }
-  return { source: postings, ordered, keys };
+  return { source: postings, ordered, keys, scopes: mutableScopes, representativeByAsset };
 }
 
 function aggregationSnapshot(

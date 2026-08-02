@@ -94,6 +94,12 @@ export interface OpeningBalanceRow {
 export interface DerivedPostingContext {
   exchangeConnections: ExchangeSourceIdentity[];
   openingBalances?: OpeningBalanceRow[];
+  /** Optional single-pass consumer used only when callers prove input ordering. */
+  onTransactionPostings?: (
+    transaction: Transaction,
+    postings: readonly DerivedPosting[],
+    start: number
+  ) => void;
 }
 
 export type AccountScopeResolution =
@@ -498,7 +504,9 @@ export function derivePostings(
     (connection) => connection.exchange === 'binance' && connection.deletedAt == null
   );
   for (const transaction of transactions) {
+    const start = sourcePostings.length;
     appendTransactionPostings(sourcePostings, transaction, context, connectionById, liveBinanceConnections);
+    context.onTransactionPostings?.(transaction, sourcePostings, start);
   }
   const openings = context.openingBalances ?? [];
   if (openings.length === 0) return sortPostingsIfNeeded(sourcePostings);

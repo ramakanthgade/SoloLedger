@@ -78,6 +78,9 @@ export interface DcaApplyResult {
   skipReasons: string[];
 }
 
+/** Testable work counter for candidate rows examined inside grouped searches. */
+export interface DcaDetectionMetrics { candidateVisits: number }
+
 const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 /** Deposits may land a few seconds/minutes after the first fill (clock skew). */
 const ORDERING_SKEW_MS = 5 * 60 * 1000;
@@ -85,6 +88,98 @@ const ORDERING_SKEW_MS = 5 * 60 * 1000;
 const MIN_TOTAL_FILLS = 2;
 
 const NATIVE_CHAIN_ASSETS = new Set(['SOL', 'ETH', 'BTC', 'BNB', 'MATIC', 'AVAX', 'ADA', 'DOT']);
+
+function lowerTimestampBound(rows: Transaction[], timestamp: number): number {
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (rows[middle].timestamp < timestamp) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function upperTimestampBound(rows: Transaction[], timestamp: number): number {
+  let low = 0;
+  let high = rows.length;
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2);
+    if (rows[middle].timestamp <= timestamp) low = middle + 1;
+    else high = middle;
+  }
+  return low;
+}
+
+function sortByTimestamp(rows: Transaction[]): void {
+  rows.sort((a, b) => a.timestamp - b.timestamp);
+}
+
+interface DepositWindowIndex {
+  rows: Transaction[];
+  leafCount: number;
+  /** Latest two rows with distinct assets for each timestamp segment. */
+  candidates: number[][];
+}
+
+function mergeDepositCandidates(
+  rows: Transaction[],
+  left: number[],
+  right: number[]
+): number[] {
+  const merged = [...left, ...right].sort((a, b) => b - a);
+  const assets = new Set<string>();
+  const result: number[] = [];
+  for (const index of merged) {
+    const asset = rows[index].asset.toUpperCase();
+    if (assets.has(asset)) continue;
+    assets.add(asset);
+    result.push(index);
+    if (result.length === 2) break;
+  }
+  return result;
+}
+
+function buildDepositWindowIndex(rows: Transaction[]): DepositWindowIndex {
+  sortByTimestamp(rows);
+  let leafCount = 1;
+  while (leafCount < rows.length) leafCount *= 2;
+  const candidates = Array.from({ length: leafCount * 2 }, () => [] as number[]);
+  for (let index = 0; index < rows.length; index++) candidates[leafCount + index] = [index];
+  for (let index = leafCount - 1; index > 0; index--) {
+    candidates[index] = mergeDepositCandidates(
+      rows,
+      candidates[index * 2],
+      candidates[index * 2 + 1]
+    );
+  }
+  return { rows, leafCount, candidates };
+}
+
+function nearestDepositInWindow(
+  index: DepositWindowIndex | undefined,
+  start: number,
+  end: number,
+  excludedAsset: string,
+  metrics?: DcaDetectionMetrics
+): Transaction | undefined {
+  if (!index) return undefined;
+  const { rows, leafCount, candidates } = index;
+  let left = lowerTimestampBound(rows, start) + leafCount;
+  let right = upperTimestampBound(rows, end) + leafCount;
+  let nearest: number[] = [];
+  while (left < right) {
+    if (left % 2 === 1) nearest = mergeDepositCandidates(rows, nearest, candidates[left++]);
+    if (right % 2 === 1) nearest = mergeDepositCandidates(rows, nearest, candidates[--right]);
+    left = Math.floor(left / 2);
+    right = Math.floor(right / 2);
+  }
+  for (const candidate of nearest) {
+    if (metrics) metrics.candidateVisits++;
+    if (rows[candidate].asset.toUpperCase() !== excludedAsset) return rows[candidate];
+  }
+  return undefined;
+}
 
 function dcaScopeKey(
   chain: string | null | undefined,
@@ -210,8 +305,13 @@ async function getInputConsumedInFillTx(
  * (i.e. there is something to do). Both callers (importJob, ReviewTab) pass
  * the full, unfiltered transaction set.
  */
-export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
+export function detectDcaGroups(
+  transactions: Transaction[],
+  metrics?: DcaDetectionMetrics
+): DcaGroup[] {
   const groups: DcaGroup[] = [];
+  const groupedDepositIds = new Set<string>();
+  const groupedScopeKeys = new Set<string>();
   const pool = transactions.filter((t) => !t.isSpam);
   const ownWallets = new Set(
     pool.flatMap((t) =>
@@ -257,6 +357,8 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     const outputAsset = [...outputAssets][0];
     if (ownWallets.has(canonicalWalletIdentity(chain, vaultAddress))) continue;
 
+    let fillStart = 0;
+    let fillEnd = 0;
     for (let i = 0; i < sortedOuts.length; i++) {
       const deposit = sortedOuts[i];
       const inputAsset = deposit.asset;
@@ -265,13 +367,22 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
       // Windows stay disjoint even with the skew: a fill inside the next
       // deposit's skew band belongs to THAT deposit, never to both.
       const windowEnd = (sortedOuts[i + 1]?.timestamp ?? Number.POSITIVE_INFINITY) - ORDERING_SKEW_MS;
-      const fillTxs = sortedIns.filter(
-        (f) => f.timestamp >= deposit.timestamp - ORDERING_SKEW_MS && f.timestamp < windowEnd
-      );
+      const windowStart = deposit.timestamp - ORDERING_SKEW_MS;
+      while (fillStart < sortedIns.length && sortedIns[fillStart].timestamp < windowStart) {
+        fillStart++;
+        if (metrics) metrics.candidateVisits++;
+      }
+      if (fillEnd < fillStart) fillEnd = fillStart;
+      while (fillEnd < sortedIns.length && sortedIns[fillEnd].timestamp < windowEnd) {
+        fillEnd++;
+        if (metrics) metrics.candidateVisits++;
+      }
+      const fillTxs = sortedIns.slice(fillStart, fillEnd);
+      fillStart = fillEnd;
       const unclassifiedFillTxs = fillTxs.filter(isUnclassifiedFillRow);
       // Nothing to do for this deposit (all fills already classified).
       if (unclassifiedFillTxs.length < 1) continue;
-      if (groups.some((g) => g.depositTx.id === deposit.id)) continue;
+      if (groupedDepositIds.has(deposit.id)) continue;
 
       groups.push({
         vaultAddress,
@@ -288,6 +399,9 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
         inputContractAddress: deposit.contractAddress,
         chain: deposit.chain ?? fillTxs[0]?.chain
       });
+      groupedDepositIds.add(deposit.id);
+      const scopeKey = dcaScopeKey(chain, deposit.walletAddress, vaultAddress);
+      if (scopeKey) groupedScopeKeys.add(scopeKey);
     }
   }
 
@@ -324,40 +438,41 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     fillOnlyGroups.get(key)!.fillTxs.push(t);
   }
 
+  const depositRowsByWallet = new Map<string, Transaction[]>();
+  for (const transaction of pool) {
+    if (transaction.type !== 'transfer_out' || !transaction.chain || !transaction.walletAddress ||
+        !transaction.source.startsWith('rpc:') ||
+        (transaction.isInternalTransfer && !isClassifiedDcaDeposit(transaction))) continue;
+    if (NATIVE_CHAIN_ASSETS.has(transaction.asset.toUpperCase())) continue;
+    const walletIdentity = canonicalWalletIdentity(transaction.chain, transaction.walletAddress);
+    const deposits = depositRowsByWallet.get(walletIdentity) ?? [];
+    deposits.push(transaction);
+    depositRowsByWallet.set(walletIdentity, deposits);
+  }
+  const depositsByWallet = new Map<string, DepositWindowIndex>();
+  for (const [walletIdentity, deposits] of depositRowsByWallet) {
+    depositsByWallet.set(walletIdentity, buildDepositWindowIndex(deposits));
+  }
+
   for (const { chain, vaultAddr, walletAddr, outputAsset, fillTxs } of fillOnlyGroups.values()) {
     // Recurrence: single fills are indistinguishable from ordinary transfers.
     if (fillTxs.length < MIN_TOTAL_FILLS) continue;
     const unclassifiedFillTxs = fillTxs.filter((t) => t.type === 'transfer_in');
     if (unclassifiedFillTxs.length < 1) continue;
     const scopeKey = dcaScopeKey(chain, walletAddr, vaultAddr)!;
-    if (groups.some((g) => dcaScopeKey(g.chain, g.depositTx.walletAddress, g.vaultAddress) === scopeKey)) continue;
+    if (groupedScopeKeys.has(scopeKey)) continue;
 
     const firstFillTime = Math.min(...fillTxs.map((f) => f.timestamp));
-    const depositCandidates = pool.filter(
-      (t) =>
-        t.type === 'transfer_out' &&
-        !NATIVE_CHAIN_ASSETS.has(t.asset.toUpperCase()) &&
-        t.asset.toUpperCase() !== outputAsset.toUpperCase() &&
-        !!t.chain &&
-        !!t.walletAddress &&
-        canonicalWalletIdentity(t.chain, t.walletAddress) === canonicalWalletIdentity(chain, walletAddr) &&
-        t.source.startsWith('rpc:') &&
-        (!t.isInternalTransfer || isClassifiedDcaDeposit(t)) &&
-        // ORDERING: the deposit funds the fills — it cannot come AFTER them
-        // (small skew tolerated). The old ±1-week window paired a receive with
-        // an unrelated send 70 minutes later and fabricated a trade.
-        t.timestamp <= firstFillTime + ORDERING_SKEW_MS &&
-        firstFillTime - t.timestamp <= ONE_WEEK_MS + ORDERING_SKEW_MS
+    const walletIdentity = canonicalWalletIdentity(chain, walletAddr);
+    const depositTx = nearestDepositInWindow(
+      depositsByWallet.get(walletIdentity),
+      firstFillTime - ONE_WEEK_MS - ORDERING_SKEW_MS,
+      firstFillTime + ORDERING_SKEW_MS,
+      outputAsset.toUpperCase(),
+      metrics
     );
 
-    if (depositCandidates.length === 0) continue;
-
-    const depositTx = depositCandidates.reduce((best, candidate) => {
-      // Nearest deposit BEFORE the first fill wins.
-      const bestDiff = firstFillTime - best.timestamp;
-      const candDiff = firstFillTime - candidate.timestamp;
-      return candDiff <= bestDiff ? candidate : best;
-    });
+    if (!depositTx) continue;
 
     groups.push({
       vaultAddress: vaultAddr,
@@ -375,9 +490,29 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
       inputContractAddress: depositTx.contractAddress,
       chain: depositTx.chain ?? fillTxs[0]?.chain
     });
+    groupedDepositIds.add(depositTx.id);
+    groupedScopeKeys.add(scopeKey);
   }
 
   // Pass 3: Helius SWAP imports — deposit + trade fills (no vault on fill counterparty)
+  const tradesByWalletAndAsset = new Map<string, Map<string, Transaction[]>>();
+  for (const transaction of pool) {
+    if (transaction.type !== 'trade' || !transaction.counterAsset || !transaction.chain ||
+        !transaction.walletAddress || !transaction.source.startsWith('rpc:')) continue;
+    if (NATIVE_CHAIN_ASSETS.has(transaction.counterAsset.toUpperCase())) continue;
+    const walletIdentity = canonicalWalletIdentity(transaction.chain, transaction.walletAddress);
+    const inputAsset = transaction.asset.toUpperCase();
+    const byAsset = tradesByWalletAndAsset.get(walletIdentity) ?? new Map<string, Transaction[]>();
+    const trades = byAsset.get(inputAsset) ?? [];
+    trades.push(transaction);
+    byAsset.set(inputAsset, trades);
+    tradesByWalletAndAsset.set(walletIdentity, byAsset);
+  }
+  for (const byAsset of tradesByWalletAndAsset.values()) {
+    for (const trades of byAsset.values()) sortByTimestamp(trades);
+  }
+
+  const depositsByWalletAndAsset = new Map<string, Map<string, Transaction[]>>();
   for (const deposit of pool) {
     if (
       deposit.type !== 'transfer_out' ||
@@ -393,27 +528,57 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     }
     const scopeKey = dcaScopeKey(deposit.chain, deposit.walletAddress, deposit.counterpartyAddress);
     if (!scopeKey || !deposit.chain || !deposit.walletAddress) continue;
-    if (groups.some((g) => g.depositTx.id === deposit.id)) continue;
+    if (groupedDepositIds.has(deposit.id)) continue;
     if (ownWallets.has(canonicalWalletIdentity(deposit.chain, deposit.counterpartyAddress))) continue;
 
     const walletIdentity = canonicalWalletIdentity(deposit.chain, deposit.walletAddress);
     const inputAsset = deposit.asset.toUpperCase();
+    const byAsset = depositsByWalletAndAsset.get(walletIdentity) ?? new Map<string, Transaction[]>();
+    const deposits = byAsset.get(inputAsset) ?? [];
+    deposits.push(deposit);
+    byAsset.set(inputAsset, deposits);
+    depositsByWalletAndAsset.set(walletIdentity, byAsset);
+  }
+  for (const byAsset of depositsByWalletAndAsset.values()) {
+    for (const deposits of byAsset.values()) sortByTimestamp(deposits);
+  }
 
-    const tradeFills = pool.filter(
-      (t) =>
-        t.type === 'trade' &&
-        t.counterAsset &&
-        !NATIVE_CHAIN_ASSETS.has(t.counterAsset.toUpperCase()) &&
-        (t.asset.toUpperCase() === inputAsset || isClassifiedDcaFill(t)) &&
-        !!t.chain &&
-        !!t.walletAddress &&
-        canonicalWalletIdentity(t.chain, t.walletAddress) === walletIdentity &&
-        t.source.startsWith('rpc:') &&
-        t.timestamp >= deposit.timestamp - ORDERING_SKEW_MS &&
-        t.timestamp <= deposit.timestamp + ONE_WEEK_MS
-    );
+  // Assign every fill to at most one deposit: the latest deposit whose
+  // seven-day window contains it (a deposit up to the ordering skew after the
+  // fill is allowed). This is the same nearest/chronological rule as Pass 1,
+  // but avoids enumerating the same dense window once per deposit. Classified
+  // fills stay in their input-asset bucket and count toward recurrence.
+  const fillsByDeposit = new Map<string, Transaction[]>();
+  for (const [walletIdentity, tradesByAsset] of tradesByWalletAndAsset) {
+    const depositsByAsset = depositsByWalletAndAsset.get(walletIdentity);
+    if (!depositsByAsset) continue;
+    for (const [inputAsset, trades] of tradesByAsset) {
+      const deposits = depositsByAsset.get(inputAsset) ?? [];
+      for (const trade of trades) {
+        if (metrics) metrics.candidateVisits++;
+        const depositIndex = upperTimestampBound(
+          deposits,
+          trade.timestamp + ORDERING_SKEW_MS
+        ) - 1;
+        if (depositIndex < 0) continue;
+        const deposit = deposits[depositIndex];
+        if (trade.timestamp > deposit.timestamp + ONE_WEEK_MS) continue;
+        const fills = fillsByDeposit.get(deposit.id) ?? [];
+        fills.push(trade);
+        fillsByDeposit.set(deposit.id, fills);
+      }
+    }
+  }
 
-    if (tradeFills.length < MIN_TOTAL_FILLS) continue;
+  // Preserve deterministic deposit order from the input while fills remain
+  // chronological from the sorted per-wallet/input sweep above.
+  for (const deposit of pool) {
+    const tradeFills = fillsByDeposit.get(deposit.id);
+    if (!tradeFills || tradeFills.length < MIN_TOTAL_FILLS) continue;
+    const scopeKey = dcaScopeKey(deposit.chain, deposit.walletAddress, deposit.counterpartyAddress);
+    if (!scopeKey) continue;
+    const inputAsset = deposit.asset.toUpperCase();
+
     const unclassifiedFillTxs = tradeFills.filter(isUnclassifiedFillRow);
     if (unclassifiedFillTxs.length < 1) continue;
 
@@ -423,7 +588,7 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
     if (outputAsset === inputAsset) continue;
 
     groups.push({
-      vaultAddress: deposit.counterpartyAddress,
+      vaultAddress: deposit.counterpartyAddress!,
       depositTx: deposit,
       fillTxs: tradeFills.sort((a, b) => a.timestamp - b.timestamp),
       unclassifiedFillTxs,
@@ -434,6 +599,8 @@ export function detectDcaGroups(transactions: Transaction[]): DcaGroup[] {
       inputContractAddress: deposit.contractAddress,
       chain: deposit.chain ?? tradeFills[0]?.chain
     });
+    groupedDepositIds.add(deposit.id);
+    groupedScopeKeys.add(scopeKey);
   }
 
   return groups;

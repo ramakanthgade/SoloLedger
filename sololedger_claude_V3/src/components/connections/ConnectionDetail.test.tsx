@@ -1,10 +1,16 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import type { ExchangeConnectionView, ExchangeSyncJobState } from '@/lib/exchangeSync';
 import type { ImportJobState } from '@/lib/importJob';
 import type { Transaction } from '@/types/transaction';
 import type { ConnectionCardData } from './connectionModel';
 import { binanceOptionsParser } from '@/lib/parsers/binanceOptions';
+import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
+import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
+import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
+import { assetKey } from '@/lib/ledger/assetKey';
+import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
 
 /**
  * ConnectionDetail — the per-connection portfolio view (round 4, issue 6).
@@ -31,6 +37,16 @@ const mocks = vi.hoisted(() => ({
       id: string; connectionId: string; exchange: string; asset: string;
       amount: number; asOf: number; source: 'exchange_api'
     }[]
+  },
+  authoritySnapshots: { current: [] as AuthoritySnapshotRow[] },
+  authorityAssets: { current: [] as AuthorityAssetRow[] },
+  sourceCoverage: { current: [] as SourceCoverageRow[] },
+  openingBalances: { current: [] as OpeningBalanceRow[] },
+  exchangeConnections: {
+    current: [
+      { id: 'exc_1', exchange: 'binance', lastSyncAt: undefined as number | undefined },
+      { id: 'exc_2', exchange: 'binance', lastSyncAt: undefined as number | undefined }
+    ]
   },
   lookupRows: {
     current: [] as {
@@ -97,8 +113,16 @@ vi.mock('@/lib/storage/db', () => ({
       })
     },
     lookupAddresses: { toArray: () => mocks.lookupRows.current },
-    exchangeConnections: { get: (id: string) =>
-      mocks.exchangeRow.current?.id === id ? mocks.exchangeRow.current : undefined }
+    authoritySnapshots: { toArray: () => mocks.authoritySnapshots.current },
+    authorityAssets: { toArray: () => mocks.authorityAssets.current },
+    sourceCoverage: { toArray: () => mocks.sourceCoverage.current },
+    openingBalances: { toArray: () => mocks.openingBalances.current },
+    exchangeConnections: {
+      toArray: () => mocks.exchangeConnections.current,
+      get: (id: string) => mocks.exchangeRow.current?.id === id
+        ? mocks.exchangeRow.current
+        : mocks.exchangeConnections.current.find((row) => row.id === id)
+    }
   },
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
   transactionSourceKey: (t: { sourceRef?: string; walletAddress?: string }) =>
@@ -272,12 +296,117 @@ function bal(
   } as (typeof mocks.balanceRows.current)[number];
 }
 
+function coverage(
+  scopeId: string,
+  sourceIdentityId: string,
+  accountClass: 'wallet' | 'spot' | 'manual' | 'options',
+  kind: 'rpc' | 'api' | 'csv',
+  snapshotId: string,
+  asOf: number,
+  over: Partial<SourceCoverageRow> = {}
+): SourceCoverageRow {
+  return {
+    id: `coverage:${snapshotId}`,
+    generation: 1,
+    scopeId,
+    sourceIdentityId,
+    evidenceId: `evidence:${snapshotId}`,
+    kind,
+    accountClasses: [accountClass],
+    endpoints: ['balance'],
+    authoritySnapshotId: snapshotId,
+    authorityAsOf: asOf,
+    requestedHistoryStart: 0,
+    requestedHistoryEnd: asOf,
+    observedHistoryStart: 0,
+    observedHistoryEnd: asOf,
+    startedAt: 0,
+    completedAt: asOf,
+    status: 'complete',
+    paginationExhausted: true,
+    endpointOutcomes: [{
+      endpoint: 'balance', accountClass, required: true, status: 'complete',
+      requestedStart: 0, requestedEnd: asOf, observedStart: 0, observedEnd: asOf,
+      paginationRequired: true, paginationExhausted: true
+    }],
+    ...over
+  };
+}
+
+function authority(
+  scopeId: string,
+  sourceIdentityId: string,
+  accountClass: 'wallet' | 'spot' | 'manual' | 'options',
+  kind: 'rpc' | 'api' | 'csv',
+  asOf: number,
+  balances: Array<{ asset: string; quantity: number; chain?: string; contractAddress?: string }>,
+  over: Partial<AuthoritySnapshotRow> = {}
+) {
+  const snapshotId = `snapshot:${sourceIdentityId}:${accountClass}:${mocks.authoritySnapshots.current.length}`;
+  const snapshot: AuthoritySnapshotRow = {
+    snapshotId,
+    generation: 1,
+    scopeId,
+    authorityKind: kind,
+    authorityClass: kind === 'rpc' ? 'wallet_balance' : kind === 'api' ? 'exchange_balance' : 'journal_final_balance',
+    accountClass,
+    coveredAccountClasses: [accountClass],
+    asOf,
+    capturedAt: asOf,
+    sourceIdentityId,
+    endpointProof: {
+      authorityKind: kind,
+      provider: kind === 'rpc' ? 'chain' : kind === 'api' ? 'binance' : 'csv',
+      operation: 'balance',
+      parametersClass: accountClass,
+      requestedAccountClasses: [accountClass],
+      provenAccountClasses: [accountClass],
+      exhaustiveBalances: true
+    },
+    status: 'complete',
+    ...over
+  };
+  mocks.authoritySnapshots.current.push(snapshot);
+  mocks.authorityAssets.current.push(...balances.map((balance, index) => ({
+    id: `${snapshotId}:${index}`,
+    snapshotId,
+    generation: snapshot.generation,
+    scopeId,
+    accountClass,
+    assetKey: assetKey(balance),
+    asset: balance.asset,
+    quantity: balance.quantity
+  })));
+  mocks.sourceCoverage.current.push(coverage(
+    scopeId, sourceIdentityId, accountClass, kind, snapshotId, asOf,
+    kind === 'csv' ? {
+      parserId: 'coinbase_csv', supportedParser: true, declaredCompleteHistory: true,
+      requiredSheets: ['balance'], presentSheets: ['balance'],
+      recognizedCount: 1, parsedCount: 1, dedupedCount: 0, skippedCount: 0,
+      excludedCount: 0, failedCount: 0,
+      endpointOutcomes: [{
+        endpoint: 'balance', parserId: 'coinbase_csv', accountClass,
+        required: true, status: 'complete'
+      }]
+    } : {}
+  ));
+  return snapshot;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.txs.current = [];
   mocks.priceRows.current = [];
   mocks.balanceRows.current = [];
   mocks.exchangeBalanceRows.current = [];
+  mocks.authoritySnapshots.current = [];
+  mocks.authorityAssets.current = [];
+  mocks.sourceCoverage.current = [];
+  mocks.openingBalances.current = [];
+  mocks.exchangeConnections.current = [
+    { id: 'exc_1', exchange: 'binance', lastSyncAt: undefined },
+    { id: 'exc_2', exchange: 'binance', lastSyncAt: undefined }
+  ];
   mocks.lookupRows.current = [];
   mocks.exchangeRow.current = undefined;
   mocks.user.current = null;
@@ -292,7 +421,7 @@ describe('ConnectionDetail — wallet kind', () => {
       makeTx({ id: 't1', type: 'transfer_in', asset: 'BTC', amount: 0.5, chain: 'bitcoin', walletAddress: 'bc1qaaa1111111111111', source: 'rpc:blockstream' }),
       makeTx({ id: 't2', type: 'transfer_out', asset: 'BTC', amount: 0.1, chain: 'bitcoin', walletAddress: 'bc1qaaa1111111111111', source: 'rpc:blockstream' }),
       makeTx({ id: 't3', type: 'trade', asset: 'ETH', amount: 0.2, counterAsset: 'BTC', counterAmount: 0.01, fiatValue: 500, chain: 'bitcoin', walletAddress: 'bc1qbbb2222222222222', source: 'rpc:blockstream' }),
-      makeTx({ id: 't4', type: 'transfer_in', asset: 'DOGE', amount: 100, fiatValue: 1000, chain: 'bitcoin', walletAddress: 'bc1qaaa1111111111111', source: 'rpc:blockstream' }),
+      makeTx({ id: 't4', type: 'transfer_in', asset: 'DOGE', amount: 100, fiatValue: 1000, chain: 'bitcoin', contractAddress: 'doge-ordinal', walletAddress: 'bc1qaaa1111111111111', source: 'rpc:blockstream' }),
       // Belongs to a DIFFERENT wallet — must not count.
       makeTx({ id: 't5', type: 'transfer_in', asset: 'BTC', amount: 9, chain: 'bitcoin', walletAddress: 'bc1qzzz9999999999999', source: 'rpc:blockstream' })
     ];
@@ -309,6 +438,21 @@ describe('ConnectionDetail — wallet kind', () => {
       // A confirmed zero is data — the drained-address proof.
       bal('bc1qbbb2222222222222', 'BTC', 0)
     ];
+    const asOf = Date.now();
+    authority(
+      `wallet:${canonicalWalletIdentity('bitcoin', 'bc1qaaa1111111111111')}`,
+      'bitcoin:bc1qaaa1111111111111', 'wallet', 'rpc', asOf,
+      [
+        { asset: 'BTC', quantity: 0.5, chain: 'bitcoin' },
+        { asset: 'DOGE', quantity: 100, chain: 'bitcoin', contractAddress: 'doge-ordinal' },
+        { asset: 'XYZ', quantity: 5, chain: 'bitcoin', contractAddress: 'xyz-ordinal' }
+      ]
+    );
+    authority(
+      `wallet:${canonicalWalletIdentity('bitcoin', 'bc1qbbb2222222222222')}`,
+      'bitcoin:bc1qbbb2222222222222', 'wallet', 'rpc', asOf,
+      [{ asset: 'BTC', quantity: 0, chain: 'bitcoin' }]
+    );
     // The live lookupAddresses table (D-4) — mirrors the card's own rows.
     mocks.lookupRows.current = [
       {
@@ -364,6 +508,12 @@ describe('ConnectionDetail — wallet kind', () => {
 
     // Total = 45,00,000 + 1,000 (+ 0) — XYZ excluded with a note.
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹45,01,000.00');
+    expect(screen.getByTestId('detail-wallet-authority-status')).toHaveTextContent(
+      'on-chain balances as of'
+    );
+    expect(screen.queryByTestId('detail-wallet-fallback-status')).not.toBeInTheDocument();
+    expect(screen.getAllByTestId('detail-wallet-row-source').every((row) =>
+      row.textContent?.includes('Current on-chain balance'))).toBe(true);
     expect(screen.getByText('1 asset without a price — not in the total.')).toBeInTheDocument();
     expect(
       screen.getByText('Some assets valued at cost — no live price cached yet.')
@@ -374,6 +524,11 @@ describe('ConnectionDetail — wallet kind', () => {
     mocks.balanceRows.current = [bal('bc1qaaa1111111111111', 'BTC', 0.5)];
     mocks.priceRows.current = [{ key: 'sym:BTC:25-07-2026:INR', price: 9_000_000, fetchedAt: 1 }];
     mocks.priceRows.current.push({ key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: Date.now() });
+    authority(
+      `wallet:${canonicalWalletIdentity('bitcoin', 'bc1qaaa1111111111111')}`,
+      'bitcoin:bc1qaaa1111111111111', 'wallet', 'rpc', Date.now(),
+      [{ asset: 'BTC', quantity: 0.5, chain: 'bitcoin' }]
+    );
     const card = walletCard({
       walletRows: [
         {
@@ -390,6 +545,47 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(screen.getAllByTestId('detail-address-group')).toHaveLength(1);
     expect(screen.queryByText('bc1qaa…1111')).not.toBeInTheDocument();
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹45,00,000.00');
+  });
+
+  it('labels stale wallet authority as ledger-estimated without changing fallback quantity', () => {
+    const address = 'bc1qaaa1111111111111';
+    mocks.txs.current = [
+      makeTx({ id: 'wallet-in', type: 'transfer_in', asset: 'BTC', amount: 0.5, chain: 'bitcoin', walletAddress: address, source: 'rpc:blockstream' }),
+      makeTx({ id: 'wallet-out', type: 'transfer_out', asset: 'BTC', amount: 0.1, chain: 'bitcoin', walletAddress: address, source: 'rpc:blockstream' })
+    ];
+    authority(
+      `wallet:${canonicalWalletIdentity('bitcoin', address)}`,
+      `bitcoin:${address}`, 'wallet', 'rpc', Date.now() - 24 * 60 * 60_000 - 1,
+      [{ asset: 'BTC', quantity: 9, chain: 'bitcoin' }]
+    );
+    const card = walletCard({
+      walletRows: [{
+        id: `bitcoin:${address}`, chain: 'bitcoin', address,
+        label: 'Ledger vault', lastSyncedAt: Date.now(), txCount: 2
+      }]
+    });
+
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+
+    const btcRow = screen.getByText('BTC').closest('li')!;
+    expect(btcRow).toHaveTextContent('0.4');
+    expect(btcRow).not.toHaveTextContent('9');
+    expect(within(btcRow).getByTestId('detail-wallet-row-source')).toHaveTextContent(
+      'Estimated from ledger postings'
+    );
+    expect(within(btcRow).getByTestId('detail-wallet-row-source')).toHaveTextContent(
+      'stale snapshot'
+    );
+    expect(screen.getByTestId('detail-wallet-fallback-status')).toHaveTextContent(
+      'Includes quantities estimated from ledger postings.'
+    );
+    expect(screen.getByTestId('detail-wallet-fallback-status')).toHaveTextContent(
+      'Reason: source balance is stale.'
+    );
+    expect(screen.getByTestId('detail-wallet-fallback-status')).toHaveTextContent(
+      'stale evidence and is not used as the quantity source'
+    );
+    expect(screen.queryByText(/on-chain balances as of/)).not.toBeInTheDocument();
   });
 
   it('empty state invites a sync when no balances are stored', async () => {
@@ -434,6 +630,16 @@ describe('ConnectionDetail — wallet kind', () => {
       bal(upper, 'SOL', 1, { id: `solana:${upper}:SOL`, chain: 'solana' }),
       bal(lower, 'SOL', 9, { id: `solana:${lower}:SOL`, chain: 'solana' })
     ];
+    authority(
+      `wallet:${canonicalWalletIdentity('solana', upper)}`,
+      `solana:${upper}`, 'wallet', 'rpc', Date.now(),
+      [{ asset: 'SOL', quantity: 1, chain: 'solana' }]
+    );
+    authority(
+      `wallet:${canonicalWalletIdentity('solana', lower)}`,
+      `solana:${lower}`, 'wallet', 'rpc', Date.now(),
+      [{ asset: 'SOL', quantity: 9, chain: 'solana' }]
+    );
     mocks.lookupRows.current = [
       { id: `solana:${upper}`, chain: 'solana', address: upper, lastSyncedAt: upperSyncedAt },
       { id: `solana:${lower}`, chain: 'solana', address: lower, lastSyncedAt: Date.now() }
@@ -454,6 +660,35 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(screen.getByText('SOL').closest('li')).toHaveTextContent('1');
     expect(screen.getByText('SOL').closest('li')).not.toHaveTextContent('9');
     expect(screen.getByTestId('detail-lastsync-line')).not.toHaveTextContent('just now');
+  });
+
+  it('keeps native and contract-token quantities separate in the projected wallet scope', () => {
+    const address = 'ContractWallet11111111111111111111111111';
+    mocks.txs.current = [
+      makeTx({ id: 'native', type: 'transfer_in', asset: 'SOL', amount: 2, chain: 'solana', walletAddress: address, source: 'rpc:helius' }),
+      makeTx({ id: 'token', type: 'transfer_in', asset: 'TOKEN', amount: 4, chain: 'solana', walletAddress: address, contractAddress: 'MintCaseSensitive', source: 'rpc:helius' })
+    ];
+    authority(
+      `wallet:${canonicalWalletIdentity('solana', address)}`,
+      `solana:${address}`, 'wallet', 'rpc', Date.now(),
+      [
+        { asset: 'SOL', quantity: 3, chain: 'solana' },
+        { asset: 'TOKEN', quantity: 7, chain: 'solana', contractAddress: 'MintCaseSensitive' }
+      ]
+    );
+    const card = walletCard({
+      id: `wallet:solana:${address}`,
+      title: 'Contract wallet',
+      walletRows: [{
+        id: `solana:${address}`, chain: 'solana', address,
+        label: 'Contract wallet', lastSyncedAt: Date.now(), txCount: 2
+      }]
+    });
+
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+
+    expect(screen.getByText('SOL').closest('li')).toHaveTextContent('3');
+    expect(screen.getByText('TOKEN').closest('li')).toHaveTextContent('7');
   });
 });
 
@@ -479,6 +714,11 @@ describe('ConnectionDetail — exchange kind', () => {
       { id: 'exc_1:USDC', connectionId: 'exc_1', exchange: 'binance', asset: 'USDC', amount: 7, asOf: Date.now(), source: 'exchange_api' },
       { id: 'exc_2:SOL', connectionId: 'exc_2', exchange: 'binance', asset: 'SOL', amount: 99, asOf: Date.now(), source: 'exchange_api' }
     ];
+    authority('exchange:exc_1', 'exc_1', 'spot', 'api', Date.now(), [
+      { asset: 'BTC', quantity: 0.12 },
+      { asset: 'ETH', quantity: 0.4 },
+      { asset: 'USDC', quantity: 7 }
+    ]);
     render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
 
     expect(screen.getByRole('heading', { name: 'Binance · Main' })).toBeInTheDocument();
@@ -507,6 +747,48 @@ describe('ConnectionDetail — exchange kind', () => {
 
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹10,82,000.00');
     expect(screen.getByText('Valued at cost where no live price is cached.')).toBeInTheDocument();
+  });
+
+  it('falls back to projected postings when exchange authority is stale', () => {
+    mocks.txs.current = [
+      makeTx({ id: 'stale-buy', type: 'buy', asset: 'BTC', amount: 0.3, fiatValue: 30_000, importBatchId: 'exc_1' })
+    ];
+    authority(
+      'exchange:exc_1', 'exc_1', 'spot', 'api', Date.now() - 24 * 60 * 60_000 - 1,
+      [{ asset: 'BTC', quantity: 9 }]
+    );
+
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
+
+    const btcRow = screen.getByText('BTC').closest('li')!;
+    expect(btcRow).toHaveTextContent('0.3');
+    expect(btcRow).not.toHaveTextContent('9');
+  });
+
+  it('falls back to projected postings when authority becomes stale while mounted', () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(now);
+    mocks.txs.current = [
+      makeTx({ id: 'aging-buy', timestamp: now - 1_000, type: 'buy', asset: 'BTC', amount: 0.3,
+        fiatValue: 30_000, importBatchId: 'exc_1' })
+    ];
+    authority('exchange:exc_1', 'exc_1', 'spot', 'api', now, [
+      { asset: 'BTC', quantity: 9 }
+    ]);
+    const view = render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
+    try {
+      expect(screen.getByText('BTC').closest('li')).toHaveTextContent('9');
+
+      act(() => vi.advanceTimersByTime(24 * 60 * 60_000 + 5 * 60_000));
+
+      const btcRow = screen.getByText('BTC').closest('li')!;
+      expect(btcRow).toHaveTextContent('0.3');
+      expect(btcRow).not.toHaveTextContent('9');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
   });
 
   it('paid hosted plan shows the auto-sync line; Sync now runs the engine sync', async () => {
@@ -593,6 +875,54 @@ describe('ConnectionDetail — file kind', () => {
     const chips = screen.getByTestId('detail-count-chips');
     expect(within(chips).getByText('2 transactions')).toBeInTheDocument();
     expect(within(chips).getByText('2 trades')).toBeInTheDocument();
+  });
+
+  it('uses the CSV authority timestamp when there are no transactions to supply a comparison instant', () => {
+    const asOf = day(2026, 5, 20);
+    authority(
+      'file:csv_1:manual', 'csv_1', 'manual', 'csv', asOf,
+      [{ asset: 'USDT', quantity: 12 }]
+    );
+
+    render(<ConnectionDetail card={fileCard()} onBack={() => {}} />);
+
+    expect(screen.getByText('USDT').closest('li')).toHaveTextContent('12');
+  });
+
+  it('follows a uniquely associated Binance CSV projection scope and agrees with the shared adapter', () => {
+    const now = Date.now();
+    mocks.exchangeConnections.current = [
+      { id: 'exc_1', exchange: 'binance', lastSyncAt: undefined }
+    ];
+    mocks.txs.current = [
+      makeTx({
+        id: 'binance-file', type: 'transfer_in', asset: 'BTC', amount: 1,
+        timestamp: now, source: 'binance', importBatchId: 'csv_1', parserAccountClass: 'spot'
+      })
+    ];
+    authority('exchange:exc_1', 'exc_1', 'spot', 'api', now, [
+      { asset: 'BTC', quantity: 3 }
+    ]);
+    const expected = buildHoldingsProjection({
+      transactions: mocks.txs.current,
+      exchangeConnections: [{ id: 'exc_1', exchange: 'binance' }],
+      openingBalances: [],
+      snapshots: mocks.authoritySnapshots.current,
+      assets: mocks.authorityAssets.current,
+      coverage: mocks.sourceCoverage.current,
+      now,
+      scopeFilter: { scopeIds: ['exchange:exc_1'] }
+    });
+
+    render(<ConnectionDetail card={fileCard({
+      iconId: 'binance', iconFallback: 'Binance', title: 'Binance file',
+      csvImport: { ...fileCard().csvImport!, parserId: 'binance' }
+    })} onBack={() => {}} />);
+
+    expect(expected.holdings[0].quantity).toBe(3);
+    expect(screen.getByText('BTC').closest('li')).toHaveTextContent(
+      expected.holdings[0].quantity.toString()
+    );
   });
 
   it('shows the persisted Options authority-required disclosure', () => {

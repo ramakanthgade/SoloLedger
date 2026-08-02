@@ -8,7 +8,7 @@
  *    on fill trades (still used for capital-gains elsewhere).
  */
 import type { Transaction } from '@/types/transaction';
-import { detectDcaGroups } from '@/lib/rpc/dcaDetection';
+import { detectDcaGroups, type DcaDetectionMetrics } from '@/lib/rpc/dcaDetection';
 
 export interface PortfolioDcaContext {
   /** Deposit rows — tax-internal escrow; still reduce portfolio holdings. */
@@ -23,8 +23,11 @@ export function isDcaEscrowDeposit(t: Transaction, depositIds?: Set<string>): bo
   return notes.includes('dca deposit') || notes.includes('non-taxable escrow');
 }
 
-export function buildPortfolioDcaContext(txs: Transaction[]): PortfolioDcaContext {
-  const groups = detectDcaGroups(txs.filter((t) => !t.isSpam));
+export function buildPortfolioDcaContext(
+  txs: Transaction[],
+  metrics?: DcaDetectionMetrics
+): PortfolioDcaContext {
+  const groups = detectDcaGroups(txs.filter((t) => !t.isSpam), metrics);
   const internalDepositIds = new Set<string>();
   const dcaFillIds = new Set<string>();
 

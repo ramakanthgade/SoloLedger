@@ -22,7 +22,7 @@ const SEED = vi.hoisted(() => {
     fiatCurrency: string; fiatValue?: number; source: string; chain?: string;
     walletAddress?: string; flags: string[]; isInternalTransfer: boolean;
     importBatchId?: string; sourceRef?: string; category?: string;
-    raw?: Record<string, unknown>; instrumentClass?: string;
+    raw?: Record<string, unknown>; instrumentClass?: string; parserAccountClass?: string;
   }> = [
     // FY 2025-26 (IN) — excluded from the default FY-period money strip.
     {
@@ -57,7 +57,27 @@ const SEED = vi.hoisted(() => {
     exchangeBalanceRows: [] as {
       id: string; connectionId: string; exchange: string; asset: string;
       amount: number; asOf: number; source: 'exchange_api'
-    }[]
+    }[],
+    authoritySnapshots: [] as unknown[],
+    authorityAssets: [] as unknown[],
+    sourceCoverage: [] as unknown[],
+    openingBalances: [] as unknown[]
+  };
+});
+
+const COST_BASIS_INPUTS = vi.hoisted(() => [] as string[][]);
+
+vi.mock('@/lib/costBasis/engine', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/costBasis/engine')>();
+  return {
+    ...actual,
+    calculateCostBasis: (transactions: Parameters<typeof actual.calculateCostBasis>[0], ...args: unknown[]) => {
+      COST_BASIS_INPUTS.push(transactions.map((transaction) => transaction.id));
+      return actual.calculateCostBasis(
+        transactions,
+        ...args as Parameters<typeof actual.calculateCostBasis> extends [unknown, ...infer Rest] ? Rest : never
+      );
+    }
   };
 });
 
@@ -73,7 +93,11 @@ vi.mock('@/lib/storage/db', () => ({
     exchangeConnections: { toArray: () => SEED.exchangeConns },
     priceCache: { toArray: () => SEED.priceRows },
     walletBalances: { toArray: () => SEED.balanceRows },
-    exchangeBalances: { toArray: () => SEED.exchangeBalanceRows }
+    exchangeBalances: { toArray: () => SEED.exchangeBalanceRows },
+    authoritySnapshots: { toArray: () => SEED.authoritySnapshots },
+    authorityAssets: { toArray: () => SEED.authorityAssets },
+    sourceCoverage: { toArray: () => SEED.sourceCoverage },
+    openingBalances: { toArray: () => SEED.openingBalances }
   },
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
   getLookupAddresses: () => SEED.wallets,
@@ -87,14 +111,17 @@ vi.mock('@/lib/saas/effectiveSettings', () => ({
   })
 }));
 
-import { DashboardTab } from './DashboardTab';
+import { DashboardTab, type DashboardInstrumentation } from './DashboardTab';
 
-async function renderTab(nav?: { goToImport: () => void; goTo: (id: string) => void }) {
+async function renderTab(
+  nav?: { goToImport: () => void; goTo: (id: string) => void },
+  instrumentation?: DashboardInstrumentation
+) {
   let utils!: ReturnType<typeof render>;
   await act(async () => {
     utils = render(
       <TabNavProvider value={nav ?? { goToImport: () => {}, goTo: () => {} }}>
-        <DashboardTab />
+        <DashboardTab instrumentation={instrumentation} />
       </TabNavProvider>
     );
     // Flush the mocked getSettings().then state update inside act().
@@ -103,22 +130,109 @@ async function renderTab(nav?: { goToImport: () => void; goTo: (id: string) => v
   return utils;
 }
 
+function seedExchangeAuthority(
+  asset: string,
+  quantity: number,
+  options: { asOf?: number; exhaustiveBalances?: boolean } = {}
+) {
+  const now = Date.now();
+  SEED.authoritySnapshots.push({
+    snapshotId: `snapshot-${asset}`, generation: 1, scopeId: 'exchange:conn1',
+    authorityKind: 'api', authorityClass: 'exchange_balance', accountClass: 'spot',
+    coveredAccountClasses: ['spot'], asOf: options.asOf ?? now, capturedAt: now,
+    sourceIdentityId: 'conn1', status: 'complete', endpointProof: {
+      authorityKind: 'api', provider: 'binance', operation: 'balance', parametersClass: 'spot',
+      requestedAccountClasses: ['spot'], provenAccountClasses: ['spot'],
+      exhaustiveBalances: options.exhaustiveBalances ?? true
+    }
+  });
+  SEED.authorityAssets.push({
+    id: `authority-${asset}`, snapshotId: `snapshot-${asset}`, generation: 1,
+    scopeId: 'exchange:conn1', accountClass: 'spot', assetKey: `asset:${asset}`,
+    asset, quantity
+  });
+  SEED.sourceCoverage.push({
+    id: `coverage-${asset}`, generation: 1, scopeId: 'exchange:conn1',
+    sourceIdentityId: 'conn1', evidenceId: `evidence-${asset}`, kind: 'api',
+    accountClasses: ['spot'], endpoints: ['history'], authoritySnapshotId: `snapshot-${asset}`,
+    authorityAsOf: options.asOf ?? now, requestedHistoryStart: 0, requestedHistoryEnd: now,
+    observedHistoryStart: 0, observedHistoryEnd: now, startedAt: 0, completedAt: now,
+    status: 'complete', paginationExhausted: true, endpointOutcomes: [{
+      endpoint: 'history', accountClass: 'spot', required: true, status: 'complete',
+      requestedStart: 0, requestedEnd: now, observedStart: 0, observedEnd: now,
+      paginationRequired: true, paginationExhausted: true
+    }]
+  });
+}
+
 beforeEach(() => {
   localStorage.clear();
   SEED.priceRows.length = 0;
   SEED.balanceRows.length = 0;
   SEED.exchangeBalanceRows.length = 0;
+  SEED.authoritySnapshots.length = 0;
+  SEED.authorityAssets.length = 0;
+  SEED.sourceCoverage.length = 0;
+  SEED.openingBalances.length = 0;
+  COST_BASIS_INPUTS.length = 0;
   // Reset the tx list to the base seed (some tests append wallet rows).
   SEED.txs.length = 4;
 });
 
 describe('DashboardTab — hero honesty', () => {
+  it('preserves same-timestamp sell/buy order for deferred tax consumers', async () => {
+    const backup = [...SEED.txs];
+    const timestamp = Date.UTC(2026, 6, 1, 12, 0, 0);
+    SEED.txs.splice(0, SEED.txs.length,
+      {
+        id: 'z-sell', timestamp, type: 'sell', asset: 'BTC', amount: 1,
+        fiatCurrency: 'INR', fiatValue: 100, source: 'manual', flags: [], isInternalTransfer: false
+      },
+      {
+        id: 'a-buy', timestamp, type: 'buy', asset: 'BTC', amount: 1,
+        fiatCurrency: 'INR', fiatValue: 80, source: 'manual', flags: [], isInternalTransfer: false
+      }
+    );
+    try {
+      await renderTab();
+      expect(SEED.txs.map((transaction) => transaction.id)).toEqual(['z-sell', 'a-buy']);
+      expect(COST_BASIS_INPUTS).toContainEqual(['z-sell', 'a-buy']);
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
+  });
+
   it('values everything at cost and says so when no prices are cached', async () => {
     await renderTab();
     const hero = screen.getByTestId('dashboard-hero');
     // 0.3 BTC @ 15,000 + 2 ETH @ 10,000 + 500 DOGE @ 0 = ₹25,000 at cost.
     expect(within(hero).getByText('Total value · at cost')).toBeInTheDocument();
     expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹25,000.00');
+    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
+      'data-transaction-count',
+      '4'
+    );
+    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
+      'data-net-worth',
+      '25000'
+    );
+    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
+      'data-btc-quantity',
+      '0.3'
+    );
+    const deferredGeneration = screen.getByTestId('dashboard-deferred-generation');
+    expect(deferredGeneration).toHaveAttribute(
+      'data-transaction-count',
+      '4'
+    );
+    expect(Number(deferredGeneration.getAttribute('data-chart-point-count'))).toBeGreaterThan(0);
+    expect(Number(deferredGeneration.getAttribute('data-chart-end-t'))).toBeGreaterThan(0);
+    const chartEndCost = deferredGeneration.getAttribute('data-chart-end-cost');
+    expect(Number(chartEndCost)).toBeGreaterThan(0);
+    expect(deferredGeneration.getAttribute('data-chart-revision')).toBe(
+      `4:${deferredGeneration.getAttribute('data-chart-point-count')}:` +
+      `${deferredGeneration.getAttribute('data-chart-end-t')}:${chartEndCost}`
+    );
     expect(within(hero).getByText('Unrealized gain')).toBeInTheDocument();
     expect(within(hero).getByText('—')).toBeInTheDocument();
     expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(
@@ -127,6 +241,16 @@ describe('DashboardTab — hero honesty', () => {
     expect(screen.getByTestId('chart-honesty-note')).toHaveTextContent(
       /cost basis over time — enable live prices for market value/i
     );
+  });
+
+  it('forwards optional chart preparation instrumentation without changing normal rendering', async () => {
+    const measureChartPreparation = vi.fn((callback: () => unknown) => callback()) as unknown as
+      (<T>(callback: () => T) => T) & ReturnType<typeof vi.fn>;
+    await renderTab(undefined, { measureChartPreparation });
+
+    expect(measureChartPreparation).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('dashboard-holdings')).toBeVisible();
+    expect(screen.getByTestId('net-worth-chart')).toBeVisible();
   });
 
   it('switches to market value + unrealized gain when cached prices exist', async () => {
@@ -295,66 +419,107 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     fireEvent.click(btcToggle!);
     const expansion = screen.getByTestId('holding-expansion');
     expect(within(expansion).getByText('Where it lives')).toBeInTheDocument();
-    expect(within(expansion).getByText(/Estimated from transaction history/)).toBeInTheDocument();
+    expect(within(expansion).getByText(/Unverified · estimated from ledger postings/)).toBeInTheDocument();
     // BTC: 0.5 bought − 0.2 sold on Binance → 0.3 netted there.
     expect(within(expansion).getByText('Binance')).toBeInTheDocument();
     expect(within(expansion).getByText(/0\.30/)).toBeInTheDocument();
   });
 
-  it('shows only the authoritative Binance Options balance, not gross historical funding', async () => {
-    const txBackup = [...SEED.txs];
-    const importBackup = [...SEED.csvImports];
+  it('uses magnitude shares and identifies a mixed-sign source deficit', async () => {
+    const backup = [...SEED.txs];
     SEED.txs.length = 0;
-    SEED.csvImports.length = 0;
     SEED.txs.push(
-      {
-        id: 'gross-options-funding', timestamp: Date.UTC(2023, 2, 22), type: 'transfer_in',
-        asset: 'USDT', amount: 23_892.79, fiatCurrency: 'INR', source: 'binance',
-        importBatchId: 'history', sourceRef: 'history:funding', flags: [], isInternalTransfer: false
-      },
-      {
-        id: 'options-net', timestamp: Date.UTC(2023, 2, 22), type: 'transfer_in',
-        asset: 'USDT', amount: 119.5193, fiatCurrency: 'INR', source: 'binance_options',
-        sourceRef: 'options:net', category: 'options_collateral', flags: [], isInternalTransfer: false
-      }
+      { id: 'manual-in', timestamp: Date.now() - 2, type: 'transfer_in', asset: 'BTC', amount: 10,
+        fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'wazirx-out', timestamp: Date.now() - 1, type: 'transfer_out', asset: 'BTC', amount: 4,
+        fiatCurrency: 'INR', source: 'wazirx', flags: [], isInternalTransfer: false }
     );
-    SEED.csvImports.push({
-      id: 'history', importedAt: Date.UTC(2026, 0, 1), txCount: 1,
-      balanceSnapshot: { USDT: 0 }
-    } as (typeof SEED.csvImports)[number]);
-
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
-      const usdtToggle = within(holdings)
-        .getAllByRole('button', { expanded: false })
-        .find((button) => button.textContent?.includes('USDT'));
-      expect(usdtToggle).toBeDefined();
-      fireEvent.click(usdtToggle!);
-      const expansion = screen.getByTestId('holding-expansion');
-      expect(within(expansion).getByText('Binance Options')).toBeInTheDocument();
-      expect(within(expansion).getByText(/119\.5193 USDT/)).toBeInTheDocument();
-      expect(within(expansion).queryByText(/23892\.79 USDT/)).not.toBeInTheDocument();
+      expect(within(holdings).getAllByText(/6\.0000/).length).toBeGreaterThan(0);
+      fireEvent.click(within(holdings).getAllByRole('button', { expanded: false })[0]);
+      const positive = screen.getByTestId('source-allocation-manual:manual');
+      const deficit = screen.getByTestId('source-allocation-unverified:wazirx:unknown');
+      expect(positive).toHaveTextContent('71.4%');
+      expect(deficit).toHaveTextContent('Deficit');
+      expect(deficit).toHaveTextContent('-4.0000 BTC');
+      expect(deficit).toHaveTextContent('28.6%');
+      expect(screen.getByTestId('source-allocation-caption')).toHaveTextContent(
+        'Shares use absolute quantities; deficits are negative source balances.'
+      );
+      expect(screen.getByTestId('source-allocation-bar-manual:manual')).toHaveStyle({
+        width: `${(10 / 14) * 100}%`
+      });
+      expect(screen.getByTestId('source-allocation-bar-unverified:wazirx:unknown')).toHaveStyle({
+        width: `${(4 / 14) * 100}%`
+      });
     } finally {
-      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
-      SEED.csvImports.splice(0, SEED.csvImports.length, ...importBackup);
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
     }
   });
 
-  it('API-only history renders one chainless current balance instead of network phantoms', async () => {
+  it('renders meaningful magnitude shares when every source slice is negative', async () => {
+    const backup = [...SEED.txs];
+    SEED.txs.length = 0;
+    SEED.txs.push(
+      { id: 'manual-out', timestamp: Date.now() - 2, type: 'transfer_out', asset: 'BTC', amount: 2,
+        fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'wazirx-out', timestamp: Date.now() - 1, type: 'transfer_out', asset: 'BTC', amount: 3,
+        fiatCurrency: 'INR', source: 'wazirx', flags: [], isInternalTransfer: false }
+    );
+    try {
+      await renderTab();
+      const holdings = screen.getByTestId('dashboard-holdings');
+      expect(within(holdings).getAllByText(/-5\.0000/).length).toBeGreaterThan(0);
+      fireEvent.click(within(holdings).getAllByRole('button', { expanded: false })[0]);
+      const manual = screen.getByTestId('source-allocation-manual:manual');
+      const wazirx = screen.getByTestId('source-allocation-unverified:wazirx:unknown');
+      expect(manual).toHaveTextContent('Deficit');
+      expect(manual).toHaveTextContent('40.0%');
+      expect(wazirx).toHaveTextContent('Deficit');
+      expect(wazirx).toHaveTextContent('60.0%');
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
+  });
+
+  it('keeps uncovered Options additive and separate from verified Spot', async () => {
+    const backup = [...SEED.txs];
+    SEED.txs.length = 0;
+    SEED.txs.push(
+      { id: 'spot', timestamp: Date.now() - 2, type: 'transfer_in', asset: 'USDT', amount: 50,
+        fiatCurrency: 'INR', source: 'binance_api', importBatchId: 'conn1', flags: [], isInternalTransfer: false },
+      { id: 'options', timestamp: Date.now() - 1, type: 'transfer_in', asset: 'USDT', amount: 3,
+        fiatCurrency: 'INR', source: 'binance_options', parserAccountClass: 'options', flags: [], isInternalTransfer: false }
+    );
+    SEED.exchangeConns.push({ id: 'conn1', exchange: 'binance', label: 'Binance',
+      createdAt: Date.now(), cursors: {}, status: 'ok', provenAccountClasses: ['spot', 'options'] } as never);
+    seedExchangeAuthority('USDT', 7);
+    try {
+      await renderTab();
+      const holding = screen.getByTestId('dashboard-holdings');
+      expect(within(holding).getAllByText(/10\.0000/).length).toBeGreaterThan(0);
+      const toggle = within(holding).getAllByRole('button', { expanded: false })
+        .find((button) => button.textContent?.includes('USDT'))!;
+      fireEvent.click(toggle);
+      const expansion = screen.getByTestId('holding-expansion');
+      expect(within(expansion).getByText('Binance Spot')).toBeInTheDocument();
+      expect(within(expansion).getByText('Binance Options')).toBeInTheDocument();
+      expect(screen.getByTestId('holding-qty-caption')).toHaveTextContent('Partly verified');
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+      SEED.exchangeConns.length = 0;
+    }
+  });
+
+  it('API-only history renders the current shared authority balance', async () => {
     const txBackup = [...SEED.txs];
     SEED.txs.length = 0;
     SEED.txs.push(
       {
-        id: 'api-eth-deposit', timestamp: Date.UTC(2024, 0, 1), type: 'transfer_in',
-        asset: 'USDT', amount: 544_193, fiatCurrency: 'INR', source: 'binance_api',
-        chain: 'ethereum', walletAddress: '0x1111111111111111111111111111111111111111',
-        importBatchId: 'conn1', flags: [], isInternalTransfer: false
-      },
-      {
-        id: 'api-bsc-deposit', timestamp: Date.UTC(2024, 0, 2), type: 'transfer_in',
+        id: 'api-history', timestamp: Date.UTC(2024, 0, 2), type: 'transfer_in',
         asset: 'USDT', amount: 701.8764, fiatCurrency: 'INR', source: 'binance_api',
-        chain: 'bsc', walletAddress: '0x2222222222222222222222222222222222222222',
         importBatchId: 'conn1', flags: [], isInternalTransfer: false
       }
     );
@@ -366,6 +531,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       id: 'conn1', exchange: 'binance', apiKey: 'redacted', secret: 'redacted',
       createdAt: Date.now(), cursors: {}, status: 'ok', lastSyncAt: Date.now()
     } as never);
+    seedExchangeAuthority('USDT', 119.5193);
 
     try {
       await renderTab();
@@ -377,11 +543,13 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       expect(within(holdings).getByText('1 asset')).toBeInTheDocument();
       expect(within(holdings).getAllByText(/119\.5193/).length).toBeGreaterThan(0);
       expect(within(holdings).queryByText('ethereum')).not.toBeInTheDocument();
-      expect(within(holdings).queryByText('bsc')).not.toBeInTheDocument();
       fireEvent.click(usdtButtons[0]);
       const expansion = screen.getByTestId('holding-expansion');
-      expect(within(expansion).getByText('Binance API')).toBeInTheDocument();
+      expect(within(expansion).getByText('Binance Spot')).toBeInTheDocument();
       expect(within(expansion).getByText(/119\.5193 USDT/)).toBeInTheDocument();
+      expect(screen.getByTestId('holding-qty-caption')).toHaveTextContent(
+        'Verified from current source balances'
+      );
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...txBackup);
       SEED.exchangeBalanceRows.length = 0;
@@ -389,45 +557,32 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     }
   });
 
-  it('combines API authority and Options without reviving full-history Funding/Margin balances', async () => {
-    const txBackup = [...SEED.txs];
+  it('falls back to postings when API authority is stale and keeps manual quantity additive', async () => {
+    const backup = [...SEED.txs];
     SEED.txs.length = 0;
     SEED.txs.push(
-      { id: 'api-uni', timestamp: Date.UTC(2025, 0, 1), type: 'buy', asset: 'UNI', amount: 1,
-        fiatCurrency: 'INR', source: 'binance_api', importBatchId: 'conn1', flags: [], isInternalTransfer: false },
-      { id: 'history-usdt', timestamp: Date.UTC(2024, 0, 1), type: 'transfer_in', asset: 'USDT', amount: 188_126.0707,
-        fiatCurrency: 'INR', source: 'binance', raw: { Account: 'Funding' }, flags: [], isInternalTransfer: false },
-      { id: 'history-sol', timestamp: Date.UTC(2024, 0, 2), type: 'transfer_in', asset: 'SOL', amount: 969.9634,
-        fiatCurrency: 'INR', source: 'binance', raw: { buy: { Account: 'Cross Margin' } }, flags: [], isInternalTransfer: false },
-      { id: 'history-busd', timestamp: Date.UTC(2024, 0, 3), type: 'transfer_in', asset: 'BUSD', amount: 120_473.93,
-        fiatCurrency: 'INR', source: 'binance', raw: { Account: 'Spot' }, flags: [], isInternalTransfer: false },
-      { id: 'options', timestamp: Date.UTC(2025, 0, 2), type: 'transfer_in', asset: 'USDT', amount: 119.5193,
-        fiatCurrency: 'INR', source: 'binance_options', flags: [], isInternalTransfer: false }
+      { id: 'api', timestamp: Date.now() - 2, type: 'transfer_in', asset: 'BTC', amount: 2,
+        fiatCurrency: 'INR', fiatValue: 20, source: 'binance_api', importBatchId: 'conn1', flags: [], isInternalTransfer: false },
+      { id: 'manual', timestamp: Date.now() - 1, type: 'transfer_in', asset: 'BTC', amount: 3,
+        fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false }
     );
-    SEED.exchangeConns.push({ id: 'conn1', exchange: 'binance', label: 'Binance API', lastSyncAt: Date.now() } as never);
-    SEED.exchangeBalanceRows.push({ id: 'conn1:UNI', connectionId: 'conn1', exchange: 'binance', asset: 'UNI',
-      amount: 1, asOf: Date.now(), source: 'exchange_api' });
-    SEED.priceRows.push(
-      { key: 'spot:sym:UNI:INR', price: 63_285.01, fetchedAt: Date.now() },
-      { key: 'spot:sym:USDT:INR', price: 95.31, fetchedAt: Date.now() }
-    );
-
+    SEED.exchangeConns.push({ id: 'conn1', exchange: 'binance', label: 'Binance',
+      createdAt: Date.now(), cursors: {}, status: 'ok' } as never);
+    seedExchangeAuthority('BTC', 99, { asOf: Date.now() - 86_400_001 });
     try {
       await renderTab();
-      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹74,676');
-      const holdings = screen.getByTestId('dashboard-holdings');
-      expect(within(holdings).getByText('2 assets')).toBeInTheDocument();
-      expect(within(holdings).queryByText('SOL')).not.toBeInTheDocument();
-      expect(within(holdings).queryByText('BUSD')).not.toBeInTheDocument();
-      const usdt = within(holdings).getAllByRole('button', { expanded: false })
-        .find((button) => button.textContent?.includes('USDT'))!;
-      fireEvent.click(usdt);
-      expect(within(screen.getByTestId('holding-expansion')).getByText('Binance Options')).toBeInTheDocument();
+      const holding = screen.getByTestId('dashboard-holdings');
+      expect(within(holding).getAllByText(/5\.0000/).length).toBeGreaterThan(0);
+      const toggle = within(holding).getAllByRole('button', { expanded: false })
+        .find((button) => button.textContent?.includes('BTC'))!;
+      fireEvent.click(toggle);
+      const expansion = screen.getByTestId('holding-expansion');
+      expect(within(expansion).getByText('Binance Spot')).toBeInTheDocument();
+      expect(within(expansion).getByText('Manual entry')).toBeInTheDocument();
+      expect(screen.getByTestId('holding-qty-caption')).toHaveTextContent('Unverified');
     } finally {
-      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
       SEED.exchangeConns.length = 0;
-      SEED.exchangeBalanceRows.length = 0;
-      SEED.priceRows.length = 0;
     }
   });
 });
@@ -468,69 +623,59 @@ describe('DashboardTab — period pills', () => {
 });
 
 
-describe('DashboardTab — on-chain reconciliation (round 4)', () => {
-  const BTC_ADDR = '1J33sNnKbs52UjTK39kEEYDfbHijgDxyKU';
-  const dayFn = (y: number, m: number, d: number) => Date.UTC(y, m - 1, d, 12, 0, 0);
-
-  function seedPhantom() {
-    // The live bug: a 32.6557 BTC receive on a drained Binance deposit
-    // address, whose batched-sweep send the old parser missed.
+describe('DashboardTab — confirmed authority zero', () => {
+  it('removes an API posting holding when current exhaustive authority confirms zero', async () => {
+    const backup = [...SEED.txs];
+    SEED.txs.length = 0;
     SEED.txs.push({
-      id: 't-phantom-btc', timestamp: dayFn(2026, 2, 5), type: 'transfer_in', asset: 'BTC',
-      amount: 32.65574623, fiatCurrency: 'INR', fiatValue: 1_000_000, source: 'rpc:blockstream',
-      chain: 'bitcoin', walletAddress: BTC_ADDR, flags: ['missing_cost_basis'], isInternalTransfer: false
-    } as (typeof SEED.txs)[number]);
-    SEED.wallets.push({
-      id: `bitcoin:${BTC_ADDR}`, chain: 'bitcoin', address: BTC_ADDR,
-      label: 'Binance deposit', lastSyncedAt: 1, txCount: 1
+      id: 'api-btc', timestamp: Date.now() - 1, type: 'transfer_in', asset: 'BTC', amount: 9,
+      fiatCurrency: 'INR', fiatValue: 900, source: 'binance_api', importBatchId: 'conn1',
+      flags: [], isInternalTransfer: false
     });
-  }
-
-  function seedBalance(amount: number) {
-    SEED.balanceRows.push({
-      id: `bitcoin:${BTC_ADDR}:BTC`, chain: 'bitcoin', address: BTC_ADDR,
-      asset: 'BTC', amount, asOf: Date.now(), source: 'rpc'
-    });
-  }
-
-  it('without a balance row the phantom inflates net worth (tx-derived fallback)', async () => {
-    seedPhantom();
-    await renderTab();
-    // Base ₹25,000 + phantom ₹1,000,000 cost.
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹10,25,000.00');
-    expect(screen.queryByTestId('reconciled-down-line')).not.toBeInTheDocument();
+    SEED.exchangeConns.push({ id: 'conn1', exchange: 'binance', label: 'Binance',
+      createdAt: Date.now(), cursors: {}, status: 'ok' } as never);
+    seedExchangeAuthority('BTC', 0);
+    try {
+      await renderTab();
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹0.00');
+      expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('No holdings yet');
+      expect(screen.getByTestId('reconciled-down-line')).toHaveTextContent(
+        '1 asset adjusted to current source balance'
+      );
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+      SEED.exchangeConns.length = 0;
+    }
   });
 
-  it('a confirmed-zero balance kills the phantom and discloses the adjustment', async () => {
-    seedPhantom();
-    seedBalance(0);
-    await renderTab();
-    // Phantom drained → honest base net worth again.
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹25,000.00');
-    expect(screen.getByTestId('reconciled-down-line')).toHaveTextContent(
-      '1 asset adjusted to on-chain balance'
-    );
-    // The holdings table keeps only the exchange BTC row (0.3), no bitcoin-chain row.
-    expect(screen.queryByText('bitcoin')).not.toBeInTheDocument();
-  });
+  it('falls back to postings when mounted authority crosses the stale threshold', async () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(now);
+    const backup = [...SEED.txs];
+    SEED.txs.length = 0;
+    SEED.txs.push({
+      id: 'api-btc', timestamp: now - 1_000, type: 'transfer_in', asset: 'BTC', amount: 2,
+      fiatCurrency: 'INR', fiatValue: 200, source: 'binance_api', importBatchId: 'conn1',
+      flags: [], isInternalTransfer: false
+    });
+    SEED.exchangeConns.push({ id: 'conn1', exchange: 'binance', label: 'Binance',
+      createdAt: now, cursors: {}, status: 'ok' } as never);
+    seedExchangeAuthority('BTC', 7, { asOf: now });
+    let view: Awaited<ReturnType<typeof renderTab>> | undefined;
+    try {
+      view = await renderTab();
+      expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('7.0000');
 
-  it('a partial balance clamps the holding down and labels it reconciled', async () => {
-    seedPhantom();
-    seedBalance(0.25);
-    await renderTab();
-    // Net worth = base ₹25,000 + 0.25 BTC at the phantom row's per-unit cost.
-    // per-unit = 1,000,000 / 32.65574623 ≈ 30,622.48 → 0.25 × 30,622.48 ≈ ₹7,655.62.
-    const hero = screen.getByTestId('net-worth-value');
-    expect(hero).toHaveTextContent('₹32,655.62');
-    // Expand the bitcoin-chain BTC row → reconciled caption. The asset cell
-    // renders in both the desktop and mobile row layouts, so there are two
-    // 'bitcoin' chain labels in the DOM; either toggle opens the same row.
-    const chainLabels = screen.getAllByText('bitcoin');
-    const toggle = chainLabels[0].closest('button');
-    expect(toggle).not.toBeNull();
-    fireEvent.click(toggle!);
-    expect(screen.getByTestId('holding-qty-caption')).toHaveTextContent(
-      'Reconciled to on-chain balance'
-    );
+      act(() => vi.advanceTimersByTime(24 * 60 * 60_000 + 5 * 60_000));
+
+      expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('2.0000');
+      expect(screen.getByTestId('dashboard-holdings')).not.toHaveTextContent('7.0000');
+    } finally {
+      view?.unmount();
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+      SEED.exchangeConns.length = 0;
+      vi.useRealTimers();
+    }
   });
 });
