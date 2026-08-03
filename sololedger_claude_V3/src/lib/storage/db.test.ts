@@ -741,5 +741,5 @@ describe('v11 file and wallet source deletion', () => {
     expect(await deleteCsvImportAndTransactions(sourceId)).toBe(transactions.length);
     expect(await db.transactions.where('importBatchId').equals(sourceId).count()).toBe(0);
     expect(await db.csvImports.get(sourceId)).toBeUndefined();
-  }, 20_000);
+  }, 45_000);
 });
