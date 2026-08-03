@@ -10,7 +10,10 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
     css: false,
-    include: ['src/lib/ledger/postingBalances.perf.test.ts'],
+    include: [
+      'src/lib/ledger/postingBalances.perf.test.ts',
+      'src/components/connections/connectionWorkspaceCollection.perf.test.ts'
+    ],
     exclude: [],
     fileParallelism: false,
     maxWorkers: 1

@@ -30,6 +30,14 @@ import { Skeleton } from '@/components/ui/Skeleton';
 import { useTabNav } from '@/lib/tabNav';
 import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
+import { DataHealthWorkspace, type DataHealthViewState } from './DataHealthWorkspace';
+import { buildDataHealthModel } from './dataHealthModel';
+import { buildCards } from '@/components/connections/connectionModel';
+import { buildConnectionWorkspaceFromCard, buildConnectionWorkspaceSnapshot, prepareConnectionWorkspaceCollectionIndex } from '@/components/connections/connectionWorkspaceModel';
+import type { ExchangeConnectionView } from '@/lib/exchangeSync';
+import type { NavigationIntent } from '@/lib/navigationIntent';
+import { canonicalWalletAddress, normalizeChainIdentity } from '@/lib/ledger/chainNamespace';
+import { resolveAccountScope } from '@/lib/ledger/derivedPostings';
 import { createHoldingsProjector, createTransactionViewsProjector } from './dashboardProjectionCache';
 import {
   cn,
@@ -402,23 +410,41 @@ const NO_AUTHORITY_SNAPSHOTS: AuthoritySnapshotRow[] = [];
 const NO_AUTHORITY_ASSETS: AuthorityAssetRow[] = [];
 const NO_SOURCE_COVERAGE: SourceCoverageRow[] = [];
 const NO_OPENING_BALANCES: OpeningBalanceRow[] = [];
+const EMPTY_DATA_HEALTH_MODEL = buildDataHealthModel([]);
 
 export interface DashboardInstrumentation {
   measureChartPreparation?: <T>(callback: () => T) => T;
 }
 
-export function DashboardTab({ instrumentation }: { instrumentation?: DashboardInstrumentation } = {}) {
+export interface DashboardTabProps {
+  instrumentation?: DashboardInstrumentation;
+  onNavigationIntent?: (intent: NavigationIntent, state: DataHealthViewState) => void;
+  restoredDataHealthState?: DataHealthViewState;
+  openDataHealthOnMount?: boolean;
+}
+
+export function DashboardTab({ instrumentation, onNavigationIntent, restoredDataHealthState, openDataHealthOnMount = false }: DashboardTabProps = {}) {
   const { goToImport, goTo } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []);
-  const wallets = useLiveQuery(() => getLookupAddresses(), []) ?? NO_WALLETS;
-  const csvImports = useLiveQuery(() => db.csvImports.toArray(), []) ?? NO_CSV_IMPORTS;
-  const exchangeConns = useLiveQuery(() => db.exchangeConnections.toArray(), []) ?? NO_EXCHANGE_CONNS;
+  const walletRowsQuery = useLiveQuery(() => getLookupAddresses(), []);
+  const csvImportsQuery = useLiveQuery(() => db.csvImports.toArray(), []);
+  const exchangeConnsQuery = useLiveQuery(() => db.exchangeConnections.toArray(), []);
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
   const exchangeBalanceRows = useLiveQuery(() => db.exchangeBalances.toArray(), []) ?? NO_EXCHANGE_BALANCES;
-  const authoritySnapshots = useLiveQuery(() => db.authoritySnapshots.toArray(), []) ?? NO_AUTHORITY_SNAPSHOTS;
-  const authorityAssets = useLiveQuery(() => db.authorityAssets.toArray(), []) ?? NO_AUTHORITY_ASSETS;
-  const sourceCoverageRows = useLiveQuery(() => db.sourceCoverage.toArray(), []) ?? NO_SOURCE_COVERAGE;
-  const openingBalances = useLiveQuery(() => db.openingBalances.toArray(), []) ?? NO_OPENING_BALANCES;
+  const authoritySnapshotsQuery = useLiveQuery(() => db.authoritySnapshots.toArray(), []);
+  const authorityAssetsQuery = useLiveQuery(() => db.authorityAssets.toArray(), []);
+  const sourceCoverageQuery = useLiveQuery(() => db.sourceCoverage.toArray(), []);
+  const openingBalancesQuery = useLiveQuery(() => db.openingBalances.toArray(), []);
+  const wallets = walletRowsQuery ?? NO_WALLETS;
+  const csvImports = csvImportsQuery ?? NO_CSV_IMPORTS;
+  const exchangeConns = exchangeConnsQuery ?? NO_EXCHANGE_CONNS;
+  const authoritySnapshots = authoritySnapshotsQuery ?? NO_AUTHORITY_SNAPSHOTS;
+  const authorityAssets = authorityAssetsQuery ?? NO_AUTHORITY_ASSETS;
+  const sourceCoverageRows = sourceCoverageQuery ?? NO_SOURCE_COVERAGE;
+  const openingBalances = openingBalancesQuery ?? NO_OPENING_BALANCES;
+  const dataHealthReady = transactions !== undefined && walletRowsQuery !== undefined && csvImportsQuery !== undefined &&
+    exchangeConnsQuery !== undefined && authoritySnapshotsQuery !== undefined && authorityAssetsQuery !== undefined &&
+    sourceCoverageQuery !== undefined && openingBalancesQuery !== undefined;
   const activeExchangeBalanceRows = useMemo(() => {
     const activeIds = new Set(exchangeConns.map((connection) => connection.id));
     return exchangeBalanceRows.filter((row) => activeIds.has(row.connectionId));
@@ -435,6 +461,7 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
   });
   const [dismissed, setDismissed] = useState<string[]>(readDismissed);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [dataHealthOpen, setDataHealthOpen] = useState(openDataHealthOnMount);
   const pillRefs = useRef<(HTMLButtonElement | null)[]>([]);
   // The existing price tick also carries projection time forward every five minutes.
   const [spotRefreshTick, setSpotRefreshTick] = useState(Date.now);
@@ -447,6 +474,26 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
     const timer = window.setInterval(() => setSpotRefreshTick(Date.now()), 5 * 60_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const refresh = () => setSpotRefreshTick(Date.now());
+    const onVisibility = () => { if (document.visibilityState === 'visible') refresh(); };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisibility);
+    const now = Date.now();
+    let nearest: number | undefined;
+    for (const snapshot of authoritySnapshots) {
+      if (snapshot.asOf == null || snapshot.authorityKind === 'csv') continue;
+      const expires = snapshot.asOf + 24 * 60 * 60_000 + 1;
+      if (expires > now && (nearest == null || expires < nearest)) nearest = expires;
+    }
+    const timer = nearest == null ? undefined : window.setTimeout(refresh, Math.min(2_147_483_647, Math.max(1, nearest - now)));
+    return () => {
+      if (timer != null) window.clearTimeout(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [authoritySnapshots, nowMs]);
 
   useEffect(() => {
     getSettings().then(setSettings);
@@ -492,6 +539,79 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
   );
   const deferredTransactions = deferredLedgerRevision.transactions;
   const deferredProjection = deferredLedgerRevision.projection;
+
+  const dataHealthModel = useMemo(() => {
+    if (!dataHealthReady) return EMPTY_DATA_HEALTH_MODEL;
+    const transactionCountByImport = new Map<string, number>();
+    for (const transaction of nonSpamTxs) if (transaction.importBatchId) {
+      transactionCountByImport.set(transaction.importBatchId, (transactionCountByImport.get(transaction.importBatchId) ?? 0) + 1);
+    }
+    const exchangeViews: ExchangeConnectionView[] = exchangeConns.map((connection) => ({
+      id: connection.id,
+      exchange: connection.exchange as ExchangeConnectionView['exchange'],
+      label: connection.label,
+      createdAt: connection.createdAt,
+      lastSyncAt: connection.lastSyncAt ?? null,
+      txCount: transactionCountByImport.get(connection.id) ?? 0,
+      lastError: connection.lastError ?? null,
+      credentialsState: connection.credentialsState ?? 'ready',
+      cursors: { ...(connection.cursors ?? {}) }
+    }));
+    const manualCount = nonSpamTxs.filter((transaction) => transaction.source === 'manual' && transaction.importBatchId == null).length;
+    const validCsvImports = csvImports.filter((row) => typeof row.fileName === 'string');
+    const cards = buildCards({ connections: exchangeViews, csvImports: validCsvImports, wallets, manualCount, syncingConnectionId: null, syncActive: false });
+    const redactedConnections = exchangeConns.map(({ id, exchange }) => ({ id, exchange }));
+    const collectionIndex = prepareConnectionWorkspaceCollectionIndex({
+      transactions: nonSpamTxs, exchangeConnections: redactedConnections, openingBalances,
+      snapshots: authoritySnapshots, assets: authorityAssets, sourceCoverage: sourceCoverageRows,
+      liveExchangeConnections: exchangeViews, liveCsvImports: validCsvImports, liveWalletRows: wallets
+    });
+    const sourceInputs = cards.map((card) => {
+      const snapshot = buildConnectionWorkspaceFromCard({
+        card, transactions: nonSpamTxs, exchangeConnections: redactedConnections,
+        openingBalances, snapshots: authoritySnapshots, assets: authorityAssets,
+        sourceCoverage: sourceCoverageRows, now: nowMs, collectionIndex,
+        liveExchangeConnections: exchangeViews, liveCsvImports: validCsvImports, liveWalletRows: wallets
+      });
+      const target = card.kind === 'exchange-api'
+        ? { kind: 'exchange' as const, connectionId: card.exchange!.id }
+        : card.kind === 'file'
+          ? { kind: 'csv' as const, importId: card.csvImport!.id }
+          : card.kind === 'wallet'
+            ? { kind: 'wallet' as const, chain: normalizeChainIdentity(card.walletRows![0].chain), address: canonicalWalletAddress(card.walletRows![0].chain, card.walletRows![0].address) }
+            : { kind: 'manual' as const, singletonId: 'manual' as const };
+      return { id: card.id, title: card.title, subtitle: card.subtitle, target, snapshot };
+    });
+    const deletedGroups = new Map<string, typeof nonSpamTxs>();
+    for (const transaction of nonSpamTxs) {
+      const deletedId = transaction.deletedSourceEvidence?.sourceIdentityId;
+      if (!deletedId) continue;
+      const rows = deletedGroups.get(deletedId) ?? [];
+      rows.push(transaction);
+      deletedGroups.set(deletedId, rows);
+    }
+    for (const [sourceIdentityId, rows] of deletedGroups) {
+      const scopes = [...new Map(rows.map((transaction) => {
+        const resolved = resolveAccountScope(transaction, { exchangeConnections: redactedConnections });
+        return [`${resolved.accountScopeId}\u001f${resolved.accountClass}`, {
+          scopeId: resolved.accountScopeId, accountClass: resolved.accountClass, scopeStatus: resolved.scopeStatus
+        }] as const;
+      })).values()];
+      const sourceName = rows[0]?.source.replace(/_api$/, '') ?? 'exchange';
+      const snapshot = buildConnectionWorkspaceSnapshot({
+        id: `deleted:${sourceIdentityId}`, kind: 'exchange-api',
+        sources: [{ kind: 'exchange-api', sourceIdentityId, exchange: sourceName, transactionIds: rows.map((row) => row.id) }],
+        scopes, transactions: rows, exchangeConnections: redactedConnections, openingBalances,
+        snapshots: authoritySnapshots, assets: authorityAssets, sourceCoverage: sourceCoverageRows, now: nowMs
+      });
+      sourceInputs.push({
+        id: `deleted:${sourceIdentityId}`, title: `Deleted source · ${sourceIdentityId}`,
+        subtitle: 'Persisted transactions retain deleted-source evidence.',
+        target: { kind: 'exchange', connectionId: sourceIdentityId }, snapshot
+      });
+    }
+    return buildDataHealthModel(sourceInputs);
+  }, [authorityAssets, authoritySnapshots, csvImports, dataHealthReady, exchangeConns, nonSpamTxs, nowMs, openingBalances, sourceCoverageRows, wallets]);
 
   useEffect(() => {
     let cancelled = false;
@@ -739,6 +859,10 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
     e.preventDefault();
     document.getElementById('dashboard-holdings')?.scrollIntoView({ behavior: 'smooth' });
   };
+
+  if (dataHealthOpen) {
+    return <DataHealthWorkspace model={dataHealthModel} loading={!dataHealthReady} onClose={() => setDataHealthOpen(false)} initialState={restoredDataHealthState} onNavigate={(intent, state) => onNavigationIntent?.(intent, state)} />;
+  }
 
   // Initial Dexie resolution — mirror Portfolio's skeleton rather than flashing empty.
   if (transactions === undefined) {
@@ -1359,9 +1483,11 @@ export function DashboardTab({ instrumentation }: { instrumentation?: DashboardI
                   completeness cross-check: what the exchange says you hold vs what
                   the ledger implies. Only renders for connections with a balance anchor. */}
               <DataHealthRecon
+                aggregateModel={dataHealthModel}
                 connections={exchangeConns}
                 exchangeBalances={activeExchangeBalanceRows}
                 transactions={deferredTransactions}
+                onOpenWorkspace={() => setDataHealthOpen(true)}
               />
             </ul>
           </section>

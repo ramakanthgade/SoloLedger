@@ -68,7 +68,7 @@ function openingEligible(scope: ConnectionWorkspaceScopeView, asset: ConnectionW
     ['spot', 'funding', 'margin', 'futures', 'options'].includes(scope.accountClass);
 }
 
-function Remediations({ presentation, sourceKind, canSync, canImportFile, onSync, onImportFile, onInspectHistory, onAddOpening }: {
+function Remediations({ presentation, sourceKind, canSync, canImportFile, onSync, onImportFile, onInspectHistory, onAddOpening, assetKey }: {
   presentation: ReconPresentation;
   sourceKind: ConnectionCardData['kind'];
   canSync: boolean;
@@ -77,6 +77,7 @@ function Remediations({ presentation, sourceKind, canSync, canImportFile, onSync
   onImportFile?: () => void;
   onInspectHistory: () => void;
   onAddOpening?: () => void;
+  assetKey?: string;
 }) {
   const all = [presentation.primaryRemediation, ...presentation.secondaryRemediations];
   const evidenceSuggested = all.some((item) => ['complete_source_history', 'establish_source_coverage', 'add_timestamped_authority'].includes(item));
@@ -91,7 +92,7 @@ function Remediations({ presentation, sourceKind, canSync, canImportFile, onSync
         {syncSuggested && onSync && <Button type="button" variant="secondary" onClick={onSync}><RefreshCw className="h-4 w-4" aria-hidden="true" /> Sync now</Button>}
         {importSuggested && onImportFile && <Button type="button" variant="secondary" onClick={onImportFile}><Upload className="h-4 w-4" aria-hidden="true" /> Import file</Button>}
         {all.includes('inspect_evidence_history') && <Button type="button" variant="secondary" onClick={onInspectHistory}><History className="h-4 w-4" aria-hidden="true" /> Inspect Sync history</Button>}
-        {hasRemediation(presentation, 'add_evidence_backed_opening_balance') && onAddOpening && <Button type="button" onClick={onAddOpening}>Add opening evidence</Button>}
+        {hasRemediation(presentation, 'add_evidence_backed_opening_balance') && onAddOpening && <Button type="button" data-opening-action="add" data-opening-asset-key={assetKey} onClick={onAddOpening}>Add opening evidence</Button>}
       </div>
     </div>
   );
@@ -181,7 +182,7 @@ export function ConnectionReconciliation({ snapshot, sourceKind, canSync, canImp
               const assetOpenings = openingsFor(asset);
               const canAddOpening = openingEligible(scope, asset);
               return (
-                <li key={asset.key} className="border-b border-hi/10 px-5 py-4 last:border-b-0" data-testid="reconciliation-asset-row">
+                <li key={asset.key} className="border-b border-hi/10 px-5 py-4 last:border-b-0" data-testid="reconciliation-asset-row" data-reconciliation-scope-id={asset.scopeId} data-reconciliation-account-class={asset.accountClass} data-reconciliation-asset-key={asset.assetKey} tabIndex={-1}>
                   <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 ref={(node) => { if (node) assetHeadingRefs.current.set(asset.key, node); else assetHeadingRefs.current.delete(asset.key); }} tabIndex={-1} className="text-sm font-bold text-hi">{asset.asset}</h4><p className="break-all font-mono text-[0.6875rem] text-faint">{asset.assetKey}</p></div><Badge tone={severityTone[asset.presentation.severity]}>{asset.presentation.severity}</Badge></div>
                   <dl className="mt-3 grid gap-2 text-xs sm:grid-cols-4">
                     <div><dt className="text-faint">Balance</dt><dd className="font-semibold text-hi">{result.balanceStatus}</dd></div>
@@ -193,8 +194,8 @@ export function ConnectionReconciliation({ snapshot, sourceKind, canSync, canImp
                   <p className="mt-2 text-xs text-low">Selected generation: {result.selectedGeneration ?? '—'} · As of: {result.asOf != null ? new Date(result.asOf).toLocaleString() : '—'} · Freshness: {result.authorityStatus}</p>
                   <p className="mt-1 text-xs text-low">Posting evidence: {result.postingEvidenceCount} · Authority evidence: {result.authorityEvidenceCount} · Opening evidence: {assetOpenings.length}</p>
                   {!comparable && reasons.length > 0 && <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-warn" aria-label={`${asset.asset} non-comparable reasons`}>{reasons.map((reason) => <li key={reason}>{reason}</li>)}</ul>}
-                  <Remediations presentation={asset.presentation} sourceKind={sourceKind} canSync={canSync} canImportFile={canImportFile} onSync={onSync} onImportFile={onImportFile} onInspectHistory={onInspectHistory} onAddOpening={canAddOpening ? () => setDialog({ asset, scopeKey: scope.key }) : undefined} />
-                  {assetOpenings.length > 0 && <div className="mt-3 border-t border-hi/10 pt-3"><p className="text-xs font-semibold text-mid">Dated opening evidence</p><ul className="mt-2 space-y-2">{assetOpenings.map((opening) => <li key={opening.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-elev-1 px-3 py-2 text-xs"><span className="text-low"><strong className="text-hi">{formatCompactAmount(opening.absoluteQuantity)} {opening.asset}</strong> · {new Date(opening.effectiveAt).toLocaleString()} · {provenanceLabel(opening.provenance)}{opening.evidenceRef ? ` · Evidence: ${opening.evidenceRef}` : ''}{opening.note ? ` · ${opening.note}` : ''}</span>{opening.provenance === 'user_confirmed' && <Button type="button" size="sm" variant="secondary" className="min-h-[44px]" onClick={() => setDialog({ asset, scopeKey: scope.key, openingId: opening.id })}>Edit</Button>}</li>)}</ul>{canAddOpening && <Button type="button" size="sm" variant="ghost" className="mt-2 min-h-[44px]" onClick={() => setDialog({ asset, scopeKey: scope.key })}>Add another dated opening</Button>}</div>}
+                  <Remediations presentation={asset.presentation} sourceKind={sourceKind} canSync={canSync} canImportFile={canImportFile} onSync={onSync} onImportFile={onImportFile} onInspectHistory={onInspectHistory} assetKey={asset.assetKey} onAddOpening={canAddOpening ? () => setDialog({ asset, scopeKey: scope.key }) : undefined} />
+                  {assetOpenings.length > 0 && <div className="mt-3 border-t border-hi/10 pt-3"><p className="text-xs font-semibold text-mid">Dated opening evidence</p><ul className="mt-2 space-y-2">{assetOpenings.map((opening) => <li key={opening.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-elev-1 px-3 py-2 text-xs"><span className="text-low"><strong className="text-hi">{formatCompactAmount(opening.absoluteQuantity)} {opening.asset}</strong> · {new Date(opening.effectiveAt).toLocaleString()} · {provenanceLabel(opening.provenance)}{opening.evidenceRef ? ` · Evidence: ${opening.evidenceRef}` : ''}{opening.note ? ` · ${opening.note}` : ''}</span>{opening.provenance === 'user_confirmed' && <Button type="button" size="sm" variant="secondary" className="min-h-[44px]" data-opening-action="edit" data-opening-asset-key={asset.assetKey} data-opening-id={opening.id} onClick={() => setDialog({ asset, scopeKey: scope.key, openingId: opening.id })}>Edit</Button>}</li>)}</ul>{canAddOpening && <Button type="button" size="sm" variant="ghost" className="mt-2 min-h-[44px]" data-opening-action="add" data-opening-asset-key={asset.assetKey} onClick={() => setDialog({ asset, scopeKey: scope.key })}>Add another dated opening</Button>}</div>}
                 </li>
               );
             })}</ul>}

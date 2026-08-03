@@ -150,10 +150,32 @@ vi.mock('./AddDataDrawer', () => ({
 // The detail view has its own test file — stub it to a marker that records
 // the opened card and exposes the Back action.
 vi.mock('./ConnectionDetail', () => ({
-  ConnectionDetail: (props: { card: { id: string }; onBack: () => void; onImportFile?: () => void }) => (
-    <div data-testid="connection-detail-mock" data-card-id={props.card.id}>
+  ConnectionDetail: (props: {
+    card: { id: string };
+    navigationIntent?: { id: string };
+    onNavigationIntentAcknowledged?: (id: string) => void;
+    onNavigationTargetNotFound?: (id: string) => void;
+    onBack: () => void;
+    onImportFile?: () => void;
+  }) => (
+    <div
+      data-testid="connection-detail-mock"
+      data-card-id={props.card.id}
+      data-navigation-id={props.navigationIntent?.id ?? ''}
+      data-has-target-missing={String(props.onNavigationTargetNotFound != null)}
+    >
+      <button
+        type="button"
+        data-testid="detail-acknowledge-mock"
+        onClick={() => props.navigationIntent && props.onNavigationIntentAcknowledged?.(props.navigationIntent.id)}
+      >
+        acknowledge
+      </button>
       <button type="button" data-testid="detail-back-mock" onClick={props.onBack}>
         back
+      </button>
+      <button type="button" data-testid="detail-target-missing-mock" onClick={() => props.navigationIntent && props.onNavigationTargetNotFound?.(props.navigationIntent.id)}>
+        target missing
       </button>
       <button type="button" data-testid="detail-import-file-mock" onClick={props.onImportFile}>
         Import file
@@ -910,6 +932,108 @@ describe('ConnectionsHome — per-connection detail (round 4)', () => {
     expect(cardBody).not.toBeNull();
     fireEvent.click(cardBody!);
     expect(screen.getByTestId('add-data-drawer')).toHaveAttribute('data-initial-flow', 'manual');
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+  });
+});
+
+describe('ConnectionsHome — typed Data Health navigation', () => {
+  it.each([
+    {
+      name: 'exchange connection id',
+      setup: () => { mocks.connections.current = [conn({ id: 'exact-exchange' })]; },
+      target: { kind: 'exchange' as const, connectionId: 'exact-exchange' },
+      cardId: 'exchange:exact-exchange'
+    },
+    {
+      name: 'CSV import id',
+      setup: () => { mocks.csvImports.current = [csvImport({ id: 'exact-import' })]; },
+      target: { kind: 'csv' as const, importId: 'exact-import' },
+      cardId: 'file:exact-import'
+    },
+    {
+      name: 'normalized wallet chain and address',
+      setup: () => {
+        mocks.wallets.current = [wallet({ id: 'ethereum:0xabcdef', chain: 'ethereum', address: '0xAbCdEf' })];
+      },
+      target: { kind: 'wallet' as const, chain: 'ETH', address: '0xABCDEF' },
+      cardId: 'wallet:evm:0xabcdef'
+    }
+  ])('opens the exact $name and waits for detail acknowledgment', async ({ setup, target, cardId }) => {
+    setup();
+    const acknowledged = vi.fn();
+    render(<ConnectionsHome navigationIntent={{
+      id: 'health-intent', destination: 'connections', target, workspaceTab: 'reconciliation', focus: { kind: 'none' }
+    }} onNavigationIntentAcknowledged={acknowledged} />);
+
+    const detail = await screen.findByTestId('connection-detail-mock');
+    expect(detail).toHaveAttribute('data-card-id', cardId);
+    expect(detail).toHaveAttribute('data-navigation-id', 'health-intent');
+    expect(acknowledged).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('detail-acknowledge-mock'));
+    expect(acknowledged).toHaveBeenCalledWith('health-intent');
+  });
+
+  it('clears and acknowledges an exact source target that no longer exists', async () => {
+    const acknowledged = vi.fn();
+    render(<ConnectionsHome navigationIntent={{
+      id: 'missing-intent',
+      destination: 'connections',
+      target: { kind: 'exchange', connectionId: 'deleted-exchange' },
+      workspaceTab: 'overview',
+      focus: { kind: 'none' }
+    }} onNavigationIntentAcknowledged={acknowledged} />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('That exact source no longer exists.');
+    expect(acknowledged).toHaveBeenCalledWith('missing-intent');
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+  });
+
+  it('returns a stale asset/opening intent to a Data Health-capable missing state without acknowledging it', async () => {
+    mocks.connections.current = [conn({ id: 'exact-exchange' })];
+    const acknowledged = vi.fn();
+    const back = vi.fn();
+    render(<ConnectionsHome navigationIntent={{
+      id: 'stale-asset-intent',
+      destination: 'connections',
+      target: { kind: 'exchange', connectionId: 'exact-exchange' },
+      workspaceTab: 'reconciliation',
+      focus: { kind: 'asset', scopeId: 'exchange:exact-exchange', accountClass: 'spot', assetKey: 'asset:deleted' }
+    }} onNavigationIntentAcknowledged={acknowledged} onNavigationBack={back} />);
+
+    expect(await screen.findByTestId('connection-detail-mock')).toBeInTheDocument();
+    expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute('data-has-target-missing', 'true');
+    fireEvent.click(screen.getByTestId('detail-target-missing-mock'));
+    expect(await screen.findByRole('alert')).toHaveTextContent('That exact asset or opening evidence no longer exists.');
+    expect(acknowledged).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /Data Health/ }));
+    expect(back).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports when an exact source is deleted while its detail is opening', async () => {
+    mocks.connections.current = [conn({ id: 'opening-exchange' })];
+    const acknowledged = vi.fn();
+    const intent = {
+      id: 'opening-intent',
+      destination: 'connections' as const,
+      target: { kind: 'exchange' as const, connectionId: 'opening-exchange' },
+      workspaceTab: 'overview' as const,
+      focus: { kind: 'sync' as const }
+    };
+    const view = render(<ConnectionsHome
+      navigationIntent={intent}
+      onNavigationIntentAcknowledged={acknowledged}
+    />);
+    expect(await screen.findByTestId('connection-detail-mock')).toBeInTheDocument();
+
+    mocks.connections.current = [];
+    view.rerender(<ConnectionsHome
+      navigationIntent={intent}
+      onNavigationIntentAcknowledged={acknowledged}
+    />);
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('This source was deleted while it was opening.');
+    expect(acknowledged).toHaveBeenCalledWith('opening-intent');
     expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
   });
 });

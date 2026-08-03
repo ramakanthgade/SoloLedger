@@ -1,4 +1,5 @@
 import { ConnectionsHome } from '@/components/connections/ConnectionsHome';
+import type { SourceNavigationIntent } from '@/lib/navigationIntent';
 
 /**
  * ImportTab — the shell's "Connections" tab (tab id stays 'import').
@@ -13,6 +14,10 @@ import { ConnectionsHome } from '@/components/connections/ConnectionsHome';
  * - Auto-sync      → What › Exchange account › an API exchange
  *   (ExchangeConnectStep)
  */
-export function ImportTab() {
-  return <ConnectionsHome />;
+export function ImportTab({ navigationIntent, onNavigationIntentAcknowledged, onNavigationBack }: {
+  navigationIntent?: SourceNavigationIntent;
+  onNavigationIntentAcknowledged?: (id: string) => void;
+  onNavigationBack?: () => void;
+} = {}) {
+  return <ConnectionsHome navigationIntent={navigationIntent} onNavigationIntentAcknowledged={onNavigationIntentAcknowledged} onNavigationBack={onNavigationBack} />;
 }

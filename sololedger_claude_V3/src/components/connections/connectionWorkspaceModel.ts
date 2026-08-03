@@ -64,6 +64,13 @@ export type ConnectionWorkspaceSourceIdentity =
   | (WorkspaceSourceBase & { kind: 'wallet'; chain: string; address: string; label?: string })
   | (WorkspaceSourceBase & { kind: 'manual' });
 
+/** Durable identities used to route remediation without implying transaction ownership. */
+export type ConnectionWorkspaceEvidenceOwner =
+  | { kind: 'exchange-api'; sourceIdentityId: string }
+  | { kind: 'file'; sourceIdentityId: string }
+  | { kind: 'wallet'; sourceIdentityId: string; chain: string; address: string }
+  | { kind: 'manual'; sourceIdentityId: string };
+
 export interface ConnectionWorkspaceInput {
   id: string;
   kind: ConnectionCardData['kind'];
@@ -192,7 +199,10 @@ export type ConnectionWorkspaceHistoryEvent =
 export interface ConnectionWorkspaceSnapshot {
   id: string;
   kind: ConnectionCardData['kind'];
+  /** Direct transaction sources represented by this card. */
   sources: readonly ConnectionWorkspaceSourceIdentity[];
+  /** Selected/contributing evidence identities, including linked non-source owners. */
+  evidenceOwners: readonly ConnectionWorkspaceEvidenceOwner[];
   scopes: readonly ConnectionWorkspaceScopeView[];
   overview: ConnectionWorkspaceOverview;
   reconciliation: readonly ConnectionWorkspaceAssetView[];
@@ -616,6 +626,46 @@ export function buildConnectionWorkspaceSnapshot(input: ConnectionWorkspaceInput
       contributingSourceIds.add(snapshot.sourceIdentityId);
     }
   }
+  const evidenceOwners = new Map<string, ConnectionWorkspaceEvidenceOwner>();
+  for (const source of input.sources) {
+    evidenceOwners.set(source.sourceIdentityId, source.kind === 'wallet'
+      ? {
+          kind: 'wallet', sourceIdentityId: source.sourceIdentityId,
+          chain: source.chain, address: source.address
+        }
+      : { kind: source.kind, sourceIdentityId: source.sourceIdentityId });
+  }
+  for (const connection of input.exchangeConnections) {
+    if (contributingSourceIds.has(connection.id)) {
+      evidenceOwners.set(connection.id, { kind: 'exchange-api', sourceIdentityId: connection.id });
+    }
+  }
+  for (const row of coverage) {
+    if (!contributingSourceIds.has(row.row.sourceIdentityId) || evidenceOwners.has(row.row.sourceIdentityId)) continue;
+    if (row.row.kind === 'api') {
+      evidenceOwners.set(row.row.sourceIdentityId, {
+        kind: 'exchange-api', sourceIdentityId: row.row.sourceIdentityId
+      });
+    } else if (row.row.kind === 'csv') {
+      evidenceOwners.set(row.row.sourceIdentityId, {
+        kind: 'file', sourceIdentityId: row.row.sourceIdentityId
+      });
+    }
+  }
+  for (const key of selectedScopeKeys) {
+    for (const snapshot of evidenceIndexes.snapshotsByScope.get(key) ?? []) {
+      if (evidenceOwners.has(snapshot.sourceIdentityId)) continue;
+      if (snapshot.authorityKind === 'api') {
+        evidenceOwners.set(snapshot.sourceIdentityId, {
+          kind: 'exchange-api', sourceIdentityId: snapshot.sourceIdentityId
+        });
+      } else if (snapshot.authorityKind === 'csv') {
+        evidenceOwners.set(snapshot.sourceIdentityId, {
+          kind: 'file', sourceIdentityId: snapshot.sourceIdentityId
+        });
+      }
+    }
+  }
   const postingEvidence = new Set<string>();
   for (const rows of postingsByAsset.values()) {
     for (const posting of rows) {
@@ -626,6 +676,7 @@ export function buildConnectionWorkspaceSnapshot(input: ConnectionWorkspaceInput
     id: input.id,
     kind: input.kind,
     sources: input.sources.map((source) => ({ ...source, transactionIds: source.transactionIds && [...source.transactionIds] })),
+    evidenceOwners: [...evidenceOwners.values()],
     scopes: scopeViews,
     overview: {
       holdings: projection.holdings,
@@ -662,6 +713,25 @@ export interface ConnectionWorkspaceCardAdapterInput {
   liveCsvImports?: readonly CsvImportRow[];
   liveWalletRows?: readonly LookupAddressRow[];
   metrics?: ConnectionWorkspaceMetrics;
+  collectionIndex?: ConnectionWorkspaceCollectionIndex;
+}
+
+export interface ConnectionWorkspaceCollectionIndex {
+  attribution: AttributionIndex;
+  transactionById: ReadonlyMap<string, Transaction>;
+  transactionIdsByImport: ReadonlyMap<string, readonly string[]>;
+  transactionIdsByWallet: ReadonlyMap<string, readonly string[]>;
+  manualTransactionIds: readonly string[];
+  transactionsByScope: ReadonlyMap<string, readonly Transaction[]>;
+  coverageBySource: ReadonlyMap<string, readonly SourceCoverageRow[]>;
+  coverageByScope: ReadonlyMap<string, readonly SourceCoverageRow[]>;
+  snapshotsBySource: ReadonlyMap<string, readonly AuthoritySnapshotRow[]>;
+  snapshotsByScope: ReadonlyMap<string, readonly AuthoritySnapshotRow[]>;
+  assetsBySnapshot: ReadonlyMap<string, readonly AuthorityAssetRow[]>;
+  assetsByScope: ReadonlyMap<string, readonly AuthorityAssetRow[]>;
+  openingsByScope: ReadonlyMap<string, readonly OpeningBalanceRow[]>;
+  openingsByScopeId: ReadonlyMap<string, readonly OpeningBalanceRow[]>;
+  openingsByFileSource: ReadonlyMap<string, readonly OpeningBalanceRow[]>;
 }
 
 export interface PreparedConnectionWorkspace {
@@ -669,9 +739,65 @@ export interface PreparedConnectionWorkspace {
   readonly projection: HoldingsProjection;
 }
 
-interface AttributionIndex {
+export interface AttributionIndex {
   connectionById: ReadonlyMap<string, ExchangeSourceIdentity>;
   liveBinanceConnections: readonly ExchangeSourceIdentity[];
+}
+
+function appendMap<K, V>(map: Map<K, V[]>, key: K, value: V): void {
+  const rows = map.get(key) ?? [];
+  rows.push(value);
+  map.set(key, rows);
+}
+
+/** One linear attribution/evidence pass shared by every aggregate source card. */
+export function prepareConnectionWorkspaceCollectionIndex(input: Omit<ConnectionWorkspaceCardAdapterInput, 'card' | 'now' | 'collectionIndex'>): ConnectionWorkspaceCollectionIndex {
+  const attribution = buildAttributionIndex(input.exchangeConnections, input.metrics);
+  const transactionById = new Map<string, Transaction>();
+  const transactionIdsByImport = new Map<string, string[]>();
+  const transactionIdsByWallet = new Map<string, string[]>();
+  const manualTransactionIds: string[] = [];
+  const transactionsByScope = new Map<string, Transaction[]>();
+  for (const transaction of input.transactions) {
+    transactionById.set(transaction.id, transaction);
+    if (transaction.importBatchId) appendMap(transactionIdsByImport, transaction.importBatchId, transaction.id);
+    if (transaction.dedupMatchedApiRow?.importBatchId) appendMap(transactionIdsByImport, transaction.dedupMatchedApiRow.importBatchId, transaction.id);
+    if (transaction.walletAddress) appendMap(transactionIdsByWallet, canonicalWalletIdentity(transaction.chain ?? '', transaction.walletAddress), transaction.id);
+    if (transaction.source === 'manual' && transaction.importBatchId == null) manualTransactionIds.push(transaction.id);
+    const resolved = resolveForAttribution(transaction, input.exchangeConnections, attribution, input.metrics);
+    appendMap(transactionsByScope, scopeKey(resolved.accountScopeId, resolved.accountClass), transaction);
+  }
+  const coverageBySource = new Map<string, SourceCoverageRow[]>();
+  const coverageByScope = new Map<string, SourceCoverageRow[]>();
+  for (const row of input.sourceCoverage) {
+    appendMap(coverageBySource, row.sourceIdentityId, row);
+    const associated = associateSourceCoverageScope(row, input.exchangeConnections);
+    appendMap(coverageByScope, scopeKey(associated.accountScopeId, associated.accountClass), row);
+  }
+  const snapshotsBySource = new Map<string, AuthoritySnapshotRow[]>();
+  const snapshotsByScope = new Map<string, AuthoritySnapshotRow[]>();
+  for (const row of input.snapshots) {
+    appendMap(snapshotsBySource, row.sourceIdentityId, row);
+    appendMap(snapshotsByScope, scopeKey(row.scopeId, row.accountClass), row);
+  }
+  const assetsBySnapshot = new Map<string, AuthorityAssetRow[]>();
+  const assetsByScope = new Map<string, AuthorityAssetRow[]>();
+  for (const row of input.assets) {
+    appendMap(assetsBySnapshot, row.snapshotId, row);
+    appendMap(assetsByScope, scopeKey(row.scopeId, row.accountClass), row);
+  }
+  const openingsByScope = new Map<string, OpeningBalanceRow[]>();
+  const openingsByScopeId = new Map<string, OpeningBalanceRow[]>();
+  const openingsByFileSource = new Map<string, OpeningBalanceRow[]>();
+  for (const row of input.openingBalances) {
+    appendMap(openingsByScope, scopeKey(row.scopeId, row.accountClass), row);
+    appendMap(openingsByScopeId, row.scopeId, row);
+    if (row.scopeId.startsWith('file:')) {
+      const sourceId = row.scopeId.slice('file:'.length).split(':', 1)[0];
+      if (sourceId) appendMap(openingsByFileSource, sourceId, row);
+    }
+  }
+  return { attribution, transactionById, transactionIdsByImport, transactionIdsByWallet, manualTransactionIds, transactionsByScope, coverageBySource, coverageByScope, snapshotsBySource, snapshotsByScope, assetsBySnapshot, assetsByScope, openingsByScope, openingsByScopeId, openingsByFileSource };
 }
 
 function buildAttributionIndex(
@@ -727,7 +853,7 @@ function cardTransactionIds(card: ConnectionCardData, transactions: readonly Tra
 
 function sourcesFromCard(input: ConnectionWorkspaceCardAdapterInput): ConnectionWorkspaceSourceIdentity[] {
   if (input.card.kind === 'exchange-api' && input.card.exchange) {
-    const ids = cardTransactionIds(input.card, input.transactions);
+    const ids = [...(input.collectionIndex ? input.collectionIndex.transactionIdsByImport.get(input.card.exchange.id) ?? [] : cardTransactionIds(input.card, input.transactions))];
     const live = input.liveExchangeConnections?.find((row) => row.id === input.card.exchange!.id) ?? input.card.exchange;
     return [{
       kind: 'exchange-api', sourceIdentityId: live.id, exchange: live.exchange,
@@ -735,7 +861,7 @@ function sourcesFromCard(input: ConnectionWorkspaceCardAdapterInput): Connection
     }];
   }
   if (input.card.kind === 'file' && input.card.csvImport) {
-    const ids = cardTransactionIds(input.card, input.transactions);
+    const ids = [...(input.collectionIndex ? input.collectionIndex.transactionIdsByImport.get(input.card.csvImport.id) ?? [] : cardTransactionIds(input.card, input.transactions))];
     const live = input.liveCsvImports?.find((row) => row.id === input.card.csvImport!.id) ?? input.card.csvImport;
     return [{
       kind: 'file', sourceIdentityId: live.id, fileName: live.fileName,
@@ -745,13 +871,10 @@ function sourcesFromCard(input: ConnectionWorkspaceCardAdapterInput): Connection
   if (input.card.kind === 'wallet') {
     const cardIds = new Set((input.card.walletRows ?? []).map((row) => row.id));
     const rows = input.liveWalletRows?.filter((row) => cardIds.has(row.id)) ?? input.card.walletRows ?? [];
-    const transactionIdsByWallet = new Map<string, string[]>();
-    for (const transaction of input.transactions) {
+    const transactionIdsByWallet = input.collectionIndex?.transactionIdsByWallet ?? new Map<string, string[]>();
+    if (!input.collectionIndex) for (const transaction of input.transactions) {
       if (transaction.walletAddress == null) continue;
-      const identity = canonicalWalletIdentity(transaction.chain ?? '', transaction.walletAddress);
-      const ids = transactionIdsByWallet.get(identity) ?? [];
-      ids.push(transaction.id);
-      transactionIdsByWallet.set(identity, ids);
+      appendMap(transactionIdsByWallet as Map<string, string[]>, canonicalWalletIdentity(transaction.chain ?? '', transaction.walletAddress), transaction.id);
     }
     return rows.map((row) => ({
       kind: 'wallet', sourceIdentityId: row.id, chain: row.chain,
@@ -759,7 +882,7 @@ function sourcesFromCard(input: ConnectionWorkspaceCardAdapterInput): Connection
       transactionIds: transactionIdsByWallet.get(canonicalWalletIdentity(row.chain, row.address)) ?? []
     }));
   }
-  const ids = cardTransactionIds(input.card, input.transactions);
+  const ids = [...(input.collectionIndex ? input.collectionIndex.manualTransactionIds : cardTransactionIds(input.card, input.transactions))];
   return [{ kind: 'manual', sourceIdentityId: 'manual', transactionIds: ids }];
 }
 
@@ -772,7 +895,13 @@ function scopesFromCard(
   const transactionIds = new Set(sources.flatMap((source) => [...(source.transactionIds ?? [])]));
   const scopes: ConnectionWorkspaceScopeIdentity[] = [];
   const projectedAuthorityKeys = new Set<string>();
-  for (const row of input.sourceCoverage) {
+  const sourceCoverageRows = input.collectionIndex
+    ? [...sourceIds].flatMap((id) => input.collectionIndex!.coverageBySource.get(id) ?? [])
+    : input.sourceCoverage;
+  const sourceSnapshotRows = input.collectionIndex
+    ? [...sourceIds].flatMap((id) => input.collectionIndex!.snapshotsBySource.get(id) ?? [])
+    : input.snapshots;
+  for (const row of sourceCoverageRows) {
     if (row.authoritySnapshotId == null) continue;
     const associated = associateSourceCoverageScope(row, input.exchangeConnections);
     if (associated.accountScopeId === row.scopeId) continue;
@@ -784,8 +913,11 @@ function scopesFromCard(
       associated.accountClass
     ));
   }
-  for (const transaction of input.transactions) {
-    if (!transactionIds.has(transaction.id)) continue;
+  const transactionsForSources = input.collectionIndex
+    ? [...transactionIds].map((id) => input.collectionIndex!.transactionById.get(id)).filter((row): row is Transaction => row != null)
+    : input.transactions;
+  for (const transaction of transactionsForSources) {
+    if (!input.collectionIndex && !transactionIds.has(transaction.id)) continue;
     const resolved = resolveForAttribution(
       transaction, input.exchangeConnections, attribution, input.metrics
     );
@@ -795,7 +927,7 @@ function scopesFromCard(
       scopeStatus: resolved.scopeStatus
     });
   }
-  for (const row of input.sourceCoverage) {
+  for (const row of sourceCoverageRows) {
     const associated = associateSourceCoverageScope(row, input.exchangeConnections);
     if (!sourceIds.has(row.sourceIdentityId) &&
       !('linkedSourceIdentityId' in associated && associated.linkedSourceIdentityId && sourceIds.has(associated.linkedSourceIdentityId))) continue;
@@ -805,7 +937,7 @@ function scopesFromCard(
       scopeStatus: associated.scopeStatus === 'unresolved' ? 'unresolved' : 'resolved'
     });
   }
-  for (const snapshot of input.snapshots) {
+  for (const snapshot of sourceSnapshotRows) {
     if (!sourceIds.has(snapshot.sourceIdentityId)) continue;
     // A linked CSV operation remains persisted against its file identity, but
     // its authority is projected onto the associated exchange scope. Do not
@@ -839,7 +971,14 @@ function scopesFromCard(
     if (source.kind === 'manual') scopes.push({ scopeId: 'manual', accountClass: 'manual', scopeStatus: 'resolved' });
   }
   const selectedScopeIds = new Set(scopes.map((scope) => scope.scopeId));
-  for (const opening of input.openingBalances) {
+  const relevantOpenings = input.collectionIndex
+    ? [...new Set([
+        ...[...selectedScopeIds].flatMap((id) => input.collectionIndex!.openingsByScopeId.get(id) ?? []),
+        ...sources.filter((source) => source.kind === 'file')
+          .flatMap((source) => input.collectionIndex!.openingsByFileSource.get(source.sourceIdentityId) ?? [])
+      ])]
+    : input.openingBalances;
+  for (const opening of relevantOpenings) {
     const belongsToFileSource = sources.some((source) =>
       source.kind === 'file' && opening.scopeId.startsWith(`file:${source.sourceIdentityId}:`));
     if (selectedScopeIds.has(opening.scopeId) || belongsToFileSource) scopes.push({
@@ -860,7 +999,7 @@ export function buildConnectionWorkspaceFromCard(
 export function prepareConnectionWorkspaceFromCard(
   input: ConnectionWorkspaceCardAdapterInput
 ): PreparedConnectionWorkspace {
-  const attribution = buildAttributionIndex(input.exchangeConnections, input.metrics);
+  const attribution = input.collectionIndex?.attribution ?? buildAttributionIndex(input.exchangeConnections, input.metrics);
   const sources = sourcesFromCard(input);
   const scopes = scopesFromCard(input, sources, attribution);
   const sourceIds = new Set(sources.map((source) => source.sourceIdentityId));
@@ -868,13 +1007,18 @@ export function prepareConnectionWorkspaceFromCard(
   // Custody projection follows exact resolved ownership, not only the source's
   // direct transaction IDs. This includes uniquely associated CSV backfill
   // rows while source-specific Overview counts remain based on transactionIds.
-  const selectedTransactions = input.transactions.filter((transaction) => {
-    const resolved = resolveForAttribution(
-      transaction, input.exchangeConnections, attribution, input.metrics
-    );
-    return selectedScopePairs.has(scopeKey(resolved.accountScopeId, resolved.accountClass));
-  });
-  const selectedCoverage = input.sourceCoverage.filter((row) => {
+  const selectedTransactions = input.collectionIndex
+    ? [...selectedScopePairs].flatMap((key) => input.collectionIndex!.transactionsByScope.get(key) ?? [])
+    : input.transactions.filter((transaction) => {
+      const resolved = resolveForAttribution(transaction, input.exchangeConnections, attribution, input.metrics);
+      return selectedScopePairs.has(scopeKey(resolved.accountScopeId, resolved.accountClass));
+    });
+  const selectedCoverage = input.collectionIndex
+    ? [...new Set([
+        ...[...sourceIds].flatMap((id) => input.collectionIndex!.coverageBySource.get(id) ?? []),
+        ...[...selectedScopePairs].flatMap((key) => input.collectionIndex!.coverageByScope.get(key) ?? [])
+      ])]
+    : input.sourceCoverage.filter((row) => {
     if (sourceIds.has(row.sourceIdentityId)) return true;
     const associated = associateSourceCoverageScope(row, input.exchangeConnections);
     return selectedScopePairs.has(scopeKey(associated.accountScopeId, associated.accountClass));
@@ -882,14 +1026,22 @@ export function prepareConnectionWorkspaceFromCard(
   const selectedSnapshotIds = new Set(selectedCoverage
     .map((row) => row.authoritySnapshotId)
     .filter((id): id is string => id != null));
-  const selectedSnapshots = input.snapshots.filter((row) =>
-    sourceIds.has(row.sourceIdentityId) || selectedSnapshotIds.has(row.snapshotId) ||
-    selectedScopePairs.has(scopeKey(row.scopeId, row.accountClass)));
+  const selectedSnapshots = input.collectionIndex
+    ? [...new Set([
+        ...[...sourceIds].flatMap((id) => input.collectionIndex!.snapshotsBySource.get(id) ?? []),
+        ...[...selectedScopePairs].flatMap((key) => input.collectionIndex!.snapshotsByScope.get(key) ?? [])
+      ])]
+    : input.snapshots.filter((row) => sourceIds.has(row.sourceIdentityId) || selectedSnapshotIds.has(row.snapshotId) || selectedScopePairs.has(scopeKey(row.scopeId, row.accountClass)));
   for (const row of selectedSnapshots) selectedSnapshotIds.add(row.snapshotId);
-  const selectedAssets = input.assets.filter((row) =>
-    selectedSnapshotIds.has(row.snapshotId) || selectedScopePairs.has(scopeKey(row.scopeId, row.accountClass)));
-  const selectedOpenings = input.openingBalances.filter((row) =>
-    selectedScopePairs.has(scopeKey(row.scopeId, row.accountClass)));
+  const selectedAssets = input.collectionIndex
+    ? [...new Set([
+        ...[...selectedSnapshotIds].flatMap((id) => input.collectionIndex!.assetsBySnapshot.get(id) ?? []),
+        ...[...selectedScopePairs].flatMap((key) => input.collectionIndex!.assetsByScope.get(key) ?? [])
+      ])]
+    : input.assets.filter((row) => selectedSnapshotIds.has(row.snapshotId) || selectedScopePairs.has(scopeKey(row.scopeId, row.accountClass)));
+  const selectedOpenings = input.collectionIndex
+    ? [...selectedScopePairs].flatMap((key) => input.collectionIndex!.openingsByScope.get(key) ?? [])
+    : input.openingBalances.filter((row) => selectedScopePairs.has(scopeKey(row.scopeId, row.accountClass)));
   if (input.metrics) input.metrics.projectionTransactionCount = selectedTransactions.length;
   let comparisonAt = input.comparisonAt;
   if (comparisonAt == null && input.card.kind === 'file') {

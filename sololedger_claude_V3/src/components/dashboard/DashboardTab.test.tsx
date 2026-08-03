@@ -742,12 +742,50 @@ describe('DashboardTab — confirmed authority zero', () => {
       view = await renderTab();
       expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('7.0000');
 
-      act(() => vi.advanceTimersByTime(24 * 60 * 60_000 + 5 * 60_000));
+      act(() => vi.advanceTimersByTime(24 * 60 * 60_000));
+      expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('7.0000');
+
+      act(() => vi.advanceTimersByTime(1));
 
       expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('2.0000');
       expect(screen.getByTestId('dashboard-holdings')).not.toHaveTextContent('7.0000');
     } finally {
       view?.unmount();
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+      SEED.exchangeConns.length = 0;
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes authority freshness when the window regains focus or becomes visible', async () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(now);
+    const backup = [...SEED.txs];
+    SEED.txs.length = 0;
+    SEED.txs.push({
+      id: 'api-focus', timestamp: now - 1_000, type: 'transfer_in', asset: 'BTC', amount: 2,
+      fiatCurrency: 'INR', fiatValue: 200, source: 'binance_api', importBatchId: 'conn1',
+      flags: [], isInternalTransfer: false
+    });
+    SEED.exchangeConns.push({ id: 'conn1', exchange: 'binance', label: 'Binance',
+      createdAt: now, cursors: {}, status: 'ok' } as never);
+    seedExchangeAuthority('BTC', 7, { asOf: now });
+    let view: Awaited<ReturnType<typeof renderTab>> | undefined;
+    const visibility = Object.getOwnPropertyDescriptor(document, 'visibilityState');
+    try {
+      view = await renderTab();
+      expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('7.0000');
+      vi.setSystemTime(now + 24 * 60 * 60_000 + 1);
+      act(() => window.dispatchEvent(new Event('focus')));
+      expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('2.0000');
+
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' });
+      act(() => document.dispatchEvent(new Event('visibilitychange')));
+      expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('2.0000');
+    } finally {
+      view?.unmount();
+      if (visibility) Object.defineProperty(document, 'visibilityState', visibility);
       SEED.txs.splice(0, SEED.txs.length, ...backup);
       SEED.exchangeConns.length = 0;
       vi.useRealTimers();
