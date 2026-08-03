@@ -24,11 +24,13 @@ import {
   associateSourceCoverageScope,
   evaluateOpeningCoverage,
   evaluateSourceCoverage,
+  selectLatestSemanticSourceCoverage,
   type OpeningCoverageStatus,
   type SourceCoverageEvaluation,
   type SourceCoverageRow,
   type StructuralCoverageStatus
 } from '@/lib/reconcile/sourceCoverage';
+import { buildReconciliationEvidenceIndexes, projectReconciliationCoverage, type ProjectedCoverage } from '@/lib/reconcile/evidenceIndexes';
 import {
   compareReconSeverity,
   deriveReconPresentation,
@@ -199,12 +201,6 @@ export interface ConnectionWorkspaceSnapshot {
   comparisonAt?: number;
 }
 
-interface ProjectedCoverage {
-  row: SourceCoverageRow;
-  scopeId: string;
-  accountClass: AccountClass;
-}
-
 function scopeKey(scopeId: string, accountClass: AccountClass): string {
   return `${scopeId}${KEY_SEPARATOR}${accountClass}`;
 }
@@ -245,122 +241,15 @@ function uniqueScopes(scopes: readonly ConnectionWorkspaceScopeIdentity[]): Conn
     left.scopeId.localeCompare(right.scopeId) || left.accountClass.localeCompare(right.accountClass));
 }
 
-function projectCoverage(
-  rows: readonly SourceCoverageRow[],
-  exchangeConnections: readonly ExchangeSourceIdentity[],
-  metrics?: ConnectionWorkspaceMetrics
-): ProjectedCoverage[] {
-  const liveBinance = exchangeConnections.filter((source) =>
-    source.exchange === 'binance' && source.deletedAt == null);
-  return rows.map((row) => {
-    if (metrics) metrics.coverageAssociationVisits += 1;
-    const associated = associateSourceCoverageScope(row, liveBinance);
-    return { row, scopeId: associated.accountScopeId, accountClass: associated.accountClass };
-  });
-}
-
-function coverageOperationTime(row: SourceCoverageRow): number {
-  return row.completedAt ?? row.startedAt;
-}
+const projectCoverage = projectReconciliationCoverage;
 
 /** Generations are monotonic only within one durable source identity. */
 function selectedCoverage(rows: readonly ProjectedCoverage[]): ProjectedCoverage | undefined {
-  const latestBySource = new Map<string, ProjectedCoverage>();
-  for (const candidate of rows) {
-    const current = latestBySource.get(candidate.row.sourceIdentityId);
-    if (!current || candidate.row.generation > current.row.generation ||
-      (candidate.row.generation === current.row.generation &&
-        (coverageOperationTime(candidate.row) > coverageOperationTime(current.row) ||
-          (coverageOperationTime(candidate.row) === coverageOperationTime(current.row) &&
-            candidate.row.id > current.row.id)))) {
-      latestBySource.set(candidate.row.sourceIdentityId, candidate);
-    }
-  }
-  const kindRank = (kind: SourceCoverageRow['kind']) =>
-    kind === 'api' ? 0 : kind === 'rpc' ? 1 : kind === 'csv' ? 2 : 3;
-  return [...latestBySource.values()].sort((left, right) =>
-    kindRank(left.row.kind) - kindRank(right.row.kind) ||
-    coverageOperationTime(right.row) - coverageOperationTime(left.row) ||
-    left.row.sourceIdentityId.localeCompare(right.row.sourceIdentityId))[0];
+  const selected = selectLatestSemanticSourceCoverage(rows.map(({ row }) => row));
+  return selected && rows.find(({ row }) => row === selected);
 }
 
-interface WorkspaceEvidenceIndexes {
-  coverageByScope: ReadonlyMap<string, readonly ProjectedCoverage[]>;
-  snapshotsByScope: ReadonlyMap<string, readonly AuthoritySnapshotRow[]>;
-  assetsByScope: ReadonlyMap<string, readonly AuthorityAssetRow[]>;
-}
-
-function buildEvidenceIndexes(
-  snapshots: readonly AuthoritySnapshotRow[],
-  assets: readonly AuthorityAssetRow[],
-  coverage: readonly ProjectedCoverage[],
-  metrics?: ConnectionWorkspaceMetrics
-): WorkspaceEvidenceIndexes {
-  const coverageByScope = new Map<string, ProjectedCoverage[]>();
-  const authorityTargets = new Map<string, ProjectedCoverage[]>();
-  for (const projected of coverage) {
-    const scoped = scopeKey(projected.scopeId, projected.accountClass);
-    const scopedRows = coverageByScope.get(scoped) ?? [];
-    scopedRows.push(projected);
-    coverageByScope.set(scoped, scopedRows);
-    if (projected.row.authoritySnapshotId == null) continue;
-    const targetKey = authorityAssociationKey(
-      projected.row.authoritySnapshotId,
-      projected.row.generation,
-      projected.row.sourceIdentityId,
-      projected.row.scopeId,
-      projected.accountClass
-    );
-    const targets = authorityTargets.get(targetKey) ?? [];
-    targets.push(projected);
-    authorityTargets.set(targetKey, targets);
-  }
-  const assetsBySnapshot = new Map<string, AuthorityAssetRow[]>();
-  for (const row of assets) {
-    if (metrics) metrics.authorityAssetIndexVisits += 1;
-    const evidenceKey = authorityAssetEvidenceKey(
-      row.snapshotId, row.generation, row.scopeId, row.accountClass
-    );
-    const group = assetsBySnapshot.get(evidenceKey) ?? [];
-    group.push(row);
-    assetsBySnapshot.set(evidenceKey, group);
-  }
-  const snapshotsByScope = new Map<string, AuthoritySnapshotRow[]>();
-  const assetsByScope = new Map<string, AuthorityAssetRow[]>();
-  for (const snapshot of snapshots) {
-    if (metrics) metrics.authoritySnapshotIndexVisits += 1;
-    const snapshotEvidenceKey = authorityAssetEvidenceKey(
-      snapshot.snapshotId, snapshot.generation, snapshot.scopeId, snapshot.accountClass
-    );
-    const targetKey = authorityAssociationKey(
-      snapshot.snapshotId,
-      snapshot.generation,
-      snapshot.sourceIdentityId,
-      snapshot.scopeId,
-      snapshot.accountClass
-    );
-    const targets = authorityTargets.get(targetKey) ?? [];
-    const scopes = targets.length > 0
-      ? targets.map((target) => ({ scopeId: target.scopeId, accountClass: target.accountClass }))
-      : [{ scopeId: snapshot.scopeId, accountClass: snapshot.accountClass }];
-    const seen = new Set<string>();
-    for (const target of scopes) {
-      const key = scopeKey(target.scopeId, target.accountClass);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const projectedSnapshot = { ...snapshot, scopeId: target.scopeId };
-      const scopedSnapshots = snapshotsByScope.get(key) ?? [];
-      scopedSnapshots.push(projectedSnapshot);
-      snapshotsByScope.set(key, scopedSnapshots);
-      for (const row of assetsBySnapshot.get(snapshotEvidenceKey) ?? []) {
-        const scopedAssets = assetsByScope.get(key) ?? [];
-        scopedAssets.push({ ...row, scopeId: target.scopeId });
-        assetsByScope.set(key, scopedAssets);
-      }
-    }
-  }
-  return { coverageByScope, snapshotsByScope, assetsByScope };
-}
+const buildEvidenceIndexes = buildReconciliationEvidenceIndexes;
 
 function openingEvidence(
   postings: readonly DerivedPosting[],

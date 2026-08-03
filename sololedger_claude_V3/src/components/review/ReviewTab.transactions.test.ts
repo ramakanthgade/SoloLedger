@@ -96,8 +96,9 @@ describe('ReviewTab — round 4: compact aligned rows (no middle desert)', () =>
     expect(source).toContain('lg:max-w-[34rem]');
   });
 
-  it('a disposal with no cost-basis data renders "—" in the details facts, not an invented ₹0.00', () => {
-    expect(source).toContain('pricedDisposal.costBasis > 0');
+  it('uses matched-row missing status rather than treating every zero basis as missing', () => {
+    expect(source).toContain("row.status === 'missing_cost_basis'");
+    expect(source).not.toContain('pricedDisposal.costBasis > 0');
   });
 });
 
@@ -105,6 +106,26 @@ describe('ReviewTab — grammar fix: needs-price banner is plural-aware', () => 
   it('delegates to needsPriceLine and no longer hardcodes "still need a price"', () => {
     expect(source).toContain('needsPriceLine(missingPriceTxs.length)');
     expect(source).not.toContain('still need a price');
+  });
+});
+
+describe('ReviewTab — transaction reconciliation and mobile overlays', () => {
+  it('does not reconcile custody history for collapsed rows', () => {
+    expect(source).toContain('const reconciliation = expanded && principalPosting && selectedAuthority ? reconcileDerivedPostings({');
+  });
+
+  it('uses the shared linked-source evidence projection', () => {
+    expect(source).toContain('buildReconciliationEvidenceIndexes(');
+    expect(source).toContain('projectReconciliationCoverage(coverage, exchangeConnections)');
+    expect(source).toContain('buildReviewReconciliationEvidence(evidenceIndexes, authoritySelectionNow)');
+    expect(source).toContain('const reconciliationCoverage = authorityCoverageByScope.get(scopeKey) ?? selectedCoverage;');
+  });
+
+  it('keeps a wrapped bulk action bar above mobile navigation', () => {
+    expect(source).toContain('data-testid="bulk-action-bar"');
+    expect(source).toContain('bottom-20');
+    expect(source).toContain('lg:bottom-5');
+    expect(source).toContain("selected.size > 0 ? 'pb-64 lg:pb-28' : 'pb-28'");
   });
 });
 

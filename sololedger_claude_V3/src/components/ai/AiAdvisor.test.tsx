@@ -1,10 +1,11 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AiAdvisor } from './AiAdvisor';
 import { db } from '@/lib/storage/db';
 import { getNetworkMode, resetNetworkActivity } from '@/lib/networkActivity';
 import { setMode } from '@/lib/saas/mode';
+import { setBulkActionsActive } from '@/lib/ui/floatingOverlayActivity';
 
 // Hosted-mode tests need the server config fetch; local tests never call it.
 vi.mock('@/lib/saas/api', () => ({
@@ -49,6 +50,7 @@ async function seedSettings(consent: boolean) {
 
 describe('AiAdvisor consent gate (A2)', () => {
   beforeEach(async () => {
+    setBulkActionsActive(false);
     resetNetworkActivity();
     await db.settings.clear();
     await db.transactions.clear();
@@ -89,6 +91,23 @@ describe('AiAdvisor consent gate (A2)', () => {
     await waitFor(() => expect(getNetworkMode()).toBe('direct'));
   });
 
+  it('keeps the available FAB above mobile navigation until the lg breakpoint', async () => {
+    await seedSettings(true);
+    render(<AiAdvisor />);
+    await screen.findByTitle('AI Tax Advisor — ask about your taxes');
+    const trigger = screen.getByTestId('ai-available-trigger');
+    expect(trigger).toHaveClass('bottom-20', 'lg:bottom-6');
+    expect(trigger).not.toHaveClass('md:bottom-6');
+  });
+
+  it('hides the available mobile/tablet FAB while the bulk action bar is active', async () => {
+    await seedSettings(true);
+    render(<AiAdvisor />);
+    await screen.findByTitle('AI Tax Advisor — ask about your taxes');
+    act(() => setBulkActionsActive(true));
+    await waitFor(() => expect(screen.getByTestId('ai-available-trigger')).toHaveClass('hidden', 'lg:flex'));
+  });
+
   it('ticking consent reveals the chat and enables sending', async () => {
     await seedSettings(false);
     render(<AiAdvisor />);
@@ -105,6 +124,16 @@ describe('AiAdvisor consent gate (A2)', () => {
     await waitFor(() =>
       expect(screen.getByText('What is my total taxable gain this year?')).toBeInTheDocument()
     );
+  });
+});
+
+describe('AiAdvisor unavailable mobile surface', () => {
+  beforeEach(async () => { setMode('local'); await db.settings.clear(); });
+  it('hides the unavailable pill and FAB while MobileTabBar is present', async () => {
+    render(<AiAdvisor />);
+    const fab = await screen.findByTitle('AI Tax Advisor — not configured on server');
+    expect(fab.parentElement).toHaveClass('hidden', 'lg:flex');
+    expect(fab.parentElement).not.toHaveClass('md:bottom-6');
   });
 });
 

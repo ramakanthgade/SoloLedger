@@ -275,6 +275,35 @@ export interface RunningBalanceIndex {
   postingPosition: Map<string, number>;
 }
 
+export interface TransactionPostingIndex {
+  readonly byTaxEventId: ReadonlyMap<string, readonly DerivedPosting[]>;
+  readonly runningBalanceByPostingId: ReadonlyMap<string, number>;
+}
+
+/** Build event membership and globally ordered balances once per snapshot. */
+export function buildTransactionPostingIndex(
+  postings: readonly DerivedPosting[],
+  prepared?: PreparedPostingAggregation
+): TransactionPostingIndex {
+  const snapshot = aggregationSnapshot(postings, prepared);
+  const mutableByEvent = new Map<string, DerivedPosting[]>();
+  const running = new Float64Array(snapshot.balanceSlotCount);
+  const runningBalanceByPostingId = new Map<string, number>();
+  for (let index = 0; index < snapshot.ordered.length; index++) {
+    const posting = snapshot.ordered[index];
+    const slot = snapshot.balanceSlotByPosting[index];
+    const balance = posting.role === 'opening_balance'
+      ? posting.signedQuantity
+      : running[slot] + posting.signedQuantity;
+    running[slot] = balance;
+    runningBalanceByPostingId.set(posting.id, balance);
+    const eventRows = mutableByEvent.get(posting.taxEventId);
+    if (eventRows) eventRows.push(posting);
+    else mutableByEvent.set(posting.taxEventId, [posting]);
+  }
+  return { byTaxEventId: mutableByEvent, runningBalanceByPostingId };
+}
+
 export function buildRunningBalanceIndex(
   postings: readonly DerivedPosting[],
   metrics?: PostingAggregationMetrics,

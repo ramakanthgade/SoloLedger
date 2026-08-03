@@ -91,6 +91,45 @@ function isLongTerm(acquiredAt: number, disposedAt: number, jurisdiction: Jurisd
   return jurisdiction === 'US' ? disposedAt > boundary : disposedAt >= boundary;
 }
 
+export interface GainTreatmentSummary {
+  /** Economic gain/loss before jurisdiction-specific inclusion or loss rules. */
+  rawGain: number;
+  /** Gain/loss carried into the jurisdiction report's taxable base. */
+  taxableGain: number;
+  disallowedLoss: number;
+  inclusionRate?: number;
+  shortTermGain?: number;
+  longTermGain?: number;
+}
+
+/** Shared per-row treatment used by annual reports and transaction drill-downs. */
+export function summarizeGainTreatment(
+  rows: readonly Pick<MatchedGainRow, 'gain' | 'buyDate' | 'sellDate'>[],
+  jurisdiction: Jurisdiction
+): GainTreatmentSummary {
+  const rules = JURISDICTIONS[jurisdiction];
+  let gains = 0; let losses = 0; let shortTermGain = 0; let longTermGain = 0;
+  for (const row of rows) {
+    if (row.gain >= 0) gains = toNumber(add(gains, row.gain));
+    else losses = toNumber(sub(losses, row.gain));
+    if (rules.hasHoldingPeriodDistinction) {
+      if (isLongTerm(row.buyDate, row.sellDate, jurisdiction)) longTermGain = toNumber(add(longTermGain, row.gain));
+      else shortTermGain = toNumber(add(shortTermGain, row.gain));
+    }
+  }
+  const rawGain = toNumber(sub(gains, losses));
+  const reportGain = rules.lossesOffsetGains ? rawGain : gains;
+  const inclusionRate = jurisdiction === 'CA' ? CA_INCLUSION_RATE : undefined;
+  return {
+    rawGain,
+    taxableGain: inclusionRate == null ? reportGain : applyInclusion(Math.max(0, reportGain), inclusionRate),
+    disallowedLoss: rules.lossesOffsetGains ? 0 : losses,
+    inclusionRate,
+    shortTermGain: rules.hasHoldingPeriodDistinction ? shortTermGain : undefined,
+    longTermGain: rules.hasHoldingPeriodDistinction ? longTermGain : undefined
+  };
+}
+
 export function summarizeYear(
   disposals: Disposal[],
   matchedRows: MatchedGainRow[],
@@ -118,8 +157,6 @@ export function summarizeYear(
   let totalCostBasis = 0;
   let totalGains = 0;   // positive-gain lots only
   let totalLosses = 0;  // magnitude of negative-gain lots
-  let shortTermGain = 0;
-  let longTermGain = 0;
 
   for (const r of yearRows) {
     totalProceeds += r.proceeds;
@@ -133,19 +170,15 @@ export function summarizeYear(
     byAsset[r.asset].costBasis += r.costBasis;
     byAsset[r.asset].gain += r.gain;
 
-    if (rules.hasHoldingPeriodDistinction) {
-      if (isLongTerm(r.buyDate, r.sellDate, jurisdiction)) longTermGain += r.gain;
-      else shortTermGain += r.gain;
-    }
   }
+
+  const gainTreatment = summarizeGainTreatment(yearRows, jurisdiction);
 
   // No-offset jurisdictions (India, Section 115BBH): taxable = positive gains
   // only; negative-gain lots are disallowed losses and are NEVER netted.
   // Offset-allowed jurisdictions keep the net gain/loss behaviour.
-  const totalGain = rules.lossesOffsetGains
-    ? toNumber(sub(totalGains, totalLosses))
-    : totalGains;
-  const disallowedLosses = rules.lossesOffsetGains ? undefined : totalLosses;
+  const totalGain = rules.lossesOffsetGains ? gainTreatment.rawGain : totalGains;
+  const disallowedLosses = rules.lossesOffsetGains ? undefined : gainTreatment.disallowedLoss;
 
   const yearIncomeEvents = incomeEvents.filter(
     (e) => e.timestamp != null && isInFy(e.timestamp, year, jurisdiction)
@@ -179,7 +212,7 @@ export function summarizeYear(
   // no longer raised. The field is kept on the type (additive) but stays false.
   const incomeGiftTreatmentLimited = false;
 
-  const inclusionRate = jurisdiction === 'CA' ? CA_INCLUSION_RATE : undefined;
+  const inclusionRate = gainTreatment.inclusionRate;
 
   // Taxable base actually used for tax, per jurisdiction:
   //  - CA: the inclusion-adjusted amount (50% of the net gain) is applied here,
@@ -188,8 +221,7 @@ export function summarizeYear(
   //    a zero taxable base (no negative inclusion).
   //  - IN: `totalGain` is already the 115BBH positive-gains-only base.
   //  - US/AE: `totalGain` is the net gain/loss.
-  const taxableGain =
-    inclusionRate != null ? applyInclusion(Math.max(0, totalGain), inclusionRate) : totalGain;
+  const taxableGain = gainTreatment.taxableGain;
 
   const estimatedTax =
     jurisdiction === 'IN' ? estimateIndiaVDA(totalGain).total : undefined;
@@ -205,8 +237,8 @@ export function summarizeYear(
     totalCostBasis,
     totalGain,
     taxableGain,
-    shortTermGain: rules.hasHoldingPeriodDistinction ? shortTermGain : undefined,
-    longTermGain: rules.hasHoldingPeriodDistinction ? longTermGain : undefined,
+    shortTermGain: gainTreatment.shortTermGain,
+    longTermGain: gainTreatment.longTermGain,
     totalGains,
     totalLosses,
     disallowedLosses,

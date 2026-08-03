@@ -4,6 +4,7 @@ import {
   assertValidSourceCoverageRow,
   evaluateOpeningCoverage,
   evaluateSourceCoverage,
+  selectLatestSemanticSourceCoverage,
   type SourceCoverageRow
 } from './sourceCoverage';
 
@@ -40,6 +41,14 @@ function csvCoverage(overrides: Partial<SourceCoverageRow> = {}): SourceCoverage
 }
 
 describe('evaluateSourceCoverage', () => {
+  it('selects deterministic latest semantic coverage using numeric generation and operation time', () => {
+    const old = apiCoverage({ id: 'z-old', generation: 9, completedAt: 900 });
+    const newest = apiCoverage({ id: 'a-new', generation: 10, completedAt: 100 });
+    const sameGenerationLater = apiCoverage({ id: 'b-later', generation: 10, completedAt: 200 });
+    const csv = csvCoverage({ generation: 999, completedAt: 999 });
+    expect(selectLatestSemanticSourceCoverage([csv, old, newest, sameGenerationLater])).toBe(sameGenerationLater);
+    expect(selectLatestSemanticSourceCoverage([sameGenerationLater, newest, old, csv])).toBe(sameGenerationLater);
+  });
   it('rejects unknown runtime statuses instead of treating them as complete', () => {
     const invalid = { ...apiCoverage(), status: 'mystery' } as unknown as SourceCoverageRow;
     expect(() => assertValidSourceCoverageRow(invalid)).toThrow('invalid_status');

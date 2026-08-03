@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 import { derivePostings, type DerivedPosting } from './derivedPostings';
 import {
-  appendPreparedPostingAggregation, buildChartPrefixIndex, buildRunningBalanceIndex,
+  appendPreparedPostingAggregation, buildChartPrefixIndex, buildRunningBalanceIndex, buildTransactionPostingIndex,
   postingBalanceKey, postingBalances, preparePostingAggregation
 } from './postingBalances';
 import { buildPostingPerformanceFixtures, runPostingPerformanceScenario } from './postingBalances.performanceFixture';
@@ -46,6 +46,23 @@ describe('posting indexes', () => {
     expect(points.map((point) => point.balance)).toEqual([2, 1.5, 4.5]);
     const chart = buildChartPrefixIndex(reversed, 'day');
     expect([...chart.byBalanceKey.values()][0].map((point) => point.balance)).toEqual([2, 1.5, 4.5]);
+  });
+
+  it('indexes deterministic event postings with globally accumulated balances', () => {
+    const postings = derivePostings([transaction('later', 20, -0.5), transaction('event', 10, 2)], { exchangeConnections: [] });
+    const index = buildTransactionPostingIndex(postings);
+    expect(index.byTaxEventId.get('event')?.map((row) => row.id)).toEqual(['event:10:0:asset:BTC']);
+    expect(index.runningBalanceByPostingId.get('event:10:0:asset:BTC')).toBe(2);
+    expect(index.runningBalanceByPostingId.get('later:10:0:asset:BTC')).toBe(1.5);
+  });
+
+  it('keeps 30k expanded event lookups below 100 ms p95', () => {
+    const postings = derivePostings(Array.from({ length: 30_000 }, (_, index) => transaction(`tx-${index}`, index, 1)), { exchangeConnections: [] });
+    const index = buildTransactionPostingIndex(postings);
+    const run = () => { const start = performance.now(); for (let i = 0; i < 30_000; i++) index.byTaxEventId.get(`tx-${i}`); return performance.now() - start; };
+    run();
+    const measures = Array.from({ length: 5 }, run).sort((a, b) => a - b);
+    expect(measures[4]).toBeLessThan(100);
   });
 
   it('processes a realistic 30k scenario with linear-size indexes', () => {
