@@ -39,6 +39,7 @@ import type { NavigationIntent } from '@/lib/navigationIntent';
 import { canonicalWalletAddress, normalizeChainIdentity } from '@/lib/ledger/chainNamespace';
 import { resolveAccountScope } from '@/lib/ledger/derivedPostings';
 import { createHoldingsProjector, createTransactionViewsProjector } from './dashboardProjectionCache';
+import { useCoherentDataHealthSnapshot } from './useCoherentDataHealthSnapshot';
 import {
   cn,
   formatCurrency,
@@ -426,15 +427,19 @@ export interface DashboardTabProps {
 export function DashboardTab({ instrumentation, onNavigationIntent, restoredDataHealthState, openDataHealthOnMount = false }: DashboardTabProps = {}) {
   const { goToImport, goTo } = useTabNav();
   const transactions = useLiveQuery(() => db.transactions.toArray(), []);
+  // Holdings and the rest of the Dashboard retain their established stable
+  // subscriptions. In particular, a transaction-only revision must not get
+  // fresh evidence-array identities from the aggregate Data Health read or it
+  // would invalidate the chronological append projector.
   const walletRowsQuery = useLiveQuery(() => getLookupAddresses(), []);
   const csvImportsQuery = useLiveQuery(() => db.csvImports.toArray(), []);
   const exchangeConnsQuery = useLiveQuery(() => db.exchangeConnections.toArray(), []);
-  const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
-  const exchangeBalanceRows = useLiveQuery(() => db.exchangeBalances.toArray(), []) ?? NO_EXCHANGE_BALANCES;
   const authoritySnapshotsQuery = useLiveQuery(() => db.authoritySnapshots.toArray(), []);
   const authorityAssetsQuery = useLiveQuery(() => db.authorityAssets.toArray(), []);
   const sourceCoverageQuery = useLiveQuery(() => db.sourceCoverage.toArray(), []);
   const openingBalancesQuery = useLiveQuery(() => db.openingBalances.toArray(), []);
+  const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
+  const exchangeBalanceRows = useLiveQuery(() => db.exchangeBalances.toArray(), []) ?? NO_EXCHANGE_BALANCES;
   const wallets = walletRowsQuery ?? NO_WALLETS;
   const csvImports = csvImportsQuery ?? NO_CSV_IMPORTS;
   const exchangeConns = exchangeConnsQuery ?? NO_EXCHANGE_CONNS;
@@ -442,9 +447,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
   const authorityAssets = authorityAssetsQuery ?? NO_AUTHORITY_ASSETS;
   const sourceCoverageRows = sourceCoverageQuery ?? NO_SOURCE_COVERAGE;
   const openingBalances = openingBalancesQuery ?? NO_OPENING_BALANCES;
-  const dataHealthReady = transactions !== undefined && walletRowsQuery !== undefined && csvImportsQuery !== undefined &&
-    exchangeConnsQuery !== undefined && authoritySnapshotsQuery !== undefined && authorityAssetsQuery !== undefined &&
-    sourceCoverageQuery !== undefined && openingBalancesQuery !== undefined;
   const activeExchangeBalanceRows = useMemo(() => {
     const activeIds = new Set(exchangeConns.map((connection) => connection.id));
     return exchangeBalanceRows.filter((row) => activeIds.has(row.connectionId));
@@ -469,6 +471,15 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
   const autoPriceAttemptedRef = useRef(false);
   const [projectTransactionViews] = useState(createTransactionViewsProjector);
   const [projectHoldings] = useState(createHoldingsProjector);
+  const dataHealthInvalidationSignal = useMemo(() => [
+    transactions, walletRowsQuery, csvImportsQuery, exchangeConnsQuery,
+    authoritySnapshotsQuery, authorityAssetsQuery, sourceCoverageQuery, openingBalancesQuery
+  ] as const, [
+    transactions, walletRowsQuery, csvImportsQuery, exchangeConnsQuery,
+    authoritySnapshotsQuery, authorityAssetsQuery, sourceCoverageQuery, openingBalancesQuery
+  ]);
+  const { snapshot: coherentDataHealthSnapshot, updating: coherentDataHealthUpdating } =
+    useCoherentDataHealthSnapshot(dataHealthInvalidationSignal, dataHealthOpen);
 
   useEffect(() => {
     const timer = window.setInterval(() => setSpotRefreshTick(Date.now()), 5 * 60_000);
@@ -540,13 +551,32 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
   const deferredTransactions = deferredLedgerRevision.transactions;
   const deferredProjection = deferredLedgerRevision.projection;
 
+  // Aggregate Data Health materializes per-source postings, reconciliation,
+  // history, and remediation details. None of that is needed to commit an
+  // urgent holdings update while the workspace is closed. Let that immutable
+  // ledger revision catch up after paint; opening the workspace always adopts
+  // the current revision in the opening render so its details are never stale.
+  const deferredDataHealthSnapshot = coherentDataHealthSnapshot;
+  const dataHealthUpdating = coherentDataHealthUpdating;
+
   const dataHealthModel = useMemo(() => {
-    if (!dataHealthReady) return EMPTY_DATA_HEALTH_MODEL;
+    if (!deferredDataHealthSnapshot) return EMPTY_DATA_HEALTH_MODEL;
+    const {
+      transactions: dataHealthRows,
+      wallets: dataHealthWallets,
+      csvImports: dataHealthCsvImports,
+      exchangeConnections: dataHealthExchangeConns,
+      authoritySnapshots: dataHealthAuthoritySnapshots,
+      authorityAssets: dataHealthAuthorityAssets,
+      sourceCoverage: dataHealthSourceCoverage,
+      openingBalances: dataHealthOpeningBalances
+    } = deferredDataHealthSnapshot;
+    const dataHealthTransactions = dataHealthRows.filter((transaction) => !transaction.isSpam);
     const transactionCountByImport = new Map<string, number>();
-    for (const transaction of nonSpamTxs) if (transaction.importBatchId) {
+    for (const transaction of dataHealthTransactions) if (transaction.importBatchId) {
       transactionCountByImport.set(transaction.importBatchId, (transactionCountByImport.get(transaction.importBatchId) ?? 0) + 1);
     }
-    const exchangeViews: ExchangeConnectionView[] = exchangeConns.map((connection) => ({
+    const exchangeViews: ExchangeConnectionView[] = dataHealthExchangeConns.map((connection) => ({
       id: connection.id,
       exchange: connection.exchange as ExchangeConnectionView['exchange'],
       label: connection.label,
@@ -557,21 +587,21 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
       credentialsState: connection.credentialsState ?? 'ready',
       cursors: { ...(connection.cursors ?? {}) }
     }));
-    const manualCount = nonSpamTxs.filter((transaction) => transaction.source === 'manual' && transaction.importBatchId == null).length;
-    const validCsvImports = csvImports.filter((row) => typeof row.fileName === 'string');
-    const cards = buildCards({ connections: exchangeViews, csvImports: validCsvImports, wallets, manualCount, syncingConnectionId: null, syncActive: false });
-    const redactedConnections = exchangeConns.map(({ id, exchange }) => ({ id, exchange }));
+    const manualCount = dataHealthTransactions.filter((transaction) => transaction.source === 'manual' && transaction.importBatchId == null).length;
+    const validCsvImports = dataHealthCsvImports.filter((row) => typeof row.fileName === 'string');
+    const cards = buildCards({ connections: exchangeViews, csvImports: validCsvImports, wallets: dataHealthWallets, manualCount, syncingConnectionId: null, syncActive: false });
+    const redactedConnections = dataHealthExchangeConns.map(({ id, exchange }) => ({ id, exchange }));
     const collectionIndex = prepareConnectionWorkspaceCollectionIndex({
-      transactions: nonSpamTxs, exchangeConnections: redactedConnections, openingBalances,
-      snapshots: authoritySnapshots, assets: authorityAssets, sourceCoverage: sourceCoverageRows,
-      liveExchangeConnections: exchangeViews, liveCsvImports: validCsvImports, liveWalletRows: wallets
+      transactions: dataHealthTransactions, exchangeConnections: redactedConnections, openingBalances: dataHealthOpeningBalances,
+      snapshots: dataHealthAuthoritySnapshots, assets: dataHealthAuthorityAssets, sourceCoverage: dataHealthSourceCoverage,
+      liveExchangeConnections: exchangeViews, liveCsvImports: validCsvImports, liveWalletRows: dataHealthWallets
     });
     const sourceInputs = cards.map((card) => {
       const snapshot = buildConnectionWorkspaceFromCard({
-        card, transactions: nonSpamTxs, exchangeConnections: redactedConnections,
-        openingBalances, snapshots: authoritySnapshots, assets: authorityAssets,
-        sourceCoverage: sourceCoverageRows, now: nowMs, collectionIndex,
-        liveExchangeConnections: exchangeViews, liveCsvImports: validCsvImports, liveWalletRows: wallets
+        card, transactions: dataHealthTransactions, exchangeConnections: redactedConnections,
+        openingBalances: dataHealthOpeningBalances, snapshots: dataHealthAuthoritySnapshots, assets: dataHealthAuthorityAssets,
+        sourceCoverage: dataHealthSourceCoverage, now: nowMs, collectionIndex,
+        liveExchangeConnections: exchangeViews, liveCsvImports: validCsvImports, liveWalletRows: dataHealthWallets
       });
       const target = card.kind === 'exchange-api'
         ? { kind: 'exchange' as const, connectionId: card.exchange!.id }
@@ -582,8 +612,8 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
             : { kind: 'manual' as const, singletonId: 'manual' as const };
       return { id: card.id, title: card.title, subtitle: card.subtitle, target, snapshot };
     });
-    const deletedGroups = new Map<string, typeof nonSpamTxs>();
-    for (const transaction of nonSpamTxs) {
+    const deletedGroups = new Map<string, typeof dataHealthTransactions>();
+    for (const transaction of dataHealthTransactions) {
       const deletedId = transaction.deletedSourceEvidence?.sourceIdentityId;
       if (!deletedId) continue;
       const rows = deletedGroups.get(deletedId) ?? [];
@@ -601,8 +631,8 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
       const snapshot = buildConnectionWorkspaceSnapshot({
         id: `deleted:${sourceIdentityId}`, kind: 'exchange-api',
         sources: [{ kind: 'exchange-api', sourceIdentityId, exchange: sourceName, transactionIds: rows.map((row) => row.id) }],
-        scopes, transactions: rows, exchangeConnections: redactedConnections, openingBalances,
-        snapshots: authoritySnapshots, assets: authorityAssets, sourceCoverage: sourceCoverageRows, now: nowMs
+        scopes, transactions: rows, exchangeConnections: redactedConnections, openingBalances: dataHealthOpeningBalances,
+        snapshots: dataHealthAuthoritySnapshots, assets: dataHealthAuthorityAssets, sourceCoverage: dataHealthSourceCoverage, now: nowMs
       });
       sourceInputs.push({
         id: `deleted:${sourceIdentityId}`, title: `Deleted source · ${sourceIdentityId}`,
@@ -611,7 +641,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
       });
     }
     return buildDataHealthModel(sourceInputs);
-  }, [authorityAssets, authoritySnapshots, csvImports, dataHealthReady, exchangeConns, nonSpamTxs, nowMs, openingBalances, sourceCoverageRows, wallets]);
+  }, [deferredDataHealthSnapshot, nowMs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -861,7 +891,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
   };
 
   if (dataHealthOpen) {
-    return <DataHealthWorkspace model={dataHealthModel} loading={!dataHealthReady} onClose={() => setDataHealthOpen(false)} initialState={restoredDataHealthState} onNavigate={(intent, state) => onNavigationIntent?.(intent, state)} />;
+    return <DataHealthWorkspace model={dataHealthModel} loading={!coherentDataHealthSnapshot} updating={dataHealthUpdating} onClose={() => setDataHealthOpen(false)} initialState={restoredDataHealthState} onNavigate={(intent, state) => onNavigationIntent?.(intent, state)} />;
   }
 
   // Initial Dexie resolution — mirror Portfolio's skeleton rather than flashing empty.
@@ -1484,6 +1514,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
                   the ledger implies. Only renders for connections with a balance anchor. */}
               <DataHealthRecon
                 aggregateModel={dataHealthModel}
+                aggregateUpdating={dataHealthUpdating}
                 connections={exchangeConns}
                 exchangeBalances={activeExchangeBalanceRows}
                 transactions={deferredTransactions}

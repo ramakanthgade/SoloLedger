@@ -28,6 +28,7 @@ export interface DataHealthReconProps {
   transactions: Transaction[];
   onOpenWorkspace?: () => void;
   aggregateModel?: DataHealthModel;
+  aggregateUpdating?: boolean;
 }
 
 /** Compute one SourceReconResult per connection that has a balance anchor. */
@@ -132,8 +133,14 @@ function ConnectionReconCard({
   );
 }
 
-export function DataHealthRecon({ connections, exchangeBalances, transactions, onOpenWorkspace, aggregateModel }: DataHealthReconProps) {
+export function DataHealthRecon({ connections, exchangeBalances, transactions, onOpenWorkspace, aggregateModel, aggregateUpdating = false }: DataHealthReconProps) {
   if (aggregateModel) {
+    if (aggregateUpdating) return (
+      <>
+        <li className="text-xs font-semibold text-mid" role="status">Updating Data Health…</li>
+        {onOpenWorkspace && <li><button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">Open aggregate Data Health →</button></li>}
+      </>
+    );
     return (
       <>
         <li className="text-xs text-mid">

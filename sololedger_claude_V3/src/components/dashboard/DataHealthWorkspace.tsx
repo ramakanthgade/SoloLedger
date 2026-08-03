@@ -20,6 +20,7 @@ export interface DataHealthViewState {
 export interface DataHealthWorkspaceProps {
   model: DataHealthModel;
   loading?: boolean;
+  updating?: boolean;
   onClose: () => void;
   onNavigate: (intent: NavigationIntent, state: DataHealthViewState) => void;
   initialState?: DataHealthViewState;
@@ -138,7 +139,7 @@ function restoreWorkspaceScroll(mobile: boolean, top: number): void {
   else scroller.scrollTo({ top });
 }
 
-export function DataHealthWorkspace({ model, loading = false, onClose, onNavigate, initialState, focusOnMount = true }: DataHealthWorkspaceProps) {
+export function DataHealthWorkspace({ model, loading = false, updating = false, onClose, onNavigate, initialState, focusOnMount = true }: DataHealthWorkspaceProps) {
   const mobile = useSyncExternalStore(subscribeMobile, mobileSnapshot, () => false);
   const shellScroll = useSyncExternalStore(subscribeShellScroll, shellScrollSnapshot, () => false);
   const [filter, setFilter] = useState<DataHealthFilter>(() => initialState?.filter ??
@@ -189,8 +190,8 @@ export function DataHealthWorkspace({ model, loading = false, onClose, onNavigat
     filterRefs.current[FILTERS.findIndex((candidate) => candidate.id === target.id)]?.focus();
   };
 
-  return (
-    <div ref={rootRef} className="space-y-5" data-testid="data-health-workspace">
+  if (loading) return (
+    <div ref={rootRef} className="space-y-5" data-testid="data-health-workspace" aria-busy="true">
       <header className="flex flex-col items-start gap-3 sm:flex-row sm:gap-4">
         <Button variant="secondary" onClick={onClose} className="min-h-[44px]"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Dashboard</Button>
         <div className="w-full min-w-0 flex-1">
@@ -198,6 +199,24 @@ export function DataHealthWorkspace({ model, loading = false, onClose, onNavigat
           <p className="mt-1 max-w-3xl text-sm leading-relaxed text-mid">See whether each source's recorded history explains its current balance, and resolve coverage gaps before relying on reports.</p>
         </div>
       </header>
+      <section aria-label="Loading Data Health summary" className="grid grid-cols-2 gap-3 sm:grid-cols-4" aria-hidden="true">
+        {[0, 1, 2, 3].map((item) => <div key={item} className="h-24 animate-pulse rounded-2xl border border-hi/10 bg-elev-2" />)}
+      </section>
+      <div className="rounded-2xl border border-hi/10 bg-elev-2 px-6 py-12 text-center" role="status" aria-busy="true"><p className="text-sm font-semibold text-mid">Loading Data Health…</p></div>
+    </div>
+  );
+
+  return (
+    <div ref={rootRef} className="space-y-5" data-testid="data-health-workspace" aria-busy={updating || undefined}>
+      <header className="flex flex-col items-start gap-3 sm:flex-row sm:gap-4">
+        <Button variant="secondary" onClick={onClose} className="min-h-[44px]"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Dashboard</Button>
+        <div className="w-full min-w-0 flex-1">
+          <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-extrabold tracking-tight text-hi focus:outline-none">Data Health</h1>
+          <p className="mt-1 max-w-3xl text-sm leading-relaxed text-mid">See whether each source's recorded history explains its current balance, and resolve coverage gaps before relying on reports.</p>
+        </div>
+      </header>
+
+      {updating && <p role="status" className="rounded-xl border border-hi/10 bg-elev-2 px-4 py-2 text-xs font-semibold text-mid">Updating Data Health…</p>}
 
       <section aria-label="Data Health summary" className="grid grid-cols-2 gap-3 sm:hidden">
         {[
@@ -220,8 +239,7 @@ export function DataHealthWorkspace({ model, loading = false, onClose, onNavigat
 
       <aside className="flex items-start gap-2 rounded-xl border-2 border-warn/30 bg-warn/10 px-4 py-3 text-sm font-semibold leading-relaxed text-mid"><ShieldQuestion className="mt-0.5 h-5 w-5 shrink-0 text-warn" aria-hidden="true" /><p>Reconciliation cannot guarantee history, classification, valuation, cost basis, holdings, or tax correctness. Quantity severity is independent of optional fiat pricing; unpriced assets remain actionable.</p></aside>
 
-      {loading ? <div className="rounded-2xl border border-hi/10 bg-elev-2 px-6 py-12 text-center" role="status" aria-busy="true"><p className="text-sm font-semibold text-mid">Loading Data Health…</p></div>
-        : model.sources.length === 0 ? <div className="rounded-2xl border border-dashed border-hi/15 bg-elev-2 px-6 py-12 text-center" role="status"><DatabaseZap className="mx-auto h-7 w-7 text-low" aria-hidden="true" /><h2 className="mt-3 font-bold text-hi">No source evidence yet</h2><p className="mt-1 text-sm text-low">Add a source, then sync or import evidence to begin Data Health checks.</p></div>
+      {model.sources.length === 0 ? <div className="rounded-2xl border border-dashed border-hi/15 bg-elev-2 px-6 py-12 text-center" role="status"><DatabaseZap className="mx-auto h-7 w-7 text-low" aria-hidden="true" /><h2 className="mt-3 font-bold text-hi">No source evidence yet</h2><p className="mt-1 text-sm text-low">Add a source, then sync or import evidence to begin Data Health checks.</p></div>
         : visible.length === 0 ? <div className="rounded-2xl border border-hi/10 bg-elev-2 px-6 py-10 text-center" role="status"><CheckCircle2 className="mx-auto h-7 w-7 text-gain" aria-hidden="true" /><h2 className="mt-3 font-bold text-hi">Nothing in this view</h2><p className="mt-1 text-sm text-low">No sources currently match this filter.</p></div>
           : <div className="grid gap-3 md:grid-cols-2" aria-live="polite">{visible.map((source) => {
             const chips = axisChips(source);
@@ -234,11 +252,11 @@ export function DataHealthWorkspace({ model, loading = false, onClose, onNavigat
               {source.findings.length > 0 && <div className="mt-3 text-xs text-low"><p><strong className="text-mid">Primary:</strong> {findingLabel[source.findings[0].remediation] ?? source.findings[0].remediation}</p>{secondaryActions.length > 0 && <p className="mt-1">{secondaryActions.length} additional remediation {secondaryActions.length === 1 ? 'action' : 'actions'}</p>}</div>}
               <div className="mt-auto pt-1">{actions.slice(0, 1).map((group) => {
                 const actionKey = `${source.id}:${group.finding.key}`;
-                return <button key={group.finding.key} type="button" data-data-health-action={actionKey} onClick={() => onNavigate(createNavigationIntent(group.finding.intent), { filter: effectiveFilter, scrollTop: workspaceScrollTop(shellScroll), focusActionKey: actionKey })} className="mt-3 inline-flex min-h-[44px] w-full items-center justify-between rounded-xl border border-primary/30 bg-primary/10 px-3 text-left text-xs font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">{actionLabel(source, group, actions)} <ChevronRight className="h-4 w-4" aria-hidden="true" /></button>;
+                return <button key={group.finding.key} type="button" disabled={updating} data-data-health-action={actionKey} onClick={() => onNavigate(createNavigationIntent(group.finding.intent), { filter: effectiveFilter, scrollTop: workspaceScrollTop(shellScroll), focusActionKey: actionKey })} className="mt-3 inline-flex min-h-[44px] w-full items-center justify-between rounded-xl border border-primary/30 bg-primary/10 px-3 text-left text-xs font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60">{actionLabel(source, group, actions)} <ChevronRight className="h-4 w-4" aria-hidden="true" /></button>;
               })}
               {secondaryActions.length > 0 && <details className="mt-2 rounded-xl border border-hi/10 px-3 py-2 text-xs text-mid"><summary className="flex min-h-[44px] cursor-pointer items-center font-bold text-mid">More actions ({secondaryActions.length})</summary><div className="mt-2 grid gap-1">{secondaryActions.map((group) => {
                 const actionKey = `${source.id}:${group.finding.key}`;
-                return <div key={group.finding.key}>{group.findings.length > 1 && <p className="px-2 text-[0.6875rem] text-low">Resolves {group.findings.map((finding) => findingLabel[finding.remediation] ?? finding.remediation).join(', ')}</p>}<button type="button" data-data-health-action={actionKey} onClick={() => onNavigate(createNavigationIntent(group.finding.intent), { filter: effectiveFilter, scrollTop: workspaceScrollTop(shellScroll), focusActionKey: actionKey })} className="inline-flex min-h-[44px] w-full items-center justify-between rounded-lg px-2 text-left font-bold text-primary hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">{actionLabel(source, group, actions)} <ChevronRight className="h-4 w-4" aria-hidden="true" /></button></div>;
+                return <div key={group.finding.key}>{group.findings.length > 1 && <p className="px-2 text-[0.6875rem] text-low">Resolves {group.findings.map((finding) => findingLabel[finding.remediation] ?? finding.remediation).join(', ')}</p>}<button type="button" disabled={updating} data-data-health-action={actionKey} onClick={() => onNavigate(createNavigationIntent(group.finding.intent), { filter: effectiveFilter, scrollTop: workspaceScrollTop(shellScroll), focusActionKey: actionKey })} className="inline-flex min-h-[44px] w-full items-center justify-between rounded-lg px-2 text-left font-bold text-primary hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60">{actionLabel(source, group, actions)} <ChevronRight className="h-4 w-4" aria-hidden="true" /></button></div>;
               })}</div></details>}
               </div>
             </article>;

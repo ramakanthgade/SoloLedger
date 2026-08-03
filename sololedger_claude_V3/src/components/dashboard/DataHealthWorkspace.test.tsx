@@ -59,6 +59,9 @@ describe('DataHealthWorkspace', () => {
     const props = { onClose: vi.fn(), onNavigate: vi.fn(), focusOnMount: false };
     const view = render(<DataHealthWorkspace {...props} model={{ ...clean, sources: [], summary: { ...clean.summary, sourceCount: 0 } }} loading />);
     expect(screen.getByText('Loading Data Health…')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Data Health summary' })).toBeNull();
+    expect(screen.queryByRole('radiogroup', { name: 'Filter Data Health sources' })).toBeNull();
+    expect(screen.queryByText(/^0$/)).toBeNull();
     view.rerender(<DataHealthWorkspace {...props} model={{ ...clean, sources: [], summary: { ...clean.summary, sourceCount: 0 } }} />);
     expect(screen.getByText('No source evidence yet')).toBeInTheDocument();
     view.rerender(<DataHealthWorkspace {...props} model={clean} />);
@@ -153,6 +156,33 @@ describe('DataHealthWorkspace', () => {
     }
   });
 
+  it('keeps filters, disclosures, and focus mounted while a coherent refresh is pending', () => {
+    const props = { model: withSecondary, onClose: vi.fn(), onNavigate: vi.fn(), focusOnMount: false };
+    const view = render(<DataHealthWorkspace {...props} />);
+    fireEvent.click(screen.getByRole('radio', { name: /Needs action/ }));
+    const disclosure = screen.getByText('More actions (1)').closest('details')!;
+    fireEvent.click(screen.getByText('More actions (1)'));
+    const secondary = document.querySelector<HTMLButtonElement>('[data-data-health-action="file:one:secondary-a"]')!;
+    secondary.focus();
+    expect(disclosure).toHaveAttribute('open');
+    expect(secondary).toHaveFocus();
+
+    view.rerender(<DataHealthWorkspace {...props} updating />);
+
+    expect(screen.getByTestId('data-health-workspace')).toHaveAttribute('aria-busy', 'true');
+    expect(screen.getByRole('status')).toHaveTextContent('Updating Data Health…');
+    expect(screen.getByRole('radio', { name: /Needs action/ })).toHaveAttribute('aria-checked', 'true');
+    expect(disclosure).toHaveAttribute('open');
+    expect(secondary).toHaveFocus();
+    expect(secondary).toBeDisabled();
+    expect(screen.getByText('CSV one')).toBeInTheDocument();
+
+    view.rerender(<DataHealthWorkspace {...props} />);
+    expect(disclosure).toHaveAttribute('open');
+    expect(secondary).toHaveFocus();
+    expect(secondary).not.toBeDisabled();
+  });
+
   it('gives the secondary disclosure summary a 44px centered target', () => {
     render(<DataHealthWorkspace model={withSecondary} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
     expect(screen.getByText('More actions (1)')).toHaveClass('min-h-[44px]', 'flex', 'items-center');
@@ -204,7 +234,7 @@ describe('DataHealthWorkspace', () => {
         initialState={{ filter: 'all', scrollTop: 321, focusActionKey: 'file:one:f' }}
         loading
       />);
-      expect(screen.getByRole('radio', { name: /All/ })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.queryByRole('radiogroup', { name: 'Filter Data Health sources' })).toBeNull();
       expect(scrollTo).not.toHaveBeenCalled();
       view.rerender(<DataHealthWorkspace
         model={actionable}
@@ -212,6 +242,7 @@ describe('DataHealthWorkspace', () => {
         onNavigate={vi.fn()}
         initialState={{ filter: 'all', scrollTop: 321, focusActionKey: 'file:one:f' }}
       />);
+      expect(screen.getByRole('radio', { name: /All/ })).toHaveAttribute('aria-checked', 'true');
       await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 321 }));
       await waitFor(() => expect(screen.getByRole('button', { name: /Review scoped transactions/ })).toHaveFocus());
     } finally {

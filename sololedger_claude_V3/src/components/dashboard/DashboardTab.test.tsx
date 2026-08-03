@@ -66,6 +66,7 @@ const SEED = vi.hoisted(() => {
 });
 
 const COST_BASIS_INPUTS = vi.hoisted(() => [] as string[][]);
+const QUERY_READINESS = vi.hoisted(() => ({ coherentDataHealth: true }));
 
 vi.mock('@/lib/costBasis/engine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/costBasis/engine')>();
@@ -105,6 +106,26 @@ vi.mock('@/lib/storage/db', () => ({
     t.sourceRef && t.walletAddress ? `${t.walletAddress}|${t.sourceRef}` : null
 }));
 
+vi.mock('./useCoherentDataHealthSnapshot', () => {
+  let coherentSnapshot: unknown;
+  return {
+    useCoherentDataHealthSnapshot: () => {
+      if (!QUERY_READINESS.coherentDataHealth) return { snapshot: undefined, updating: true };
+      coherentSnapshot ??= {
+        transactions: SEED.txs,
+        wallets: SEED.wallets,
+        csvImports: SEED.csvImports,
+        exchangeConnections: SEED.exchangeConns,
+        authoritySnapshots: SEED.authoritySnapshots,
+        authorityAssets: SEED.authorityAssets,
+        sourceCoverage: SEED.sourceCoverage,
+        openingBalances: SEED.openingBalances
+      };
+      return { snapshot: coherentSnapshot, updating: false };
+    }
+  };
+});
+
 vi.mock('@/lib/saas/effectiveSettings', () => ({
   getEffectiveSettings: () => Promise.resolve({
     reportingCurrency: 'INR', jurisdiction: 'IN', priceApiEnabled: false
@@ -113,7 +134,8 @@ vi.mock('@/lib/saas/effectiveSettings', () => ({
 
 import {
   DashboardTab,
-  type DashboardInstrumentation
+  type DashboardInstrumentation,
+  type DashboardTabProps
 } from './DashboardTab';
 import { createHoldingsProjector, createTransactionViewsProjector } from './dashboardProjectionCache';
 import type {
@@ -124,13 +146,14 @@ import type { Transaction } from '@/types/transaction';
 
 async function renderTab(
   nav?: { goToImport: () => void; goTo: (id: string) => void },
-  instrumentation?: DashboardInstrumentation
+  instrumentation?: DashboardInstrumentation,
+  props: Omit<DashboardTabProps, 'instrumentation'> = {}
 ) {
   let utils!: ReturnType<typeof render>;
   await act(async () => {
     utils = render(
       <TabNavProvider value={nav ?? { goToImport: () => {}, goTo: () => {} }}>
-        <DashboardTab instrumentation={instrumentation} />
+        <DashboardTab {...props} instrumentation={instrumentation} />
       </TabNavProvider>
     );
     // Flush the mocked getSettings().then state update inside act().
@@ -184,8 +207,45 @@ beforeEach(() => {
   SEED.sourceCoverage.length = 0;
   SEED.openingBalances.length = 0;
   COST_BASIS_INPUTS.length = 0;
+  QUERY_READINESS.coherentDataHealth = true;
   // Reset the tx list to the base seed (some tests append wallet rows).
   SEED.txs.length = 4;
+});
+
+describe('DashboardTab — staggered Data Health readiness', () => {
+  it('shows updating instead of false aggregate zero counts until every compact query is ready', async () => {
+    QUERY_READINESS.coherentDataHealth = false;
+    const view = await renderTab();
+
+    expect(screen.getByText('Updating Data Health…')).toHaveAttribute('role', 'status');
+    expect(screen.queryByText(/0 sources · 0 scopes · 0 assets/)).toBeNull();
+
+    QUERY_READINESS.coherentDataHealth = true;
+    await act(async () => {
+      view.rerender(<TabNavProvider value={{ goToImport: () => {}, goTo: () => {} }}><DashboardTab /></TabNavProvider>);
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('Updating Data Health…')).toBeNull();
+    expect(screen.getByText(/sources · .* scopes · .* assets/)).toBeInTheDocument();
+  });
+
+  it('keeps an initially open workspace count-free while queries become ready', async () => {
+    QUERY_READINESS.coherentDataHealth = false;
+    const view = await renderTab(undefined, undefined, { openDataHealthOnMount: true });
+
+    expect(screen.getByText('Loading Data Health…')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Data Health summary' })).toBeNull();
+    expect(screen.queryByRole('radiogroup', { name: 'Filter Data Health sources' })).toBeNull();
+
+    QUERY_READINESS.coherentDataHealth = true;
+    await act(async () => {
+      view.rerender(<TabNavProvider value={{ goToImport: () => {}, goTo: () => {} }}><DashboardTab openDataHealthOnMount /></TabNavProvider>);
+      await Promise.resolve();
+    });
+    expect(screen.queryByText('Loading Data Health…')).toBeNull();
+    expect(screen.getAllByRole('region', { name: 'Data Health summary' })).toHaveLength(2);
+    expect(screen.getByRole('radiogroup', { name: 'Filter Data Health sources' })).toBeInTheDocument();
+  });
 });
 
 describe('DashboardTab — hero honesty', () => {
@@ -253,6 +313,43 @@ describe('DashboardTab — hero honesty', () => {
       transactions: updated.projection
     }, updated.appendProof);
     expect(rejectRemovedRestriction).not.toHaveBeenCalled();
+  });
+
+  it('keeps transaction append projection fast when only Data Health emits a fresh coherent snapshot', () => {
+    const projectViews = createTransactionViewsProjector();
+    const initialRows = SEED.txs.slice(0, 3) as Transaction[];
+    const initial = projectViews(initialRows);
+    const inserted = { ...SEED.txs[3], id: 'coherent-emission-append', timestamp: Date.now() } as Transaction;
+    const updated = projectViews([inserted, ...initialRows]);
+    const staticEvidence = {
+      exchangeConnections: [], openingBalances: [], snapshots: [], assets: [], coverage: [], now: 5_000
+    } satisfies Omit<HoldingsProjectionInput, 'transactions'>;
+    const fullBuild = vi.fn((input: HoldingsProjectionInput) =>
+      createHoldingsProjector()(input));
+    const append = vi.fn((
+      previous: HoldingsProjection,
+      _input: HoldingsProjectionInput,
+      _transaction: Transaction
+    ) => ({
+      ...previous,
+      holdings: previous.holdings,
+      slices: previous.slices
+    }));
+    const projectHoldings = createHoldingsProjector(append, fullBuild);
+
+    projectHoldings({ ...staticEvidence, transactions: initial.projection });
+    // Aggregate Data Health emits a new immutable object after its coherent
+    // transaction. It is deliberately not an input to the holdings projector.
+    const coherentDataHealthEmission = {
+      transactions: updated.nonSpam,
+      authoritySnapshots: [{ snapshotId: 'new-coherent-revision' }]
+    };
+    expect(coherentDataHealthEmission.authoritySnapshots).toHaveLength(1);
+    projectHoldings({ ...staticEvidence, transactions: updated.projection }, updated.appendProof);
+
+    expect(fullBuild).toHaveBeenCalledTimes(1);
+    expect(append).toHaveBeenCalledTimes(1);
+    expect(append.mock.calls[0][2]).toBe(inserted);
   });
 
   it('preserves same-timestamp sell/buy order for deferred tax consumers', async () => {
