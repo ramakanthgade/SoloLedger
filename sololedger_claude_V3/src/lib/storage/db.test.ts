@@ -499,6 +499,37 @@ describe('absolute opening-balance persistence', () => {
     expect(await db.openingBalances.count()).toBe(1);
   });
 
+  it('atomically rejects stale update and delete revisions without recreating rows', async () => {
+    const created = await upsertOpeningBalance(base, 1_000);
+    const updated = await upsertOpeningBalance(
+      { ...base, absoluteQuantity: 6 }, 2_000, { expectedUpdatedAt: created.updatedAt }
+    );
+    await expect(upsertOpeningBalance(
+      { ...base, absoluteQuantity: 7 }, 3_000, { expectedUpdatedAt: created.updatedAt }
+    )).rejects.toThrow(/changed in another tab/i);
+    await expect(deleteOpeningBalance(created.id, { expectedUpdatedAt: created.updatedAt }))
+      .rejects.toThrow(/changed in another tab/i);
+    expect(await db.openingBalances.get(created.id)).toEqual(updated);
+    expect(await deleteOpeningBalance(created.id, { expectedUpdatedAt: updated.updatedAt })).toBe(true);
+    await expect(upsertOpeningBalance(
+      base, 4_000, { expectedUpdatedAt: updated.updatedAt }
+    )).rejects.toThrow(/changed in another tab/i);
+    expect(await db.openingBalances.count()).toBe(0);
+  });
+
+  it('atomically rejects a create/create collision and preserves existing source evidence', async () => {
+    const source = await upsertOpeningBalance({
+      ...base, provenance: 'source_snapshot', evidenceRef: 'snapshot:trusted'
+    }, 1_000, { mode: 'create' });
+    await expect(upsertOpeningBalance({
+      ...base, absoluteQuantity: 99, provenance: 'user_confirmed', note: 'stale creator'
+    }, 2_000, { mode: 'create' })).rejects.toThrow(/already exists.*exact date/i);
+    expect(await db.openingBalances.get(source.id)).toEqual(source);
+    expect(await db.openingBalances.get(source.id)).toMatchObject({
+      provenance: 'source_snapshot', evidenceRef: 'snapshot:trusted', absoluteQuantity: 5
+    });
+  });
+
   it('selects by cutoff and keeps deterministic historical supersession', async () => {
     const older = await upsertOpeningBalance(base, 1_000);
     const newer = await upsertOpeningBalance({ ...base, effectiveAt: 200, absoluteQuantity: 9 }, 2_000);

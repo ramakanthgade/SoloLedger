@@ -4,7 +4,7 @@ import { isNativeSolHolding } from '@/lib/portfolio/solBalance';
 import { buildCurrentPriceCacheKey, db } from '@/lib/storage/db';
 import { fetchCurrentPrices } from './coingecko';
 
-const SPOT_TTL_MS = 5 * 60_000;
+export const SPOT_TTL_MS = 5 * 60_000;
 const inFlight = new Map<string, Promise<void>>();
 
 /**

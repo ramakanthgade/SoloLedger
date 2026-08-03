@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, within, act } from '@testing-library/react';
 import type { ExchangeConnectionView, ExchangeSyncJobState } from '@/lib/exchangeSync';
@@ -11,6 +12,7 @@ import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import { assetKey } from '@/lib/ledger/assetKey';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
+import type { ConnectionWorkspaceMetrics } from './connectionWorkspaceModel';
 
 /**
  * ConnectionDetail — the per-connection portfolio view (round 4, issue 6).
@@ -53,6 +55,7 @@ const mocks = vi.hoisted(() => ({
       id: string; chain: string; address: string; lastSyncedAt: number
     }[]
   },
+  lookupLoaded: { current: false },
   exchangeRow: { current: undefined as { id: string; lastSyncAt?: number } | undefined },
   user: { current: null as { plan: string; subscriptionActive: boolean } | null },
   mode: { current: 'local' as 'local' | 'byok' | 'hosted' },
@@ -67,6 +70,7 @@ const mocks = vi.hoisted(() => ({
     ) => {}
   ),
   getEffectiveSettings: vi.fn(async () => ({ reportingCurrency: 'INR', priceApiEnabled: false })),
+  refreshCurrentHoldingPrices: vi.fn(async () => {}),
   exchangeJob: { current: null as unknown as ExchangeSyncJobState },
   walletJob: { current: null as unknown as ImportJobState }
 }));
@@ -97,7 +101,11 @@ const IDLE_WALLET_JOB: ImportJobState = {
 
 vi.mock('dexie-react-hooks', () => ({
   // Run the querier synchronously against the stubbed db below.
-  useLiveQuery: (querier: () => unknown) => querier()
+  useLiveQuery: (querier: () => unknown) => {
+    if (String(querier).includes('lookupAddresses') &&
+      !mocks.lookupLoaded.current && mocks.lookupRows.current.length === 0) return undefined;
+    return querier();
+  }
 }));
 
 vi.mock('@/lib/storage/db', () => ({
@@ -124,6 +132,8 @@ vi.mock('@/lib/storage/db', () => ({
         : mocks.exchangeConnections.current.find((row) => row.id === id)
     }
   },
+  upsertOpeningBalance: vi.fn(),
+  deleteOpeningBalance: vi.fn(),
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
   transactionSourceKey: (t: { sourceRef?: string; walletAddress?: string }) =>
     t.sourceRef && t.walletAddress ? `${t.walletAddress}|${t.sourceRef}` : null
@@ -150,6 +160,11 @@ vi.mock('@/lib/importJob', async (importOriginal) => {
 vi.mock('@/lib/saas/effectiveSettings', () => ({
   getEffectiveSettings: mocks.getEffectiveSettings
 }));
+
+vi.mock('@/lib/pricing/currentPrices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/pricing/currentPrices')>();
+  return { ...actual, refreshCurrentHoldingPrices: mocks.refreshCurrentHoldingPrices };
+});
 
 vi.mock('@/lib/saas/lookupConfig', () => ({
   buildLookupConfig: vi.fn(() => ({})),
@@ -408,11 +423,16 @@ beforeEach(() => {
     { id: 'exc_2', exchange: 'binance', lastSyncAt: undefined }
   ];
   mocks.lookupRows.current = [];
+  mocks.lookupLoaded.current = false;
   mocks.exchangeRow.current = undefined;
   mocks.user.current = null;
   mocks.mode.current = 'local';
   mocks.exchangeJob.current = { ...IDLE_JOB };
   mocks.walletJob.current = { ...IDLE_WALLET_JOB };
+  mocks.getEffectiveSettings.mockReset();
+  mocks.getEffectiveSettings.mockResolvedValue({ reportingCurrency: 'INR', priceApiEnabled: false });
+  mocks.refreshCurrentHoldingPrices.mockReset();
+  mocks.refreshCurrentHoldingPrices.mockResolvedValue(undefined);
 });
 
 describe('ConnectionDetail — wallet kind', () => {
@@ -545,6 +565,45 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(screen.getAllByTestId('detail-address-group')).toHaveLength(1);
     expect(screen.queryByText('bc1qaa…1111')).not.toBeInTheDocument();
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹45,00,000.00');
+  });
+
+  it('renders current exhaustive zero authority as a synced zero balance, not a sync prompt', () => {
+    const address = 'bc1qzero111111111111111';
+    authority(
+      `wallet:${canonicalWalletIdentity('bitcoin', address)}`,
+      `bitcoin:${address}`, 'wallet', 'rpc', Date.now(),
+      [{ asset: 'BTC', quantity: 0, chain: 'bitcoin' }]
+    );
+    const card = walletCard({
+      walletRows: [{
+        id: `bitcoin:${address}`, chain: 'bitcoin', address,
+        label: 'Drained wallet', lastSyncedAt: Date.now(), txCount: 0
+      }]
+    });
+
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+
+    expect(screen.queryByText('No on-chain balances yet')).not.toBeInTheDocument();
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹0.00');
+    expect(screen.getByText('BTC').closest('li')).toHaveTextContent('0');
+    expect(screen.getByTestId('detail-wallet-authority-status')).toHaveTextContent('on-chain balances as of');
+    expect(screen.getByTestId('detail-wallet-row-source')).toHaveTextContent('Current on-chain balance');
+  });
+
+  it('closes after the final represented wallet row is deleted and never syncs stale card rows', () => {
+    const card = walletCard({ walletRows: [walletCard().walletRows![0]] });
+    mocks.lookupLoaded.current = true;
+    mocks.lookupRows.current = [card.walletRows![0]];
+    const onBack = vi.fn();
+    const view = render(<ConnectionDetail card={card} onBack={onBack} />);
+    expect(screen.getByTestId('detail-sync-now')).toBeEnabled();
+
+    mocks.lookupRows.current = [];
+    view.rerender(<ConnectionDetail card={card} onBack={onBack} />);
+
+    expect(onBack).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('detail-sync-now')).not.toBeInTheDocument();
+    expect(mocks.runWalletImport).not.toHaveBeenCalled();
   });
 
   it('labels stale wallet authority as ledger-estimated without changing fallback quantity', () => {
@@ -780,8 +839,232 @@ describe('ConnectionDetail — exchange kind', () => {
     try {
       expect(screen.getByText('BTC').closest('li')).toHaveTextContent('9');
 
-      act(() => vi.advanceTimersByTime(24 * 60 * 60_000 + 5 * 60_000));
+      act(() => vi.advanceTimersByTime(24 * 60 * 60_000));
+      expect(screen.getByText('BTC').closest('li')).toHaveTextContent('9');
 
+      act(() => vi.advanceTimersByTime(1));
+
+      const btcRow = screen.getByText('BTC').closest('li')!;
+      expect(btcRow).toHaveTextContent('0.3');
+      expect(btcRow).not.toHaveTextContent('9');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('schedules an immediate authority refresh when the effect installs just after expiry', () => {
+    vi.useFakeTimers();
+    const expiry = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(expiry);
+    mocks.txs.current = [makeTx({
+      id: 'effect-race', timestamp: expiry - 24 * 60 * 60_000 - 1_000,
+      type: 'buy', asset: 'BTC', amount: 0.3, fiatValue: 30_000, importBatchId: 'exc_1'
+    })];
+    authority(
+      'exchange:exc_1', 'exc_1', 'spot', 'api', expiry - 24 * 60 * 60_000,
+      [{ asset: 'BTC', quantity: 9 }]
+    );
+    function EffectRaceHarness() {
+      useLayoutEffect(() => { vi.setSystemTime(expiry + 1); }, []);
+      return <ConnectionDetail card={exchangeCard()} onBack={() => {}} />;
+    }
+    const view = render(<EffectRaceHarness />);
+    try {
+      expect(screen.getByText('BTC').closest('li')).toHaveTextContent('9');
+      act(() => vi.advanceTimersByTime(1));
+      const btcRow = screen.getByText('BTC').closest('li')!;
+      expect(btcRow).toHaveTextContent('0.3');
+      expect(btcRow).not.toHaveTextContent('9');
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('ages a current price after 15 minutes without deriving postings again', () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(now);
+    mocks.txs.current = [makeTx({
+      id: 'price-aging', timestamp: now - 1_000, type: 'buy', asset: 'BTC', amount: 0.3,
+      fiatValue: 30_000, importBatchId: 'exc_1'
+    })];
+    mocks.priceRows.current = [{ key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: now }];
+    const metrics: ConnectionWorkspaceMetrics = {
+      coverageAssociationVisits: 0,
+      authoritySnapshotIndexVisits: 0,
+      authorityAssetIndexVisits: 0,
+      authoritySelectorSnapshotVisits: 0,
+      authoritySelectorAssetVisits: 0,
+      postingAssetIndexVisits: 0,
+      openingAssetIndexVisits: 0,
+      authorityLabelIndexVisits: 0
+    };
+    const view = render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} workspaceMetrics={metrics} />);
+    try {
+      expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹27,00,000.00');
+      expect(metrics.postingDerivationCount).toBe(1);
+
+      act(() => vi.advanceTimersByTime(15 * 60_000));
+      expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹27,00,000.00');
+      expect(metrics.postingDerivationCount).toBe(1);
+
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹30,000.00');
+      expect(screen.getByText('Valued at cost where no live price is cached.')).toBeInTheDocument();
+      expect(metrics.postingDerivationCount).toBe(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('invokes current-price refresh at the next five-minute deadline without authority', async () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(now);
+    mocks.getEffectiveSettings.mockResolvedValue({ reportingCurrency: 'INR', priceApiEnabled: true });
+    mocks.txs.current = [makeTx({
+      id: 'price-refresh', timestamp: now - 1_000, type: 'buy', asset: 'BTC', amount: 0.3,
+      fiatValue: 30_000, importBatchId: 'exc_1'
+    })];
+    mocks.priceRows.current = [{ key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: now }];
+    const view = render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
+    try {
+      await act(async () => { await Promise.resolve(); });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(1);
+
+      act(() => vi.advanceTimersByTime(5 * 60_000 - 1));
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+      });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(2);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries an empty initial price fetch after five minutes without a cached row', async () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(now);
+    mocks.getEffectiveSettings.mockResolvedValue({ reportingCurrency: 'INR', priceApiEnabled: true });
+    mocks.txs.current = [makeTx({
+      id: 'empty-price-retry', timestamp: now - 1_000, type: 'buy', asset: 'BTC', amount: 0.3,
+      fiatValue: 30_000, importBatchId: 'exc_1'
+    })];
+    const metrics: ConnectionWorkspaceMetrics = {
+      coverageAssociationVisits: 0,
+      authoritySnapshotIndexVisits: 0,
+      authorityAssetIndexVisits: 0,
+      authoritySelectorSnapshotVisits: 0,
+      authoritySelectorAssetVisits: 0,
+      postingAssetIndexVisits: 0,
+      openingAssetIndexVisits: 0,
+      authorityLabelIndexVisits: 0
+    };
+    const view = render(
+      <ConnectionDetail card={exchangeCard()} onBack={() => {}} workspaceMetrics={metrics} />
+    );
+    try {
+      await act(async () => { await Promise.resolve(); });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(1);
+      expect(metrics.postingDerivationCount).toBe(1);
+
+      act(() => vi.advanceTimersByTime(5 * 60_000 - 1));
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+      });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(2);
+      expect(metrics.postingDerivationCount).toBe(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60_000);
+        await Promise.resolve();
+      });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(3);
+      expect(metrics.postingDerivationCount).toBe(1);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries an unchanged stale price row every five minutes without immediate loops', async () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(now);
+    mocks.getEffectiveSettings.mockResolvedValue({ reportingCurrency: 'INR', priceApiEnabled: true });
+    mocks.txs.current = [makeTx({
+      id: 'stale-price-retry', timestamp: now - 1_000, type: 'buy', asset: 'BTC', amount: 0.3,
+      fiatValue: 30_000, importBatchId: 'exc_1'
+    })];
+    mocks.priceRows.current = [{
+      key: 'spot:sym:BTC:INR', price: 9_000_000, fetchedAt: now - 6 * 60_000
+    }];
+    const view = render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
+    try {
+      await act(async () => { await Promise.resolve(); });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹27,00,000.00');
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+      });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        vi.advanceTimersByTime(5 * 60_000 - 1);
+        await Promise.resolve();
+      });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(2);
+
+      await act(async () => {
+        vi.advanceTimersByTime(4 * 60_000);
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹27,00,000.00');
+
+      await act(async () => {
+        vi.advanceTimersByTime(1);
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹30,000.00');
+
+      await act(async () => {
+        vi.advanceTimersByTime(60_000 - 1);
+        await Promise.resolve();
+      });
+      expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(3);
+    } finally {
+      view.unmount();
+      vi.useRealTimers();
+    }
+  });
+
+  it('refreshes expired authority immediately when window focus returns', () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 2, 12);
+    vi.setSystemTime(now);
+    mocks.txs.current = [makeTx({
+      id: 'focus-aging', timestamp: now - 1_000, type: 'buy', asset: 'BTC', amount: 0.3,
+      fiatValue: 30_000, importBatchId: 'exc_1'
+    })];
+    authority('exchange:exc_1', 'exc_1', 'spot', 'api', now, [{ asset: 'BTC', quantity: 9 }]);
+    const view = render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
+    try {
+      expect(screen.getByText('BTC').closest('li')).toHaveTextContent('9');
+      vi.setSystemTime(now + 24 * 60 * 60_000 + 1);
+      act(() => window.dispatchEvent(new Event('focus')));
       const btcRow = screen.getByText('BTC').closest('li')!;
       expect(btcRow).toHaveTextContent('0.3');
       expect(btcRow).not.toHaveTextContent('9');
@@ -950,5 +1233,54 @@ describe('ConnectionDetail — navigation', () => {
     render(<ConnectionDetail card={walletCard()} onBack={onBack} />);
     fireEvent.click(screen.getByTestId('detail-back'));
     expect(onBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses an accessible roving tablist with arrow, Home, and End navigation', () => {
+    render(<ConnectionDetail card={walletCard()} onBack={() => {}} />);
+    const tabs = screen.getAllByRole('tab');
+    const tablist = screen.getByRole('tablist', { name: 'Connection workspace' });
+    expect(tablist).toHaveClass('max-w-full', 'overflow-x-auto');
+    expect(tablist.firstElementChild).toHaveClass('min-w-max');
+    expect(tablist.firstElementChild).not.toHaveClass('overflow-x-auto');
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Reconciliation', 'Sync history']);
+    expect(tabs[0]).toHaveAttribute('tabindex', '0');
+    expect(tabs[1]).toHaveAttribute('tabindex', '-1');
+    expect(screen.getByRole('tabpanel', { name: 'Overview' })).toBeVisible();
+
+    tabs[0].focus();
+    fireEvent.keyDown(tabs[0], { key: 'ArrowRight' });
+    expect(tabs[1]).toHaveFocus();
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getByTestId('connection-reconciliation')).toBeVisible();
+
+    fireEvent.keyDown(tabs[1], { key: 'End' });
+    expect(tabs[2]).toHaveFocus();
+    expect(screen.getByTestId('sync-history-empty')).toBeVisible();
+    fireEvent.keyDown(tabs[2], { key: 'Home' });
+    expect(tabs[0]).toHaveFocus();
+  });
+
+  it('opens file import from the workspace header without changing tabs', () => {
+    const onImportFile = vi.fn();
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} onImportFile={onImportFile} />);
+    fireEvent.click(screen.getByTestId('detail-import-file'));
+    expect(onImportFile).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('moves focus into Sync history when reconciliation requests evidence inspection', async () => {
+    const now = Date.now();
+    mocks.txs.current = [makeTx({
+      id: 'focus-gap', type: 'transfer_in', asset: 'BTC', amount: 1,
+      timestamp: now - 1_000, source: 'binance_api', importBatchId: 'exc_1', parserAccountClass: 'spot'
+    })];
+    authority('exchange:exc_1', 'exc_1', 'spot', 'api', now, [{ asset: 'BTC', quantity: 2 }]);
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
+    fireEvent.click(screen.getByRole('tab', { name: 'Reconciliation' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Inspect Sync history' }));
+    const historyTab = screen.getByRole('tab', { name: 'Sync history' });
+    const historyPanel = screen.getByRole('tabpanel', { name: 'Sync history' });
+    expect(historyTab).toHaveAttribute('aria-selected', 'true');
+    await waitFor(() => expect(historyPanel).toHaveFocus());
   });
 });

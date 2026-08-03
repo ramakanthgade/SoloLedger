@@ -126,6 +126,22 @@ describe('buildHoldingsProjection', () => {
     expect(result.slices[0]).toMatchObject({ assetKey: 'asset:ETH', quantity: 0, authorityQuantity: 0 });
   });
 
+  it('retains authority-only assets when an exact authority scope is explicitly non-comparable', () => {
+    const result = buildHoldingsProjection(input({
+      snapshots: [snapshot()],
+      assets: [authorityAsset({ assetKey: 'asset:ETH', asset: 'ETH', quantity: 4 })],
+      nonComparableAuthorityScopes: [{ scopeId: 'exchange:c1', accountClass: 'spot' }]
+    }));
+    expect(result.holdings).toEqual([
+      expect.objectContaining({
+        assetKey: 'asset:ETH', quantity: 0,
+        sourceVerification: [expect.objectContaining({
+          authorityStatus: 'non_comparable', fallbackReason: 'non_comparable_authority'
+        })]
+      })
+    ]);
+  });
+
   it('keeps manual holdings additive and preserves negative posting quantities', () => {
     const additive = buildHoldingsProjection(input({
       transactions: [apiTx(), tx({ id: 'manual', amount: 3 })], snapshots: [snapshot()],
@@ -332,6 +348,30 @@ describe('buildHoldingsProjection', () => {
     expect(result.slices).toHaveLength(1);
     expect(result.slices[0].scopeId).toBe('exchange:c2');
     expect(result.holdings[0].quantity).toBe(5);
+  });
+
+  it('filters exact scope/account-class pairs without a Cartesian leak', () => {
+    const result = buildHoldingsProjection(input({
+      exchangeConnections: [
+        { id: 'c1', exchange: 'binance', provenAccountClasses: ['spot', 'options'] },
+        { id: 'c2', exchange: 'binance', provenAccountClasses: ['spot', 'options'] }
+      ],
+      transactions: [
+        apiTx({ id: 'c1-spot', importBatchId: 'c1', parserAccountClass: 'spot', amount: 1 }),
+        apiTx({ id: 'c1-options', importBatchId: 'c1', parserAccountClass: 'options', amount: 10 }),
+        apiTx({ id: 'c2-spot', importBatchId: 'c2', parserAccountClass: 'spot', amount: 100 }),
+        apiTx({ id: 'c2-options', importBatchId: 'c2', parserAccountClass: 'options', amount: 1_000 })
+      ],
+      scopeFilter: { scopePairs: [
+        { scopeId: 'exchange:c1', accountClass: 'spot' },
+        { scopeId: 'exchange:c2', accountClass: 'options' }
+      ] }
+    }));
+    expect(result.slices.map((slice) => [slice.scopeId, slice.accountClass, slice.quantity])).toEqual([
+      ['exchange:c1', 'spot', 1],
+      ['exchange:c2', 'options', 1_000]
+    ]);
+    expect(result.holdings[0].quantity).toBe(1_001);
   });
 
   it('overlays positive per-unit legacy cost without overriding authority quantity', () => {

@@ -61,7 +61,7 @@ export interface PriceIndex {
   currentBySymbol: Map<string, PricePoint>;
 }
 
-const CURRENT_PRICE_MAX_AGE_MS = 15 * 60_000;
+export const CURRENT_PRICE_MAX_AGE_MS = 15 * 60_000;
 
 function parseCacheDate(ddmmyyyy: string): number | null {
   const m = /^(\d{2})-(\d{2})-(\d{4})$/.exec(ddmmyyyy);

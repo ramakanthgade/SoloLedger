@@ -57,6 +57,8 @@ export interface AuthorityBalanceModelInput {
   now: number;
   /** Exact custody instant. CSV evidence is current only at this exact timestamp. */
   comparisonAt?: number;
+  /** Exact scopes whose persisted authority captures conflict logically. */
+  nonComparableScopes?: readonly Readonly<{ scopeId: string; accountClass: AccountClass }>[];
   /** Reuse a caller's immutable aggregation snapshot for this exact postings array. */
   preparedPostings?: PreparedPostingAggregation;
   /** Optional deterministic work counters for performance regression tests. */
@@ -221,6 +223,8 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
   const liveBinanceConnections = input.exchangeConnections.filter(
     (source) => source.exchange === 'binance' && source.deletedAt == null
   );
+  const forcedNonComparableScopes = new Set((input.nonComparableScopes ?? []).map((scope) =>
+    scopeKey(scope.scopeId, scope.accountClass)));
   const assetsBySnapshotId = new Map<string, AuthorityAssetRow[]>();
   for (const asset of input.assets) {
     if (metrics) metrics.authorityAssetIndexVisits += 1;
@@ -316,14 +320,21 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
     const scopedCoverage = coverageByScope.get(key) ?? [];
     const postingIndex = postingsByScope.get(key);
     if (metrics && postingIndex) metrics.scopedPostingVisits += postingIndex.postingCount;
-    const selection = selectAuthoritySnapshot({
-      scopeId: scope.scopeId,
-      accountClass: scope.accountClass,
-      snapshots: authorities.map(({ snapshot }) => snapshot),
-      assets: authorities.flatMap((authority) => authority.assets),
-      now: input.now,
-      comparisonAt: input.comparisonAt
-    });
+    const forcedNonComparable = forcedNonComparableScopes.has(key);
+    const selection = forcedNonComparable
+      ? {
+          authorityStatus: 'non_comparable' as const,
+          selectedAssets: [],
+          diagnostics: authorities.map(({ snapshot }) => snapshot)
+        }
+      : selectAuthoritySnapshot({
+          scopeId: scope.scopeId,
+          accountClass: scope.accountClass,
+          snapshots: authorities.map(({ snapshot }) => snapshot),
+          assets: authorities.flatMap((authority) => authority.assets),
+          now: input.now,
+          comparisonAt: input.comparisonAt
+        });
     let authorityStatus = selection.authorityStatus;
     const selectedRows = selection.selectedAssets;
     const duplicateAssetKeys = new Set<string>();
@@ -342,6 +353,11 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
     const coverageStatus = coverageForSelection(scopedCoverage, selection.selectedSnapshot);
     const assets = new Map(postingIndex?.assets ?? []);
     selectedRows.forEach((row) => assets.set(row.assetKey, row.asset));
+    if (forcedNonComparable) {
+      for (const authority of authorities) {
+        for (const row of authority.assets) assets.set(row.assetKey, row.asset);
+      }
+    }
 
     for (const [assetKey, asset] of assets) {
       const postingQuantity = postingIndex?.balances.get(assetKey) ?? 0;
