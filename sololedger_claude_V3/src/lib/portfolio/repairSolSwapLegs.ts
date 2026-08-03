@@ -2,7 +2,7 @@
  * Repair incomplete swaps that never recorded a native SOL leg (common for USDC→SOL).
  * Uses Vite `/solana-rpc` on localhost (no API key / no SaaS login required).
  */
-import { db } from '@/lib/storage/db';
+import { db, mutateTransactionsAndReconcileCsv } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
 import { makeId } from '@/lib/parsers/types';
 import { isNativeSolAsset } from '@/lib/portfolio/solBalance';
@@ -19,6 +19,7 @@ import {
 
 const MIN_SOL_LEG = 0.001;
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+type TransactionMutationRunner = (mutation: () => Promise<void>) => Promise<void>;
 
 function tradeTouchesSolFully(t: Transaction): boolean {
   if (isNativeSolAsset(t.asset) && t.amount >= MIN_SOL_LEG) return true;
@@ -215,7 +216,10 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
 /**
  * Reconcile USDC amounts per signature with on-chain delta; drop duplicate credits.
  */
-export async function repairUsdcOvercount(_alchemyApiKey?: string): Promise<number> {
+export async function repairUsdcOvercount(
+  _alchemyApiKey?: string,
+  runTransactionMutation: TransactionMutationRunner = mutateTransactionsAndReconcileCsv
+): Promise<number> {
   const usdcRows = await db.transactions
     .filter(
       (t) =>
@@ -237,6 +241,8 @@ export async function repairUsdcOvercount(_alchemyApiKey?: string): Promise<numb
   }
 
   let fixed = 0;
+  const updates = new Map<string, Partial<Transaction>>();
+  const deletionIds = new Set<string>();
   for (const rows of bySig.values()) {
     const wallet = rows[0].walletAddress!;
     const sig = rows[0].sourceRef!;
@@ -270,8 +276,10 @@ export async function repairUsdcOvercount(_alchemyApiKey?: string): Promise<numb
       chainDelta < -0.0001 &&
       Math.abs(tradeOut.amount - Math.abs(chainDelta)) > 0.0001
     ) {
-      // eslint-disable-next-line no-await-in-loop
-      await db.transactions.update(tradeOut.id, { amount: Math.abs(chainDelta) });
+      updates.set(tradeOut.id, {
+        ...updates.get(tradeOut.id),
+        amount: Math.abs(chainDelta)
+      });
       fixed++;
       continue;
     }
@@ -284,8 +292,7 @@ export async function repairUsdcOvercount(_alchemyApiKey?: string): Promise<numb
       )
       .sort((a, b) => Math.abs(a.amount - excess) - Math.abs(b.amount - excess));
     if (dupIns.length > 0 && Math.abs(dupIns[0].amount - excess) < 0.01) {
-      // eslint-disable-next-line no-await-in-loop
-      await db.transactions.delete(dupIns[0].id);
+      deletionIds.add(dupIns[0].id);
       fixed++;
       continue;
     }
@@ -295,10 +302,21 @@ export async function repairUsdcOvercount(_alchemyApiKey?: string): Promise<numb
     );
     if (tradeIn && excess > 0.0001) {
       const next = Math.max(0, (tradeIn.counterAmount ?? 0) - excess);
-      // eslint-disable-next-line no-await-in-loop
-      await db.transactions.update(tradeIn.id, { counterAmount: next });
+      updates.set(tradeIn.id, {
+        ...updates.get(tradeIn.id),
+        counterAmount: next
+      });
       fixed++;
     }
+  }
+
+  if (updates.size > 0 || deletionIds.size > 0) {
+    await runTransactionMutation(async () => {
+      for (const [id, changes] of updates) {
+        await db.transactions.update(id, changes);
+      }
+      if (deletionIds.size > 0) await db.transactions.bulkDelete([...deletionIds]);
+    });
   }
 
   return fixed;

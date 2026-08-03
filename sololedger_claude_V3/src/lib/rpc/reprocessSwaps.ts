@@ -1,4 +1,4 @@
-import { db } from '@/lib/storage/db';
+import { db, mutateTransactionsAndReconcileCsv } from '@/lib/storage/db';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import { batchClassifyNoves } from '@/lib/rpc/noves';
 import { classifyRewardIncome, isKnownRewardToken } from '@/lib/assets/rewardRegistry';
@@ -88,7 +88,7 @@ export async function reprocessSwapDetectionInDb(
   });
 
   if (removedIds.length > 0 || tradeUpdates.length > 0) {
-    await db.transaction('rw', db.transactions, async () => {
+    await mutateTransactionsAndReconcileCsv(async () => {
       if (removedIds.length > 0) await db.transactions.bulkDelete(removedIds);
       if (tradeUpdates.length > 0) await db.transactions.bulkPut(tradeUpdates);
     });
@@ -225,7 +225,7 @@ export async function reprocessSwapDetectionInDb(
   }
 
   if (toUpsert.length > 0 || toDelete.length > 0) {
-    await db.transaction('rw', db.transactions, async () => {
+    await mutateTransactionsAndReconcileCsv(async () => {
       if (toDelete.length > 0) await db.transactions.bulkDelete(toDelete);
       if (toUpsert.length > 0) await db.transactions.bulkPut(toUpsert);
     });

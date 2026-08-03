@@ -2,7 +2,7 @@
  * Full-wallet on-chain reconcile for Solana SOL (and USDC excess).
  * Scans every signature for the wallet — works even when a swap was never imported.
  */
-import { db, getLookupAddresses } from '@/lib/storage/db';
+import { db, getLookupAddresses, mutateTransactionsAndReconcileCsv } from '@/lib/storage/db';
 import { makeId } from '@/lib/parsers/types';
 import type { FlagReason, Transaction } from '@/types/transaction';
 import {
@@ -70,13 +70,24 @@ export interface WalletChainReconcileResult {
   message: string;
 }
 
+type TransactionMutationRunner = (mutation: () => Promise<void>) => Promise<void>;
+
 /**
  * For each imported Solana wallet, walk on-chain signatures and patch the ledger
  * so per-signature SOL (and obvious USDC duplicates) match the chain.
  */
-export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReconcileResult> {
+export async function reconcileSolanaWalletsFromChain(
+  runTransactionMutation: TransactionMutationRunner = mutateTransactionsAndReconcileCsv
+): Promise<WalletChainReconcileResult> {
   const wallets = (await getLookupAddresses()).filter((w) => w.chain === 'solana');
   const allTxs = await db.transactions.filter((t) => t.chain === 'solana' && !t.isSpam).toArray();
+  const updates = new Map<string, Partial<Transaction>>();
+  const inserts: Transaction[] = [];
+  const deletionIds = new Set<string>();
+
+  const stageUpdate = (id: string, changes: Partial<Transaction>) => {
+    updates.set(id, { ...updates.get(id), ...changes });
+  };
 
   let signaturesChecked = 0;
   let solRowsFixed = 0;
@@ -122,8 +133,7 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
 
         if (gap > MIN_SOL && trade) {
           const solFromSwap = swapAssociatedSol(tx, wallet) ?? gap;
-          // eslint-disable-next-line no-await-in-loop
-          await db.transactions.update(trade.id, {
+          stageUpdate(trade.id, {
             counterAsset: 'SOL',
             counterAmount: Math.max(solFromSwap, gap),
             notes: trade.notes?.includes('SOL leg repaired')
@@ -133,8 +143,7 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
           solRowsFixed++;
         } else if (gap > MIN_SOL && transferOut) {
           const solFromSwap = swapAssociatedSol(tx, wallet) ?? gap;
-          // eslint-disable-next-line no-await-in-loop
-          await db.transactions.update(transferOut.id, {
+          stageUpdate(transferOut.id, {
             type: 'trade',
             counterAsset: 'SOL',
             counterAmount: Math.max(solFromSwap, gap),
@@ -145,8 +154,7 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
         } else if (Math.abs(gap) > MIN_SOL) {
           // Insert a SOL transfer to close the gap (works when the whole sig was missing).
           const inbound = gap > 0;
-          // eslint-disable-next-line no-await-in-loop
-          await db.transactions.add({
+          inserts.push({
             id: makeId('rpc'),
             timestamp: (s.blockTime ?? Math.floor(Date.now() / 1000)) * 1000,
             type: inbound ? 'transfer_in' : 'transfer_out',
@@ -179,8 +187,7 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
           chainUsdc < -0.0001 &&
           Math.abs(tradeOut.amount - Math.abs(chainUsdc)) > 0.0001
         ) {
-          // eslint-disable-next-line no-await-in-loop
-          await db.transactions.update(tradeOut.id, { amount: Math.abs(chainUsdc) });
+          stageUpdate(tradeOut.id, { amount: Math.abs(chainUsdc) });
           usdcRowsFixed++;
         } else {
           const dupIn = rows
@@ -191,16 +198,14 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
             )
             .sort((a, b) => Math.abs(a.amount - usdcExcess) - Math.abs(b.amount - usdcExcess))[0];
           if (dupIn && Math.abs(dupIn.amount - usdcExcess) < 0.01) {
-            // eslint-disable-next-line no-await-in-loop
-            await db.transactions.delete(dupIn.id);
+            deletionIds.add(dupIn.id);
             usdcRowsFixed++;
           } else {
             const tradeIn = rows.find(
               (t) => t.type === 'trade' && t.counterAsset?.toUpperCase() === 'USDC'
             );
             if (tradeIn && (tradeIn.counterAmount ?? 0) > usdcExcess) {
-              // eslint-disable-next-line no-await-in-loop
-              await db.transactions.update(tradeIn.id, {
+              stageUpdate(tradeIn.id, {
                 counterAmount: (tradeIn.counterAmount ?? 0) - usdcExcess
               });
               usdcRowsFixed++;
@@ -209,6 +214,16 @@ export async function reconcileSolanaWalletsFromChain(): Promise<WalletChainReco
         }
       }
     }
+  }
+
+  if (updates.size > 0 || inserts.length > 0 || deletionIds.size > 0) {
+    await runTransactionMutation(async () => {
+      for (const [id, changes] of updates) {
+        await db.transactions.update(id, changes);
+      }
+      if (inserts.length > 0) await db.transactions.bulkAdd(inserts);
+      if (deletionIds.size > 0) await db.transactions.bulkDelete([...deletionIds]);
+    });
   }
 
   const message =

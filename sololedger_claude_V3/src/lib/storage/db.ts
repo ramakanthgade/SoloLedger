@@ -403,7 +403,60 @@ class SoloLedgerDB extends Dexie {
         });
       }
     });
+    // v12: CsvImportRow.txCount is an exact survivor count, not the count at
+    // the time that source was first committed. Global dedup can delete rows
+    // owned by older imports, so backfill every persisted CSV identity from
+    // the current transaction ledger (including explicit zero survivors).
+    this.version(12).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName',
+      exchangeConnections: 'id, exchange, lastSyncAt',
+      walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset',
+      authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+      authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+      sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+      openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]'
+    }).upgrade(async (tx) => {
+      await reconcileCsvImportTransactionCounts(
+        tx.table<Transaction, string>('transactions'),
+        tx.table<CsvImportRow, string>('csvImports')
+      );
+    });
   }
+}
+
+export async function reconcileCsvImportTransactionCounts(
+  transactions: Table<Transaction, string>,
+  csvImports: Table<CsvImportRow, string>
+): Promise<void> {
+  const imports = await csvImports.toArray();
+  if (imports.length === 0) return;
+  const importIds = new Set(imports.map((row) => row.id));
+  const counts = new Map<string, number>();
+  await transactions.each((transaction) => {
+    const id = transaction.importBatchId;
+    if (id && importIds.has(id)) counts.set(id, (counts.get(id) ?? 0) + 1);
+  });
+  await Promise.all(imports.map((row) => {
+    const txCount = counts.get(row.id) ?? 0;
+    return row.txCount === txCount ? Promise.resolve(0) : csvImports.update(row.id, { txCount });
+  }));
+}
+
+/** Own both stores so transaction-row mutations and CSV survivor counts commit together. */
+export function mutateTransactionsAndReconcileCsv<T>(mutation: () => Promise<T>): Promise<T> {
+  return db.transaction('rw', [db.transactions, db.csvImports], async () => {
+    const result = await mutation();
+    await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
+    return result;
+  });
 }
 
 function coherentLegacyAsOf(rows: readonly { asOf: number }[]): number | undefined {
@@ -733,7 +786,7 @@ export async function deleteLookupAddress(id: string): Promise<void> {
 }
 
 export async function deleteLookupAddressAndTransactions(id: string): Promise<number> {
-  return db.transaction('rw', [db.transactions, db.lots, db.disposals, db.lookupAddresses, db.specIdHints, db.walletBalances,
+  return db.transaction('rw', [db.transactions, db.lots, db.disposals, db.lookupAddresses, db.specIdHints, db.walletBalances, db.csvImports,
     db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances], async () => {
     const row = await db.lookupAddresses.get(id);
     if (!row) return 0;
@@ -761,6 +814,7 @@ export async function deleteLookupAddressAndTransactions(id: string): Promise<nu
       .toArray()).map((b) => b.id);
     if (balanceIds.length > 0) await db.walletBalances.bulkDelete(balanceIds);
     await db.lookupAddresses.delete(id);
+    await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
     return toDelete.length;
   });
 }
@@ -1593,12 +1647,13 @@ export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
     }
   }
 
-  await db.transaction('rw', [db.transactions, db.lots, db.disposals, db.specIdHints], async () => {
+  await db.transaction('rw', [db.transactions, db.lots, db.disposals, db.specIdHints, db.csvImports], async () => {
     await deleteDependentTaxArtifacts(ids);
     await db.transactions.bulkDelete(ids);
     for (const id of ids) {
       await db.specIdHints.delete(id);
     }
+    await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
   });
 
   for (const { chain, address } of wallets.values()) {
@@ -1762,6 +1817,7 @@ export async function commitCsvImportGeneration(input: CommitCsvImportInput): Pr
     if (rows.snapshots.length > 0) await db.authoritySnapshots.bulkAdd(rows.snapshots);
     if (rows.assets.length > 0) await db.authorityAssets.bulkAdd(rows.assets);
     await db.sourceCoverage.bulkAdd(rows.coverage);
+    await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
     return savedAfterDedup;
   });
 }
@@ -1796,6 +1852,7 @@ export async function deleteCsvImportAndTransactions(importId: string): Promise<
       .concat(snapshots.map((snapshot) => snapshot.scopeId)))];
     await db.openingBalances.where('scopeId').anyOf(ownedOpeningScopes).delete();
     await db.csvImports.delete(importId);
+    await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
     return toDelete.length;
   });
 }
@@ -1806,6 +1863,7 @@ export async function deleteCsvImportAndTransactions(importId: string): Promise<
  * like transfer_in → income must still match a raw re-import).
  */
 export async function deduplicateTransactions(): Promise<number> {
+  return mutateTransactionsAndReconcileCsv(async () => {
   const all = await db.transactions.toArray();
   const seen = new Map<string, string>();
   const toDelete: string[] = [];
@@ -1911,17 +1969,16 @@ export async function deduplicateTransactions(): Promise<number> {
 
   const uniqueDeletes = [...new Set(toDelete)];
   if (uniqueDeletes.length > 0 || reservationUpdates.length > 0) {
-    await db.transaction('rw', db.transactions, async () => {
-      for (const update of reservationUpdates) {
-        await db.transactions.update(update.id, {
-          dedupMatchedApiId: update.dedupMatchedApiId,
-          dedupMatchedApiRow: update.dedupMatchedApiRow
-        });
-      }
-      if (uniqueDeletes.length > 0) await db.transactions.bulkDelete(uniqueDeletes);
-    });
+    for (const update of reservationUpdates) {
+      await db.transactions.update(update.id, {
+        dedupMatchedApiId: update.dedupMatchedApiId,
+        dedupMatchedApiRow: update.dedupMatchedApiRow
+      });
+    }
+    if (uniqueDeletes.length > 0) await db.transactions.bulkDelete(uniqueDeletes);
   }
   return uniqueDeletes.length;
+  });
 }
 
 /**

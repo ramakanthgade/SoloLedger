@@ -79,7 +79,7 @@ export interface TransactionAppendProof {
   transaction: Transaction;
 }
 
-interface TransactionViews {
+export interface TransactionViews {
   source: readonly Transaction[];
   nonSpam: Transaction[];
   projection: Transaction[];
