@@ -3,11 +3,13 @@ import type { AccountClass, OpeningBalanceRow } from '@/lib/ledger/derivedPostin
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
+import { buildDataHealthModel } from '@/components/dashboard/dataHealthModel';
 import type { ConnectionCardData } from './connectionModel';
 import {
   buildPreparedConnectionWorkspace,
   buildConnectionWorkspaceFromCard,
   buildConnectionWorkspaceSnapshot,
+  prepareConnectionWorkspaceCollectionIndex,
   prepareConnectionWorkspaceFromCard,
   type ConnectionWorkspaceInput,
   type ConnectionWorkspaceMetrics
@@ -337,6 +339,105 @@ describe('connection workspace model', () => {
     });
   });
 
+  it('routes a linked file card API failure to the contributing exchange without changing direct sources', () => {
+    const adapterInput = {
+      transactions: [tx({
+        id: 'linked-file-tx', source: 'binance', importBatchId: 'file-1',
+        parserAccountClass: 'spot'
+      })],
+      exchangeConnections: [{ id: 'conn-1', exchange: 'binance' }],
+      openingBalances: [] as OpeningBalanceRow[], snapshots: [] as AuthoritySnapshotRow[],
+      assets: [] as AuthorityAssetRow[],
+      sourceCoverage: [coverage('spot', {
+        id: 'failed-api-coverage', sourceIdentityId: 'conn-1', status: 'failed',
+        endpointOutcomes: [{
+          endpoint: 'spot:history', accountClass: 'spot', required: true, status: 'failed' as const
+        }]
+      })],
+      now: NOW
+    };
+    const workspace = buildConnectionWorkspaceFromCard({
+      ...adapterInput,
+      card: fileCard(),
+    });
+    const exchangeWorkspace = buildConnectionWorkspaceFromCard({ ...adapterInput, card: exchangeCard() });
+
+    expect(workspace.sources).toEqual([
+      expect.objectContaining({ kind: 'file', sourceIdentityId: 'file-1' })
+    ]);
+    expect(workspace.overview.transactionCount).toBe(1);
+    expect(workspace.evidenceOwners).toEqual(expect.arrayContaining([
+      { kind: 'file', sourceIdentityId: 'file-1' },
+      { kind: 'exchange-api', sourceIdentityId: 'conn-1' }
+    ]));
+
+    const model = buildDataHealthModel([
+      {
+        id: workspace.id, title: 'history.csv',
+        target: { kind: 'csv', importId: 'file-1' }, snapshot: workspace
+      },
+      {
+        id: exchangeWorkspace.id, title: 'Binance',
+        target: { kind: 'exchange', connectionId: 'conn-1' }, snapshot: exchangeWorkspace
+      }
+    ]);
+    expect(model.sources).toHaveLength(2);
+    expect(model.summary.failedCoverage).toBe(1);
+    expect(model.sources.flatMap((source) => source.findings)
+      .filter((finding) => finding.remediation === 'retry_source_operation')).toHaveLength(1);
+    expect(model.sources.find((source) => source.id === exchangeWorkspace.id)?.findings
+      .find((finding) => finding.remediation === 'retry_source_operation')?.intent)
+      .toEqual({
+        destination: 'connections',
+        target: { kind: 'exchange', connectionId: 'conn-1' },
+        workspaceTab: 'overview',
+        focus: { kind: 'sync' }
+      });
+    expect(model.sources.find((source) => source.id === workspace.id)?.findings).toEqual([]);
+  });
+
+  it('routes a genuinely file-owned adapter failure to the exact file import action', () => {
+    const fileCoverage = coverage('spot', {
+      id: 'failed-file-coverage', scopeId: 'file:file-1:spot',
+      sourceIdentityId: 'file-1', evidenceId: 'file-import', kind: 'csv',
+      parserId: 'coinbase', supportedParser: true, status: 'failed',
+      requestedHistoryStart: undefined, requestedHistoryEnd: undefined,
+      observedHistoryStart: undefined, observedHistoryEnd: undefined,
+      declaredExportStart: 0, declaredExportEnd: NOW,
+      requiredSheets: ['spot'], presentSheets: ['spot'],
+      recognizedCount: 0, parsedCount: 0, dedupedCount: 0, excludedCount: 0, skippedCount: 0,
+      endpointOutcomes: [{
+        endpoint: 'spot:history', parserId: 'coinbase', accountClass: 'spot',
+        required: true, status: 'failed'
+      }]
+    });
+    const workspace = buildConnectionWorkspaceFromCard({
+      card: fileCard(),
+      transactions: [tx({
+        id: 'owned-file-tx', source: 'coinbase', importBatchId: 'file-1',
+        parserAccountClass: 'spot'
+      })],
+      exchangeConnections: [], openingBalances: [], snapshots: [], assets: [],
+      sourceCoverage: [fileCoverage], now: NOW
+    });
+    const model = buildDataHealthModel([{
+      id: workspace.id,
+      title: 'history.csv',
+      target: { kind: 'csv', importId: 'file-1' },
+      snapshot: workspace
+    }]);
+
+    expect(workspace.sources).toHaveLength(1);
+    expect(workspace.evidenceOwners).toContainEqual({ kind: 'file', sourceIdentityId: 'file-1' });
+    expect(model.sources[0].findings.find((finding) => finding.remediation === 'retry_source_operation')?.intent)
+      .toEqual({
+        destination: 'connections',
+        target: { kind: 'csv', importId: 'file-1' },
+        workspaceTab: 'overview',
+        focus: { kind: 'import' }
+      });
+  });
+
   it('requires openings only from bounded complete evidence and suppresses it when opening evidence exists', () => {
     const outgoing = tx({ id: 'out', type: 'transfer_out', amount: 2 });
     const base: ConnectionWorkspaceInput = {
@@ -637,6 +738,39 @@ describe('connection workspace model', () => {
     expect(Object.isFrozen(workspace.scopes[0].authority.diagnostics)).toBe(true);
   });
 
+  it('preserves empty-source ownership, scope status, and history on the optimized path', () => {
+    const source = {
+      kind: 'exchange-api' as const, sourceIdentityId: 'empty-1', exchange: 'kraken', createdAt: 50,
+      transactionIds: []
+    };
+    const base: ConnectionWorkspaceInput = {
+      id: 'exchange:empty-1', kind: 'exchange-api', sources: [source],
+      scopes: [
+        { scopeId: 'exchange:empty-1', accountClass: 'spot', scopeStatus: 'resolved' },
+        { scopeId: 'exchange:empty-1', accountClass: 'margin', scopeStatus: 'unresolved' }
+      ],
+      transactions: [], exchangeConnections: [{ id: 'empty-1', exchange: 'kraken' }],
+      openingBalances: [], snapshots: [], assets: [], sourceCoverage: [], now: NOW
+    };
+    const metrics: ConnectionWorkspaceMetrics = {
+      coverageAssociationVisits: 0, authoritySnapshotIndexVisits: 0,
+      authorityAssetIndexVisits: 0, authoritySelectorSnapshotVisits: 0,
+      authoritySelectorAssetVisits: 0, postingAssetIndexVisits: 0,
+      openingAssetIndexVisits: 0, authorityLabelIndexVisits: 0
+    };
+
+    const optimized = buildConnectionWorkspaceSnapshot(base);
+    const reference = buildConnectionWorkspaceSnapshot({ ...base, metrics });
+
+    expect(optimized).toEqual(reference);
+    expect(optimized.evidenceOwners).toEqual([
+      { kind: 'exchange-api', sourceIdentityId: 'empty-1' }
+    ]);
+    expect(optimized.syncHistory).toHaveLength(1);
+    expect(Object.isFrozen(optimized)).toBe(true);
+    expect(Object.isFrozen(source)).toBe(false);
+  });
+
   it('omits a delta when selected authority has duplicate canonical asset evidence', () => {
     const workspace = buildConnectionWorkspaceSnapshot({
       id: 'exchange:conn-1', kind: 'exchange-api',
@@ -702,6 +836,71 @@ describe('connection workspace model', () => {
     });
     expect(workspace.reconciliation.find((row) => row.assetKey === 'asset:ETH')?.reconciliation)
       .toMatchObject({ authorityStatus: 'non_comparable', balanceStatus: 'not_compared' });
+  });
+
+  it('applies duplicate-authority fallback to initial prepared reuse and clock refreshes', () => {
+    const duplicate = snapshot({ snapshotId: 'snap-duplicate' });
+    const prepared = prepareConnectionWorkspaceFromCard({
+      card: exchangeCard(), transactions: [tx()],
+      exchangeConnections: [{ id: 'conn-1', exchange: 'binance' }], openingBalances: [],
+      snapshots: [snapshot(), duplicate], assets: [
+        authorityAsset({ quantity: 9 }),
+        authorityAsset({ id: 'duplicate-btc', snapshotId: 'snap-duplicate', quantity: 7 })
+      ],
+      sourceCoverage: [], now: NOW
+    });
+
+    const initial = buildPreparedConnectionWorkspace(prepared, NOW);
+    const refreshed = buildPreparedConnectionWorkspace(prepared, NOW + 60_000);
+    for (const workspace of [initial, refreshed]) {
+      expect(workspace.scopes.find((row) => row.accountClass === 'spot')?.authority.status)
+        .toBe('non_comparable');
+      expect(workspace.overview.holdings.find((row) => row.assetKey === 'asset:BTC'))
+        .toMatchObject({
+          quantity: 1,
+          sourceVerification: [expect.objectContaining({
+            authorityStatus: 'non_comparable', fallbackReason: 'non_comparable_authority'
+          })]
+        });
+    }
+    expect(initial.overview.holdings).toEqual(refreshed.overview.holdings);
+  });
+
+  it('merges indexed source scope status independent of transaction order', () => {
+    const deletedSourceEvidence = {
+      kind: 'deleted_exchange_source' as const, sourceIdentityId: 'conn-1',
+      transactionId: 'old-api', source: 'kraken_api', apiIdentity: 'kraken:old-api', deletedAt: 99
+    };
+    const resolvedImport = tx({ id: 'resolved-import', source: 'kraken_api', importBatchId: 'conn-1' });
+    const deletedImport = tx({
+      id: 'deleted-import', source: 'kraken_api', importBatchId: 'conn-1', deletedSourceEvidence
+    });
+    const resolvedManual = tx({
+      id: 'resolved-manual', source: 'manual', importBatchId: undefined,
+      parserAccountClass: 'spot',
+      dedupMatchedApiRow: tx({ id: 'api-twin', source: 'kraken_api', importBatchId: 'conn-1' })
+    });
+    const deletedManual = tx({
+      id: 'deleted-manual', source: 'manual', importBatchId: undefined,
+      parserAccountClass: 'spot', deletedSourceEvidence
+    });
+    const buildIndex = (transactions: Transaction[]) => prepareConnectionWorkspaceCollectionIndex({
+      transactions, exchangeConnections: [{ id: 'conn-1', exchange: 'kraken' }],
+      openingBalances: [], snapshots: [], assets: [], sourceCoverage: []
+    });
+
+    for (const transactions of [
+      [deletedImport, resolvedImport, deletedManual, resolvedManual],
+      [resolvedManual, deletedManual, resolvedImport, deletedImport]
+    ]) {
+      const index = buildIndex(transactions);
+      expect(index.scopesByImport.get('conn-1')).toEqual([{
+        scopeId: 'exchange:conn-1', accountClass: 'spot', scopeStatus: 'source_deleted'
+      }]);
+      expect(index.manualScopes).toEqual([{
+        scopeId: 'exchange:conn-1', accountClass: 'spot', scopeStatus: 'source_deleted'
+      }]);
+    }
   });
 
   it('indexes a large evidence fixture once and passes only scoped candidates to the selector', () => {
@@ -779,6 +978,45 @@ describe('connection workspace model', () => {
     expect(metrics.projectionTransactionCount).toBe(1);
     expect(workspace.overview.transactionCount).toBe(1);
     expect(workspace.overview.holdings[0].quantity).toBe(2);
+  });
+
+  it('builds 30k transactions across many source workspaces from one linear collection index', () => {
+    const transactionCount = 30_000;
+    const sourceCount = 100;
+    const connections = Array.from({ length: sourceCount }, (_, index) => ({
+      id: `conn-${index}`, exchange: 'kraken'
+    }));
+    const transactions = Array.from({ length: transactionCount }, (_, index) => tx({
+      id: `many-source-${index}`,
+      source: 'kraken_api',
+      importBatchId: `conn-${index % sourceCount}`,
+      timestamp: index + 1
+    }));
+    const cards = connections.map((connection, index): ConnectionCardData => ({
+      ...exchangeCard(),
+      id: `exchange:${connection.id}`,
+      title: `Kraken ${index}`,
+      exchange: {
+        ...exchangeCard().exchange!,
+        id: connection.id,
+        exchange: 'kraken'
+      }
+    }));
+    const input = {
+      transactions,
+      exchangeConnections: connections,
+      openingBalances: [] as OpeningBalanceRow[],
+      snapshots: [] as AuthoritySnapshotRow[],
+      assets: [] as AuthorityAssetRow[],
+      sourceCoverage: [] as SourceCoverageRow[]
+    };
+
+    const collectionIndex = prepareConnectionWorkspaceCollectionIndex(input);
+    const workspaces = cards.map((card) => buildConnectionWorkspaceFromCard({
+      ...input, card, now: NOW, collectionIndex
+    }));
+    expect(workspaces).toHaveLength(sourceCount);
+    expect(workspaces.reduce((sum, workspace) => sum + workspace.overview.transactionCount, 0)).toBe(transactionCount);
   });
 
   it('indexes attribution linearly and reuses posting derivation on clock-only refresh', () => {

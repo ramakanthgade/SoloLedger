@@ -26,6 +26,8 @@ import {
 import { SwitchModeButton } from '@/components/SwitchModeButton';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { cn } from '@/lib/utils';
+import type { NavigationIntent } from '@/lib/navigationIntent';
+import type { DataHealthViewState } from '@/components/dashboard/DataHealthWorkspace';
 
 /**
  * Primary nav — Ember & Slate shell (confirmed Variation A top-nav frame).
@@ -86,10 +88,53 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
   const { user, dbReady } = useAuth();
   const tabs = user?.role === 'admin' ? [...BASE_TABS, ADMIN_TAB] : BASE_TABS;
   const [active, setActive] = useState<TabId>(initialActive);
-  const ActiveComponent = tabs.find((t) => t.id === active)!.component;
+  const [navigationIntent, setNavigationIntent] = useState<NavigationIntent | undefined>();
+  const [reviewNavigationResetToken, setReviewNavigationResetToken] = useState(0);
+  const [dataHealthOrigin, setDataHealthOrigin] = useState<DataHealthViewState | undefined>();
   const importState = useImportJob();
   const [deduping, setDeduping] = useState(false);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const selectTopLevelTab = (tab: TabId) => {
+    if (tab === 'review' && active === 'review') setReviewNavigationResetToken((token) => token + 1);
+    setNavigationIntent(undefined);
+    setDataHealthOrigin(undefined);
+    setActive(tab);
+  };
+
+  const beginRemediationNavigation = (intent: NavigationIntent, state: DataHealthViewState) => {
+    window.history.replaceState({ ...window.history.state, sololedgerDataHealth: state }, '');
+    window.history.pushState({ sololedgerRemediation: true }, '');
+    setDataHealthOrigin(state);
+    setNavigationIntent(intent);
+    setActive(intent.destination === 'connections' ? 'import' : 'review');
+  };
+
+  const acknowledgeNavigationIntent = (id: string) => {
+    setNavigationIntent((current) => current?.id === id ? undefined : current);
+  };
+
+  const returnToDataHealth = () => {
+    setNavigationIntent(undefined);
+    window.history.back();
+  };
+
+  useEffect(() => {
+    const previousScrollRestoration = window.history.scrollRestoration;
+    window.history.scrollRestoration = 'manual';
+    const onPopState = (event: PopStateEvent) => {
+      const restored = event.state?.sololedgerDataHealth as DataHealthViewState | undefined;
+      if (!restored) return;
+      setNavigationIntent(undefined);
+      setDataHealthOrigin(restored);
+      setActive('dashboard');
+    };
+    window.addEventListener('popstate', onPopState);
+    return () => {
+      window.removeEventListener('popstate', onPopState);
+      window.history.scrollRestoration = previousScrollRestoration;
+    };
+  }, []);
 
   useEffect(() => {
     const key = `sololedger_dedup_session_${user?.id ?? 'local'}`;
@@ -121,20 +166,20 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
     else return;
     e.preventDefault();
     const nextTab = tabs[next];
-    setActive(nextTab.id);
+    selectTopLevelTab(nextTab.id);
     tabRefs.current[next]?.focus();
   };
 
   return (
     <TabNavProvider
       value={{
-        goToImport: () => setActive('import'),
+        goToImport: () => selectTopLevelTab('import'),
         goTo: (tabId) => {
-          if (tabs.some((t) => t.id === tabId)) setActive(tabId as TabId);
+          if (tabs.some((t) => t.id === tabId)) selectTopLevelTab(tabId as TabId);
         }
       }}
     >
-    <div className="min-h-screen bg-canvas" key={user?.id ?? 'guest'}>
+    <div className="flex h-[100dvh] flex-col overflow-hidden bg-canvas lg:block lg:h-auto lg:min-h-screen lg:overflow-visible" key={user?.id ?? 'guest'}>
       {/* Skip link — first tab stop, revealed on focus (shell mockup `.skiplink`). */}
       <a
         href="#main-content"
@@ -175,7 +220,7 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
                   aria-selected={isActive}
                   aria-controls={`tabpanel-${tab.id}`}
                   tabIndex={isActive ? 0 : -1}
-                  onClick={() => setActive(tab.id)}
+                  onClick={() => selectTopLevelTab(tab.id)}
                   onKeyDown={(e) => handleTabKeyDown(e, i)}
                   className={cn(
                     'flex min-h-[44px] shrink-0 items-center gap-2 whitespace-nowrap rounded-lg px-2.5 text-sm font-bold transition-colors xl:px-3',
@@ -197,7 +242,7 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
             <LocalOnlyBadge />
             <ThemeToggle />
             <SwitchModeButton className="hidden lg:inline-flex" />
-            <UserProfileMenu onOpenSettings={() => setActive('settings')} />
+            <UserProfileMenu onOpenSettings={() => selectTopLevelTab('settings')} />
           </div>
         </div>
       </header>
@@ -223,8 +268,9 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
         </div>
       )}
 
-      {/* pb-28 clears the fixed mobile tab bar + AI FAB on small screens. */}
-      <main id="main-content" className="mx-auto max-w-7xl px-6 pt-10 pb-28 lg:pb-10 lg:px-8">
+      {/* Below lg, main owns scrolling and the tab bar occupies a separate row,
+          so actionable controls can never pass beneath navigation. */}
+      <main id="main-content" className="w-full min-h-0 flex-1 overflow-y-auto px-6 pb-8 pt-10 lg:mx-auto lg:max-w-7xl lg:overflow-visible lg:pb-10 lg:px-8">
         <div
           role="tabpanel"
           id={`tabpanel-${active}`}
@@ -238,12 +284,34 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
               Tidying up your transactions (removing duplicates)…
             </div>
           ) : (
-            <ActiveComponent />
+            active === 'dashboard' ? (
+              <DashboardTab
+                onNavigationIntent={beginRemediationNavigation}
+                restoredDataHealthState={dataHealthOrigin}
+                openDataHealthOnMount={dataHealthOrigin != null}
+              />
+            ) : active === 'import' ? (
+              <ImportTab
+                navigationIntent={navigationIntent?.destination === 'connections' ? navigationIntent : undefined}
+                onNavigationIntentAcknowledged={acknowledgeNavigationIntent}
+                onNavigationBack={dataHealthOrigin ? returnToDataHealth : undefined}
+              />
+            ) : active === 'review' ? (
+              <ReviewTab
+                navigationIntent={navigationIntent?.destination === 'transactions' ? navigationIntent : undefined}
+                navigationResetToken={reviewNavigationResetToken}
+                onNavigationIntentAcknowledged={acknowledgeNavigationIntent}
+                onNavigationBack={dataHealthOrigin ? returnToDataHealth : undefined}
+              />
+            ) : active === 'capital-gains' ? <CapitalGainsTab />
+              : active === 'reports' ? <ReportsTab />
+                : active === 'settings' ? <SettingsTab />
+                  : <AdminPanel />
           )}
         </div>
       </main>
 
-      <MobileTabBar tabs={tabs} active={active} onSelect={setActive} />
+      <MobileTabBar tabs={tabs} active={active} onSelect={selectTopLevelTab} />
       <AiAdvisor />
     </div>
     </TabNavProvider>

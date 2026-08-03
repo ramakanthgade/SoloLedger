@@ -22,7 +22,7 @@ export function TransactionDetailPanel(props: {
 }) {
   const tab = props.activeTab;
   const select = props.onActiveTabChange;
-  return <div className="border-t border-hi/10 bg-elev-1/40 px-4 py-4 pb-24 sm:px-6 lg:pb-6" data-testid="tx-details">
+  return <div className="border-t border-hi/10 bg-elev-1/40 px-4 py-4 pb-24 focus:outline-none sm:px-6 lg:pb-6" data-testid="tx-details" tabIndex={-1}>
     <div role="tablist" aria-label="Transaction detail views" className="mb-4 flex gap-5 border-b border-hi/10">
       {TABS.map((item, index) => <button key={item.id} id={`transaction-tab-${item.id}`} role="tab" aria-selected={tab === item.id} aria-controls={`transaction-panel-${item.id}`} tabIndex={tab === item.id ? 0 : -1} onClick={() => select(item.id)} onKeyDown={(event) => {
         const next = event.key === 'ArrowLeft' ? (index - 1 + TABS.length) % TABS.length

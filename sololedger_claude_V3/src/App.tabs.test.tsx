@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import App from '@/App';
 import { AuthProvider } from '@/lib/saas/authContext';
 import { ModeProvider } from '@/lib/saas/modeContext';
@@ -22,13 +22,19 @@ import type { Transaction } from '@/types/transaction';
  * them keeps this a focused, deterministic a11y test.
  */
 vi.mock('@/components/dashboard/DashboardTab', () => ({
-  DashboardTab: () => <div data-testid="panel-dashboard">Dashboard</div>
+  DashboardTab: (props: { onNavigationIntent?: (intent: object, state: object) => void; restoredDataHealthState?: { filter: string; scrollTop: number }; openDataHealthOnMount?: boolean }) => <div data-testid="panel-dashboard">
+    Dashboard
+    <span data-testid="dashboard-restored">{props.openDataHealthOnMount ? `${props.restoredDataHealthState?.filter}:${props.restoredDataHealthState?.scrollTop}` : 'closed'}</span>
+    <button onClick={() => props.onNavigationIntent?.({ id: 'source-1', destination: 'connections', target: { kind: 'exchange', connectionId: 'exact-1' }, workspaceTab: 'reconciliation', focus: { kind: 'asset', assetKey: 'asset:BTC' } }, { filter: 'stale', scrollTop: 420 })}>Remediate source</button>
+    <button onClick={() => props.onNavigationIntent?.({ id: 'tx-1', destination: 'transactions', transactionId: 'tx-exact', focus: 'detail-panel', detailTab: 'ledger' }, { filter: 'action', scrollTop: 120 })}>Remediate transaction</button>
+    <button onClick={() => { props.onNavigationIntent?.({ id: 'source-first', destination: 'connections', target: { kind: 'csv', importId: 'first' }, workspaceTab: 'overview', focus: { kind: 'none' } }, { filter: 'action', scrollTop: 1 }); props.onNavigationIntent?.({ id: 'tx-second', destination: 'transactions', transactionId: 'second', focus: 'transaction' }, { filter: 'stale', scrollTop: 2 }); }}>Back-to-back</button>
+  </div>
 }));
 vi.mock('@/components/import/ImportTab', () => ({
-  ImportTab: () => <div data-testid="panel-import">Import</div>
+  ImportTab: (props: { navigationIntent?: { id: string; target: { connectionId?: string } }; onNavigationIntentAcknowledged?: (id: string) => void; onNavigationBack?: () => void }) => <div data-testid="panel-import">Import:{props.navigationIntent?.target.connectionId ?? 'none'}<button onClick={() => props.navigationIntent && props.onNavigationIntentAcknowledged?.(props.navigationIntent.id)}>Acknowledge source</button>{props.onNavigationBack && <button onClick={props.onNavigationBack}>Back to Data Health</button>}</div>
 }));
 vi.mock('@/components/review/ReviewTab', () => ({
-  ReviewTab: () => <div data-testid="panel-review">Review</div>
+  ReviewTab: (props: { navigationIntent?: { id: string; transactionId?: string }; navigationResetToken?: number; onNavigationIntentAcknowledged?: (id: string) => void; onNavigationBack?: () => void }) => <div data-testid="panel-review">Review:{props.navigationIntent?.transactionId ?? 'none'} Reset:{props.navigationResetToken}<button onClick={() => props.navigationIntent && props.onNavigationIntentAcknowledged?.(props.navigationIntent.id)}>Acknowledge transaction</button>{props.onNavigationBack && <button onClick={props.onNavigationBack}>Back to Data Health</button>}</div>
 }));
 vi.mock('@/components/capitalGains/CapitalGainsTab', () => ({
   CapitalGainsTab: () => <div data-testid="panel-capital-gains">Capital Gains</div>
@@ -166,6 +172,15 @@ describe('App tab navigation (a11y)', () => {
     expect(screen.getByTestId('panel-review')).toBeInTheDocument();
   });
 
+  it('signals navigation-scope abandonment when the active Transactions tab is clicked', async () => {
+    await renderApp();
+    const transactions = headerTabs()[2];
+    fireEvent.click(transactions);
+    expect(screen.getByTestId('panel-review')).toHaveTextContent('Reset:0');
+    fireEvent.click(transactions);
+    expect(screen.getByTestId('panel-review')).toHaveTextContent('Reset:1');
+  });
+
   it('opens the Dashboard (absorbed Portfolio home) as the default first screen', async () => {
     await renderApp();
     expect(screen.getByTestId('panel-dashboard')).toBeInTheDocument();
@@ -197,6 +212,61 @@ describe('App tab navigation (a11y)', () => {
     const skip = screen.getByRole('link', { name: 'Skip to main content' });
     expect(skip).toHaveAttribute('href', '#main-content');
     expect(document.getElementById('main-content')).not.toBeNull();
+  });
+
+  it('routes typed source intents, waits for acknowledgment, and restores Data Health state on Back', async () => {
+    await renderApp();
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    fireEvent.click(screen.getByRole('button', { name: 'Remediate source' }));
+    expect(screen.getByTestId('panel-import')).toHaveTextContent('Import:exact-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Acknowledge source' }));
+    expect(screen.getByTestId('panel-import')).toHaveTextContent('Import:none');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Data Health' }));
+    expect(historyBack).toHaveBeenCalledTimes(1);
+    act(() => window.dispatchEvent(new PopStateEvent('popstate', {
+      state: { sololedgerDataHealth: { filter: 'stale', scrollTop: 420 } }
+    })));
+    expect(screen.getByTestId('dashboard-restored')).toHaveTextContent('stale:420');
+    act(() => window.dispatchEvent(new PopStateEvent('popstate', { state: null })));
+    expect(screen.getByTestId('dashboard-restored')).toHaveTextContent('stale:420');
+    expect(screen.queryByTestId('panel-import')).not.toBeInTheDocument();
+    historyBack.mockRestore();
+  });
+
+  it('stores the nonzero-scroll origin on the history entry restored by browser Back', async () => {
+    await renderApp();
+    expect(window.history.scrollRestoration).toBe('manual');
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    const pushState = vi.spyOn(window.history, 'pushState');
+    fireEvent.click(screen.getByRole('button', { name: 'Remediate source' }));
+    expect(replaceState).toHaveBeenCalledWith(
+      expect.objectContaining({ sololedgerDataHealth: { filter: 'stale', scrollTop: 420 } }),
+      ''
+    );
+    expect(pushState).toHaveBeenCalledWith({ sololedgerRemediation: true }, '');
+
+    act(() => window.dispatchEvent(new PopStateEvent('popstate', {
+      state: { sololedgerDataHealth: { filter: 'stale', scrollTop: 420 } }
+    })));
+    expect(await screen.findByTestId('dashboard-restored')).toHaveTextContent('stale:420');
+    expect(screen.queryByTestId('panel-import')).not.toBeInTheDocument();
+    replaceState.mockRestore();
+    pushState.mockRestore();
+  });
+
+  it('routes transaction panel intents and lets a newer back-to-back intent win', async () => {
+    await renderApp();
+    const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    fireEvent.click(screen.getByRole('button', { name: 'Remediate transaction' }));
+    expect(screen.getByTestId('panel-review')).toHaveTextContent('Review:tx-exact');
+    fireEvent.click(screen.getByRole('button', { name: 'Back to Data Health' }));
+    act(() => window.dispatchEvent(new PopStateEvent('popstate', {
+      state: { sololedgerDataHealth: { filter: 'action', scrollTop: 120 } }
+    })));
+    fireEvent.click(screen.getByRole('button', { name: 'Back-to-back' }));
+    expect(screen.getByTestId('panel-review')).toHaveTextContent('Review:second');
+    expect(headerTabs()[2]).toHaveAttribute('aria-selected', 'true');
+    historyBack.mockRestore();
   });
 
   describe('mobile bottom tab bar', () => {

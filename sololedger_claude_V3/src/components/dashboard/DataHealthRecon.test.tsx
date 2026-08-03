@@ -1,7 +1,19 @@
-import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
+import { describe, it, expect, vi } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 import type { ExchangeBalanceRow, ExchangeConnectionRow } from '@/lib/storage/db';
-import { buildConnectionRecons } from './DataHealthRecon';
+import { buildConnectionRecons, DataHealthRecon } from './DataHealthRecon';
+import type { DataHealthModel } from './dataHealthModel';
+
+const emptyAggregateModel: DataHealthModel = {
+  sources: [],
+  summary: {
+    sourceCount: 0, scopeCount: 0, assetCount: 0, actionSourceCount: 0,
+    divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0,
+    partialCoverage: 0, failedCoverage: 0, unknownCoverage: 0,
+    openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0, reconciled: 0
+  }
+};
 
 let seq = 0;
 function tx(over: Partial<Transaction>): Transaction {
@@ -47,6 +59,21 @@ function bal(over: Partial<ExchangeBalanceRow>): ExchangeBalanceRow {
 }
 
 describe('buildConnectionRecons', () => {
+  it('suppresses aggregate counts and reports an updating compact model', () => {
+    render(<ul><DataHealthRecon
+      aggregateModel={emptyAggregateModel}
+      aggregateUpdating
+      connections={[]}
+      exchangeBalances={[]}
+      transactions={[]}
+      onOpenWorkspace={vi.fn()}
+    /></ul>);
+
+    expect(screen.getByRole('status')).toHaveTextContent('Updating Data Health…');
+    expect(screen.queryByText(/0 sources/)).toBeNull();
+    expect(screen.getByRole('button', { name: /Open aggregate Data Health/ })).toBeInTheDocument();
+  });
+
   it('returns one recon per connection that has a balance anchor', () => {
     const recons = buildConnectionRecons(
       [conn({ id: 'conn1' })],

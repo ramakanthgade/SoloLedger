@@ -18,8 +18,24 @@ const brandSource = readFileSync(resolve(here, 'brandIcons.tsx'), 'utf8');
 describe('ReviewTab — item 7/10: page renamed to Transactions', () => {
   it('renders the page title as Transactions (both the list and the empty state)', () => {
     const titles = source.match(/<h2 className="page-title">Transactions<\/h2>/g) ?? [];
-    expect(titles.length).toBe(2);
+    expect(titles.length).toBe(4);
     expect(source).not.toContain('<h2 className="page-title">Review</h2>');
+  });
+});
+
+describe('ReviewTab — exact navigation ordering', () => {
+  it('shows exact-target loading or missing feedback with Back before the generic empty ledger', () => {
+    expect(source.indexOf("if (navigationError)")).toBeLessThan(source.indexOf('if (transactions.length === 0)'));
+    expect(source.indexOf("if (navigationIntent?.transactionId && transactionsLive === undefined)")).toBeLessThan(source.indexOf('if (transactions.length === 0)'));
+    expect(source).toContain('Locating the exact transaction…');
+  });
+
+  it('shows and clears the exact durable navigation scope as a real filter', () => {
+    expect(source).toContain('navigationScopeFilter != null');
+    expect(source).toContain('Remove exact navigation scope');
+    expect(source).toContain('Exact scope · {navigationScopeFilter.accountClass');
+    expect(source).toContain('setNavigationScopeFilter(null);');
+    expect(source).toContain('navigationResetToken');
   });
 });
 

@@ -14,17 +14,21 @@
  * Pure computation lives in `@/lib/reconcile/sourceReconcile`; this component
  * only wires rows → reconcileSource → render. No network calls.
  */
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import type { Transaction } from '@/types/transaction';
 import type { ExchangeBalanceRow, ExchangeConnectionRow } from '@/lib/storage/db';
 import { reconcileSource, type SourceReconResult } from '@/lib/reconcile/sourceReconcile';
 import { formatCompactAmount, cn } from '@/lib/utils';
 import { CheckCircle2, AlertTriangle, ChevronDown, ChevronUp, Info } from 'lucide-react';
+import type { DataHealthModel } from './dataHealthModel';
 
 export interface DataHealthReconProps {
   connections: ExchangeConnectionRow[];
   exchangeBalances: ExchangeBalanceRow[];
   transactions: Transaction[];
+  onOpenWorkspace?: () => void;
+  aggregateModel?: DataHealthModel;
+  aggregateUpdating?: boolean;
 }
 
 /** Compute one SourceReconResult per connection that has a balance anchor. */
@@ -129,12 +133,34 @@ function ConnectionReconCard({
   );
 }
 
-export function DataHealthRecon({ connections, exchangeBalances, transactions }: DataHealthReconProps) {
-  const recons = useMemo(
-    () => buildConnectionRecons(connections, exchangeBalances, transactions),
-    [connections, exchangeBalances, transactions]
-  );
-  if (recons.length === 0) return null;
+export function DataHealthRecon({ connections, exchangeBalances, transactions, onOpenWorkspace, aggregateModel, aggregateUpdating = false }: DataHealthReconProps) {
+  if (aggregateModel) {
+    if (aggregateUpdating) return (
+      <>
+        <li className="text-xs font-semibold text-mid" role="status">Updating Data Health…</li>
+        {onOpenWorkspace && <li><button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">Open aggregate Data Health →</button></li>}
+      </>
+    );
+    return (
+      <>
+        <li className="text-xs text-mid">
+          {aggregateModel.summary.sourceCount} sources · {aggregateModel.summary.scopeCount} scopes · {aggregateModel.summary.assetCount} assets
+        </li>
+        <li className="text-xs font-semibold text-hi">
+          {aggregateModel.summary.actionSourceCount} sources need action · {aggregateModel.summary.reconciled} assets reconciled
+        </li>
+        {onOpenWorkspace && <li><button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">Open aggregate Data Health →</button></li>}
+      </>
+    );
+  }
+  const recons = buildConnectionRecons(connections, exchangeBalances, transactions);
+  if (recons.length === 0) return onOpenWorkspace ? (
+    <li>
+      <button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+        Open aggregate Data Health →
+      </button>
+    </li>
+  ) : null;
   const byId = new Map(connections.map((c) => [c.id, c]));
   return (
     <>
@@ -145,6 +171,13 @@ export function DataHealthRecon({ connections, exchangeBalances, transactions }:
           label={connLabel(byId.get(recon.connectionId), recon.exchange)}
         />
       ))}
+      {onOpenWorkspace && (
+        <li className="pt-1">
+          <button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
+            Open aggregate Data Health →
+          </button>
+        </li>
+      )}
     </>
   );
 }

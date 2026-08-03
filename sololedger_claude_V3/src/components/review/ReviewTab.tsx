@@ -8,7 +8,6 @@ import type { TxType, Transaction, FlagReason, Jurisdiction, TaxSettings } from 
 import { cn, formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
-import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { buildWalletLabelMap, walletLabelFor } from './walletLabels';
 import { explorerTxUrl } from '@/lib/parsers/explorer';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
@@ -55,7 +54,7 @@ import { groupRowsByDate, formatGroupDateLabel, pageNumberList } from './reviewL
 import { buildTxSummary, txFlow, truncateAddress, OWN_ACCOUNT_SIDE, type RowLeg } from './rowAnatomy';
 import {
   Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles,
-  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, Search, Link2, Wallet
+  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, ArrowLeft, Search, Link2, Wallet
 } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useTabNav } from '@/lib/tabNav';
@@ -71,6 +70,9 @@ import { buildTransactionCostAnalysisIndexes, buildTransactionCostAnalysisModel 
 import { buildReviewReconciliationEvidence } from './reviewReconciliationEvidence';
 import { TransactionDetailPanel, type DetailTab } from './TransactionDetailPanel';
 import { LotPicker } from './LotPicker';
+import { type TransactionNavigationIntent, type TransactionScopeFilter } from '@/lib/navigationIntent';
+import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import { resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
 
 const ALL_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out',
@@ -404,7 +406,12 @@ function DetailRow({ label, children }: { label: string; children: ReactNode }) 
   );
 }
 
-export function ReviewTab() {
+export function ReviewTab({ navigationIntent, navigationResetToken, onNavigationIntentAcknowledged, onNavigationBack }: {
+  navigationIntent?: TransactionNavigationIntent;
+  navigationResetToken?: number;
+  onNavigationIntentAcknowledged?: (id: string) => void;
+  onNavigationBack?: () => void;
+} = {}) {
   const [query, setQuery] = useState('');
   const [assetFilter, setAssetFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<TxType | 'all'>('all');
@@ -426,6 +433,11 @@ export function ReviewTab() {
     return () => setBulkActionsActive(false);
   }, [selected.size]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [navigationError, setNavigationError] = useState<string | null>(null);
+  const [navigationTargetId, setNavigationTargetId] = useState<string | null>(null);
+  const [navigationScopeFilter, setNavigationScopeFilter] = useState<TransactionScopeFilter | null>(null);
+  const appliedNavigationIntent = useRef<string | null>(null);
+  const [pendingNavigationFocus, setPendingNavigationFocus] = useState<TransactionNavigationIntent | null>(null);
   const [openLotPicker, setOpenLotPicker] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
@@ -845,8 +857,19 @@ export function ReviewTab() {
     // Source filter — applied after the shared row filter so the lib contract
     // (and its tests) stay untouched.
     const bySource = sourceFilter === 'all' ? base : base.filter((t) => t.source === sourceFilter);
+    const byDurableScope = navigationScopeFilter == null ? bySource : bySource.filter((transaction) =>
+      transactionMatchesNavigationScope(
+        transaction,
+        navigationScopeFilter,
+        postingSnapshot.context,
+        postingSnapshot.index.byTaxEventId
+      )
+    );
 
-    return [...bySource].sort((a, b) => {
+    return [...byDurableScope].sort((a, b) => {
+      if (navigationTargetId != null && (a.id === navigationTargetId || b.id === navigationTargetId)) {
+        return a.id === navigationTargetId ? -1 : 1;
+      }
       switch (sortBy) {
         case 'date_asc': return a.timestamp - b.timestamp;
         case 'wallet': {
@@ -860,7 +883,7 @@ export function ReviewTab() {
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
+  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy, navigationTargetId, navigationScopeFilter, postingSnapshot]);
 
   const { pageRows, totalPages, safePage } = useMemo(
     () => paginate(filtered, page, PAGE_SIZE),
@@ -890,7 +913,8 @@ export function ReviewTab() {
     showNeedsPrice ||
     showNeedsReview ||
     showSpam ||
-    instrumentFilter !== 'all';
+    instrumentFilter !== 'all' ||
+    navigationScopeFilter != null;
 
   const clearFilters = () => {
     setQuery('');
@@ -899,12 +923,65 @@ export function ReviewTab() {
     setFlagFilter('all');
     setWalletFilter('all');
     setSourceFilter('all');
+    setNavigationScopeFilter(null);
     setFyFilter(null);
     setShowNeedsPrice(false);
     setShowNeedsReview(false);
     setShowSpam(false);
     setInstrumentFilter('all');
   };
+
+  useEffect(() => {
+    if (navigationResetToken == null) return;
+    setNavigationScopeFilter(null);
+    setNavigationTargetId(null);
+  }, [navigationResetToken]);
+
+  useEffect(() => {
+    if (!navigationIntent || appliedNavigationIntent.current === navigationIntent.id || transactionsLive === undefined) return;
+    appliedNavigationIntent.current = navigationIntent.id;
+    setNavigationError(null);
+    const target = resolveReviewTransactionTarget(navigationIntent, transactions);
+    if (navigationIntent.transactionId && !target) {
+      setNavigationTargetId(null);
+      setNavigationError('That exact transaction no longer exists. The stale navigation request was cleared.');
+      onNavigationIntentAcknowledged?.(navigationIntent.id);
+      return;
+    }
+    setNavigationTargetId(target?.id ?? null);
+    setQuery('');
+    setAssetFilter('all');
+    setSourceFilter('all');
+    setNavigationScopeFilter(navigationIntent.focus === 'filters' ? navigationIntent.filter : null);
+    setTypeFilter('all'); setFlagFilter('all'); setWalletFilter('all'); setFyFilter(null);
+    setShowNeedsPrice(navigationIntent.focus === 'filters' && navigationIntent.filter.needsPrice === true);
+    setShowNeedsReview(navigationIntent.focus === 'filters' && navigationIntent.filter.needsReview === true);
+    setShowSpam(false); setInstrumentFilter('all'); setSortBy('date_desc'); setPage(1);
+    if (target) {
+      setExpandedId(target.id);
+      setDetailTabByTxId((current) => ({ ...current, [target.id]: navigationIntent.detailTab ?? 'details' }));
+    }
+    setPendingNavigationFocus(navigationIntent);
+  }, [navigationIntent, onNavigationIntentAcknowledged, transactions, transactionsLive]);
+
+  useEffect(() => {
+    if (!pendingNavigationFocus) return;
+    const frame = window.requestAnimationFrame(() => {
+      const row = pendingNavigationFocus.transactionId
+        ? Array.from(document.querySelectorAll<HTMLElement>('[data-transaction-id]'))
+          .find((element) => element.dataset.transactionId === pendingNavigationFocus.transactionId)
+        : undefined;
+      const detail = row?.querySelector<HTMLElement>('[data-testid="tx-details"]');
+      const filterTarget = document.querySelector<HTMLElement>('[aria-label="Search transactions"]');
+      const focusTarget = pendingNavigationFocus.focus === 'filters' ? filterTarget
+        : pendingNavigationFocus.focus === 'detail-panel' ? detail ?? row : row;
+      focusTarget?.focus();
+      focusTarget?.scrollIntoView?.({ block: 'center' });
+      onNavigationIntentAcknowledged?.(pendingNavigationFocus.id);
+      setPendingNavigationFocus(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [expandedId, filtered, onNavigationIntentAcknowledged, pendingNavigationFocus]);
 
   // Shared pagination bar — rendered both above and below the list so long
   // ledgers can be paged from either end. Both instances read the same
@@ -1362,7 +1439,7 @@ export function ReviewTab() {
       return '—';
     };
     return (
-      <div key={t.id} className={cn(idx > 0 && 'border-t border-hi/10')}>
+      <div key={t.id} className={cn(idx > 0 && 'border-t border-hi/10')} data-transaction-id={t.id} tabIndex={-1}>
         <div
           onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
           className={cn(
@@ -1626,6 +1703,26 @@ export function ReviewTab() {
     );
   };
 
+  if (navigationError) {
+    return (
+      <div className="space-y-5">
+        {onNavigationBack && <Button variant="secondary" size="sm" onClick={onNavigationBack}><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Data Health</Button>}
+        <h2 className="page-title">Transactions</h2>
+        <div role="alert" className="rounded-xl border border-warn/30 bg-warn/10 px-4 py-4 text-sm text-warn">{navigationError}</div>
+      </div>
+    );
+  }
+
+  if (navigationIntent?.transactionId && transactionsLive === undefined) {
+    return (
+      <div className="space-y-5" aria-busy="true">
+        {onNavigationBack && <Button variant="secondary" size="sm" onClick={onNavigationBack}><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Data Health</Button>}
+        <h2 className="page-title">Transactions</h2>
+        <div role="status" className="rounded-xl border border-hi/10 bg-elev-2 px-4 py-4 text-sm text-mid">Locating the exact transaction…</div>
+      </div>
+    );
+  }
+
   if (transactions.length === 0) {
     return (
       <div className="space-y-6">
@@ -1650,6 +1747,7 @@ export function ReviewTab() {
           The pill counts the default (non-spam) view; spam rows are reachable
           via the Spam chip and counted there. */}
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+        {onNavigationBack && <Button variant="secondary" size="sm" onClick={onNavigationBack}><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Data Health</Button>}
         <h2 className="page-title">Transactions</h2>
         <span className="inline-flex h-[26px] items-center rounded-full border border-hi/10 bg-elev-3 px-2.5 text-xs font-bold tabular-figures text-mid">
           {(transactions.length - spamTxCount).toLocaleString('en-IN')}
@@ -1662,7 +1760,6 @@ export function ReviewTab() {
           <Button variant="secondary" size="sm" onClick={() => setPdfConfirmOpen(true)}>PDF</Button>
         </div>
       </div>
-
       {/* Token-name resolution — local/BYOK only; hosted resolves automatically. */}
       {showTokenResolveBanner(hosted, unresolvedSymbolTxs.length) && (
         <div className="flex flex-col gap-3 rounded-xl border border-hi/10 bg-elev-2 px-5 py-4 shadow-xs sm:flex-row sm:items-center sm:justify-between">
@@ -1970,6 +2067,17 @@ export function ReviewTab() {
             )}
           >
             {showSpam ? `Spam (${spamTxCount}) ✕` : `Spam (${spamTxCount})`}
+          </button>
+        )}
+
+        {navigationScopeFilter && (
+          <button
+            type="button"
+            aria-label={`Remove exact navigation scope ${navigationScopeFilter.accountClass ?? 'any class'} ${navigationScopeFilter.scopeId ?? ''}`.trim()}
+            onClick={() => setNavigationScopeFilter(null)}
+            className="flex min-h-[44px] items-center rounded-full border border-primary/30 bg-primary/10 px-4 text-xs font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+          >
+            Exact scope · {navigationScopeFilter.accountClass ?? 'any class'} · {navigationScopeFilter.scopeId ?? 'source'} · Remove
           </button>
         )}
 

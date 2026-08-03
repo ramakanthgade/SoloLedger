@@ -54,6 +54,7 @@ import {
 import { AddDataDrawer } from './AddDataDrawer';
 import type { ApiExchangeState, ApiExchangeStates } from './WhichStep';
 import type { FlowKind } from './WhatStep';
+import { resolveSourceTarget, type SourceNavigationIntent } from '@/lib/navigationIntent';
 
 /** Locked pill order (mockup `cv2-filter-pills`): Manual entry before + New. */
 const PILLS: Array<{ id: PillFilter; label: string }> = [
@@ -101,15 +102,19 @@ interface DrawerState {
  * preview surface, and the exchange/wallet job banners ported from
  * AutoSyncPanel. All add-flows open in the right-side AddDataDrawer.
  */
-export function ConnectionsHome() {
+export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledged, onNavigationBack }: {
+  navigationIntent?: SourceNavigationIntent;
+  onNavigationIntentAcknowledged?: (id: string) => void;
+  onNavigationBack?: () => void;
+} = {}) {
   const liveConnections = useLiveQuery(() => listConnections(), []);
   const liveCsvImports = useLiveQuery(() => getCsvImports(), []);
   const liveWalletRows = useLiveQuery(() => getLookupAddresses(), []);
   const connections = liveConnections ?? [];
   const csvImports = liveCsvImports ?? [];
   const walletRows = liveWalletRows ?? [];
-  const manualCount =
-    useLiveQuery(() => db.transactions.filter((t) => t.source === 'manual').count(), []) ?? 0;
+  const liveManualCount = useLiveQuery(() => db.transactions.filter((t) => t.source === 'manual').count(), []);
+  const manualCount = liveManualCount ?? 0;
 
   const exchangeJob = useExchangeSyncJob();
   const walletJob = useImportJob();
@@ -129,6 +134,10 @@ export function ConnectionsHome() {
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const toastId = useRef(0);
   const [syncAllActive, setSyncAllActive] = useState(false);
+  const [navigationError, setNavigationError] = useState<string | null>(null);
+  const acknowledgedIntent = useRef<string | null>(null);
+  const missingDetailTargetIntent = useRef<string | null>(null);
+  const [externalDetailIntentId, setExternalDetailIntentId] = useState<string | null>(null);
 
   const [removeExchange, setRemoveExchange] = useState<ExchangeConnectionView | null>(null);
   const [removeFile, setRemoveFile] = useState<CsvImportRow | null>(null);
@@ -162,8 +171,14 @@ export function ConnectionsHome() {
     (detailId.startsWith('wallet:') ? liveWalletRows !== undefined :
       detailId.startsWith('file:') ? liveCsvImports !== undefined : liveConnections !== undefined);
   useEffect(() => {
-    if (detailId != null && detailSourceLoaded && detail == null) setDetailId(null);
-  }, [detail, detailId, detailSourceLoaded]);
+    if (detailId != null && detailSourceLoaded && detail == null) {
+      if (externalDetailIntentId) {
+        setExternalDetailIntentId(null);
+        setNavigationError('This source was deleted while it was opening. Return to Data Health to review the remaining evidence.');
+      }
+      setDetailId(null);
+    }
+  }, [detail, detailId, detailSourceLoaded, externalDetailIntentId]);
   const detailLoading = detailId != null && !detailSourceLoaded;
   const visibleCards = pill === 'all' ? cards : cards.filter((c) => c.lane === pill);
   const readyConnections = useMemo(
@@ -193,6 +208,28 @@ export function ConnectionsHome() {
       ),
     [csvImports]
   );
+
+  useEffect(() => {
+    if (!navigationIntent || acknowledgedIntent.current === navigationIntent.id || missingDetailTargetIntent.current === navigationIntent.id) return;
+    const loaded = liveConnections !== undefined && liveCsvImports !== undefined && liveWalletRows !== undefined && liveManualCount !== undefined;
+    if (!loaded) return;
+    setNavigationError(null);
+    const target = resolveSourceTarget(navigationIntent.target, cards);
+    if (!target) {
+      const deletedWhileOpening = externalDetailIntentId === navigationIntent.id;
+      acknowledgedIntent.current = navigationIntent.id;
+      setExternalDetailIntentId(null);
+      setDetailId(null);
+      setNavigationError(deletedWhileOpening
+        ? 'This source was deleted while it was opening. Return to Data Health to review the remaining evidence.'
+        : 'That exact source no longer exists. Return to Data Health to review the live evidence.');
+      onNavigationIntentAcknowledged?.(navigationIntent.id);
+      return;
+    }
+    setExternalDetailIntentId(navigationIntent.id);
+    setPill('all');
+    setDetailId(target.id);
+  }, [cards, externalDetailIntentId, liveConnections, liveCsvImports, liveManualCount, liveWalletRows, navigationIntent, onNavigationIntentAcknowledged]);
 
   const openDrawer = (opts?: { initialFlow?: FlowKind | null }) =>
     setDrawer({
@@ -368,14 +405,34 @@ export function ConnectionsHome() {
       ) : detail ? (
         <ConnectionDetail
           card={detail}
-          onBack={() => setDetailId(null)}
+          navigationIntent={externalDetailIntentId === navigationIntent?.id ? navigationIntent : undefined}
+          onNavigationIntentAcknowledged={(id) => {
+            acknowledgedIntent.current = id;
+            onNavigationIntentAcknowledged?.(id);
+          }}
+          onNavigationTargetNotFound={(id) => {
+            if (navigationIntent?.id !== id) return;
+            missingDetailTargetIntent.current = id;
+            setNavigationError('That exact asset or opening evidence no longer exists. Return to Data Health to review the live findings.');
+            setExternalDetailIntentId(null);
+            setDetailId(null);
+          }}
+          onBack={() => {
+            setDetailId(null);
+            if (externalDetailIntentId) {
+              setExternalDetailIntentId(null);
+              onNavigationBack?.();
+            }
+          }}
           onImportFile={() => openDrawer({ initialFlow: 'file' })}
         />
       ) : (
         <>
+      {navigationError && <div role="alert" className="rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">{navigationError}</div>}
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
+          {onNavigationBack && <Button variant="secondary" size="sm" onClick={onNavigationBack} className="mb-3"><span aria-hidden="true">←</span> Data Health</Button>}
           <h1 className="text-2xl font-bold tracking-tight text-hi">Connections</h1>
           <p className="mt-1 text-sm text-low">
             Every place your crypto lives — linked, synced, or added by hand.

@@ -1228,6 +1228,63 @@ describe('ConnectionDetail — file kind', () => {
 });
 
 describe('ConnectionDetail — navigation', () => {
+  it('focuses duplicate BTC using the exact scope, account class, and asset key', async () => {
+    const now = Date.now();
+    mocks.txs.current = [
+      makeTx({ id: 'spot-btc', source: 'binance_api', importBatchId: 'exc_1', parserAccountClass: 'spot', asset: 'BTC', amount: 1 }),
+      makeTx({ id: 'options-btc', source: 'binance_api', importBatchId: 'exc_1', parserAccountClass: 'options', asset: 'BTC', amount: 1 })
+    ];
+    authority('exchange:exc_1', 'exc_1', 'spot', 'api', now, [{ asset: 'BTC', quantity: 1 }]);
+    authority('exchange:exc_1', 'exc_1', 'options', 'api', now, [{ asset: 'BTC', quantity: 1 }]);
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} navigationIntent={{
+      id: 'intent-options-btc', destination: 'connections', target: { kind: 'exchange', connectionId: 'exc_1' },
+      workspaceTab: 'reconciliation', focus: { kind: 'asset', scopeId: 'exchange:exc_1', accountClass: 'options', assetKey: assetKey({ asset: 'BTC' }) }
+    }} />);
+    await waitFor(() => expect(document.activeElement?.closest('[data-reconciliation-asset-key]'))
+      .toHaveAttribute('data-reconciliation-account-class', 'options'));
+  });
+
+  it('applies and acknowledges an exact typed workspace intent only after focus moves', async () => {
+    const acknowledged = vi.fn();
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} navigationIntent={{
+      id: 'intent-sync', destination: 'connections', target: { kind: 'exchange', connectionId: 'exc_1' },
+      workspaceTab: 'overview', focus: { kind: 'sync' }
+    }} onNavigationIntentAcknowledged={acknowledged} />);
+    const sync = await screen.findByTestId('detail-sync-now');
+    await waitFor(() => expect(sync).toHaveFocus());
+    expect(acknowledged).toHaveBeenCalledWith('intent-sync');
+  });
+  it('reports an absent explicit Sync target without fallback acknowledgment', async () => {
+    const acknowledged = vi.fn();
+    const notFound = vi.fn();
+    render(<ConnectionDetail card={fileCard()} onBack={() => {}} navigationIntent={{
+      id: 'intent-missing-sync', destination: 'connections', target: { kind: 'csv', importId: 'csv_1' },
+      workspaceTab: 'overview', focus: { kind: 'sync' }
+    }} onNavigationIntentAcknowledged={acknowledged} onNavigationTargetNotFound={notFound} />);
+    await waitFor(() => expect(notFound).toHaveBeenCalledWith('intent-missing-sync'));
+    expect(acknowledged).not.toHaveBeenCalled();
+  });
+  it('reports a stale exact asset target without acknowledging it', async () => {
+    const acknowledged = vi.fn();
+    const notFound = vi.fn();
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} navigationIntent={{
+      id: 'intent-missing-asset', destination: 'connections', target: { kind: 'exchange', connectionId: 'exc_1' },
+      workspaceTab: 'reconciliation', focus: { kind: 'asset', scopeId: 'exchange:exc_1', accountClass: 'spot', assetKey: 'asset:deleted' }
+    }} onNavigationIntentAcknowledged={acknowledged} onNavigationTargetNotFound={notFound} />);
+    await waitFor(() => expect(notFound).toHaveBeenCalledWith('intent-missing-asset'));
+    expect(acknowledged).not.toHaveBeenCalled();
+  });
+
+  it('reports a stale exact opening target without button-text matching or acknowledgment', async () => {
+    const acknowledged = vi.fn();
+    const notFound = vi.fn();
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} navigationIntent={{
+      id: 'intent-missing-opening', destination: 'connections', target: { kind: 'exchange', connectionId: 'exc_1' },
+      workspaceTab: 'reconciliation', focus: { kind: 'opening', scopeId: 'exchange:exc_1', accountClass: 'spot', assetKey: 'asset:deleted', action: 'edit', openingId: 'opening:deleted' }
+    }} onNavigationIntentAcknowledged={acknowledged} onNavigationTargetNotFound={notFound} />);
+    await waitFor(() => expect(notFound).toHaveBeenCalledWith('intent-missing-opening'));
+    expect(acknowledged).not.toHaveBeenCalled();
+  });
   it('the Back button returns to Connections home', () => {
     const onBack = vi.fn();
     render(<ConnectionDetail card={walletCard()} onBack={onBack} />);

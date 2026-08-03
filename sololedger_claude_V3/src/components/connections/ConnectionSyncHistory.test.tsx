@@ -73,7 +73,7 @@ function workspace(
   scopes: ConnectionWorkspaceScopeView[] = []
 ): ConnectionWorkspaceSnapshot {
   return {
-    id: 'history', kind: 'exchange-api', sources, scopes,
+    id: 'history', kind: 'exchange-api', sources, evidenceOwners: [], scopes,
     overview: {
       holdings: [], slices: [], postingCount: 0, transactionCount: 0, evidenceCount: 0,
       transactionBreakdown: { deposits: 0, withdrawals: 0, trades: 0, other: 0 }

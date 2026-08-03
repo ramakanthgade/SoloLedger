@@ -27,6 +27,7 @@ import {
 import { ConnectionOverview } from './ConnectionOverview';
 import { ConnectionSyncHistory } from './ConnectionSyncHistory';
 import { ConnectionReconciliation } from './ConnectionReconciliation';
+import type { SourceNavigationIntent } from '@/lib/navigationIntent';
 
 const NO_TXS: Transaction[] = [];
 const NO_PRICE_ROWS: PriceCacheRow[] = [];
@@ -48,29 +49,42 @@ function plural(count: number, noun: string): string {
 }
 
 /** Live-query and job orchestrator shared by all connection workspace tabs. */
-export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics }: {
+export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics, navigationIntent, onNavigationIntentAcknowledged, onNavigationTargetNotFound }: {
   card: ConnectionCardData;
   onBack: () => void;
   onImportFile?: () => void;
   /** Optional instrumentation used by performance regressions. */
   workspaceMetrics?: ConnectionWorkspaceMetrics;
+  navigationIntent?: SourceNavigationIntent;
+  onNavigationIntentAcknowledged?: (id: string) => void;
+  onNavigationTargetNotFound?: (id: string) => void;
 }) {
   const [snapshotNow, setSnapshotNow] = useState(Date.now);
   const [priceNow, setPriceNow] = useState(Date.now);
   const [priceRefreshNow, setPriceRefreshNow] = useState(Date.now);
 
-  const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? NO_TXS;
+  const transactionsQuery = useLiveQuery(() => db.transactions.toArray(), []);
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
-  const authoritySnapshots = useLiveQuery(() => db.authoritySnapshots.toArray(), []) ?? NO_ROWS;
-  const authorityAssets = useLiveQuery(() => db.authorityAssets.toArray(), []) ?? NO_ROWS;
-  const sourceCoverage = useLiveQuery(() => db.sourceCoverage.toArray(), []) ?? NO_ROWS;
-  const openingBalances = useLiveQuery(() => db.openingBalances.toArray(), []) ?? NO_ROWS;
-  const exchangeConnectionRows = useLiveQuery(() => db.exchangeConnections.toArray(), []) ?? NO_ROWS;
+  const authoritySnapshotsQuery = useLiveQuery(() => db.authoritySnapshots.toArray(), []);
+  const authorityAssetsQuery = useLiveQuery(() => db.authorityAssets.toArray(), []);
+  const sourceCoverageQuery = useLiveQuery(() => db.sourceCoverage.toArray(), []);
+  const openingBalancesQuery = useLiveQuery(() => db.openingBalances.toArray(), []);
+  const exchangeConnectionRowsQuery = useLiveQuery(() => db.exchangeConnections.toArray(), []);
   const liveWalletRows = useLiveQuery(() => db.lookupAddresses.toArray(), []);
   const liveExchange = useLiveQuery(
     () => card.kind === 'exchange-api' && card.exchange ? db.exchangeConnections.get(card.exchange.id) : undefined,
     [card.kind, card.kind === 'exchange-api' ? card.exchange?.id : null]
   );
+  const transactions = transactionsQuery ?? NO_TXS;
+  const authoritySnapshots = authoritySnapshotsQuery ?? NO_ROWS;
+  const authorityAssets = authorityAssetsQuery ?? NO_ROWS;
+  const sourceCoverage = sourceCoverageQuery ?? NO_ROWS;
+  const openingBalances = openingBalancesQuery ?? NO_ROWS;
+  const exchangeConnectionRows = exchangeConnectionRowsQuery ?? NO_ROWS;
+  const workspaceReady = transactionsQuery !== undefined && authoritySnapshotsQuery !== undefined &&
+    authorityAssetsQuery !== undefined && sourceCoverageQuery !== undefined && openingBalancesQuery !== undefined &&
+    exchangeConnectionRowsQuery !== undefined;
+  const navigationReady = workspaceReady && (card.kind !== 'wallet' || liveWalletRows !== undefined);
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   useEffect(() => {
@@ -103,7 +117,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
     closedDeletedWallet.current = true;
     onBack();
   }, [card.kind, onBack, representedWalletRows]);
-  const preparedWorkspace = useMemo(() => prepareConnectionWorkspaceFromCard({
+  const preparedWorkspace = useMemo(() => workspaceReady ? prepareConnectionWorkspaceFromCard({
     card,
     transactions: cleanTransactions,
     exchangeConnections: redactedExchangeSources,
@@ -116,8 +130,8 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
     now: 0,
     liveWalletRows: representedWalletRows,
     metrics: workspaceMetrics
-  }), [card, cleanTransactions, redactedExchangeSources, openingBalances, authoritySnapshots, authorityAssets, sourceCoverage, representedWalletRows, workspaceMetrics]);
-  const snapshot = useMemo(() =>
+  }) : undefined, [card, cleanTransactions, redactedExchangeSources, openingBalances, authoritySnapshots, authorityAssets, sourceCoverage, representedWalletRows, workspaceMetrics, workspaceReady]);
+  const snapshot = useMemo(() => preparedWorkspace == null ? undefined :
     buildPreparedConnectionWorkspace(preparedWorkspace, snapshotNow),
   [preparedWorkspace, snapshotNow]);
 
@@ -129,7 +143,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
     window.addEventListener('focus', refreshClock);
     document.addEventListener('visibilitychange', onVisibilityChange);
     const now = Date.now();
-    const nearestExpiry = snapshot.scopes.reduce<number | undefined>((nearest, scope) => {
+    const nearestExpiry = snapshot?.scopes.reduce<number | undefined>((nearest, scope) => {
       const selected = scope.authority.selectedSnapshot;
       if (!selected || selected.asOf == null || selected.authorityKind === 'csv' ||
         scope.authority.status !== 'current') return nearest;
@@ -145,7 +159,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
       window.removeEventListener('focus', refreshClock);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [snapshot.scopes]);
+  }, [snapshot?.scopes]);
 
   useEffect(() => {
     const refreshClock = () => setPriceNow(Date.now());
@@ -177,7 +191,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
   }, [currency, priceRows, priceNow]);
 
   useEffect(() => {
-    if (snapshot.overview.holdings.length === 0) return;
+    if (!snapshot || snapshot.overview.holdings.length === 0) return;
     const refreshClock = () => setPriceRefreshNow(Date.now());
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') refreshClock();
@@ -206,10 +220,10 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
       window.removeEventListener('focus', refreshClock);
       document.removeEventListener('visibilitychange', onVisibilityChange);
     };
-  }, [currency, priceRefreshNow, priceRows, snapshot.overview.holdings.length]);
+  }, [currency, priceRefreshNow, priceRows, snapshot?.overview.holdings.length]);
 
   useEffect(() => {
-    if (snapshot.overview.holdings.length === 0) return;
+    if (!snapshot || snapshot.overview.holdings.length === 0) return;
     let cancelled = false;
     getEffectiveSettings().then((effective) => {
       if (!cancelled && effective.priceApiEnabled) {
@@ -217,7 +231,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
       }
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [snapshot.overview.holdings, currency, priceRefreshNow]);
+  }, [snapshot, currency, priceRefreshNow]);
 
   const [walletSyncing, setWalletSyncing] = useState(false);
   const syncingThisWallet = walletJob.active || walletSyncing;
@@ -261,14 +275,16 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
     return stamps.length > 0 ? Math.max(...stamps) : 0;
   })() : null;
 
-  const breakdown = snapshot.overview.transactionBreakdown;
+  const breakdown = snapshot?.overview.transactionBreakdown ?? { deposits: 0, withdrawals: 0, trades: 0, other: 0 };
+  const transactionCount = snapshot?.overview.transactionCount ?? 0;
   const chips = card.kind === 'wallet'
-    ? [plural(snapshot.overview.transactionCount, 'transaction'), ...(breakdown.deposits + breakdown.withdrawals > 0 ? [plural(breakdown.deposits + breakdown.withdrawals, 'transfer')] : []), ...(breakdown.trades > 0 ? [plural(breakdown.trades, 'trade')] : [])]
-    : [plural(snapshot.overview.transactionCount, 'transaction'), ...(breakdown.deposits > 0 ? [plural(breakdown.deposits, 'deposit')] : []), ...(breakdown.withdrawals > 0 ? [plural(breakdown.withdrawals, 'withdrawal')] : []), ...(breakdown.trades > 0 ? [plural(breakdown.trades, 'trade')] : [])];
+    ? [plural(transactionCount, 'transaction'), ...(breakdown.deposits + breakdown.withdrawals > 0 ? [plural(breakdown.deposits + breakdown.withdrawals, 'transfer')] : []), ...(breakdown.trades > 0 ? [plural(breakdown.trades, 'trade')] : [])]
+    : [plural(transactionCount, 'transaction'), ...(breakdown.deposits > 0 ? [plural(breakdown.deposits, 'deposit')] : []), ...(breakdown.withdrawals > 0 ? [plural(breakdown.withdrawals, 'withdrawal')] : []), ...(breakdown.trades > 0 ? [plural(breakdown.trades, 'trade')] : [])];
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('overview');
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const panelRefs = useRef<Record<WorkspaceTab, HTMLDivElement | null>>({ overview: null, reconciliation: null, 'sync-history': null });
+  const appliedIntentRef = useRef<string | null>(null);
   const selectWorkspaceTab = (tab: WorkspaceTab, focus: 'none' | 'tab' | 'panel' = 'none') => {
     setActiveTab(tab);
     const index = TABS.findIndex((candidate) => candidate.id === tab);
@@ -285,6 +301,57 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics 
     event.preventDefault();
     selectWorkspaceTab(TABS[next].id, 'tab');
   };
+
+  useEffect(() => {
+    if (!snapshot || !navigationReady || !navigationIntent || appliedIntentRef.current === navigationIntent.id) return;
+    appliedIntentRef.current = navigationIntent.id;
+    setActiveTab(navigationIntent.workspaceTab);
+    window.requestAnimationFrame(() => {
+      const focus = navigationIntent.focus;
+      const assetRow = focus.kind === 'asset' || focus.kind === 'opening'
+        ? Array.from(document.querySelectorAll<HTMLElement>('[data-reconciliation-asset-key]'))
+          .find((row) => row.dataset.reconciliationScopeId === focus.scopeId &&
+            row.dataset.reconciliationAccountClass === focus.accountClass &&
+            row.dataset.reconciliationAssetKey === focus.assetKey)
+        : undefined;
+      if ((focus.kind === 'asset' || focus.kind === 'opening') && !assetRow) {
+        onNavigationTargetNotFound?.(navigationIntent.id);
+        return;
+      }
+      if (focus.kind === 'opening' && assetRow) {
+        const openingButton = Array.from(assetRow.querySelectorAll<HTMLButtonElement>('[data-opening-action]')).find((button) =>
+          focus.action === 'edit'
+            ? button.dataset.openingAction === 'edit' && button.dataset.openingId === focus.openingId
+            : button.dataset.openingAction === 'add');
+        if (!openingButton) {
+          onNavigationTargetNotFound?.(navigationIntent.id);
+          return;
+        }
+        openingButton.click();
+        window.requestAnimationFrame(() => {
+          const dialog = document.querySelector<HTMLElement>('[role="dialog"]');
+          if (!dialog) {
+            onNavigationTargetNotFound?.(navigationIntent.id);
+            return;
+          }
+          dialog.focus();
+          onNavigationIntentAcknowledged?.(navigationIntent.id);
+        });
+        return;
+      }
+      const target = focus.kind === 'sync' ? document.querySelector<HTMLElement>('[data-testid="detail-sync-now"]')
+        : focus.kind === 'import' ? document.querySelector<HTMLElement>('[data-testid="detail-import-file"]')
+        : assetRow ?? panelRefs.current[navigationIntent.workspaceTab];
+      if ((focus.kind === 'sync' || focus.kind === 'import') && !target) {
+        onNavigationTargetNotFound?.(navigationIntent.id);
+        return;
+      }
+      target?.focus();
+      onNavigationIntentAcknowledged?.(navigationIntent.id);
+    });
+  }, [navigationIntent, navigationReady, onNavigationIntentAcknowledged, onNavigationTargetNotFound, snapshot]);
+
+  if (!snapshot) return <div className="rounded-2xl border border-hi/10 bg-elev-2 px-6 py-12 text-center text-sm font-semibold text-mid" role="status" aria-busy="true">Loading connection evidence…</div>;
 
   return (
     <div className="space-y-5" data-testid="connection-detail">

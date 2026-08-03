@@ -121,7 +121,10 @@ export function createTransactionViewsProjector() {
   };
 }
 
-export function createHoldingsProjector(appendProjection = appendHoldingsProjection) {
+export function createHoldingsProjector(
+  appendProjection = appendHoldingsProjection,
+  buildProjection = buildHoldingsProjection
+) {
   let cached: {
     transactions: readonly Transaction[];
     input: HoldingsProjectionInput;
@@ -144,7 +147,7 @@ export function createHoldingsProjector(appendProjection = appendHoldingsProject
           previous.projection, input, proof.transaction
         )
       : undefined;
-    const projection = appended ?? buildHoldingsProjection(input);
+    const projection = appended ?? buildProjection(input);
     cached = { transactions: input.transactions, input, projection };
     return projection;
   };
