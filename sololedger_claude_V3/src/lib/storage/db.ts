@@ -1277,6 +1277,13 @@ export type OpeningBalanceInput = Pick<
   'scopeId' | 'accountClass' | 'assetKey' | 'asset' | 'absoluteQuantity' | 'effectiveAt' | 'provenance'
 > & Pick<Partial<OpeningBalanceRow>, 'evidenceRef' | 'note'>;
 
+export interface OpeningBalanceMutationOptions {
+  /** Explicit mutation intent. Create requires the exact logical key to be absent. */
+  mode?: 'upsert' | 'create' | 'update';
+  /** Revision observed by the editor; rejects stale-tab overwrite/recreation. */
+  expectedUpdatedAt?: number;
+}
+
 export function openingBalanceLogicalKey(
   row: Pick<OpeningBalanceRow, 'scopeId' | 'accountClass' | 'assetKey' | 'effectiveAt'>
 ): string {
@@ -1427,7 +1434,8 @@ async function rebuildOpeningSupersession(
 
 export async function upsertOpeningBalance(
   input: OpeningBalanceInput,
-  now = Date.now()
+  now = Date.now(),
+  options: OpeningBalanceMutationOptions = {}
 ): Promise<OpeningBalanceRow> {
   validateOpeningBalanceInput(input);
   if (!Number.isFinite(now)) throw new Error('opening balance update time must be finite');
@@ -1442,6 +1450,15 @@ export async function upsertOpeningBalance(
     });
     await rejectEqualTimeSourceActivity(input);
     const existing = await db.openingBalances.where('logicalKey').equals(logicalKey).first();
+    if (options.mode === 'create' && existing) {
+      throw new Error('opening balance already exists for this exact date; reload before saving');
+    }
+    if (options.mode === 'update' && !existing) {
+      throw new Error('opening balance changed in another tab; reload before saving');
+    }
+    if (options.expectedUpdatedAt != null && existing?.updatedAt !== options.expectedUpdatedAt) {
+      throw new Error('opening balance changed in another tab; reload before saving');
+    }
     const cleanNote = input.note?.trim() || undefined;
     if (existing) {
       const unchanged = existing.absoluteQuantity === input.absoluteQuantity &&
@@ -1450,7 +1467,8 @@ export async function upsertOpeningBalance(
       if (!unchanged) {
         await db.openingBalances.update(existing.id, {
           absoluteQuantity: input.absoluteQuantity, provenance: input.provenance,
-          evidenceRef: input.evidenceRef, note: cleanNote, updatedAt: now
+          evidenceRef: input.evidenceRef, note: cleanNote,
+          updatedAt: Math.max(now, existing.updatedAt + 1)
         });
       }
       return (await db.openingBalances.get(existing.id))!;
@@ -1491,15 +1509,26 @@ export async function selectOpeningBalance(
   return rows[0];
 }
 
-export async function deleteOpeningBalance(idOrLogicalKey: string): Promise<boolean> {
-  const row = await db.openingBalances.get(idOrLogicalKey) ??
-    await db.openingBalances.where('logicalKey').equals(idOrLogicalKey).first();
-  if (!row) return false;
-  await db.transaction('rw', db.openingBalances, async () => {
+export async function deleteOpeningBalance(
+  idOrLogicalKey: string,
+  options: OpeningBalanceMutationOptions = {}
+): Promise<boolean> {
+  return db.transaction('rw', db.openingBalances, async () => {
+    const row = await db.openingBalances.get(idOrLogicalKey) ??
+      await db.openingBalances.where('logicalKey').equals(idOrLogicalKey).first();
+    if (!row) {
+      if (options.expectedUpdatedAt != null) {
+        throw new Error('opening balance changed in another tab; reload before deleting');
+      }
+      return false;
+    }
+    if (options.expectedUpdatedAt != null && row.updatedAt !== options.expectedUpdatedAt) {
+      throw new Error('opening balance changed in another tab; reload before deleting');
+    }
     await db.openingBalances.delete(row.id);
     await rebuildOpeningSupersession(row.scopeId, row.accountClass, row.assetKey);
+    return true;
   });
-  return true;
 }
 
 /** All stored balance rows for one address (any chain), newest schema. */

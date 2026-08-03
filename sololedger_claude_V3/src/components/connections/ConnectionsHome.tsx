@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
   Check,
@@ -102,9 +102,12 @@ interface DrawerState {
  * AutoSyncPanel. All add-flows open in the right-side AddDataDrawer.
  */
 export function ConnectionsHome() {
-  const connections = useLiveQuery(() => listConnections(), []) ?? [];
-  const csvImports = useLiveQuery(() => getCsvImports(), []) ?? [];
-  const walletRows = useLiveQuery(() => getLookupAddresses(), []) ?? [];
+  const liveConnections = useLiveQuery(() => listConnections(), []);
+  const liveCsvImports = useLiveQuery(() => getCsvImports(), []);
+  const liveWalletRows = useLiveQuery(() => getLookupAddresses(), []);
+  const connections = liveConnections ?? [];
+  const csvImports = liveCsvImports ?? [];
+  const walletRows = liveWalletRows ?? [];
   const manualCount =
     useLiveQuery(() => db.transactions.filter((t) => t.source === 'manual').count(), []) ?? 0;
 
@@ -114,7 +117,9 @@ export function ConnectionsHome() {
   const [pill, setPill] = useState<PillFilter>('all');
   const pillRefs = useRef<Array<HTMLButtonElement | null>>([]);
   /** Open per-connection detail view (round 4) — null shows the cards grid. */
-  const [detail, setDetail] = useState<ConnectionCardData | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
+  const cardElements = useRef(new Map<string, HTMLElement>());
+  const detailOpenerId = useRef<string | null>(null);
   const [drawer, setDrawer] = useState<DrawerState>({
     open: false,
     guided: false,
@@ -131,6 +136,14 @@ export function ConnectionsHome() {
   const [renaming, setRenaming] = useState<{ cardId: string; rows: LookupAddressRow[] } | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
 
+  useEffect(() => {
+    if (detailId !== null || detailOpenerId.current === null) return;
+    const opener = cardElements.current.get(detailOpenerId.current);
+    if (opener) opener.focus();
+    else pillRefs.current[PILLS.findIndex((candidate) => candidate.id === pill)]?.focus();
+    detailOpenerId.current = null;
+  }, [detailId, pill]);
+
   const cards = useMemo(
     () =>
       buildCards({
@@ -144,6 +157,14 @@ export function ConnectionsHome() {
     [connections, csvImports, walletRows, manualCount, exchangeJob.connectionId, exchangeJob.active]
   );
   const counts = useMemo(() => pillCounts(cards), [cards]);
+  const detail = detailId == null ? null : cards.find((card) => card.id === detailId) ?? null;
+  const detailSourceLoaded = detailId == null ||
+    (detailId.startsWith('wallet:') ? liveWalletRows !== undefined :
+      detailId.startsWith('file:') ? liveCsvImports !== undefined : liveConnections !== undefined);
+  useEffect(() => {
+    if (detailId != null && detailSourceLoaded && detail == null) setDetailId(null);
+  }, [detail, detailId, detailSourceLoaded]);
+  const detailLoading = detailId != null && !detailSourceLoaded;
   const visibleCards = pill === 'all' ? cards : cards.filter((c) => c.lane === pill);
   const readyConnections = useMemo(
     () => connections.filter((c) => c.credentialsState !== 'reauthorization_required'),
@@ -337,13 +358,21 @@ export function ConnectionsHome() {
 
   const previewStaged = exchangeJob.preview !== null;
 
-  // Per-connection portfolio view replaces the grid while open.
-  if (detail) {
-    return <ConnectionDetail card={detail} onBack={() => setDetail(null)} />;
-  }
-
   return (
     <div className="space-y-5" data-testid="connections-home">
+      {detailLoading ? (
+        <div className="rounded-2xl border border-hi/10 bg-elev-2 px-6 py-12 text-center" role="status">
+          <Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" aria-hidden="true" />
+          <p className="mt-3 text-sm font-semibold text-mid">Loading connection…</p>
+        </div>
+      ) : detail ? (
+        <ConnectionDetail
+          card={detail}
+          onBack={() => setDetailId(null)}
+          onImportFile={() => openDrawer({ initialFlow: 'file' })}
+        />
+      ) : (
+        <>
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -546,6 +575,10 @@ export function ConnectionsHome() {
             <ConnectionCard
               key={card.id}
               card={card}
+              elementRef={(element) => {
+                if (element) cardElements.current.set(card.id, element);
+                else cardElements.current.delete(card.id);
+              }}
               menuItems={menuItemsFor(card)}
               onClick={
                 card.kind === 'manual' ? () => openDrawer({ initialFlow: 'manual' }) : undefined
@@ -553,7 +586,10 @@ export function ConnectionsHome() {
               onOpenDetail={
                 card.kind === 'manual' || card.requiresReauthorization
                   ? undefined
-                  : () => setDetail(card)
+                  : () => {
+                      detailOpenerId.current = card.id;
+                      setDetailId(card.id);
+                    }
               }
               renaming={
                 renaming?.cardId === card.id ? (
@@ -598,6 +634,8 @@ export function ConnectionsHome() {
           )}
           <AddDataCard onClick={() => openDrawer()} />
         </div>
+      )}
+        </>
       )}
 
       {/* Add-data drawer (all flows + guided setup) */}

@@ -11,11 +11,13 @@ import type { ExchangeBalanceRow } from '@/lib/storage/db';
 import { derivePostings } from '@/lib/ledger/derivedPostings';
 import type { AuthoritySelection } from './authoritySelection';
 import {
+  compareReconSeverity,
   coverageStatusFromEvidence,
   deriveReconPresentation,
   ledgerImpliedQty,
   reconcileDerivedPostings,
   reconcileSource,
+  type ReconSeverity,
   type ReconciliationResult
 } from './sourceReconcile';
 
@@ -130,8 +132,59 @@ describe('four-axis custody reconciliation', () => {
     expect(result).toMatchObject({
       balanceStatus: 'reconciled', authorityStatus: 'current', coverageStatus: 'complete',
       scopeStatus: 'resolved', ledgerQuantity: 2, authorityQuantity: 2, delta: 0,
-      selectedSnapshotId: 'snapshot-1', selectedGeneration: 7
+      selectedSnapshotId: 'snapshot-1', selectedGeneration: 7, postingEvidenceCount: 2
     });
+  });
+
+  it('treats the latest applicable opening as an absolute reset before later movements', () => {
+    const postings = derivePostings([
+      tx({ id: 'historical', timestamp: 100, type: 'transfer_in', asset: 'BTC', amount: 10, source: 'binance_api' }),
+      tx({ id: 'after-opening', timestamp: 600, type: 'transfer_in', asset: 'BTC', amount: 1, source: 'binance_api' })
+    ], {
+      exchangeConnections: [{ id: CONN, exchange: 'binance' }],
+      openingBalances: [{
+        id: 'opening-1', logicalKey: 'opening-1', scopeId: `exchange:${CONN}`,
+        accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', absoluteQuantity: 5,
+        effectiveAt: 500, provenance: 'user_confirmed', createdAt: 1, updatedAt: 1
+      }]
+    });
+    const result = reconcileDerivedPostings({
+      scopeId: `exchange:${CONN}`, accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC',
+      postings, authority: selectedAuthority(700, 6), coverage: { status: 'complete' }, scopeStatus: 'resolved'
+    });
+
+    expect(result).toMatchObject({
+      balanceStatus: 'reconciled', ledgerQuantity: 6, authorityQuantity: 6, delta: 0,
+      postingEvidenceCount: 2
+    });
+  });
+
+  it('counts only selected reset evidence and movements participating through authority asOf', () => {
+    const postings = derivePostings([
+      tx({ id: 'pre-opening', timestamp: 100, type: 'transfer_in', asset: 'BTC', amount: 10, source: 'binance_api' }),
+      tx({ id: 'included', timestamp: 600, type: 'transfer_in', asset: 'BTC', amount: 1, source: 'binance_api' }),
+      tx({ id: 'post-authority', timestamp: 800, type: 'transfer_in', asset: 'BTC', amount: 20, source: 'binance_api' })
+    ], {
+      exchangeConnections: [{ id: CONN, exchange: 'binance' }],
+      openingBalances: [
+        {
+          id: 'older-opening', logicalKey: 'older-opening', scopeId: `exchange:${CONN}`,
+          accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', absoluteQuantity: 4,
+          effectiveAt: 300, provenance: 'user_confirmed', createdAt: 1, updatedAt: 1
+        },
+        {
+          id: 'selected-opening', logicalKey: 'selected-opening', scopeId: `exchange:${CONN}`,
+          accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', absoluteQuantity: 5,
+          effectiveAt: 500, provenance: 'user_confirmed', createdAt: 1, updatedAt: 1
+        }
+      ]
+    });
+    const result = reconcileDerivedPostings({
+      scopeId: `exchange:${CONN}`, accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC',
+      postings, authority: selectedAuthority(700, 6), coverage: { status: 'complete' }, scopeStatus: 'resolved'
+    });
+
+    expect(result).toMatchObject({ ledgerQuantity: 6, postingEvidenceCount: 2 });
   });
 
   it('does not produce quantities or delta for missing/non-comparable authority or unresolved scope', () => {
@@ -228,7 +281,7 @@ describe('four-axis custody reconciliation', () => {
   });
 
   it.each([
-    [{ authorityStatus: 'stale', balanceStatus: 'ledger_under' }, 'refresh_authority', 'info'],
+    [{ authorityStatus: 'stale', balanceStatus: 'ledger_under' }, 'inspect_evidence_history', 'warning'],
     [{ coverageStatus: 'partial', balanceStatus: 'reconciled' }, 'complete_source_history', 'warning'],
     [{ authorityStatus: 'missing', coverageStatus: 'unknown', balanceStatus: 'not_compared' }, 'add_timestamped_authority', 'warning'],
     [{ authorityStatus: 'non_comparable', coverageStatus: 'complete', balanceStatus: 'not_compared' }, 'capture_coherent_authority', 'blocked'],
@@ -238,6 +291,20 @@ describe('four-axis custody reconciliation', () => {
   ] as const)('applies deterministic status precedence for %o', (partial, remediation, severity) => {
     expect(deriveReconPresentation(reconResult(partial))).toMatchObject({
       primaryRemediation: remediation, severity
+    });
+  });
+
+  it('orders every severity explicitly and breaks same-severity findings deterministically', () => {
+    expect((['clean', 'info', 'warning', 'error', 'blocked'] as ReconSeverity[])
+      .sort(compareReconSeverity)).toEqual([
+      'blocked', 'error', 'warning', 'info', 'clean'
+    ]);
+    expect(deriveReconPresentation(reconResult({
+      authorityStatus: 'missing', coverageStatus: 'failed', balanceStatus: 'not_compared'
+    }))).toEqual({
+      severity: 'error',
+      primaryRemediation: 'retry_source_operation',
+      secondaryRemediations: ['add_timestamped_authority']
     });
   });
 });

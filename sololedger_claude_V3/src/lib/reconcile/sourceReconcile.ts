@@ -165,6 +165,31 @@ export interface ReconPresentation {
   secondaryRemediations: string[];
 }
 
+export const RECON_SEVERITY_RANK: Readonly<Record<ReconSeverity, number>> = {
+  blocked: 0,
+  error: 1,
+  warning: 2,
+  info: 3,
+  clean: 4
+};
+
+export function compareReconSeverity(left: ReconSeverity, right: ReconSeverity): number {
+  return RECON_SEVERITY_RANK[left] - RECON_SEVERITY_RANK[right];
+}
+
+const REMEDIATION_RANK = new Map([
+  'reconnect_source',
+  'resolve_source_scope',
+  'capture_coherent_authority',
+  'retry_source_operation',
+  'add_timestamped_authority',
+  'complete_source_history',
+  'establish_source_coverage',
+  'add_evidence_backed_opening_balance',
+  'inspect_evidence_history',
+  'refresh_authority'
+].map((remediation, index) => [remediation, index]));
+
 function remediationFindings(result: ReconciliationResult): { severity: ReconSeverity; remediation: string }[] {
   const findings: { severity: ReconSeverity; remediation: string }[] = [];
   if (result.scopeStatus !== 'resolved') findings.push({ severity: 'blocked', remediation: result.scopeStatus === 'source_deleted' ? 'reconnect_source' : 'resolve_source_scope' });
@@ -180,7 +205,11 @@ function remediationFindings(result: ReconciliationResult): { severity: ReconSev
 }
 
 export function deriveReconPresentation(result: ReconciliationResult): ReconPresentation {
-  const findings = remediationFindings(result);
+  const findings = remediationFindings(result).sort((left, right) =>
+    compareReconSeverity(left.severity, right.severity) ||
+    (REMEDIATION_RANK.get(left.remediation) ?? Number.MAX_SAFE_INTEGER) -
+      (REMEDIATION_RANK.get(right.remediation) ?? Number.MAX_SAFE_INTEGER) ||
+    left.remediation.localeCompare(right.remediation));
   if (findings.length === 0) return { severity: 'clean', primaryRemediation: 'none', secondaryRemediations: [] };
   return {
     severity: findings[0].severity,
@@ -215,19 +244,36 @@ export function reconcileDerivedPostings(input: ReconcileDerivedPostingsInput): 
   const blocked = input.scopeStatus !== 'resolved' ||
     effectiveAuthorityStatus === 'missing' || effectiveAuthorityStatus === 'non_comparable' ||
     input.authority.selectedSnapshot?.asOf == null;
-  const relevantEvidence = new Set<string>();
-  const visitedEvidence = new Set<DerivedPosting['evidence'][number]>();
   const asOf = input.authority.selectedSnapshot?.asOf;
-  let ledgerQuantity = 0;
+  let latestOpening: DerivedPosting | undefined;
   for (const posting of input.postings) {
     if (posting.accountScopeId !== input.scopeId || posting.accountClass !== input.accountClass || posting.assetKey !== input.assetKey) continue;
-    if (asOf != null && posting.effectiveAt <= asOf) ledgerQuantity += posting.signedQuantity;
+    if (posting.role === 'opening_balance' && asOf != null && posting.effectiveAt <= asOf &&
+      (latestOpening == null || posting.effectiveAt > latestOpening.effectiveAt ||
+        (posting.effectiveAt === latestOpening.effectiveAt && posting.id > latestOpening.id))) {
+      latestOpening = posting;
+    }
+  }
+  const relevantEvidence = new Set<string>();
+  const visitedEvidence = new Set<DerivedPosting['evidence'][number]>();
+  const addEvidence = (posting: DerivedPosting) => {
     for (const evidence of posting.evidence) {
       // Multiple legs from one transaction intentionally share evidence objects.
-      // Preserve structural de-duplication while avoiding repeated serialization.
+      // Count only evidence participating in this reset-aware comparison.
       if (visitedEvidence.has(evidence)) continue;
       visitedEvidence.add(evidence);
       relevantEvidence.add(`${evidence.kind}:${JSON.stringify(evidence)}`);
+    }
+  };
+  if (latestOpening) addEvidence(latestOpening);
+  let ledgerQuantity = latestOpening?.signedQuantity ?? 0;
+  for (const posting of input.postings) {
+    if (posting.accountScopeId !== input.scopeId || posting.accountClass !== input.accountClass ||
+      posting.assetKey !== input.assetKey || posting.role === 'opening_balance') continue;
+    if (asOf != null && posting.effectiveAt <= asOf &&
+      (latestOpening == null || posting.effectiveAt > latestOpening.effectiveAt)) {
+      ledgerQuantity += posting.signedQuantity;
+      addEvidence(posting);
     }
   }
   const base: ReconciliationResult = {

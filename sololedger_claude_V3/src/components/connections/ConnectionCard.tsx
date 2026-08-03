@@ -17,6 +17,8 @@ interface ConnectionCardProps {
    * propagation so their clicks never trigger this.
    */
   onOpenDetail?: () => void;
+  /** Allows the workspace shell to restore focus to this exact card after Back. */
+  elementRef?: React.Ref<HTMLElement>;
   /** Inline rename slot replacing the title/subtitle block (wallet cards). */
   renaming?: React.ReactNode;
 }
@@ -27,7 +29,7 @@ interface ConnectionCardProps {
  * sync state (Synced / Needs attention / Watching / Imported) next to the
  * last-sync line and transaction count. No invented health metrics.
  */
-export function ConnectionCard({ card, menuItems, onClick, onOpenDetail, renaming }: ConnectionCardProps) {
+export function ConnectionCard({ card, menuItems, onClick, onOpenDetail, elementRef, renaming }: ConnectionCardProps) {
   const body = (
     <>
       <div className="flex items-start gap-3">
@@ -111,6 +113,7 @@ export function ConnectionCard({ card, menuItems, onClick, onOpenDetail, renamin
   if (onOpenDetail) {
     return (
       <article
+        ref={elementRef}
         role="button"
         tabIndex={0}
         aria-label={`Open ${card.title} details`}

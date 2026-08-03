@@ -32,6 +32,8 @@ import type { DisplayCostProjections } from './displayCostProjection';
 export interface HoldingsScopeFilter {
   scopeIds?: readonly string[];
   accountClasses?: readonly AccountClass[];
+  /** Exact custody pairs. When present, no scope/class Cartesian product is inferred. */
+  scopePairs?: readonly Readonly<{ scopeId: string; accountClass: AccountClass }>[];
 }
 
 export interface HoldingsProjectionInput {
@@ -44,6 +46,10 @@ export interface HoldingsProjectionInput {
   now: number;
   comparisonAt?: number;
   scopeFilter?: HoldingsScopeFilter;
+  nonComparableAuthorityScopes?: readonly Readonly<{ scopeId: string; accountClass: AccountClass }>[];
+  /** Reuse immutable transaction/posting/cost work when only authority freshness changed. */
+  preparedProjection?: HoldingsProjection;
+  metrics?: { postingDerivationCount: number };
 }
 
 export interface HoldingSourceVerification {
@@ -79,7 +85,7 @@ export interface ProjectedPortfolioHolding {
 export interface HoldingsProjection {
   /** Exact scope/class/asset evidence, including verified zero balances. */
   slices: AuthorityBalanceSlice[];
-  /** Non-zero canonical asset aggregates across the selected slices. */
+  /** Non-zero aggregates plus zero-quantity assets carrying conflicting authority evidence. */
   holdings: ProjectedPortfolioHolding[];
   /** One immutable posting projection, useful to downstream chart consumers. */
   postings: readonly DerivedPosting[];
@@ -223,9 +229,26 @@ function displayIdentities(
   return result;
 }
 
-function matchesScope(slice: AuthorityBalanceSlice, filter?: HoldingsScopeFilter): boolean {
-  if (filter?.scopeIds && !filter.scopeIds.includes(slice.scopeId)) return false;
-  if (filter?.accountClasses && !filter.accountClasses.includes(slice.accountClass)) return false;
+interface PreparedHoldingsScopeFilter {
+  scopeIds?: ReadonlySet<string>;
+  accountClasses?: ReadonlySet<AccountClass>;
+  scopePairs?: ReadonlySet<string>;
+}
+
+function prepareScopeFilter(filter?: HoldingsScopeFilter): PreparedHoldingsScopeFilter | undefined {
+  if (!filter) return undefined;
+  return {
+    scopeIds: filter.scopeIds && new Set(filter.scopeIds),
+    accountClasses: filter.accountClasses && new Set(filter.accountClasses),
+    scopePairs: filter.scopePairs && new Set(filter.scopePairs.map((pair) =>
+      `${pair.scopeId}\u001f${pair.accountClass}`))
+  };
+}
+
+function matchesScope(slice: AuthorityBalanceSlice, filter?: PreparedHoldingsScopeFilter): boolean {
+  if (filter?.scopePairs && !filter.scopePairs.has(`${slice.scopeId}\u001f${slice.accountClass}`)) return false;
+  if (filter?.scopeIds && !filter.scopeIds.has(slice.scopeId)) return false;
+  if (filter?.accountClasses && !filter.accountClasses.has(slice.accountClass)) return false;
   return true;
 }
 
@@ -253,25 +276,28 @@ function sourceVerification(slice: AuthorityBalanceSlice): HoldingSourceVerifica
  * contribute display metadata and the posting projection contributes display cost.
  */
 export function buildHoldingsProjection(input: HoldingsProjectionInput): HoldingsProjection {
+  const reusable = input.preparedProjection;
   const chronologicallyAppendable = input.comparisonAt == null && input.openingBalances.length === 0 &&
     input.transactions.every((transaction, index) =>
       index === 0 || input.transactions[index - 1].timestamp < transaction.timestamp ||
       (input.transactions[index - 1].timestamp === transaction.timestamp &&
         input.transactions[index - 1].id <= transaction.id));
-  const costAccumulator = chronologicallyAppendable
+  const costAccumulator = reusable == null && chronologicallyAppendable
     ? createDisplayCostProjectionAccumulator()
     : undefined;
-  const postings = derivePostings(input.transactions, {
-    exchangeConnections: [...input.exchangeConnections],
-    openingBalances: [...input.openingBalances],
-    onTransactionPostings: costAccumulator
-      ? (transaction, transactionPostings, start) => {
-          costAccumulator.addTransaction(transaction);
-          costAccumulator.addPostings(transaction, transactionPostings, start);
-        }
-      : undefined
-  });
-  const preparedPostings = preparePostingAggregation(postings, chronologicallyAppendable);
+  const postings = reusable?.postings ?? derivePostings(input.transactions, {
+      exchangeConnections: [...input.exchangeConnections],
+      openingBalances: [...input.openingBalances],
+      onTransactionPostings: costAccumulator
+        ? (transaction, transactionPostings, start) => {
+            costAccumulator.addTransaction(transaction);
+            costAccumulator.addPostings(transaction, transactionPostings, start);
+          }
+        : undefined
+    });
+  if (reusable == null && input.metrics) input.metrics.postingDerivationCount += 1;
+  const preparedPostings = reusable?.preparedPostings ??
+    preparePostingAggregation(postings, chronologicallyAppendable);
   const allSlices = buildAuthorityBalanceModel({
     postings,
     snapshots: input.snapshots,
@@ -280,10 +306,13 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     exchangeConnections: input.exchangeConnections,
     now: input.now,
     comparisonAt: input.comparisonAt,
+    nonComparableScopes: input.nonComparableAuthorityScopes,
     preparedPostings
   });
-  const slices = allSlices.filter((slice) => matchesScope(slice, input.scopeFilter));
-  const identities = displayIdentities(input.transactions, postings, slices, input.comparisonAt);
+  const preparedScopeFilter = prepareScopeFilter(input.scopeFilter);
+  const slices = allSlices.filter((slice) => matchesScope(slice, preparedScopeFilter));
+  const identities = reusable?.displayIdentityIndex ??
+    displayIdentities(input.transactions, postings, slices, input.comparisonAt);
 
   const slicesByAsset = new Map<string, AuthorityBalanceSlice[]>();
   for (const slice of slices) {
@@ -291,7 +320,7 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     rows.push(slice);
     slicesByAsset.set(slice.assetKey, rows);
   }
-  const displayCostProjections = costAccumulator?.finish() ??
+  const displayCostProjections = reusable?.displayCostProjections ?? costAccumulator?.finish() ??
     buildDisplayCostProjections({
       transactions: input.transactions,
       postings,
@@ -305,7 +334,9 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
   const holdings: ProjectedPortfolioHolding[] = [];
   for (const [canonicalKey, assetSlices] of slicesByAsset) {
     const quantity = assetSlices.reduce((sum, slice) => sum + slice.quantity, 0);
-    if (quantity === 0) continue;
+    const visibleNonComparableEvidence = assetSlices.some((slice) =>
+      slice.authorityStatus === 'non_comparable' && slice.fallbackReason === 'non_comparable_authority');
+    if (quantity === 0 && !visibleNonComparableEvidence) continue;
     const canonicalIdentity = identities.get(canonicalKey) ?? { asset: assetSlices[0].asset };
     const identity = canonicalIdentity;
     const statuses = new Set(assetSlices.map((slice) => slice.verificationStatus));
@@ -360,7 +391,8 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     holdings,
     postings,
     preparedPostings,
-    chartPostingCostsEquivalent: displayCostProjections.chartPostingCostsEquivalent,
+    chartPostingCostsEquivalent: reusable?.chartPostingCostsEquivalent ??
+      displayCostProjections.chartPostingCostsEquivalent,
     displayCostProjections,
     displayIdentityIndex: identities
   };
@@ -376,7 +408,10 @@ export function appendHoldingsProjection(
   input: HoldingsProjectionInput,
   transaction: Transaction
 ): HoldingsProjection | undefined {
-  if (input.comparisonAt != null || input.scopeFilter != null || input.openingBalances.length !== 0) return undefined;
+  if (
+    input.comparisonAt != null || input.scopeFilter != null || input.openingBalances.length !== 0 ||
+    (input.nonComparableAuthorityScopes?.length ?? 0) > 0
+  ) return undefined;
   const finalInputIndex = input.transactions.length - 1;
   if (finalInputIndex < 0 || input.transactions[finalInputIndex] !== transaction) return undefined;
   const precedingTransaction = input.transactions[finalInputIndex - 1];
@@ -399,6 +434,7 @@ export function appendHoldingsProjection(
     coverage: input.coverage,
     exchangeConnections: input.exchangeConnections,
     now: input.now,
+    nonComparableScopes: input.nonComparableAuthorityScopes,
     preparedPostings
   });
   const identities = new Map(previous.displayIdentityIndex);

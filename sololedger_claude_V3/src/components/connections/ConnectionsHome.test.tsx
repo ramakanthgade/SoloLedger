@@ -132,27 +132,31 @@ vi.mock('./AddDataDrawer', () => ({
     apiExchangeStates: Record<string, string>;
     fileImportedSlugs: string[];
     reauthorizationTarget?: ExchangeConnectionView | null;
-  }) =>
-    props.open ? (
-      <div
-        data-testid="add-data-drawer"
-        data-guided={String(props.guided)}
-        data-initial-flow={props.initialFlow ?? 'null'}
-        data-api-states={JSON.stringify(props.apiExchangeStates)}
-        data-file-imported={props.fileImportedSlugs.join(',')}
-        data-reauthorization-id={props.reauthorizationTarget?.id ?? ''}
-        data-reauthorization-exchange={props.reauthorizationTarget?.exchange ?? ''}
-      />
-    ) : null
+  }) => (
+    <div data-testid="add-data-drawer-mounted">
+      {props.open && <div
+          data-testid="add-data-drawer"
+          data-guided={String(props.guided)}
+          data-initial-flow={props.initialFlow ?? 'null'}
+          data-api-states={JSON.stringify(props.apiExchangeStates)}
+          data-file-imported={props.fileImportedSlugs.join(',')}
+          data-reauthorization-id={props.reauthorizationTarget?.id ?? ''}
+          data-reauthorization-exchange={props.reauthorizationTarget?.exchange ?? ''}
+        />}
+    </div>
+  )
 }));
 
 // The detail view has its own test file — stub it to a marker that records
 // the opened card and exposes the Back action.
 vi.mock('./ConnectionDetail', () => ({
-  ConnectionDetail: (props: { card: { id: string }; onBack: () => void }) => (
+  ConnectionDetail: (props: { card: { id: string }; onBack: () => void; onImportFile?: () => void }) => (
     <div data-testid="connection-detail-mock" data-card-id={props.card.id}>
       <button type="button" data-testid="detail-back-mock" onClick={props.onBack}>
         back
+      </button>
+      <button type="button" data-testid="detail-import-file-mock" onClick={props.onImportFile}>
+        Import file
       </button>
     </div>
   )
@@ -817,6 +821,45 @@ describe('ConnectionsHome — per-connection detail (round 4)', () => {
     fireEvent.click(screen.getByTestId('detail-back-mock'));
     expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
     expect(screen.getByTestId('connections-grid')).toBeInTheDocument();
+  });
+
+  it('Back restores focus to the exact opener card while preserving the selected filter', () => {
+    mocks.connections.current = [conn()];
+    render(<ConnectionsHome />);
+    fireEvent.click(screen.getByRole('radio', { name: /exchanges/i }));
+    const opener = screen.getByTestId('connection-card-exchange:exc_1');
+    opener.focus();
+    fireEvent.click(opener);
+    fireEvent.click(screen.getByTestId('detail-back-mock'));
+
+    expect(screen.getByTestId('connection-card-exchange:exc_1')).toHaveFocus();
+    expect(screen.getByRole('radio', { name: /exchanges/i })).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('restores focus to the active filter when the opener wallet was deleted while detail was mounted', async () => {
+    mocks.wallets.current = [wallet()];
+    const view = render(<ConnectionsHome />);
+    fireEvent.click(screen.getByRole('radio', { name: /wallet apps/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Phantom main details' }));
+
+    mocks.wallets.current = [];
+    view.rerender(<ConnectionsHome />);
+
+    await waitFor(() => expect(screen.getByRole('radio', { name: /wallet apps/i })).toHaveFocus());
+    expect(screen.queryByRole('button', { name: 'Open Phantom main details' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the drawer mounted and opens detail Import file in the existing file flow', () => {
+    mocks.connections.current = [conn()];
+    render(<ConnectionsHome />);
+    const drawerMount = screen.getByTestId('add-data-drawer-mounted');
+    fireEvent.click(screen.getByTestId('connection-card-exchange:exc_1'));
+    expect(screen.getByTestId('add-data-drawer-mounted')).toBe(drawerMount);
+
+    fireEvent.click(screen.getByTestId('detail-import-file-mock'));
+    expect(screen.getByTestId('add-data-drawer')).toHaveAttribute('data-initial-flow', 'file');
+    expect(screen.getByTestId('connection-detail-mock')).toBeInTheDocument();
+    expect(screen.getByTestId('add-data-drawer-mounted')).toBe(drawerMount);
   });
 
   it('clicking a wallet card body opens the detail view', () => {
