@@ -173,6 +173,28 @@ describe('buildAuthorityBalanceModel', () => {
     }
   );
 
+  it('uses a complete journal balance when only tax classification coverage is partial', () => {
+    const csv = snapshot({
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', asOf: undefined,
+      scopeId: 'file:f:spot', sourceIdentityId: 'f', status: 'complete',
+      endpointProof: proof({ authorityKind: 'csv', operation: 'journal', parametersClass: 'untimestamped' })
+    });
+    const csvCoverage = coverage({
+      scopeId: 'file:f:spot', sourceIdentityId: 'f', kind: 'csv', status: 'unknown',
+      parserId: 'binance', supportedParser: true, requiredSheets: ['journal'], presentSheets: ['journal'],
+      recognizedCount: 2, parsedCount: 1, dedupedCount: 0, excludedCount: 0, skippedCount: 0,
+      failedCount: 1, endpointOutcomes: [{
+        endpoint: 'history', parserId: 'binance', accountClass: 'spot', required: true,
+        status: 'partial', failedCount: 1, warning: 'Tax classification did not consume one signed row.'
+      }]
+    });
+    expect(model({
+      postings: [posting({ accountScopeId: 'file:f:spot', signedQuantity: 12 })], snapshots: [csv],
+      assets: [authorityAsset({ scopeId: 'file:f:spot', quantity: 0.00000049 })], coverage: [csvCoverage],
+      exchangeConnections: [], comparisonAt: undefined
+    })[0]).toMatchObject({ quantity: 0.00000049, verificationStatus: 'reconstructed_authority' });
+  });
+
   it('distinguishes exhaustive absence, non-exhaustive absence, and explicit zero', () => {
     const ethPosting = posting({ assetKey: 'asset:ETH', asset: 'ETH' });
     expect(model({ postings: [ethPosting], assets: [] })[0]).toMatchObject({ quantity: 0, authorityQuantity: 0 });

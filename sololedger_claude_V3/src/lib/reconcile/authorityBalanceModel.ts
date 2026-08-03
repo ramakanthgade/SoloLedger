@@ -205,14 +205,11 @@ function supportsReconstructedCsvQuantity(
     coverage.row.generation === snapshot.generation
   );
   if (linked.length === 0) return false;
-  return linked.every(({ row }) => {
-    if (row.kind !== 'csv' || (row.status !== 'unknown' && row.status !== 'complete')) return false;
-    const evaluation = evaluateSourceCoverage(row);
-    // Untimestamped Binance journals are intentionally `unknown` only because
-    // the export does not declare a historical range. Every structural row,
-    // required outcome, and dedup mapping must otherwise be complete.
-    return evaluation.reasons.every((reason) => reason === 'export_range_not_source_declared');
-  });
+  return linked.every(({ row }) => row.kind === 'csv' && row.status !== 'failed' &&
+    // A skipped/malformed source row could carry quantity that never reached
+    // the signed journal. Tax-classification failures are safe here because
+    // normalized signed rows still participate in the reconstructed balance.
+    (row.skippedCount ?? 0) === 0);
 }
 
 function fallbackReason(
