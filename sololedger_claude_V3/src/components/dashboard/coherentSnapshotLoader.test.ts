@@ -78,4 +78,25 @@ describe('CoherentSnapshotLoader', () => {
     expect(complete).toHaveBeenCalledOnce();
     expect(complete).toHaveBeenCalledWith({ revision: 'open-latest', snapshot: 'latest' });
   });
+
+  it('cancels a closed idle request and starts immediately when opened', async () => {
+    const scheduled: Array<() => void> = [];
+    const cancel = vi.fn();
+    const read = vi.fn(async () => 'opened');
+    const complete = vi.fn();
+    const loader = new CoherentSnapshotLoader(read, (callback) => {
+      scheduled.push(callback);
+      return cancel;
+    }, complete);
+
+    loader.invalidate('closed', false);
+    expect(read).not.toHaveBeenCalled();
+    loader.invalidate('opened', true);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledOnce();
+    scheduled[0]();
+    expect(read).toHaveBeenCalledOnce();
+    await Promise.resolve();
+    expect(complete).toHaveBeenCalledWith({ revision: 'opened', snapshot: 'opened' });
+  });
 });

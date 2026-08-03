@@ -106,6 +106,12 @@ vi.mock('@/lib/storage/db', () => ({
     t.sourceRef && t.walletAddress ? `${t.walletAddress}|${t.sourceRef}` : null
 }));
 
+vi.mock('./dashboardTransactionsQuery', () => ({
+  createDashboardTransactionsSubscription: () => ({
+    query: () => SEED.txs, activate: () => {}, deactivate: () => {}
+  })
+}));
+
 vi.mock('./useCoherentDataHealthSnapshot', () => {
   let coherentSnapshot: unknown;
   return {
@@ -134,6 +140,7 @@ vi.mock('@/lib/saas/effectiveSettings', () => ({
 
 import {
   DashboardTab,
+  historicalRevisionCaughtUp,
   type DashboardInstrumentation,
   type DashboardTabProps
 } from './DashboardTab';
@@ -213,6 +220,17 @@ beforeEach(() => {
 });
 
 describe('DashboardTab — staggered Data Health readiness', () => {
+  it('does not permit a closed coherent read until deferred history catches up', () => {
+    const currentTransactions = [{}];
+    expect(historicalRevisionCaughtUp(
+      { transactionCount: 1, transactions: currentTransactions },
+      { transactionCount: 0, transactions: [] }
+    )).toBe(false);
+    expect(historicalRevisionCaughtUp(
+      { transactionCount: 1, transactions: currentTransactions },
+      { transactionCount: 1, transactions: currentTransactions }
+    )).toBe(true);
+  });
   it('shows updating instead of false aggregate zero counts until every compact query is ready', async () => {
     QUERY_READINESS.coherentDataHealth = false;
     const view = await renderTab();

@@ -39,6 +39,7 @@ import type { NavigationIntent } from '@/lib/navigationIntent';
 import { canonicalWalletAddress, normalizeChainIdentity } from '@/lib/ledger/chainNamespace';
 import { resolveAccountScope } from '@/lib/ledger/derivedPostings';
 import { createHoldingsProjector, createTransactionViewsProjector } from './dashboardProjectionCache';
+import { createDashboardTransactionsSubscription } from './dashboardTransactionsQuery';
 import { useCoherentDataHealthSnapshot } from './useCoherentDataHealthSnapshot';
 import {
   cn,
@@ -424,9 +425,25 @@ export interface DashboardTabProps {
   openDataHealthOnMount?: boolean;
 }
 
+export function historicalRevisionCaughtUp(
+  current: { transactionCount: number; transactions: readonly unknown[] },
+  deferred: { transactionCount: number; transactions: readonly unknown[] }
+): boolean {
+  return current.transactionCount === deferred.transactionCount && current.transactions === deferred.transactions;
+}
+
 export function DashboardTab({ instrumentation, onNavigationIntent, restoredDataHealthState, openDataHealthOnMount = false }: DashboardTabProps = {}) {
   const { goToImport, goTo } = useTabNav();
-  const transactions = useLiveQuery(() => db.transactions.toArray(), []);
+  const [transactionSubscription] = useState(createDashboardTransactionsSubscription);
+  // Registration belongs to effect lifetime. This effect intentionally comes
+  // before useLiveQuery so its setup activates mutation tracking before the
+  // query hook's initial subscription/read effect runs, including StrictMode's
+  // setup-cleanup-setup cycle.
+  useEffect(() => {
+    transactionSubscription.activate();
+    return transactionSubscription.deactivate;
+  }, [transactionSubscription]);
+  const transactions = useLiveQuery(transactionSubscription.query, [transactionSubscription]);
   // Holdings and the rest of the Dashboard retain their established stable
   // subscriptions. In particular, a transaction-only revision must not get
   // fresh evidence-array identities from the aggregate Data Health read or it
@@ -478,9 +495,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
     transactions, walletRowsQuery, csvImportsQuery, exchangeConnsQuery,
     authoritySnapshotsQuery, authorityAssetsQuery, sourceCoverageQuery, openingBalancesQuery
   ]);
-  const { snapshot: coherentDataHealthSnapshot, updating: coherentDataHealthUpdating } =
-    useCoherentDataHealthSnapshot(dataHealthInvalidationSignal, dataHealthOpen);
-
   useEffect(() => {
     const timer = window.setInterval(() => setSpotRefreshTick(Date.now()), 5 * 60_000);
     return () => window.clearInterval(timer);
@@ -550,6 +564,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
   );
   const deferredTransactions = deferredLedgerRevision.transactions;
   const deferredProjection = deferredLedgerRevision.projection;
+  const { snapshot: coherentDataHealthSnapshot, updating: coherentDataHealthUpdating } =
+    useCoherentDataHealthSnapshot(dataHealthInvalidationSignal, dataHealthOpen, {
+      closedReadReady: historicalRevisionCaughtUp(ledgerRevision, deferredLedgerRevision)
+    });
 
   // Aggregate Data Health materializes per-source postings, reconciliation,
   // history, and remediation details. None of that is needed to commit an
