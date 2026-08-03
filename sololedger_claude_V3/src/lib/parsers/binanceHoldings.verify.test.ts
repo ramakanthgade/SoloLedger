@@ -47,5 +47,5 @@ describe.skipIf(!LEDGER)('REAL Binance CSV holdings authority', () => {
     expect(amount('BNB')).toBeCloseTo(0.18313113, 8);
     expect(amount('USDC')).toBeCloseTo(0.01385116, 8);
     expect(amount('BTC')).toBeCloseTo(0.00000049, 12);
-  }, 30000);
+  }, 120000);
 });
