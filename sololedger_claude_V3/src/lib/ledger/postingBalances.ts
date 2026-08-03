@@ -33,6 +33,13 @@ export interface PreparedPostingAggregation {
   readonly scopes: ReadonlyMap<string, PreparedPostingScopeAggregation>;
   /** First posting per canonical asset, for stable historical display identity. */
   readonly representativeByAsset: ReadonlyMap<string, DerivedPosting>;
+  /** Compact chart indexes aligned with `ordered`; avoid per-posting string-map lookups. */
+  readonly balanceSlotByPosting: readonly number[];
+  readonly assetSlotByPosting: readonly number[];
+  readonly assetKeys: readonly string[];
+  readonly balanceSlotCount: number;
+  readonly balanceSlots: ReadonlyMap<PostingBalanceKey, number>;
+  readonly assetSlots: ReadonlyMap<string, number>;
 }
 
 export interface PreparedPostingScopeAggregation {
@@ -98,12 +105,30 @@ export function preparePostingAggregation(
     assets: Map<string, string>;
   }>();
   const representativeByAsset = new Map<string, DerivedPosting>();
+  const balanceSlots = new Map<PostingBalanceKey, number>();
+  const assetSlots = new Map<string, number>();
+  const balanceSlotByPosting = new Array<number>(ordered.length);
+  const assetSlotByPosting = new Array<number>(ordered.length);
+  const assetKeys: string[] = [];
   for (let index = 0; index < ordered.length; index++) {
     const posting = ordered[index];
     if (!representativeByAsset.has(posting.assetKey)) {
       representativeByAsset.set(posting.assetKey, posting);
     }
     keys[index] = cachedPostingBalanceKey(posting, keyCache);
+    let balanceSlot = balanceSlots.get(keys[index]);
+    if (balanceSlot == null) {
+      balanceSlot = balanceSlots.size;
+      balanceSlots.set(keys[index], balanceSlot);
+    }
+    balanceSlotByPosting[index] = balanceSlot;
+    let assetSlot = assetSlots.get(posting.assetKey);
+    if (assetSlot == null) {
+      assetSlot = assetSlots.size;
+      assetSlots.set(posting.assetKey, assetSlot);
+      assetKeys.push(posting.assetKey);
+    }
+    assetSlotByPosting[index] = assetSlot;
     const scopeKey = postingScopeAggregationKey(posting.accountScopeId, posting.accountClass);
     let scope = mutableScopes.get(scopeKey);
     if (scope == null) {
@@ -125,7 +150,11 @@ export function preparePostingAggregation(
         : (scope.balances.get(posting.assetKey) ?? 0) + posting.signedQuantity
     );
   }
-  return { source: postings, ordered, keys, scopes: mutableScopes, representativeByAsset };
+  return {
+    source: postings, ordered, keys, scopes: mutableScopes, representativeByAsset,
+    balanceSlotByPosting, assetSlotByPosting, assetKeys,
+    balanceSlotCount: balanceSlots.size, balanceSlots, assetSlots
+  };
 }
 
 /** Extend an immutable aggregation when callers have proved every new posting is later. */
@@ -150,9 +179,27 @@ export function appendPreparedPostingAggregation(
   const keys = [...prepared.keys];
   const scopes = new Map(prepared.scopes);
   const representativeByAsset = new Map(prepared.representativeByAsset);
+  const balanceSlots = new Map(prepared.balanceSlots);
+  const assetSlots = new Map(prepared.assetSlots);
+  const balanceSlotByPosting = [...prepared.balanceSlotByPosting];
+  const assetSlotByPosting = [...prepared.assetSlotByPosting];
+  const assetKeys = [...prepared.assetKeys];
   for (const posting of appended) {
     const key = postingBalanceKey(posting);
     keys.push(key);
+    let balanceSlot = balanceSlots.get(key);
+    if (balanceSlot == null) {
+      balanceSlot = balanceSlots.size;
+      balanceSlots.set(key, balanceSlot);
+    }
+    balanceSlotByPosting.push(balanceSlot);
+    let assetSlot = assetSlots.get(posting.assetKey);
+    if (assetSlot == null) {
+      assetSlot = assetSlots.size;
+      assetSlots.set(posting.assetKey, assetSlot);
+      assetKeys.push(posting.assetKey);
+    }
+    assetSlotByPosting.push(assetSlot);
     if (!representativeByAsset.has(posting.assetKey)) representativeByAsset.set(posting.assetKey, posting);
     const scopeKey = postingScopeAggregationKey(posting.accountScopeId, posting.accountClass);
     const previous = scopes.get(scopeKey);
@@ -170,7 +217,11 @@ export function appendPreparedPostingAggregation(
       assets
     });
   }
-  return { source: postings, ordered: postings, keys, scopes, representativeByAsset };
+  return {
+    source: postings, ordered: postings, keys, scopes, representativeByAsset,
+    balanceSlotByPosting, assetSlotByPosting, assetKeys,
+    balanceSlotCount: balanceSlots.size, balanceSlots, assetSlots
+  };
 }
 
 function aggregationSnapshot(

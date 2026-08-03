@@ -9,6 +9,9 @@ interface CostHolding { amount: number; cost: number }
 export interface CostSample { t: number; cost: number }
 
 const WRAPPED_SOL_MINT = 'So11111111111111111111111111111111111111112';
+const INTERNAL_OUT_TYPES = new Set<Transaction['type']>(['transfer_out', 'sell', 'gift_sent']);
+const INCOMING_TYPES = new Set<Transaction['type']>(['buy', 'transfer_in', 'income', 'gift_received']);
+const OUTGOING_TYPES = new Set<Transaction['type']>(['sell', 'transfer_out', 'gift_sent', 'fee']);
 
 function mayBeNativeSolAsset(asset?: string | null): boolean {
   if (!asset) return false;
@@ -80,6 +83,8 @@ export function buildCustodyCostSamples(
     ? collapseSolTxRows([...visible]).sort((left, right) => left.timestamp - right.timestamp)
     : [];
   const holdings = new Map<string, CostHolding>();
+  const simpleHoldingKeys = new Map<string, string>();
+  const qualifiedHoldingKeys = new Map<string, Map<string, string>>();
   const sourceKeys = new Set<string>();
   const tradeLegs = new Set<string>();
   let total = 0;
@@ -89,6 +94,27 @@ export function buildCustodyCostSamples(
   let solAmount = 0;
   let solAcquisitionCost = 0;
   const appliedSolKeys = new Set<string>();
+
+  const holdingKey = (asset: string, chain?: string, contract?: string) => {
+    if (!chain && !contract) {
+      const cached = simpleHoldingKeys.get(asset);
+      if (cached) return cached;
+      const created = key(asset);
+      simpleHoldingKeys.set(asset, created);
+      return created;
+    }
+    let byQualifier = qualifiedHoldingKeys.get(chain ?? 'x');
+    if (!byQualifier) {
+      byQualifier = new Map();
+      qualifiedHoldingKeys.set(chain ?? 'x', byQualifier);
+    }
+    const cacheKey = contract ? `contract:${contract}` : `asset:${asset}`;
+    const cached = byQualifier.get(cacheKey);
+    if (cached) return cached;
+    const created = key(asset, chain, contract);
+    byQualifier.set(cacheKey, created);
+    return created;
+  };
 
   if (mayContainSourceRefs) {
     for (const transaction of visible) {
@@ -104,8 +130,8 @@ export function buildCustodyCostSamples(
     transaction: Transaction, asset: string, amount: number, sign: 1 | -1,
     costAdd: number, chain?: string, contract?: string
   ) => {
-    const holdingKey = key(asset, chain, contract);
-    const holding = holdings.get(holdingKey) ?? { amount: 0, cost: 0 };
+    const balanceKey = holdingKey(asset, chain, contract);
+    const holding = holdings.get(balanceKey) ?? { amount: 0, cost: 0 };
     const before = holding.cost;
     if (transaction.category?.startsWith('options_')) {
       holding.amount += sign * amount;
@@ -118,21 +144,23 @@ export function buildCustodyCostSamples(
       holding.cost -= holding.cost * (quantity / holding.amount);
       holding.amount -= quantity;
     }
-    holdings.set(holdingKey, holding);
+    holdings.set(balanceKey, holding);
     total += holding.cost - before;
   };
 
   const apply = (transaction: Transaction) => {
     if (mayContainSol && isNativeSolAsset(transaction.asset) && transaction.type !== 'trade') return;
-    const sourceKey = transactionSourceKey(transaction);
+    const sourceKey = mayContainSourceRefs ? transactionSourceKey(transaction) : null;
     if (sourceKey) {
       if (sourceKeys.has(sourceKey)) return;
       sourceKeys.add(sourceKey);
     }
-    const ref = canonicalWalletSourceRefKey(transaction.chain, transaction.walletAddress, transaction.sourceRef);
+    const ref = mayContainSourceRefs
+      ? canonicalWalletSourceRefKey(transaction.chain, transaction.walletAddress, transaction.sourceRef)
+      : null;
     if (ref && ['transfer_in', 'transfer_out', 'income'].includes(transaction.type) &&
         tradeLegs.has(`${ref}|${transaction.asset.toUpperCase()}`)) return;
-    if (transaction.isInternalTransfer && ['transfer_out', 'sell', 'gift_sent'].includes(transaction.type) &&
+    if (transaction.isInternalTransfer && INTERNAL_OUT_TYPES.has(transaction.type) &&
         !isDcaEscrowDeposit(transaction, dca.internalDepositIds)) return;
 
     if (transaction.type === 'trade' && transaction.counterAsset && transaction.counterAmount) {
@@ -144,15 +172,15 @@ export function buildCustodyCostSamples(
         }
         return;
       }
-      if (!isNativeSolAsset(transaction.asset)) {
+      if (!mayContainSol || !isNativeSolAsset(transaction.asset)) {
         upsert(transaction, transaction.asset, transaction.amount, -1, 0, transaction.chain, transaction.contractAddress);
       }
-      if (!isNativeSolAsset(transaction.counterAsset)) {
+      if (!mayContainSol || !isNativeSolAsset(transaction.counterAsset)) {
         upsert(transaction, transaction.counterAsset, transaction.counterAmount, 1,
           transaction.fiatValue ?? 0, transaction.chain,
           transaction.chain === 'solana' ? resolveSolanaMintAddress(transaction.counterAsset) : undefined);
       }
-      if (transaction.feeAmount && !isNativeSolAsset(transaction.feeAsset ?? transaction.asset)) {
+      if (transaction.feeAmount && (!mayContainSol || !isNativeSolAsset(transaction.feeAsset ?? transaction.asset))) {
         const asset = transaction.feeAsset ?? transaction.asset;
         upsert(transaction, asset, transaction.feeAmount, -1, 0, transaction.chain,
           transaction.chain === 'solana' && transaction.feeAsset ? resolveSolanaMintAddress(asset) : undefined);
@@ -162,26 +190,26 @@ export function buildCustodyCostSamples(
 
     if ((transaction.type === 'buy' || transaction.type === 'sell') && transaction.counterAsset && transaction.counterAmount) {
       const buy = transaction.type === 'buy';
-      if (!isNativeSolAsset(transaction.asset)) {
+      if (!mayContainSol || !isNativeSolAsset(transaction.asset)) {
         upsert(transaction, transaction.asset, transaction.amount, buy ? 1 : -1,
           buy ? transaction.fiatValue ?? 0 : 0, transaction.chain, transaction.contractAddress);
       }
-      if (!isNativeSolAsset(transaction.counterAsset)) {
+      if (!mayContainSol || !isNativeSolAsset(transaction.counterAsset)) {
         upsert(transaction, transaction.counterAsset, transaction.counterAmount, buy ? -1 : 1,
           buy ? 0 : transaction.fiatValue ?? 0, transaction.chain,
           transaction.chain === 'solana' ? resolveSolanaMintAddress(transaction.counterAsset) : undefined);
       }
       if (transaction.feeAmount) {
         const feeAsset = transaction.feeAsset ?? transaction.asset;
-        if (!isNativeSolAsset(feeAsset)) {
+        if (!mayContainSol || !isNativeSolAsset(feeAsset)) {
           upsert(transaction, feeAsset, transaction.feeAmount, -1, 0, transaction.chain);
         }
       }
       return;
     }
 
-    const sign = ['buy', 'transfer_in', 'income', 'gift_received'].includes(transaction.type) ? 1
-      : ['sell', 'transfer_out', 'gift_sent', 'fee'].includes(transaction.type) ? -1 : 0;
+    const sign = INCOMING_TYPES.has(transaction.type) ? 1
+      : OUTGOING_TYPES.has(transaction.type) ? -1 : 0;
     if (!sign) return;
     // Native SOL's legacy display cost is cumulative acquisition fiat while it
     // is held. Model that as the same overlay; representative SOL equivalence
@@ -210,8 +238,7 @@ export function buildCustodyCostSamples(
       if (appliedSolKeys.has(dedupKey)) return;
       appliedSolKeys.add(dedupKey);
     }
-    if (transaction.isInternalTransfer &&
-        ['transfer_out', 'sell', 'gift_sent'].includes(transaction.type)) return;
+    if (transaction.isInternalTransfer && INTERNAL_OUT_TYPES.has(transaction.type)) return;
     if (transaction.type === 'fee') {
       solAmount += isSolRentRefund(transaction) ? transaction.amount : -transaction.amount;
       return;
@@ -226,9 +253,9 @@ export function buildCustodyCostSamples(
       }
       return;
     }
-    if (['transfer_in', 'income', 'gift_received', 'buy'].includes(transaction.type)) {
+    if (INCOMING_TYPES.has(transaction.type)) {
       solAmount += transaction.amount;
-    } else if (['transfer_out', 'gift_sent', 'sell'].includes(transaction.type)) {
+    } else if (INTERNAL_OUT_TYPES.has(transaction.type)) {
       solAmount -= transaction.amount;
     }
     if (isNativeSolAsset(transaction.feeAsset) && transaction.feeAmount) {

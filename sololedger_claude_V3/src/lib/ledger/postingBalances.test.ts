@@ -104,5 +104,26 @@ describe('posting indexes', () => {
     expect(prepared.scopes.get('manual\u001fmanual')).toMatchObject({ postingCount: 3 });
     expect(prepared.scopes.get('manual\u001fmanual')?.balances.get('asset:BTC')).toBe(5);
     expect(prepared.representativeByAsset.get('asset:BTC')?.transactionId).toBe('before');
+    expect(prepared.balanceSlotByPosting).toHaveLength(postings.length);
+    expect(prepared.assetSlotByPosting).toHaveLength(postings.length);
+    expect(prepared.assetKeys).toEqual(['asset:BTC']);
+    expect(prepared.balanceSlotCount).toBe(1);
+  });
+
+  it('assigns compact slots equivalent to posting keys and canonical assets', () => {
+    const rows: Transaction[] = [
+      transaction('btc', 10, 2),
+      { ...transaction('eth', 20, 3), asset: 'ETH' },
+      { ...transaction('btc-out', 30, -1), importBatchId: 'other-scope' }
+    ];
+    const postings = derivePostings(rows, { exchangeConnections: [] });
+    const prepared = preparePostingAggregation(postings);
+
+    expect(prepared.balanceSlotByPosting.map((slot) =>
+      [...prepared.balanceSlots].find(([, candidate]) => candidate === slot)?.[0]
+    )).toEqual(prepared.keys);
+    expect(prepared.assetSlotByPosting.map((slot) => prepared.assetKeys[slot]))
+      .toEqual(prepared.ordered.map((posting) => posting.assetKey));
+    expect(new Set(prepared.balanceSlotByPosting).size).toBe(prepared.balanceSlotCount);
   });
 });

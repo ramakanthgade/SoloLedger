@@ -354,6 +354,22 @@ describe('buildChartSeries', () => {
       tx({ id: 'spam', timestamp: day(2026, 4, 1), asset: 'BTC', amount: 100,
         fiatValue: 10_000, isSpam: true }),
       tx({ id: 'early', timestamp: day(2026, 4, 2), asset: 'BTC', amount: 1, fiatValue: 100 })
+    ]],
+    ['address-shaped asset and matching contract remain distinct', [
+      tx({ id: 'raw-address', timestamp: day(2026, 4, 1), type: 'buy', asset: '0xabc',
+        amount: 1, fiatValue: 100, chain: 'ethereum' }),
+      tx({ id: 'resolved-contract', timestamp: day(2026, 4, 2), type: 'buy', asset: 'TOKEN',
+        amount: 1, fiatValue: 200, chain: 'ethereum', contractAddress: '0xabc' }),
+      tx({ id: 'resolved-disposal', timestamp: day(2026, 4, 3), type: 'sell', asset: 'TOKEN',
+        amount: 1, fiatValue: 250, chain: 'ethereum', contractAddress: '0xabc' })
+    ]],
+    ['empty contracts retain separate asset holdings', [
+      tx({ id: 'btc-empty-contract', timestamp: day(2026, 4, 1), type: 'buy', asset: 'BTC',
+        amount: 1, fiatValue: 100, chain: 'ethereum', contractAddress: '' }),
+      tx({ id: 'eth-empty-contract', timestamp: day(2026, 4, 2), type: 'buy', asset: 'ETH',
+        amount: 1, fiatValue: 200, chain: 'ethereum', contractAddress: '' }),
+      tx({ id: 'eth-empty-disposal', timestamp: day(2026, 4, 3), type: 'sell', asset: 'ETH',
+        amount: 1, fiatValue: 250, chain: 'ethereum', contractAddress: '' })
     ]]
   ] as const)('matches legacy chart costs exactly for %s', (_name, rows) => {
     const transactions = [...rows] as Transaction[];
