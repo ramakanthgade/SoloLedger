@@ -39,7 +39,7 @@ interface WalletAssetView {
   amount: number;
   value: number | null;
   atCost: boolean;
-  verificationStatus: 'verified_authority' | 'posting_fallback';
+  verificationStatus: 'verified_authority' | 'reconstructed_authority' | 'posting_fallback';
   fallbackReason?: AuthorityBalanceFallbackReason;
   authorityAsOf?: number;
 }
@@ -61,7 +61,7 @@ interface SourceAssetView {
   atCost: boolean;
   postingQuantity: number;
   authorityQuantity?: number;
-  verificationStatus: 'verified_authority' | 'posting_fallback';
+  verificationStatus: 'verified_authority' | 'reconstructed_authority' | 'posting_fallback';
   fallbackReason?: AuthorityBalanceFallbackReason;
 }
 
@@ -225,5 +225,10 @@ function WalletAssetRow({ asset, formatMoney }: { asset: WalletAssetView; format
 function SourceAssetRow({ asset, formatMoney }: { asset: SourceAssetView; formatMoney: (value: number) => string }) {
   const hasAuthorityDiscrepancy = asset.authorityQuantity != null &&
     Math.abs(asset.postingQuantity - asset.authorityQuantity) > 1e-9;
-  return <li className="flex items-center gap-3 border-b border-hi/10 px-5 py-3 last:border-b-0"><AssetIcon symbol={asset.asset} size={32} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-hi">{asset.asset}</p>{asset.chain && <p className="text-xs capitalize text-low">{chainLabel(asset.chain)}</p>}<p className={cn('text-[0.6875rem]', asset.verificationStatus === 'verified_authority' ? 'text-faint' : 'text-warn')} data-testid="detail-source-row-source">{asset.verificationStatus === 'verified_authority' ? 'Current source balance' : 'Estimated from ledger postings'}{asset.verificationStatus === 'posting_fallback' ? ` · ${walletFallbackLabel(asset.fallbackReason)}` : ''}{hasAuthorityDiscrepancy ? ` · Ledger postings: ${formatCompactAmount(asset.postingQuantity)}` : ''}</p></div><div className="text-right"><p className="text-sm font-semibold tabular-figures text-hi">{formatCompactAmount(asset.amount)}</p><p className={cn('text-xs tabular-figures', asset.value == null ? 'text-faint' : 'text-low')}>{asset.value != null ? formatMoney(asset.value) : '—'}{asset.atCost && asset.value != null ? ' · at cost' : ''}</p></div></li>;
+  const quantityLabel = asset.verificationStatus === 'verified_authority'
+    ? 'Current source balance'
+    : asset.verificationStatus === 'reconstructed_authority'
+      ? 'Reconstructed journal balance · not verified current'
+      : `Estimated from ledger postings${asset.fallbackReason ? ` · ${walletFallbackLabel(asset.fallbackReason)}` : ''}`;
+  return <li className="flex items-center gap-3 border-b border-hi/10 px-5 py-3 last:border-b-0"><AssetIcon symbol={asset.asset} size={32} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-hi">{asset.asset}</p>{asset.chain && <p className="text-xs capitalize text-low">{chainLabel(asset.chain)}</p>}<p className={cn('text-[0.6875rem]', asset.verificationStatus === 'verified_authority' ? 'text-faint' : 'text-warn')} data-testid="detail-source-row-source">{quantityLabel}{hasAuthorityDiscrepancy ? ` · Ledger postings: ${formatCompactAmount(asset.postingQuantity)}` : ''}</p></div><div className="text-right"><p className="text-sm font-semibold tabular-figures text-hi">{formatCompactAmount(asset.amount)}</p><p className={cn('text-xs tabular-figures', asset.value == null ? 'text-faint' : 'text-low')}>{asset.value != null ? formatMoney(asset.value) : '—'}{asset.atCost && asset.value != null ? ' · at cost' : ''}</p></div></li>;
 }

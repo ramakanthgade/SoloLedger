@@ -167,19 +167,48 @@ export function selectAuthoritySnapshot(input: AuthoritySelectionInput): Authori
       b.generation - a.generation || b.capturedAt - a.capturedAt;
   };
   let selectedSnapshot: AuthoritySnapshotRow | undefined;
+  let reconstructedSnapshot: AuthoritySnapshotRow | undefined;
+  let reconstructedAssets: AuthorityAssetRow[] = [];
   for (const snapshot of proofCompatible) {
     const rows = assetsBySnapshotId.get(snapshot.snapshotId) ?? [];
     if (!snapshotIsCoherent(snapshot, rows, input.metrics)) {
       return { authorityStatus: 'non_comparable', selectedAssets: [], diagnostics: scoped };
     }
-    if (snapshot.asOf == null) continue;
+    if (snapshot.asOf == null) {
+      if (snapshot.authorityKind === 'csv' && (
+        reconstructedSnapshot == null || snapshot.generation > reconstructedSnapshot.generation ||
+        (snapshot.generation === reconstructedSnapshot.generation && snapshot.capturedAt > reconstructedSnapshot.capturedAt)
+      )) {
+        reconstructedSnapshot = snapshot;
+        reconstructedAssets = rows;
+      }
+      continue;
+    }
     if (selectedSnapshot == null) selectedSnapshot = snapshot;
     else {
       if (input.metrics) input.metrics.candidateComparisons += 1;
       if (compare(snapshot, selectedSnapshot) < 0) selectedSnapshot = snapshot;
     }
   }
-  if (!selectedSnapshot) return { authorityStatus: 'non_comparable', selectedAssets: [], diagnostics: scoped };
+  if (!selectedSnapshot) {
+    if (reconstructedSnapshot) {
+      return {
+        authorityStatus: 'non_comparable',
+        selectedSnapshot: reconstructedSnapshot,
+        selectedAssets: reconstructedAssets,
+        diagnostics: scoped.filter((snapshot) => snapshot.snapshotId !== reconstructedSnapshot!.snapshotId)
+      };
+    }
+    return { authorityStatus: 'non_comparable', selectedAssets: [], diagnostics: scoped };
+  }
+  if (reconstructedSnapshot && freshness(selectedSnapshot, input.now, input.comparisonAt) !== 'current') {
+    return {
+      authorityStatus: 'non_comparable',
+      selectedSnapshot: reconstructedSnapshot,
+      selectedAssets: reconstructedAssets,
+      diagnostics: scoped.filter((snapshot) => snapshot.snapshotId !== reconstructedSnapshot!.snapshotId)
+    };
+  }
   const selectedAssets = assetsBySnapshotId.get(selectedSnapshot.snapshotId) ?? [];
   return {
     authorityStatus: freshness(selectedSnapshot, input.now, input.comparisonAt), selectedSnapshot,

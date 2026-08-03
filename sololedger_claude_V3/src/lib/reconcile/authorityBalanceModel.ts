@@ -17,7 +17,10 @@ import {
   type StructuralCoverageStatus
 } from './sourceCoverage';
 
-export type AuthorityBalanceVerificationStatus = 'verified_authority' | 'posting_fallback';
+export type AuthorityBalanceVerificationStatus =
+  | 'verified_authority'
+  | 'reconstructed_authority'
+  | 'posting_fallback';
 export type AuthorityBalanceFallbackReason =
   | 'stale_authority'
   | 'missing_authority'
@@ -190,6 +193,26 @@ function coverageForSelection(
   if (statuses.includes('failed')) return 'failed';
   if (statuses.includes('partial')) return 'partial';
   return 'unknown';
+}
+
+function supportsReconstructedCsvQuantity(
+  scopedCoverage: readonly ProjectedCoverage[],
+  snapshot: AuthoritySnapshotRow | undefined
+): boolean {
+  if (snapshot == null) return false;
+  const linked = scopedCoverage.filter((coverage) =>
+    coverage.row.authoritySnapshotId === snapshot.snapshotId &&
+    coverage.row.generation === snapshot.generation
+  );
+  if (linked.length === 0) return false;
+  return linked.every(({ row }) => {
+    if (row.kind !== 'csv' || (row.status !== 'unknown' && row.status !== 'complete')) return false;
+    const evaluation = evaluateSourceCoverage(row);
+    // Untimestamped Binance journals are intentionally `unknown` only because
+    // the export does not declare a historical range. Every structural row,
+    // required outcome, and dedup mapping must otherwise be complete.
+    return evaluation.reasons.every((reason) => reason === 'export_range_not_source_declared');
+  });
 }
 
 function fallbackReason(
@@ -371,15 +394,23 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
       const reason = duplicateAssetKeys.has(assetKey)
         ? 'non_comparable_authority'
         : fallbackReason(associatedScopeStatus, perAssetAuthorityStatus, coverageStatus);
+      const usesReconstructedCsvBalance = reason != null && associatedScopeStatus === 'resolved' &&
+        input.comparisonAt == null &&
+        selection.selectedSnapshot?.authorityKind === 'csv' && selection.selectedSnapshot.asOf == null &&
+        selection.selectedSnapshot.status === 'complete' && authorityQuantity != null &&
+        supportsReconstructedCsvQuantity(scopedCoverage, selection.selectedSnapshot) &&
+        !duplicateAssetKeys.has(assetKey);
       result.push({
         scopeId: scope.scopeId,
         accountClass: scope.accountClass,
         assetKey,
         asset,
-        quantity: reason == null ? authorityQuantity! : postingQuantity,
+        quantity: reason == null || usesReconstructedCsvBalance ? authorityQuantity! : postingQuantity,
         postingQuantity,
         authorityQuantity,
-        verificationStatus: reason == null ? 'verified_authority' : 'posting_fallback',
+        verificationStatus: reason == null
+          ? 'verified_authority'
+          : usesReconstructedCsvBalance ? 'reconstructed_authority' : 'posting_fallback',
         fallbackReason: reason,
         authorityStatus: perAssetAuthorityStatus,
         coverageStatus,

@@ -141,6 +141,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
 
   const [removeExchange, setRemoveExchange] = useState<ExchangeConnectionView | null>(null);
   const [removeFile, setRemoveFile] = useState<CsvImportRow | null>(null);
+  const [removingFile, setRemovingFile] = useState<CsvImportRow | null>(null);
   const [removeWallet, setRemoveWallet] = useState<ConnectionCardData | null>(null);
   const [renaming, setRenaming] = useState<{ cardId: string; rows: LookupAddressRow[] } | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
@@ -352,9 +353,12 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
       const row = card.csvImport;
       return [
         {
-          label: 'Remove',
-          icon: <Trash2 className="h-4 w-4" aria-hidden="true" />,
+          label: removingFile?.id === row.id ? 'Removal in progress' : 'Remove',
+          icon: removingFile?.id === row.id
+            ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            : <Trash2 className="h-4 w-4" aria-hidden="true" />,
           danger: true,
+          disabled: removingFile != null,
           onSelect: () => setRemoveFile(row)
         }
       ];
@@ -429,6 +433,12 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
       ) : (
         <>
       {navigationError && <div role="alert" className="rounded-xl border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">{navigationError}</div>}
+      {removingFile && (
+        <div role="status" aria-live="polite" className="flex items-center gap-2 rounded-lg border border-primary/30 bg-primary/10 px-4 py-2.5 text-sm text-mid" data-testid="file-removal-progress">
+          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" aria-hidden="true" />
+          <span>Removing <strong>{removingFile.fileName}</strong> and {removingFile.txCount.toLocaleString()} transactions… You can keep using SoloLedger.</span>
+        </div>
+      )}
       {/* Header */}
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
@@ -748,9 +758,22 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
         }
         confirmLabel="Remove import"
         onConfirm={async () => {
-          if (removeFile) await deleteCsvImportAndTransactions(removeFile.id);
+          if (!removeFile || removingFile) return;
+          const target = removeFile;
           setRemoveFile(null);
-          pushToast({ tone: 'primary', title: 'Import removed' });
+          setRemovingFile(target);
+          try {
+            await deleteCsvImportAndTransactions(target.id);
+            pushToast({ tone: 'primary', title: 'Import removed' });
+          } catch {
+            pushToast({
+              tone: 'loss',
+              title: 'Import could not be removed',
+              description: 'Nothing was partially deleted. Please try again.'
+            });
+          } finally {
+            setRemovingFile(null);
+          }
         }}
         onCancel={() => setRemoveFile(null)}
       />

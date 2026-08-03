@@ -289,8 +289,12 @@ function HoldingExpansion({
         <p className="text-[0.6875rem] text-faint" data-testid="holding-qty-caption">
           {holding.sourceVerification?.every((slice) => slice.verificationStatus === 'verified_authority')
             ? 'Verified from current source balances'
+            : holding.sourceVerification?.every((slice) => slice.verificationStatus === 'reconstructed_authority')
+              ? 'Reconstructed from complete source journals · not a current balance verification'
             : holding.sourceVerification?.some((slice) => slice.verificationStatus === 'verified_authority')
-              ? 'Partly verified · remaining quantities use ledger postings'
+              ? 'Partly verified · remaining quantities use reconstructed journals or ledger postings'
+              : holding.sourceVerification?.some((slice) => slice.verificationStatus === 'reconstructed_authority')
+                ? 'Partly reconstructed from source journals · reconciliation still needs review'
               : 'Unverified · estimated from ledger postings'}
         </p>
       </div>

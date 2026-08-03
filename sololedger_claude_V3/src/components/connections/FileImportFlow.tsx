@@ -43,6 +43,13 @@ type FileHandleOutcome =
 
 class CsvSaveError extends Error {}
 
+function yieldForProgressPaint(): Promise<void> {
+  if (typeof requestAnimationFrame !== 'function') {
+    return new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  return new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+}
+
 /**
  * Shared note builders — the single-file path (persistTransactions) and the
  * batch aggregation (handleFiles) MUST emit identical strings, so both call
@@ -92,7 +99,7 @@ export function FileImportFlow() {
   const [priceFetchNote, setPriceFetchNote] = useState<string | null>(null);
   const [extractionNote, setExtractionNote] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
-  const [importPhase, setImportPhase] = useState<'saving' | 'pricing' | 'mapping' | null>(null);
+  const [importPhase, setImportPhase] = useState<'reading' | 'saving' | 'pricing' | 'mapping' | null>(null);
   /** Summary line shown after a multi-file drop (per-file states are last-wins). */
   const [batchNote, setBatchNote] = useState<string | null>(null);
   /** Actionable fix-the-file + AI-last-resort guidance when a file can't be read. */
@@ -259,36 +266,30 @@ export function FileImportFlow() {
 
       // Auto-save when format is recognized and rows were parsed
       if (result.detectedParser && result.transactions.length > 0) {
-        setSaving(true);
         setImportPhase('saving');
-        try {
-          // Best-effort orientation confirmation for ambiguous-Address sheets
-          // (non-local only). Only the ambiguous sheets' rows are re-oriented;
-          // clearly-named / non-generic sheets are left untouched. Non-fatal.
-          const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
-          const persisted = await persistTransactions(toPersist, result.detectedParser, hash, file.name, {
-            balanceSnapshot: result.balanceSnapshot,
-            optionsBalanceUnavailable: result.optionsBalanceUnavailable,
-            optionsBalanceIncluded: result.optionsBalanceIncluded,
-            optionsCoverageThrough: result.optionsCoverageThrough,
-            evidence: result.evidence,
-            warnings: result.warnings
-          });
-          setImportWarnings([...result.warnings, ...persisted.warnings]);
-          setFileName('');
-          setFileHash('');
-          return {
-            kind: 'saved',
-            count: persisted.saved,
-            pricesUpdated: persisted.pricesUpdated,
-            pricesFailed: persisted.pricesFailed,
-            converted: persisted.converted,
-            convertFailed: persisted.failed
-          };
-        } finally {
-          setSaving(false);
-          setImportPhase(null);
-        }
+        // Best-effort orientation confirmation for ambiguous-Address sheets
+        // (non-local only). Only the ambiguous sheets' rows are re-oriented;
+        // clearly-named / non-generic sheets are left untouched. Non-fatal.
+        const toPersist = await confirmSheetOrientations(result.sheets, result.transactions);
+        const persisted = await persistTransactions(toPersist, result.detectedParser, hash, file.name, {
+          balanceSnapshot: result.balanceSnapshot,
+          optionsBalanceUnavailable: result.optionsBalanceUnavailable,
+          optionsBalanceIncluded: result.optionsBalanceIncluded,
+          optionsCoverageThrough: result.optionsCoverageThrough,
+          evidence: result.evidence,
+          warnings: result.warnings
+        });
+        setImportWarnings([...result.warnings, ...persisted.warnings]);
+        setFileName('');
+        setFileHash('');
+        return {
+          kind: 'saved',
+          count: persisted.saved,
+          pricesUpdated: persisted.pricesUpdated,
+          pricesFailed: persisted.pricesFailed,
+          converted: persisted.converted,
+          convertFailed: persisted.failed
+        };
       }
 
       // Format not recognized (or recognized but produced no rows). Do NOT fire
@@ -322,6 +323,13 @@ export function FileImportFlow() {
   const handleFiles = useCallback(
     async (files: File[]) => {
       if (files.length === 0) return;
+      // Paint feedback before file.text(), Papa parsing, and ledger stitching
+      // begin their synchronous work. Without this yield a large Binance CSV
+      // can leave the unchanged dropzone visible for several seconds.
+      setFileName(files.length === 1 ? files[0].name : `${files.length} selected files`);
+      setSaving(true);
+      setImportPhase('reading');
+      await yieldForProgressPaint();
       setSavedCount(null);
       setBatchNote(null);
       let savedFiles = 0;
@@ -341,90 +349,93 @@ export function FileImportFlow() {
       /** Outcome of the last file that didn't throw — the per-file UI below
        *  (duplicate banner, column-mapping form) only reflects THIS file. */
       let lastOutcome: FileHandleOutcome | null = null;
-      for (const file of files) {
-        let outcome: FileHandleOutcome;
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          outcome = await handleFile(file);
-        } catch (error) {
-          // A corrupt/unreadable file must not strand the rest of the batch.
-          if (error instanceof CsvSaveError) saveFailed += 1;
-          else failed += 1;
-          lastOutcome = null;
-          continue;
-        }
-        lastOutcome = outcome;
-        if (outcome.kind === 'saved') {
-          pricesUpdated += outcome.pricesUpdated;
-          pricesFailed += outcome.pricesFailed;
-          valuesConverted += outcome.converted;
-          valuesConvertFailed += outcome.convertFailed;
-          if (outcome.count > 0) {
-            savedFiles += 1;
-            totalSaved += outcome.count;
-          } else {
-            // Parsed fine but every row was already in the ledger (row-level
-            // dedup, e.g. an overlapping re-export) — must not inflate the
-            // saved total or the "N of M files imported" count.
-            noNew += 1;
+      try {
+        for (const file of files) {
+          setImportPhase('reading');
+          let outcome: FileHandleOutcome;
+          try {
+            // eslint-disable-next-line no-await-in-loop
+            outcome = await handleFile(file);
+          } catch (error) {
+            // A corrupt/unreadable file must not strand the rest of the batch.
+            if (error instanceof CsvSaveError) saveFailed += 1;
+            else failed += 1;
+            lastOutcome = null;
+            continue;
           }
-        } else if (outcome.kind === 'duplicate') {
-          duplicates += 1;
-        } else {
-          manual += 1;
+          lastOutcome = outcome;
+          if (outcome.kind === 'saved') {
+            pricesUpdated += outcome.pricesUpdated;
+            pricesFailed += outcome.pricesFailed;
+            valuesConverted += outcome.converted;
+            valuesConvertFailed += outcome.convertFailed;
+            if (outcome.count > 0) {
+              savedFiles += 1;
+              totalSaved += outcome.count;
+            } else {
+              noNew += 1;
+            }
+          } else if (outcome.kind === 'duplicate') {
+            duplicates += 1;
+          } else {
+            manual += 1;
+          }
         }
-      }
-      if (totalSaved > 0) setSavedCount(totalSaved);
-      if (files.length > 1) {
-        // The batch summary replaces the single-file duplicate banner.
-        setDuplicateBlocked(false);
-        // Item 5: per-file price/conversion notes are last-wins across a
-        // batch (each handleFile resets them) — replace them with ONE
-        // aggregated note each, mirroring the single-file strings, so a
-        // 3-file import reports "Fetched prices for 123 transactions."
-        // instead of only the last file's count.
-        setPriceFetchNote(priceFetchNoteText(pricesUpdated, pricesFailed));
-        if (valuesConverted > 0 || valuesConvertFailed > 0) {
-          const { reportingCurrency } = await getSettings();
-          setConversionNote(conversionNoteText(valuesConverted, valuesConvertFailed, reportingCurrency));
-        } else {
-          setConversionNote(null);
+        if (totalSaved > 0) setSavedCount(totalSaved);
+        if (files.length > 1) {
+          // The batch summary replaces the single-file duplicate banner.
+          setDuplicateBlocked(false);
+          // Item 5: per-file price/conversion notes are last-wins across a
+          // batch (each handleFile resets them) — replace them with ONE
+          // aggregated note each, mirroring the single-file strings, so a
+          // 3-file import reports "Fetched prices for 123 transactions."
+          // instead of only the last file's count.
+          setPriceFetchNote(priceFetchNoteText(pricesUpdated, pricesFailed));
+          if (valuesConverted > 0 || valuesConvertFailed > 0) {
+            const { reportingCurrency } = await getSettings();
+            setConversionNote(conversionNoteText(valuesConverted, valuesConvertFailed, reportingCurrency));
+          } else {
+            setConversionNote(null);
+          }
+          // The column-mapping form only survives when the LAST processed file
+          // is the one needing mapping — a later file's handleFile reset it.
+          const mappingShown = lastOutcome?.kind === 'manual';
+          setBatchNote(
+            `${[
+              `${savedFiles} of ${files.length} files imported (${totalSaved} transaction${totalSaved === 1 ? '' : 's'})`,
+              duplicates > 0 ? `${duplicates} already imported — skipped` : null,
+              manual > 0
+                ? `${manual} need${manual === 1 ? 's' : ''} column mapping${
+                    mappingShown ? ' — shown below' : ' — re-drop that file on its own to map it'
+                  }`
+                : null,
+              failed > 0 ? `${failed} could not be read — skipped` : null,
+              saveFailed > 0 ? `${saveFailed} could not be saved — no partial data was kept` : null,
+              noNew > 0
+                ? `${noNew} had no new rows — everything already in your ledger`
+                : null
+            ]
+              .filter(Boolean)
+              .join(' · ')}.`
+          );
+        } else if (failed > 0) {
+          // Single-file drop that threw: nothing else surfaced, so say so.
+          setBatchNote(
+            `"${files[0].name}" could not be read — the file may be corrupt or in an unexpected format.`
+          );
+        } else if (saveFailed > 0) {
+          setBatchNote(
+            `"${files[0].name}" could not be saved — no partial transactions or evidence were kept.`
+          );
+        } else if (noNew > 0) {
+          // Single file parsed fine but row-level dedup dropped every row.
+          setBatchNote(
+            'No new transactions — everything in that file was already in your ledger.'
+          );
         }
-        // The column-mapping form only survives when the LAST processed file
-        // is the one needing mapping — a later file's handleFile reset it.
-        const mappingShown = lastOutcome?.kind === 'manual';
-        setBatchNote(
-          `${[
-            `${savedFiles} of ${files.length} files imported (${totalSaved} transaction${totalSaved === 1 ? '' : 's'})`,
-            duplicates > 0 ? `${duplicates} already imported — skipped` : null,
-            manual > 0
-              ? `${manual} need${manual === 1 ? 's' : ''} column mapping${
-                  mappingShown ? ' — shown below' : ' — re-drop that file on its own to map it'
-                }`
-              : null,
-            failed > 0 ? `${failed} could not be read — skipped` : null,
-            saveFailed > 0 ? `${saveFailed} could not be saved — no partial data was kept` : null,
-            noNew > 0
-              ? `${noNew} had no new rows — everything already in your ledger`
-              : null
-          ]
-            .filter(Boolean)
-            .join(' · ')}.`
-        );
-      } else if (failed > 0) {
-        // Single-file drop that threw: nothing else surfaced, so say so.
-        setBatchNote(
-          `"${files[0].name}" could not be read — the file may be corrupt or in an unexpected format.`
-        );
-      } else if (saveFailed > 0) {
-        setBatchNote(
-          `"${files[0].name}" could not be saved — no partial transactions or evidence were kept.`
-        );
-      } else if (noNew > 0) {
-        // Single file parsed fine but row-level dedup dropped every row.
-        setBatchNote(
-          'No new transactions — everything in that file was already in your ledger.'
-        );
+      } finally {
+        setSaving(false);
+        setImportPhase(null);
       }
     },
     [handleFile]
@@ -566,7 +577,9 @@ export function FileImportFlow() {
           <>
             <Loader2 className="mb-3 h-6 w-6 animate-spin text-primary" aria-hidden="true" />
             <p className="text-sm text-mid">
-              {importPhase === 'pricing'
+              {importPhase === 'reading'
+                ? 'Reading and checking your file…'
+                : importPhase === 'pricing'
                 ? 'Transactions saved. Fetching optional market prices in the background — you can close this panel.'
                 : importPhase === 'mapping'
                   ? 'Asking AI to map columns…'

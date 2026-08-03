@@ -212,7 +212,7 @@ function evidenceForSheet(
     const accountClass = transactionAccountClass(transaction, parserId);
     classCounts.set(accountClass, (classCounts.get(accountClass) ?? 0) + 1);
   }
-  const base = result.evidence ?? {
+  const base: CsvImportEvidence = result.evidence ?? {
     coveredAccountClasses: accountClasses,
     requiredOutcomes: accountClasses.map((accountClass) => ({
       id: `${sheetName}:${accountClass}`, accountClass, required: true,
@@ -245,13 +245,13 @@ function evidenceForSheet(
   const snapshotClass = declaredClasses?.length === 1 && base.coveredAccountClasses.includes(declaredClasses[0])
     ? declaredClasses[0]
     : base.coveredAccountClasses.length === 1 ? base.coveredAccountClasses[0] : 'unknown';
-  const finalBalanceSnapshots = result.balanceSnapshot
+  const finalBalanceSnapshots = base.finalBalanceSnapshots ?? (result.balanceSnapshot
       ? [{
           asOf: ctx.sourceDeclaredSnapshotAsOf,
           accountClass: snapshotClass,
           balances: result.balanceSnapshot
         }]
-      : undefined;
+      : undefined);
   return {
     ...base,
     requiredOutcomes: base.requiredOutcomes.map((outcome, index) => ({
@@ -259,7 +259,7 @@ function evidenceForSheet(
       parserId,
       id: `${sheetName}:${outcome.id}:${index}`
     })),
-    declaredHistory: ctx.sourceDeclaredHistory,
+    declaredHistory: ctx.sourceDeclaredHistory ?? base.declaredHistory,
     finalBalanceSnapshots,
     coveredAccountClasses: base.coveredAccountClasses
   };

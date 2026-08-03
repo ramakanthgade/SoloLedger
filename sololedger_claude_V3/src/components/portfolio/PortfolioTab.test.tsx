@@ -334,6 +334,61 @@ describe('PortfolioTab (Ember & Slate)', () => {
     }
   });
 
+  it('labels verified Spot plus reconstructed Options as journal-reconstructed, not posting-derived', async () => {
+    const originalTxCount = SEED.txs.length;
+    const now = Date.now();
+    SEED.txs.push(
+      {
+        id: 'mixed-spot', timestamp: now - 1_000, type: 'transfer_in', asset: 'USDT', amount: 2,
+        fiatCurrency: 'INR', source: 'binance_api', importBatchId: 'api-current',
+        parserAccountClass: 'spot', flags: [], isInternalTransfer: false
+      } as never,
+      {
+        id: 'mixed-options', timestamp: now - 500, type: 'transfer_in', asset: 'USDT', amount: 500,
+        fiatCurrency: 'INR', source: 'binance_options', importBatchId: 'options-file',
+        parserAccountClass: 'options', flags: [], isInternalTransfer: true
+      } as never
+    );
+    addApiAuthority('USDT', 5, now);
+    SEED.authoritySnapshots.push({
+      snapshotId: 'options-snapshot', generation: 1, scopeId: 'file:options-file:options',
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', accountClass: 'options',
+      coveredAccountClasses: ['options'], capturedAt: now, sourceIdentityId: 'options-file', status: 'complete',
+      endpointProof: {
+        authorityKind: 'csv', provider: 'binance_options', operation: 'parser_final_balance',
+        parametersClass: 'parser_final_balance_without_source_timestamp', requestedAccountClasses: ['options'],
+        provenAccountClasses: ['options'], exhaustiveBalances: true
+      }
+    });
+    SEED.authorityAssets.push({
+      id: 'options-usdt', snapshotId: 'options-snapshot', generation: 1,
+      scopeId: 'file:options-file:options', accountClass: 'options', assetKey: 'asset:USDT',
+      asset: 'USDT', quantity: 119.5193
+    });
+    SEED.sourceCoverage.push({
+      id: 'options-coverage', generation: 1, scopeId: 'file:options-file:options',
+      sourceIdentityId: 'options-file', evidenceId: 'options-evidence', kind: 'csv',
+      accountClasses: ['options'], endpoints: ['history'], authoritySnapshotId: 'options-snapshot',
+      startedAt: now, completedAt: now, status: 'unknown', parserId: 'binance_options',
+      supportedParser: true, requiredSheets: ['history'], presentSheets: ['history'],
+      recognizedCount: 1, parsedCount: 1, dedupedCount: 0, excludedCount: 0, skippedCount: 0,
+      failedCount: 0, endpointOutcomes: [{
+        endpoint: 'history', parserId: 'binance_options', accountClass: 'options', required: true, status: 'complete'
+      }]
+    });
+    try {
+      await renderTab();
+      const captions = screen.getAllByTestId('holding-quantity-source').map((row) => row.textContent ?? '');
+      expect(captions.some((caption) => caption.includes(
+        'Partly verified · quantity source only · remainder reconstructed from journals · not verified current'
+      ))).toBe(true);
+      expect(captions.some((caption) => caption.includes('remainder posting-derived'))).toBe(false);
+    } finally {
+      SEED.txs.splice(originalTxCount);
+      clearProjectionEvidence();
+    }
+  });
+
   it('falls back to posting quantity when API authority is stale', async () => {
     const originalTxCount = SEED.txs.length;
     SEED.txs.push({

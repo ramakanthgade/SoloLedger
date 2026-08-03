@@ -165,7 +165,7 @@ export interface ValuedHolding extends PortfolioHolding {
   qtySource?: 'on-chain' | 'exchange-api' | 'tx-history';
   /** Pre-reconciliation tx-derived qty, when reconciliation ran. */
   txDerivedAmount?: number;
-  verificationStatus?: 'verified_authority' | 'posting_fallback' | 'mixed';
+  verificationStatus?: 'verified_authority' | 'reconstructed_authority' | 'posting_fallback' | 'mixed';
   sourceVerification?: HoldingSourceVerification[];
   /** Latest cached close for this asset, if any. */
   priceNow: number | null;

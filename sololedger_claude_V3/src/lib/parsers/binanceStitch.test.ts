@@ -111,9 +111,9 @@ describe('Binance Transaction-History stitch (C1)', () => {
     });
     expect(result.evidence.declaredHistory).toBeUndefined();
     expect(result.balanceSnapshot).toEqual({ BTC: 3 });
-    // parseImportFile promotes this parser-level final balance into immutable
-    // finalBalanceSnapshots after it has the parser-declared account class.
-    expect(result.evidence.finalBalanceSnapshots).toBeUndefined();
+    expect(result.evidence.finalBalanceSnapshots).toEqual([
+      { accountClass: 'spot', balances: { BTC: 3 } }
+    ]);
     expect(result.evidence.exclusionReasons).toHaveLength(1);
     expect(result.evidence.skippedReasons).toHaveLength(1);
     expect(result.evidence.failureReasons).toHaveLength(1);
@@ -130,6 +130,10 @@ describe('Binance Transaction-History stitch (C1)', () => {
     const funding = result.evidence.requiredOutcomes.find((outcome) => outcome.accountClass === 'funding');
     expect(spot).toMatchObject({ parsedCount: 1, failedCount: 0, status: 'complete' });
     expect(funding).toMatchObject({ parsedCount: 1, failedCount: 1, status: 'partial' });
+    expect(result.evidence.finalBalanceSnapshots).toEqual([
+      { accountClass: 'spot', balances: { BTC: 1 } },
+      { accountClass: 'funding', balances: { USDT: 2, ETH: 3 } }
+    ]);
   });
 
   it('accounts every consumed Funding/Margin trade row and keeps unrecognized rows in their class', () => {
