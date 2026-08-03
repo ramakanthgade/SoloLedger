@@ -11,6 +11,7 @@ import { Bot, Check, Mic, MicOff, Send, ShieldCheck, Upload, X, ChevronDown, Spa
 import { isSaasMode } from '@/lib/saas/config';
 import { fetchPublicConfig } from '@/lib/saas/api';
 import { Dialog } from '@/components/ui/Dialog';
+import { getBulkActionsActive, subscribeBulkActionsActive } from '@/lib/ui/floatingOverlayActivity';
 
 const SUGGESTED_QUESTIONS = [
   'What is my total taxable gain this year?',
@@ -78,6 +79,7 @@ export function AiAdvisor() {
   // real AI request goes out.
   const expectedMode: 'direct' | 'relay' = saas ? 'relay' : 'direct';
   const networkMode = useSyncExternalStore(subscribeNetworkActivity, getNetworkMode);
+  const bulkActionsActive = useSyncExternalStore(subscribeBulkActionsActive, getBulkActionsActive);
 
   useEffect(() => {
     if (!saas) return;
@@ -219,8 +221,8 @@ export function AiAdvisor() {
 
   if (!aiAvailable) {
     return (
-      <div className="fixed bottom-20 right-6 z-50 flex items-center gap-3 md:bottom-6">
-        <span className="hidden rounded-full border border-hi/10 bg-elev-1/95 px-3.5 py-2 text-xs font-semibold text-low shadow-pop sm:inline">
+      <div className="fixed bottom-6 right-6 z-50 hidden items-center gap-3 lg:flex" data-testid="ai-unavailable-trigger">
+        <span className="rounded-full border border-hi/10 bg-elev-1/95 px-3.5 py-2 text-xs font-semibold text-low shadow-pop">
           AI advisor unavailable
         </span>
         <button
@@ -252,7 +254,7 @@ export function AiAdvisor() {
   }
 
   return (
-    <div className="fixed bottom-20 right-6 z-50 flex flex-col items-end gap-3 md:bottom-6">
+    <div className={`fixed bottom-20 right-6 z-50 flex-col items-end gap-3 lg:bottom-6 ${bulkActionsActive ? 'hidden lg:flex' : 'flex'}`} data-testid="ai-available-trigger">
       {open && (
         <Dialog
           open={open}

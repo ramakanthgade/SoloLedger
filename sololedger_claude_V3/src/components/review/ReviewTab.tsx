@@ -38,7 +38,6 @@ import { llamaBannerHint, markLlamaAutoRun, shouldAutoRunLlamaSuggestions } from
 import {
   ALL_FLAGS,
   BULK_FLAG_CHECKBOXES,
-  DISPOSAL_TYPES,
   bulkFlagsPatch,
   bulkTypeImpactLines,
   bulkTypePatch,
@@ -46,10 +45,10 @@ import {
   needsPriceLine,
   summarizeBulkTypeChange
 } from '@/lib/review/bulkEdit';
+import { supportsSpecificIdEditing } from '@/lib/review/specificIdEditing';
 import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
 import { displayFlags } from '@/lib/review/displayFlags';
 import { filterRows, paginate } from '@/lib/review/reviewTableView';
-import { LotPicker } from './LotPicker';
 import { AssetIcon, SourceIcon } from './brandIcons';
 import { sourceBrandInfo } from './brandIconMap';
 import { groupRowsByDate, formatGroupDateLabel, pageNumberList } from './reviewListUtils';
@@ -63,6 +62,15 @@ import { useTabNav } from '@/lib/tabNav';
 import { createBrandedPdf, pdfTableStyles, truncatePdfRef } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
+import { derivePostings, resolveAccountScope } from '@/lib/ledger/derivedPostings';
+import { buildTransactionPostingIndex, preparePostingAggregation } from '@/lib/ledger/postingBalances';
+import { reconcileDerivedPostings } from '@/lib/reconcile/sourceReconcile';
+import { buildReconciliationEvidenceIndexes, projectReconciliationCoverage } from '@/lib/reconcile/evidenceIndexes';
+import { setBulkActionsActive } from '@/lib/ui/floatingOverlayActivity';
+import { buildTransactionCostAnalysisIndexes, buildTransactionCostAnalysisModel } from './transactionCostAnalysisModel';
+import { buildReviewReconciliationEvidence } from './reviewReconciliationEvidence';
+import { TransactionDetailPanel, type DetailTab } from './TransactionDetailPanel';
+import { LotPicker } from './LotPicker';
 
 const ALL_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out',
@@ -413,7 +421,12 @@ export function ReviewTab() {
   const PAGE_SIZE = 200;
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    setBulkActionsActive(selected.size > 0);
+    return () => setBulkActionsActive(false);
+  }, [selected.size]);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [openLotPicker, setOpenLotPicker] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
   // Bulk-edit: "Set type" (dropdown → impact-summary confirm) + "Set flags".
@@ -430,7 +443,7 @@ export function ReviewTab() {
     const { id: _id, ...rest } = settingsRow;
     return rest;
   }, [settingsRow]);
-  const [openLotPicker, setOpenLotPicker] = useState<string | null>(null);
+  const [detailTabByTxId, setDetailTabByTxId] = useState<Record<string, DetailTab>>({});
   const [fetchingPrices, setFetchingPrices] = useState(false);
   const [priceProgress, setPriceProgress] = useState<{ done: number; total: number } | null>(null);
   const [priceErrors, setPriceErrors] = useState<string[]>([]);
@@ -463,6 +476,35 @@ export function ReviewTab() {
   // Stable empty array while the query resolves, so dependent memos don't
   // recompute on every render (react-hooks/exhaustive-deps).
   const transactions = useMemo(() => transactionsLive ?? [], [transactionsLive]);
+  const ledgerEvidenceLive = useLiveQuery(async () => {
+    const [exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets] = await Promise.all([
+      db.exchangeConnections.toArray(), db.openingBalances.toArray(), db.sourceCoverage.toArray(), db.authoritySnapshots.toArray(), db.authorityAssets.toArray()
+    ]);
+    return { exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets };
+  }, []);
+  const ledgerEvidence = useMemo(() => ledgerEvidenceLive ?? {
+    exchangeConnections: [], openingBalances: [], coverage: [], authoritySnapshots: [], authorityAssets: []
+  }, [ledgerEvidenceLive]);
+  const { exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets } = ledgerEvidence;
+  const [authoritySelectionNow] = useState(Date.now);
+  const postingSnapshot = useMemo(() => {
+    const context = {
+      exchangeConnections: exchangeConnections.map((row) => ({
+        id: row.id, exchange: row.exchange
+      })),
+      openingBalances
+    };
+    const postings = derivePostings(transactions, context);
+    const prepared = preparePostingAggregation(postings, true);
+    return { context, postings, prepared, index: buildTransactionPostingIndex(postings, prepared) };
+  }, [transactions, exchangeConnections, openingBalances]);
+  const evidenceIndexes = useMemo(() => buildReconciliationEvidenceIndexes(
+    authoritySnapshots, authorityAssets, projectReconciliationCoverage(coverage, exchangeConnections)
+  ), [authoritySnapshots, authorityAssets, coverage, exchangeConnections]);
+  const { coverageByScope, authorityCoverageByScope, authorityByScope } = useMemo(
+    () => buildReviewReconciliationEvidence(evidenceIndexes, authoritySelectionNow),
+    [evidenceIndexes, authoritySelectionNow]
+  );
   const hintsLive = useLiveQuery(() => getSpecIdHints(), []);
   const hints = useMemo(() => hintsLive ?? {}, [hintsLive]);
 
@@ -566,10 +608,9 @@ export function ReviewTab() {
     () => new Map((engineResult?.disposals ?? []).map((d) => [d.sourceTxId, d])),
     [engineResult]
   );
-  const lotById = useMemo(
-    () => new Map((engineResult?.lots ?? []).map((l) => [l.id, l])),
-    [engineResult]
-  );
+  const costAnalysisIndexes = useMemo(() => buildTransactionCostAnalysisIndexes({
+    disposals: engineResult?.disposals ?? [], lots: engineResult?.lots ?? [], transactions
+  }), [engineResult, transactions]);
 
   /** Tax-relevant rows missing historical fiat value; internal custody moves do not need basis. */
   const missingPriceTxs = useMemo(
@@ -1219,8 +1260,6 @@ export function ReviewTab() {
   };
 
   const renderRow = (t: Transaction, idx: number) => {
-    const isDisposal = DISPOSAL_TYPES.has(t.type);
-    const candidates = engineResult?.disposalCandidates[t.id] ?? [];
     const { fromAddr, toAddr } = txFromToAddresses(t);
     const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : null;
     const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
@@ -1255,6 +1294,39 @@ export function ReviewTab() {
     const ownSide = OWN_ACCOUNT_SIDE[t.type];
     // Exchange rows carry an order/trade id in sourceRef; on-chain rows a tx hash.
     const hashFactLabel = t.txHash || t.chain || t.source.startsWith('rpc:') ? 'Tx hash' : 'Order ID';
+    const scope = resolveAccountScope(t, postingSnapshot.context);
+    const scopeKey = `${scope.accountScopeId}\u001f${scope.accountClass}`;
+    const eventPostings = postingSnapshot.index.byTaxEventId.get(t.id) ?? [];
+    const selectedAuthority = authorityByScope.get(scopeKey);
+    const principalPosting = eventPostings.find((posting) => posting.role === 'principal');
+    const selectedCoverage = coverageByScope.get(scopeKey);
+    const reconciliationCoverage = authorityCoverageByScope.get(scopeKey) ?? selectedCoverage;
+    const reconciliation = expanded && principalPosting && selectedAuthority ? reconcileDerivedPostings({
+      scopeId: scope.accountScopeId,
+      accountClass: scope.accountClass,
+      assetKey: principalPosting.assetKey,
+      asset: principalPosting.asset,
+      postings: postingSnapshot.postings,
+      authority: selectedAuthority,
+      coverage: {
+        status: reconciliationCoverage?.status ?? 'unknown',
+        provenHistoryStart: reconciliationCoverage?.observedHistoryStart,
+        authorityAsOf: selectedAuthority.selectedSnapshot?.asOf
+      },
+      scopeStatus: scope.scopeStatus
+    }) : undefined;
+    const unexplainedAuthorityQuantity = reconciliation?.balanceStatus !== 'not_compared'
+      ? reconciliation?.delta : undefined;
+    const canEditSpecificId = supportsSpecificIdEditing(t.type, settings?.defaultCostBasisMethod ?? 'FIFO');
+    const candidates = engineResult?.disposalCandidates[t.id] ?? [];
+    const costAnalysis = expanded ? buildTransactionCostAnalysisModel({
+      transaction: t,
+      settings: settings ?? {
+        jurisdiction, reportingCurrency: t.fiatCurrency,
+        defaultCostBasisMethod: 'FIFO', priceApiEnabled: false, rpcLookupEnabled: false
+      },
+      disposal, indexes: costAnalysisIndexes, unexplainedAuthorityQuantity
+    }) : null;
 
     /** From/To fact value: the wallet NAME beats the raw address wherever
      * Connections knows it; the source brand stands in for the user's own
@@ -1407,7 +1479,16 @@ export function ReviewTab() {
 
         {/* Expanded Details panel — plain-English summary, facts grid, lots */}
         {expanded && (
-          <div className="border-t border-hi/10 bg-elev-1/40 px-4 py-4 sm:px-6" data-testid="tx-details">
+          <TransactionDetailPanel
+            scope={scope}
+            coverage={selectedCoverage}
+            authorityGeneration={selectedAuthority?.selectedSnapshot?.generation}
+            postings={eventPostings}
+            runningBalances={postingSnapshot.index.runningBalanceByPostingId}
+            costAnalysis={costAnalysis!}
+            activeTab={detailTabByTxId[t.id] ?? 'details'}
+            onActiveTabChange={(activeTab) => setDetailTabByTxId((current) => ({ ...current, [t.id]: activeTab }))}
+            details={<>
             <p className="text-[0.875rem] leading-relaxed text-mid" data-testid="tx-summary">
               {summary.lead}
               {summary.tail ? (
@@ -1502,7 +1583,7 @@ export function ReviewTab() {
               )}
               {pricedDisposal && (
                 <DetailRow label="Cost basis">
-                  {pricedDisposal.costBasis > 0 ? formatCurrency(pricedDisposal.costBasis, t.fiatCurrency) : '—'}
+                  {costAnalysis?.matchedRows.some((row) => row.status === 'missing_cost_basis') ? '—' : formatCurrency(pricedDisposal.costBasis, t.fiatCurrency)}
                 </DetailRow>
               )}
               {pricedDisposal && (
@@ -1523,72 +1604,23 @@ export function ReviewTab() {
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {pricedDisposal && <Badge tone="primary">Cost basis · {pricedDisposal.method}</Badge>}
               {t.isInternalTransfer && <Badge tone="neutral">Internal · not taxable</Badge>}
-              {isDisposal && settings?.defaultCostBasisMethod === 'SpecID' && (
+              {canEditSpecificId && (
                 <button
                   type="button"
                   className="rounded text-xs font-bold text-primary underline decoration-dotted hover:text-primary-deep focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                  onClick={() => setOpenLotPicker((cur) => (cur === t.id ? null : t.id))}
+                  onClick={() => setOpenLotPicker((current) => current === t.id ? null : t.id)}
                 >
                   {openLotPicker === t.id ? 'Hide lot picker' : 'Match lots (Specific ID)'}
                 </button>
               )}
             </div>
-
-            {/* Matched lots (the cost-basis provenance story) */}
-            {disposal && disposal.lotConsumption.length > 0 && (
-              <div className="mt-4">
-                <p className="mb-2 text-[10px] font-bold uppercase tracking-wide text-low">
-                  Matched lots · {disposal.method} · oldest lots first
-                </p>
-                <div className="overflow-x-auto rounded-lg border border-hi/10">
-                  <table className="w-full min-w-[480px] text-xs">
-                    <thead className="bg-elev-3/60 text-left text-[10px] uppercase tracking-wide text-low">
-                      <tr>
-                        <th className="px-3 py-2 font-bold">Acquisition lot</th>
-                        <th className="px-3 py-2 text-right font-bold">Amount</th>
-                        <th className="px-3 py-2 text-right font-bold">Cost basis</th>
-                      </tr>
-                    </thead>
-                    <tbody className="tabular-figures">
-                      {disposal.lotConsumption.map((lc) => {
-                        const lot = lotById.get(lc.lotId);
-                        return (
-                          <tr key={lc.lotId} className="border-t border-hi/10">
-                            <td className="px-3 py-2 font-semibold text-hi">
-                              {lot ? formatGroupDateLabel(new Date(lot.acquiredAt).toISOString().slice(0, 10)) : '—'}
-                              {lot && <span className="ml-2 font-normal text-low">{lot.acquisitionType.replace(/_/g, ' ')}</span>}
-                            </td>
-                            <td className="px-3 py-2 text-right font-semibold text-mid">{formatCompactAmount(lc.amount)}</td>
-                            <td className="px-3 py-2 text-right text-mid">{formatCurrency(lc.costBasis, t.fiatCurrency)}</td>
-                          </tr>
-                        );
-                      })}
-                      <tr className="border-t border-hi/10 bg-gain/[0.07] font-bold">
-                        <td className="rounded-bl-lg px-3 py-2 text-hi">Net disposal</td>
-                        <td className="px-3 py-2 text-right text-hi">{formatCompactAmount(disposal.amount)}</td>
-                        <td className={cn('rounded-br-lg px-3 py-2 text-right', disposal.gain >= 0 ? 'text-gain' : 'text-loss')}>
-                          {disposal.gain >= 0 ? '+' : '−'}
-                          {formatCurrency(Math.abs(disposal.gain), t.fiatCurrency)}
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
             {openLotPicker === t.id && (
-              <div className="mt-4">
-                <LotPicker
-                  txId={t.id}
-                  candidates={candidates}
-                  currentHint={hints[t.id]}
-                  currency={t.fiatCurrency}
-                  onSaved={() => setOpenLotPicker(null)}
-                />
+              <div className="mt-4" data-testid="details-lot-picker">
+                <LotPicker txId={t.id} candidates={candidates} currentHint={hints[t.id]} currency={t.fiatCurrency} onSaved={() => setOpenLotPicker(null)} />
               </div>
             )}
-          </div>
+            </>}
+          />
         )}
       </div>
     );
@@ -1613,7 +1645,7 @@ export function ReviewTab() {
   }
 
   return (
-    <div className="space-y-5 pb-28">
+    <div className={`space-y-5 ${selected.size > 0 ? 'pb-64 lg:pb-28' : 'pb-28'}`}>
       {/* Page head — mockup frame 06: title + count pill + on-device footnote.
           The pill counts the default (non-spam) view; spam rows are reachable
           via the Spam chip and counted there. */}
@@ -2065,7 +2097,7 @@ export function ReviewTab() {
 
       {/* Floating bulk action bar (mockup frame 08) — menus open upward. */}
       {selected.size > 0 && (
-        <div className="fixed bottom-5 left-1/2 z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-hi/15 bg-elev-2 px-3 py-2 shadow-pop">
+        <div data-testid="bulk-action-bar" className="fixed bottom-20 left-1/2 z-40 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-1.5 rounded-2xl border border-hi/15 bg-elev-2 px-3 py-2 shadow-pop lg:bottom-5">
           <span className="px-2 text-[0.8125rem] font-extrabold tabular-figures text-hi">{selected.size} selected</span>
           <span className="mx-1 hidden h-6 w-px bg-hi/10 sm:block" aria-hidden="true" />
           {/* Bulk: Set type (dropdown → impact-summary confirm) */}

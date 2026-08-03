@@ -76,6 +76,29 @@ export interface SourceCoverageEvaluation {
   completeEnoughForOpening: boolean;
 }
 
+export function sourceCoverageOperationTime(row: SourceCoverageRow): number {
+  return row.completedAt ?? row.startedAt;
+}
+
+/** Latest semantic operation per source, then the workspace source-kind preference. */
+export function selectLatestSemanticSourceCoverage(rows: readonly SourceCoverageRow[]): SourceCoverageRow | undefined {
+  const latestBySource = new Map<string, SourceCoverageRow>();
+  for (const candidate of rows) {
+    const current = latestBySource.get(candidate.sourceIdentityId);
+    if (!current || candidate.generation > current.generation ||
+      (candidate.generation === current.generation &&
+        (sourceCoverageOperationTime(candidate) > sourceCoverageOperationTime(current) ||
+          (sourceCoverageOperationTime(candidate) === sourceCoverageOperationTime(current) && candidate.id > current.id)))) {
+      latestBySource.set(candidate.sourceIdentityId, candidate);
+    }
+  }
+  const kindRank = (kind: SourceCoverageKind) => kind === 'api' ? 0 : kind === 'rpc' ? 1 : kind === 'csv' ? 2 : 3;
+  return [...latestBySource.values()].sort((left, right) =>
+    kindRank(left.kind) - kindRank(right.kind) ||
+    sourceCoverageOperationTime(right) - sourceCoverageOperationTime(left) ||
+    left.sourceIdentityId.localeCompare(right.sourceIdentityId))[0];
+}
+
 export interface CoverageExchangeSourceIdentity {
   id: string;
   exchange: string;
