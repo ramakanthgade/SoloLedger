@@ -42,6 +42,8 @@ export interface SourceDeclaredBalanceSnapshot {
   asOf?: number;
   accountClass: AccountClass;
   balances: Record<string, number>;
+  /** Completeness of the signed balance journal, independent of tax-row classification. */
+  balanceStatus?: 'complete' | 'partial';
 }
 
 /**

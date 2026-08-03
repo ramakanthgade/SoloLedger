@@ -110,9 +110,9 @@ describe('Binance Transaction-History stitch (C1)', () => {
       failedCount: 1
     });
     expect(result.evidence.declaredHistory).toBeUndefined();
-    expect(result.balanceSnapshot).toEqual({ BTC: 3 });
+    expect(result.balanceSnapshot).toBeUndefined();
     expect(result.evidence.finalBalanceSnapshots).toEqual([
-      { accountClass: 'spot', balances: { BTC: 3 } }
+      { accountClass: 'spot', balances: { BTC: 3 }, balanceStatus: 'partial' }
     ]);
     expect(result.evidence.exclusionReasons).toHaveLength(1);
     expect(result.evidence.skippedReasons).toHaveLength(1);
@@ -131,9 +131,67 @@ describe('Binance Transaction-History stitch (C1)', () => {
     expect(spot).toMatchObject({ parsedCount: 1, failedCount: 0, status: 'complete' });
     expect(funding).toMatchObject({ parsedCount: 1, failedCount: 1, status: 'partial' });
     expect(result.evidence.finalBalanceSnapshots).toEqual([
-      { accountClass: 'spot', balances: { BTC: 1 } },
-      { accountClass: 'funding', balances: { USDT: 2, ETH: 3 } }
+      { accountClass: 'spot', balances: { BTC: 1 }, balanceStatus: 'complete' },
+      { accountClass: 'funding', balances: { USDT: 2, ETH: 3 }, balanceStatus: 'complete' }
     ]);
+  });
+
+  it('requires explicit account classes and full signed decimals for complete balance authority', () => {
+    const result = stitchBinanceTransactionHistory([
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Spot', Operation: 'Deposit', Coin: 'BTC', Change: '0.5' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Spot', Operation: 'Future New Operation', Coin: 'ETH', Change: '1e-8' },
+      { UTC_Time: '2025-01-01 00:02:00', Account: '', Operation: 'Deposit', Coin: 'SOL', Change: '2' }
+    ]);
+    expect(result.evidence.finalBalanceSnapshots).toEqual([{
+      accountClass: 'spot', balances: { BTC: 0.5 }, balanceStatus: 'partial'
+    }]);
+    expect(result.transactions).toHaveLength(1);
+    expect(result.balanceSnapshot).toBeUndefined();
+  });
+
+  it('rejects invalid timestamps and malformed numeric grouping before tax stitching', () => {
+    const result = stitchBinanceTransactionHistory([
+      { UTC_Time: '2025-02-30 00:00:00', Account: 'Spot', Operation: 'Staking Rewards', Coin: 'ETH', Change: '1' },
+      { UTC_Time: '2025-01-01 00:00:00 junk', Account: 'Spot', Operation: 'Staking Rewards', Coin: 'SOL', Change: '1' },
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Spot', Operation: 'Staking Rewards', Coin: 'BTC', Change: '1,2,3' }
+    ]);
+    expect(result.transactions).toEqual([]);
+    expect(result.balanceSnapshot).toBeUndefined();
+    expect(result.evidence.skippedCount).toBe(3);
+    expect(result.skippedRows).toBe(3);
+    expect(result.warnings.join(' ')).toContain('invalid account, timestamp, asset, operation, or signed decimal amount');
+  });
+
+  it('rejects leading plus amounts before both tax and balance calculations', () => {
+    const result = stitchBinanceTransactionHistory([
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Spot', Operation: 'Staking Rewards', Coin: 'BTC', Change: '+1' }
+    ]);
+    expect(result.transactions).toEqual([]);
+    expect(result.balanceSnapshot).toBeUndefined();
+    expect(result.evidence.finalBalanceSnapshots).toEqual([]);
+  });
+
+  it('suppresses legacy authority when a known-class journal row is malformed', () => {
+    const result = stitchBinanceTransactionHistory([
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Spot', Operation: 'Deposit', Coin: 'BTC', Change: '1' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Spot', Operation: 'Deposit', Coin: 'BTC', Change: 'bad' }
+    ]);
+    expect(result.transactions).toHaveLength(1);
+    expect(result.evidence.finalBalanceSnapshots).toEqual([{
+      accountClass: 'spot', balances: { BTC: 1 }, balanceStatus: 'partial'
+    }]);
+    expect(result.balanceSnapshot).toBeUndefined();
+  });
+
+  it('suppresses legacy authority when a malformed non-Options class has no valid rows', () => {
+    const result = stitchBinanceTransactionHistory([
+      { UTC_Time: '2025-01-01 00:00:00', Account: 'Spot', Operation: 'Deposit', Coin: 'BTC', Change: '1' },
+      { UTC_Time: '2025-01-01 00:01:00', Account: 'Funding', Operation: 'Deposit', Coin: 'USDT', Change: 'bad' }
+    ]);
+    expect(result.evidence.finalBalanceSnapshots).toEqual([{
+      accountClass: 'spot', balances: { BTC: 1 }, balanceStatus: 'complete'
+    }]);
+    expect(result.balanceSnapshot).toBeUndefined();
   });
 
   it('accounts every consumed Funding/Margin trade row and keeps unrecognized rows in their class', () => {

@@ -100,9 +100,11 @@ export function buildCsvImportEvidenceGeneration(
         provenAccountClasses: [declared.accountClass],
         exhaustiveBalances: true
       },
-      status: snapshotOutcomes.some((outcome) => outcome.required) && snapshotOutcomes.every((outcome) =>
-        outcome.status === 'complete' && (outcome.skippedCount ?? 0) === 0 && (outcome.failedCount ?? 0) === 0)
-        ? 'complete' : 'partial'
+      status: declared.balanceStatus ?? (
+        snapshotOutcomes.some((outcome) => outcome.required) && snapshotOutcomes.every((outcome) =>
+          outcome.status === 'complete' && (outcome.skippedCount ?? 0) === 0 && (outcome.failedCount ?? 0) === 0)
+          ? 'complete' : 'partial'
+      )
     };
     const snapshotAssets: AuthorityAssetRow[] = Object.entries(declared.balances).map(([asset, quantity]) => {
       const normalized = asset.trim().toUpperCase();

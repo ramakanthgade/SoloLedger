@@ -1,7 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { buildPortfolioHoldings } from '@/lib/portfolio/portfolioCompute';
+import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
 import type { CsvImportRow } from '@/lib/storage/db';
+import { buildCsvImportEvidenceGeneration } from './importEvidence';
 import { stitchBinanceTransactionHistory } from './binanceStitch';
 
 const CANDIDATES = [
@@ -47,5 +49,29 @@ describe.skipIf(!LEDGER)('REAL Binance CSV holdings authority', () => {
     expect(amount('BNB')).toBeCloseTo(0.18313113, 8);
     expect(amount('USDC')).toBeCloseTo(0.01385116, 8);
     expect(amount('BTC')).toBeCloseTo(0.00000049, 12);
+  }, 120000);
+
+  it('persists a complete custody journal even when tax-row stitching is partial', () => {
+    const result = stitchBinanceTransactionHistory(parseCsv(LEDGER!));
+    const transactions = result.transactions.map((transaction) => ({
+      ...transaction, importBatchId: 'real-binance'
+    }));
+    const generation = buildCsvImportEvidenceGeneration({
+      sourceIdentityId: 'real-binance', parserId: 'binance', generation: 1, completedAt: Date.now(),
+      parsedBeforeDedup: transactions.length, savedAfterDedup: transactions.length,
+      savedTransactions: transactions, evidence: result.evidence, warnings: result.warnings
+    });
+    expect(generation.snapshots.find((row) => row.accountClass === 'spot')).toMatchObject({ status: 'complete' });
+    const projection = buildHoldingsProjection({
+      transactions, exchangeConnections: [], openingBalances: [], snapshots: generation.snapshots,
+      assets: generation.assets, coverage: generation.coverage, now: Date.now()
+    });
+    const holding = (asset: string) => projection.holdings.find((row) => row.asset === asset);
+    expect(holding('BTC')).toMatchObject({ verificationStatus: 'reconstructed_authority' });
+    expect(holding('BTC')?.quantity).toBeCloseTo(0.00000049, 12);
+    expect(holding('ETH')).toMatchObject({ quantity: 0, verificationStatus: 'reconstructed_authority' });
+    expect(holding('SOL')).toMatchObject({ quantity: 0, verificationStatus: 'reconstructed_authority' });
+    expect(holding('UNI')?.quantity).toBeCloseTo(120.001444, 8);
+    expect(holding('ROSE')?.quantity).toBeCloseTo(11454.8, 8);
   }, 120000);
 });

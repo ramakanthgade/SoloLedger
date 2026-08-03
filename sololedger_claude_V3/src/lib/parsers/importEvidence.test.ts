@@ -8,6 +8,29 @@ import { stitchBinanceTransactionHistory } from './binanceStitch';
 beforeEach(() => vi.clearAllMocks());
 
 describe('CSV structured evidence persistence', () => {
+  it('keeps a complete signed journal snapshot authoritative when tax-row classification is partial', () => {
+    const rows = buildCsvImportEvidenceGeneration({
+      sourceIdentityId: 'binance-real-shape', parserId: 'binance',
+      generation: 1, completedAt: 100, parsedBeforeDedup: 1, savedAfterDedup: 1,
+      evidence: {
+        coveredAccountClasses: ['spot'], recognizedCount: 1, parsedCount: 1,
+        excludedCount: 0, skippedCount: 0, failedCount: 1, exclusionReasons: [], skippedReasons: [],
+        failureReasons: [{ reason: 'Recognized row was not consumed by tax stitching.', count: 1 }],
+        finalBalanceSnapshots: [{
+          accountClass: 'spot', balances: { BTC: 0.00000049, ETH: 0, SOL: 0 }, balanceStatus: 'complete'
+        }],
+        requiredOutcomes: [{
+          id: 'binance_transaction_history:spot', accountClass: 'spot', required: true,
+          status: 'partial', parsedCount: 1, failedCount: 1,
+          parsedTransactionRows: [{ transactionId: 'tx-1', sourceRowCount: 1 }]
+        }]
+      },
+      savedTransactions: [{ id: 'tx-1' } as Transaction]
+    });
+    expect(rows.snapshots[0]).toMatchObject({ status: 'complete', accountClass: 'spot' });
+    expect(rows.coverage[0]).toMatchObject({ status: 'unknown', skippedCount: 0, failedCount: 1 });
+  });
+
   it('keeps post-dedup counts unknown without exact transaction-to-source-row mappings', async () => {
     const rows = buildCsvImportEvidenceGeneration({
       sourceIdentityId: 'hash-1', parserId: 'binance', parsedBeforeDedup: 5, savedAfterDedup: 3,
