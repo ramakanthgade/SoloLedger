@@ -738,6 +738,39 @@ describe('connection workspace model', () => {
     expect(Object.isFrozen(workspace.scopes[0].authority.diagnostics)).toBe(true);
   });
 
+  it('preserves empty-source ownership, scope status, and history on the optimized path', () => {
+    const source = {
+      kind: 'exchange-api' as const, sourceIdentityId: 'empty-1', exchange: 'kraken', createdAt: 50,
+      transactionIds: []
+    };
+    const base: ConnectionWorkspaceInput = {
+      id: 'exchange:empty-1', kind: 'exchange-api', sources: [source],
+      scopes: [
+        { scopeId: 'exchange:empty-1', accountClass: 'spot', scopeStatus: 'resolved' },
+        { scopeId: 'exchange:empty-1', accountClass: 'margin', scopeStatus: 'unresolved' }
+      ],
+      transactions: [], exchangeConnections: [{ id: 'empty-1', exchange: 'kraken' }],
+      openingBalances: [], snapshots: [], assets: [], sourceCoverage: [], now: NOW
+    };
+    const metrics: ConnectionWorkspaceMetrics = {
+      coverageAssociationVisits: 0, authoritySnapshotIndexVisits: 0,
+      authorityAssetIndexVisits: 0, authoritySelectorSnapshotVisits: 0,
+      authoritySelectorAssetVisits: 0, postingAssetIndexVisits: 0,
+      openingAssetIndexVisits: 0, authorityLabelIndexVisits: 0
+    };
+
+    const optimized = buildConnectionWorkspaceSnapshot(base);
+    const reference = buildConnectionWorkspaceSnapshot({ ...base, metrics });
+
+    expect(optimized).toEqual(reference);
+    expect(optimized.evidenceOwners).toEqual([
+      { kind: 'exchange-api', sourceIdentityId: 'empty-1' }
+    ]);
+    expect(optimized.syncHistory).toHaveLength(1);
+    expect(Object.isFrozen(optimized)).toBe(true);
+    expect(Object.isFrozen(source)).toBe(false);
+  });
+
   it('omits a delta when selected authority has duplicate canonical asset evidence', () => {
     const workspace = buildConnectionWorkspaceSnapshot({
       id: 'exchange:conn-1', kind: 'exchange-api',
@@ -803,6 +836,71 @@ describe('connection workspace model', () => {
     });
     expect(workspace.reconciliation.find((row) => row.assetKey === 'asset:ETH')?.reconciliation)
       .toMatchObject({ authorityStatus: 'non_comparable', balanceStatus: 'not_compared' });
+  });
+
+  it('applies duplicate-authority fallback to initial prepared reuse and clock refreshes', () => {
+    const duplicate = snapshot({ snapshotId: 'snap-duplicate' });
+    const prepared = prepareConnectionWorkspaceFromCard({
+      card: exchangeCard(), transactions: [tx()],
+      exchangeConnections: [{ id: 'conn-1', exchange: 'binance' }], openingBalances: [],
+      snapshots: [snapshot(), duplicate], assets: [
+        authorityAsset({ quantity: 9 }),
+        authorityAsset({ id: 'duplicate-btc', snapshotId: 'snap-duplicate', quantity: 7 })
+      ],
+      sourceCoverage: [], now: NOW
+    });
+
+    const initial = buildPreparedConnectionWorkspace(prepared, NOW);
+    const refreshed = buildPreparedConnectionWorkspace(prepared, NOW + 60_000);
+    for (const workspace of [initial, refreshed]) {
+      expect(workspace.scopes.find((row) => row.accountClass === 'spot')?.authority.status)
+        .toBe('non_comparable');
+      expect(workspace.overview.holdings.find((row) => row.assetKey === 'asset:BTC'))
+        .toMatchObject({
+          quantity: 1,
+          sourceVerification: [expect.objectContaining({
+            authorityStatus: 'non_comparable', fallbackReason: 'non_comparable_authority'
+          })]
+        });
+    }
+    expect(initial.overview.holdings).toEqual(refreshed.overview.holdings);
+  });
+
+  it('merges indexed source scope status independent of transaction order', () => {
+    const deletedSourceEvidence = {
+      kind: 'deleted_exchange_source' as const, sourceIdentityId: 'conn-1',
+      transactionId: 'old-api', source: 'kraken_api', apiIdentity: 'kraken:old-api', deletedAt: 99
+    };
+    const resolvedImport = tx({ id: 'resolved-import', source: 'kraken_api', importBatchId: 'conn-1' });
+    const deletedImport = tx({
+      id: 'deleted-import', source: 'kraken_api', importBatchId: 'conn-1', deletedSourceEvidence
+    });
+    const resolvedManual = tx({
+      id: 'resolved-manual', source: 'manual', importBatchId: undefined,
+      parserAccountClass: 'spot',
+      dedupMatchedApiRow: tx({ id: 'api-twin', source: 'kraken_api', importBatchId: 'conn-1' })
+    });
+    const deletedManual = tx({
+      id: 'deleted-manual', source: 'manual', importBatchId: undefined,
+      parserAccountClass: 'spot', deletedSourceEvidence
+    });
+    const buildIndex = (transactions: Transaction[]) => prepareConnectionWorkspaceCollectionIndex({
+      transactions, exchangeConnections: [{ id: 'conn-1', exchange: 'kraken' }],
+      openingBalances: [], snapshots: [], assets: [], sourceCoverage: []
+    });
+
+    for (const transactions of [
+      [deletedImport, resolvedImport, deletedManual, resolvedManual],
+      [resolvedManual, deletedManual, resolvedImport, deletedImport]
+    ]) {
+      const index = buildIndex(transactions);
+      expect(index.scopesByImport.get('conn-1')).toEqual([{
+        scopeId: 'exchange:conn-1', accountClass: 'spot', scopeStatus: 'source_deleted'
+      }]);
+      expect(index.manualScopes).toEqual([{
+        scopeId: 'exchange:conn-1', accountClass: 'spot', scopeStatus: 'source_deleted'
+      }]);
+    }
   });
 
   it('indexes a large evidence fixture once and passes only scoped candidates to the selector', () => {

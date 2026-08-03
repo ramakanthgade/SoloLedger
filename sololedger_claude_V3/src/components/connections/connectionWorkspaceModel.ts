@@ -87,6 +87,8 @@ export interface ConnectionWorkspaceInput {
   metrics?: ConnectionWorkspaceMetrics;
   /** Immutable transaction/posting work reused when only `now` changes. */
   preparedProjection?: HoldingsProjection;
+  /** The prepared projection is complete, rather than posting-only, at this exact clock. */
+  preparedProjectionAt?: number;
 }
 
 export interface ConnectionWorkspaceMetrics {
@@ -219,6 +221,10 @@ function assetKey(scopeId: string, accountClass: AccountClass, canonicalAssetKey
   return `${scopeKey(scopeId, accountClass)}${KEY_SEPARATOR}${canonicalAssetKey}`;
 }
 
+function scopeStatusRank(status: ScopeStatus): number {
+  return status === 'source_deleted' ? 2 : status === 'unresolved' ? 1 : 0;
+}
+
 function authorityAssetEvidenceKey(
   snapshotId: string,
   generation: number,
@@ -241,11 +247,12 @@ function authorityAssociationKey(
 
 function uniqueScopes(scopes: readonly ConnectionWorkspaceScopeIdentity[]): ConnectionWorkspaceScopeIdentity[] {
   const result = new Map<string, ConnectionWorkspaceScopeIdentity>();
-  const rank = (status: ScopeStatus) => status === 'source_deleted' ? 2 : status === 'unresolved' ? 1 : 0;
   for (const scope of scopes) {
     const key = scopeKey(scope.scopeId, scope.accountClass);
     const current = result.get(key);
-    if (!current || rank(scope.scopeStatus) > rank(current.scopeStatus)) result.set(key, { ...scope });
+    if (!current || scopeStatusRank(scope.scopeStatus) > scopeStatusRank(current.scopeStatus)) {
+      result.set(key, { ...scope });
+    }
   }
   return [...result.values()].sort((left, right) =>
     left.scopeId.localeCompare(right.scopeId) || left.accountClass.localeCompare(right.accountClass));
@@ -422,6 +429,83 @@ function hasDuplicateLogicalAuthorityCapture(snapshots: readonly AuthoritySnapsh
   return false;
 }
 
+function duplicateAuthorityScopes(
+  scopes: readonly ConnectionWorkspaceScopeIdentity[],
+  snapshotsByScope: ReadonlyMap<string, readonly AuthoritySnapshotRow[]>
+): ReadonlyArray<Readonly<{ scopeId: string; accountClass: AccountClass }>> {
+  return scopes.filter((scope) => hasDuplicateLogicalAuthorityCapture(
+    snapshotsByScope.get(scopeKey(scope.scopeId, scope.accountClass)) ?? []
+  )).map(({ scopeId, accountClass }) => ({ scopeId, accountClass }));
+}
+
+const EMPTY_WORKSPACE_ROWS = Object.freeze([]) as never[];
+const EMPTY_WORKSPACE_BREAKDOWN = Object.freeze({
+  deposits: 0, withdrawals: 0, trades: 0, other: 0
+});
+const EMPTY_SCOPE_PRESENTATION = Object.freeze({
+  resolved: deepFreeze(deriveReconPresentation({
+    scopeId: '', accountClass: 'spot', assetKey: '', asset: '',
+    balanceStatus: 'not_compared', authorityStatus: 'missing', coverageStatus: 'unknown',
+    scopeStatus: 'resolved', postingEvidenceCount: 0, authorityEvidenceCount: 0
+  })),
+  unresolved: deepFreeze(deriveReconPresentation({
+    scopeId: '', accountClass: 'spot', assetKey: '', asset: '',
+    balanceStatus: 'not_compared', authorityStatus: 'missing', coverageStatus: 'unknown',
+    scopeStatus: 'unresolved', postingEvidenceCount: 0, authorityEvidenceCount: 0
+  })),
+  source_deleted: deepFreeze(deriveReconPresentation({
+    scopeId: '', accountClass: 'spot', assetKey: '', asset: '',
+    balanceStatus: 'not_compared', authorityStatus: 'missing', coverageStatus: 'unknown',
+    scopeStatus: 'source_deleted', postingEvidenceCount: 0, authorityEvidenceCount: 0
+  }))
+} satisfies Record<ScopeStatus, ReconPresentation>);
+
+function buildEvidenceEmptyWorkspace(
+  input: ConnectionWorkspaceInput,
+  scopes: readonly ConnectionWorkspaceScopeIdentity[]
+): ConnectionWorkspaceSnapshot {
+  const scopeViews = scopes.map((scope): ConnectionWorkspaceScopeView => {
+    const key = scopeKey(scope.scopeId, scope.accountClass);
+    const scopePresentation = EMPTY_SCOPE_PRESENTATION[scope.scopeStatus];
+    return {
+      kind: 'scope', key, scopeId: scope.scopeId, accountClass: scope.accountClass,
+      scopeStatus: scope.scopeStatus,
+      authority: {
+        status: 'missing', selectedAssets: EMPTY_WORKSPACE_ROWS, diagnostics: EMPTY_WORKSPACE_ROWS
+      },
+      coverage: { kind: 'missing', status: 'unknown' },
+      presentation: scopePresentation, scopePresentation, assets: EMPTY_WORKSPACE_ROWS
+    };
+  });
+  scopeViews.sort(comparePresentation);
+  const sources = input.sources.map((source) => ({
+    ...source,
+    transactionIds: source.transactionIds && [...source.transactionIds]
+  })) as ConnectionWorkspaceSourceIdentity[];
+  const contributingSourceIds = new Set(sources.map((source) => source.sourceIdentityId));
+  return deepFreeze({
+    id: input.id,
+    kind: input.kind,
+    sources,
+    evidenceOwners: sources.map((source): ConnectionWorkspaceEvidenceOwner => source.kind === 'wallet'
+      ? {
+          kind: 'wallet', sourceIdentityId: source.sourceIdentityId,
+          chain: source.chain, address: source.address
+        }
+      : { kind: source.kind, sourceIdentityId: source.sourceIdentityId }),
+    scopes: scopeViews,
+    overview: {
+      holdings: EMPTY_WORKSPACE_ROWS, slices: EMPTY_WORKSPACE_ROWS,
+      postingCount: 0, transactionCount: 0, evidenceCount: 0,
+      transactionBreakdown: EMPTY_WORKSPACE_BREAKDOWN
+    },
+    reconciliation: EMPTY_WORKSPACE_ROWS,
+    syncHistory: historyEvents(sources, [], [], [], contributingSourceIds),
+    generatedAt: input.now,
+    comparisonAt: input.comparisonAt
+  });
+}
+
 function indexValue<K, V>(map: Map<K, V[]>, key: K, value: V): void {
   const rows = map.get(key);
   if (rows) rows.push(value);
@@ -436,14 +520,19 @@ function indexValue<K, V>(map: Map<K, V[]>, key: K, value: V): void {
  */
 export function buildConnectionWorkspaceSnapshot(input: ConnectionWorkspaceInput): ConnectionWorkspaceSnapshot {
   const scopes = uniqueScopes(input.scopes);
+  if (
+    input.metrics == null && input.transactions.length === 0 && input.openingBalances.length === 0 &&
+    input.snapshots.length === 0 && input.assets.length === 0 && input.sourceCoverage.length === 0
+  ) return buildEvidenceEmptyWorkspace(input, scopes);
   const selectedScopeKeys = new Set(scopes.map((scope) => scopeKey(scope.scopeId, scope.accountClass)));
   const coverage = projectCoverage(input.sourceCoverage, input.exchangeConnections, input.metrics);
   const evidenceIndexes = buildEvidenceIndexes(input.snapshots, input.assets, coverage, input.metrics);
-  const nonComparableAuthorityScopes = scopes.filter((scope) =>
-    hasDuplicateLogicalAuthorityCapture(
-      evidenceIndexes.snapshotsByScope.get(scopeKey(scope.scopeId, scope.accountClass)) ?? []
-    )).map(({ scopeId, accountClass }) => ({ scopeId, accountClass }));
-  const projection = buildHoldingsProjection({
+  const nonComparableAuthorityScopes = duplicateAuthorityScopes(
+    scopes, evidenceIndexes.snapshotsByScope
+  );
+  const projection = input.preparedProjection && input.preparedProjectionAt === input.now
+    ? input.preparedProjection
+    : buildHoldingsProjection({
     transactions: input.transactions,
     exchangeConnections: input.exchangeConnections,
     openingBalances: input.openingBalances,
@@ -461,7 +550,7 @@ export function buildConnectionWorkspaceSnapshot(input: ConnectionWorkspaceInput
       get postingDerivationCount() { return input.metrics!.postingDerivationCount ?? 0; },
       set postingDerivationCount(value: number) { input.metrics!.postingDerivationCount = value; }
     }
-  });
+    });
   const postingsByAsset = new Map<string, DerivedPosting[]>();
   const assetLabelsByScope = new Map<string, Map<string, string>>();
   const openingsByAsset = new Map<string, OpeningBalanceRow[]>();
@@ -718,10 +807,12 @@ export interface ConnectionWorkspaceCardAdapterInput {
 
 export interface ConnectionWorkspaceCollectionIndex {
   attribution: AttributionIndex;
-  transactionById: ReadonlyMap<string, Transaction>;
   transactionIdsByImport: ReadonlyMap<string, readonly string[]>;
   transactionIdsByWallet: ReadonlyMap<string, readonly string[]>;
   manualTransactionIds: readonly string[];
+  scopesByImport: ReadonlyMap<string, readonly ConnectionWorkspaceScopeIdentity[]>;
+  scopesByWallet: ReadonlyMap<string, readonly ConnectionWorkspaceScopeIdentity[]>;
+  manualScopes: readonly ConnectionWorkspaceScopeIdentity[];
   transactionsByScope: ReadonlyMap<string, readonly Transaction[]>;
   coverageBySource: ReadonlyMap<string, readonly SourceCoverageRow[]>;
   coverageByScope: ReadonlyMap<string, readonly SourceCoverageRow[]>;
@@ -735,8 +826,9 @@ export interface ConnectionWorkspaceCollectionIndex {
 }
 
 export interface PreparedConnectionWorkspace {
-  readonly input: Omit<ConnectionWorkspaceInput, 'now' | 'preparedProjection'>;
-  readonly projection: HoldingsProjection;
+  readonly input: Omit<ConnectionWorkspaceInput, 'now' | 'preparedProjection' | 'preparedProjectionAt'>;
+  readonly projection?: HoldingsProjection;
+  readonly projectionAt: number;
 }
 
 export interface AttributionIndex {
@@ -745,26 +837,77 @@ export interface AttributionIndex {
 }
 
 function appendMap<K, V>(map: Map<K, V[]>, key: K, value: V): void {
-  const rows = map.get(key) ?? [];
-  rows.push(value);
-  map.set(key, rows);
+  const rows = map.get(key);
+  if (rows) rows.push(value);
+  else map.set(key, [value]);
+}
+
+function appendSourceScope(
+  map: Map<string, Map<string, ConnectionWorkspaceScopeIdentity>>,
+  sourceId: string,
+  scope: ConnectionWorkspaceScopeIdentity
+): void {
+  let scopes = map.get(sourceId);
+  if (!scopes) {
+    scopes = new Map();
+    map.set(sourceId, scopes);
+  }
+  const key = scopeKey(scope.scopeId, scope.accountClass);
+  const current = scopes.get(key);
+  if (!current || scopeStatusRank(scope.scopeStatus) > scopeStatusRank(current.scopeStatus)) {
+    scopes.set(key, scope);
+  }
+}
+
+function mergeScope(
+  scopes: Map<string, ConnectionWorkspaceScopeIdentity>,
+  scope: ConnectionWorkspaceScopeIdentity
+): void {
+  const key = scopeKey(scope.scopeId, scope.accountClass);
+  const current = scopes.get(key);
+  if (!current || scopeStatusRank(scope.scopeStatus) > scopeStatusRank(current.scopeStatus)) {
+    scopes.set(key, scope);
+  }
+}
+
+function sourceScopeArrays(
+  map: Map<string, Map<string, ConnectionWorkspaceScopeIdentity>>
+): Map<string, readonly ConnectionWorkspaceScopeIdentity[]> {
+  return new Map([...map].map(([sourceId, scopes]) => [sourceId, [...scopes.values()]]));
 }
 
 /** One linear attribution/evidence pass shared by every aggregate source card. */
 export function prepareConnectionWorkspaceCollectionIndex(input: Omit<ConnectionWorkspaceCardAdapterInput, 'card' | 'now' | 'collectionIndex'>): ConnectionWorkspaceCollectionIndex {
   const attribution = buildAttributionIndex(input.exchangeConnections, input.metrics);
-  const transactionById = new Map<string, Transaction>();
   const transactionIdsByImport = new Map<string, string[]>();
   const transactionIdsByWallet = new Map<string, string[]>();
   const manualTransactionIds: string[] = [];
+  const scopesByImport = new Map<string, Map<string, ConnectionWorkspaceScopeIdentity>>();
+  const scopesByWallet = new Map<string, Map<string, ConnectionWorkspaceScopeIdentity>>();
+  const manualScopes = new Map<string, ConnectionWorkspaceScopeIdentity>();
   const transactionsByScope = new Map<string, Transaction[]>();
   for (const transaction of input.transactions) {
-    transactionById.set(transaction.id, transaction);
     if (transaction.importBatchId) appendMap(transactionIdsByImport, transaction.importBatchId, transaction.id);
     if (transaction.dedupMatchedApiRow?.importBatchId) appendMap(transactionIdsByImport, transaction.dedupMatchedApiRow.importBatchId, transaction.id);
-    if (transaction.walletAddress) appendMap(transactionIdsByWallet, canonicalWalletIdentity(transaction.chain ?? '', transaction.walletAddress), transaction.id);
+    const walletIdentity = transaction.walletAddress
+      ? canonicalWalletIdentity(transaction.chain ?? '', transaction.walletAddress)
+      : undefined;
+    if (walletIdentity) appendMap(transactionIdsByWallet, walletIdentity, transaction.id);
     if (transaction.source === 'manual' && transaction.importBatchId == null) manualTransactionIds.push(transaction.id);
     const resolved = resolveForAttribution(transaction, input.exchangeConnections, attribution, input.metrics);
+    const scope = {
+      scopeId: resolved.accountScopeId,
+      accountClass: resolved.accountClass,
+      scopeStatus: resolved.scopeStatus
+    };
+    if (transaction.importBatchId) appendSourceScope(scopesByImport, transaction.importBatchId, scope);
+    if (transaction.dedupMatchedApiRow?.importBatchId) {
+      appendSourceScope(scopesByImport, transaction.dedupMatchedApiRow.importBatchId, scope);
+    }
+    if (walletIdentity) appendSourceScope(scopesByWallet, walletIdentity, scope);
+    if (transaction.source === 'manual' && transaction.importBatchId == null) {
+      mergeScope(manualScopes, scope);
+    }
     appendMap(transactionsByScope, scopeKey(resolved.accountScopeId, resolved.accountClass), transaction);
   }
   const coverageBySource = new Map<string, SourceCoverageRow[]>();
@@ -797,7 +940,14 @@ export function prepareConnectionWorkspaceCollectionIndex(input: Omit<Connection
       if (sourceId) appendMap(openingsByFileSource, sourceId, row);
     }
   }
-  return { attribution, transactionById, transactionIdsByImport, transactionIdsByWallet, manualTransactionIds, transactionsByScope, coverageBySource, coverageByScope, snapshotsBySource, snapshotsByScope, assetsBySnapshot, assetsByScope, openingsByScope, openingsByScopeId, openingsByFileSource };
+  return {
+    attribution, transactionIdsByImport, transactionIdsByWallet, manualTransactionIds,
+    scopesByImport: sourceScopeArrays(scopesByImport),
+    scopesByWallet: sourceScopeArrays(scopesByWallet),
+    manualScopes: [...manualScopes.values()], transactionsByScope,
+    coverageBySource, coverageByScope, snapshotsBySource, snapshotsByScope,
+    assetsBySnapshot, assetsByScope, openingsByScope, openingsByScopeId, openingsByFileSource
+  };
 }
 
 function buildAttributionIndex(
@@ -892,7 +1042,9 @@ function scopesFromCard(
   attribution: AttributionIndex
 ): ConnectionWorkspaceScopeIdentity[] {
   const sourceIds = new Set(sources.map((source) => source.sourceIdentityId));
-  const transactionIds = new Set(sources.flatMap((source) => [...(source.transactionIds ?? [])]));
+  const transactionIds = input.collectionIndex
+    ? undefined
+    : new Set(sources.flatMap((source) => [...(source.transactionIds ?? [])]));
   const scopes: ConnectionWorkspaceScopeIdentity[] = [];
   const projectedAuthorityKeys = new Set<string>();
   const sourceCoverageRows = input.collectionIndex
@@ -913,18 +1065,27 @@ function scopesFromCard(
       associated.accountClass
     ));
   }
-  const transactionsForSources = input.collectionIndex
-    ? [...transactionIds].map((id) => input.collectionIndex!.transactionById.get(id)).filter((row): row is Transaction => row != null)
-    : input.transactions;
-  for (const transaction of transactionsForSources) {
-    if (!input.collectionIndex && !transactionIds.has(transaction.id)) continue;
-    const resolved = resolveForAttribution(
+  if (input.collectionIndex) {
+    for (const source of sources) {
+      if (source.kind === 'exchange-api' || source.kind === 'file') {
+        scopes.push(...(input.collectionIndex.scopesByImport.get(source.sourceIdentityId) ?? []));
+      } else if (source.kind === 'wallet') {
+        scopes.push(...(input.collectionIndex.scopesByWallet.get(
+          canonicalWalletIdentity(source.chain, source.address)
+        ) ?? []));
+      } else {
+        scopes.push(...input.collectionIndex.manualScopes);
+      }
+    }
+  } else for (const transaction of input.transactions) {
+    if (!transactionIds!.has(transaction.id)) continue;
+    const attributed = resolveForAttribution(
       transaction, input.exchangeConnections, attribution, input.metrics
     );
     scopes.push({
-      scopeId: resolved.accountScopeId,
-      accountClass: resolved.accountClass,
-      scopeStatus: resolved.scopeStatus
+      scopeId: attributed.accountScopeId,
+      accountClass: attributed.accountClass,
+      scopeStatus: attributed.scopeStatus
     });
   }
   for (const row of sourceCoverageRows) {
@@ -1053,7 +1214,7 @@ export function prepareConnectionWorkspaceFromCard(
     // custody evidence, and differing per-class instants cannot be synthesized.
     if (authorityTimes.size === 1) comparisonAt = [...authorityTimes][0];
   }
-  const preparedInput: Omit<ConnectionWorkspaceInput, 'now' | 'preparedProjection'> = {
+  const preparedInput: Omit<ConnectionWorkspaceInput, 'now' | 'preparedProjection' | 'preparedProjectionAt'> = {
     id: input.card.id,
     kind: input.card.kind,
     sources,
@@ -1067,22 +1228,39 @@ export function prepareConnectionWorkspaceFromCard(
     comparisonAt,
     metrics: input.metrics
   };
-  const projection = buildHoldingsProjection({
-    transactions: selectedTransactions,
-    exchangeConnections: input.exchangeConnections,
-    openingBalances: selectedOpenings,
-    snapshots: selectedSnapshots,
-    assets: selectedAssets,
-    coverage: selectedCoverage,
-    now: input.now,
-    comparisonAt,
-    scopeFilter: { scopePairs: scopes.map(({ scopeId, accountClass }) => ({ scopeId, accountClass })) },
-    metrics: input.metrics && {
-      get postingDerivationCount() { return input.metrics!.postingDerivationCount ?? 0; },
-      set postingDerivationCount(value: number) { input.metrics!.postingDerivationCount = value; }
-    }
-  });
-  return { input: preparedInput, projection };
+  // Duplicate logical captures must constrain the very first projection too;
+  // otherwise same-clock reuse could briefly trust conflicting authority.
+  const nonComparableAuthorityScopes = selectedSnapshots.length < 2
+    ? []
+    : duplicateAuthorityScopes(
+        scopes,
+        buildEvidenceIndexes(
+          selectedSnapshots,
+          selectedAssets,
+          projectCoverage(selectedCoverage, input.exchangeConnections)
+        ).snapshotsByScope
+      );
+  const projection = input.metrics == null && selectedTransactions.length === 0 &&
+    selectedOpenings.length === 0 && selectedSnapshots.length === 0 &&
+    selectedAssets.length === 0 && selectedCoverage.length === 0
+    ? undefined
+    : buildHoldingsProjection({
+        transactions: selectedTransactions,
+        exchangeConnections: input.exchangeConnections,
+        openingBalances: selectedOpenings,
+        snapshots: selectedSnapshots,
+        assets: selectedAssets,
+        coverage: selectedCoverage,
+        now: input.now,
+        comparisonAt,
+        scopeFilter: { scopePairs: scopes.map(({ scopeId, accountClass }) => ({ scopeId, accountClass })) },
+        nonComparableAuthorityScopes,
+        metrics: input.metrics && {
+          get postingDerivationCount() { return input.metrics!.postingDerivationCount ?? 0; },
+          set postingDerivationCount(value: number) { input.metrics!.postingDerivationCount = value; }
+        }
+      });
+  return { input: preparedInput, projection, projectionAt: input.now };
 }
 
 export function buildPreparedConnectionWorkspace(
@@ -1092,7 +1270,8 @@ export function buildPreparedConnectionWorkspace(
   return buildConnectionWorkspaceSnapshot({
     ...prepared.input,
     now,
-    preparedProjection: prepared.projection
+    preparedProjection: prepared.projection,
+    preparedProjectionAt: prepared.projectionAt
   });
 }
 
