@@ -75,6 +75,42 @@ describe('selectAuthoritySnapshot', () => {
     }).authorityStatus).toBe('non_comparable');
   });
 
+  it('retains coherent untimestamped CSV rows as explicitly non-comparable reconstructed evidence', () => {
+    const csv = snapshot({
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', asOf: undefined,
+      endpointProof: csvProof()
+    });
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [csv], assets: [asset()], now: NOW
+    })).toMatchObject({
+      authorityStatus: 'non_comparable', selectedSnapshot: { snapshotId: 's1' },
+      selectedAssets: [expect.objectContaining({ asset: 'BTC' })]
+    });
+  });
+
+  it('lets untimestamped reconstruction evidence outrank stale API, but not current API', () => {
+    const reconstructed = snapshot({
+      snapshotId: 'csv', generation: 2, authorityKind: 'csv', authorityClass: 'journal_final_balance',
+      asOf: undefined, capturedAt: NOW, endpointProof: csvProof()
+    });
+    const reconstructedAsset = asset({ snapshotId: 'csv', generation: 2, quantity: 0.5 });
+    const stale = selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot',
+      snapshots: [snapshot({ asOf: NOW - 86_400_001 }), reconstructed],
+      assets: [asset(), reconstructedAsset], now: NOW
+    });
+    expect(stale).toMatchObject({
+      authorityStatus: 'non_comparable', selectedSnapshot: { snapshotId: 'csv' },
+      selectedAssets: [expect.objectContaining({ quantity: 0.5 })]
+    });
+
+    const current = selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot(), reconstructed],
+      assets: [asset(), reconstructedAsset], now: NOW
+    });
+    expect(current).toMatchObject({ authorityStatus: 'current', selectedSnapshot: { snapshotId: 's1' } });
+  });
+
   it('accepts an empty generation as confirmed zero only with exhaustive proof', () => {
     expect(selectAuthoritySnapshot({
       scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot()], assets: [], now: NOW

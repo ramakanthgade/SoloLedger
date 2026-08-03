@@ -190,6 +190,21 @@ beforeEach(() => {
 });
 
 describe('FileImportFlow — multi-file batch handling', () => {
+  it('shows reading feedback before a deferred large-file parser begins producing results', async () => {
+    let resolveParse!: (value: ReturnType<typeof recognized>) => void;
+    mocks.parseImportFile.mockImplementation(() => new Promise((resolve) => { resolveParse = resolve; }));
+    const { container } = render(<FileImportFlow />);
+
+    fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [makeFile('large-binance.csv', 'many rows')] }
+    });
+
+    expect(await screen.findByText('Reading and checking your file…')).toBeInTheDocument();
+    await waitFor(() => expect(mocks.parseImportFile).toHaveBeenCalledTimes(1));
+    await act(async () => resolveParse(recognized(1, 'large-binance.csv')));
+    await screen.findByText(/Saved 1 transaction to your local database/);
+  });
+
   it('F4: the browse input accepts multiple files and imports them all', async () => {
     mocks.parseImportFile.mockImplementation(async (file: File) =>
       recognized(file.name === 'one.csv' ? 1 : 2, file.name)

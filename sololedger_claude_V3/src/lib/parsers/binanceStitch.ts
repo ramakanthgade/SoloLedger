@@ -47,10 +47,24 @@ export function stitchBinanceTransactionHistory(rows: Record<string, string>[]):
   const coveredAccountClasses = [...new Set(normalized.map((row) => accountClassOf(row.account)))];
   const classes = coveredAccountClasses.length > 0 ? coveredAccountClasses : ['unknown' as const];
   if (malformedCount > 0 && !classes.includes('unknown')) classes.push('unknown');
+  // Keep the reconstructed journal ending quantities in their exact custody
+  // classes. Binance's export does not timestamp an absolute balance, so these
+  // deliberately remain non-comparable evidence rather than being promoted to
+  // a fabricated current snapshot. Consumers may label a structurally complete
+  // class as a reconstructed journal balance while reconciliation stays open.
+  const finalBalanceSnapshots = classes.flatMap((accountClass) => {
+    if (accountClass === 'options' || accountClass === 'unknown') return [];
+    const classRows = normalized.filter((row) => accountClassOf(row.account) === accountClass);
+    if (classRows.length === 0) return [];
+    const balances: Record<string, number> = {};
+    for (const row of classRows) balances[row.coin] = (balances[row.coin] ?? 0) + row.change;
+    return [{ accountClass, balances }];
+  });
   return {
     ...result,
     sourceRowAccounting,
     evidence: {
+      finalBalanceSnapshots,
       coveredAccountClasses: classes,
       requiredOutcomes: classes.map((accountClass) => {
         const classRows = sourceRowAccounting.filter((row) => row.accountClass === accountClass);

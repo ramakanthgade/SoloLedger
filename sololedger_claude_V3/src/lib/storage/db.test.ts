@@ -692,6 +692,13 @@ describe('v11 file and wallet source deletion', () => {
       lotConsumption: [{ lotId: 'owned-lot', amount: 1, costBasis: 1 }],
       sourceTxId: 'owned-tx', method: 'FIFO'
     });
+    await db.disposals.put({
+      id: 'dependent-disposal', asset: 'BTC', disposedAt: 3, amount: 1, proceeds: 3,
+      costBasis: 1, gain: 2, holdingPeriodDays: 0,
+      lotConsumption: [{ lotId: 'owned-lot', amount: 1, costBasis: 1 }],
+      sourceTxId: 'surviving-tx', method: 'FIFO'
+    });
+    await db.specIdHints.put({ txId: 'surviving-tx', preferredLotIds: ['owned-lot', 'other-lot'] });
 
     const deleted = kind === 'csv'
       ? await deleteCsvImportAndTransactions(sourceId)
@@ -701,5 +708,38 @@ describe('v11 file and wallet source deletion', () => {
       db.transactions.count(), db.authoritySnapshots.count(), db.authorityAssets.count(),
       db.sourceCoverage.count(), db.openingBalances.count(), db.lots.count(), db.disposals.count()
     ])).toEqual([0, 0, 0, 0, 0, 0, 0]);
+    expect(await db.specIdHints.get('surviving-tx')).toEqual({
+      txId: 'surviving-tx', preferredLotIds: ['other-lot']
+    });
   });
+
+  it('atomically removes a large CSV import without oversized IndexedDB key queries', async () => {
+    const sourceId = 'large-csv';
+    // fake-indexeddb is orders of magnitude slower than Chromium IndexedDB;
+    // this still crosses multiple 500-key cleanup batches deterministically.
+    const transactions: Transaction[] = Array.from({ length: 2_800 }, (_, index) => ({
+      id: `large-${index}`,
+      timestamp: index + 1,
+      type: 'transfer_in',
+      asset: 'USDT',
+      amount: 1,
+      fiatCurrency: 'USD',
+      source: 'binance',
+      importBatchId: sourceId,
+      flags: [],
+      isInternalTransfer: false
+    }));
+    await db.csvImports.put({
+      id: sourceId,
+      fileName: 'large-history.csv',
+      importedAt: 1,
+      txCount: transactions.length,
+      parserId: 'binance'
+    });
+    await db.transactions.bulkAdd(transactions);
+
+    expect(await deleteCsvImportAndTransactions(sourceId)).toBe(transactions.length);
+    expect(await db.transactions.where('importBatchId').equals(sourceId).count()).toBe(0);
+    expect(await db.csvImports.get(sourceId)).toBeUndefined();
+  }, 20_000);
 });

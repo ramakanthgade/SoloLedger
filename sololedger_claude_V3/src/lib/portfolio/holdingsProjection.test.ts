@@ -118,6 +118,70 @@ describe('buildHoldingsProjection', () => {
     expect(result.holdings[0]).toMatchObject({ quantity: 10, verificationStatus: 'mixed' });
   });
 
+  it('uses production-shaped Binance API Spot over linked reconstructed CSV and keeps Options additive', () => {
+    const csvSpot = snapshot({
+      snapshotId: 'csv-spot', scopeId: 'file:history:spot', sourceIdentityId: 'history',
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', asOf: undefined,
+      endpointProof: proof({
+        authorityKind: 'csv', provider: 'binance', operation: 'parser_final_balance',
+        parametersClass: 'parser_final_balance_without_source_timestamp'
+      })
+    });
+    const csvOptions = snapshot({
+      snapshotId: 'csv-options', scopeId: 'file:options:options', sourceIdentityId: 'options',
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', accountClass: 'options',
+      coveredAccountClasses: ['options'], asOf: undefined,
+      endpointProof: proof({
+        authorityKind: 'csv', provider: 'binance_options', operation: 'parser_final_balance',
+        parametersClass: 'parser_final_balance_without_source_timestamp',
+        requestedAccountClasses: ['options'], provenAccountClasses: ['options']
+      })
+    });
+    const csvCoverage = (id: string, scopeId: string, sourceIdentityId: string,
+      accountClass: 'spot' | 'options', authoritySnapshotId: string, parserId: string): SourceCoverageRow => ({
+      id, generation: 1, scopeId, sourceIdentityId, evidenceId: `${id}-evidence`, kind: 'csv',
+      accountClasses: [accountClass], endpoints: ['history'], authoritySnapshotId,
+      startedAt: 0, completedAt: NOW, status: 'unknown', parserId, supportedParser: true,
+      requiredSheets: ['history'], presentSheets: ['history'], recognizedCount: 1, parsedCount: 1,
+      dedupedCount: 0, excludedCount: 0, skippedCount: 0, failedCount: 0,
+      endpointOutcomes: [{ endpoint: 'history', parserId, accountClass, required: true, status: 'complete' }]
+    });
+    const result = buildHoldingsProjection(input({
+      // This is the persisted production source shape, including the real
+      // connection id carried in importBatchId.
+      transactions: [
+        apiTx({ id: 'api-btc-history', asset: 'BTC', amount: 0.0200048 }),
+        apiTx({ id: 'api-eth-history', asset: 'ETH', amount: 0.067678 }),
+        tx({ id: 'options-transfer', source: 'binance_options', importBatchId: 'options',
+          parserAccountClass: 'options', asset: 'USDT', amount: 500, isInternalTransfer: true })
+      ],
+      snapshots: [snapshot(), csvSpot, csvOptions],
+      assets: [
+        authorityAsset({ quantity: 0.00000049 }),
+        authorityAsset({ id: 'csv-btc', snapshotId: 'csv-spot', scopeId: 'file:history:spot', quantity: 0.00000049 }),
+        authorityAsset({ id: 'csv-eth', snapshotId: 'csv-spot', scopeId: 'file:history:spot', assetKey: 'asset:ETH', asset: 'ETH', quantity: 0 }),
+        authorityAsset({ id: 'options-usdt', snapshotId: 'csv-options', scopeId: 'file:options:options',
+          accountClass: 'options', assetKey: 'asset:USDT', asset: 'USDT', quantity: 119.5193 })
+      ],
+      coverage: [
+        coverage(),
+        csvCoverage('csv-spot-coverage', 'file:history:spot', 'history', 'spot', 'csv-spot', 'binance'),
+        csvCoverage('csv-options-coverage', 'file:options:options', 'options', 'options', 'csv-options', 'binance_options')
+      ]
+    }));
+
+    expect(result.slices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scopeId: 'exchange:c1', accountClass: 'spot', asset: 'BTC', quantity: 0.00000049,
+        verificationStatus: 'verified_authority', selectedSnapshotId: 's1' }),
+      expect.objectContaining({ scopeId: 'exchange:c1', accountClass: 'spot', asset: 'ETH', quantity: 0,
+        verificationStatus: 'verified_authority', selectedSnapshotId: 's1' }),
+      expect.objectContaining({ scopeId: 'file:options:options', accountClass: 'options', asset: 'USDT',
+        postingQuantity: 500, quantity: 119.5193, verificationStatus: 'reconstructed_authority' })
+    ]));
+    expect(result.holdings.find((row) => row.asset === 'ETH')).toBeUndefined();
+    expect(result.holdings.find((row) => row.asset === 'USDT')).toMatchObject({ quantity: 119.5193 });
+  });
+
   it('uses exhaustive absence as a verified zero', () => {
     const result = buildHoldingsProjection(input({
       transactions: [apiTx({ asset: 'ETH' })], snapshots: [snapshot()], assets: [], coverage: [coverage()]

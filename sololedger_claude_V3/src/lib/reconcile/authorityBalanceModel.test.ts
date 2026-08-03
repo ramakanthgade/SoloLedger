@@ -100,6 +100,79 @@ describe('buildAuthorityBalanceModel', () => {
       .toMatchObject({ quantity: 2, fallbackReason: 'incomplete_coverage' });
   });
 
+  it('uses a structurally complete untimestamped CSV class as a reconstructed, non-current quantity', () => {
+    const csv = snapshot({
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', asOf: undefined,
+      scopeId: 'file:f:spot', sourceIdentityId: 'f',
+      endpointProof: proof({ authorityKind: 'csv', operation: 'journal', parametersClass: 'untimestamped' })
+    });
+    const csvAsset = authorityAsset({ scopeId: 'file:f:spot', quantity: 0 });
+    const csvCoverage = coverage({
+      scopeId: 'file:f:spot', sourceIdentityId: 'f', kind: 'csv', status: 'unknown',
+      parserId: 'binance', supportedParser: true, declaredCompleteHistory: undefined,
+      requiredSheets: ['journal'], presentSheets: ['journal'], recognizedCount: 1, parsedCount: 1,
+      dedupedCount: 0, excludedCount: 0, skippedCount: 0, failedCount: 0,
+      endpointOutcomes: [{
+        endpoint: 'history', parserId: 'binance', accountClass: 'spot', required: true, status: 'complete'
+      }]
+    });
+    expect(model({
+      postings: [posting({ accountScopeId: 'file:f:spot', signedQuantity: 12 })],
+      snapshots: [csv], assets: [csvAsset], coverage: [csvCoverage], exchangeConnections: [],
+      comparisonAt: undefined
+    })[0]).toMatchObject({
+      quantity: 0, postingQuantity: 12, authorityQuantity: 0,
+      authorityStatus: 'non_comparable', coverageStatus: 'unknown',
+      verificationStatus: 'reconstructed_authority', fallbackReason: 'non_comparable_authority'
+    });
+  });
+
+  it('never applies an untimestamped reconstructed ending balance to a historical comparison', () => {
+    const csv = snapshot({
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', asOf: undefined,
+      scopeId: 'file:f:spot', sourceIdentityId: 'f',
+      endpointProof: proof({ authorityKind: 'csv', operation: 'journal', parametersClass: 'untimestamped' })
+    });
+    const csvCoverage = coverage({
+      scopeId: 'file:f:spot', sourceIdentityId: 'f', kind: 'csv', status: 'unknown',
+      parserId: 'binance', supportedParser: true, declaredCompleteHistory: undefined,
+      requiredSheets: ['journal'], presentSheets: ['journal'], recognizedCount: 1, parsedCount: 1,
+      dedupedCount: 0, excludedCount: 0, skippedCount: 0, failedCount: 0,
+      endpointOutcomes: [{ endpoint: 'history', parserId: 'binance', accountClass: 'spot', required: true, status: 'complete' }]
+    });
+    expect(model({
+      postings: [posting({ accountScopeId: 'file:f:spot', signedQuantity: 12, effectiveAt: NOW - 10 })],
+      snapshots: [csv], assets: [authorityAsset({ scopeId: 'file:f:spot', quantity: 0 })],
+      coverage: [csvCoverage], exchangeConnections: [], comparisonAt: NOW - 1
+    })[0]).toMatchObject({ quantity: 12, verificationStatus: 'posting_fallback' });
+  });
+
+  it.each(['partial', 'failed'] as const)(
+    'rejects reconstructed authority when linked CSV coverage is %s',
+    (status) => {
+      const csv = snapshot({
+        authorityKind: 'csv', authorityClass: 'journal_final_balance', asOf: undefined,
+        scopeId: 'file:f:spot', sourceIdentityId: 'f',
+        endpointProof: proof({ authorityKind: 'csv', operation: 'journal', parametersClass: 'untimestamped' })
+      });
+      const csvCoverage = coverage({
+        scopeId: 'file:f:spot', sourceIdentityId: 'f', kind: 'csv', status,
+        parserId: 'binance', supportedParser: true, requiredSheets: ['journal'], presentSheets: ['journal'],
+        recognizedCount: 2, parsedCount: 1, dedupedCount: 0, excludedCount: 0, skippedCount: 1,
+        failedCount: status === 'failed' ? 1 : 0,
+        endpointOutcomes: [{
+          endpoint: 'history', parserId: 'binance', accountClass: 'spot', required: true,
+          status, skippedCount: 1, exclusionReasons: ['bad row'], failedCount: status === 'failed' ? 1 : undefined
+        }]
+      });
+      expect(model({
+        postings: [posting({ accountScopeId: 'file:f:spot', signedQuantity: 12 })], snapshots: [csv],
+        assets: [authorityAsset({ scopeId: 'file:f:spot', quantity: 0 })], coverage: [csvCoverage],
+        exchangeConnections: [], comparisonAt: undefined
+      })[0]).toMatchObject({ quantity: 12, verificationStatus: 'posting_fallback' });
+    }
+  );
+
   it('distinguishes exhaustive absence, non-exhaustive absence, and explicit zero', () => {
     const ethPosting = posting({ assetKey: 'asset:ETH', asset: 'ETH' });
     expect(model({ postings: [ethPosting], assets: [] })[0]).toMatchObject({ quantity: 0, authorityQuantity: 0 });
@@ -225,7 +298,7 @@ describe('buildAuthorityBalanceModel', () => {
     });
     const optionsSnapshot = snapshot({
       scopeId: 'file:f:options', authorityKind: 'csv', authorityClass: 'journal_final_balance', accountClass: 'options',
-      coveredAccountClasses: ['options'], endpointProof: optionsProof
+      coveredAccountClasses: ['options'], endpointProof: optionsProof, asOf: undefined
     });
     const optionsCoverage = coverage({
       scopeId: 'file:f:options', kind: 'csv', accountClasses: ['options'], parserId: 'binance_options',
@@ -236,8 +309,33 @@ describe('buildAuthorityBalanceModel', () => {
     });
     expect(model({
       postings: [posting({ accountScopeId: 'file:f:options', accountClass: 'options' })], snapshots: [optionsSnapshot],
-      assets: [authorityAsset({ scopeId: 'file:f:options', accountClass: 'options' })], coverage: [optionsCoverage]
-    })[0]).toMatchObject({ scopeId: 'file:f:options', quantity: 7 });
+      assets: [authorityAsset({ scopeId: 'file:f:options', accountClass: 'options' })], coverage: [optionsCoverage],
+      comparisonAt: undefined
+    })[0]).toMatchObject({
+      scopeId: 'file:f:options', quantity: 7, authorityStatus: 'non_comparable',
+      verificationStatus: 'reconstructed_authority'
+    });
+
+    const combined = model({
+      postings: [
+        posting({ accountScopeId: 'exchange:c1', accountClass: 'spot', assetKey: 'asset:USDT', asset: 'USDT' }),
+        posting({ id: 'options-posting', accountScopeId: 'file:f:options', accountClass: 'options', assetKey: 'asset:USDT', asset: 'USDT' })
+      ],
+      snapshots: [snapshot(), { ...optionsSnapshot, snapshotId: 'options-snapshot' }],
+      assets: [
+        authorityAsset({ assetKey: 'asset:USDT', asset: 'USDT', quantity: 5 }),
+        authorityAsset({
+          id: 'options-usdt', snapshotId: 'options-snapshot', scopeId: 'file:f:options',
+          accountClass: 'options', assetKey: 'asset:USDT', asset: 'USDT', quantity: 119.5193
+        })
+      ],
+      coverage: [coverage(), { ...optionsCoverage, id: 'options-coverage', authoritySnapshotId: 'options-snapshot' }],
+      comparisonAt: undefined
+    });
+    expect(combined).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scopeId: 'exchange:c1', accountClass: 'spot', quantity: 5, verificationStatus: 'verified_authority' }),
+      expect.objectContaining({ scopeId: 'file:f:options', accountClass: 'options', quantity: 119.5193, verificationStatus: 'reconstructed_authority' })
+    ]));
   });
 
   it('indexes thousands of adversarial scopes with linear posting visits', () => {

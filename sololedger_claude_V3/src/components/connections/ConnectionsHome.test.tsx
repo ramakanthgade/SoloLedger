@@ -269,6 +269,7 @@ function kebab(cardTitle: string, item: string | RegExp) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.deleteCsvImportAndTransactions.mockResolvedValue(undefined);
   mocks.connections.current = [];
   mocks.csvImports.current = [];
   mocks.wallets.current = [];
@@ -580,7 +581,11 @@ describe('ConnectionsHome — exchange actions', () => {
 });
 
 describe('ConnectionsHome — file actions', () => {
-  it('kebab Remove confirms then deletes the import and its transactions', async () => {
+  it('closes confirmation immediately and keeps durable progress until a large import is removed', async () => {
+    let finishRemoval!: () => void;
+    mocks.deleteCsvImportAndTransactions.mockImplementation(() => new Promise<void>((resolve) => {
+      finishRemoval = resolve;
+    }));
     mocks.csvImports.current = [csvImport()];
     render(<ConnectionsHome />);
     kebab('CoinDCX', /^remove$/i);
@@ -588,10 +593,22 @@ describe('ConnectionsHome — file actions', () => {
     expect(screen.getByText('Remove this import and its transactions?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove import' }));
 
-    await waitFor(() =>
-      expect(mocks.deleteCsvImportAndTransactions).toHaveBeenCalledWith('csv_1')
-    );
+    expect(screen.queryByText('Remove this import and its transactions?')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('file-removal-progress')).toHaveTextContent(/Removing coindcx-trades\.csv/);
+    expect(mocks.deleteCsvImportAndTransactions).toHaveBeenCalledWith('csv_1');
+    await act(async () => finishRemoval());
     expect(await screen.findByText('Import removed')).toBeInTheDocument();
+  });
+
+  it('surfaces an atomic removal failure and keeps the source actionable', async () => {
+    mocks.deleteCsvImportAndTransactions.mockRejectedValue(new Error('quota'));
+    mocks.csvImports.current = [csvImport()];
+    render(<ConnectionsHome />);
+    kebab('CoinDCX', /^remove$/i);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove import' }));
+
+    expect(await screen.findByText('Import could not be removed')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'CoinDCX actions' })).toBeEnabled();
   });
 });
 

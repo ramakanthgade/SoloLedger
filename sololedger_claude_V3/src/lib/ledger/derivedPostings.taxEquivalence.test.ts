@@ -117,6 +117,16 @@ function custodyProjectionEvidence(): Omit<HoldingsProjectionInput, 'transaction
       authorityKind: 'api', authorityClass: 'exchange_balance', accountClass: 'spot',
       coveredAccountClasses: ['spot'], asOf: now - DAY - 1, capturedAt: now - DAY - 1,
       sourceIdentityId: 'stale', endpointProof: authorityProof(), status: 'complete'
+    },
+    {
+      snapshotId: 'options-snapshot', generation: 1, scopeId: 'file:options-file:options',
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', accountClass: 'options',
+      coveredAccountClasses: ['options'], capturedAt: now, sourceIdentityId: 'options-file',
+      endpointProof: {
+        ...authorityProof(), authorityKind: 'csv', provider: 'binance_options',
+        operation: 'parser_final_balance', parametersClass: 'parser_final_balance_without_source_timestamp',
+        requestedAccountClasses: ['options'], provenAccountClasses: ['options']
+      }, status: 'complete'
     }
   ];
   const assets: AuthorityAssetRow[] = [
@@ -127,6 +137,11 @@ function custodyProjectionEvidence(): Omit<HoldingsProjectionInput, 'transaction
     {
       id: 'stale-sol', snapshotId: 'stale-snapshot', generation: 1, scopeId: 'exchange:stale',
       accountClass: 'spot', assetKey: 'asset:SOL', asset: 'SOL', quantity: 12
+    },
+    {
+      id: 'options-usdt', snapshotId: 'options-snapshot', generation: 1,
+      scopeId: 'file:options-file:options', accountClass: 'options',
+      assetKey: 'asset:USDT', asset: 'USDT', quantity: 119.5193
     }
   ];
   const coverage = (source: 'current' | 'stale', snapshotId: string, authorityAsOf: number): SourceCoverageRow => ({
@@ -159,7 +174,19 @@ function custodyProjectionEvidence(): Omit<HoldingsProjectionInput, 'transaction
     assets,
     coverage: [
       coverage('current', 'current-snapshot', now),
-      coverage('stale', 'stale-snapshot', now - DAY - 1)
+      coverage('stale', 'stale-snapshot', now - DAY - 1),
+      {
+        id: 'options-coverage', generation: 1, scopeId: 'file:options-file:options',
+        sourceIdentityId: 'options-file', evidenceId: 'options-journal', kind: 'csv',
+        accountClasses: ['options'], endpoints: ['history'], authoritySnapshotId: 'options-snapshot',
+        startedAt: 0, completedAt: now, status: 'unknown', parserId: 'binance_options',
+        supportedParser: true, requiredSheets: ['options'], presentSheets: ['options'],
+        recognizedCount: 1, parsedCount: 1, dedupedCount: 0, excludedCount: 0,
+        skippedCount: 0, failedCount: 0, endpointOutcomes: [{
+          endpoint: 'history', parserId: 'binance_options', accountClass: 'options',
+          required: true, status: 'complete'
+        }]
+      }
     ],
     now
   });
@@ -639,6 +666,9 @@ describe('custody projection tax boundary', () => {
     const staleSol = projection.slices.find((slice) =>
       slice.scopeId === 'exchange:stale' && slice.assetKey === 'asset:SOL'
     );
+    const reconstructedOptions = projection.slices.find((slice) =>
+      slice.scopeId === 'file:options-file:options' && slice.assetKey === 'asset:USDT'
+    );
 
     expect(currentAda).toMatchObject({
       postingQuantity: 7,
@@ -658,6 +688,14 @@ describe('custody projection tax boundary', () => {
       authorityStatus: 'stale',
       coverageStatus: 'complete',
       selectedSnapshotId: 'stale-snapshot'
+    });
+    expect(reconstructedOptions).toMatchObject({
+      postingQuantity: 0,
+      authorityQuantity: 119.5193,
+      quantity: 119.5193,
+      verificationStatus: 'reconstructed_authority',
+      authorityStatus: 'non_comparable',
+      selectedSnapshotId: 'options-snapshot'
     });
     expect(projection.postings.some((posting) =>
       posting.role === 'opening_balance' && posting.evidence.some((row) => row.kind === 'opening_balance')

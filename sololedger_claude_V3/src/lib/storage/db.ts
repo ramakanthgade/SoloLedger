@@ -1551,9 +1551,23 @@ export async function deleteWalletBalancesForAddress(address: string, chain?: st
 /** Remove tax artifacts made invalid by deleting their source transactions. Must run in the caller's rw transaction. */
 export async function deleteDependentTaxArtifacts(transactionIds: readonly string[]): Promise<void> {
   if (transactionIds.length === 0) return;
-  const lots = await db.lots.where('sourceTxId').anyOf([...transactionIds]).toArray();
+  // Avoid handing IndexedDB one enormous `anyOf` range set when a large CSV
+  // owns tens of thousands of transactions. Bounded batches keep the atomic
+  // transaction alive while preventing long synchronous query construction.
+  const queryChunkSize = 500;
+  const lots: Lot[] = [];
+  const directDisposals: Disposal[] = [];
+  const [lotCount, disposalCount] = await Promise.all([db.lots.count(), db.disposals.count()]);
+  if (lotCount > 0 || disposalCount > 0) {
+    for (let offset = 0; offset < transactionIds.length; offset += queryChunkSize) {
+      const ids = transactionIds.slice(offset, offset + queryChunkSize);
+      if (lotCount > 0) lots.push(...await db.lots.where('sourceTxId').anyOf(ids).toArray());
+      if (disposalCount > 0) {
+        directDisposals.push(...await db.disposals.where('sourceTxId').anyOf(ids).toArray());
+      }
+    }
+  }
   const lotIds = new Set(lots.map((lot) => lot.id));
-  const directDisposals = await db.disposals.where('sourceTxId').anyOf([...transactionIds]).toArray();
   const dependentDisposals = lotIds.size === 0 ? [] : await db.disposals
     .filter((row) => row.lotConsumption.some((consumption) => lotIds.has(consumption.lotId))).toArray();
   const disposalIds = [...new Set([...directDisposals, ...dependentDisposals].map((row) => row.id))];
@@ -1636,7 +1650,7 @@ export async function upsertCsvImport(
 }
 
 export async function countCsvImportTransactions(importId: string): Promise<number> {
-  return db.transactions.filter((t) => t.importBatchId === importId).count();
+  return db.transactions.where('importBatchId').equals(importId).count();
 }
 
 export interface CsvImportGenerationRows {
@@ -1755,7 +1769,9 @@ export async function commitCsvImportGeneration(input: CommitCsvImportInput): Pr
 export async function deleteCsvImportAndTransactions(importId: string): Promise<number> {
   return db.transaction('rw', [db.transactions, db.lots, db.disposals, db.csvImports, db.specIdHints,
     db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances], async () => {
-    const toDelete = await db.transactions.filter((t) => t.importBatchId === importId).toArray();
+    const importedTransactions = db.transactions.where('importBatchId').equals(importId);
+    const toDelete = await importedTransactions.toArray();
+    const transactionIds = toDelete.map((transaction) => transaction.id);
     const snapshots = await db.authoritySnapshots.where('sourceIdentityId').equals(importId).toArray();
     const recoverableApiRows = toDelete
       .map((t) => t.dedupMatchedApiRow)
@@ -1763,9 +1779,11 @@ export async function deleteCsvImportAndTransactions(importId: string): Promise<
       .map((t) => ({ ...t, dedupMatchedApiId: undefined, dedupMatchedApiRow: undefined }));
     if (recoverableApiRows.length > 0) await db.transactions.bulkPut(recoverableApiRows);
     if (toDelete.length > 0) {
-      await deleteDependentTaxArtifacts(toDelete.map((t) => t.id));
-      await db.transactions.bulkDelete(toDelete.map((t) => t.id));
-      await db.specIdHints.bulkDelete(toDelete.map((t) => t.id));
+      await deleteDependentTaxArtifacts(transactionIds);
+      // Reuse the primary keys already loaded above instead of walking the
+      // 28k-entry importBatchId secondary index a second time.
+      await db.transactions.bulkDelete(transactionIds);
+      await db.specIdHints.bulkDelete(transactionIds);
     }
     const snapshotIds = snapshots.map((snapshot) => snapshot.snapshotId);
     if (snapshotIds.length > 0) {
@@ -1773,10 +1791,10 @@ export async function deleteCsvImportAndTransactions(importId: string): Promise<
       await db.authoritySnapshots.bulkDelete(snapshotIds);
     }
     await db.sourceCoverage.where('sourceIdentityId').equals(importId).delete();
-    const ownedOpenings = await db.openingBalances
-      .filter((row) => row.scopeId.startsWith(`file:${importId}:`) ||
-        snapshots.some((snapshot) => snapshot.scopeId === row.scopeId)).toArray();
-    if (ownedOpenings.length > 0) await db.openingBalances.bulkDelete(ownedOpenings.map((row) => row.id));
+    const ownedOpeningScopes = [...new Set([
+      ...EXCHANGE_OPENING_CLASSES].map((accountClass) => `file:${importId}:${accountClass}`)
+      .concat(snapshots.map((snapshot) => snapshot.scopeId)))];
+    await db.openingBalances.where('scopeId').anyOf(ownedOpeningScopes).delete();
     await db.csvImports.delete(importId);
     return toDelete.length;
   });

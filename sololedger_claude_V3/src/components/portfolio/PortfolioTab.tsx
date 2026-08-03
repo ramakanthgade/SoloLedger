@@ -141,16 +141,32 @@ function quantitySourceLabel(holding: ProjectedPortfolioHolding): {
       tone: 'text-gain'
     };
   }
+  if (holding.verificationStatus === 'reconstructed_authority') {
+    return {
+      status: 'Reconstructed journal balance',
+      detail: 'quantity source only · not verified as a current balance',
+      tone: 'text-warn'
+    };
+  }
   const reasons = Array.from(new Set(holding.sourceVerification.flatMap((source) =>
     source.verificationStatus === 'posting_fallback' && source.fallbackReason
       ? [QUANTITY_FALLBACK_REASON[source.fallbackReason]]
       : []
   )));
   const reason = reasons.length > 0 ? reasons.join(', ') : 'no current authority';
+  const hasVerified = holding.sourceVerification.some((source) => source.verificationStatus === 'verified_authority');
+  const hasReconstructed = holding.sourceVerification.some((source) =>
+    source.verificationStatus === 'reconstructed_authority');
+  const hasPostingFallback = holding.sourceVerification.some((source) =>
+    source.verificationStatus === 'posting_fallback');
   return holding.verificationStatus === 'mixed'
     ? {
-        status: 'Partly verified',
-        detail: `quantity source only · remainder posting-derived · ${reason}`,
+        status: hasVerified ? 'Partly verified' : 'Mixed quantity sources',
+        detail: hasReconstructed && !hasPostingFallback
+          ? 'quantity source only · remainder reconstructed from journals · not verified current'
+          : hasReconstructed
+            ? `quantity source only · remainder reconstructed or posting-derived · ${reason}`
+            : `quantity source only · remainder posting-derived · ${reason}`,
         tone: 'text-warn'
       }
     : {
