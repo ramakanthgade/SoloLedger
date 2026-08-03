@@ -111,7 +111,16 @@ vi.mock('@/lib/saas/effectiveSettings', () => ({
   })
 }));
 
-import { DashboardTab, type DashboardInstrumentation } from './DashboardTab';
+import {
+  DashboardTab,
+  type DashboardInstrumentation
+} from './DashboardTab';
+import { createHoldingsProjector, createTransactionViewsProjector } from './dashboardProjectionCache';
+import type {
+  HoldingsProjection,
+  HoldingsProjectionInput
+} from '@/lib/portfolio/holdingsProjection';
+import type { Transaction } from '@/types/transaction';
 
 async function renderTab(
   nav?: { goToImport: () => void; goTo: (id: string) => void },
@@ -180,6 +189,72 @@ beforeEach(() => {
 });
 
 describe('DashboardTab — hero honesty', () => {
+  it('recognizes one primary-key-ordered insertion and appends its later projection', () => {
+    const projectViews = createTransactionViewsProjector();
+    const first: Transaction[] = [
+      { ...SEED.txs[0], id: 'p-0', timestamp: 1_000 } as Transaction,
+      { ...SEED.txs[1], id: 'p-1', timestamp: 2_000 } as Transaction,
+      { ...SEED.txs[2], id: 'p-2', timestamp: 3_000 } as Transaction
+    ];
+    const initial = projectViews(first);
+    const inserted = {
+      ...SEED.txs[3], id: 'holdings-live-1', timestamp: 4_000
+    } as Transaction;
+    const freshRows = first.map((transaction) => ({
+      ...transaction,
+      flags: [...transaction.flags],
+      raw: transaction.raw ? structuredClone(transaction.raw) : undefined
+    }));
+    const updated = projectViews([inserted, ...freshRows]);
+
+    expect(updated.nonSpam.map((transaction) => transaction.id)).toEqual([
+      'holdings-live-1', 'p-0', 'p-1', 'p-2'
+    ]);
+    expect(updated.projection.map((transaction) => transaction.id)).toEqual([
+      'p-0', 'p-1', 'p-2', 'holdings-live-1'
+    ]);
+
+    const rejectChangedRemainder = createTransactionViewsProjector();
+    rejectChangedRemainder(first);
+    const changedFinal = { ...first[2], raw: { nested: { changed: true } } };
+    const rebuiltViews = rejectChangedRemainder([inserted, first[0], first[1], changedFinal]);
+    expect(rebuiltViews.nonSpam[3]).toBe(changedFinal);
+    expect(rebuiltViews.appendProof).toBeUndefined();
+
+    const rejectScalarEdit = createTransactionViewsProjector();
+    rejectScalarEdit(first);
+    const changedFirst = { ...first[0], amount: first[0].amount + 1 };
+    expect(rejectScalarEdit([inserted, changedFirst, first[1], first[2]]).appendProof)
+      .toBeUndefined();
+
+    const appendProjection = vi.fn((
+      _previous: HoldingsProjection,
+      _input: HoldingsProjectionInput,
+      _transaction: Transaction
+    ) => undefined);
+    const projectHoldings = createHoldingsProjector(appendProjection);
+    const staticInput = {
+      exchangeConnections: [], openingBalances: [], snapshots: [], assets: [], coverage: [], now: 5_000
+    } satisfies Omit<HoldingsProjectionInput, 'transactions'>;
+    projectHoldings({ ...staticInput, transactions: initial.projection });
+    projectHoldings({ ...staticInput, transactions: updated.projection }, updated.appendProof);
+    expect(appendProjection).toHaveBeenCalledTimes(1);
+    expect(appendProjection.mock.calls[0][2]).toBe(inserted);
+
+    const rejectRemovedRestriction = vi.fn(() => undefined);
+    const projectRestrictedHoldings = createHoldingsProjector(rejectRemovedRestriction);
+    projectRestrictedHoldings({
+      ...staticInput,
+      transactions: initial.projection,
+      comparisonAt: 3_000
+    });
+    projectRestrictedHoldings({
+      ...staticInput,
+      transactions: updated.projection
+    }, updated.appendProof);
+    expect(rejectRemovedRestriction).not.toHaveBeenCalled();
+  });
+
   it('preserves same-timestamp sell/buy order for deferred tax consumers', async () => {
     const backup = [...SEED.txs];
     const timestamp = Date.UTC(2026, 6, 1, 12, 0, 0);

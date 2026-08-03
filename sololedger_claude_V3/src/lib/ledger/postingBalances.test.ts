@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Transaction } from '@/types/transaction';
-import { derivePostings } from './derivedPostings';
+import { derivePostings, type DerivedPosting } from './derivedPostings';
 import {
-  buildChartPrefixIndex, buildRunningBalanceIndex, postingBalances, preparePostingAggregation
+  appendPreparedPostingAggregation, buildChartPrefixIndex, buildRunningBalanceIndex,
+  postingBalanceKey, postingBalances, preparePostingAggregation
 } from './postingBalances';
 import { buildPostingPerformanceFixtures, runPostingPerformanceScenario } from './postingBalances.performanceFixture';
 
@@ -10,6 +11,21 @@ function transaction(id: string, timestamp: number, amount: number): Transaction
   return {
     id, timestamp, type: amount >= 0 ? 'transfer_in' : 'transfer_out', asset: 'BTC',
     amount: Math.abs(amount), fiatCurrency: 'USD', source: 'manual', flags: [], isInternalTransfer: false
+  };
+}
+
+function posting(
+  id: string,
+  effectiveAt: number,
+  accountScopeId: string,
+  assetKey: string,
+  signedQuantity: number,
+  role: DerivedPosting['role'] = 'principal'
+): DerivedPosting {
+  return {
+    id, taxEventId: id, transactionId: id, accountScopeId, accountClass: 'manual',
+    assetKey, asset: assetKey, signedQuantity, role, postingPhase: 10, ordinal: 0,
+    effectiveAt, evidence: [], taxableEffect: 'none'
   };
 }
 
@@ -104,5 +120,68 @@ describe('posting indexes', () => {
     expect(prepared.scopes.get('manual\u001fmanual')).toMatchObject({ postingCount: 3 });
     expect(prepared.scopes.get('manual\u001fmanual')?.balances.get('asset:BTC')).toBe(5);
     expect(prepared.representativeByAsset.get('asset:BTC')?.transactionId).toBe('before');
+    expect(prepared.balanceSlotByPosting).toHaveLength(postings.length);
+    expect(prepared.assetSlotByPosting).toHaveLength(postings.length);
+    expect(prepared.assetKeys).toEqual(['asset:BTC']);
+    expect(prepared.balanceSlotCount).toBe(1);
+  });
+
+  it('assigns compact slots equivalent to posting keys and canonical assets', () => {
+    const rows: Transaction[] = [
+      transaction('btc', 10, 2),
+      { ...transaction('eth', 20, 3), asset: 'ETH' },
+      { ...transaction('btc-out', 30, -1), importBatchId: 'other-scope' }
+    ];
+    const postings = derivePostings(rows, { exchangeConnections: [] });
+    const prepared = preparePostingAggregation(postings);
+
+    expect(prepared.balanceSlotByPosting.map((slot) =>
+      [...prepared.balanceSlots].find(([, candidate]) => candidate === slot)?.[0]
+    )).toEqual(prepared.keys);
+    expect(prepared.assetSlotByPosting.map((slot) => prepared.assetKeys[slot]))
+      .toEqual(prepared.ordered.map((posting) => posting.assetKey));
+    expect(new Set(prepared.balanceSlotByPosting).size).toBe(prepared.balanceSlotCount);
+  });
+
+  it('preserves legacy exact-key semantics when distinct structural entries collide', () => {
+    const first = posting('first', 1, 'a', 'x|manual|y', 5);
+    const reset = posting('reset', 2, 'a|manual|x', 'y', 2, 'opening_balance');
+    const final = posting('final', 3, 'a', 'x|manual|y', 1);
+    const prefix = [first];
+    const appended = [reset, final];
+    const postings = [...prefix, ...appended];
+    const exactKey = postingBalanceKey(first);
+
+    expect(postingBalanceKey(reset)).toBe(exactKey);
+    const incremental = appendPreparedPostingAggregation(
+      preparePostingAggregation(prefix, true), postings, appended
+    );
+    const full = preparePostingAggregation(postings, true);
+
+    expect(incremental).toEqual(full);
+    expect(full.hasBalanceKeyCollisions).toBe(true);
+    expect(full.balanceSlots).toEqual(new Map([[exactKey, 0]]));
+    expect(full.balanceSlotCount).toBe(1);
+    expect(full.balanceSlotByPosting).toEqual([0, 0, 0]);
+    expect(new Set(full.balanceSlotByPosting).size).toBe(full.balanceSlotCount);
+    expect(full.balanceSlotByPosting.every((slot) => slot >= 0 && slot < full.balanceSlotCount)).toBe(true);
+
+    const unfiltered = postingBalances(postings, {}, full);
+    const traversed = postingBalances(postings, { asOf: Infinity }, full);
+    expect(unfiltered).toEqual(traversed);
+    expect(unfiltered.get(exactKey)).toBe(3);
+
+    expect(buildRunningBalanceIndex(postings, undefined, full).byBalanceKey.get(exactKey))
+      .toEqual([
+        { postingId: 'first', effectiveAt: 1, balance: 5 },
+        { postingId: 'reset', effectiveAt: 2, balance: 2 },
+        { postingId: 'final', effectiveAt: 3, balance: 3 }
+      ]);
+    expect(buildChartPrefixIndex(postings, 1, undefined, full).byBalanceKey.get(exactKey))
+      .toEqual([
+        { bucketStart: 1, balance: 5 },
+        { bucketStart: 2, balance: 2 },
+        { bucketStart: 3, balance: 3 }
+      ]);
   });
 });

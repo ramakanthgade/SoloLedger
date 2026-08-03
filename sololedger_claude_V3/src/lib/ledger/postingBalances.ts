@@ -15,11 +15,6 @@ export function postingBalanceKey(posting: Pick<DerivedPosting, 'accountScopeId'
   return `${posting.accountScopeId}|${posting.accountClass}|${posting.assetKey}`;
 }
 
-type PostingKeyCache = Map<
-  string,
-  Map<DerivedPosting['accountClass'], Map<string, PostingBalanceKey>>
->;
-
 /**
  * Ephemeral snapshot for several synchronous aggregations over the same posting
  * state. It is never cached globally; callers that mutate postings create a new
@@ -33,6 +28,15 @@ export interface PreparedPostingAggregation {
   readonly scopes: ReadonlyMap<string, PreparedPostingScopeAggregation>;
   /** First posting per canonical asset, for stable historical display identity. */
   readonly representativeByAsset: ReadonlyMap<string, DerivedPosting>;
+  /** Compact chart indexes aligned with `ordered`; avoid per-posting string-map lookups. */
+  readonly balanceSlotByPosting: readonly number[];
+  readonly assetSlotByPosting: readonly number[];
+  readonly assetKeys: readonly string[];
+  readonly balanceSlotCount: number;
+  readonly balanceSlots: ReadonlyMap<PostingBalanceKey, number>;
+  readonly assetSlots: ReadonlyMap<string, number>;
+  /** True when distinct scope/class/asset tuples serialize to the same legacy key. */
+  readonly hasBalanceKeyCollisions: boolean;
 }
 
 export interface PreparedPostingScopeAggregation {
@@ -48,27 +52,6 @@ export function postingScopeAggregationKey(
   accountClass: DerivedPosting['accountClass']
 ): string {
   return `${scopeId}\u001f${accountClass}`;
-}
-
-function cachedPostingBalanceKey(
-  posting: DerivedPosting,
-  cache: PostingKeyCache
-): PostingBalanceKey {
-  let byAccountClass = cache.get(posting.assetKey);
-  if (byAccountClass == null) {
-    byAccountClass = new Map();
-    cache.set(posting.assetKey, byAccountClass);
-  }
-  let byScope = byAccountClass.get(posting.accountClass);
-  if (byScope == null) {
-    byScope = new Map();
-    byAccountClass.set(posting.accountClass, byScope);
-  }
-  const cached = byScope.get(posting.accountScopeId);
-  if (cached != null) return cached;
-  const key = postingBalanceKey(posting);
-  byScope.set(posting.accountScopeId, key);
-  return key;
 }
 
 function orderedPostings(postings: readonly DerivedPosting[]): readonly DerivedPosting[] {
@@ -88,34 +71,67 @@ export function preparePostingAggregation(
   alreadyOrdered = false
 ): PreparedPostingAggregation {
   const ordered = alreadyOrdered ? postings : orderedPostings(postings);
-  const keyCache: PostingKeyCache = new Map();
   const keys = new Array<PostingBalanceKey>(ordered.length);
-  const mutableScopes = new Map<string, {
+  type MutableScope = {
     scopeId: string;
     accountClass: DerivedPosting['accountClass'];
     postingCount: number;
     balances: Map<string, number>;
     assets: Map<string, string>;
-  }>();
+  };
+  type ScopeBuilder = {
+    aggregation: MutableScope;
+    balanceEntries: Map<string, { key: PostingBalanceKey; slot: number }>;
+  };
+  const mutableScopes = new Map<string, MutableScope>();
+  const scopesById = new Map<string, Map<DerivedPosting['accountClass'], ScopeBuilder>>();
   const representativeByAsset = new Map<string, DerivedPosting>();
+  const balanceSlots = new Map<PostingBalanceKey, number>();
+  const assetSlots = new Map<string, number>();
+  const balanceSlotByPosting = new Array<number>(ordered.length);
+  const assetSlotByPosting = new Array<number>(ordered.length);
+  const assetKeys: string[] = [];
+  let hasBalanceKeyCollisions = false;
   for (let index = 0; index < ordered.length; index++) {
     const posting = ordered[index];
-    if (!representativeByAsset.has(posting.assetKey)) {
+    let assetSlot = assetSlots.get(posting.assetKey);
+    if (assetSlot == null) {
+      assetSlot = assetSlots.size;
+      assetSlots.set(posting.assetKey, assetSlot);
+      assetKeys.push(posting.assetKey);
       representativeByAsset.set(posting.assetKey, posting);
     }
-    keys[index] = cachedPostingBalanceKey(posting, keyCache);
-    const scopeKey = postingScopeAggregationKey(posting.accountScopeId, posting.accountClass);
-    let scope = mutableScopes.get(scopeKey);
-    if (scope == null) {
-      scope = {
+    assetSlotByPosting[index] = assetSlot;
+    let byClass = scopesById.get(posting.accountScopeId);
+    if (byClass == null) {
+      byClass = new Map();
+      scopesById.set(posting.accountScopeId, byClass);
+    }
+    let scopeBuilder = byClass.get(posting.accountClass);
+    if (scopeBuilder == null) {
+      const aggregation: MutableScope = {
         scopeId: posting.accountScopeId,
         accountClass: posting.accountClass,
         postingCount: 0,
         balances: new Map(),
         assets: new Map()
       };
-      mutableScopes.set(scopeKey, scope);
+      scopeBuilder = { aggregation, balanceEntries: new Map() };
+      byClass.set(posting.accountClass, scopeBuilder);
+      mutableScopes.set(postingScopeAggregationKey(posting.accountScopeId, posting.accountClass), aggregation);
     }
+    const scope = scopeBuilder.aggregation;
+    let balanceEntry = scopeBuilder.balanceEntries.get(posting.assetKey);
+    if (balanceEntry == null) {
+      const key = postingBalanceKey(posting);
+      const existingSlot = balanceSlots.get(key);
+      hasBalanceKeyCollisions ||= existingSlot != null;
+      balanceEntry = { key, slot: existingSlot ?? balanceSlots.size };
+      scopeBuilder.balanceEntries.set(posting.assetKey, balanceEntry);
+      if (existingSlot == null) balanceSlots.set(key, balanceEntry.slot);
+    }
+    keys[index] = balanceEntry.key;
+    balanceSlotByPosting[index] = balanceEntry.slot;
     scope.postingCount += 1;
     scope.assets.set(posting.assetKey, posting.asset);
     scope.balances.set(
@@ -125,7 +141,82 @@ export function preparePostingAggregation(
         : (scope.balances.get(posting.assetKey) ?? 0) + posting.signedQuantity
     );
   }
-  return { source: postings, ordered, keys, scopes: mutableScopes, representativeByAsset };
+  return {
+    source: postings, ordered, keys, scopes: mutableScopes, representativeByAsset,
+    balanceSlotByPosting, assetSlotByPosting, assetKeys,
+    balanceSlotCount: balanceSlots.size, balanceSlots, assetSlots, hasBalanceKeyCollisions
+  };
+}
+
+/** Extend an immutable aggregation when callers have proved every new posting is later. */
+export function appendPreparedPostingAggregation(
+  prepared: PreparedPostingAggregation,
+  postings: readonly DerivedPosting[],
+  appended: readonly DerivedPosting[]
+): PreparedPostingAggregation {
+  if (appended.length === 0 || postings.length !== prepared.source.length + appended.length) {
+    throw new Error('invalid prepared posting append');
+  }
+  const previousLast = prepared.ordered[prepared.ordered.length - 1];
+  if (previousLast && comparePostings(previousLast, appended[0]) > 0) {
+    throw new Error('prepared posting append is not ordered');
+  }
+  for (let index = 1; index < appended.length; index++) {
+    if (comparePostings(appended[index - 1], appended[index]) > 0) {
+      throw new Error('prepared posting append is not ordered');
+    }
+  }
+
+  const keys = [...prepared.keys];
+  const scopes = new Map(prepared.scopes);
+  const representativeByAsset = new Map(prepared.representativeByAsset);
+  const balanceSlots = new Map(prepared.balanceSlots);
+  const assetSlots = new Map(prepared.assetSlots);
+  const balanceSlotByPosting = [...prepared.balanceSlotByPosting];
+  const assetSlotByPosting = [...prepared.assetSlotByPosting];
+  const assetKeys = [...prepared.assetKeys];
+  let hasBalanceKeyCollisions = prepared.hasBalanceKeyCollisions;
+  for (const posting of appended) {
+    const key = postingBalanceKey(posting);
+    keys.push(key);
+    let balanceSlot = balanceSlots.get(key);
+    const scopeKey = postingScopeAggregationKey(posting.accountScopeId, posting.accountClass);
+    const previous = scopes.get(scopeKey);
+    if (!previous?.balances.has(posting.assetKey) && balanceSlot != null) {
+      hasBalanceKeyCollisions = true;
+    }
+    if (balanceSlot == null) {
+      balanceSlot = balanceSlots.size;
+      balanceSlots.set(key, balanceSlot);
+    }
+    balanceSlotByPosting.push(balanceSlot);
+    let assetSlot = assetSlots.get(posting.assetKey);
+    if (assetSlot == null) {
+      assetSlot = assetSlots.size;
+      assetSlots.set(posting.assetKey, assetSlot);
+      assetKeys.push(posting.assetKey);
+    }
+    assetSlotByPosting.push(assetSlot);
+    if (!representativeByAsset.has(posting.assetKey)) representativeByAsset.set(posting.assetKey, posting);
+    const balances = new Map(previous?.balances);
+    const assets = new Map(previous?.assets);
+    assets.set(posting.assetKey, posting.asset);
+    balances.set(posting.assetKey, posting.role === 'opening_balance'
+      ? posting.signedQuantity
+      : (balances.get(posting.assetKey) ?? 0) + posting.signedQuantity);
+    scopes.set(scopeKey, {
+      scopeId: posting.accountScopeId,
+      accountClass: posting.accountClass,
+      postingCount: (previous?.postingCount ?? 0) + 1,
+      balances,
+      assets
+    });
+  }
+  return {
+    source: postings, ordered: postings, keys, scopes, representativeByAsset,
+    balanceSlotByPosting, assetSlotByPosting, assetKeys,
+    balanceSlotCount: balanceSlots.size, balanceSlots, assetSlots, hasBalanceKeyCollisions
+  };
 }
 
 function aggregationSnapshot(
@@ -145,6 +236,19 @@ export function postingBalances(
   const balances = new Map<PostingBalanceKey, number>();
   const snapshot = aggregationSnapshot(postings, prepared);
   const { asOf, scopeId, accountClass, metrics } = options;
+  if (asOf == null && scopeId == null && accountClass == null && !snapshot.hasBalanceKeyCollisions) {
+    if (metrics) metrics.postingVisits += snapshot.ordered.length;
+    for (const scope of snapshot.scopes.values()) {
+      for (const [assetKey, balance] of scope.balances) {
+        balances.set(postingBalanceKey({
+          accountScopeId: scope.scopeId,
+          accountClass: scope.accountClass,
+          assetKey
+        }), balance);
+      }
+    }
+    return balances;
+  }
   for (let index = 0; index < snapshot.ordered.length; index++) {
     const posting = snapshot.ordered[index];
     if (metrics) metrics.postingVisits += 1;
@@ -179,17 +283,14 @@ export function buildRunningBalanceIndex(
   const snapshot = aggregationSnapshot(postings, prepared);
   const ordered = snapshot.ordered;
   const orderedPostingIds: string[] = [];
-  const byBalanceKey = new Map<PostingBalanceKey, RunningBalancePoint[]>();
+  const pointsBySlot: RunningBalancePoint[][] = Array.from(
+    { length: snapshot.balanceSlotCount }, () => []
+  );
   const postingPosition = new Map<string, number>();
   for (let position = 0; position < ordered.length; position++) {
     if (metrics) metrics.postingVisits += 1;
     const posting = ordered[position];
-    const key = snapshot.keys[position];
-    let points = byBalanceKey.get(key);
-    if (points == null) {
-      points = [];
-      byBalanceKey.set(key, points);
-    }
+    const points = pointsBySlot[snapshot.balanceSlotByPosting[position]];
     const balance = posting.role === 'opening_balance'
       ? posting.signedQuantity
       : (points.length === 0 ? 0 : points[points.length - 1].balance) + posting.signedQuantity;
@@ -197,6 +298,8 @@ export function buildRunningBalanceIndex(
     orderedPostingIds.push(posting.id);
     postingPosition.set(posting.id, position);
   }
+  const byBalanceKey = new Map<PostingBalanceKey, RunningBalancePoint[]>();
+  for (const [key, slot] of snapshot.balanceSlots) byBalanceKey.set(key, pointsBySlot[slot]);
   return { orderedPostingIds, byBalanceKey, postingPosition };
 }
 
@@ -221,25 +324,25 @@ export function buildChartPrefixIndex(
   const bucketMs = bucketMilliseconds(bucket);
   const snapshot = aggregationSnapshot(postings, prepared);
   const ordered = snapshot.ordered;
-  const byBalanceKey = new Map<PostingBalanceKey, ChartPrefixPoint[]>();
-  const running = new Map<PostingBalanceKey, number>();
+  const pointsBySlot: ChartPrefixPoint[][] = Array.from(
+    { length: snapshot.balanceSlotCount }, () => []
+  );
+  const running = new Float64Array(snapshot.balanceSlotCount);
   for (let index = 0; index < ordered.length; index++) {
     const posting = ordered[index];
     if (metrics) metrics.postingVisits += 1;
-    const key = snapshot.keys[index];
+    const slot = snapshot.balanceSlotByPosting[index];
     const bucketStart = Math.floor(posting.effectiveAt / bucketMs) * bucketMs;
     const balance = posting.role === 'opening_balance'
       ? posting.signedQuantity
-      : (running.get(key) ?? 0) + posting.signedQuantity;
-    running.set(key, balance);
-    let points = byBalanceKey.get(key);
-    if (points == null) {
-      points = [];
-      byBalanceKey.set(key, points);
-    }
+      : running[slot] + posting.signedQuantity;
+    running[slot] = balance;
+    const points = pointsBySlot[slot];
     const last = points[points.length - 1];
     if (last?.bucketStart === bucketStart) last.balance = balance;
     else points.push({ bucketStart, balance });
   }
+  const byBalanceKey = new Map<PostingBalanceKey, ChartPrefixPoint[]>();
+  for (const [key, slot] of snapshot.balanceSlots) byBalanceKey.set(key, pointsBySlot[slot]);
   return { bucketMs, byBalanceKey };
 }

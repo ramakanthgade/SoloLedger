@@ -3,7 +3,11 @@ import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import type { AuthorityAssetRow, AuthoritySnapshotRow, EndpointProof } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
-import { buildHoldingsProjection, type HoldingsProjectionInput } from './holdingsProjection';
+import {
+  appendHoldingsProjection,
+  buildHoldingsProjection,
+  type HoldingsProjectionInput
+} from './holdingsProjection';
 
 const NOW = 1_800_000_000_000;
 
@@ -365,6 +369,99 @@ describe('buildHoldingsProjection', () => {
     const unordered = buildHoldingsProjection(input({ transactions: [...rows].reverse() }));
     expect(ordered.holdings).toEqual(unordered.holdings);
     expect(ordered.chartPostingCostsEquivalent).toBe(true);
+  });
+
+  it('extends a strictly chronological ledger with full-projection semantics', () => {
+    const original = [
+      tx({ id: 'buy', timestamp: NOW - 3_000, type: 'buy', amount: 2, fiatValue: 200 }),
+      tx({ id: 'sell', timestamp: NOW - 2_000, type: 'sell', amount: 0.5, fiatValue: 80 })
+    ];
+    const appended = tx({
+      id: 'append', timestamp: NOW - 1_000, type: 'transfer_in', amount: 1, fiatValue: 150
+    });
+    const previous = buildHoldingsProjection(input({ transactions: original }));
+    const nextInput = input({ transactions: [...original, appended] });
+    const incremental = appendHoldingsProjection(previous, nextInput, appended);
+    const rebuilt = buildHoldingsProjection(nextInput);
+
+    expect(incremental).toEqual(rebuilt);
+    expect(incremental?.postings.slice(0, previous.postings.length)).toEqual(previous.postings);
+    expect(incremental?.preparedPostings.source).toBe(incremental?.postings);
+  });
+
+  it('declines an append that could alter historical ordering', () => {
+    const original = [tx({ id: 'original', timestamp: NOW - 1_000 })];
+    const previous = buildHoldingsProjection(input({ transactions: original }));
+    const sameInstant = tx({ id: 'later-id', timestamp: NOW - 1_000 });
+
+    expect(appendHoldingsProjection(
+      previous,
+      input({ transactions: [...original, sameInstant] }),
+      sameInstant
+    )).toBeUndefined();
+  });
+
+  it('declines a transaction that is not the final projection input', () => {
+    const original = [tx({ id: 'original', timestamp: NOW - 3_000 })];
+    const previous = buildHoldingsProjection(input({ transactions: original }));
+    const allegedAppend = tx({ id: 'middle', timestamp: NOW - 2_000 });
+    const final = tx({ id: 'final', timestamp: NOW - 1_000 });
+
+    expect(appendHoldingsProjection(
+      previous,
+      input({ transactions: [...original, allegedAppend, final] }),
+      allegedAppend
+    )).toBeUndefined();
+  });
+
+  it('declines a same-timestamp append after a prior transaction with no postings', () => {
+    const original = [
+      tx({ id: 'holding', timestamp: NOW - 2_000 }),
+      tx({ id: 'zero-posting', timestamp: NOW - 1_000, amount: 0 })
+    ];
+    const previous = buildHoldingsProjection(input({ transactions: original }));
+    const appended = tx({ id: 'append', timestamp: NOW - 1_000 });
+    const nextInput = input({ transactions: [...original, appended] });
+
+    expect(previous.postings[previous.postings.length - 1].effectiveAt).toBe(NOW - 2_000);
+    expect(appendHoldingsProjection(previous, nextInput, appended)).toBeUndefined();
+    expect(buildHoldingsProjection(nextInput).chartPostingCostsEquivalent).toBe(false);
+  });
+
+  it('retains a zero-balance canonical identity when a mismatched fee revives its key', () => {
+    const usdcMint = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const wrappedSolMint = 'So11111111111111111111111111111111111111112';
+    const wallet = 'WalletAddress';
+    const acquired = tx({
+      id: 'usdc-in', timestamp: NOW - 3_000, type: 'transfer_in', asset: 'USDC', amount: 2,
+      source: 'rpc:helius', chain: 'solana', walletAddress: wallet, contractAddress: usdcMint
+    });
+    const disposed = tx({
+      id: 'usdc-out', timestamp: NOW - 2_000, type: 'transfer_out', asset: 'USDC', amount: 2,
+      source: 'rpc:helius', chain: 'solana', walletAddress: wallet, contractAddress: usdcMint
+    });
+    const fee = tx({
+      id: 'usdc-fee', timestamp: NOW - 1_000, type: 'fee', asset: 'EPjF…TDt1v', amount: 1,
+      source: 'rpc:helius', chain: 'solana', walletAddress: wallet, contractAddress: usdcMint,
+      feeAsset: 'SOL', raw: { feeMint: wrappedSolMint }
+    });
+    const previous = buildHoldingsProjection(input({ transactions: [acquired, disposed] }));
+    const nextInput = input({ transactions: [acquired, disposed, fee] });
+    const incremental = appendHoldingsProjection(previous, nextInput, fee);
+    const rebuilt = buildHoldingsProjection(nextInput);
+
+    expect(previous.holdings).toEqual([]);
+    expect(previous.displayIdentityIndex.get(`solana:${usdcMint}`)).toEqual({
+      asset: 'USDC', chain: 'solana', contractAddress: usdcMint
+    });
+    expect(incremental).toEqual(rebuilt);
+    expect(incremental?.holdings[0]).toMatchObject({
+      assetKey: `solana:${usdcMint}`,
+      asset: 'USDC',
+      chain: 'solana',
+      contractAddress: usdcMint,
+      quantity: -1
+    });
   });
 
   it('keeps special custody chart semantics off the posting-cost fast path', () => {

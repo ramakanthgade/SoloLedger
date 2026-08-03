@@ -401,27 +401,30 @@ export function buildPostingChartSeries(
     for (const [assetKey, posting] of preparedPostings.representativeByAsset) {
       historyByAsset.set(assetKey, priceHistoryFor(postingDisplayIdentity(posting), index));
     }
-    const accountBalances = new Map<string, number>();
-    const assetBalances = new Map<string, number>();
+    const accountBalances = new Float64Array(preparedPostings.balanceSlotCount);
+    const assetBalances = new Float64Array(preparedPostings.assetKeys.length);
     const ordered = preparedPostings.ordered;
     let postingCursor = 0;
     return costSeries.map((point) => {
       while (postingCursor < ordered.length && Math.floor(ordered[postingCursor].effectiveAt) <= point.t) {
         const posting = ordered[postingCursor];
-        const balanceKey = preparedPostings.keys[postingCursor];
-        const previous = accountBalances.get(balanceKey) ?? 0;
+        const balanceSlot = preparedPostings.balanceSlotByPosting[postingCursor];
+        const assetSlot = preparedPostings.assetSlotByPosting[postingCursor];
+        const previous = accountBalances[balanceSlot];
         const next = posting.role === 'opening_balance'
           ? posting.signedQuantity
           : previous + posting.signedQuantity;
-        accountBalances.set(balanceKey, next);
-        assetBalances.set(posting.assetKey, (assetBalances.get(posting.assetKey) ?? 0) + next - previous);
+        accountBalances[balanceSlot] = next;
+        assetBalances[assetSlot] += next - previous;
         postingCursor++;
       }
       let market = 0;
       let pricedAny = false;
       let unpricedCount = 0;
-      for (const [assetKey, quantity] of assetBalances) {
+      for (let assetSlot = 0; assetSlot < assetBalances.length; assetSlot++) {
+        const quantity = assetBalances[assetSlot];
         if (Math.abs(quantity) <= 1e-9) continue;
+        const assetKey = preparedPostings.assetKeys[assetSlot];
         const history = historyByAsset.get(assetKey);
         const price = history ? priceAt(history, point.t) : null;
         if (price == null) unpricedCount++;
