@@ -119,7 +119,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   coinbase: 'Coinbase',
   kraken: 'Kraken',
   okx: 'OKX',
-  kucoin: 'KuCoin'
+  kucoin: 'KuCoin',
+  bybit: 'Bybit'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -150,12 +151,23 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     timeout: 30_000
   };
   if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx') {
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
     // calls). Restrict the markets fetch to spot explicitly.
-    config.options = { defaultType: 'spot', fetchMarkets: ['spot'] };
+    config.options = exchangeId === 'bybit'
+      ? {
+          defaultType: 'spot',
+          fetchMarkets: { types: ['spot'] },
+          // Current Bybit accounts use UTA. Pinning this prevents ccxt's
+          // isUnifiedEnabled() probe from making two extra signed account/API
+          // metadata requests before the one balance call we actually need.
+          enableUnifiedMargin: false,
+          enableUnifiedAccount: true,
+          unifiedMarginStatus: 6
+        }
+      : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
     // ccxt's binance fetchCurrencies (default on when credentials exist)
@@ -166,6 +178,15 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // cross/isolated margin pair lists from SAPI when credentials exist.
     (config.options as Record<string, unknown>).fetchCurrencies = false;
     (config.options as Record<string, unknown>).fetchMargins = false;
+  }
+  if (exchangeId === 'bybit') {
+    // Bybit's fetchCurrencies is a signed asset endpoint unrelated to the
+    // spot history engine and broadens the relay surface unnecessarily.
+    (config.options as Record<string, unknown>).fetchCurrencies = false;
+    // ccxt base loadMarkets checks `has.fetchCurrencies`, not the option, for
+    // Bybit. Override the capability as well so the signed coin-info endpoint
+    // is never called.
+    config.has = { fetchCurrencies: false };
   }
   const exchange = new Ctor(config) as ExchangeClient;
   installTunnelFetch(exchange, exchangeId);

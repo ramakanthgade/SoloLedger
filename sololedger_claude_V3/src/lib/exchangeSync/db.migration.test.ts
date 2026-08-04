@@ -74,9 +74,10 @@ describe('Dexie v8 — exchangeConnections', () => {
 });
 
 describe('EXCHANGE_API_SOURCES', () => {
-  it('registers all five <exchange>_api sources', () => {
+  it('registers every <exchange>_api source', () => {
     expect([...EXCHANGE_API_SOURCES].sort()).toEqual([
       'binance_api',
+      'bybit_api',
       'coinbase_api',
       'kraken_api',
       'kucoin_api',

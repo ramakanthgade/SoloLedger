@@ -6,15 +6,16 @@
  */
 import type { Transaction } from '@/types/transaction';
 
-/** The five exchanges supported by auto-sync in v1. (ONE name — no aliases.) */
-export type ExchangeId = 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin';
+/** Exchanges supported by auto-sync. (ONE name — no aliases.) */
+export type ExchangeId = 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit';
 
 export const SYNC_EXCHANGES: readonly ExchangeId[] = [
   'binance',
   'coinbase',
   'kraken',
   'okx',
-  'kucoin'
+  'kucoin',
+  'bybit'
 ] as const;
 
 /** Per-kind sync cursors (epoch ms) persisted on the connection row. */

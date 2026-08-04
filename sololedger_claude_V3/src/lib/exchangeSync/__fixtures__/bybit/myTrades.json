@@ -1,0 +1,64 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from the documented GET /v5/execution/list V5 response shape. IDs are synthetic. The first two executions intentionally share an orderId and are twins of one order-level Bybit CSV row.",
+  "response": {
+    "retCode": 0,
+    "retMsg": "OK",
+    "result": {
+      "category": "spot",
+      "nextPageCursor": "",
+      "list": [
+        {
+          "category": "spot",
+          "symbol": "BTCUSDT",
+          "orderId": "bb-order-buy-001",
+          "side": "Buy",
+          "orderType": "Limit",
+          "execFee": "0.00004",
+          "feeCoin": "BTC",
+          "execId": "bb-exec-buy-001-a",
+          "execPrice": "50000",
+          "execQty": "0.04",
+          "execValue": "2000",
+          "execType": "Trade",
+          "execTime": "1735689600000",
+          "isMaker": true
+        },
+        {
+          "category": "spot",
+          "symbol": "BTCUSDT",
+          "orderId": "bb-order-buy-001",
+          "side": "Buy",
+          "orderType": "Limit",
+          "execFee": "0.00006",
+          "feeCoin": "BTC",
+          "execId": "bb-exec-buy-001-b",
+          "execPrice": "50000",
+          "execQty": "0.06",
+          "execValue": "3000",
+          "execType": "Trade",
+          "execTime": "1735689600500",
+          "isMaker": true
+        },
+        {
+          "category": "spot",
+          "symbol": "ETHUSDT",
+          "orderId": "bb-order-sell-002",
+          "side": "Sell",
+          "orderType": "Market",
+          "execFee": "2",
+          "feeCoin": "USDT",
+          "execId": "bb-exec-sell-002",
+          "execPrice": "4000",
+          "execQty": "0.5",
+          "execValue": "2000",
+          "execType": "Trade",
+          "execTime": "1735776000000",
+          "isMaker": false
+        }
+      ]
+    },
+    "retExtInfo": {},
+    "time": 1735776001000
+  }
+}

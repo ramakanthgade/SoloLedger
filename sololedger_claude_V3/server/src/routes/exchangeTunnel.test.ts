@@ -193,7 +193,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['coinbase', 'api.coinbase.com', '/api/v3/brokerage/market/products'],
     ['kraken', 'api.kraken.com', '/0/public/Time'],
     ['okx', 'www.okx.com', '/api/v5/public/time'],
-    ['kucoin', 'api.kucoin.com', '/api/v1/timestamp']
+    ['kucoin', 'api.kucoin.com', '/api/v1/timestamp'],
+    ['bybit', 'api.bybit.com', '/v5/market/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -304,6 +305,28 @@ describe('3. header allowlist', () => {
       'cb-access-key': 'CB_KEY'
     });
   });
+
+  it('bybit: forwards only the four V5 auth headers', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"retCode":0}'));
+    await rawRequest({
+      path: '/bybit/v5/execution/list?category=spot',
+      headers: {
+        ...AUTH,
+        'x-exchange-x-bapi-api-key': 'BYBIT_KEY',
+        'x-exchange-x-bapi-sign': 'signature',
+        'x-exchange-x-bapi-timestamp': '1700000000000',
+        'x-exchange-x-bapi-recv-window': '5000',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+    const [, init] = lastUpstreamCall();
+    expect(init.headers).toEqual({
+      'x-bapi-api-key': 'BYBIT_KEY',
+      'x-bapi-sign': 'signature',
+      'x-bapi-timestamp': '1700000000000',
+      'x-bapi-recv-window': '5000'
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -342,6 +365,19 @@ describe('4. exchangeId and path validation', () => {
   it('empty upstream path → 400 bad_path', async () => {
     for (const suffix of ['/binance', '/binance/']) {
       const res = await client(suffix, { headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('Bybit rejects non-sync and derivatives REST paths before fetch', async () => {
+    for (const path of [
+      '/bybit/v5/order/create',
+      '/bybit/v5/position/list',
+      '/bybit/v5/asset/withdraw/create'
+    ]) {
+      const res = await client(path, { headers: AUTH });
       expect(res.status).toBe(400);
       expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
     }

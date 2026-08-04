@@ -1,0 +1,4 @@
+{
+  "_recorded": false,
+  "_note": "All Bybit fixtures in this directory, including tradeHistory.csv, are hand-authored and schema-faithful to documented Bybit V5/API and SoloLedger CSV shapes. No user credentials or account data were used."
+}

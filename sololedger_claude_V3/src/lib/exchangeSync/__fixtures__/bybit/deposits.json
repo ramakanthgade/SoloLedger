@@ -1,0 +1,39 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from the documented GET /v5/asset/deposit/query-record response shape. Addresses and transaction hashes are synthetic. The pending row must be excluded by normalization.",
+  "response": {
+    "retCode": 0,
+    "retMsg": "success",
+    "result": {
+      "nextPageCursor": "",
+      "rows": [
+        {
+          "coin": "USDT",
+          "chain": "ETH",
+          "amount": "1250",
+          "txID": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "status": 3,
+          "toAddress": "0x1111111111111111111111111111111111111111",
+          "tag": "",
+          "depositFee": "0",
+          "successAt": "1735516800000",
+          "confirmations": "32"
+        },
+        {
+          "coin": "BTC",
+          "chain": "BTC",
+          "amount": "0.02",
+          "txID": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "status": 1,
+          "toAddress": "bc1qsyntheticpendingaddress",
+          "tag": "",
+          "depositFee": "0",
+          "successAt": "1735603200000",
+          "confirmations": "0"
+        }
+      ]
+    },
+    "retExtInfo": {},
+    "time": 1735776001000
+  }
+}

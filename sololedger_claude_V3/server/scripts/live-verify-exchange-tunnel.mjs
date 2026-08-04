@@ -123,6 +123,12 @@ const TIER2 = [
     probe: 'GET /api/v1/timestamp',
     path: '/api/v1/timestamp',
     check: (r, json) => r.status === 200 && typeof json?.data === 'number'
+  },
+  {
+    exchange: 'bybit',
+    probe: 'GET /v5/market/time',
+    path: '/v5/market/time',
+    check: (r, json) => r.status === 200 && json?.retCode === 0 && Boolean(json?.result?.timeSecond)
   }
 ];
 
@@ -239,6 +245,29 @@ const tier3 = [
       };
     },
     check: (r) => r.status === 401 && r.text.includes('"code":"400003"')
+  },
+  {
+    exchange: 'bybit',
+    probe: 'GET /v5/execution/list?category=spot (X-BAPI-SIGN)',
+    build() {
+      const apiKey = 'dummy-bybit-key';
+      const secret = 'dummy-bybit-secret';
+      const timestamp = Date.now().toString();
+      const recvWindow = '5000';
+      const query = 'category=spot&limit=1';
+      const sign = hmacHex('sha256', secret, timestamp + apiKey + recvWindow + query);
+      return {
+        path: `/v5/execution/list?${query}`,
+        exchangeHeaders: {
+          'x-bapi-api-key': apiKey,
+          'x-bapi-sign': sign,
+          'x-bapi-timestamp': timestamp,
+          'x-bapi-recv-window': recvWindow
+        }
+      };
+    },
+    // Bybit's distinctive unknown-key response (signature errors are 10004).
+    check: (r) => r.status === 401 && r.text.includes('"retCode":10003') && /api key/i.test(r.text)
   }
 ];
 

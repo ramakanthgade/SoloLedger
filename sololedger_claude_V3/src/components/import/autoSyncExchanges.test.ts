@@ -6,12 +6,12 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  * The auto-sync catalog drives the AddConnectionForm picker — its ids must
  * stay exactly the ccxt exchange ids (contract C3 `SYNC_EXCHANGES`), and
  * `needsPassphrase` must be true ONLY for OKX and KuCoin (contract C5:
- * their `requiredCredentials` include `password`; the other three take
+ * their `requiredCredentials` include `password`; the others take
  * apiKey+secret only).
  */
 describe('autoSyncExchanges catalog', () => {
-  it('lists exactly the five supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(5);
+  it('lists exactly the supported exchanges', () => {
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(6);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -48,7 +48,14 @@ describe('autoSyncExchanges catalog', () => {
   it('getAutoSyncExchange resolves by id and tolerates null/unknown', () => {
     expect(getAutoSyncExchange('binance')?.label).toBe('Binance');
     expect(getAutoSyncExchange('kucoin')?.needsPassphrase).toBe(true);
+    expect(getAutoSyncExchange('bybit')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange(null)).toBeUndefined();
     expect(getAutoSyncExchange('nope')).toBeUndefined();
+  });
+
+  it('documents Bybit master-account withdrawal-history scope', () => {
+    expect(getAutoSyncExchange('bybit')?.keyInstructions.join(' ')).toMatch(
+      /master account.*master UID.*withdrawal history/i
+    );
   });
 });

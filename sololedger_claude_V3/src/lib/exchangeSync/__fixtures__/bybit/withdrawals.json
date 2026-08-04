@@ -1,0 +1,43 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from the documented GET /v5/asset/withdraw/query-record response shape. Addresses and transaction hashes are synthetic. The SecurityCheck row must be excluded by normalization.",
+  "response": {
+    "retCode": 0,
+    "retMsg": "success",
+    "result": {
+      "nextPageCursor": "",
+      "rows": [
+        {
+          "coin": "ETH",
+          "chain": "ETH",
+          "amount": "0.25",
+          "txID": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "status": "success",
+          "toAddress": "0x2222222222222222222222222222222222222222",
+          "tag": "",
+          "withdrawFee": "0.001",
+          "createTime": "1735686000000",
+          "updateTime": "1735686300000",
+          "withdrawId": "bb-withdraw-001",
+          "withdrawType": 0
+        },
+        {
+          "coin": "USDT",
+          "chain": "TRX",
+          "amount": "100",
+          "txID": "",
+          "status": "SecurityCheck",
+          "toAddress": "TSyntheticPendingAddress",
+          "tag": "",
+          "withdrawFee": "1",
+          "createTime": "1735687000000",
+          "updateTime": "1735687000000",
+          "withdrawId": "bb-withdraw-pending-002",
+          "withdrawType": 0
+        }
+      ]
+    },
+    "retExtInfo": {},
+    "time": 1735776001000
+  }
+}

@@ -7,7 +7,8 @@
  * API↔CSV twins (plan §B-5).
  *
  * Classification parity notes:
- * - Trades (binance/coinbase/okx/kucoin) mirror binanceSpot.ts per-fill
+ * - Trades (binance/coinbase/okx/kucoin) mirror binanceSpot.ts per-fill;
+ *   Bybit fills aggregate by Order ID to mirror its order-level CSV export
  *   semantics, except crypto-quoted fills classify as 'trade' (the more
  *   correct treatment — see the v1.1 divergence note in README) while their
  *   sourceRef still collides with the Trade-History-CSV row.
@@ -35,7 +36,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   coinbase: 'excb',
   kraken: 'exkr',
   okx: 'exok',
-  kucoin: 'exkc'
+  kucoin: 'exkc',
+  bybit: 'exbb'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -86,11 +88,15 @@ function tradeSourceRef(
       return trade.order ?? trade.id ?? exchangeSourceRef('okx', floorToSeconds(ts), side, base, amount);
     case 'kucoin':
       return trade.id ?? exchangeSourceRef('kucoin', floorToSeconds(ts), side, base, amount);
+    case 'bybit':
+      // Bybit's CSV parser uses Order ID; execution id is only a fallback.
+      return trade.order ?? trade.id ?? exchangeSourceRef('bybit', floorToSeconds(ts), side, base, amount);
   }
 }
 
 /**
- * Normalize one per-fill trade (binance/coinbase/okx/kucoin) — §B-5a.
+ * Normalize one per-fill trade (binance/coinbase/okx/kucoin, plus a synthetic
+ * aggregated Bybit order) — §B-5a.
  * Returns null for fills that lack the fields any classification needs.
  */
 export function normalizeTrade(
@@ -285,6 +291,154 @@ export function normalizeKrakenTradesByOrder(
   return { transactions, skipped };
 }
 
+/**
+ * Bybit execution rows are fill-level while the existing CSV is order-level.
+ * Aggregate fills by Order ID before normalizing so the API row both preserves
+ * the complete economics and collides with the CSV parser's `Order ID` ref.
+ */
+export function normalizeBybitTradesByOrder(
+  trades: UnifiedTrade[],
+  markets: Record<string, UnifiedMarket>
+): { transactions: Transaction[]; skipped: number } {
+  const groups = new Map<string, UnifiedTrade[]>();
+  for (const trade of trades) {
+    const key = trade.order ?? `__fill__${trade.id ?? groups.size}`;
+    const group = groups.get(key) ?? [];
+    group.push(trade);
+    groups.set(key, group);
+  }
+
+  const transactions: Transaction[] = [];
+  let skipped = 0;
+  for (const [key, fills] of groups) {
+    const first = fills[0];
+    const feeCurrencies = new Set(
+      fills.filter((fill) => fill.fee?.cost != null).map((fill) => fill.fee?.currency?.toUpperCase() ?? '')
+    );
+    const synthetic: UnifiedTrade = {
+      ...first,
+      id: first.id,
+      order: key.startsWith('__fill__') ? first.order : key,
+      timestamp: Math.min(...fills.map((fill) => fill.timestamp ?? Number.POSITIVE_INFINITY)),
+      amount: fills.reduce((sum, fill) => sum + (fill.amount ?? 0), 0),
+      cost: fills.reduce((sum, fill) => sum + (fill.cost ?? ((fill.price ?? 0) * (fill.amount ?? 0))), 0),
+      fee: feeCurrencies.size === 1
+        ? {
+            cost: fills.reduce((sum, fill) => sum + Math.abs(fill.fee?.cost ?? 0), 0),
+            currency: [...feeCurrencies][0] || undefined
+          }
+        : undefined
+    };
+    const transaction = normalizeTrade('bybit', synthetic, resolveMarket(markets, synthetic.symbol));
+    if (transaction) {
+      const market = resolveMarket(markets, synthetic.symbol);
+      transaction.raw = {
+        ...transaction.raw,
+        bybitBase: market?.base.toUpperCase(),
+        bybitQuote: market?.quote.toUpperCase(),
+        bybitExecutions: fills.map((fill) => ({
+          id: fill.id,
+          timestamp: fill.timestamp,
+          side: fill.side,
+          amount: fill.amount,
+          cost: fill.cost ?? ((fill.price ?? 0) * (fill.amount ?? 0)),
+          feeAmount: fill.fee?.cost != null ? Math.abs(fill.fee.cost) : undefined,
+          feeAsset: fill.fee?.currency?.toUpperCase()
+        }))
+      };
+      transactions.push(transaction);
+    }
+    else skipped += fills.length;
+  }
+  return { transactions, skipped };
+}
+
+interface BybitExecutionEvidence {
+  id?: string;
+  timestamp?: number;
+  side?: string;
+  amount?: number;
+  cost?: number;
+  feeAmount?: number;
+  feeAsset?: string;
+}
+
+function bybitExecutionEvidence(transaction: Transaction): BybitExecutionEvidence[] {
+  const value = transaction.raw?.bybitExecutions;
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is BybitExecutionEvidence => item != null && typeof item === 'object');
+}
+
+function bybitExecutionIdentity(fill: BybitExecutionEvidence): string {
+  if (fill.id) return `id:${fill.id}`;
+  return [fill.timestamp, fill.side, fill.amount, fill.cost, fill.feeAmount, fill.feeAsset].join(':');
+}
+
+/**
+ * Union durable Bybit execution evidence and recompute the order-level row.
+ * Existing row identity and user classification metadata survive; only the
+ * exchange-derived economics and evidence are refreshed.
+ */
+export function mergeBybitOrderTransactions(existing: Transaction, incoming: Transaction): Transaction {
+  const fills = new Map<string, BybitExecutionEvidence>();
+  for (const fill of [...bybitExecutionEvidence(existing), ...bybitExecutionEvidence(incoming)]) {
+    fills.set(bybitExecutionIdentity(fill), fill);
+  }
+  if (fills.size === 0) {
+    return {
+      ...incoming,
+      ...existing,
+      raw: incoming.raw
+    };
+  }
+
+  const executions = [...fills.values()];
+  const side = executions.find((fill) => fill.side === 'buy' || fill.side === 'sell')?.side;
+  const base = String(incoming.raw?.bybitBase ?? existing.raw?.bybitBase ?? '').toUpperCase();
+  const quote = String(incoming.raw?.bybitQuote ?? existing.raw?.bybitQuote ?? '').toUpperCase();
+  const amount = executions.reduce((sum, fill) => sum + (fill.amount ?? 0), 0);
+  const cost = executions.reduce((sum, fill) => sum + (fill.cost ?? 0), 0);
+  const timestamps = executions.map((fill) => fill.timestamp).filter((value): value is number =>
+    value != null && Number.isFinite(value));
+  const feeFills = executions.filter((fill) => (fill.feeAmount ?? 0) > 0);
+  const feeAssets = new Set(feeFills.map((fill) => fill.feeAsset ?? ''));
+  const feeAmount = feeAssets.size === 1
+    ? feeFills.reduce((sum, fill) => sum + (fill.feeAmount ?? 0), 0)
+    : undefined;
+  const feeAsset = feeAssets.size === 1 ? [...feeAssets][0] || undefined : undefined;
+  let economic: Partial<Transaction>;
+  if (incoming.type === 'buy' || incoming.type === 'sell') {
+    economic = {
+      amount,
+      counterAmount: cost
+    };
+  } else if (side === 'buy') {
+    economic = { asset: quote || incoming.asset, amount: cost, counterAsset: base || incoming.counterAsset, counterAmount: amount };
+  } else {
+    economic = { asset: base || incoming.asset, amount, counterAsset: quote || incoming.counterAsset, counterAmount: cost };
+  }
+
+  return {
+    ...incoming,
+    // Preserve the complete stored row first. Transaction review fields are
+    // intentionally open-ended (classification, spam, manual fiat/pricing,
+    // notes/category/flags, TDS, etc.); copying only a hand-picked subset is
+    // unsafe whenever the model gains another user-owned field.
+    ...existing,
+    // Refresh only values derived from Bybit executions.
+    ...economic,
+    timestamp: timestamps.length > 0 ? Math.min(...timestamps) : incoming.timestamp,
+    feeAmount,
+    feeAsset,
+    raw: {
+      ...incoming.raw,
+      bybitBase: base || undefined,
+      bybitQuote: quote || undefined,
+      bybitExecutions: executions
+    }
+  };
+}
+
 /** sourceRef for a transfer (§B-5b). */
 function transferSourceRef(
   exchange: ExchangeId,
@@ -308,6 +462,17 @@ function transferSourceRef(
       return transfer.id ?? exchangeSourceRef('okx', floorToSeconds(ts), type, asset, amount);
     case 'kucoin':
       return transfer.id ?? exchangeSourceRef('kucoin', floorToSeconds(ts), type, asset, amount);
+    case 'bybit': {
+      if (type === 'transfer_out' && transfer.id) return transfer.id;
+      const nativeTxid = [transfer.txid, transfer.info?.txID, transfer.info?.txId]
+        .find((value) => value != null && String(value).trim().length > 0);
+      const nativeIndex = [transfer.info?.txIndex, transfer.info?.id, transfer.info?.depositId, transfer.id]
+        .find((value) => value != null && String(value).trim().length > 0);
+      if (nativeTxid != null) {
+        return `bybit:${String(nativeTxid)}${nativeIndex != null ? `:${String(nativeIndex)}` : ''}`;
+      }
+      return transfer.id ?? exchangeSourceRef('bybit', floorToSeconds(ts), type, asset, amount);
+    }
   }
 }
 
@@ -315,7 +480,7 @@ function transferSourceRef(
  * Whether a unified transfer actually settled. Verify-at-build finding: ccxt
  * 4.5.68's binance leaks RAW numeric statuses ('1' deposit credited / '6'
  * completed) because parseTransactionStatusByType needs a type the capital
- * endpoints don't carry; the other four map to 'ok' properly. Binance
+ * endpoints don't carry; the other exchanges map to 'ok' properly. Binance
  * settled sets are per-kind ('1' means ok for deposits but CANCELED for
  * withdrawals).
  */
@@ -328,7 +493,7 @@ function isSettledTransfer(exchange: ExchangeId, type: TxType, status: string | 
 }
 
 /**
- * Normalize one transfer (all five exchanges) — §B-5d, mirrors
+ * Normalize one transfer (all supported exchanges) — §B-5d, mirrors
  * binanceTransfers.ts. Returns null when the transfer is unsettled
  * (status !== 'ok' → counted as skippedUnsettled by the engine) or invalid.
  */
@@ -382,6 +547,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     isInternalTransfer: false,
     raw: {
       txid,
+      txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
       exchangeAddress: address

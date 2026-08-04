@@ -83,7 +83,7 @@ export interface CsvImportRow {
  */
 export interface ExchangeConnectionRow {
   id: string;           // makeId('exc')
-  exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin')
+  exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit')
   label?: string;       // user-assigned friendly name, e.g. "My Binance"
   apiKey?: string;
   secret?: string;
@@ -621,7 +621,7 @@ const EXCHANGE_CSV_SOURCES = new Set([
 ]);
 
 /**
- * The five Exchange Auto-Sync sources (`<exchange>_api`). API-synced rows set
+ * The Exchange Auto-Sync sources (`<exchange>_api`). API-synced rows set
  * `source` to one of these and build `sourceRef` to collide with the CSV
  * parsers' refs, so the existing dedup machinery dedups API-vs-API and
  * API-vs-CSV. Keep in sync with `SYNC_EXCHANGES` in lib/exchangeSync/types.ts.
@@ -631,7 +631,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'coinbase_api',
   'kraken_api',
   'okx_api',
-  'kucoin_api'
+  'kucoin_api',
+  'bybit_api'
 ]);
 
 /**
@@ -1932,6 +1933,27 @@ export async function deduplicateTransactions(): Promise<number> {
     toDelete.push(api.id);
   }
 
+  // Bybit executions are reconciled into one durable API row per Order ID.
+  // When an order-history CSV twin exists, keep the CSV row authoritative and
+  // embed the API row so deleting either source remains recoverable/auditable.
+  const bybitCsvByRef = new Map<string, Transaction[]>();
+  for (const row of all) {
+    if (row.source !== 'bybit' || !row.sourceRef || row.deletedSourceEvidence) continue;
+    const bucket = bybitCsvByRef.get(row.sourceRef) ?? [];
+    bucket.push(row);
+    bybitCsvByRef.set(row.sourceRef, bucket);
+  }
+  for (const api of all) {
+    if (api.source !== 'bybit_api' || !api.sourceRef || !api.importBatchId || toDelete.includes(api.id)) continue;
+    const csv = bybitCsvByRef.get(api.sourceRef)?.find((row) => !row.dedupMatchedApiRow);
+    if (!csv) continue;
+    const identity = `${api.importBatchId}:bybit-order:${api.sourceRef}`;
+    csv.dedupMatchedApiId = identity;
+    csv.dedupMatchedApiRow = api;
+    reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
+    toDelete.push(api.id);
+  }
+
   const score = (row: Transaction) =>
     (row.deletedSourceEvidence ? 16 : 0) +
     (row.dedupMatchedApiId ? 8 : 0) +
@@ -2030,6 +2052,8 @@ export async function filterAlreadyImported(transactions: Transaction[]): Promis
       t.source === 'binance' && economicKey &&
       existingApiEconomicKeys.has(economicKey)
     ) return true;
+    if (t.source === 'bybit' && t.sourceRef && existing.some((row) =>
+      row.source === 'bybit_api' && row.sourceRef === t.sourceRef)) return true;
     const exKey = exactExchangeKey;
     if (exKey && existingExchangeKeys.has(exKey)) return false;
     const sourceKey = transactionSourceKey(t);
