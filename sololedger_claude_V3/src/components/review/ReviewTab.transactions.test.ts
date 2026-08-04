@@ -88,6 +88,8 @@ describe('ReviewTab — item 10: richer rows + click-anywhere details', () => {
     expect(source).toContain('<DetailRow label="To">');
     expect(source).toContain('<DetailRow label="Value">');
     expect(source).toContain('<DetailRow label="Cost basis">');
+    expect(source).toContain('Review Cost Analysis');
+    expect(source).toContain('[role="tab"][aria-controls="transaction-panel-cost"]');
     expect(source).toContain('<DetailRow label="Gain">');
   });
 

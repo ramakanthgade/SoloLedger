@@ -186,7 +186,7 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
       <section aria-label="Source summary" className="grid grid-cols-1 gap-3 sm:grid-cols-3" data-testid="overview-metrics">
         {([
           ['Transactions', snapshot.overview.transactionCount],
-          ['Assets', card.kind === 'wallet' ? snapshot.overview.slices.length : sourceAssets.length],
+          ['Assets', card.kind === 'wallet' ? snapshot.overview.slices.length : sourceAssets.length + zeroAssets.length],
           ['History updates', historyUpdateCount]
         ] as const).map(([label, value]) => (
           <div key={label} className="rounded-2xl border border-hi/10 bg-elev-2 px-4 py-3.5">
