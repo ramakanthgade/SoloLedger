@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from Gate API v4 GET /spot/accounts and CCXT 4.5.68 parseBalanceHelper.",
+  "response": [
+    { "currency": "BTC", "available": "0.40", "locked": "0.10" },
+    { "currency": "USDT", "available": "1200.00", "locked": "0" }
+  ]
+}

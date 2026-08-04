@@ -118,6 +118,21 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['Bybit', 'Account', 'API Management', 'Create New Key'],
     docsUrl: 'https://www.bybit.com/app/user/api-management'
+  },
+  {
+    id: 'gateio',
+    label: 'Gate.io',
+    monogram: 'GT',
+    needsPassphrase: false,
+    formatHint: 'API key + secret',
+    keyInstructions: [
+      'Log in to Gate.io on the web and open Profile → API Management → Sub account and API → APIv4 Keys.',
+      'Create a new APIv4 key and give it a recognizable name.',
+      'Enable read-only access for Spot / Account and Wallet history only. Never enable trading, withdrawals, margin or futures permissions.',
+      'Copy the API Key and API Secret and paste them here. Gate.io does not require a passphrase.'
+    ],
+    path: ['Gate.io', 'Profile', 'API Management', 'APIv4 Keys'],
+    docsUrl: 'https://www.gate.io/myaccount/api_key_manage'
   }
 ];
 

@@ -46,6 +46,7 @@ describe('loadCcxt', () => {
     expect(typeof a.okx).toBe('function');
     expect(typeof a.kucoin).toBe('function');
     expect(typeof a.bybit).toBe('function');
+    expect(typeof a.gate).toBe('function');
   });
 });
 
@@ -93,6 +94,24 @@ describe('createExchangeClient', () => {
     });
     expect((client as unknown as { requiredCredentials: Record<string, boolean> }).requiredCredentials)
       .toMatchObject({ apiKey: true, secret: true, password: false });
+  });
+
+  it('maps gateio to CCXT gate and avoids unified/currency/margin probes', async () => {
+    const client = await createExchangeClient(row({ exchange: 'gateio' }));
+    const raw = client as unknown as {
+      id: string;
+      options: Record<string, unknown>;
+      has: Record<string, unknown>;
+      requiredCredentials: Record<string, boolean>;
+      publicMarginGetCurrencyPairs: () => Promise<unknown[]>;
+    };
+    expect(raw.id).toBe('gate');
+    expect(raw.options).toMatchObject({
+      defaultType: 'spot', fetchMarkets: { types: ['spot'] }, unifiedAccount: false, fetchCurrencies: false
+    });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(await raw.publicMarginGetCurrencyPairs()).toEqual([]);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
   });
 
   it('does not set password for exchanges without a passphrase', async () => {
@@ -189,6 +208,7 @@ describe('syncErrorMessage', () => {
     expect(syncErrorMessage('permission', 'okx')).toContain('OKX');
     expect(syncErrorMessage('network', 'kucoin')).toContain('KuCoin');
     expect(syncErrorMessage('relay_auth', 'kraken')).toContain('sign in');
+    expect(syncErrorMessage('invalid_key', 'gateio')).toContain('Gate.io');
   });
 
   it('region_blocked copy points users at CSV import', () => {

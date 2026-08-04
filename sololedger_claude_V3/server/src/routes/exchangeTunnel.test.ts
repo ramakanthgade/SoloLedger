@@ -194,7 +194,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['kraken', 'api.kraken.com', '/0/public/Time'],
     ['okx', 'www.okx.com', '/api/v5/public/time'],
     ['kucoin', 'api.kucoin.com', '/api/v1/timestamp'],
-    ['bybit', 'api.bybit.com', '/v5/market/time']
+    ['bybit', 'api.bybit.com', '/v5/market/time'],
+    ['gateio', 'api.gateio.ws', '/api/v4/spot/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -327,6 +328,22 @@ describe('3. header allowlist', () => {
       'x-bapi-recv-window': '5000'
     });
   });
+
+  it('gateio: forwards only KEY, Timestamp and SIGN', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"label":"INVALID_KEY"}', 401));
+    await rawRequest({
+      path: '/gateio/api/v4/spot/accounts',
+      headers: {
+        ...AUTH,
+        'x-exchange-key': 'GATE_KEY',
+        'x-exchange-timestamp': '1700000000',
+        'x-exchange-sign': 'signature',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+    const [, init] = lastUpstreamCall();
+    expect(init.headers).toEqual({ key: 'GATE_KEY', timestamp: '1700000000', sign: 'signature' });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -381,6 +398,24 @@ describe('4. exchangeId and path validation', () => {
       expect(res.status).toBe(400);
       expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
     }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('Gate.io allows only exact read-only spot/wallet GET endpoints', async () => {
+    for (const path of [
+      '/gateio/api/v4/spot/orders',
+      '/gateio/api/v4/margin/accounts',
+      '/gateio/api/v4/futures/usdt/accounts',
+      '/gateio/api/v4/wallet/transfers',
+      '/gateio/api/v4/withdrawals'
+    ]) {
+      const res = await client(path, { headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    const post = await client('/gateio/api/v4/spot/my_trades', { method: 'POST', headers: AUTH });
+    expect(post.status).toBe(400);
+    expect(post.headers.get('x-sololedger-error')).toBe('bad_path');
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 });

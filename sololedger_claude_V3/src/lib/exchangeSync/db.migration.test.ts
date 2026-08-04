@@ -79,6 +79,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'binance_api',
       'bybit_api',
       'coinbase_api',
+      'gateio_api',
       'kraken_api',
       'kucoin_api',
       'okx_api'

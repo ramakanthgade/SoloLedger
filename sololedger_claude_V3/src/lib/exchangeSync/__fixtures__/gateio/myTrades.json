@@ -1,0 +1,36 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from Gate API v4 GET /spot/my_trades and CCXT 4.5.68 fetchMyTrades parser comments.",
+  "response": [
+    {
+      "id": "gt-fill-1001",
+      "create_time": "1735689600",
+      "create_time_ms": "1735689600123.000000",
+      "currency_pair": "BTC_USDT",
+      "side": "buy",
+      "role": "taker",
+      "amount": "0.10000000",
+      "price": "50000.00",
+      "order_id": "gt-order-501",
+      "fee": "0.00010000",
+      "fee_currency": "BTC",
+      "point_fee": "0",
+      "gt_fee": "0"
+    },
+    {
+      "id": "gt-fill-1002",
+      "create_time": "1735776000",
+      "create_time_ms": "1735776000456.000000",
+      "currency_pair": "ETH_USDT",
+      "side": "sell",
+      "role": "maker",
+      "amount": "2.00000000",
+      "price": "3000.00",
+      "order_id": "gt-order-502",
+      "fee": "6.00000000",
+      "fee_currency": "USDT",
+      "point_fee": "0",
+      "gt_fee": "0"
+    }
+  ]
+}

@@ -2,11 +2,14 @@
 
 Pull trades/deposits/withdrawals directly from a user's exchange API key
 (read-only) into the normal SoloLedger transaction store — initial full
-history + incremental syncs — with zero new dedup machinery: synced rows
-carry `sourceRef`s that collide with the CSV parsers' refs, so the existing
-`deduplicateTransactions()` removes API↔CSV twins automatically.
+history + incremental syncs — with zero new dedup machinery: synced rows use
+stable `sourceRef`s, and connectors with a verified vendor-export mapping make
+those refs collide with their CSV parser twins so the existing
+`deduplicateTransactions()` removes them automatically. Gate.io API replay
+idempotence is proven; its CSV collision is fixture-demonstrated only because
+the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -75,7 +78,12 @@ a sync discards any staged preview (with a warning).
   coinbase/okx/kucoin/bybit. Bybit V5 executions use 6.5 d windows plus the
   opaque `nextPageCursor`; deposits/withdrawals use 29 d windows plus cursor
   (limits 100 and 50 respectively). Kraken trades paginate by `ofs` (50 fills
-  per call) inside one window. Binance has its separate fromId/23.5 h plan.
+  per call) inside one window. Gate.io trades/deposits/withdrawals use strict
+  29 d forward windows. Trades use 1-based pages (limit 1000); wallet history
+  uses offsets (deposit limit 500, withdrawal limit 100). Before Gate's
+  ~100,000 maximum offset would be exceeded, a still-dense window is bisected
+  and replayed; an unsplittable same-second window returns partial/nonadvancing
+  instead of skipping data or looping. Binance has its separate fromId/23.5 h plan.
 - Budgets: `MAX_PAGES_PER_PHASE = 200` caps **data pages** (pages with
   rows); empty-window probes have their own `MAX_EMPTY_HOPS_PER_PHASE =
   4000` so an initial sync can skip across silent years without going
@@ -122,10 +130,14 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | okx | `trade.order ?? trade.id ?? formula` (**order first** — okx.ts prefers `ordId`) | `transfer.id ?? formula` |
 | kucoin | `trade.id ?? formula` | `transfer.id ?? formula` |
 | bybit | aggregate executions by `trade.order` → `sourceRef = orderId` (== CSV `Order ID`); durable `execId` evidence is unioned across syncs and recomputes the order row | withdrawals prefer `withdrawId`; deposits use `txid + txIndex/native id` before formula fallback |
+| gateio | `trade.id` (closest available counterpart to beta CSV `ID`; equivalence is not live-verified) | `transfer.id` (same beta caveat) |
 
-`dedup.contract.test.ts` proves the collisions pairwise (real CSV parsers
-vs real ccxt parsing) and end-to-end: CSV import → replay sync → **zero
-net-new rows**, CSV twins survive (they win the survivor score).
+`dedup.contract.test.ts` proves the established connector collisions pairwise
+(real CSV parsers vs real ccxt parsing) and end-to-end: CSV import → replay
+sync → **zero net-new rows**, CSV twins survive (they win the survivor score).
+Gate.io separately proves API↔API replay idempotence and exercises both CSV/API
+orders against hand-authored twins; that fixture is not evidence that Gate's
+current vendor export populates its beta `ID` column with the same native ids.
 
 ## Validation tiers
 
@@ -162,6 +174,12 @@ hand, because Binance geo-blocks this build environment (HTTP 451, see
 `region_blocked` above) so nothing could be recorded live. When tier-4
 runs against a real account, refresh the Binance fixtures with sanitized
 real responses (mask account ids/addresses) and flip `_recorded`.
+
+Gate.io fixtures carry their own `gateio/provenance.json`: they are
+schema-faithful transcriptions of official API v4 examples and CCXT 4.5.68's
+`gate` parser comments, with `_recorded: false`. The replay tests still drive
+the real CCXT client and signing/tunnel path; they are not evidence from a
+live Gate.io account.
 
 ## Known limitations / caveats
 
@@ -221,6 +239,14 @@ real responses (mask account ids/addresses) and flip `_recorded`.
     only execution-derived economics/evidence. Transfer API rows remain
     API-idempotent but have no CSV-twin guarantee. Complete withdrawal history
     requires the read-only key to belong to the Bybit master account / master UID.
+13. **Gate.io CSV schema is beta** — the existing generic Gate.io parser has
+    one `ID` column across trades and transfers, but its export provenance is
+    not documented and no live account was available to verify that it equals
+    API v4 fill ids (`trade.id`) or wallet record ids (`d…` / `w…`). The API
+    connector uses those native ids because they are the strongest stable
+    references available, and hand-authored CSV twins exercise the intended
+    collision. Real exports may diverge; do not treat the fixture collision as
+    a universal zero-duplicate guarantee. API↔API replay remains idempotent.
 
 ## Adding an exchange?
 
