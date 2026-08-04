@@ -1,6 +1,5 @@
 import { useMemo, useState } from 'react';
 import { Check, ChevronRight, Search, Wallet } from 'lucide-react';
-import { Badge } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import type { ExchangeId } from '@/lib/exchangeSync';
 import { AUTO_SYNC_EXCHANGES } from '@/components/import/autoSyncExchanges';
@@ -35,15 +34,11 @@ interface Cell {
   searchText?: string;
   /** Generic affordance (not a brand) — render the neutral lucide glyph chip. */
   genericGlyph?: 'wallet';
-  capability?: { label: string; tone: 'neutral' | 'primary' | 'warn' };
-  added?: boolean;
   selection: WhichSelection;
   modes?: Array<{
     kind: 'file' | 'api';
     label: string;
     hint: string;
-    capability: string;
-    capabilityTone: 'neutral' | 'primary' | 'warn';
     active: boolean;
     tone?: 'primary' | 'gain' | 'warn';
     selection: WhichSelection;
@@ -69,27 +64,23 @@ function exchangeCells(
 ): { india: Cell[]; global: Cell[] } {
   const byId = new Map<string, Cell>();
   for (const source of IMPORT_SOURCES) {
+    // Parser maturity belongs in internal catalog metadata, not in the picker:
+    // every rendered action here is supported and should read simply as such.
+    const formatHint = source.formatHint.replace(/\s*·?\s*schema-compatible beta/gi, '');
     const selection: WhichSelection = { kind: 'exchange-file', id: source.id, label: source.label };
     byId.set(source.id, {
       id: source.id,
       label: source.label,
-      meta: source.id === 'other' ? 'Any CSV / Excel' : source.formatHint,
+      meta: source.id === 'other' ? 'Any CSV / Excel' : formatHint,
       searchText: `${source.id} ${source.formatHint}`,
       iconId: source.id === 'other' ? null : source.id,
-      added: fileImported.has(source.id),
       selection,
       modes: [{
         kind: 'file',
         label: fileImported.has(source.id) ? 'CSV imported' : 'Import file',
-        hint: source.formatHint,
-        capability:
-          source.fileSupport === 'verified'
-            ? 'Verified file import'
-            : source.fileSupport === 'schema-beta'
-              ? 'Schema-compatible beta'
-              : 'Flexible file import',
-        capabilityTone: source.fileSupport === 'schema-beta' ? 'warn' : source.fileSupport === 'verified' ? 'primary' : 'neutral',
+        hint: formatHint,
         active: fileImported.has(source.id),
+        tone: fileImported.has(source.id) ? 'gain' : undefined,
         selection
       }]
     });
@@ -109,8 +100,6 @@ function exchangeCells(
               ? 'Needs attention'
               : 'Connect API',
       hint: apiState === 'connected' ? 'Ready to sync' : 'Read-only key',
-      capability: 'API sync',
-      capabilityTone: 'primary' as const,
       active: apiState !== undefined,
       tone: apiState === 'synced' ? 'gain' as const : apiState === 'attention' ? 'warn' as const : 'primary' as const,
       selection
@@ -125,7 +114,6 @@ function exchangeCells(
         label: exchange.label,
         meta: 'API sync with read-only credentials',
         iconId: exchange.id,
-        added: apiState !== undefined,
         selection,
         modes: [apiMode]
       });
@@ -170,7 +158,6 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
           meta: w.subtitle,
           iconId: w.logo ? w.id : null,
           genericGlyph: w.genericGlyph,
-          added: false,
           selection: {
             kind: 'wallet-app',
             id: w.id,
@@ -208,8 +195,6 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
           : 'Public wallet address',
       searchText: `${chain.id} ${chain.asset} ${chain.provider}`,
       iconId: chainIconId(chain.id) ?? null,
-      capability: { label: 'Address support', tone: 'primary' },
-      added: false,
       selection: { kind: 'chain', id: chain.id, label: chain.label }
     });
     return [
@@ -280,33 +265,33 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
               {section.heading}
             </p>
           )}
-          <div className={cn(flow === 'exchange' ? 'flex flex-col gap-2' : 'grid grid-cols-1 gap-2 sm:grid-cols-2')}>
+          <div className="overflow-hidden rounded-xl border border-hi/10 bg-elev-1 divide-y divide-hi/10">
             {section.cells.map((cell) => cell.modes && cell.modes.length > 0 ? (
               <div
                 key={cell.id}
-                className="grid min-h-11 grid-cols-[32px_minmax(0,1fr)] items-center gap-x-3 gap-y-2 rounded-xl border border-hi/10 bg-elev-1 px-3 py-2"
+                className="grid min-h-[68px] grid-cols-[40px_minmax(0,1fr)] items-center gap-x-3 gap-y-2 bg-elev-1 px-3.5 py-2.5 sm:grid-cols-[40px_minmax(7rem,1fr)_auto]"
                 aria-label={`${cell.label} import options`}
                 data-testid={`exchange-row-${cell.id}`}
               >
-                <BrandIcon id={cell.iconId} fallback={cell.label} size={32} />
-                <span className="min-w-[8rem] flex-1">
+                <BrandIcon id={cell.iconId} fallback={cell.label} size={40} />
+                <span className="min-w-0">
                   <span className="block text-sm font-bold text-hi">{cell.label}</span>
                   <span className="block text-[11px] text-low">{cell.meta}</span>
                 </span>
-                <span className="col-span-2 grid grid-cols-1 gap-2">
+                <span className="col-span-2 flex gap-2 pl-[52px] sm:col-span-1 sm:pl-0">
                   {cell.modes.map((mode) => (
                     <button
                       key={mode.kind}
                       type="button"
                       onClick={() => onPick(mode.selection)}
-                      aria-label={`${cell.label} ${mode.label} · ${mode.capability}`}
+                      aria-label={`${cell.label} ${mode.label}`}
                       title={mode.hint}
                       data-testid={`${cell.id}-mode-${mode.kind}`}
                       className={cn(
-                        'flex min-w-0 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left text-xs font-semibold transition-colors',
+                        'flex h-11 min-w-0 flex-1 items-center justify-center gap-1.5 rounded-lg border px-3 text-left text-xs font-semibold transition-colors sm:h-9 sm:flex-none',
                         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
                         mode.active
-                          ? mode.kind === 'file' || mode.tone === 'primary'
+                          ? mode.tone === 'primary'
                             ? 'border-primary/30 bg-primary/10 text-primary'
                             : mode.tone === 'warn'
                               ? 'border-warn/30 bg-warn/10 text-warn'
@@ -315,9 +300,6 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                       )}
                     >
                       {mode.active && <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={3} aria-hidden="true" />}
-                      <Badge tone={mode.capabilityTone} className="px-1.5 py-0 text-[9px] leading-3">
-                        <span>{mode.capability}</span>
-                      </Badge>
                       <span className="min-w-0 flex-1 truncate">{mode.label}</span>
                       {!mode.active && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden="true" />}
                     </button>
@@ -331,10 +313,7 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                 data-testid={`choice-${flow}-${cell.id}`}
                 onClick={() => onPick(cell.selection)}
                 className={cn(
-                  'relative min-h-11 w-full rounded-xl border border-hi/10 bg-elev-1 px-3 py-2.5 text-left',
-                  cell.capability
-                    ? 'grid grid-cols-[32px_minmax(0,1fr)] items-center gap-x-2.5 gap-y-1.5'
-                    : 'flex items-center gap-3',
+                  'relative flex min-h-[68px] w-full items-center gap-3 bg-elev-1 px-3.5 py-2.5 text-left',
                   'transition-colors hover:border-primary/40 hover:bg-primary/[0.04]',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60'
                 )}
@@ -353,26 +332,9 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                 )}
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-bold text-hi">{cell.label}</span>
-                  <span className={cn('text-[11px] text-low', cell.capability ? 'sr-only' : 'block')}>{cell.meta}</span>
+                  <span className="block text-[11px] text-low">{cell.meta}</span>
                 </span>
-                {cell.capability && (
-                  <Badge tone={cell.capability.tone} className="col-span-2 justify-self-start px-2 py-0 text-[10px]">
-                    {cell.capability.label}
-                  </Badge>
-                )}
-                {cell.added ? (
-                  <Badge
-                    tone={
-                      cell.modes?.[0]?.kind === 'file'
-                        ? 'primary'
-                        : cell.modes?.[0]?.tone ?? 'gain'
-                    }
-                  >
-                    {cell.modes?.[0]?.label ?? 'Added'}
-                  </Badge>
-                ) : !cell.capability ? (
-                  <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden="true" />
-                ) : null}
+                <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden="true" />
               </button>
             ))}
           </div>

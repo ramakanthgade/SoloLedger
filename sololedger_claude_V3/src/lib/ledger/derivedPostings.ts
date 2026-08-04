@@ -306,7 +306,24 @@ function signedPrincipal(transaction: Transaction): number {
   return 0;
 }
 
-function legsFor(transaction: Transaction): PostingLeg[] {
+function isExchangeCustodyScope(transaction: Transaction, scope: AccountScopeResolution): boolean {
+  if (scope.accountScopeId.startsWith('exchange:')) return true;
+  if (scope.accountScopeId.startsWith('wallet:')) return false;
+  return transaction.source === 'binance' || transaction.source === 'binance_spot' ||
+    transaction.source === 'binance_transfers' || transaction.source === 'binance_options';
+}
+
+function postingLegAssetKey(
+  transaction: Transaction,
+  leg: 'principal' | 'counter' | 'fee',
+  scope: AccountScopeResolution
+): string {
+  return transactionLegAssetKey(transaction, leg, {
+    exchangeCustody: isExchangeCustodyScope(transaction, scope)
+  });
+}
+
+function legsFor(transaction: Transaction, scope: AccountScopeResolution): PostingLeg[] {
   if (transaction.isSpam) return [];
   const legs: PostingLeg[] = [];
   if (transaction.type === 'fee') {
@@ -314,7 +331,7 @@ function legsFor(transaction: Transaction): PostingLeg[] {
     if (quantity !== 0 && Number.isFinite(quantity)) {
       legs.push({
         role: 'fee', phase: 30, asset: normalizeAssetSymbol(transaction.asset),
-        assetKey: transactionLegAssetKey(transaction, 'principal'), quantity, position: 0
+        assetKey: postingLegAssetKey(transaction, 'principal', scope), quantity, position: 0
       });
     }
     return legs;
@@ -323,7 +340,7 @@ function legsFor(transaction: Transaction): PostingLeg[] {
   if (principal !== 0 && Number.isFinite(principal)) {
     legs.push({
       role: 'principal', phase: 10, asset: normalizeAssetSymbol(transaction.asset),
-      assetKey: transactionLegAssetKey(transaction, 'principal'), quantity: principal, position: 0
+      assetKey: postingLegAssetKey(transaction, 'principal', scope), quantity: principal, position: 0
     });
   }
   if (
@@ -333,14 +350,14 @@ function legsFor(transaction: Transaction): PostingLeg[] {
     const sign = transaction.type === 'buy' || transaction.type === 'nft_buy' ? -1 : 1;
     legs.push({
       role: 'counter', phase: 20, asset: normalizeAssetSymbol(transaction.counterAsset),
-      assetKey: transactionLegAssetKey(transaction, 'counter'),
+      assetKey: postingLegAssetKey(transaction, 'counter', scope),
       quantity: sign * Math.abs(transaction.counterAmount), position: 1
     });
   }
   if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
     legs.push({
       role: 'fee', phase: 30, asset: normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset),
-      assetKey: transactionLegAssetKey(transaction, 'fee'), quantity: -Math.abs(transaction.feeAmount), position: 2
+      assetKey: postingLegAssetKey(transaction, 'fee', scope), quantity: -Math.abs(transaction.feeAmount), position: 2
     });
   }
   return legs;
@@ -354,7 +371,7 @@ export function deriveTransactionPostings(
   const evidence = transaction.deletedSourceEvidence
     ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
     : transactionEvidence(transaction);
-  const legs = legsFor(transaction);
+  const legs = legsFor(transaction, scope);
   const postings: DerivedPosting[] = [];
   let previousPhase: PostingPhase | undefined;
   let ordinal = 0;
@@ -419,7 +436,7 @@ function appendTransactionPostings(
     const quantity = -Math.abs(transaction.amount);
     if (quantity !== 0 && Number.isFinite(quantity)) {
       appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
-        normalizeAssetSymbol(transaction.asset), transactionLegAssetKey(transaction, 'principal'), quantity);
+        normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), quantity);
     }
     return;
   }
@@ -429,11 +446,11 @@ function appendTransactionPostings(
       : -Math.abs(transaction.amount);
     if (quantity !== 0 && Number.isFinite(quantity)) {
       appendDerivedPosting(target, transaction, scope, evidence, 'principal', 10,
-        normalizeAssetSymbol(transaction.asset), transactionLegAssetKey(transaction, 'principal'), quantity);
+        normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), quantity);
     }
     if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
       appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
-        normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset), transactionLegAssetKey(transaction, 'fee'),
+        normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset), postingLegAssetKey(transaction, 'fee', scope),
         -Math.abs(transaction.feeAmount));
     }
     return;
@@ -441,18 +458,18 @@ function appendTransactionPostings(
   const principal = signedPrincipal(transaction);
   if (principal !== 0 && Number.isFinite(principal)) {
     appendDerivedPosting(target, transaction, scope, evidence, 'principal', 10,
-      normalizeAssetSymbol(transaction.asset), transactionLegAssetKey(transaction, 'principal'), principal);
+      normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), principal);
   }
   if (transaction.counterAsset && transaction.counterAmount != null && Number.isFinite(transaction.counterAmount) &&
     COUNTER_LEG_TYPES.has(transaction.type)) {
     const sign = transaction.type === 'buy' || transaction.type === 'nft_buy' ? -1 : 1;
     appendDerivedPosting(target, transaction, scope, evidence, 'counter', 20,
-      normalizeAssetSymbol(transaction.counterAsset), transactionLegAssetKey(transaction, 'counter'),
+      normalizeAssetSymbol(transaction.counterAsset), postingLegAssetKey(transaction, 'counter', scope),
       sign * Math.abs(transaction.counterAmount));
   }
   if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
     appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
-      normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset), transactionLegAssetKey(transaction, 'fee'),
+      normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset), postingLegAssetKey(transaction, 'fee', scope),
       -Math.abs(transaction.feeAmount));
   }
 }

@@ -58,6 +58,7 @@ export function buildPriceRequestsForTransactions(
         contractAddress,
         platform,
         chain: t.chain,
+        source: t.source,
         coingeckoApiKey: settings.coingeckoApiKey,
         alchemyApiKey: settings.alchemyApiKey,
         birdeyeApiKey: settings.birdeyeApiKey,

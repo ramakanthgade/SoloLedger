@@ -96,6 +96,33 @@ describe('buildHoldingsProjection', () => {
     expect(zero.slices[0]).toMatchObject({ quantity: 0, authorityQuantity: 0, verificationStatus: 'verified_authority' });
   });
 
+  it('matches symbol-keyed Binance authority for routed assets in full and incremental projections', () => {
+    const busd = apiTx({
+      id: 'busd', timestamp: NOW - 2_000, asset: 'BUSD', chain: 'bsc',
+      contractAddress: '0xe9e7cea3dedca5984780bafc599bd69add087d56'
+    });
+    const sol = apiTx({ id: 'sol', timestamp: NOW - 1_000, asset: 'SOL', chain: 'solana' });
+    const busdAuthority = authorityAsset({ id: 'busd-authority', asset: 'BUSD', assetKey: 'asset:BUSD', quantity: 11 });
+    const solAuthority = authorityAsset({ id: 'sol-authority', asset: 'SOL', assetKey: 'asset:SOL', quantity: 13 });
+    const previousInput = input({
+      transactions: [busd], snapshots: [snapshot()], assets: [busdAuthority], coverage: [coverage()]
+    });
+    const previous = buildHoldingsProjection(previousInput);
+    const nextInput = input({
+      transactions: [busd, sol], snapshots: [snapshot()], assets: [busdAuthority, solAuthority], coverage: [coverage()]
+    });
+
+    const incremental = appendHoldingsProjection(previous, nextInput, sol);
+    const rebuilt = buildHoldingsProjection(nextInput);
+
+    expect(incremental).toEqual(rebuilt);
+    expect(rebuilt.holdings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetKey: 'asset:BUSD', quantity: 11, chain: undefined, contractAddress: undefined }),
+      expect.objectContaining({ assetKey: 'asset:SOL', quantity: 13, chain: undefined, contractAddress: undefined })
+    ]));
+    expect(rebuilt.slices.every((slice) => slice.verificationStatus === 'verified_authority')).toBe(true);
+  });
+
   it('falls back to postings for stale authority', () => {
     const result = buildHoldingsProjection(input({
       transactions: [apiTx()], snapshots: [snapshot({ asOf: NOW - 86_400_001 })],
@@ -257,7 +284,7 @@ describe('buildHoldingsProjection', () => {
       scopeFilter: { scopeIds: ['exchange:c1'] }
     }));
     expect(result.holdings[0]).toMatchObject({
-      asset: 'SELECTED', assetKey: `evm:1:${contractAddress}`, contractAddress
+      asset: 'SELECTED', assetKey: 'asset:SELECTED', chain: undefined, contractAddress: undefined
     });
   });
 

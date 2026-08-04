@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/card';
 import { currentPriceFor, valueHoldings, type PriceIndex } from '@/lib/dashboard/dashboardModel';
 import type { AuthorityBalanceFallbackReason } from '@/lib/reconcile/authorityBalanceModel';
 import { CHAINS } from '@/lib/rpc/providers';
-import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import { EVM_CHAIN_NUMERIC_IDS, canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { cn, formatCompactAmount } from '@/lib/utils';
 import type { ConnectionCardData } from './connectionModel';
 import { relativeTime, shortAddress } from './connectionModel';
@@ -57,9 +57,54 @@ interface SourceAssetView {
   key: string;
   asset: string;
   chain?: string;
+  contractAddress?: string;
   amount: number;
   value: number | null;
   atCost: boolean;
+}
+
+const EVM_CHAIN_BY_NUMERIC_ID = new Map(
+  Object.entries(EVM_CHAIN_NUMERIC_IDS).map(([chain, numericId]) => [numericId, chain])
+);
+
+function chainFromAssetKey(key: string): string | undefined {
+  if (key === 'bitcoin:native' || key.startsWith('bitcoin:')) return 'bitcoin';
+  if (key === 'solana:native' || key.startsWith('solana:')) return 'solana';
+  if (key === 'starknet:native' || key.startsWith('starknet:')) return 'starknet';
+  if (key.startsWith('evm:custom:')) return 'custom_evm';
+  const evmMatch = /^(?:unresolved:)?evm:([^:]+):/.exec(key);
+  return evmMatch ? normalizeDisplayChain(evmMatch[1]) : undefined;
+}
+
+function normalizeDisplayChain(chain: string | undefined): string | undefined {
+  if (!chain) return undefined;
+  const normalized = chain.trim().toLowerCase();
+  if (normalized === 'custom' || normalized === 'custom_evm' || normalized.startsWith('custom:')) return 'custom_evm';
+  return EVM_CHAIN_BY_NUMERIC_ID.get(normalized) ?? normalized;
+}
+
+function contractFromAssetKey(key: string): string | undefined {
+  // An unresolved symbol placeholder is not a contract address and should
+  // never be presented as one.
+  if (key.startsWith('unresolved:')) return undefined;
+  if (key.startsWith('evm:custom:')) {
+    const parts = key.slice('evm:custom:'.length).split(':');
+    const assetIdentity = parts[parts.length - 1];
+    return assetIdentity && assetIdentity !== 'native' ? assetIdentity : undefined;
+  }
+  const evm = /^evm:[^:]+:(.+)$/.exec(key);
+  if (evm?.[1] && evm[1] !== 'native') return evm[1];
+  for (const prefix of ['solana:', 'starknet:']) {
+    if (key.startsWith(prefix)) {
+      const identity = key.slice(prefix.length);
+      return identity !== 'native' ? identity : undefined;
+    }
+  }
+  return undefined;
+}
+
+function shortContract(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 6)}…${value.slice(-4)}` : value;
 }
 
 export interface ConnectionOverviewProps {
@@ -140,6 +185,7 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
       key: sourceHolding.assetKey,
       asset: holding.asset,
       chain: holding.chain,
+      contractAddress: holding.contractAddress,
       amount: holding.amount,
       value: current ? holding.amount * current.price : holding.costBasis > 0 ? holding.costBasis : null,
       atCost: current == null && holding.costBasis > 0
@@ -158,9 +204,27 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
     }
   }
   const zeroAssets: SourceAssetView[] = [...zeroAssetsByKey].flatMap(([key, row]) =>
-    Math.abs(row.amount) <= 1e-9 ? [{ key, asset: row.asset, amount: 0, value: 0, atCost: false }] : []
+    Math.abs(row.amount) <= 1e-9 ? [{
+      key,
+      asset: row.asset,
+      chain: chainFromAssetKey(key),
+      contractAddress: contractFromAssetKey(key),
+      amount: 0,
+      value: 0,
+      atCost: false
+    }] : []
   ).sort((left, right) => left.asset.localeCompare(right.asset) || left.key.localeCompare(right.key));
   const visibleSourceAssets = showZeroBalances ? [...sourceAssets, ...zeroAssets] : sourceAssets;
+  const repeatedSymbolCounts = visibleSourceAssets.reduce((counts, asset) => {
+    counts.set(asset.asset, (counts.get(asset.asset) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
+  const repeatedSymbolChainCounts = visibleSourceAssets.reduce((counts, asset) => {
+    const chain = normalizeDisplayChain(asset.chain) ?? chainFromAssetKey(asset.key);
+    const key = `${asset.asset}:${chain ?? ''}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+    return counts;
+  }, new Map<string, number>());
   const walletTotal = addressGroups.reduce((sum, group) => sum + group.total, 0);
   const walletAssetCount = addressGroups.reduce((sum, group) => sum + group.assets.length, 0);
   const walletUnpriced = addressGroups.reduce((sum, group) => sum + group.unpriced, 0);
@@ -213,8 +277,13 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
           </div>
           <div className="text-right text-[0.6875rem] leading-relaxed text-faint">{card.kind === 'wallet' && walletAtCost && <p>Some assets valued at cost — no live price cached yet.</p>}{card.kind === 'wallet' && walletUnpriced > 0 && <p>{walletUnpriced} asset{walletUnpriced === 1 ? '' : 's'} without a price — not in the total.</p>}{card.kind !== 'wallet' && sourceAtCost && <p>Valued at cost where no live price is cached.</p>}{card.kind === 'file' && card.csvImport?.optionsBalanceUnavailable && <p className="text-warn" data-testid="detail-options-balance-unavailable">Options balance unavailable — add a current-balance authority to include it.</p>}</div>
         </div>
-        {card.kind !== 'wallet' && zeroAssets.length > 0 && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hi/10 bg-elev-1/50 px-5 py-2.5 text-xs text-low" data-testid="zero-balance-control"><span>{showZeroBalances ? `${plural(zeroAssets.length, 'asset')} with zero balances ${zeroAssets.length === 1 ? 'is' : 'are'} shown.` : `${plural(zeroAssets.length, 'asset')} with zero balances ${zeroAssets.length === 1 ? 'is' : 'are'} hidden.`}</span><Button type="button" size="sm" variant="ghost" onClick={() => setShowZeroBalances((shown) => !shown)}>{showZeroBalances ? 'Hide zeros' : 'Show all'}</Button></div>}
-        {card.kind === 'wallet' ? addressGroups.length === 0 ? <WalletEmpty syncing={syncing} disabled={syncDisabled} onSync={onSync} /> : <div>{addressGroups.map((group) => <div key={group.key} data-testid="detail-address-group">{addressGroups.length > 1 && <div className="flex items-center justify-between gap-3 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5"><p className="truncate font-mono text-xs text-low">{shortAddress(group.address)}</p><p className="text-xs font-semibold tabular-figures text-mid">{formatMoney(group.total)}</p></div>}<ul>{group.assets.map((asset) => <WalletAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul></div>)}</div> : sourceAssets.length === 0 && zeroAssets.length === 0 ? <div className="px-6 py-12 text-center" data-testid="detail-empty-balances"><p className="text-sm font-bold text-hi">No holdings from this source yet</p><p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-low">{card.kind === 'file' ? 'The imported file has no open positions.' : 'Sync to pull this exchange’s current activity.'}</p></div> : visibleSourceAssets.length > 0 ? <ul>{visibleSourceAssets.map((asset) => <SourceAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul> : null}
+        {card.kind === 'wallet' ? addressGroups.length === 0 ? <WalletEmpty syncing={syncing} disabled={syncDisabled} onSync={onSync} /> : <div>{addressGroups.map((group) => <div key={group.key} data-testid="detail-address-group">{addressGroups.length > 1 && <div className="flex items-center justify-between gap-3 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5"><p className="truncate font-mono text-xs text-low">{shortAddress(group.address)}</p><p className="text-xs font-semibold tabular-figures text-mid">{formatMoney(group.total)}</p></div>}<ul>{group.assets.map((asset) => <WalletAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul></div>)}</div> : sourceAssets.length === 0 && zeroAssets.length === 0 ? <div className="px-6 py-12 text-center" data-testid="detail-empty-balances"><p className="text-sm font-bold text-hi">No holdings from this source yet</p><p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-low">{card.kind === 'file' ? 'The imported file has no open positions.' : 'Sync to pull this exchange’s current activity.'}</p></div> : visibleSourceAssets.length > 0 ? <ul>{visibleSourceAssets.map((asset) => {
+          const chain = normalizeDisplayChain(asset.chain) ?? chainFromAssetKey(asset.key);
+          const showChain = (repeatedSymbolCounts.get(asset.asset) ?? 0) > 1 && chain != null;
+          const showContract = showChain && (repeatedSymbolChainCounts.get(`${asset.asset}:${chain}`) ?? 0) > 1;
+          return <SourceAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} showChain={showChain} showContract={showContract} />;
+        })}</ul> : null}
+        {card.kind !== 'wallet' && zeroAssets.length > 0 && <div className="flex flex-wrap items-center justify-between gap-2 bg-elev-1/50 px-5 py-2.5 text-xs text-low" data-testid="zero-balance-control"><span>{showZeroBalances ? `${plural(zeroAssets.length, 'asset')} with zero balances ${zeroAssets.length === 1 ? 'is' : 'are'} shown.` : `${plural(zeroAssets.length, 'asset')} with zero balances ${zeroAssets.length === 1 ? 'is' : 'are'} hidden.`}</span><Button type="button" size="sm" variant="ghost" onClick={() => setShowZeroBalances((shown) => !shown)}>{showZeroBalances ? 'Show less' : 'Show all'}</Button></div>}
       </section>
     </div>
   );
@@ -228,6 +297,8 @@ function WalletAssetRow({ asset, formatMoney }: { asset: WalletAssetView; format
   return <li className="flex items-center gap-3 border-b border-hi/10 px-5 py-3 last:border-b-0"><AssetIcon symbol={asset.asset} size={32} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-hi">{asset.asset}</p><p className="text-xs capitalize text-low">{chainLabel(asset.chain)}</p><p className={cn('text-[0.6875rem]', asset.verificationStatus === 'verified_authority' ? 'text-faint' : 'text-warn')} data-testid="detail-wallet-row-source">{asset.verificationStatus === 'verified_authority' ? 'Current on-chain balance' : 'Estimated from ledger postings'}{asset.verificationStatus === 'posting_fallback' ? ` · ${walletFallbackLabel(asset.fallbackReason)}` : ''}{asset.fallbackReason === 'stale_authority' && asset.authorityAsOf != null ? ` · stale snapshot ${relativeTime(asset.authorityAsOf)} not used for quantity` : ''}</p></div><div className="text-right"><p className="text-sm font-semibold tabular-figures text-hi">{formatCompactAmount(asset.amount)}</p><p className={cn('text-xs tabular-figures', asset.value == null ? 'text-faint' : 'text-low')}>{asset.value != null ? formatMoney(asset.value) : '—'}{asset.atCost && asset.value != null ? ' · at cost' : ''}</p></div></li>;
 }
 
-function SourceAssetRow({ asset, formatMoney }: { asset: SourceAssetView; formatMoney: (value: number) => string }) {
-  return <li className="flex items-center gap-3 border-b border-hi/10 px-5 py-3 last:border-b-0" data-overview-asset-key={asset.key} tabIndex={-1}><AssetIcon symbol={asset.asset} size={32} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-hi">{asset.asset}</p></div><div className="text-right"><p className="text-sm font-semibold tabular-figures text-hi">{formatCompactAmount(asset.amount)}</p><p className={cn('text-xs tabular-figures', asset.value == null ? 'text-faint' : 'text-low')}>{asset.value != null ? formatMoney(asset.value) : '—'}</p></div></li>;
+function SourceAssetRow({ asset, formatMoney, showChain, showContract }: { asset: SourceAssetView; formatMoney: (value: number) => string; showChain: boolean; showContract: boolean }) {
+  const chain = normalizeDisplayChain(asset.chain) ?? chainFromAssetKey(asset.key);
+  const contract = asset.contractAddress ?? contractFromAssetKey(asset.key);
+  return <li className="flex items-center gap-3 border-b border-hi/10 px-5 py-3 last:border-b-0" data-overview-asset-key={asset.key} tabIndex={-1}><AssetIcon symbol={asset.asset} size={32} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-hi">{asset.asset}</p>{showChain && chain && <p className="text-xs text-low">{chainLabel(chain)}{showContract && contract ? ` · ${shortContract(contract)}` : ''}</p>}</div><div className="text-right"><p className="text-sm font-semibold tabular-figures text-hi">{formatCompactAmount(asset.amount)}</p><p className={cn('text-xs tabular-figures', asset.value == null ? 'text-faint' : 'text-low')}>{asset.value != null ? formatMoney(asset.value) : '—'}</p></div></li>;
 }

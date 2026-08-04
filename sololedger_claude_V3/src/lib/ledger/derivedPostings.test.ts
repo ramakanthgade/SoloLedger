@@ -119,6 +119,43 @@ describe('deriveTransactionPostings', () => {
       .map(({ accountScopeId, accountClass, assetKey, signedQuantity }) => ({ accountScopeId, accountClass, assetKey, signedQuantity }));
     expect(projection(csv)).toEqual(projection(api));
   });
+
+  it.each(['SOL', 'BUSD', 'CELO', 'REQ', 'SKL'])(
+    'uses symbol identity for chain-routed Binance API and linked transfer CSV %s custody',
+    (asset) => {
+      const api = tx({
+        id: `api-${asset}`, source: 'binance_api', importBatchId: 'conn-1',
+        type: 'transfer_in', asset: asset.toLowerCase(), chain: asset === 'SOL' ? 'solana' : 'ethereum',
+        contractAddress: asset === 'SOL' || asset === 'CELO' ? undefined : `0x${asset}`
+      });
+      const csv = tx({
+        ...api, id: `csv-${asset}`, source: 'binance_transfers', importBatchId: 'csv-file',
+        dedupMatchedApiRow: api
+      });
+      for (const transaction of [api, csv]) {
+        expect(deriveTransactionPostings(transaction, context)[0]).toMatchObject({
+          accountScopeId: 'exchange:conn-1', assetKey: `asset:${asset}`, asset
+        });
+      }
+    }
+  );
+
+  it('symbol-scopes every exchange trade leg but preserves wallet chain/contract keys', () => {
+    const exchange = tx({
+      source: 'binance_api', importBatchId: 'conn-1', type: 'trade', asset: 'REQ', amount: 2,
+      counterAsset: 'SKL', counterAmount: 3, feeAsset: 'BUSD', feeAmount: 0.1,
+      chain: 'ethereum', contractAddress: '0xreq',
+      raw: { counterContractAddress: '0xskl', feeContractAddress: '0xbusd' }
+    });
+    expect(deriveTransactionPostings(exchange, context).map((posting) => posting.assetKey)).toEqual([
+      'asset:REQ', 'asset:SKL', 'asset:BUSD'
+    ]);
+
+    const wallet = { ...exchange, source: 'rpc:moralis', importBatchId: undefined, walletAddress: '0xWallet' };
+    expect(deriveTransactionPostings(wallet, context).map((posting) => posting.assetKey)).toEqual([
+      'evm:1:0xreq', 'evm:1:0xskl', 'evm:1:0xbusd'
+    ]);
+  });
 });
 
 describe('resolveAccountScope', () => {

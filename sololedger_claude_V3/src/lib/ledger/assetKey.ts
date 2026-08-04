@@ -116,13 +116,25 @@ export function transactionAssetKey(
 
 export function transactionLegAssetKey(
   transaction: Transaction,
-  leg: 'principal' | 'counter' | 'fee'
+  leg: 'principal' | 'counter' | 'fee',
+  options?: { exchangeCustody?: boolean }
 ): string {
-  if (leg === 'principal') return transactionAssetKey(transaction);
-  const asset = leg === 'counter'
-    ? transaction.counterAsset
-    : transaction.feeAsset ?? transaction.asset;
+  const asset = leg === 'principal'
+    ? transaction.asset
+    : leg === 'counter'
+      ? transaction.counterAsset
+      : transaction.feeAsset ?? transaction.asset;
   if (!asset) throw new Error(`${leg} asset is required`);
+
+  // Centralized-exchange balance authorities are symbol-scoped. A chain on an
+  // exchange transfer is route/explorer metadata, not custody identity, unless
+  // an authority explicitly proves chain/contract-separated balances.
+  if (options?.exchangeCustody) {
+    const normalizedAsset = normalizeAssetSymbol(asset);
+    if (!normalizedAsset) throw new Error(`${leg} asset is required`);
+    return `asset:${normalizedAsset}`;
+  }
+  if (leg === 'principal') return transactionAssetKey(transaction);
 
   if (!transaction.chain && !transaction.contractAddress) {
     const raw = transaction.raw;

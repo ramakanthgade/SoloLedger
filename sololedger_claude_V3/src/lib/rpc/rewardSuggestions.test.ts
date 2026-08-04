@@ -19,6 +19,7 @@ vi.mock('@/lib/storage/db', () => ({
 }));
 
 import { applyDefiLlamaRewardSuggestions, countNeedsReview, reclassifyTypePatch } from '@/lib/rpc/rewardSuggestions';
+import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 
 const REWARD_MINT = 'R'.repeat(44);
 const SENDER = 'S'.repeat(44);
@@ -150,7 +151,7 @@ describe('applyDefiLlamaRewardSuggestions', () => {
     // Reject via the REAL reclassify patch (the exact code path ReviewTab uses)
     // so this test breaks if reclassify ever starts clearing the category marker.
     const rejected = store[0];
-    store[0] = { ...rejected, ...reclassifyTypePatch(rejected.flags, 'transfer_in') };
+    store[0] = { ...rejected, ...reclassifyTypePatch(rejected, 'transfer_in') };
     expect(store[0].type).toBe('transfer_in');
     expect(store[0].flags).not.toContain('needs_review'); // left the review queue
     expect(store[0].category).toBe('defi_reward'); // rejection marker persists
@@ -173,7 +174,10 @@ describe('applyDefiLlamaRewardSuggestions', () => {
 describe('reclassifyTypePatch', () => {
   it('strips auto-derived + needs_review flags but returns no category (preserves the rejection marker)', () => {
     const patch = reclassifyTypePatch(
-      ['possible_internal_transfer', 'missing_market_value', 'needs_review', 'duplicate_suspected'],
+      tx({
+        category: 'defi_reward',
+        flags: ['possible_internal_transfer', 'missing_market_value', 'needs_review', 'duplicate_suspected']
+      }),
       'transfer_in'
     );
     expect(patch.type).toBe('transfer_in');
@@ -181,6 +185,26 @@ describe('reclassifyTypePatch', () => {
     // Must NOT touch category — a rejected defi_reward row keeps that marker so
     // applyDefiLlamaRewardSuggestions won't re-suggest it.
     expect('category' in patch).toBe(false);
+  });
+
+  it('clears incompatible Options classification so a user-selected type is not tax-deferred', () => {
+    const premium = tx({
+      type: 'fee',
+      category: 'options_premium',
+      instrumentClass: 'derivative',
+      flags: ['needs_review']
+    });
+    const reclassified = { ...premium, ...reclassifyTypePatch(premium, 'sell') };
+
+    expect(reclassified).toMatchObject({ type: 'sell', flags: [] });
+    expect(reclassified.category).toBeUndefined();
+    expect(reclassified.instrumentClass).toBeUndefined();
+    expect(isDerivativeTransaction(reclassified)).toBe(false);
+  });
+
+  it('preserves canonical premium classification when switching between paid and received shapes', () => {
+    const premium = tx({ type: 'fee', category: 'options_premium', instrumentClass: 'derivative' });
+    expect(reclassifyTypePatch(premium, 'income')).toEqual({ type: 'income', flags: [] });
   });
 });
 

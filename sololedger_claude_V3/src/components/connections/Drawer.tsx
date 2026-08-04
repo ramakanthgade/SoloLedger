@@ -112,7 +112,7 @@ export function Drawer({ open, onClose, label, wide = false, children }: DrawerP
           'transition-transform duration-200 ease-out motion-reduce:transition-none',
           entered ? 'translate-x-0 translate-y-0' : 'translate-y-full sm:translate-y-0 sm:translate-x-full',
           'sm:inset-y-0 sm:left-auto sm:right-0 sm:w-full sm:border-l',
-          wide ? 'sm:max-w-[560px]' : 'sm:max-w-[480px]'
+          wide ? 'sm:max-w-[640px]' : 'sm:max-w-[480px]'
         )}
       >
         {children}

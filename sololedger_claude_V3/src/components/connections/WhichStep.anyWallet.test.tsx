@@ -58,6 +58,8 @@ describe('WhichStep — Any other wallet tile', () => {
     const section = heading.parentElement!;
     const buttons = within(section).getAllByRole('button');
     expect(buttons[buttons.length - 1]).toBe(tile);
+    expect(tile).toHaveClass('min-h-[68px]');
+    expect(tile.parentElement).toHaveClass('divide-y');
   });
 
   it('search matches "any" and "other"', () => {

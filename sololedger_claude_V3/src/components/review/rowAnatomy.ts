@@ -15,6 +15,30 @@
 import type { Transaction, TxType } from '@/types/transaction';
 import { formatCompactAmount, formatCurrency } from '@/lib/utils';
 
+const DEFAULT_TYPE_LABEL: Record<TxType, string> = {
+  buy: 'Buy',
+  sell: 'Sell',
+  trade: 'Swap',
+  transfer_in: 'Receive',
+  transfer_out: 'Send',
+  income: 'Income',
+  gift_sent: 'Gift sent',
+  gift_received: 'Gift received',
+  fee: 'Fee',
+  nft_mint: 'NFT mint',
+  nft_buy: 'NFT buy',
+  nft_sell: 'NFT sell',
+  defi_deposit: 'DeFi deposit',
+  defi_withdraw: 'DeFi withdraw',
+  other: 'Other'
+};
+
+/** Display-only classification. Parser type/category and tax treatment stay unchanged. */
+export function reviewTypeLabel(t: Pick<Transaction, 'type' | 'category'>): string {
+  if (t.category === 'options_premium' && (t.type === 'fee' || t.type === 'income')) return 'Options premium';
+  return DEFAULT_TYPE_LABEL[t.type];
+}
+
 /** Shorten a long address/hash for display: 0x1234…abcd. */
 export function truncateAddress(addr?: string): string {
   if (!addr) return '—';
@@ -236,6 +260,11 @@ export function buildTxSummary(t: Transaction, ctx: SummaryCtx): TxSummary {
   const tail: FlowGain | undefined = disposal
     ? { kind: disposal.gain >= 0 ? 'gain' : 'loss', formatted: formatCurrency(Math.abs(disposal.gain), t.fiatCurrency) }
     : undefined;
+  if (t.category === 'options_premium' && (t.type === 'fee' || t.type === 'income')) {
+    return t.type === 'income'
+      ? { lead: `You received an Options premium of ${amt}${fiat ? ` worth ${fiat}` : ''} ${src}` }
+      : { lead: `You paid an Options premium of ${amt}${fiat ? ` worth ${fiat}` : ''} ${src}` };
+  }
   switch (t.type) {
     case 'buy': {
       // Crypto-to-crypto buy (Bought LPT with USDT): keep the original pair,

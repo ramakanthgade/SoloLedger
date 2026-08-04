@@ -70,7 +70,8 @@ describe('WhichStep — registry-derived chain catalog', () => {
       expect(choice.querySelector('img'), choice.getAttribute('data-testid') ?? '').not.toBeNull();
       expect(choice.querySelector('[data-testid="neutral-chain-glyph"]')).toBeNull();
       expect(choice.querySelector('.bg-aurora')).toBeNull();
-      expect(choice).toHaveTextContent('Address support');
+      expect(choice).toHaveClass('min-h-[68px]');
     }
+    expect(screen.queryByText('Address support')).not.toBeInTheDocument();
   });
 });

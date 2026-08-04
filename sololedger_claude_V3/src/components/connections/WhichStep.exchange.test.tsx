@@ -27,8 +27,8 @@ describe('WhichStep — exchange modes', () => {
   it('shows CSV-only Binance honestly while leaving API auto-sync available', () => {
     renderChooser({ file: ['binance'] });
 
-    expect(screen.getByRole('button', { name: 'Binance CSV imported · Verified file import' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Binance Connect API · API sync' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Binance CSV imported' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Binance Connect API' })).toBeInTheDocument();
     expect(screen.queryByText('Added')).not.toBeInTheDocument();
     expect(screen.queryByText('API synced')).not.toBeInTheDocument();
   });
@@ -36,10 +36,10 @@ describe('WhichStep — exchange modes', () => {
   it('shows independent statuses when both modes exist and routes each selection', () => {
     const onPick = renderChooser({ api: { binance: 'synced' }, file: ['binance'] });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Binance CSV imported · Verified file import' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Binance CSV imported' }));
     expect(onPick).toHaveBeenLastCalledWith({ kind: 'exchange-file', id: 'binance', label: 'Binance' });
 
-    fireEvent.click(screen.getByRole('button', { name: 'Binance API synced · API sync' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Binance API synced' }));
     expect(onPick).toHaveBeenLastCalledWith({ kind: 'exchange-api', id: 'binance', label: 'Binance' });
   });
 
@@ -49,23 +49,26 @@ describe('WhichStep — exchange modes', () => {
     expect(screen.getByText('API synced', { selector: 'span' })).toBeInTheDocument();
   });
 
-  it('labels verified, beta, and API capabilities without implying API support elsewhere', () => {
+  it('shows only supported actions without redundant capability copy', () => {
     renderChooser();
-    expect(screen.getByTestId('binance-mode-file')).toHaveTextContent('Verified file import');
-    expect(screen.getByTestId('kraken-mode-file')).toHaveTextContent('Schema-compatible beta');
-    expect(screen.getByTestId('binance-mode-api')).toHaveTextContent('API sync');
-    expect(screen.getByTestId('bybit-mode-file')).toHaveTextContent('Schema-compatible beta');
-    expect(screen.getByTestId('binance-mode-file')).toHaveAccessibleName(/Verified file import/);
-    expect(screen.getByTestId('kraken-mode-file')).toHaveAccessibleName(/Schema-compatible beta/);
-    expect(screen.getByTestId('binance-mode-api')).toHaveAccessibleName(/API sync/);
+    expect(screen.getByTestId('binance-mode-file')).toHaveAccessibleName('Binance Import file');
+    expect(screen.getByTestId('binance-mode-api')).toHaveAccessibleName('Binance Connect API');
+    expect(screen.queryByText('Verified file import')).not.toBeInTheDocument();
+    expect(screen.getByTestId('addflow-which')).not.toHaveTextContent(/Schema-compatible beta/i);
     expect(screen.queryByTestId('hyperliquid-mode-api')).not.toBeInTheDocument();
   });
 
   it('shows a saved never-synced API row as connected, not synced', () => {
     renderChooser({ api: { binance: 'connected' } });
 
-    expect(screen.getByRole('button', { name: 'Binance API connected · API sync' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Binance API synced · API sync' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Binance API connected' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Binance API synced' })).not.toBeInTheDocument();
+  });
+
+  it('uses non-warning styling for successful imported and synced states', () => {
+    renderChooser({ api: { binance: 'synced' }, file: ['binance'] });
+    expect(screen.getByRole('button', { name: 'Binance CSV imported' })).toHaveClass('text-gain');
+    expect(screen.getByRole('button', { name: 'Binance API synced' })).toHaveClass('text-gain');
   });
 
   it('shows file controls for the complete parser-backed catalog and API controls only for the wired catalog', () => {
