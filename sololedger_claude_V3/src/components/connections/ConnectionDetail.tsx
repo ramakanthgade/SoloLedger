@@ -35,7 +35,7 @@ const NO_ROWS: never[] = [];
 const TABS = [
   { id: 'overview', label: 'Overview' },
   { id: 'reconciliation', label: 'Reconciliation' },
-  { id: 'sync-history', label: 'Sync history' }
+  { id: 'sync-history', label: 'History' }
 ] as const;
 type WorkspaceTab = typeof TABS[number]['id'];
 

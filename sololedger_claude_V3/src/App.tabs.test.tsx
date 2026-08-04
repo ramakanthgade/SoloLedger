@@ -22,11 +22,12 @@ import type { Transaction } from '@/types/transaction';
  * them keeps this a focused, deterministic a11y test.
  */
 vi.mock('@/components/dashboard/DashboardTab', () => ({
-  DashboardTab: (props: { onNavigationIntent?: (intent: object, state: object) => void; restoredDataHealthState?: { filter: string; scrollTop: number }; openDataHealthOnMount?: boolean }) => <div data-testid="panel-dashboard">
+  DashboardTab: (props: { onNavigationIntent?: (intent: object, state: object) => void; onDashboardNavigationIntent?: (intent: object) => void; restoredDataHealthState?: { filter: string; scrollTop: number }; openDataHealthOnMount?: boolean }) => <div data-testid="panel-dashboard">
     Dashboard
     <span data-testid="dashboard-restored">{props.openDataHealthOnMount ? `${props.restoredDataHealthState?.filter}:${props.restoredDataHealthState?.scrollTop}` : 'closed'}</span>
     <button onClick={() => props.onNavigationIntent?.({ id: 'source-1', destination: 'connections', target: { kind: 'exchange', connectionId: 'exact-1' }, workspaceTab: 'reconciliation', focus: { kind: 'asset', assetKey: 'asset:BTC' } }, { filter: 'stale', scrollTop: 420 })}>Remediate source</button>
     <button onClick={() => props.onNavigationIntent?.({ id: 'tx-1', destination: 'transactions', transactionId: 'tx-exact', focus: 'detail-panel', detailTab: 'ledger' }, { filter: 'action', scrollTop: 120 })}>Remediate transaction</button>
+    <button onClick={() => props.onDashboardNavigationIntent?.({ id: 'dashboard-filter', destination: 'transactions', filter: { needsReview: true }, focus: 'filters' })}>Open Dashboard filter</button>
     <button onClick={() => { props.onNavigationIntent?.({ id: 'source-first', destination: 'connections', target: { kind: 'csv', importId: 'first' }, workspaceTab: 'overview', focus: { kind: 'none' } }, { filter: 'action', scrollTop: 1 }); props.onNavigationIntent?.({ id: 'tx-second', destination: 'transactions', transactionId: 'second', focus: 'transaction' }, { filter: 'stale', scrollTop: 2 }); }}>Back-to-back</button>
   </div>
 }));
@@ -267,6 +268,19 @@ describe('App tab navigation (a11y)', () => {
     expect(screen.getByTestId('panel-review')).toHaveTextContent('Review:second');
     expect(headerTabs()[2]).toHaveAttribute('aria-selected', 'true');
     historyBack.mockRestore();
+  });
+
+  it('routes Dashboard-global filters without creating Data Health remediation history', async () => {
+    await renderApp();
+    const replaceState = vi.spyOn(window.history, 'replaceState');
+    const pushState = vi.spyOn(window.history, 'pushState');
+    fireEvent.click(screen.getByRole('button', { name: 'Open Dashboard filter' }));
+    expect(screen.getByTestId('panel-review')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Back to Data Health' })).not.toBeInTheDocument();
+    expect(replaceState).not.toHaveBeenCalled();
+    expect(pushState).not.toHaveBeenCalled();
+    replaceState.mockRestore();
+    pushState.mockRestore();
   });
 
   describe('mobile bottom tab bar', () => {

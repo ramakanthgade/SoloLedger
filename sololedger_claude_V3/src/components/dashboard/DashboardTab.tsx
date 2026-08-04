@@ -35,7 +35,7 @@ import { buildDataHealthModel } from './dataHealthModel';
 import { buildCards } from '@/components/connections/connectionModel';
 import { buildConnectionWorkspaceFromCard, buildConnectionWorkspaceSnapshot, prepareConnectionWorkspaceCollectionIndex } from '@/components/connections/connectionWorkspaceModel';
 import type { ExchangeConnectionView } from '@/lib/exchangeSync';
-import type { NavigationIntent } from '@/lib/navigationIntent';
+import { createNavigationIntent, type NavigationIntent } from '@/lib/navigationIntent';
 import { canonicalWalletAddress, normalizeChainIdentity } from '@/lib/ledger/chainNamespace';
 import { resolveAccountScope } from '@/lib/ledger/derivedPostings';
 import { createHoldingsProjector, createTransactionViewsProjector } from './dashboardProjectionCache';
@@ -434,6 +434,7 @@ export interface DashboardInstrumentation {
 export interface DashboardTabProps {
   instrumentation?: DashboardInstrumentation;
   onNavigationIntent?: (intent: NavigationIntent, state: DataHealthViewState) => void;
+  onDashboardNavigationIntent?: (intent: NavigationIntent) => void;
   restoredDataHealthState?: DataHealthViewState;
   openDataHealthOnMount?: boolean;
 }
@@ -445,8 +446,22 @@ export function historicalRevisionCaughtUp(
   return current.transactionCount === deferred.transactionCount && current.transactions === deferred.transactions;
 }
 
-export function DashboardTab({ instrumentation, onNavigationIntent, restoredDataHealthState, openDataHealthOnMount = false }: DashboardTabProps = {}) {
+export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardNavigationIntent, restoredDataHealthState, openDataHealthOnMount = false }: DashboardTabProps = {}) {
   const { goToImport, goTo } = useTabNav();
+  const openTransactionFilter = (filter: { needsReview?: boolean; needsPrice?: boolean }) => {
+    const navigate = onDashboardNavigationIntent ?? (onNavigationIntent
+      ? (intent: NavigationIntent) => onNavigationIntent(intent, { filter: 'action', scrollTop: 0 })
+      : undefined);
+    if (!navigate) {
+      goTo('review');
+      return;
+    }
+    navigate(createNavigationIntent({
+      destination: 'transactions',
+      filter,
+      focus: 'filters'
+    }));
+  };
   const [transactionSubscription] = useState(createDashboardTransactionsSubscription);
   // Registration belongs to effect lifetime. This effect intentionally comes
   // before useLiveQuery so its setup activates mutation tracking before the
@@ -981,41 +996,39 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
 
     const pnlCell =
       h.unrealized != null ? (
-        // Huge gain text (phantom-scale numbers) must truncate inside the
-        // chip, not overflow the card edge at 390px (D-2) — parents carry
-        // min-w-0 so max-w-full has something real to constrain against.
         <Badge
           tone={h.unrealized >= 0 ? 'gain' : 'loss'}
-          className="max-w-full truncate tabular-figures"
+          className="ml-auto max-w-full flex-col items-end gap-0 whitespace-normal px-2 py-1 leading-tight tabular-figures"
+          data-layout="dashboard-holdings-pnl"
         >
-          {hideBalances
-            ? '••••'
-            : h.unrealizedPct != null
-              ? `${fmtSigned(h.unrealized)} · ${fmtPct(h.unrealizedPct)}`
-              : fmtSigned(h.unrealized)}
+          <span className="max-w-full break-all text-right [overflow-wrap:anywhere]">
+            {hideBalances ? '••••' : fmtSigned(h.unrealized)}
+          </span>
+          {!hideBalances && h.unrealizedPct != null && (
+            <span className="whitespace-nowrap opacity-80">· {fmtPct(h.unrealizedPct)}</span>
+          )}
         </Badge>
       ) : (
         <span className="text-mid">—</span>
       );
 
     const shareCell = (
-      <div className="flex min-w-0 items-center justify-end gap-1.5">
-        <span aria-hidden="true" className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-elev-3">
-          <span
-            className="block h-full rounded-full bg-primary/60"
-            style={{ width: `${Math.min(100, Math.max(sharePct ?? 0, 2))}%` }}
-          />
-        </span>
-        <span className="w-10 shrink-0 text-right text-xs tabular-figures text-low">
-          {sharePct == null ? '—' : sharePct < 0.1 ? '<0.1%' : `${sharePct.toFixed(1)}%`}
-        </span>
-      </div>
+      <span
+        className="block whitespace-nowrap text-right text-xs tabular-figures text-low"
+        aria-label={sharePct == null ? 'Portfolio share unavailable' : `Portfolio share ${sharePct < 0.1 ? 'less than 0.1%' : `${sharePct.toFixed(1)}%`}`}
+        data-layout="dashboard-holdings-share"
+      >
+        {sharePct == null ? '—' : sharePct < 0.1 ? '<0.1%' : `${sharePct.toFixed(1)}%`}
+      </span>
     );
 
     return (
       <div key={key} className="border-b border-hi/10 last:border-b-0">
         {/* desktop row */}
-        <div className="hidden items-center gap-2 px-5 py-3.5 sm:grid sm:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,.9fr)_minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,.9fr)]">
+        <div
+          className="hidden items-center gap-2 px-5 py-3.5 sm:grid sm:grid-cols-[minmax(0,1.3fr)_minmax(0,.9fr)_minmax(0,.75fr)_minmax(0,.85fr)_minmax(7.5rem,1.3fr)_3.25rem]"
+          data-layout="dashboard-holdings-desktop-row"
+        >
           <div className="min-w-0">{assetCell}</div>
           <div className="text-right">
             <p className="text-sm font-semibold tabular-figures text-hi">
@@ -1046,7 +1059,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
               <span className="text-mid">—</span>
             )}
           </div>
-          <div className="min-w-0 text-right">{pnlCell}</div>
+          <div className="min-w-0 text-right" data-layout="dashboard-holdings-pnl-cell">{pnlCell}</div>
           <div>{shareCell}</div>
         </div>
 
@@ -1060,7 +1073,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
               </p>
               <p className="text-xs tabular-figures text-low">{fm(value)}</p>
             </div>
-            <div className="min-w-0 shrink text-right">{pnlCell}</div>
+            <div className="min-w-0 max-w-[55%] text-right" data-layout="dashboard-holdings-mobile-pnl-cell">{pnlCell}</div>
           </div>
         </div>
 
@@ -1299,7 +1312,12 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
                 key={insight.id}
                 insight={insight}
                 onDismiss={dismissInsight}
-                onNavigate={goTo}
+                onNavigate={(tab) => {
+                  if (tab !== 'review') return goTo(tab);
+                  if (insight.kind === 'needs-review') return openTransactionFilter({ needsReview: true });
+                  if (insight.kind === 'needs-price') return openTransactionFilter({ needsPrice: true });
+                  goTo(tab);
+                }}
               />
             ))}
           </div>
@@ -1394,7 +1412,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
           )}
           {valued.length > 0 && (
             <div
-              className="hidden grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_minmax(0,.9fr)_minmax(0,1fr)_minmax(0,1.15fr)_minmax(0,.9fr)] gap-2 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5 text-[0.6875rem] font-bold uppercase tracking-[0.06em] text-faint sm:grid"
+              className="hidden grid-cols-[minmax(0,1.3fr)_minmax(0,.9fr)_minmax(0,.75fr)_minmax(0,.85fr)_minmax(7.5rem,1.3fr)_3.25rem] gap-2 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5 text-[0.6875rem] font-bold uppercase tracking-[0.06em] text-faint sm:grid"
               data-testid="dashboard-holdings-columns"
             >
               <span>Asset</span>
@@ -1491,7 +1509,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
                     </span>
                     <button
                       type="button"
-                      onClick={() => goTo('review')}
+                      onClick={() => openTransactionFilter({ needsReview: true })}
                       className="ml-auto inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline"
                     >
                       Fix →
@@ -1530,7 +1548,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
                     </span>
                     <button
                       type="button"
-                      onClick={() => goTo('review')}
+                      onClick={() => openTransactionFilter({ needsPrice: true })}
                       className="ml-auto inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline"
                     >
                       Fix →

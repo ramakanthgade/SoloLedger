@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import { evaluateSourceCoverage, type SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
@@ -83,7 +83,7 @@ function workspace(
 }
 
 describe('ConnectionSyncHistory', () => {
-  it('renders source creation as a timestamped fact without inventing a completion status', () => {
+  it('renders source creation as a compact disclosure with its identity under Advanced details', () => {
     const source: ConnectionWorkspaceSourceIdentity = {
       kind: 'exchange-api', sourceIdentityId: 'created-only', exchange: 'kraken',
       createdAt: NOW - DAY
@@ -93,9 +93,15 @@ describe('ConnectionSyncHistory', () => {
     }])} />);
 
     const event = screen.getByTestId('sync-history-event');
-    expect(within(event).getByRole('heading', { name: 'Source created' })).toBeInTheDocument();
-    expect(within(event).getByText(/Kraken · created-only/)).toBeInTheDocument();
-    expect(within(event).queryByText(/complete|partial|failed|unknown|pending/i)).not.toBeInTheDocument();
+    expect(within(event).getByRole('heading', { name: 'Source connected' })).toBeInTheDocument();
+    expect(within(event).getAllByText('Kraken').length).toBeGreaterThan(0);
+    expect(event).not.toHaveAttribute('open');
+    expect(within(event).getByText('View details')).toBeInTheDocument();
+    fireEvent.click(event.querySelector('summary')!);
+    expect(event).toHaveAttribute('open');
+    const advanced = within(event).getByText('Advanced details').closest('details')!;
+    expect(advanced).not.toHaveAttribute('open');
+    expect(within(advanced).getByText(/Kraken · created-only/)).toBeInTheDocument();
   });
 
   it('sorts API success evidence newest-first and renders selected authority proof without actions', () => {
@@ -119,16 +125,22 @@ describe('ConnectionSyncHistory', () => {
     expect(screen.getAllByTestId('sync-history-event').map((element) => element.dataset.eventId))
       .toEqual(['authority', 'operation:coverage-api', 'created']);
     const api = screen.getAllByTestId('sync-history-event')[1];
-    expect(within(api).getByText('API sync')).toBeInTheDocument();
-    expect(within(api).getByText(/Binance · Main · api-1/)).toBeInTheDocument();
+    expect(within(api).getByRole('heading', { name: 'API sync completed' })).toBeInTheDocument();
+    expect(within(api).getByText('Main')).toBeInTheDocument();
+    expect(within(api).getByText(/8 records · No failures/)).toBeInTheDocument();
+    const apiAdvanced = within(api).getByText('Advanced details').closest('details')!;
+    expect(apiAdvanced.parentElement).toHaveClass('mt-3');
+    expect(within(apiAdvanced).getByText(/Binance · Main · api-1/)).toBeInTheDocument();
     expect(within(api).getByText(/exchange:api-1 · Spot/)).toBeInTheDocument();
     expect(within(api).getByText(/Discovery universe:/)).toHaveTextContent('Discovery universe: 12');
     expect(within(api).getByText(/Pages: 3/)).toHaveTextContent('required and exhausted');
 
     const authorityEvent = screen.getAllByTestId('sync-history-event')[0];
+    expect(within(authorityEvent).getByRole('heading', { name: 'Balance snapshot saved' })).toBeInTheDocument();
+    expect(within(authorityEvent).getByText(/7 asset balances · Saved/)).toBeInTheDocument();
     expect(within(authorityEvent).getByText('Selected authority')).toBeInTheDocument();
     expect(within(authorityEvent).getByText(/API · Exchange Balance/)).toBeInTheDocument();
-    expect(within(authorityEvent).getByText(/Current/)).toBeInTheDocument();
+    expect(within(authorityEvent).getAllByText(/Current/).length).toBeGreaterThan(0);
     expect(within(authorityEvent).getByText(/binance · ccxt.fetchBalance/)).toBeInTheDocument();
     expect(within(authorityEvent).getByText('Spot, Funding / Spot')).toBeInTheDocument();
     expect(within(authorityEvent).getByText('7 rows')).toBeInTheDocument();
@@ -158,7 +170,8 @@ describe('ConnectionSyncHistory', () => {
     });
     render(<ConnectionSyncHistory snapshot={workspace(sources, [operation(first), operation(second)])} />);
 
-    expect(screen.getAllByRole('heading', { name: 'Wallet refresh' })).toHaveLength(2);
+    expect(screen.getByRole('heading', { name: 'Wallet refresh failed' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Wallet refresh completed' })).toBeInTheDocument();
     const identities = screen.getAllByTestId('history-source-identity').map((node) => node.textContent);
     expect(identities).toEqual(expect.arrayContaining([
       expect.stringContaining('bc1-one'), expect.stringContaining('bc1-two')
@@ -201,7 +214,8 @@ describe('ConnectionSyncHistory', () => {
     };
     render(<ConnectionSyncHistory snapshot={workspace([source], [operation(csv), authorityEvent], [csvScope])} />);
 
-    expect(screen.getByRole('heading', { name: 'CSV import' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'File import completed with warnings' })).toBeInTheDocument();
+    expect(screen.getByText(/4 records · Needs review/)).toBeInTheDocument();
     expect(screen.getByText(/binance_options · Supported: yes/)).toHaveTextContent('Required: Orders, Trades · Present: Orders');
     expect(screen.getByText(/Parsed:/)).toHaveTextContent('Parsed: 4');
     expect(screen.getByText(/Trades sheet missing/)).toHaveTextContent('Some rows malformed');
@@ -209,5 +223,25 @@ describe('ConnectionSyncHistory', () => {
     expect(screen.getByText('CSV · Journal Final Balance')).toBeInTheDocument();
     expect(screen.getByText('No')).toBeInTheDocument();
     expect(screen.getByText('0 rows')).toBeInTheDocument();
+  });
+
+  it('keeps the disclosure usable on narrow screens and exposes semantic timestamps', () => {
+    const source: ConnectionWorkspaceSourceIdentity = {
+      kind: 'file', sourceIdentityId: 'mobile-file', fileName: 'mobile-history.csv', parserId: null
+    };
+    render(<ConnectionSyncHistory snapshot={workspace([source], [operation(coverage({
+      kind: 'csv', sourceIdentityId: source.sourceIdentityId, parsedCount: 1
+    }))])} />);
+
+    const event = screen.getByTestId('sync-history-event');
+    const summary = event.querySelector('summary')!;
+    expect(summary).toHaveClass('grid-cols-[2rem_minmax(0,1fr)]', 'sm:grid-cols-[2rem_minmax(0,1fr)_auto]');
+    expect(within(event).getByText('View details')).toBeInTheDocument();
+    expect(event.querySelector('time')).toHaveAttribute('datetime', new Date(NOW - 4_000).toISOString());
+    summary.focus();
+    expect(summary).toHaveFocus();
+    fireEvent.click(summary);
+    expect(event).toHaveAttribute('open');
+    expect(within(event).getByTestId('history-event-details')).toHaveClass('sm:pl-16');
   });
 });

@@ -14,17 +14,26 @@ never redraw the glyph.
 
 ## Exchanges
 
-| File | Origin | License |
-| --- | --- | --- |
-| `binance.svg` | Simple Icons (`simple-icons@15`, slug `binance`, brand hex #F0B90B) via jsDelivr `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/binance.svg` | CC0 1.0 |
-| `coinbase.svg` | Simple Icons (slug `coinbase`, #0052FF) | CC0 1.0 |
-| `okx.svg` | Simple Icons (slug `okx`, #000000) | CC0 1.0 |
-| `kucoin.svg` | Simple Icons (slug `kucoin`, #01BC8D) | CC0 1.0 |
-| `wazirx.svg` | Simple Icons (slug `wazirx`, #3067F0) | CC0 1.0 |
-| `zebpay.svg` | Simple Icons (slug `zebpay`, #2072EF) | CC0 1.0 |
-| `coindcx.png` | CoinGecko `/exchanges` API hosted image (50×50, RGBA) | CoinGecko-hosted brand asset; used for identification only |
-| `kraken.jpg` | CoinGecko `/exchanges` API hosted image (50×50) — note: JPG, no alpha; render on a light chip in dark mode | CoinGecko-hosted brand asset |
-| `coinswitch.svg` | Official site asset `https://coinswitch.co/images/logo.svg`, cropped to the square mark (viewBox 0 0 32 32). CoinSwitch is NOT listed in CoinGecko's exchanges API | Official brand asset; used for identification only |
+| File | Exact origin / provenance | License / use | Retrieved |
+| --- | --- | --- | --- |
+| `binance.svg` | Simple Icons `simple-icons@15`, slug `binance`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/binance.svg` | CC0 1.0; Binance trademark | 2026-08-04 |
+| `coinbase.svg` | Simple Icons `simple-icons@15`, slug `coinbase`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/coinbase.svg` | CC0 1.0; Coinbase trademark | 2026-08-04 |
+| `okx.svg` | Simple Icons `simple-icons@15`, slug `okx`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/okx.svg` | CC0 1.0; OKX trademark | 2026-08-04 |
+| `kucoin.svg` | Simple Icons `simple-icons@15`, slug `kucoin`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/kucoin.svg` | CC0 1.0; KuCoin trademark | 2026-08-04 |
+| `wazirx.svg` | Simple Icons `simple-icons@15`, slug `wazirx`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/wazirx.svg` | CC0 1.0; WazirX trademark | 2026-08-04 |
+| `zebpay.svg` | Simple Icons `simple-icons@15`, slug `zebpay`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/zebpay.svg` | CC0 1.0; ZebPay trademark | 2026-08-04 |
+| `coinswitch.svg` | CoinSwitch official site asset: `https://coinswitch.co/images/logo.svg` (square mark cropped without redrawing) | Official brand asset; nominative identification only | 2026-08-04 |
+| `coindcx.png` | CoinGecko `/exchanges` API hosted image (50×50, RGBA), restored because it is the recognizable consumer CoinDCX mark | CoinGecko-hosted brand asset; nominative identification only | 2026-08-04 |
+| `kraken.png` | Kraken official site Apple icon: `https://www.kraken.com/_assets/icons/apple-touch-icon.png` | Official brand asset; nominative identification only | 2026-08-04 |
+| `mudrex.png` | Mudrex official site Apple icon: `https://mudrex.com/apple-touch-icon.png` | Official brand asset; nominative identification only | 2026-08-04 |
+| `cryptocom.png` | Crypto.com official site icon: `https://crypto.com/favicon.ico` | Official brand asset; nominative identification only | 2026-08-04 |
+| `bybit.png` | Bybit official site icon: `https://www.bybit.com/favicon.ico` | Official brand asset; nominative identification only | 2026-08-04 |
+| `gateio.svg` | Iconify API, Token Icons collection `token:gate-io`: `https://api.iconify.design/token/gate-io.svg` | Token Icons collection asset; Gate trademark; nominative identification only | 2026-08-04 |
+| `bitfinex.png` | Bitfinex official site icon: `https://www.bitfinex.com/assets/favicons/bitfinex.ico` | Official brand asset; nominative identification only | 2026-08-04 |
+| `gemini.png` | Gemini official site Android icon: `https://www.gemini.com/android-icon-192x192.png` | Official brand asset; nominative identification only | 2026-08-04 |
+| `htx.png` | HTX official site icon: `https://www.htx.com/web-v4/static/favicon.ico` | Official brand asset; nominative identification only | 2026-08-04 |
+| `coinspot.png` | CoinSpot official site Android icon: `https://www.coinspot.com.au/public/img/favicons/android-icon-192x192.png` | Official brand asset; nominative identification only | 2026-08-04 |
+| `hyperliquid.png` | Hyperliquid Foundation official site Apple icon: `https://hyperfoundation.org/apple-touch-icon.png` | Official brand asset; nominative identification only | 2026-08-04 |
 
 ## Wallets
 
@@ -99,16 +108,72 @@ these; wallets with no entry here render the clean aurora letter chip.
 | Typhon | `typhonwallet.io` blocks non-browser fetches (Cloudflare 403 on the HTML page); the only reachable asset is a 16×16 `favicon.ico` — too low-res for a 32px chip. No official repo ships a logo. |
 | Martian | `martianwallet.xyz` is defunct (connection refused/timeout) and no official Martian repo with a logo could be found. |
 
-## Chains & tokens
+## Actionable chains
+
+Chainlist-backed files were downloaded from the exact catalog image URL below,
+then resized to a 96×96 local PNG. Chainlist itself identifies each image with
+the corresponding mainnet entry; the marks remain trademarks of their owners
+and are used only to identify the selected network. Nothing is hotlinked.
+Chainlist publishes no redistribution license for these individual network
+marks; the entries below therefore document nominative identification, not a
+formal redistribution license.
+
+| File | Exact origin / provenance | License / use | Retrieved |
+| --- | --- | --- | --- |
+| `bitcoin.svg` | Simple Icons, slug `bitcoin`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/bitcoin.svg` | CC0 1.0; Bitcoin mark | 2026-08-04 |
+| `solana.svg` | Solana official brand kit: `https://solana.com/src/img/branding/solanaLogoMark.svg` | Official brand asset; nominative identification only | 2026-08-04 |
+| `ethereum.svg` | Simple Icons, slug `ethereum`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/ethereum.svg` | CC0 1.0; Ethereum mark | 2026-08-04 |
+| `chain-polygon.png` | Chainlist Polygon mainnet asset: `https://icons.llamao.fi/icons/chains/rsz_polygon.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-arbitrum.png` | Chainlist Arbitrum One asset: `https://icons.llamao.fi/icons/chains/rsz_arbitrum.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-base.png` | Chainlist Base asset: `https://icons.llamao.fi/icons/chains/rsz_base.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `bnb.png` | Trust Wallet assets official repository, BNB chain logo: `https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/binance/info/logo.png` | Trust Wallet repository asset; BNB trademark; nominative identification only | 2026-08-04 |
+| `chain-optimism.png` | Chainlist OP Mainnet asset: `https://icons.llamao.fi/icons/chains/rsz_optimism.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-avalanche.png` | Chainlist Avalanche C-Chain asset: `https://icons.llamao.fi/icons/chains/rsz_avalanche.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-celo.png` | Chainlist Celo mainnet asset: `https://icons.llamao.fi/icons/chains/rsz_celo.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-zksync.png` | Chainlist zkSync Era asset: `https://icons.llamao.fi/icons/chains/rsz_zksync%20era.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-linea.png` | Chainlist Linea asset: `https://icons.llamao.fi/icons/chains/rsz_linea.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-scroll.png` | Chainlist Scroll asset: `https://icons.llamao.fi/icons/chains/rsz_scroll.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-blast.png` | Chainlist Blast asset: `https://icons.llamao.fi/icons/chains/rsz_blast.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-mantle.png` | Chainlist Mantle asset: `https://icons.llamao.fi/icons/chains/rsz_mantle.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-cronos.png` | Chainlist Cronos asset: `https://icons.llamao.fi/icons/chains/rsz_cronos.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-gnosis.png` | Chainlist Gnosis/xDai asset: `https://icons.llamao.fi/icons/chains/rsz_xdai.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-moonbeam.png` | Chainlist Moonbeam asset: `https://icons.llamao.fi/icons/chains/rsz_moonbeam.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-metis.png` | Chainlist Metis asset: `https://icons.llamao.fi/icons/chains/rsz_metis.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-opbnb.png` | Chainlist opBNB asset: `https://icons.llamao.fi/icons/chains/rsz_op_bnb.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-abstract.png` | Chainlist Abstract asset: `https://icons.llamao.fi/icons/chains/rsz_abstract.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-apechain.png` | Chainlist ApeChain asset: `https://icons.llamao.fi/icons/chains/rsz_apechain.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-anime.png` | AnimeChain official docs icon: `https://animechain.dev/assets/images/favicon.png` | Official brand asset; nominative identification only | 2026-08-04 |
+| `chain-berachain.png` | Chainlist Berachain asset: `https://icons.llamao.fi/icons/chains/rsz_berachain.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-hyperevm.png` | Chainlist HyperEVM/Hyperliquid asset: `https://icons.llamao.fi/icons/chains/rsz_hyperliquid.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-ink.png` | Chainlist Ink asset: `https://icons.llamao.fi/icons/chains/rsz_ink.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-lens.png` | Chainlist Lens asset: `https://icons.llamao.fi/icons/chains/rsz_lens.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-monad.png` | Chainlist Monad asset: `https://icons.llamao.fi/icons/chains/rsz_monad.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-mythos.png` | Chainlist Mythos asset: `https://icons.llamao.fi/icons/chains/rsz_mythos.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-robinhood.png` | Chainlist Robinhood Chain asset: `https://icons.llamao.fi/icons/chains/rsz_robinhood.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-rootstock.png` | Chainlist Rootstock/RSK asset: `https://icons.llamao.fi/icons/chains/rsz_rsk.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-ronin.png` | Chainlist Ronin asset: `https://icons.llamao.fi/icons/chains/rsz_ronin.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-shape.png` | Chainlist Shape asset: `https://icons.llamao.fi/icons/chains/rsz_shape.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-settlus.png` | Settlus official site icon: `https://settlus.org/favicon.ico` | Official brand asset; nominative identification only | 2026-08-04 |
+| `chain-soneium.png` | Chainlist Soneium asset: `https://icons.llamao.fi/icons/chains/rsz_soneium.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-story.png` | Chainlist Story asset: `https://icons.llamao.fi/icons/chains/rsz_story.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-unichain.png` | Chainlist Unichain asset: `https://icons.llamao.fi/icons/chains/rsz_unichain.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-worldchain.png` | Chainlist World Chain asset: `https://icons.llamao.fi/icons/chains/rsz_world-chain.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-zora.png` | Chainlist Zora asset: `https://icons.llamao.fi/icons/chains/rsz_zora.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-zetachain.png` | Chainlist ZetaChain asset: `https://icons.llamao.fi/icons/chains/rsz_zetachain.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-fraxtal.png` | Chainlist Fraxtal asset: `https://icons.llamao.fi/icons/chains/rsz_fraxtal.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-sei.png` | Chainlist Sei asset: `https://icons.llamao.fi/icons/chains/rsz_sei.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-sonic.png` | Chainlist Sonic asset: `https://icons.llamao.fi/icons/chains/rsz_sonic.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-plasma.png` | Chainlist Plasma asset: `https://icons.llamao.fi/icons/chains/rsz_plasma.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-stable.png` | Chainlist Stable asset: `https://icons.llamao.fi/icons/chains/rsz_stable.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-megaeth.png` | Chainlist MegaETH asset: `https://icons.llamao.fi/icons/chains/rsz_megaeth.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-katana.png` | Chainlist Katana asset: `https://icons.llamao.fi/icons/chains/rsz_katana.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+
+## Other token and reporting marks
 
 | File | Origin | License |
 | --- | --- | --- |
-| `bitcoin.svg` | Simple Icons (slug `bitcoin`, #F7931A) | CC0 1.0 |
-| `ethereum.svg` | Simple Icons (slug `ethereum`; render on a #627EEA tile) | CC0 1.0 |
-| `solana.svg` | **Official brand mark** from the Solana brand kit, `https://solana.com/src/img/branding/solanaLogoMark.svg` (purple→mint gradient bars) | Official brand asset; used for identification only |
 | `polygon.svg` | Simple Icons (slug `polygon`, #7B3FE4) | CC0 1.0 |
 | `tether.svg` | Simple Icons (slug `tether`, #50AF95) | CC0 1.0 |
-| `bnb.png` | TrustWallet `assets` repo, `blockchains/binance/info/logo.png` (256×256, RGBA) | TrustWallet-hosted brand asset |
 | `usdc.png` | TrustWallet `assets` repo (181×181, RGBA) | TrustWallet-hosted brand asset |
 | `livepeer.svg` | cryptologos.cc `https://cryptologos.cc/logos/livepeer-lpt-logo.svg` (black-blocks mark; white tile baked in — the mark is designed for light backgrounds, same accommodation as OKX/Trezor) | Logo provided for identification use |
 | `0g.png` | CoinGecko-hosted 0G image (`zero-gravity`, 250×250 RGBA), sourced from the current 0G listing | CoinGecko-hosted brand asset; used for identification only |

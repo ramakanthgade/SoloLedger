@@ -1299,7 +1299,7 @@ describe('ConnectionDetail — navigation', () => {
     expect(tablist).toHaveClass('max-w-full', 'overflow-x-auto');
     expect(tablist.firstElementChild).toHaveClass('min-w-max');
     expect(tablist.firstElementChild).not.toHaveClass('overflow-x-auto');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Reconciliation', 'Sync history']);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Reconciliation', 'History']);
     expect(tabs[0]).toHaveAttribute('tabindex', '0');
     expect(tabs[1]).toHaveAttribute('tabindex', '-1');
     expect(screen.getByRole('tabpanel', { name: 'Overview' })).toBeVisible();
@@ -1325,7 +1325,7 @@ describe('ConnectionDetail — navigation', () => {
     expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('moves focus into Sync history when reconciliation requests evidence inspection', async () => {
+  it('moves focus into History when the balance check requests source update inspection', async () => {
     const now = Date.now();
     mocks.txs.current = [makeTx({
       id: 'focus-gap', type: 'transfer_in', asset: 'BTC', amount: 1,
@@ -1334,9 +1334,9 @@ describe('ConnectionDetail — navigation', () => {
     authority('exchange:exc_1', 'exc_1', 'spot', 'api', now, [{ asset: 'BTC', quantity: 2 }]);
     render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
     fireEvent.click(screen.getByRole('tab', { name: 'Reconciliation' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect Sync history' }));
-    const historyTab = screen.getByRole('tab', { name: 'Sync history' });
-    const historyPanel = screen.getByRole('tabpanel', { name: 'Sync history' });
+    fireEvent.click(screen.getByRole('button', { name: 'Review source update history' }));
+    const historyTab = screen.getByRole('tab', { name: 'History' });
+    const historyPanel = screen.getByRole('tabpanel', { name: 'History' });
     expect(historyTab).toHaveAttribute('aria-selected', 'true');
     await waitFor(() => expect(historyPanel).toHaveFocus());
   });

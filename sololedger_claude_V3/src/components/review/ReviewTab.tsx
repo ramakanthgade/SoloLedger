@@ -72,7 +72,7 @@ import { TransactionDetailPanel, type DetailTab } from './TransactionDetailPanel
 import { LotPicker } from './LotPicker';
 import { type TransactionNavigationIntent, type TransactionScopeFilter } from '@/lib/navigationIntent';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
-import { resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
+import { hasDurableNavigationScope, resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
 
 const ALL_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out',
@@ -952,10 +952,15 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     setQuery('');
     setAssetFilter('all');
     setSourceFilter('all');
-    setNavigationScopeFilter(navigationIntent.focus === 'filters' ? navigationIntent.filter : null);
+    const navigationFilter = navigationIntent.filter ?? {};
+    setNavigationScopeFilter(
+      navigationIntent.focus === 'filters' && hasDurableNavigationScope(navigationFilter)
+        ? navigationFilter
+        : null
+    );
     setTypeFilter('all'); setFlagFilter('all'); setWalletFilter('all'); setFyFilter(null);
-    setShowNeedsPrice(navigationIntent.focus === 'filters' && navigationIntent.filter.needsPrice === true);
-    setShowNeedsReview(navigationIntent.focus === 'filters' && navigationIntent.filter.needsReview === true);
+    setShowNeedsPrice(navigationIntent.focus === 'filters' && navigationFilter.needsPrice === true);
+    setShowNeedsReview(navigationIntent.focus === 'filters' && navigationFilter.needsReview === true);
     setShowSpam(false); setInstrumentFilter('all'); setSortBy('date_desc'); setPage(1);
     if (target) {
       setExpandedId(target.id);

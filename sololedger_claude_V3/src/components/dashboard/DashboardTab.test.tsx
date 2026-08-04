@@ -260,7 +260,7 @@ describe('DashboardTab — staggered Data Health readiness', () => {
       await Promise.resolve();
     });
     expect(screen.queryByText('Updating Data Health…')).toBeNull();
-    expect(screen.getByText(/sources · .* scopes · .* assets/)).toBeInTheDocument();
+    expect(screen.getByText(/sources · .* account types · .* assets/)).toBeInTheDocument();
   });
 
   it('keeps an initially open workspace count-free while queries become ready', async () => {
@@ -588,6 +588,20 @@ describe('DashboardTab — insights', () => {
     expect(goTo).toHaveBeenCalledWith('review');
   });
 
+  it('opens the exact needs-price filter when typed navigation is available', async () => {
+    const onNavigationIntent = vi.fn();
+    await renderTab(undefined, undefined, { onNavigationIntent });
+    const card = within(screen.getByTestId('insights-strip')).getByTestId('insight-needs-price');
+    fireEvent.click(within(card).getByRole('button', { name: /Fix/ }));
+    expect(onNavigationIntent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: 'transactions', focus: 'filters',
+        filter: { needsPrice: true }
+      }),
+      { filter: 'action', scrollTop: 0 }
+    );
+  });
+
   it('excludes internal custody transfers from the historical-price count', async () => {
     SEED.txs.push({
       id: 't-sol-internal', timestamp: Date.UTC(2026, 6, 12, 12, 0, 0), type: 'transfer_in',
@@ -615,6 +629,42 @@ describe('DashboardTab — insights', () => {
 });
 
 describe('DashboardTab — holdings with per-source expansion', () => {
+  it('reserves a readable P&L track and keeps amount and percent on separate untruncated lines', async () => {
+    SEED.priceRows.push(
+      { key: 'spot:sym:BTC:INR', price: 100000, fetchedAt: Date.now() },
+      { key: 'spot:sym:ETH:INR', price: 6000, fetchedAt: Date.now() }
+    );
+
+    const { container } = await renderTab();
+    const columns = screen.getByTestId('dashboard-holdings-columns');
+    const desktopRows = container.querySelectorAll('[data-layout="dashboard-holdings-desktop-row"]');
+    const pnlPills = container.querySelectorAll('[data-layout="dashboard-holdings-pnl"]');
+    const shareCells = container.querySelectorAll('[data-layout="dashboard-holdings-share"]');
+
+    expect(columns).toHaveClass('grid-cols-[minmax(0,1.3fr)_minmax(0,.9fr)_minmax(0,.75fr)_minmax(0,.85fr)_minmax(7.5rem,1.3fr)_3.25rem]');
+    expect(desktopRows.length).toBeGreaterThan(0);
+    expect(desktopRows[0]).toHaveClass('sm:grid-cols-[minmax(0,1.3fr)_minmax(0,.9fr)_minmax(0,.75fr)_minmax(0,.85fr)_minmax(7.5rem,1.3fr)_3.25rem]');
+    expect(pnlPills.length).toBeGreaterThan(0);
+    expect(pnlPills[0]).toHaveClass('flex-col', 'whitespace-normal');
+    expect(pnlPills[0]).not.toHaveClass('truncate');
+    expect(pnlPills[0].querySelectorAll('span')).toHaveLength(2);
+    expect(pnlPills[0].querySelectorAll('span')[0]).toHaveClass('break-all', '[overflow-wrap:anywhere]');
+    expect(pnlPills[0].querySelectorAll('span')[1]).toHaveTextContent('%');
+    expect(shareCells.length).toBeGreaterThan(0);
+    expect(shareCells[0].children).toHaveLength(0);
+    expect(shareCells[0]).toHaveAccessibleName(/Portfolio share/);
+  });
+
+  it('lets an extreme mobile P&L wrap inside a bounded card column', async () => {
+    SEED.priceRows.push({ key: 'spot:sym:BTC:INR', price: 9.99e24, fetchedAt: Date.now() });
+    const { container } = await renderTab();
+    const mobilePnl = container.querySelector('[data-layout="dashboard-holdings-mobile-pnl-cell"]');
+    const amount = mobilePnl?.querySelector('[data-layout="dashboard-holdings-pnl"] span:first-child');
+    expect(mobilePnl).toHaveClass('min-w-0', 'max-w-[55%]');
+    expect(mobilePnl).not.toHaveClass('shrink-0');
+    expect(amount).toHaveClass('max-w-full', 'break-all', '[overflow-wrap:anywhere]');
+  });
+
   it('expands a row into "Where it lives" with netted source slices', async () => {
     await renderTab();
     const holdings = screen.getByTestId('dashboard-holdings');

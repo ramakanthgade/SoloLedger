@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { derivePostings } from '@/lib/ledger/derivedPostings';
 import { buildTransactionPostingIndex, preparePostingAggregation } from '@/lib/ledger/postingBalances';
 import type { Transaction } from '@/types/transaction';
-import { resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
+import { hasDurableNavigationScope, resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 
 const tx = (over: Partial<Transaction> = {}): Transaction => ({
@@ -11,6 +11,13 @@ const tx = (over: Partial<Transaction> = {}): Transaction => ({
 } as Transaction);
 
 describe('Review typed navigation', () => {
+  it('distinguishes global queue filters from durable source/account scope', () => {
+    expect(hasDurableNavigationScope({ needsPrice: true })).toBe(false);
+    expect(hasDurableNavigationScope({ needsReview: true })).toBe(false);
+    expect(hasDurableNavigationScope({ scopeId: 'exchange:binance:spot' })).toBe(true);
+    expect(hasDurableNavigationScope({ sourceTarget: { kind: 'exchange', connectionId: 'binance' } })).toBe(true);
+  });
+
   it('resolves an exact transaction and returns missing for a deleted id', () => {
     const rows = [tx()];
     expect(resolveReviewTransactionTarget({ id: 'i', destination: 'transactions', transactionId: 'manual-1', focus: 'transaction' }, rows)?.id).toBe('manual-1');
@@ -43,5 +50,15 @@ describe('Review typed navigation', () => {
     };
     expect(transactionMatchesNavigationScope(rows[0], filter, context, index.byTaxEventId)).toBe(false);
     expect(transactionMatchesNavigationScope(rows[1], filter, context, index.byTaxEventId)).toBe(true);
+  });
+
+  it('allows Dashboard-wide review filters without narrowing to a source', () => {
+    const rows = [tx(), tx({ id: 'csv-1', source: 'binance', importBatchId: 'csv-import' })];
+    const context = { exchangeConnections: [], openingBalances: [] };
+    const postings = derivePostings(rows, context);
+    const index = buildTransactionPostingIndex(postings, preparePostingAggregation(postings, true));
+    expect(rows.every((row) => transactionMatchesNavigationScope(
+      row, { needsReview: true }, context, index.byTaxEventId
+    ))).toBe(true);
   });
 });

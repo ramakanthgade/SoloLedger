@@ -80,11 +80,11 @@ function ConnectionReconCard({
           <AlertTriangle className="h-4 w-4 shrink-0 text-warn" aria-hidden="true" />
         )}
         <span className="min-w-0 flex-1">
-          <span className="block truncate font-bold text-hi">{label} — reconciliation</span>
+          <span className="block truncate font-bold text-hi">{label} — balance check</span>
           <span className="block text-[0.6875rem] font-semibold text-mid">
             {clean
-              ? `${recon.reconciledCount} asset${recon.reconciledCount === 1 ? '' : 's'} reconciled to exchange balance`
-              : `${recon.reconciledCount} reconciled · ${recon.divergentCount} divergent`}
+              ? `${recon.reconciledCount} asset balance${recon.reconciledCount === 1 ? '' : 's'} matched`
+              : `${recon.reconciledCount} matched · ${recon.divergentCount} need attention`}
           </span>
         </span>
         {!clean &&
@@ -111,7 +111,7 @@ function ConnectionReconCard({
                 </span>
               </div>
               <p className="mt-0.5 text-mid">
-                exchange shows <b className="text-hi">{formatCompactAmount(a.authorityQty)}</b>, ledger implies{' '}
+                source balance <b className="text-hi">{formatCompactAmount(a.authorityQty)}</b>, recorded activity explains{' '}
                 <b className="text-hi">{formatCompactAmount(a.ledgerQty)}</b> →{' '}
                 {a.status === 'ledger_under'
                   ? `${formatCompactAmount(Math.abs(a.delta))} of in-side history missing`
@@ -138,29 +138,28 @@ export function DataHealthRecon({ connections, exchangeBalances, transactions, o
     if (aggregateUpdating) return (
       <>
         <li className="text-xs font-semibold text-mid" role="status">Updating Data Health…</li>
-        {onOpenWorkspace && <li><button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">Open aggregate Data Health →</button></li>}
+        <li className="rounded-lg border border-hi/10 bg-elev-1/50 px-3 py-2 text-[0.6875rem] leading-relaxed text-low"><strong className="text-mid">What these statuses mean:</strong> Matched means recorded activity explains a dated source balance. Needs action means a difference or missing record needs review.</li>
+        {onOpenWorkspace && <li><button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">Review sources in Data Health →</button></li>}
       </>
     );
     return (
       <>
         <li className="text-xs text-mid">
-          {aggregateModel.summary.sourceCount} sources · {aggregateModel.summary.scopeCount} scopes · {aggregateModel.summary.assetCount} assets
+          {aggregateModel.summary.sourceCount} sources · {aggregateModel.summary.scopeCount} account types · {aggregateModel.summary.assetCount} assets
         </li>
         <li className="text-xs font-semibold text-hi">
-          {aggregateModel.summary.actionSourceCount} sources need action · {aggregateModel.summary.reconciled} assets reconciled
+          {aggregateModel.summary.actionSourceCount} sources need action · {aggregateModel.summary.reconciled} balances matched
         </li>
-        {onOpenWorkspace && <li><button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">Open aggregate Data Health →</button></li>}
+        <li className="rounded-lg border border-hi/10 bg-elev-1/50 px-3 py-2 text-[0.6875rem] leading-relaxed text-low"><strong className="text-mid">What these statuses mean:</strong> Matched means recorded activity explains a dated source balance. Needs action means a difference or missing record needs review.</li>
+        {onOpenWorkspace && <li><button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">Review sources in Data Health →</button><p className="text-[0.6875rem] text-low">Opens source-specific fixes and the records each action will show.</p></li>}
       </>
     );
   }
   const recons = buildConnectionRecons(connections, exchangeBalances, transactions);
-  if (recons.length === 0) return onOpenWorkspace ? (
-    <li>
-      <button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
-        Open aggregate Data Health →
-      </button>
-    </li>
-  ) : null;
+  if (recons.length === 0) return <>
+    <li className="rounded-lg border border-hi/10 bg-elev-1/50 px-3 py-2 text-[0.6875rem] leading-relaxed text-low"><strong className="text-mid">What these statuses mean:</strong> A balance can be checked after this source provides recorded activity and a dated source balance.</li>
+    {onOpenWorkspace && <li><button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">Review sources in Data Health →</button></li>}
+  </>;
   const byId = new Map(connections.map((c) => [c.id, c]));
   return (
     <>
@@ -171,11 +170,13 @@ export function DataHealthRecon({ connections, exchangeBalances, transactions, o
           label={connLabel(byId.get(recon.connectionId), recon.exchange)}
         />
       ))}
+      <li className="rounded-lg border border-hi/10 bg-elev-1/50 px-3 py-2 text-[0.6875rem] leading-relaxed text-low"><strong className="text-mid">What these statuses mean:</strong> Matched means recorded activity explains a dated source balance. Needs action means SoloLedger found a difference to review.</li>
       {onOpenWorkspace && (
         <li className="pt-1">
           <button type="button" onClick={onOpenWorkspace} className="inline-flex min-h-[44px] items-center text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60">
-            Open aggregate Data Health →
+            Review sources in Data Health →
           </button>
+          <p className="text-[0.6875rem] text-low">Opens source-specific fixes and the records each action will show.</p>
         </li>
       )}
     </>

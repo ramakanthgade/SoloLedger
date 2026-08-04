@@ -172,21 +172,15 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
     return counts;
   }, { complete: 0, partial: 0, failed: 0, unknown: 0 });
   const attentionCoverage = coverageCounts.partial + coverageCounts.failed;
-  const currentAuthorityScopes = snapshot.scopes.filter((scope) => scope.authority.status === 'current').length;
-  const staleAuthorityScopes = snapshot.scopes.filter((scope) => scope.authority.status === 'stale').length;
-  const reconciledAssets = snapshot.reconciliation.filter((asset) => asset.reconciliation.balanceStatus === 'reconciled').length;
+  const historyUpdateCount = snapshot.syncHistory.filter((event) => event.kind === 'source-operation').length;
 
   return (
     <div className="space-y-5" data-testid="connection-overview">
-      <section aria-label="Workspace summary" className="grid gap-3 sm:grid-cols-3" data-testid="overview-metrics">
+      <section aria-label="Source summary" className="grid grid-cols-1 gap-3 sm:grid-cols-3" data-testid="overview-metrics">
         {([
           ['Transactions', snapshot.overview.transactionCount],
-          ['Ledger postings', snapshot.overview.postingCount],
-          ['Posting evidence', snapshot.overview.evidenceCount],
-          ['Current authority scopes', currentAuthorityScopes],
-          ['Stale authority scopes', staleAuthorityScopes],
-          ['Reconciled assets', reconciledAssets],
-          ['Persisted source operations', snapshot.syncHistory.filter((event) => event.kind === 'source-operation').length]
+          ['Assets', snapshot.overview.slices.length],
+          ['History updates', historyUpdateCount]
         ] as const).map(([label, value]) => (
           <div key={label} className="rounded-2xl border border-hi/10 bg-elev-2 px-4 py-3.5">
             <p className="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-faint">{label}</p>
@@ -196,8 +190,8 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
       </section>
       <section aria-labelledby="coverage-summary-title" className="rounded-2xl border border-hi/10 bg-elev-2 px-5 py-4" data-testid="overview-coverage-summary">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div><h2 id="coverage-summary-title" className="text-sm font-bold text-hi">Coverage summary</h2><p className="mt-1 text-xs leading-relaxed text-low">{coverageCounts.complete} of {snapshot.scopes.length} custody scopes have complete history coverage.</p></div>
-          <div className="flex flex-wrap gap-1.5" aria-label="Coverage status counts"><Badge tone="gain">{coverageCounts.complete} complete</Badge>{attentionCoverage > 0 && <Badge tone="warn">{attentionCoverage} need attention</Badge>}{coverageCounts.unknown > 0 && <Badge tone="neutral">{coverageCounts.unknown} unknown</Badge>}</div>
+          <div><h2 id="coverage-summary-title" className="text-sm font-bold text-hi">History coverage</h2><p className="mt-1 text-xs leading-relaxed text-low">{coverageCounts.complete} of {snapshot.scopes.length} account areas have complete history.</p></div>
+          <div className="flex flex-wrap gap-1.5" aria-label="History coverage status"><Badge tone="gain">{coverageCounts.complete} complete</Badge>{attentionCoverage > 0 && <Badge tone="warn">{attentionCoverage} need review</Badge>}{coverageCounts.unknown > 0 && <Badge tone="neutral">{coverageCounts.unknown} not checked</Badge>}</div>
         </div>
       </section>
       <section aria-label="Holdings" className="rounded-2xl border border-hi/10 bg-elev-2" data-testid="detail-holdings">

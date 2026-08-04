@@ -66,37 +66,41 @@ describe('ConnectionReconciliation', () => {
     expect(scopes[0]).toHaveTextContent('exchange:one');
 
     const rows = screen.getAllByTestId('reconciliation-asset-row');
-    expect(within(rows[0]).getByText('Balance').parentElement).toHaveTextContent('ledger_under');
-    expect(within(rows[0]).getByText('Authority').parentElement).toHaveTextContent('current');
-    expect(within(rows[0]).getByText('Coverage').parentElement).toHaveTextContent('complete');
-    expect(within(rows[0]).getByText('Scope').parentElement).toHaveTextContent('resolved');
+    expect(within(rows[0]).getByText('Balance check').parentElement).toHaveTextContent('Difference found');
+    expect(within(rows[0]).getByText('Balance record').parentElement).toHaveTextContent('Available');
+    expect(within(rows[0]).getByText('History range').parentElement).toHaveTextContent('Confirmed');
+    expect(within(rows[0]).getByText('Account type').parentElement).toHaveTextContent('Confirmed');
     expect(within(rows[0]).getByTestId('comparable-quantities')).toHaveTextContent('2');
     expect(within(rows[0]).getByTestId('comparable-quantities')).toHaveTextContent('1.25');
     expect(rows[0]).toHaveTextContent('Posting evidence: 3 · Authority evidence: 2 · Opening evidence: 0');
     expect(rows[0]).toHaveTextContent('Selected generation: 7');
 
     expect(within(rows[1]).queryByTestId('comparable-quantities')).not.toBeInTheDocument();
-    expect(scopes[1]).toHaveTextContent('Spot authority: current. It does not cover Funding.');
-    expect(rows[1]).toHaveTextContent('No compatible timestamped authority was selected.');
+    expect(scopes[1]).toHaveTextContent('A Spot balance cannot check a Funding account. Add a dated Funding balance instead.');
+    expect(rows[1]).toHaveTextContent('No dated balance record matches this account type.');
+    expect(screen.getByText('What these statuses mean')).toBeVisible();
+    const rawAssetStatus = within(rows[0]).getByText(/Balance: ledger_under/);
+    expect(rawAssetStatus.closest('details')).not.toHaveAttribute('open');
+    expect(within(rows[0]).getByText(/Asset key: asset:BTC/).closest('details')).not.toHaveAttribute('open');
   });
 
   it('shows worst asset severity while keeping scope-only remediation text clean', () => {
     render(<ConnectionReconciliation {...capabilities} snapshot={snapshot()} openingBalances={[]} onInspectHistory={() => {}} />);
     const spotScope = screen.getAllByTestId('reconciliation-scope')[0];
-    expect(within(spotScope).getAllByText('warning').length).toBeGreaterThan(0);
-    expect(within(spotScope).getByText('No remediation needed')).toBeInTheDocument();
-    expect(within(spotScope).getByText('Inspect evidence history')).toBeInTheDocument();
+    expect(within(spotScope).getAllByText('Needs attention').length).toBeGreaterThan(0);
+    expect(within(spotScope).getByText('No action needed')).toBeInTheDocument();
+    expect(within(spotScope).getAllByText('Review source update history').length).toBeGreaterThan(0);
   });
 
   it('wires only safe callbacks and gates opening entry on the derived remediation', () => {
     const onImportFile = vi.fn();
     const onInspectHistory = vi.fn();
     render(<ConnectionReconciliation sourceKind="file" canSync={false} canImportFile snapshot={snapshot()} openingBalances={[]} onImportFile={onImportFile} onInspectHistory={onInspectHistory} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Inspect Sync history' }));
-    fireEvent.click(screen.getAllByRole('button', { name: 'Import file' })[0]);
+    fireEvent.click(screen.getByRole('button', { name: 'Review source update history' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Choose a balance or history file' })[0]);
     expect(onInspectHistory).toHaveBeenCalledOnce();
     expect(onImportFile).toHaveBeenCalledOnce();
-    expect(screen.getByRole('button', { name: 'Add opening evidence' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Add a dated starting balance' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Accept as dust/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/balancing transaction/i)).not.toBeInTheDocument();
   });
@@ -116,12 +120,13 @@ describe('ConnectionReconciliation', () => {
     ];
     render(<ConnectionReconciliation {...capabilities} snapshot={snapshot()} openingBalances={openingBalances} onInspectHistory={() => {}} />);
     const fundingRow = screen.getAllByTestId('reconciliation-asset-row')[1];
-    expect(within(fundingRow).getByText(/12\.0000 USDT/).parentElement).toHaveTextContent('Source snapshot');
-    expect(within(fundingRow).getByText(/12\.0000 USDT/).parentElement).toHaveTextContent('Evidence: snapshot:trusted');
+    expect(within(fundingRow).getByText(/12\.0000 USDT/).parentElement).toHaveTextContent('Imported source record');
+    const evidenceReference = within(fundingRow).getByText(/Evidence reference: snapshot:trusted/);
+    expect(evidenceReference.closest('details')).not.toHaveAttribute('open');
     expect(within(fundingRow).getByText(/10\.0000 USDT/).parentElement).toHaveTextContent('User confirmed');
     expect(within(fundingRow).getAllByRole('button', { name: 'Edit' })).toHaveLength(1);
-    expect(within(fundingRow).getByRole('button', { name: 'Add another dated opening' })).toBeInTheDocument();
-    fireEvent.click(within(fundingRow).getByRole('button', { name: 'Add another dated opening' }));
+    expect(within(fundingRow).getByRole('button', { name: 'Add another dated starting balance' })).toBeInTheDocument();
+    fireEvent.click(within(fundingRow).getByRole('button', { name: 'Add another dated starting balance' }));
     expect(screen.getByText('User confirmed')).toBeInTheDocument();
     expect(screen.getByLabelText('Absolute quantity')).toHaveValue(null);
     expect(screen.getByRole('dialog')).not.toHaveTextContent('snapshot:trusted');
@@ -131,8 +136,8 @@ describe('ConnectionReconciliation', () => {
     const onSync = vi.fn();
     const onImportFile = vi.fn();
     render(<ConnectionReconciliation sourceKind="wallet" canSync canImportFile={false} snapshot={snapshot()} openingBalances={[]} onSync={onSync} onImportFile={onImportFile} onInspectHistory={() => {}} />);
-    expect(screen.getAllByRole('button', { name: 'Sync now' }).length).toBeGreaterThan(0);
-    expect(screen.queryByRole('button', { name: 'Import file' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Update this source now' }).length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Choose a balance or history file' })).not.toBeInTheDocument();
   });
 
   it('keeps add-another available on an eligible resolved scope after remediation is clean', () => {
@@ -145,7 +150,7 @@ describe('ConnectionReconciliation', () => {
       provenance: 'user_confirmed' as const, createdAt: 1, updatedAt: 1
     };
     render(<ConnectionReconciliation {...capabilities} snapshot={clean} openingBalances={[opening]} onInspectHistory={() => {}} />);
-    const addAnother = screen.getByRole('button', { name: 'Add another dated opening' });
+    const addAnother = screen.getByRole('button', { name: 'Add another dated starting balance' });
     const edit = screen.getByRole('button', { name: 'Edit' });
     expect(addAnother).toHaveClass('min-h-[44px]');
     expect(edit).toHaveClass('min-h-[44px]');
@@ -172,7 +177,7 @@ describe('ConnectionReconciliation', () => {
     };
     const saveOpening = vi.fn().mockResolvedValueOnce(created);
     const view = render(<ConnectionReconciliation {...capabilities} snapshot={snapshot()} openingBalances={[]} saveOpening={saveOpening} onInspectHistory={() => {}} />);
-    fireEvent.click(screen.getByRole('button', { name: 'Add opening evidence' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Add a dated starting balance' }));
     fireEvent.change(screen.getByLabelText('Absolute quantity'), { target: { value: '3' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save opening' }));
     await screen.findByTestId('connection-reconciliation');

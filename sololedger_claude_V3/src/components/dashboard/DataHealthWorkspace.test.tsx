@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { DataHealthModel } from './dataHealthModel';
 import { DataHealthWorkspace } from './DataHealthWorkspace';
@@ -31,6 +31,8 @@ const actionableManual: DataHealthModel = {
 };
 
 const secondaryIntent = { destination: 'connections' as const, target: { kind: 'csv' as const, importId: 'one' }, workspaceTab: 'reconciliation' as const, focus: { kind: 'asset' as const, scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC' } };
+const importIntent = { destination: 'connections' as const, target: { kind: 'csv' as const, importId: 'one' }, workspaceTab: 'overview' as const, focus: { kind: 'import' as const } };
+const syncIntent = { destination: 'connections' as const, target: { kind: 'csv' as const, importId: 'one' }, workspaceTab: 'overview' as const, focus: { kind: 'sync' as const } };
 const withSecondary: DataHealthModel = {
   ...actionable,
   sources: [{
@@ -63,7 +65,7 @@ describe('DataHealthWorkspace', () => {
     expect(screen.queryByRole('radiogroup', { name: 'Filter Data Health sources' })).toBeNull();
     expect(screen.queryByText(/^0$/)).toBeNull();
     view.rerender(<DataHealthWorkspace {...props} model={{ ...clean, sources: [], summary: { ...clean.summary, sourceCount: 0 } }} />);
-    expect(screen.getByText('No source evidence yet')).toBeInTheDocument();
+    expect(screen.getByText('No source data yet')).toBeInTheDocument();
     view.rerender(<DataHealthWorkspace {...props} model={clean} />);
     fireEvent.click(screen.getByRole('radio', { name: /All/ }));
     expect(screen.getByText('Manual entry')).toBeInTheDocument();
@@ -78,11 +80,13 @@ describe('DataHealthWorkspace', () => {
     const action = screen.getByRole('radio', { name: /Needs action/ });
     action.focus();
     fireEvent.keyDown(action, { key: 'End' });
-    expect(screen.getByRole('radio', { name: /No authority/ })).toHaveFocus();
+    expect(screen.getByRole('radio', { name: /No balance record/ })).toHaveFocus();
     fireEvent.click(action);
-    fireEvent.click(screen.getByRole('button', { name: /Review scoped transactions/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Review the related transactions/ }));
     expect(onNavigate.mock.calls[0][0]).toMatchObject({ destination: 'transactions', filter: { sourceTarget: { kind: 'csv', importId: 'one' }, scopeId: 'file:one:spot', assetKey: 'asset:BTC' } });
-    expect(screen.getByText(/cannot guarantee history, classification, valuation, cost basis, holdings, or tax correctness/i)).toBeInTheDocument();
+    expect(screen.getByText('What these statuses mean')).toBeInTheDocument();
+    expect(screen.getByText(/does not confirm tax treatment, labels, prices, or cost basis/i)).toBeInTheDocument();
+    expect(screen.getByText(/Opens Transactions with this source, account, and asset already selected/i)).toBeInTheDocument();
     expect(screen.queryByText(/Sync all|Export health report/)).toBeNull();
   });
 
@@ -113,11 +117,11 @@ describe('DataHealthWorkspace', () => {
     })) as typeof window.matchMedia;
     try {
       render(<DataHealthWorkspace model={actionableManual} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} initialState={{ filter: 'no-authority', scrollTop: 0 }} />);
-      expect(screen.getByRole('radio', { name: /No authority/ })).toHaveAttribute('aria-checked', 'true');
+      expect(screen.getByRole('radio', { name: /No balance record/ })).toHaveAttribute('aria-checked', 'true');
       mobile = true;
       act(() => listeners.forEach((listener) => listener()));
       await waitFor(() => expect(screen.getByRole('radio', { name: /Needs action/ })).toHaveAttribute('aria-checked', 'true'));
-      expect(screen.getByRole('radio', { name: /No authority/ })).toHaveAttribute('aria-checked', 'false');
+      expect(screen.getByRole('radio', { name: /No balance record/ })).toHaveAttribute('aria-checked', 'false');
       const action = screen.getByRole('radio', { name: /Needs action/ });
       action.focus();
       fireEvent.keyDown(action, { key: 'End' });
@@ -133,7 +137,7 @@ describe('DataHealthWorkspace', () => {
     try {
       render(<DataHealthWorkspace model={actionableManual} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} initialState={{ filter: 'no-authority', scrollTop: 0 }} />);
       expect(screen.getByRole('radio', { name: /Needs action/ })).toHaveAttribute('aria-checked', 'true');
-      expect(screen.getByRole('radio', { name: /No authority/ })).toHaveAttribute('tabindex', '-1');
+      expect(screen.getByRole('radio', { name: /No balance record/ })).toHaveAttribute('tabindex', '-1');
     } finally {
       window.matchMedia = originalMatchMedia;
     }
@@ -209,15 +213,16 @@ describe('DataHealthWorkspace', () => {
   it('distinguishes equivalent remediation labels for exact account-class scopes', () => {
     render(<DataHealthWorkspace model={withDistinctClasses} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
     fireEvent.click(screen.getByText('More actions (2)'));
-    expect(screen.getByRole('button', { name: /Add timestamped authority · spot · file:one:spot/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Add timestamped authority · options · file:one:options/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Add a dated balance record · Spot account/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Add a dated balance record · Options account/ })).toBeInTheDocument();
+    expect(screen.queryByText(/file:one:/)).not.toBeInTheDocument();
   });
 
   it('renders the mobile summary as Need action then Reconciled and keeps desktop order', () => {
     render(<DataHealthWorkspace model={actionable} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
     const summaries = screen.getAllByRole('region', { name: 'Data Health summary' });
-    expect([...summaries[0].querySelectorAll('p:first-child')].map((node) => node.textContent)).toEqual(['Need action', 'Reconciled']);
-    expect([...summaries[1].querySelectorAll('p:first-child')].map((node) => node.textContent)).toEqual(['Sources connected', 'Assets reconciled', 'Need action', 'No live authority']);
+    expect([...summaries[0].querySelectorAll('p:first-child')].map((node) => node.textContent)).toEqual(['Need action', 'Balances matched']);
+    expect([...summaries[1].querySelectorAll('p:first-child')].map((node) => node.textContent)).toEqual(['Sources connected', 'Balances matched', 'Need action', 'Not checked yet']);
   });
 
   it('preserves a restored filter, nonzero scroll, and exact action focus over the mobile default', async () => {
@@ -244,7 +249,7 @@ describe('DataHealthWorkspace', () => {
       />);
       expect(screen.getByRole('radio', { name: /All/ })).toHaveAttribute('aria-checked', 'true');
       await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 321 }));
-      await waitFor(() => expect(screen.getByRole('button', { name: /Review scoped transactions/ })).toHaveFocus());
+      await waitFor(() => expect(screen.getByRole('button', { name: /Review the related transactions/ })).toHaveFocus());
     } finally {
       window.matchMedia = originalMatchMedia;
       window.scrollTo = originalScrollTo;
@@ -254,11 +259,54 @@ describe('DataHealthWorkspace', () => {
   it('labels manual remediation as a transaction review and emits the manual singleton filter', () => {
     const onNavigate = vi.fn();
     render(<DataHealthWorkspace model={actionableManual} onClose={vi.fn()} onNavigate={onNavigate} focusOnMount={false} />);
-    fireEvent.click(screen.getByRole('button', { name: /Review manual authority transactions/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Review manual balance transactions/ }));
     expect(onNavigate.mock.calls[0][0]).toMatchObject({
       destination: 'transactions',
       filter: { sourceTarget: { kind: 'manual', singletonId: 'manual' }, scopeId: 'manual' }
     });
-    expect(screen.queryByRole('button', { name: /Add timestamped authority/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Add a dated balance record/ })).toBeNull();
+  });
+
+  it('keeps plain-language status help visible and raw diagnostics collapsed', () => {
+    render(<DataHealthWorkspace model={actionable} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
+    expect(screen.getByText('What these statuses mean')).toBeVisible();
+    expect(screen.getAllByText('Needs attention').some((node) => node.classList.contains('mt-2'))).toBe(true);
+    expect(screen.getByText(/Recorded activity does not match the source balance/)).toBeVisible();
+    const rawStatus = screen.getByText(/raw severity: warning/);
+    const advanced = rawStatus.closest('details');
+    expect(advanced).not.toHaveAttribute('open');
+    expect(within(advanced!).getByText('Advanced details')).toBeInTheDocument();
+  });
+
+  it('describes retry navigation without claiming the update starts immediately', () => {
+    const retryModel: DataHealthModel = {
+      ...actionable,
+      sources: [{
+        ...actionable.sources[0],
+        title: 'Binance API',
+        findings: [{ ...actionable.sources[0].findings[0], remediation: 'retry_source_operation', intent: importIntent }]
+      }]
+    };
+    render(<DataHealthWorkspace model={retryModel} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
+    expect(screen.getByRole('button', { name: 'Open Binance API to retry update' })).toBeInTheDocument();
+    expect(screen.getByText('Opens this source and focuses Import file.')).toBeVisible();
+    expect(screen.queryByRole('button', { name: /^Retry Binance API/ })).toBeNull();
+  });
+
+  it('describes sync and reconciliation destinations exactly', () => {
+    const model: DataHealthModel = {
+      ...actionable,
+      sources: [{
+        ...actionable.sources[0],
+        findings: [
+          { ...actionable.sources[0].findings[0], key: 'sync', remediation: 'refresh_authority', intent: syncIntent },
+          { ...actionable.sources[0].findings[0], key: 'reconcile', remediation: 'inspect_evidence_history', intent: secondaryIntent }
+        ]
+      }]
+    };
+    render(<DataHealthWorkspace model={model} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
+    expect(screen.getByText('Opens this source and focuses Sync now.')).toBeVisible();
+    fireEvent.click(screen.getByText('More actions (1)'));
+    expect(screen.getByText(/Opens this source’s Reconciliation view/)).toBeVisible();
   });
 });
