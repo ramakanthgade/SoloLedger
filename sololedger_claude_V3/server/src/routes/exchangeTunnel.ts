@@ -35,6 +35,8 @@ interface ExchangeSpec {
   headers: readonly string[];
   /** Optional exact endpoint allowlist. Prefix entries ending in `/` allow descendants. */
   paths?: readonly string[];
+  /** Optional HTTP-method allowlist (used when a connector is read-only). */
+  methods?: readonly string[];
 }
 
 /**
@@ -78,6 +80,21 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/v5/execution/list',
       '/v5/asset/deposit/query-record',
       '/v5/asset/withdraw/query-record'
+    ]
+  },
+  gateio: {
+    host: 'api.gateio.ws',
+    headers: ['key', 'timestamp', 'sign'],
+    methods: ['GET'],
+    // Exact read-only endpoints used by CCXT 4.5.68's `gate` class. No order
+    // mutation, withdrawal mutation, margin, unified, futures or delivery APIs.
+    paths: [
+      '/api/v4/spot/time',
+      '/api/v4/spot/currency_pairs',
+      '/api/v4/spot/accounts',
+      '/api/v4/spot/my_trades',
+      '/api/v4/wallet/deposits',
+      '/api/v4/wallet/withdrawals'
     ]
   }
 };
@@ -169,6 +186,10 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
   if (spec.paths && !spec.paths.some((allowed) =>
     allowed.endsWith('/') ? upstreamPath.startsWith(allowed) : upstreamPath === allowed)) {
     fail(res, 'bad_path', 400, 'Upstream path is not allowed for this exchange');
+    return;
+  }
+  if (spec.methods && !spec.methods.includes(method)) {
+    fail(res, 'bad_path', 400, 'Upstream method is not allowed for this exchange');
     return;
   }
 

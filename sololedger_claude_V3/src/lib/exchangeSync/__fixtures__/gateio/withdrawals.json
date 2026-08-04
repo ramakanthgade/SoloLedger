@@ -1,0 +1,32 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from Gate API v4 GET /wallet/withdrawals and CCXT 4.5.68 parseTransaction comments. CCXT reports withdrawal amount net of fee.",
+  "response": [
+    {
+      "id": "w64413318",
+      "timestamp": "1735948800",
+      "withdraw_order_id": "fixture-withdraw-order",
+      "currency": "ETH",
+      "address": "0x1111111111111111111111111111111111111111",
+      "txid": "0xcccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "block_number": "12345678",
+      "amount": "0.25000000",
+      "fee": "0.00100000",
+      "memo": "",
+      "status": "DONE",
+      "chain": "ETH"
+    },
+    {
+      "id": "w64413319",
+      "timestamp": "1735948900",
+      "currency": "USDT",
+      "address": "TFixtureFailedAddress",
+      "txid": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "amount": "50.00",
+      "fee": "1.00",
+      "memo": "",
+      "status": "FAIL",
+      "chain": "TRX"
+    }
+  ]
+}

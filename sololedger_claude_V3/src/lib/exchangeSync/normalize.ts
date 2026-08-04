@@ -37,7 +37,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   kraken: 'exkr',
   okx: 'exok',
   kucoin: 'exkc',
-  bybit: 'exbb'
+  bybit: 'exbb',
+  gateio: 'exgt'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -91,6 +92,10 @@ function tradeSourceRef(
     case 'bybit':
       // Bybit's CSV parser uses Order ID; execution id is only a fallback.
       return trade.order ?? trade.id ?? exchangeSourceRef('bybit', floorToSeconds(ts), side, base, amount);
+    case 'gateio':
+      // Existing Gate.io CSV is a beta generic schema whose `ID` provenance
+      // is not documented. Prefer Gate's native fill id; formula is fallback.
+      return trade.id ?? exchangeSourceRef('gateio', floorToSeconds(ts), side, base, amount);
   }
 }
 
@@ -473,6 +478,11 @@ function transferSourceRef(
       }
       return transfer.id ?? exchangeSourceRef('bybit', floorToSeconds(ts), type, asset, amount);
     }
+    case 'gateio':
+      // Gate wallet history exposes a native d*/w* record id. This is the
+      // closest available counterpart to the beta CSV `ID` field, but actual
+      // export equivalence has not been live-verified (README limitation).
+      return transfer.id ?? exchangeSourceRef('gateio', floorToSeconds(ts), type, asset, amount);
   }
 }
 
@@ -484,10 +494,22 @@ function transferSourceRef(
  * settled sets are per-kind ('1' means ok for deposits but CANCELED for
  * withdrawals).
  */
-function isSettledTransfer(exchange: ExchangeId, type: TxType, status: string | undefined): boolean {
+function isSettledTransfer(
+  exchange: ExchangeId,
+  type: TxType,
+  status: string | undefined,
+  rawStatus: unknown
+): boolean {
   if (status === 'ok') return true;
   if (exchange === 'binance') {
     return type === 'transfer_in' ? status === '1' || status === '6' : status === '6';
+  }
+  // Gate now returns DEP_CREDITED for a terminal credited deposit, but CCXT
+  // 4.5.68 does not map it and leaks the raw value as unified `status`.
+  // Direction is deliberately pinned: no pending status, and no withdrawal
+  // carrying the same unexpected marker, is accepted as settled.
+  if (exchange === 'gateio' && type === 'transfer_in') {
+    return status === 'DEP_CREDITED' || rawStatus === 'DEP_CREDITED';
   }
   return false;
 }
@@ -508,7 +530,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     if (infoType === 'send') type = 'transfer_out';
     else if (infoType === 'receive') type = 'transfer_in';
   }
-  if (!type || !isSettledTransfer(exchange, type, transfer.status)) return null;
+  if (!type || !isSettledTransfer(exchange, type, transfer.status, transfer.info?.status)) return null;
   const ts = transfer.timestamp;
   const asset = transfer.currency?.toUpperCase();
   const amount = transfer.amount != null ? Math.abs(transfer.amount) : 0;

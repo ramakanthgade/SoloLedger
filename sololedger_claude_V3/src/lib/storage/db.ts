@@ -83,7 +83,7 @@ export interface CsvImportRow {
  */
 export interface ExchangeConnectionRow {
   id: string;           // makeId('exc')
-  exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit')
+  exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio')
   label?: string;       // user-assigned friendly name, e.g. "My Binance"
   apiKey?: string;
   secret?: string;
@@ -632,7 +632,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'kraken_api',
   'okx_api',
   'kucoin_api',
-  'bybit_api'
+  'bybit_api',
+  'gateio_api'
 ]);
 
 /**

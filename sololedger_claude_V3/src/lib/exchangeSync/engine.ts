@@ -92,6 +92,23 @@ const BINANCE_TRANSFER_WINDOW_MS = 89 * 86_400_000;
 const TRADE_WINDOW_MS = 6.5 * 86_400_000;
 /** Bybit asset-history endpoints require ranges shorter than 30 days. */
 const BYBIT_TRANSFER_WINDOW_MS = 29 * 86_400_000;
+/** Gate wallet and spot-history APIs reject ranges of 30 days or more. */
+export const GATEIO_WINDOW_MS = 29 * 86_400_000;
+/** Gate list endpoints reject offsets beyond roughly 100,000. */
+export const GATEIO_MAX_OFFSET = 100_000;
+/**
+ * Gate dense-window discovery can replay up to 101 pages at every bisection
+ * level. Keep that replay separate from the per-branch data-page guard while
+ * retaining a hard phase cap. A 29-day range has fewer than 23 binary splits
+ * at Gate's one-second precision, so 8,000 requests leaves ample room for a
+ * dense one-sided branch plus its empty siblings without permitting runaway
+ * request trees.
+ */
+export const GATEIO_MAX_REQUESTS_PER_PHASE = 8_000;
+const GATEIO_TRADE_LIMIT = 1000;
+const GATEIO_DEPOSIT_LIMIT = 500;
+/** Official wallet docs cap withdrawal-history responses at 100 rows. */
+const GATEIO_WITHDRAWAL_LIMIT = 100;
 /** Bybit advertises two years of execution history for the V5 endpoint. */
 const BYBIT_TRADE_RETENTION_MS = 2 * 365 * 86_400_000;
 /**
@@ -116,7 +133,10 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   kraken: Date.UTC(2011, 6, 28), // 2011-07-28
   okx: Date.UTC(2014, 0, 1), // 2014-01-01 (launched as OKEx)
   kucoin: Date.UTC(2017, 8, 27), // 2017-09-27
-  bybit: Date.UTC(2021, 6, 15) // 2021-07-15 (spot launch)
+  bybit: Date.UTC(2021, 6, 15), // 2021-07-15 (spot launch)
+  // Gate launched in April 2013. The exact first spot-market day is not
+  // published, so use the conservative beginning of that launch month.
+  gateio: Date.UTC(2013, 3, 1)
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -546,6 +566,132 @@ export async function paginateBybitWindows<T extends PageRow>(args: {
   return { rows, maxTs: args.now, partial: false, pages, termination: 'exhausted' };
 }
 
+/**
+ * Gate's spot/wallet history combines strict sub-30-day ranges with a maximum
+ * reachable offset. Exhaust each time window by offset; if its last reachable
+ * page is still full, bisect that window and replay both halves (native ids
+ * dedup the inclusive boundaries and the already-read parent rows). A window
+ * narrower than one API timestamp second cannot be split safely: report an
+ * explicit partial/nonadvancing result instead of requesting an invalid offset
+ * or looping forever on same-timestamp data. Data-page accounting resets for
+ * each queued branch so parent discovery does not starve child replay; one
+ * independent request cap bounds the complete subdivision tree.
+ */
+export async function paginateGateioWindows<T extends PageRow>(args: {
+  fetchPage: (since: number, until: number, offset: number) => Promise<T[]>;
+  since: number;
+  windowMs: number;
+  fullPage: number;
+  now: number;
+  maxOffset?: number;
+  maxPages?: number;
+  maxEmptyHops?: number;
+  maxRequests?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<PaginateResult<T>> {
+  const rows: T[] = [];
+  const seenIds = new Set<string>();
+  const maxOffset = args.maxOffset ?? GATEIO_MAX_OFFSET;
+  // Preserve explicit caller/test page-budget behavior. The production branch
+  // budget can reach Gate's finite offset cap, while subdivisionPages below
+  // proactively splits smaller-page endpoints before that becomes expensive.
+  const offsetReachablePages = Math.floor(maxOffset / args.fullPage) + 1;
+  const maxPages = args.maxPages ?? Math.max(MAX_PAGES_PER_PHASE, offsetReachablePages);
+  // Small-page wallet endpoints could otherwise need 1,001 requests at every
+  // split level before reaching offset 100,000. Under production defaults,
+  // subdivide a still-full branch after at most 200 pages; explicit maxPages
+  // remains a caller-controlled partial-success guard rather than a split hint.
+  const subdivisionPages = args.maxPages == null
+    ? Math.min(MAX_PAGES_PER_PHASE, offsetReachablePages)
+    : offsetReachablePages;
+  const subdivisionMaxOffset = Math.min(maxOffset, (subdivisionPages - 1) * args.fullPage);
+  const maxEmptyHops = args.maxEmptyHops ?? MAX_EMPTY_HOPS_PER_PHASE;
+  const maxRequests = args.maxRequests ?? GATEIO_MAX_REQUESTS_PER_PHASE;
+  const sleep = args.sleep ?? (async () => {});
+  const windows: Array<{ start: number; end: number }> = [];
+  for (let start = args.since; start <= args.now;) {
+    const end = Math.min(start + args.windowMs, args.now);
+    windows.push({ start, end });
+    if (end >= args.now) break;
+    start = end;
+  }
+  // Counts physical upstream attempts, including retry attempts. This state
+  // lives outside every page/window branch so retries cannot reset the phase
+  // cap by restarting the paginator.
+  let fetches = 0;
+  let emptyHops = 0;
+
+  while (windows.length > 0) {
+    const window = windows.shift()!;
+    let offset = 0;
+    // Parent discovery pages must not consume the budget needed to replay a
+    // subdivided child. Each chronological branch gets its own data-page
+    // allowance; maxRequests remains the overall phase safety guard.
+    let branchDataPages = 0;
+    let priorFullPageKey: string | undefined;
+    for (;;) {
+      if (fetches >= maxRequests || branchDataPages >= maxPages || emptyHops >= maxEmptyHops) {
+        return {
+          rows, maxTs: window.start, partial: true, pages: fetches,
+          termination: emptyHops >= maxEmptyHops ? 'empty_hop_budget' : 'page_budget'
+        };
+      }
+      let retry = 0;
+      let page: T[] | undefined;
+      while (page == null) {
+        if (fetches >= maxRequests) {
+          return { rows, maxTs: window.start, partial: true, pages: fetches, termination: 'page_budget' };
+        }
+        fetches += 1;
+        try {
+          page = await args.fetchPage(window.start, window.end, offset);
+        } catch (err) {
+          const kind = classifySyncError(err);
+          if (retry >= MAX_RETRIES || !RETRYABLE_KINDS.has(kind)) throw err;
+          // Do not sleep for a retry that the physical-attempt cap forbids.
+          if (fetches >= maxRequests) {
+            return { rows, maxTs: window.start, partial: true, pages: fetches, termination: 'page_budget' };
+          }
+          await sleep(RETRY_BACKOFF_MS[retry] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]);
+          retry += 1;
+        }
+      }
+      if (page.length === 0) emptyHops += 1;
+      else branchDataPages += 1;
+      for (const row of page) {
+        const id = row.id == null ? undefined : String(row.id);
+        if (id && seenIds.has(id)) continue;
+        if (id) seenIds.add(id);
+        rows.push(row);
+      }
+      if (page.length < args.fullPage) break;
+
+      // A server ignoring `offset` would otherwise burn the complete phase
+      // budget while returning the same dense page. Keep the window replayable.
+      const pageKey = page.map((row, index) => String(row.id ?? `${row.timestamp ?? ''}:${index}`)).join('|');
+      if (pageKey === priorFullPageKey) {
+        return { rows, maxTs: window.start, partial: true, pages: fetches, termination: 'nonadvancing' };
+      }
+      priorFullPageKey = pageKey;
+      const nextOffset = offset + args.fullPage;
+      if (nextOffset > subdivisionMaxOffset) {
+        // Gate's from/to values have whole-second precision. Split only at a
+        // distinct second so both child ranges are meaningful after CCXT's
+        // ms→seconds conversion. Inclusive boundaries are safe via seenIds.
+        const midpoint = Math.floor(((window.start + window.end) / 2) / 1000) * 1000;
+        if (midpoint <= window.start || midpoint >= window.end) {
+          return { rows, maxTs: window.start, partial: true, pages: fetches, termination: 'nonadvancing' };
+        }
+        windows.unshift({ start: midpoint, end: window.end });
+        windows.unshift({ start: window.start, end: midpoint });
+        break;
+      }
+      offset = nextOffset;
+    }
+  }
+  return { rows, maxTs: args.now, partial: false, pages: fetches, termination: 'exhausted' };
+}
+
 // ---- Per-exchange fetch plans ----
 
 interface FetchPlanOutcome<T extends PageRow> {
@@ -575,7 +721,8 @@ async function fetchTransferKind(
   since: number,
   now: number,
   coinbaseCurrencies: string[],
-  warnings: string[]
+  warnings: string[],
+  sleep?: (ms: number) => Promise<void>
 ): Promise<FetchPlanOutcome<UnifiedTransfer>> {
   const fetchDeposits = kind === 'deposits';
   if (exchange === 'kraken') {
@@ -672,6 +819,19 @@ async function fetchTransferKind(
       now
     });
   }
+  if (exchange === 'gateio') {
+    const limit = fetchDeposits ? GATEIO_DEPOSIT_LIMIT : GATEIO_WITHDRAWAL_LIMIT;
+    return paginateGateioWindows<UnifiedTransfer>({
+      fetchPage: (s, u, offset) => fetchDeposits
+        ? client.fetchDeposits(undefined, s, limit, { until: u, offset })
+        : client.fetchWithdrawals(undefined, s, limit, { until: u, offset }),
+      since,
+      windowMs: GATEIO_WINDOW_MS,
+      fullPage: limit,
+      now,
+      sleep
+    });
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -730,7 +890,7 @@ async function fetchTradesForSymbol(
   symbol: string | undefined,
   since: number,
   now: number,
-  opts?: { firstSync?: boolean }
+  opts?: { firstSync?: boolean; sleep?: (ms: number) => Promise<void> }
 ): Promise<FetchPlanOutcome<UnifiedTrade>> {
   switch (exchange) {
     case 'binance':
@@ -789,6 +949,22 @@ async function fetchTradesForSymbol(
         since,
         windowMs: TRADE_WINDOW_MS,
         now
+      });
+    case 'gateio':
+      return paginateGateioWindows<UnifiedTrade>({
+        // Gate accepts seconds while CCXT post-filters unified rows against
+        // the supplied ms `since`. Floor it so an API-full boundary page is
+        // not made artificially short by that local filter.
+        fetchPage: (s, u, offset) => client.fetchMyTrades(undefined, Math.floor(s / 1000) * 1000, GATEIO_TRADE_LIMIT, {
+          until: u,
+          page: offset / GATEIO_TRADE_LIMIT + 1,
+          type: 'spot'
+        }),
+        since,
+        windowMs: GATEIO_WINDOW_MS,
+        fullPage: GATEIO_TRADE_LIMIT,
+        now,
+        sleep: opts?.sleep
       });
   }
 }
@@ -913,6 +1089,11 @@ export async function syncConnection(
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
       if (exchange === 'coinbase' && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
+      } else if (exchange === 'gateio') {
+        // Gate retries each physical page request inside its paginator so a
+        // retry cannot restart subdivision or reset the 8,000-attempt cap.
+        outcome = await fetchTransferKind(client, exchange, kind, since, nowMs, cbAssets, warnings, sleep);
+        transferOutcomes.set(kind, outcome);
       } else {
         outcome = await withRetries(
           () => fetchTransferKind(client, exchange, kind, since, nowMs, cbAssets, warnings),
@@ -1039,10 +1220,12 @@ export async function syncConnection(
       fetchedCount += outcome.rows.length;
       if (outcome.partial) partialHistory = true;
     } else {
-      const outcome = await withRetries(
-        () => fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs),
-        sleep
-      );
+      const outcome = exchange === 'gateio'
+        ? await fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs, { sleep })
+        : await withRetries(
+            () => fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs),
+            sleep
+          );
       if (exchange === 'okx' && oldCursors.trades == null) {
         const retentionFloor = nowMs - 90 * 86_400_000;
         outcome.partial = true;
@@ -1070,7 +1253,7 @@ export async function syncConnection(
       }
     }
 
-    const tradeCursorCandidate = exchange === 'bybit'
+    const tradeCursorCandidate = exchange === 'bybit' || exchange === 'gateio'
       ? tradeOutcomes.reduce((max, outcome) => Math.max(max, outcome.maxTs ?? 0), 0)
       : maxTimestamp(tradeRows) ?? 0;
     const mergedTrades = Math.max(oldCursors.trades ?? 0, tradeCursorCandidate);

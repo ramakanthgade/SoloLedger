@@ -129,6 +129,12 @@ const TIER2 = [
     probe: 'GET /v5/market/time',
     path: '/v5/market/time',
     check: (r, json) => r.status === 200 && json?.retCode === 0 && Boolean(json?.result?.timeSecond)
+  },
+  {
+    exchange: 'gateio',
+    probe: 'GET /api/v4/spot/time',
+    path: '/api/v4/spot/time',
+    check: (r, json) => r.status === 200 && typeof json?.server_time === 'number'
   }
 ];
 
@@ -268,6 +274,26 @@ const tier3 = [
     },
     // Bybit's distinctive unknown-key response (signature errors are 10004).
     check: (r) => r.status === 401 && r.text.includes('"retCode":10003') && /api key/i.test(r.text)
+  },
+  {
+    exchange: 'gateio',
+    probe: 'GET /api/v4/spot/accounts (KEY/Timestamp/SIGN)',
+    build() {
+      const apiKey = 'dummy-gateio-key';
+      const secret = 'dummy-gateio-secret';
+      const timestamp = Math.floor(Date.now() / 1000).toString();
+      const requestPath = '/api/v4/spot/accounts';
+      const bodyHash = crypto.createHash('sha512').update('', 'utf8').digest('hex');
+      const payload = ['GET', requestPath, '', bodyHash, timestamp].join('\n');
+      const sign = hmacHex('sha512', secret, payload);
+      return {
+        path: requestPath,
+        exchangeHeaders: { key: apiKey, timestamp, sign }
+      };
+    },
+    // Gate's exchange-origin unknown-key label. SIGNATURE_ERROR would mean
+    // the signed bytes changed, while relay errors carry x-sololedger-error.
+    check: (r) => (r.status === 401 || r.status === 400) && r.text.includes('"label":"INVALID_KEY"')
   }
 ];
 

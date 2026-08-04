@@ -1,0 +1,28 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from Gate API v4 GET /wallet/deposits and CCXT 4.5.68 parseTransaction comments.",
+  "response": [
+    {
+      "id": "d33361395",
+      "currency": "USDT",
+      "address": "TFixtureDepositAddress",
+      "amount": "1250.00",
+      "txid": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "timestamp": "1735862400",
+      "status": "DEP_CREDITED",
+      "chain": "TRX",
+      "memo": ""
+    },
+    {
+      "id": "d33361396",
+      "currency": "BTC",
+      "address": "bc1fixturepending",
+      "amount": "0.01000000",
+      "txid": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "timestamp": "1735862500",
+      "status": "PEND",
+      "chain": "BTC",
+      "memo": ""
+    }
+  ]
+}

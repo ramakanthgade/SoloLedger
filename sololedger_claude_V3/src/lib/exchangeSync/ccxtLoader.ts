@@ -120,7 +120,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   kraken: 'Kraken',
   okx: 'OKX',
   kucoin: 'KuCoin',
-  bybit: 'Bybit'
+  bybit: 'Bybit',
+  gateio: 'Gate.io'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -140,7 +141,10 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
   }
   const exchangeId = row.exchange as ExchangeId;
   const ccxt = await loadCcxt();
-  const Ctor = ccxt[exchangeId] as CcxtExchangeCtor | undefined;
+  // SoloLedger's stable id follows the existing CSV parser (`gateio`), while
+  // CCXT 4.5.68 exports Gate.io as the `gate` class.
+  const ccxtClassId = exchangeId === 'gateio' ? 'gate' : exchangeId;
+  const Ctor = ccxt[ccxtClassId] as CcxtExchangeCtor | undefined;
   if (!Ctor) {
     throw new TunnelError('relay_unavailable', `ccxt has no exchange implementation for '${exchangeId}'.`);
   }
@@ -151,7 +155,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     timeout: 30_000
   };
   if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit') {
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -167,7 +171,16 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
           enableUnifiedAccount: true,
           unifiedMarginStatus: 6
         }
-      : { defaultType: 'spot', fetchMarkets: ['spot'] };
+      : exchangeId === 'gateio'
+        ? {
+            defaultType: 'spot',
+            fetchMarkets: { types: ['spot'] },
+            // Avoid Gate's signed /unified/unified_mode account probe. The
+            // connector is intentionally classic spot-only.
+            unifiedAccount: false,
+            fetchCurrencies: false
+          }
+        : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
     // ccxt's binance fetchCurrencies (default on when credentials exist)
@@ -188,7 +201,20 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // is never called.
     config.has = { fetchCurrencies: false };
   }
+  if (exchangeId === 'gateio') {
+    // Gate's public currencies response is not needed for our market/trade
+    // normalization. Pin the capability off as well as the option so
+    // loadMarkets performs only the spot currency-pairs request.
+    config.has = { fetchCurrencies: false };
+  }
   const exchange = new Ctor(config) as ExchangeClient;
+  if (exchangeId === 'gateio') {
+    // CCXT's Gate fetchSpotMarkets always joins public margin/currency_pairs
+    // into the spot response. Margin metadata is irrelevant here and the
+    // relay deliberately blocks that path, so satisfy the join locally.
+    (exchange as unknown as { publicMarginGetCurrencyPairs: () => Promise<unknown[]> })
+      .publicMarginGetCurrencyPairs = async () => [];
+  }
   installTunnelFetch(exchange, exchangeId);
   return exchange;
 }

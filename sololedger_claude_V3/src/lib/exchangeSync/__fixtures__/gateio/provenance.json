@@ -1,0 +1,11 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful Gate API v4 fixtures. Shapes and field names were transcribed from Gate's official API v4 documentation and CCXT 4.5.68's gate parser comments; no user account response was recorded.",
+  "sources": [
+    "https://www.gate.com/docs/developers/apiv4/en/#query-personal-trading-records",
+    "https://www.gate.com/docs/developers/apiv4/en/#get-deposit-records",
+    "https://www.gate.com/docs/developers/apiv4/en/#get-withdrawal-records",
+    "ccxt@4.5.68 js/src/gate.js"
+  ],
+  "authoredAt": "2026-08-04"
+}
