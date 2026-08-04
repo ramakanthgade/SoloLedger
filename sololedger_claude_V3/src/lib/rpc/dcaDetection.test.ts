@@ -424,7 +424,7 @@ describe('applyDcaClassification — Jupiter verification (Solana)', () => {
       }),
       tx({
         id: 'unrelated-tiny-inbound', type: 'transfer_in', asset: 'SOL', amount: 0.005,
-        sourceRef: 'unrelated-signature', flags: ['missing_cost_basis']
+        sourceRef: 'unrelated-signature', flags: ['missing_market_value']
       })
     );
     fetchJupiterRecurringHistory.mockResolvedValueOnce(
@@ -449,7 +449,7 @@ describe('applyDcaClassification — Jupiter verification (Solana)', () => {
       type: 'transfer_in', notes: 'Token account rent refund (DCA account close)'
     });
     expect(store.find((row) => row.id === 'unrelated-tiny-inbound')).toMatchObject({
-      type: 'transfer_in', flags: ['missing_cost_basis']
+      type: 'transfer_in', flags: ['missing_market_value']
     });
     expect(store.find((row) => row.id === 'unrelated-tiny-inbound')?.notes).toBeUndefined();
   });

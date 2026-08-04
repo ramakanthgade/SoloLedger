@@ -111,9 +111,7 @@ export const hyperliquidDepositsParser: ExchangeParser = {
       // lookup instead of silently mis-stating fiatValue = amount.
       const usdEquivalent = isUsdEquivalent(asset);
       const fiatValue = usdEquivalent ? amount : undefined;
-      const flags: FlagReason[] = usdEquivalent
-        ? ['possible_internal_transfer']
-        : ['possible_internal_transfer', 'missing_cost_basis'];
+      const flags: FlagReason[] = ['possible_internal_transfer'];
 
       const notesParts = [
         mapped === 'transfer_in' ? 'HL deposit' : 'HL withdraw',

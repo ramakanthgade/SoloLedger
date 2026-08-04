@@ -49,6 +49,29 @@ describe('normalizeFiatToReportingCurrencyLocal', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it('preserves explicit zero and removes only legacy stored pricing markers', () => {
+    const out = normalizeFiatToReportingCurrencyLocal([
+      makeTx('zero', {
+        fiatCurrency: 'INR', fiatValue: 0,
+        flags: ['missing_market_value', 'missing_cost_basis', 'needs_review']
+      })
+    ], 'INR');
+    expect(out[0].fiatValue).toBe(0);
+    expect(out[0].flags).toEqual(['needs_review']);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('preserves foreign-currency explicit zero without an FX lookup', () => {
+    const out = normalizeFiatToReportingCurrencyLocal([
+      makeTx('foreign-zero', {
+        fiatCurrency: 'USD', fiatValue: 0,
+        flags: ['missing_market_value', 'needs_review']
+      })
+    ], 'INR');
+    expect(out[0]).toMatchObject({ fiatValue: 0, fiatCurrency: 'INR', flags: ['needs_review'] });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
   it('clears foreign-fiat values (leaves them unpriced) instead of doing network FX', () => {
     const out = normalizeFiatToReportingCurrencyLocal(
       [makeTx('b', { fiatCurrency: 'USD', fiatValue: 100 })],

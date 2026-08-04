@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import { clearAllData, db, upsertOpeningBalance } from '@/lib/storage/db';
 import { ConnectionReconciliation } from './ConnectionReconciliation';
+import { ConnectionOpeningBalances } from './ConnectionOpeningBalances';
 import type { ConnectionWorkspaceSnapshot } from './connectionWorkspaceModel';
 import { OpeningBalanceDialog } from './OpeningBalanceDialog';
 
@@ -68,6 +69,55 @@ function LiveOpeningOnlyReconciliationHarness({ removeScopeWhenEmpty = false }: 
     openingBalances={openings}
     onInspectHistory={() => {}}
   />;
+}
+
+function LiveOpeningOverviewHarness() {
+  const openings = useLiveQuery(() => db.openingBalances.toArray(), []) ?? [];
+  return <div data-testid="connection-overview" tabIndex={-1}>
+    <h2>Overview fallback</h2>
+    <ConnectionOpeningBalances
+      snapshot={openingOnlySnapshot(openings.length > 0, true)}
+      openingBalances={openings}
+    />
+  </div>;
+}
+
+function duplicateIdentitySnapshot(openings: readonly OpeningBalanceRow[]): ConnectionWorkspaceSnapshot {
+  const presentation = { severity: 'warning', primaryRemediation: 'none', secondaryRemediations: [] } as const;
+  const identities = [
+    { scopeId: 'manual', accountClass: 'manual' },
+    { scopeId: 'exchange:duplicate', accountClass: 'spot' }
+  ] as const;
+  const scopes = identities.map(({ scopeId, accountClass }) => {
+    const hasOpening = openings.some((row) => row.scopeId === scopeId && row.accountClass === accountClass && row.assetKey === 'asset:BTC');
+    const asset = {
+      kind: 'asset', key: `${scopeId}\u001f${accountClass}\u001fasset:BTC`, scopeId, accountClass,
+      assetKey: 'asset:BTC', asset: 'BTC', openingStatus: 'opening_balance_present',
+      reconciliation: {
+        scopeId, accountClass, assetKey: 'asset:BTC', asset: 'BTC', balanceStatus: 'not_compared',
+        authorityStatus: 'missing', coverageStatus: 'complete', scopeStatus: 'resolved',
+        postingEvidenceCount: 0, authorityEvidenceCount: 0
+      },
+      presentation
+    } as const;
+    return {
+      kind: 'scope', key: `${scopeId}\u001f${accountClass}`, scopeId, accountClass,
+      scopeStatus: 'resolved', authority: { status: 'missing', selectedAssets: [], diagnostics: [] },
+      coverage: { kind: 'complete', status: 'complete' }, presentation, assets: hasOpening ? [asset] : []
+    };
+  });
+  return {
+    id: 'duplicate-identities', kind: 'manual', sources: [], generatedAt: 1, scopes,
+    overview: { holdings: [], slices: [], postingCount: 0, transactionCount: 0, evidenceCount: 0, transactionBreakdown: { deposits: 0, withdrawals: 0, trades: 0, other: 0 } },
+    reconciliation: scopes.flatMap((scope) => scope.assets), syncHistory: []
+  } as unknown as ConnectionWorkspaceSnapshot;
+}
+
+function DuplicateIdentityOpeningOverviewHarness() {
+  const openings = useLiveQuery(() => db.openingBalances.toArray(), []) ?? [];
+  return <div data-testid="connection-overview" tabIndex={-1}>
+    <ConnectionOpeningBalances snapshot={duplicateIdentitySnapshot(openings)} openingBalances={openings} />
+  </div>;
 }
 
 async function taxBytes() {
@@ -230,5 +280,57 @@ describe('OpeningBalanceDialog production IndexedDB isolation', () => {
     await waitFor(() => expect(destination).toHaveFocus());
     expect(destination).toHaveAccessibleName('Does recorded activity explain the source balance?');
     expect(destination).toHaveAttribute('tabindex', '-1');
+  });
+
+  it('restores keyboard focus to the durable Overview fallback after deleting the final relocated opening row', async () => {
+    await upsertOpeningBalance({
+      scopeId: 'manual', accountClass: 'manual', assetKey: 'asset:BTC', asset: 'BTC',
+      absoluteQuantity: 1, effectiveAt: Date.UTC(2025, 0, 1), provenance: 'user_confirmed'
+    }, 10, { mode: 'create' });
+    render(<LiveOpeningOverviewHarness />);
+
+    const edit = await screen.findByRole('button', { name: 'Edit' });
+    edit.focus();
+    expect(edit).toHaveFocus();
+    fireEvent.click(edit);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => expect(screen.queryByTestId('connection-opening-balances')).not.toBeInTheDocument());
+    const fallback = screen.getByTestId('connection-overview');
+    await waitFor(() => expect(fallback).toHaveFocus());
+    expect(fallback).toHaveAttribute('tabindex', '-1');
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it('does not focus another account with the same asset identity after deletion', async () => {
+    await db.exchangeConnections.put({
+      id: 'duplicate', exchange: 'binance', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    await upsertOpeningBalance({
+      scopeId: 'manual', accountClass: 'manual', assetKey: 'asset:BTC', asset: 'BTC',
+      absoluteQuantity: 1, effectiveAt: Date.UTC(2025, 0, 1), provenance: 'user_confirmed'
+    }, 10, { mode: 'create' });
+    await upsertOpeningBalance({
+      scopeId: 'exchange:duplicate', accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC',
+      absoluteQuantity: 2, effectiveAt: Date.UTC(2025, 0, 1), provenance: 'user_confirmed'
+    }, 11, { mode: 'create' });
+    render(<DuplicateIdentityOpeningOverviewHarness />);
+
+    const manualRow = await waitFor(() => {
+      const row = document.querySelector<HTMLElement>('[data-opening-scope-id="manual"][data-opening-account-class="manual"][data-opening-asset-key="asset:BTC"]');
+      expect(row).not.toBeNull();
+      return row!;
+    });
+    fireEvent.click(manualRow.querySelector<HTMLButtonElement>('[data-opening-action="edit"]')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
+
+    await waitFor(() => expect(document.querySelector('[data-opening-scope-id="manual"]')).not.toBeInTheDocument());
+    const otherAccountControl = document.querySelector<HTMLButtonElement>('[data-opening-scope-id="exchange:duplicate"] [data-opening-action="add"]');
+    expect(otherAccountControl).not.toBeNull();
+    const heading = screen.getByRole('heading', { name: 'Dated starting balances', level: 2 });
+    await waitFor(() => expect(heading).toHaveFocus());
+    expect(otherAccountControl).not.toHaveFocus();
   });
 });

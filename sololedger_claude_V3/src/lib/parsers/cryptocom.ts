@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
+import { exchangeSourceRef, makeId, optionalNumber, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
 import { normalizeHeader } from './tableExtract';
 import { rowCol } from './headerMap';
 
@@ -24,7 +24,7 @@ export const cryptocomParser: ExchangeParser = {
       // Real app exports use "Timestamp (UTC)" — parsed as UTC, not local time.
       const ts = safeTimestampUtc(rowCol(row, 'Timestamp (UTC)', 'timestamp', 'date'));
       if (!type || !asset || !amount || !Number.isFinite(ts)) { skippedRows += 1; continue; }
-      const nativeValue = Math.abs(safeNumber(rowCol(row, 'native_amount')));
+      const nativeRaw = optionalNumber(rowCol(row, 'native_amount')); const nativeValue = nativeRaw == null ? undefined : Math.abs(nativeRaw);
       const nativeCurrency = rowCol(row, 'native_currency').trim().toUpperCase() || 'USD';
       const transfer = type === 'transfer_in' || type === 'transfer_out';
       // Real app exports use "Transaction Description".
@@ -38,7 +38,7 @@ export const cryptocomParser: ExchangeParser = {
       }
       transactions.push({
         id: makeId('cdc'), timestamp: ts, type, asset, amount,
-        counterAsset, fiatCurrency: nativeCurrency, fiatValue: nativeValue || undefined,
+        counterAsset, fiatCurrency: nativeCurrency, fiatValue: nativeValue,
         source: 'cryptocom', sourceRef: rowCol(row, 'transaction_hash') || exchangeSourceRef('cryptocom', ts, type, asset, amount),
         notes: description || undefined, flags: transfer ? ['possible_internal_transfer'] : [],
         isInternalTransfer: false, raw: row

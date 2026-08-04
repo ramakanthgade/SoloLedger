@@ -1,6 +1,7 @@
 import type { Transaction } from '@/types/transaction';
 import {
   makeId,
+  optionalNumber,
   safeQuantity,
   safeTimestamp,
   safeTimestampUtc,
@@ -91,14 +92,16 @@ export const binanceSpotParser: ExchangeParser = {
       const pairRaw = (row[pairCol] || '').trim();
       const { base, quote } = parseTradingPair(pairRaw);
       const qty = safeQuantity(row[qtyCol]);
-      const price = priceCol ? safeQuantity(row[priceCol]) : 0;
+      const priceRaw = priceCol ? optionalNumber(row[priceCol]) : undefined;
+      const price = priceRaw == null ? undefined : Math.abs(priceRaw);
       // Quote total: prefer Amount column when Executed holds crypto; else Total/Amount
-      const quoteTotal =
+      const quoteTotalRaw =
         executedCol && amountCol && amountCol !== executedCol
-          ? safeQuantity(row[amountCol])
+          ? optionalNumber(row[amountCol])
           : totalOnlyCol
-            ? safeQuantity(row[totalOnlyCol])
-            : 0;
+            ? optionalNumber(row[totalOnlyCol])
+            : undefined;
+      const quoteTotal = quoteTotalRaw == null ? undefined : Math.abs(quoteTotalRaw);
 
       if (!base || !Number.isFinite(timestamp) || qty === 0) {
         skippedRows++;
@@ -106,10 +109,10 @@ export const binanceSpotParser: ExchangeParser = {
       }
 
       let fiatValue: number | undefined;
-      let fiatCurrency = quoteToFiatCurrency(quote) ?? 'USD';
-      if (quoteTotal > 0) {
+      const fiatCurrency = quoteToFiatCurrency(quote) ?? 'USD';
+      if (quoteTotal != null) {
         fiatValue = quoteTotal;
-      } else if (price > 0 && qty > 0) {
+      } else if (price != null && qty > 0) {
         fiatValue = price * qty;
       }
 
@@ -123,7 +126,7 @@ export const binanceSpotParser: ExchangeParser = {
         asset: base,
         amount: qty,
         counterAsset: quote,
-        counterAmount: quoteTotal > 0 ? quoteTotal : price > 0 ? price * qty : undefined,
+        counterAmount: quoteTotal != null ? quoteTotal : price != null ? price * qty : undefined,
         fiatCurrency,
         fiatValue,
         feeAmount: feeAmount && feeAmount > 0 ? feeAmount : undefined,
@@ -131,7 +134,7 @@ export const binanceSpotParser: ExchangeParser = {
         source: 'binance_spot',
         sourceRef: exchangeSourceRef('binance', timestamp, isBuy ? 'buy' : 'sell', base, qty),
         notes: pairRaw !== base ? `Pair ${pairRaw}` : undefined,
-        flags: fiatValue != null && fiatValue > 0 ? [] : ['missing_cost_basis'],
+        flags: fiatValue != null ? [] : ['missing_market_value'],
         isInternalTransfer: false,
         raw: row
       });

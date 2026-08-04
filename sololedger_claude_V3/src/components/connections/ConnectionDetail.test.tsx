@@ -800,7 +800,9 @@ describe('ConnectionDetail — exchange kind', () => {
     expect(btcRow).toHaveTextContent('₹10,80,000.00');
     const ethRow = within(holdings).getByText('ETH').closest('li')!;
     expect(ethRow).toHaveTextContent('0.4');
-    expect(ethRow).toHaveTextContent('₹2,000.00 · at cost');
+    expect(ethRow).toHaveTextContent('₹2,000.00');
+    expect(ethRow).not.toHaveTextContent('at cost');
+    expect(holdings).toHaveTextContent('Valued at cost where no live price is cached.');
     expect(within(holdings).getByText('USDC').closest('li')).toHaveTextContent('7');
     expect(screen.queryByText('SOL')).not.toBeInTheDocument();
 
@@ -1228,7 +1230,7 @@ describe('ConnectionDetail — file kind', () => {
 });
 
 describe('ConnectionDetail — navigation', () => {
-  it('focuses duplicate BTC using the exact scope, account class, and asset key', async () => {
+  it('remaps a legacy exact reconciliation asset intent to its canonical Overview row', async () => {
     const now = Date.now();
     mocks.txs.current = [
       makeTx({ id: 'spot-btc', source: 'binance_api', importBatchId: 'exc_1', parserAccountClass: 'spot', asset: 'BTC', amount: 1 }),
@@ -1240,8 +1242,9 @@ describe('ConnectionDetail — navigation', () => {
       id: 'intent-options-btc', destination: 'connections', target: { kind: 'exchange', connectionId: 'exc_1' },
       workspaceTab: 'reconciliation', focus: { kind: 'asset', scopeId: 'exchange:exc_1', accountClass: 'options', assetKey: assetKey({ asset: 'BTC' }) }
     }} />);
-    await waitFor(() => expect(document.activeElement?.closest('[data-reconciliation-asset-key]'))
-      .toHaveAttribute('data-reconciliation-account-class', 'options'));
+    await waitFor(() => expect(document.activeElement).toHaveAttribute('data-overview-asset-key', assetKey({ asset: 'BTC' })));
+    expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
+    expect(screen.getAllByText('BTC')).toHaveLength(1);
   });
 
   it('applies and acknowledges an exact typed workspace intent only after focus moves', async () => {
@@ -1299,7 +1302,7 @@ describe('ConnectionDetail — navigation', () => {
     expect(tablist).toHaveClass('max-w-full', 'overflow-x-auto');
     expect(tablist.firstElementChild).toHaveClass('min-w-max');
     expect(tablist.firstElementChild).not.toHaveClass('overflow-x-auto');
-    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'Reconciliation', 'History']);
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['Overview', 'History']);
     expect(tabs[0]).toHaveAttribute('tabindex', '0');
     expect(tabs[1]).toHaveAttribute('tabindex', '-1');
     expect(screen.getByRole('tabpanel', { name: 'Overview' })).toBeVisible();
@@ -1308,12 +1311,12 @@ describe('ConnectionDetail — navigation', () => {
     fireEvent.keyDown(tabs[0], { key: 'ArrowRight' });
     expect(tabs[1]).toHaveFocus();
     expect(tabs[1]).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByTestId('connection-reconciliation')).toBeVisible();
+    expect(screen.getByTestId('sync-history-empty')).toBeVisible();
 
     fireEvent.keyDown(tabs[1], { key: 'End' });
-    expect(tabs[2]).toHaveFocus();
+    expect(tabs[1]).toHaveFocus();
     expect(screen.getByTestId('sync-history-empty')).toBeVisible();
-    fireEvent.keyDown(tabs[2], { key: 'Home' });
+    fireEvent.keyDown(tabs[1], { key: 'Home' });
     expect(tabs[0]).toHaveFocus();
   });
 
@@ -1325,19 +1328,14 @@ describe('ConnectionDetail — navigation', () => {
     expect(screen.getByRole('tab', { name: 'Overview' })).toHaveAttribute('aria-selected', 'true');
   });
 
-  it('moves focus into History when the balance check requests source update inspection', async () => {
-    const now = Date.now();
-    mocks.txs.current = [makeTx({
-      id: 'focus-gap', type: 'transfer_in', asset: 'BTC', amount: 1,
-      timestamp: now - 1_000, source: 'binance_api', importBatchId: 'exc_1', parserAccountClass: 'spot'
-    })];
-    authority('exchange:exc_1', 'exc_1', 'spot', 'api', now, [{ asset: 'BTC', quantity: 2 }]);
-    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Reconciliation' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Review source update history' }));
-    const historyTab = screen.getByRole('tab', { name: 'History' });
-    const historyPanel = screen.getByRole('tabpanel', { name: 'History' });
-    expect(historyTab).toHaveAttribute('aria-selected', 'true');
-    await waitFor(() => expect(historyPanel).toHaveFocus());
+  it('remaps a legacy reconciliation panel intent to Overview instead of a blank panel', async () => {
+    const acknowledged = vi.fn();
+    render(<ConnectionDetail card={exchangeCard()} onBack={() => {}} navigationIntent={{
+      id: 'legacy-reconciliation', destination: 'connections', target: { kind: 'exchange', connectionId: 'exc_1' },
+      workspaceTab: 'reconciliation', focus: { kind: 'none' }
+    }} onNavigationIntentAcknowledged={acknowledged} />);
+    await waitFor(() => expect(screen.getByRole('tabpanel', { name: 'Overview' })).toHaveFocus());
+    expect(screen.queryByRole('tab', { name: 'Reconciliation' })).not.toBeInTheDocument();
+    expect(acknowledged).toHaveBeenCalledWith('legacy-reconciliation');
   });
 });

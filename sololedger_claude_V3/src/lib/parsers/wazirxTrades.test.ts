@@ -48,4 +48,15 @@ describe('wazirxTradesParser — structured TDS', () => {
     expect(t.tdsAsset).toBeUndefined();
     expect(t.tdsInr).toBeUndefined();
   });
+
+  it('preserves explicit zero total while blank/malformed totals remain absent without a price', () => {
+    const base = { Date: '2025-06-01 10:00:00', Market: 'BTC/INR', Price: '', Volume: '0.01', 'Trade Type': 'Buy' };
+    const zero = wazirxTradesParser.parse([{ ...base, Total: '0' }]).transactions[0];
+    const blank = wazirxTradesParser.parse([{ ...base, Total: '' }]).transactions[0];
+    const malformed = wazirxTradesParser.parse([{ ...base, Total: 'bad' }]).transactions[0];
+    expect(zero.fiatValue).toBe(0);
+    expect(zero.flags).toEqual([]);
+    expect(blank.fiatValue).toBeUndefined();
+    expect(malformed.fiatValue).toBeUndefined();
+  });
 });

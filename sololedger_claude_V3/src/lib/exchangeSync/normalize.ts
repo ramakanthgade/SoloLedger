@@ -21,6 +21,7 @@ import { quoteToFiatCurrency } from '@/lib/parsers/pairUtils';
 import { isRealTxHash, isValidTxHashForChain, normalizeChain } from '@/lib/parsers/explorer';
 import type { ExchangeId } from './types';
 import type { UnifiedMarket, UnifiedTrade, UnifiedTransfer } from './ccxtLoader';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 
 /** Quotes treated as fiat-equivalent for fiatValue purposes (§B-5a). */
 const STABLE_QUOTES = new Set(['USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI']);
@@ -166,7 +167,7 @@ export function normalizeTrade(
     source: `${exchange}_api`,
     sourceRef: tradeSourceRef(exchange, trade, side, base, amount, ts),
     notes,
-    flags: fiatValue != null && fiatValue > 0 ? [] : ['missing_cost_basis'],
+    flags: fiatValue != null || !requiresMarketValue(type) ? [] : ['missing_market_value'],
     isInternalTransfer: false,
     raw: { tradeId: trade.id, orderId: trade.order }
   };
@@ -205,7 +206,10 @@ export function normalizeKrakenTradesByOrder(
     }
     const base = market.base.toUpperCase();
     const quote = market.quote.toUpperCase();
-    const cost = fills.reduce((s, f) => s + (f.cost ?? (f.price != null && f.amount != null ? f.price * f.amount : 0)), 0);
+    const costParts = fills.map((f) => f.cost ?? (f.price != null && f.amount != null ? f.price * f.amount : undefined));
+    const cost = costParts.every((part) => part == null)
+      ? undefined
+      : costParts.reduce<number>((sum, part) => sum + (part ?? 0), 0);
 
     // Fee: summed only when every fill's fee is in the same currency. When
     // ccxt leaves the fee currency unset (kraken parses no fee currency when
@@ -224,7 +228,7 @@ export function normalizeKrakenTradesByOrder(
     let asset: string;
     let txAmount: number;
     let counterAsset: string;
-    let counterAmount: number;
+    let counterAmount: number | undefined;
     let fiatCurrency = 'USD';
     let fiatValue: number | undefined;
 
@@ -247,7 +251,7 @@ export function normalizeKrakenTradesByOrder(
         counterAmount = cost;
       } else {
         asset = quote; // received
-        txAmount = cost;
+        txAmount = cost ?? 0;
         counterAsset = base;
         counterAmount = amount;
       }

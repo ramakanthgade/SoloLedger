@@ -39,6 +39,17 @@ function opts(over: Partial<RowFilterOptions> = {}): RowFilterOptions {
 }
 
 describe('filterRows', () => {
+  it('filters on runtime cost-analysis flags rather than legacy price flags', () => {
+    const shortfall = tx({ id: 'shortfall', fiatValue: 100, flags: [] });
+    const legacy = tx({ id: 'legacy', fiatValue: 100, flags: ['missing_cost_basis'] });
+    const rows = filterRows([shortfall, legacy], {
+      ...opts(),
+      flagFilter: 'missing_cost_basis',
+      derivedFlagsById: new Map([['shortfall', ['missing_cost_basis']]])
+    });
+    expect(rows.map((row) => row.id)).toEqual(['shortfall']);
+  });
+
   it('keeps case-distinct Base58 wallet filters separate while folding EVM case', () => {
     const rows = [
       tx({ id: 'upper', chain: 'solana', walletAddress: 'Base58Case' }),
@@ -87,10 +98,11 @@ describe('filterRows', () => {
   });
 
   it('excludes internal transfers from the needs-price queue', () => {
-    const missingPrice = tx({ fiatValue: undefined, isInternalTransfer: false });
+    const missingPrice = tx({ type: 'buy', fiatValue: undefined, isInternalTransfer: false });
     const internal = tx({ fiatValue: undefined, isInternalTransfer: true });
+    const unconfirmedTransfer = tx({ type: 'transfer_out', fiatValue: undefined, isInternalTransfer: false });
     const priced = tx({ fiatValue: 100, isInternalTransfer: false });
-    expect(filterRows([missingPrice, internal, priced], opts({ showNeedsPrice: true })))
+    expect(filterRows([missingPrice, internal, unconfirmedTransfer, priced], opts({ showNeedsPrice: true })))
       .toEqual([missingPrice]);
   });
 

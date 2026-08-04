@@ -182,6 +182,9 @@ export function buildIncomeRows(
 
     // Explicitly classified income (auto-classified or user-set)
     if (t.type === 'income' || t.type === 'gift_received') {
+      // An unknown receipt FMV is not confirmed zero income. Keep it out of
+      // report totals until pricing succeeds; Review surfaces the missing value.
+      if (t.fiatValue == null || !Number.isFinite(t.fiatValue)) continue;
       // Income kind comes from the category field: Dabba kinds (genesis/staking/
       // airdrop/mainnet) and generic reward kinds (mining_reward). One merged map
       // resolves the display label; unknown kinds yield an undefined label.
@@ -193,7 +196,7 @@ export function buildIncomeRows(
         date: t.timestamp,
         asset: t.asset,
         amount: t.amount,
-        fiatValue: t.fiatValue ?? 0,
+        fiatValue: t.fiatValue,
         source: t.source,
         kind: kind ?? (t.type === 'gift_received' ? 'gift_received' : 'income'),
         kindLabel,

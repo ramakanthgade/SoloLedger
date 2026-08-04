@@ -153,7 +153,7 @@ describe('Binance dust conversion conservation', () => {
     expect(unmatchedCredit).toMatchObject({
       asset: 'BNB',
       amount: 0.02,
-      flags: ['needs_review', 'missing_cost_basis'],
+      flags: ['needs_review', 'missing_market_value'],
       raw: { received: extraCredit }
     });
     expect(buildPortfolioHoldings(creditOnly).find((holding) => holding.asset === 'BNB')?.amount)

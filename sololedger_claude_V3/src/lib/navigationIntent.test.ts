@@ -30,8 +30,8 @@ describe('typed navigation intents', () => {
   it('rejects invalid destination/tab/focus combinations at compile time', () => {
     // @ts-expect-error manual remediation is a Transactions filter, never Connections.
     createNavigationIntent({ destination: 'connections', target: { kind: 'manual', singletonId: 'manual' }, workspaceTab: 'overview', focus: { kind: 'none' } });
-    // @ts-expect-error opening focus is only valid on reconciliation.
-    createNavigationIntent({ destination: 'connections', target: { kind: 'exchange', connectionId: 'x' }, workspaceTab: 'overview', focus: { kind: 'opening', scopeId: 'exchange:x', accountClass: 'spot', assetKey: 'a', action: 'add' } });
+    // @ts-expect-error History is static and cannot accept an opening focus.
+    createNavigationIntent({ destination: 'connections', target: { kind: 'exchange', connectionId: 'x' }, workspaceTab: 'sync-history', focus: { kind: 'opening', scopeId: 'exchange:x', accountClass: 'spot', assetKey: 'a', action: 'add' } });
     // @ts-expect-error reconciliation asset focus requires exact scope and account class.
     createNavigationIntent({ destination: 'connections', target: { kind: 'exchange', connectionId: 'x' }, workspaceTab: 'reconciliation', focus: { kind: 'asset', assetKey: 'a' } });
     // @ts-expect-error exact transaction navigation cannot also carry a filter.

@@ -123,8 +123,14 @@ function destinationGuidance(finding: Finding): string {
     if (finding.intent.workspaceTab === 'overview' && finding.intent.focus.kind === 'import') {
       return 'Opens this source and focuses Import file.';
     }
+    if (finding.intent.workspaceTab === 'overview' && finding.intent.focus.kind === 'opening') {
+      return 'Opens this source’s Overview and focuses the dated starting balance control.';
+    }
+    if (finding.intent.workspaceTab === 'overview' && finding.intent.focus.kind === 'asset') {
+      return 'Opens this source’s Overview at the affected asset.';
+    }
     if (finding.intent.workspaceTab === 'sync-history') return 'Opens this source’s update history.';
-    return 'Opens this source’s Reconciliation view at the affected account or asset.';
+    return 'Opens this source’s Overview.';
   }
   return 'Opens the relevant records so you can make this change.';
 }

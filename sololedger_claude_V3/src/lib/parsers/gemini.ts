@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
+import { exchangeSourceRef, makeId, optionalNumber, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 import { normalizeHeader } from './tableExtract';
 import { rowCol } from './headerMap';
@@ -18,10 +18,10 @@ export const geminiParser: ExchangeParser = {
       const type = TYPE_MAP[rowCol(row, 'Type').trim().toLowerCase()]; const pair = parseTradingPair(rowCol(row, 'Symbol')); const amount = Math.abs(safeNumber(rowCol(row, 'Quantity')));
       const date = rowCol(row, 'Date'); const time = rowCol(row, 'Time (UTC)', 'Time'); const ts = safeTimestampUtc(time && !date.includes(time) ? `${date} ${time}` : date || time);
       if (!type || !pair.base || !amount || !Number.isFinite(ts)) { skippedRows++; continue; }
-      const total = Math.abs(safeNumber(rowCol(row, 'Total'))) || amount * Math.abs(safeNumber(rowCol(row, 'Price'))); const fee = Math.abs(safeNumber(rowCol(row, 'Fee'))); const transfer = type.startsWith('transfer_');
+      const totalRaw = optionalNumber(rowCol(row, 'Total')); const priceRaw = optionalNumber(rowCol(row, 'Price')); const total = totalRaw != null ? Math.abs(totalRaw) : priceRaw != null ? amount * Math.abs(priceRaw) : undefined; const fee = Math.abs(safeNumber(rowCol(row, 'Fee'))); const transfer = type.startsWith('transfer_');
       const quoteFiat = quoteToFiatCurrency(pair.quote);
-      transactions.push({ id: makeId('gem'), timestamp: ts, type, asset: pair.base, amount, counterAsset: pair.quote, counterAmount: total || undefined,
-        fiatCurrency: quoteFiat ?? 'USD', fiatValue: quoteFiat ? total || undefined : undefined,
+      transactions.push({ id: makeId('gem'), timestamp: ts, type, asset: pair.base, amount, counterAsset: pair.quote, counterAmount: total,
+        fiatCurrency: quoteFiat ?? 'USD', fiatValue: quoteFiat ? total : undefined,
         feeAmount: fee || undefined, feeAsset: fee ? pair.quote : undefined, source: 'gemini', sourceRef: exchangeSourceRef('gemini', ts, type, pair.base, amount),
         flags: transfer ? ['possible_internal_transfer'] : [], isInternalTransfer: false, raw: row });
     }

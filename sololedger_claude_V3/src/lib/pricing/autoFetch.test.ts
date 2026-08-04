@@ -21,7 +21,7 @@ function tx(id: string, asset: string): Transaction {
     amount: 2,
     fiatCurrency: 'INR',
     source: 'binance',
-    flags: ['missing_cost_basis'],
+    flags: ['missing_market_value', 'missing_cost_basis'],
     isInternalTransfer: false
   };
 }
@@ -48,6 +48,18 @@ describe('fetchMissingPricesForAllTransactions', () => {
     expect(bulkPut).toHaveBeenCalledTimes(1);
     expect(update).not.toHaveBeenCalled();
     expect((await db.transactions.toArray()).map((row) => row.fiatValue)).toEqual([200, 200, 200]);
+    for (const row of await db.transactions.toArray()) {
+      expect(row.flags).not.toContain('missing_cost_basis');
+      expect(row.flags).not.toContain('missing_market_value');
+    }
+  });
+
+  it('does not fetch prices for transfer rows', async () => {
+    await db.transactions.put({ ...tx('transfer', 'BTC'), type: 'transfer_in' });
+    expect(await fetchMissingPricesForAllTransactions({
+      reportingCurrency: 'INR', coingeckoApiKey: '', alchemyApiKey: '', birdeyeApiKey: ''
+    })).toEqual({ updated: 0, failed: 0, total: 0 });
+    expect((await db.transactions.get('transfer'))?.fiatValue).toBeUndefined();
   });
 
   it('preserves unrelated user edits made while network pricing is in flight', async () => {

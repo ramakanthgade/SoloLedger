@@ -32,7 +32,7 @@ describe('stitchSimpleTrades — OLD-era simple Buy/Sell/Fee', () => {
     expect(t[0].counterAmount).toBe(0.05);
     expect(t[0].feeAsset).toBe('BTC');
     expect(t[0].feeAmount).toBe(0.0001);
-    expect(t[0].flags).toContain('missing_cost_basis'); // crypto-quote → priced later
+    expect(t[0].flags).toContain('missing_market_value'); // crypto-quote → priced later
   });
 
   it('stable-quote simple trade → sell with fiat proceeds, no missing_cost_basis', () => {
@@ -63,7 +63,7 @@ describe('stitchSimpleTrades — OLD-era simple Buy/Sell/Fee', () => {
     // The surplus acquisition (XRP 5000) survived.
     const surplus = buys.find((b) => b.asset === 'XRP' && b.amount === 5000);
     expect(surplus).toBeDefined();
-    expect(surplus!.flags).toContain('missing_cost_basis');
+    expect(surplus!.flags).toContain('missing_market_value');
   });
 
   it('unpaired simple-era legs (no counter-leg) import standalone', () => {
@@ -74,7 +74,7 @@ describe('stitchSimpleTrades — OLD-era simple Buy/Sell/Fee', () => {
     const buys = transactions.filter((x) => x.type === 'buy');
     expect(buys).toHaveLength(1);
     expect(buys[0].asset).toBe('RCN');
-    expect(buys[0].flags).toContain('missing_cost_basis');
+    expect(buys[0].flags).toContain('missing_market_value');
   });
 
   it('mixed-era group defers to modern stitchers (simple Buy/Sell not double-stitched)', () => {

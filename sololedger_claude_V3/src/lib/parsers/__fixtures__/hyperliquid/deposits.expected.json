@@ -26,7 +26,6 @@
     "sourceRef": "hyperliquid:1783386000000:transfer_in:ETH:5.0000",
     "notes": "HL deposit · arbitrum → trading · fee 0.01 ETH · ETH value not in USD — fetch price",
     "flags": [
-      "missing_cost_basis",
       "possible_internal_transfer"
     ],
     "isInternalTransfer": false,

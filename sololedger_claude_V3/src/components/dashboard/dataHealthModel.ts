@@ -40,13 +40,13 @@ function transactionFilterIntent(target: TransactionSourceTarget, scopeId: strin
 }
 function sourceIntent(target: TransactionSourceTarget, remediation: string, scopeId: string, accountClass: string, assetKey?: string): NavigationIntentInput {
   if (target.kind === 'manual') return transactionFilterIntent(target, scopeId, accountClass, assetKey);
-  if (remediation === 'add_evidence_backed_opening_balance' && assetKey) return { destination: 'connections', target, workspaceTab: 'reconciliation', focus: { kind: 'opening', scopeId, accountClass, assetKey, action: 'add' } };
-  if (assetKey) return { destination: 'connections', target, workspaceTab: 'reconciliation', focus: { kind: 'asset', scopeId, accountClass, assetKey } };
-  if (remediation === 'refresh_authority' || remediation === 'retry_source_operation') return {
+  if (remediation === 'add_evidence_backed_opening_balance' && assetKey) return { destination: 'connections', target, workspaceTab: 'overview', focus: { kind: 'opening', scopeId, accountClass, assetKey, action: 'add' } };
+  if (['add_timestamped_authority', 'capture_coherent_authority', 'complete_source_history', 'establish_source_coverage', 'refresh_authority', 'retry_source_operation'].includes(remediation)) return {
     destination: 'connections', target, workspaceTab: 'overview',
     focus: target.kind === 'csv' ? { kind: 'import' } : { kind: 'sync' }
   };
-  return { destination: 'connections', target, workspaceTab: 'reconciliation', focus: { kind: 'none' } };
+  if (assetKey) return { destination: 'connections', target, workspaceTab: 'overview', focus: { kind: 'asset', scopeId, accountClass, assetKey } };
+  return { destination: 'connections', target, workspaceTab: 'overview', focus: { kind: 'none' } };
 }
 function addAxisFindings(
   findings: DataHealthFinding[], key: string, target: TransactionSourceTarget,

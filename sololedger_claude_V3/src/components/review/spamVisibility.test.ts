@@ -73,7 +73,7 @@ describe('filterRows — spam hidden by default (item 11)', () => {
   });
 
   it('never leaks spam into the Needs-price view', () => {
-    const priced = tx({ asset: 'ABC', fiatValue: undefined });
+    const priced = tx({ type: 'buy', asset: 'ABC', fiatValue: undefined });
     const rows = filterRows([priced, spam], opts({ showNeedsPrice: true }));
     expect(rows.map((t) => t.id)).toEqual([priced.id]);
   });

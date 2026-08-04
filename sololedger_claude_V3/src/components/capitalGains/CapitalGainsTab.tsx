@@ -24,6 +24,7 @@ import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { useExportGuard } from '@/components/billing/ExportGateDialog';
 import { useAuth } from '@/lib/saas/authContext';
+import { assertTaxExportsComplete, isFullyMatchedInventoryDisposal, unpricedInventoryDisposalsInPeriod, unpricedTaxableReceiptsInPeriod } from '@/lib/costBasis/unpricedDisposals';
 
 const INCOME_KIND_LABEL: Record<string, string> = {
   income: 'Income',
@@ -152,7 +153,7 @@ export function CapitalGainsTab() {
     });
   }, []);
 
-  const { disposals, lots, shortfalls } = useMemo(
+  const { disposals, inventoryDisposals, lots, shortfalls } = useMemo(
     () => calculateCostBasis(transactions, { method, specIdHints: hints }),
     [transactions, method, hints]
   );
@@ -170,6 +171,10 @@ export function CapitalGainsTab() {
   const incomeRows = useMemo(
     () => buildIncomeRows(transactions, dcaVaultAddresses),
     [transactions, dcaVaultAddresses]
+  );
+  const unpricedReceipts = useMemo(
+    () => unpricedTaxableReceiptsInPeriod(transactions, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER),
+    [transactions]
   );
 
   const derivIncomeRows = useMemo(
@@ -190,25 +195,29 @@ export function CapitalGainsTab() {
       getAvailableFys(
         [
           ...matchedRows.map((r) => r.sellDate),
+          ...inventoryDisposals.filter((r) => !r.finalized).map((r) => r.disposedAt),
           ...incomeRows.map((r) => r.date),
+          ...unpricedReceipts.map((r) => r.timestamp),
           ...derivIncomeRows.map((r) => r.date),
           ...derivExpenseRows.map((r) => r.date),
           ...derivCgRows.map((r) => r.sellDate)
         ],
         jurisdiction
       ),
-    [matchedRows, incomeRows, derivIncomeRows, derivExpenseRows, derivCgRows, jurisdiction]
+    [matchedRows, inventoryDisposals, incomeRows, unpricedReceipts, derivIncomeRows, derivExpenseRows, derivCgRows, jurisdiction]
   );
 
   const activeFys = useMemo(() => {
     const fys = new Set<number>();
     for (const r of matchedRows) fys.add(getFyForTimestamp(r.sellDate, jurisdiction));
+    for (const r of inventoryDisposals) if (!r.finalized) fys.add(getFyForTimestamp(r.disposedAt, jurisdiction));
     for (const r of incomeRows) fys.add(getFyForTimestamp(r.date, jurisdiction));
+    for (const r of unpricedReceipts) fys.add(getFyForTimestamp(r.timestamp, jurisdiction));
     for (const r of derivIncomeRows) fys.add(getFyForTimestamp(r.date, jurisdiction));
     for (const r of derivExpenseRows) fys.add(getFyForTimestamp(r.date, jurisdiction));
     for (const r of derivCgRows) fys.add(getFyForTimestamp(r.sellDate, jurisdiction));
     return Array.from(fys).sort((a, b) => b - a);
-  }, [matchedRows, incomeRows, derivIncomeRows, derivExpenseRows, derivCgRows, jurisdiction]);
+  }, [matchedRows, inventoryDisposals, incomeRows, unpricedReceipts, derivIncomeRows, derivExpenseRows, derivCgRows, jurisdiction]);
 
   useEffect(() => {
     if (fyInitialized) return;
@@ -218,6 +227,19 @@ export function CapitalGainsTab() {
   }, [activeFys, fyInitialized]);
 
   const fyBounds = useMemo(() => getFyBoundaries(fy, jurisdiction), [fy, jurisdiction]);
+  const yearUnpricedDisposals = useMemo(
+    () => unpricedInventoryDisposalsInPeriod(inventoryDisposals, fyBounds.start, fyBounds.end),
+    [inventoryDisposals, fyBounds]
+  );
+  const fullyMatchedUnpriced = useMemo(
+    () => yearUnpricedDisposals.filter(isFullyMatchedInventoryDisposal),
+    [yearUnpricedDisposals]
+  );
+  const yearUnpricedReceipts = useMemo(
+    () => unpricedTaxableReceiptsInPeriod(transactions, fyBounds.start, fyBounds.end),
+    [transactions, fyBounds]
+  );
+  const exportsBlocked = yearUnpricedDisposals.length > 0 || yearUnpricedReceipts.length > 0;
 
   const yearMatches = useMemo(
     () => matchedRows.filter((r) => r.sellDate >= fyBounds.start && r.sellDate <= fyBounds.end),
@@ -293,6 +315,7 @@ export function CapitalGainsTab() {
 
 
   const exportCapitalGainsCsv = () => {
+    assertTaxExportsComplete(yearUnpricedDisposals, yearUnpricedReceipts);
     const cur = currency.toUpperCase();
     const header = [
       'sell_date',
@@ -351,6 +374,7 @@ export function CapitalGainsTab() {
   };
 
   const exportCapitalGainsJson = () => {
+    assertTaxExportsComplete(yearUnpricedDisposals, yearUnpricedReceipts);
     downloadBlob(
       JSON.stringify(
         {
@@ -376,6 +400,7 @@ export function CapitalGainsTab() {
   };
 
   const exportCapitalGainsPdf = async () => {
+    assertTaxExportsComplete(yearUnpricedDisposals, yearUnpricedReceipts);
     const { doc, startY } = await createBrandedPdf({
       reportTitle: 'Capital Gains Detail',
       metaLines: [
@@ -524,6 +549,31 @@ export function CapitalGainsTab() {
         </div>
       )}
 
+      {yearUnpricedDisposals.length > 0 && (
+        <div role="alert" className="rounded-2xl border border-loss/40 bg-loss/10 px-5 py-4 text-sm text-low shadow-xs">
+          <p className="font-semibold text-hi">Taxable disposals are missing proceeds</p>
+          <p className="mt-1">
+            {yearUnpricedDisposals.length} disposal(s) in {getFyLabel(fy, jurisdiction)} are excluded from gain totals because market value is missing.
+            {' '}{fullyMatchedUnpriced.length} are fully matched to acquisition lots, so their inventory movement is preserved, but gain is not finalized.
+            Exports are blocked until every disposal has proceeds.
+          </p>
+          <ul className="mt-2 list-disc pl-5 text-xs">
+            {yearUnpricedDisposals.slice(0, 5).map((row) => (
+              <li key={row.sourceTxId}>{formatDateTime(row.disposedAt)} · {formatCompactAmount(row.amount)} {row.asset}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {yearUnpricedReceipts.length > 0 && (
+        <div role="alert" className="rounded-2xl border border-loss/40 bg-loss/10 px-5 py-4 text-sm text-low shadow-xs">
+          <p className="font-semibold text-hi">Taxable receipts are missing market value</p>
+          <p className="mt-1">
+            {yearUnpricedReceipts.length} non-mining income or gift receipt(s) in {getFyLabel(fy, jurisdiction)} are excluded from income totals because receipt FMV is missing. Exports are blocked until every receipt is valued.
+          </p>
+        </div>
+      )}
+
       {/* FY summary hero (mockup gains-summary-cards): gains and losses are
        * separate figures, exactly as Sec 115BBH requires; the taxable base and
        * the India tax estimate sit alongside. */}
@@ -630,6 +680,7 @@ export function CapitalGainsTab() {
           <Button
             variant="ghost"
             size="sm"
+            disabled={exportsBlocked}
             onClick={() => void runGuarded(exportCapitalGainsCsv)}
             className="min-h-[44px]"
           >
@@ -1132,7 +1183,9 @@ export function CapitalGainsTab() {
           </span>
           <div className="min-w-0 flex-1 basis-64">
             <p className="text-base font-extrabold tracking-tight text-hi">
-              Ready to file {getFyLabel(fy, jurisdiction)}?
+              {exportsBlocked
+                ? `Complete missing tax values for ${getFyLabel(fy, jurisdiction)}`
+                : `Ready to file ${getFyLabel(fy, jurisdiction)}?`}
             </p>
             <p className="mt-1 text-xs leading-relaxed text-low">
               Every matched disposal and income event above, exported on-device — nothing leaves your
@@ -1140,15 +1193,15 @@ export function CapitalGainsTab() {
             </p>
           </div>
           <div className="flex flex-wrap gap-2.5">
-            <Button variant="secondary" onClick={() => void runGuarded(exportCapitalGainsCsv)}>
+            <Button variant="secondary" disabled={exportsBlocked} onClick={() => void runGuarded(exportCapitalGainsCsv)}>
               <Download className="h-4 w-4" aria-hidden="true" />
               Export CSV
             </Button>
-            <Button variant="secondary" onClick={() => void runGuarded(exportCapitalGainsJson)}>
+            <Button variant="secondary" disabled={exportsBlocked} onClick={() => void runGuarded(exportCapitalGainsJson)}>
               <Download className="h-4 w-4" aria-hidden="true" />
               Export JSON
             </Button>
-            <Button variant="primary" onClick={() => setPdfConfirmOpen(true)}>
+            <Button variant="primary" disabled={exportsBlocked} onClick={() => setPdfConfirmOpen(true)}>
               Export PDF →
             </Button>
           </div>

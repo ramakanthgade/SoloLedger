@@ -201,7 +201,7 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
         sourceRef: sig,
         walletAddress: wallet,
         chain: 'solana',
-        flags: ['missing_cost_basis'],
+        flags: ['missing_market_value'],
         isInternalTransfer: false,
         notes: 'SOL credit restored from on-chain balance (missing from import)'
       });

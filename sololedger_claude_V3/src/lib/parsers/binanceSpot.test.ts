@@ -36,4 +36,15 @@ describe('Binance Spot parser — Date(UTC) timezone (C1)', () => {
     const { transactions } = binanceSpotParser.parse(rows);
     expect(transactions[0].timestamp).toBe(Date.UTC(2025, 4, 1, 0, 30, 0));
   });
+
+  it('preserves explicit zero total while blank/malformed totals stay absent when price is unavailable', () => {
+    const base = { 'Date(UTC)': '2025-05-01 00:30:00', Pair: 'BTCUSDT', Side: 'BUY', Executed: '0.01', Price: '' };
+    const zero = binanceSpotParser.parse([{ ...base, Amount: '0' }]).transactions[0];
+    const blank = binanceSpotParser.parse([{ ...base, Amount: '' }]).transactions[0];
+    const malformed = binanceSpotParser.parse([{ ...base, Amount: 'bad' }]).transactions[0];
+    expect(zero.fiatValue).toBe(0);
+    expect(zero.flags).toEqual([]);
+    expect(blank.fiatValue).toBeUndefined();
+    expect(malformed.fiatValue).toBeUndefined();
+  });
 });

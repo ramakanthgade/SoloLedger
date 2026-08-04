@@ -48,6 +48,7 @@ import { supportsSpecificIdEditing } from '@/lib/review/specificIdEditing';
 import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
 import { displayFlags } from '@/lib/review/displayFlags';
 import { filterRows, paginate } from '@/lib/review/reviewTableView';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { AssetIcon, SourceIcon } from './brandIcons';
 import { sourceBrandInfo } from './brandIconMap';
 import { groupRowsByDate, formatGroupDateLabel, pageNumberList } from './reviewListUtils';
@@ -67,6 +68,7 @@ import { reconcileDerivedPostings } from '@/lib/reconcile/sourceReconcile';
 import { buildReconciliationEvidenceIndexes, projectReconciliationCoverage } from '@/lib/reconcile/evidenceIndexes';
 import { setBulkActionsActive } from '@/lib/ui/floatingOverlayActivity';
 import { buildTransactionCostAnalysisIndexes, buildTransactionCostAnalysisModel } from './transactionCostAnalysisModel';
+import { parseManualMarketValue } from './manualMarketValue';
 import { buildReviewReconciliationEvidence } from './reviewReconciliationEvidence';
 import { TransactionDetailPanel, type DetailTab } from './TransactionDetailPanel';
 import { LotPicker } from './LotPicker';
@@ -83,7 +85,9 @@ const ALL_TYPES: TxType[] = [
 
 const FLAG_LABELS: Record<FlagReason, string> = {
   possible_internal_transfer: 'Possible internal transfer',
+  missing_market_value: 'Missing market value',
   missing_cost_basis: 'Missing cost basis',
+  invalid_transaction_data: 'Invalid transaction data',
   duplicate_suspected: 'Duplicate suspected',
   unrecognized_asset: 'Unrecognized asset',
   needs_review: 'Needs review'
@@ -171,12 +175,12 @@ function ChipSelect({
   );
 }
 
-function FlagSelector({ tx }: { tx: Transaction }) {
+function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; derivedFlags?: readonly FlagReason[] }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const storedFlags = new Set(tx.flags ?? []);
-  const shownFlags = displayFlags(tx);
+  const shownFlags = displayFlags(tx, derivedFlags);
 
   const patch = async (update: Partial<Transaction>) => {
     setSaving(true);
@@ -621,12 +625,33 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     [engineResult]
   );
   const costAnalysisIndexes = useMemo(() => buildTransactionCostAnalysisIndexes({
-    disposals: engineResult?.disposals ?? [], lots: engineResult?.lots ?? [], transactions
+    disposals: engineResult?.disposals ?? [],
+    inventoryDisposals: engineResult?.inventoryDisposals ?? [],
+    lots: engineResult?.lots ?? [],
+    transactions
   }), [engineResult, transactions]);
+
+  const derivedFlagsByTxId = useMemo(() => {
+    const flags = new Map<string, Set<FlagReason>>();
+    const add = (transactionId: string, reason: FlagReason) => {
+      const current = flags.get(transactionId) ?? new Set<FlagReason>();
+      current.add(reason);
+      flags.set(transactionId, current);
+    };
+    for (const shortfall of engineResult?.shortfalls ?? []) add(shortfall.transactionId, 'missing_cost_basis');
+    for (const flag of engineResult?.flags ?? []) add(flag.transactionId, flag.reason);
+    return new Map([...flags].map(([id, reasons]) => [id, [...reasons]]));
+  }, [engineResult]);
+
+  const missingCostBasisTxIds = useMemo(() => new Set(
+    [...derivedFlagsByTxId]
+      .filter(([, flags]) => flags.includes('missing_cost_basis'))
+      .map(([id]) => id)
+  ), [derivedFlagsByTxId]);
 
   /** Tax-relevant rows missing historical fiat value; internal custody moves do not need basis. */
   const missingPriceTxs = useMemo(
-    () => transactions.filter((t) => !t.isSpam && !t.isInternalTransfer && t.fiatValue == null),
+    () => transactions.filter((t) => !t.isSpam && !t.isInternalTransfer && t.fiatValue == null && requiresMarketValue(t)),
     [transactions]
   );
 
@@ -763,11 +788,11 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   };
 
   const saveFiat = async (tx: (typeof transactions)[number]) => {
-    const parsed = Number(editValue);
-    if (!Number.isFinite(parsed) || parsed < 0) return;
+    const parsed = parseManualMarketValue(editValue);
+    if (parsed == null) return;
     await db.transactions.update(tx.id, {
       fiatValue: parsed,
-      flags: (tx.flags ?? []).filter((f) => f !== 'missing_cost_basis')
+      flags: (tx.flags ?? []).filter((f) => f !== 'missing_market_value')
     });
     setEditingFiat(null);
   };
@@ -851,7 +876,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
       instrumentFilter,
       query,
       isNeedsReview,
-      isDerivative: isDerivativeTransaction
+      isDerivative: isDerivativeTransaction,
+      derivedFlagsById: derivedFlagsByTxId
     });
 
     // Source filter — applied after the shared row filter so the lib contract
@@ -883,7 +909,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy, navigationTargetId, navigationScopeFilter, postingSnapshot]);
+  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy, navigationTargetId, navigationScopeFilter, postingSnapshot, derivedFlagsByTxId]);
 
   const { pageRows, totalPages, safePage } = useMemo(
     () => paginate(filtered, page, PAGE_SIZE),
@@ -1177,7 +1203,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
         fromAddr ?? '',
         toAddr ?? '',
         t.sourceRef ?? '',
-        displayFlags(t).join('|'),
+        displayFlags(t, derivedFlagsByTxId.get(t.id)).join('|'),
         t.isInternalTransfer ? 'yes' : 'no',
         t.isSpam ? 'yes' : 'no',
         (t.notes ?? '')
@@ -1195,7 +1221,10 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             reportingCurrency: (settings?.reportingCurrency ?? 'INR').toUpperCase(),
             monetaryFields: ['fiatValue']
           },
-          transactions: filtered
+          transactions: filtered.map((t) => ({
+            ...t,
+            flags: displayFlags(t, derivedFlagsByTxId.get(t.id))
+          }))
         },
         null,
         2
@@ -1231,7 +1260,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
         t.fiatValue != null ? formatAmountForExport(t.fiatValue, t.fiatCurrency) : '—',
         fromAddr ? truncateAddress(fromAddr) : '—',
         toAddr ? truncateAddress(toAddr) : '—',
-        displayFlags(t).join(', ') || '—',
+        displayFlags(t, derivedFlagsByTxId.get(t.id)).join(', ') || '—',
         t.sourceRef ? truncatePdfRef(t.sourceRef) : '—'
       ];
       })
@@ -1350,7 +1379,10 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     const disposal = disposalByTxId.get(t.id);
     const isEditing = editingFiat === t.id;
     const expanded = expandedId === t.id;
-    const needsPrice = t.fiatValue == null && !t.isSpam;
+    const needsPrice = t.fiatValue == null && !t.isSpam && !t.isInternalTransfer && requiresMarketValue(t);
+    const derivedFlags = derivedFlagsByTxId.get(t.id) ?? [];
+    const missingCostBasis = derivedFlags.includes('missing_cost_basis');
+    const invalidTransactionData = derivedFlags.includes('invalid_transaction_data');
     const hash = t.txHash ?? t.sourceRef;
     // explorerTxUrl is chain-aware and enforces hash shape, so a non-null
     // result is always safe to link.
@@ -1515,7 +1547,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
                 )}
               </div>
               <div className="hidden lg:block">
-                <FlagSelector tx={t} />
+                <FlagSelector tx={t} derivedFlags={derivedFlags} />
               </div>
             </div>
             <button
@@ -1537,7 +1569,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
           {/* Flags (narrow screens — under the flow, full width) */}
           <div className="order-5 w-full pl-10 lg:hidden">
-            <FlagSelector tx={t} />
+            <FlagSelector tx={t} derivedFlags={derivedFlags} />
           </div>
         </div>
 
@@ -1554,8 +1586,36 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               onClick={() => startEditFiat(t.id, t.fiatValue)}
               className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
             >
-              Add manual price
+              Add market value
             </button>
+          </div>
+        )}
+
+        {missingCostBasis && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-warn/20 bg-warn/10 px-5 py-2 text-xs font-semibold text-mid sm:pl-[4.5rem]">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warn" aria-hidden="true" />
+            <span>
+              Acquisition history is missing for part or all of this disposal. Import the source account&rsquo;s earlier acquisition history; no basis was inferred from this transaction&rsquo;s market value.
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setExpandedId(t.id);
+                setDetailTabByTxId((current) => ({ ...current, [t.id]: 'cost' }));
+              }}
+              className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+            >
+              Review Cost Analysis
+            </button>
+          </div>
+        )}
+
+        {invalidTransactionData && (
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-warn/20 bg-warn/10 px-5 py-2 text-xs font-semibold text-mid sm:pl-[4.5rem]">
+            <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warn" aria-hidden="true" />
+            <span>
+              This transaction has an invalid or incomplete amount. Correct this row&apos;s quantity or trade counter-leg details; importing older acquisition history will not repair it.
+            </span>
           </div>
         )}
 
@@ -1630,7 +1690,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
                       inputMode="decimal"
                       className="h-9 w-28 rounded-md border border-primary/60 bg-elev-1 px-2 text-right text-xs tabular-figures text-hi focus:outline-none focus:ring-2 focus-visible:ring-primary/30"
                       placeholder="0.00"
-                      aria-label="Fiat value"
+                    aria-label="Total transaction market value"
                     />
                     <button
                       onClick={() => saveFiat(t)}
@@ -1651,9 +1711,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
                   <button
                     onClick={() => startEditFiat(t.id, t.fiatValue)}
                     className="group inline-flex items-center gap-1 rounded text-xs tabular-figures text-mid transition-colors hover:text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                    title="Click to enter a fiat value manually"
+                    title="Click to enter the total transaction market value manually"
                   >
-                    {t.fiatValue != null ? `≈ ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : 'Add price'}
+                    {t.fiatValue != null ? `≈ ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : 'Add market value'}
                     <Pencil className="h-3 w-3 opacity-0 transition-opacity group-hover:opacity-70" />
                   </button>
                 )}
@@ -1907,7 +1967,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             <div>
               <p className="text-sm font-semibold text-hi">{needsPriceLine(missingPriceTxs.length)}</p>
               <p className="text-xs text-low">
-                {priceLookupEnabled
+                {hosted
+                  ? 'Automatic historical pricing was attempted. Retry any market values that are still missing; pricing does not create acquisition history or repair cost basis.'
+                  : priceLookupEnabled
                   ? rpcTransferCount > 0
                     ? 'Wallet imports are included — click the button to fetch historical prices. Swaps auto-detected as trades will feed cost basis after prices are filled.'
                     : 'Automatic historical-price lookup is enabled; use the button to retry anything still missing.'
@@ -1926,6 +1988,28 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
                 : `Fetch ${missingPriceTxs.length} missing price${missingPriceTxs.length === 1 ? '' : 's'} now`}
             </Button>
           )}
+        </div>
+      )}
+      {hosted && missingCostBasisTxIds.size > 0 && (
+        <div className="flex flex-col gap-3 rounded-xl border border-warn/30 bg-warn/15 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <p className="text-sm font-semibold text-hi">{missingCostBasisTxIds.size} transactions are missing cost basis</p>
+            <p className="mt-1 text-xs text-low">
+              Import the source account&rsquo;s acquisition history from before these disposals, or add the acquisition cost manually in the source history. A transaction market value is not a replacement for lot basis.
+            </p>
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() => {
+              setFlagFilter('missing_cost_basis');
+              setShowNeedsPrice(false);
+              setShowNeedsReview(false);
+              setShowSpam(false);
+            }}
+            className="shrink-0"
+          >
+            Missing cost basis
+          </Button>
         </div>
       )}
       {priceErrors.length > 0 && (

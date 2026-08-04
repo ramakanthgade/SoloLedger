@@ -512,7 +512,7 @@ export function moralisTxToRows(
         counterpartyAddress: mtx.to_address, // DEX router
         chain: chainId,
         notes: mtx.summary || classified?.notes,
-        flags: ['missing_cost_basis'] as FlagReason[],
+        flags: ['missing_market_value'] as FlagReason[],
         isInternalTransfer: false
       });
       return rows;
@@ -548,7 +548,7 @@ export function moralisTxToRows(
       counterpartyAddress: isSend ? t.to_address : t.from_address,
       chain: chainId,
       notes: mtx.summary,
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+      flags: ['possible_internal_transfer', 'missing_market_value'] as FlagReason[],
       isInternalTransfer: false,
       isSpam: spamFlag || undefined
     });
@@ -576,7 +576,7 @@ export function moralisTxToRows(
       counterpartyAddress: isSend ? to : from,
       chain: chainId,
       notes: mtx.summary,
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+      flags: ['possible_internal_transfer', 'missing_market_value'] as FlagReason[],
       isInternalTransfer: false
     });
   }
@@ -600,7 +600,7 @@ export function moralisTxToRows(
         counterpartyAddress: isSend ? mtx.to_address : mtx.from_address,
         chain: chainId,
         notes: mtx.summary,
-        flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+        flags: ['possible_internal_transfer', 'missing_market_value'] as FlagReason[],
         isInternalTransfer: false
       });
     }

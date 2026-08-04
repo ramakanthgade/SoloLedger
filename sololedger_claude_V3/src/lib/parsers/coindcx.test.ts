@@ -59,4 +59,15 @@ describe('CoinDCX parser (C1-India)', () => {
     expect(a).toEqual(b);
     expect(a[0]).toBe('coindcx:' + Date.UTC(2025, 5, 1, 4, 30, 0) + ':sell:BTC:0.010000');
   });
+
+  it('preserves explicit zero total while blank/malformed totals remain absent without a price', () => {
+    const base = { Date: '2025-06-01 10:00:00', Type: 'TRADE', Market: 'BTCINR', Side: 'BUY', Price: '', Quantity: '0.01' };
+    const zero = coindcxParser.parse([{ ...base, Total: '0' }]).transactions[0];
+    const blank = coindcxParser.parse([{ ...base, Total: '' }]).transactions[0];
+    const malformed = coindcxParser.parse([{ ...base, Total: 'bad' }]).transactions[0];
+    expect(zero.fiatValue).toBe(0);
+    expect(zero.flags).toEqual([]);
+    expect(blank.fiatValue).toBeUndefined();
+    expect(malformed.fiatValue).toBeUndefined();
+  });
 });

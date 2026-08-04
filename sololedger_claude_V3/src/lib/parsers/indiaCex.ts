@@ -15,7 +15,7 @@
  *  - timestamps are parsed with `safeTimestampIst` (bare "YYYY-MM-DD HH:mm:ss"
  *    is treated as UTC+5:30, not the machine's local zone);
  *  - INR (and USD-pegged stablecoin) quotes yield a `fiatValue`; anything else
- *    is flagged `missing_cost_basis`;
+ *    is flagged `missing_market_value`;
  *  - TDS columns are captured into the structured B3 `tdsAmount` / `tdsAsset` /
  *    `tdsInr` fields (never only stuffed into `notes`).
  *  - `sourceRef` uses `exchangeSourceRef` (content-hash-stable) so re-importing
@@ -31,6 +31,7 @@
 import type { Transaction, TxType } from '@/types/transaction';
 import {
   makeId,
+  optionalNumber,
   safeQuantity,
   safeTimestampIst,
   exchangeSourceRef,
@@ -205,8 +206,10 @@ export function makeIndiaCexParser(cfg: IndiaCexConfig): ExchangeParser {
           const pairRaw = pairCol ? (row[pairCol] || '').trim() : '';
           const { base, quote } = parseTradingPair(pairRaw);
           const qty = qtyCol ? safeQuantity(row[qtyCol]) : 0;
-          const price = priceCol ? safeQuantity(row[priceCol]) : 0;
-          const total = totalCol ? safeQuantity(row[totalCol]) : 0;
+          const priceRaw = priceCol ? optionalNumber(row[priceCol]) : undefined;
+          const totalRaw = totalCol ? optionalNumber(row[totalCol]) : undefined;
+          const price = priceRaw == null ? undefined : Math.abs(priceRaw);
+          const total = totalRaw == null ? undefined : Math.abs(totalRaw);
 
           if (!base || qty === 0) {
             skippedRows++;
@@ -215,7 +218,7 @@ export function makeIndiaCexParser(cfg: IndiaCexConfig): ExchangeParser {
 
           const fiatQuote = quoteToFiatCurrency(quote);
           const fiatCurrency = fiatQuote ?? 'INR';
-          const counterAmount = total > 0 ? total : price > 0 && qty > 0 ? price * qty : undefined;
+          const counterAmount = total != null ? total : price != null && qty > 0 ? price * qty : undefined;
           let fiatValue: number | undefined;
           if (fiatQuote) fiatValue = counterAmount;
 
@@ -232,7 +235,7 @@ export function makeIndiaCexParser(cfg: IndiaCexConfig): ExchangeParser {
             counterAsset: quote,
             counterAmount,
             fiatCurrency,
-            fiatValue: fiatValue && fiatValue > 0 ? fiatValue : undefined,
+            fiatValue,
             feeAmount: feeAmount > 0 ? feeAmount : undefined,
             feeAsset: feeAsset || (feeAmount > 0 ? fiatCurrency : undefined),
             tdsAmount: hasTds ? tdsAmount : undefined,
@@ -241,7 +244,7 @@ export function makeIndiaCexParser(cfg: IndiaCexConfig): ExchangeParser {
             source: cfg.source,
             sourceRef: exchangeSourceRef(cfg.refSource, timestamp, action, base, qty),
             notes: notesParts.join(' · '),
-            flags: fiatValue && fiatValue > 0 ? [] : ['missing_cost_basis'],
+            flags: fiatValue != null ? [] : ['missing_market_value'],
             isInternalTransfer: false,
             raw: { ...row, _sheetFormat: `${cfg.id}_trades` }
           });

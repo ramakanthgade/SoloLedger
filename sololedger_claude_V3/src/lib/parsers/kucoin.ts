@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeEpochTimestamp, safeNumber, type ExchangeParser } from './types';
+import { exchangeSourceRef, makeId, optionalNumber, safeEpochTimestamp, safeNumber, type ExchangeParser } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 import { normalizeHeader } from './tableExtract';
 import { rowCol } from './headerMap';
@@ -25,15 +25,15 @@ export const kucoinParser: ExchangeParser = {
       const amount = Math.abs(safeNumber(rowCol(row, 'size', 'amount')));
       const ts = safeEpochTimestamp(rowCol(row, 'time', 'timestamp'));
       if (!type || !asset || !amount || !Number.isFinite(ts)) { skippedRows += 1; continue; }
-      const total = Math.abs(safeNumber(rowCol(row, 'funds', 'total')));
+      const totalRaw = optionalNumber(rowCol(row, 'funds', 'total')); const total = totalRaw == null ? undefined : Math.abs(totalRaw);
       const fee = Math.abs(safeNumber(rowCol(row, 'fee')));
       const transfer = type === 'transfer_in' || type === 'transfer_out';
       const quoteFiat = quoteToFiatCurrency(pair.quote);
       transactions.push({
         id: makeId('kc'), timestamp: ts, type, asset, amount,
-        counterAsset: pair.quote, counterAmount: total || undefined,
+        counterAsset: pair.quote, counterAmount: total,
         fiatCurrency: quoteFiat ?? 'USD',
-        fiatValue: quoteFiat ? (total || undefined) : undefined,
+        fiatValue: quoteFiat ? total : undefined,
         feeAmount: fee || undefined, feeAsset: fee ? rowCol(row, 'feeCurrency').toUpperCase() || pair.quote : undefined,
         source: 'kucoin', sourceRef: rowCol(row, 'tradeId', 'orderId') || exchangeSourceRef('kucoin', ts, type, asset, amount),
         flags: transfer ? ['possible_internal_transfer'] : [], isInternalTransfer: false, raw: row

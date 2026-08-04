@@ -81,7 +81,7 @@ describe('Binance full replay through the tunnel', () => {
     });
     expect(preview.duplicatesSkipped).toBe(0);
     expect(preview.distinctAssets).toBe(2); // BTC, ETH
-    expect(preview.missingPriceCount).toBe(3); // crypto-quote trade + 2 transfers
+    expect(preview.missingPriceCount).toBe(1); // crypto-quote trade; transfers do not require tax FMV
     expect(preview.dateRange).toEqual({ from: 1699617600000, to: 1700259200111 });
 
     // Job store holds the staged preview (survives tab navigation); no result.

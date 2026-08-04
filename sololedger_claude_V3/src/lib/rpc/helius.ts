@@ -200,7 +200,7 @@ function pushSplBalanceRow(
     chain: 'solana',
     category: reward?.kind ?? unified?.kind,
     notes: reward?.notes ?? unified?.label,
-    flags: reward ? [] : unified ? ['needs_review'] : (['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[]),
+    flags: reward ? [] : unified ? ['needs_review'] : (['possible_internal_transfer', 'missing_market_value'] as FlagReason[]),
     isInternalTransfer: false
   });
 }
@@ -260,7 +260,7 @@ function pushSolanaNetworkFeeRow(
     sourceRef: htx.signature,
     walletAddress,
     chain: 'solana',
-    flags: ['missing_cost_basis'] as FlagReason[],
+    flags: ['missing_market_value'] as FlagReason[],
     isInternalTransfer: false,
     notes: 'Solana network fee'
   });
@@ -411,7 +411,7 @@ function heliusSwapToTrade(
       heliusNativeOutput: nativeOutput
     },
     notes: htx.description || `Swapped ${inputSymbol} for ${outputSymbol} on ${htx.source}`,
-    flags: ['missing_cost_basis'] as FlagReason[],
+    flags: ['missing_market_value'] as FlagReason[],
     isInternalTransfer: false
   };
 }
@@ -467,7 +467,7 @@ function heliusTransferToRows(
       walletAddress,
       counterpartyAddress: inbound ? solCounterpartyIn : solCounterpartyOut,
       chain: 'solana',
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as FlagReason[],
+      flags: ['possible_internal_transfer', 'missing_market_value'] as FlagReason[],
       isInternalTransfer: false
     });
   }
@@ -512,7 +512,7 @@ function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transact
             walletAddress,
             counterpartyAddress: inbound ? counterpartyIn : counterpartyOut,
             chain: 'solana',
-            flags: ['missing_cost_basis'] as FlagReason[],
+            flags: ['missing_market_value'] as FlagReason[],
             isInternalTransfer: false,
             notes: 'Native SOL leg preserved from swap (Helius safety net)'
           });
@@ -531,7 +531,7 @@ function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transact
     return rows.map((r) => ({
       ...r,
       type: defiType as TxType,
-      flags: ['missing_cost_basis'] as FlagReason[],
+      flags: ['missing_market_value'] as FlagReason[],
       notes: htx.description || classified?.notes
     }));
   }

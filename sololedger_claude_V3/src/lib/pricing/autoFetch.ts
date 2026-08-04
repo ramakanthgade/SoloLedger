@@ -10,6 +10,7 @@ import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { COINGECKO_PLATFORM, CHAINS, type ChainId } from '@/lib/rpc/providers';
 import type { Transaction, TaxSettings, FlagReason } from '@/types/transaction';
 import type { PriceRequest } from './coingecko';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 
 interface PriceRequestWithMeta {
   tx: Transaction;
@@ -77,7 +78,8 @@ interface PricingPatch {
   id: string;
   fiatValue: number | undefined;
   fiatCurrency: string;
-  removeMissingCostBasis?: boolean;
+  removeMissingMarketValue?: boolean;
+  removeLegacyPriceMarker?: boolean;
   onlyIfUnpriced?: boolean;
   expectedFiatValue?: number;
   expectedFiatCurrency?: string;
@@ -101,8 +103,11 @@ async function applyPricingPatches(patches: PricingPatch[]): Promise<void> {
         ...row,
         fiatValue: patch.fiatValue,
         fiatCurrency: patch.fiatCurrency,
-        flags: patch.removeMissingCostBasis
-          ? (row.flags ?? []).filter((flag) => flag !== 'missing_cost_basis') as FlagReason[]
+        flags: patch.removeMissingMarketValue
+          ? (row.flags ?? []).filter((flag) =>
+              flag !== 'missing_market_value' &&
+              !(patch.removeLegacyPriceMarker && flag === 'missing_cost_basis')
+            ) as FlagReason[]
           : row.flags
       });
     }
@@ -122,7 +127,9 @@ export async function fetchMissingPricesForAllTransactions(
   onProgress?: (done: number, total: number) => void
 ): Promise<AutoFetchResult> {
   const all = await db.transactions.toArray();
-  const needsPrice = all.filter((t) => t.fiatValue == null && !t.isSpam && !t.isInternalTransfer);
+  const needsPrice = all.filter((t) =>
+    t.fiatValue == null && !t.isSpam && !t.isInternalTransfer && requiresMarketValue(t)
+  );
   const needsConversion = all.filter(
     (t) =>
       t.fiatValue != null &&
@@ -157,8 +164,8 @@ export async function fetchMissingPricesForAllTransactions(
         id: row.id,
         fiatValue: row.fiatValue,
         fiatCurrency: row.fiatCurrency,
-        removeMissingCostBasis:
-          original.flags.includes('missing_cost_basis') && !row.flags.includes('missing_cost_basis'),
+        removeMissingMarketValue:
+          original.flags.includes('missing_market_value') && !row.flags.includes('missing_market_value'),
         expectedFiatValue: original.fiatValue,
         expectedFiatCurrency: original.fiatCurrency
       };
@@ -186,7 +193,10 @@ export async function fetchMissingPricesForAllTransactions(
           id: tx.id,
           fiatValue: r.price * qty,
           fiatCurrency: r.currency,
-          removeMissingCostBasis: true,
+          removeMissingMarketValue: true,
+          // A stored basis flag on an unpriced row came from legacy importers;
+          // genuine lot shortfalls are runtime-derived and are never cleared here.
+          removeLegacyPriceMarker: true,
           onlyIfUnpriced: true
         });
         updated++;

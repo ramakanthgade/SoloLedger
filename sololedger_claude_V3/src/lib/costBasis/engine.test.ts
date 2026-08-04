@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { calculateCostBasis, STRATEGIES, type EngineOptions, type CostBasisMethod } from './engine';
+import { buildMatchedGainRows } from './matchedGains';
 import type { Transaction, TxType, TaxSettings } from '@/types/transaction';
 
 let seq = 0;
@@ -88,7 +89,7 @@ describe('cost-basis engine', () => {
     expect(lots.length).toBeGreaterThan(0);
   });
 
-  it('records a shortfall/flag when a trade acquisition leg lacks a counterAmount', () => {
+  it('records neutral invalid-row guidance when a trade acquisition leg lacks a counterAmount', () => {
     const { flags } = run([
       tx({
         id: 't',
@@ -103,8 +104,67 @@ describe('cost-basis engine', () => {
     ]);
     const ethFlag = flags.find((f) => f.asset === 'ETH');
     expect(ethFlag).toBeDefined();
-    expect(ethFlag?.reason).toBe('missing_cost_basis');
+    expect(ethFlag?.reason).toBe('invalid_transaction_data');
     expect(ethFlag?.transactionId).toBe('t');
+  });
+
+  it('conserves BTC→WBTC swap FMV while never fabricating prior BTC basis', () => {
+    const result = run([
+      tx({
+        id: 'wrap', type: 'trade', asset: 'BTC', amount: 1,
+        counterAsset: 'WBTC', counterAmount: 0.9995, fiatValue: 5_000_000,
+        timestamp: 2 * DAY
+      })
+    ]);
+
+    expect(result.disposals).toHaveLength(1);
+    expect(result.disposals[0]).toMatchObject({ asset: 'BTC', proceeds: 5_000_000, costBasis: 0 });
+    expect(result.shortfalls).toEqual([{ transactionId: 'wrap', asset: 'BTC', unmatchedAmount: 1 }]);
+    const wbtcLot = result.lots.find((lot) => lot.asset === 'WBTC');
+    expect(wbtcLot).toMatchObject({ amountOriginal: 0.9995, costBasisTotal: 5_000_000, sourceTxId: 'wrap' });
+    expect(result.lots.some((lot) => lot.asset === 'BTC')).toBe(false);
+    const reportRows = buildMatchedGainRows(result.disposals, result.lots, []);
+    expect(reportRows.reduce((sum, row) => sum + row.proceeds, 0)).toBe(5_000_000);
+    expect(reportRows[0]).toMatchObject({ status: 'missing_cost_basis', asset: 'BTC', costBasis: 0 });
+  });
+
+  it('does not confirm missing acquisition FMV as zero, while preserving explicit zero and mining basis', () => {
+    const missing = run([tx({ id: 'missing', type: 'buy', fiatValue: undefined })]);
+    expect(missing.lots).toHaveLength(0);
+    expect(missing.flags).toContainEqual({ transactionId: 'missing', asset: 'BTC', reason: 'missing_market_value' });
+
+    const explicitZero = run([tx({ id: 'zero', type: 'buy', fiatValue: 0 })]);
+    expect(explicitZero.lots[0].costBasisTotal).toBe(0);
+
+    const mining = run([tx({ id: 'mine-unpriced', type: 'income', category: 'mining', fiatValue: undefined })]);
+    expect(mining.lots[0].costBasisTotal).toBe(0);
+  });
+
+  it('consumes inventory for an unpriced disposal without finalizing proceeds or gain', () => {
+    const result = run([
+      tx({ id: 'buy', type: 'buy', amount: 1, fiatValue: 100, timestamp: DAY }),
+      tx({ id: 'sell-unpriced', type: 'sell', amount: 2, fiatValue: undefined, timestamp: 2 * DAY })
+    ]);
+    expect(result.disposals).toHaveLength(0);
+    expect(result.inventoryDisposals).toHaveLength(1);
+    expect(result.inventoryDisposals[0]).toMatchObject({ sourceTxId: 'sell-unpriced', amount: 2, costBasis: 100, finalized: false });
+    expect(result.shortfalls).toEqual([{ transactionId: 'sell-unpriced', asset: 'BTC', unmatchedAmount: 1 }]);
+    expect(result.lots[0].amountRemaining).toBe(0);
+    expect(result.flags).toContainEqual({ transactionId: 'sell-unpriced', asset: 'BTC', reason: 'missing_market_value' });
+  });
+
+  it('keeps later FIFO sales correct after an earlier unpriced disposal consumes the oldest lot', () => {
+    const result = run([
+      tx({ id: 'buy-old', type: 'buy', amount: 1, fiatValue: 100, timestamp: DAY }),
+      tx({ id: 'buy-new', type: 'buy', amount: 1, fiatValue: 300, timestamp: 2 * DAY }),
+      tx({ id: 'sell-unpriced', type: 'sell', amount: 1, fiatValue: undefined, timestamp: 3 * DAY }),
+      tx({ id: 'sell-priced', type: 'sell', amount: 1, fiatValue: 500, timestamp: 4 * DAY })
+    ]);
+    expect(result.disposals).toHaveLength(1);
+    expect(result.disposals[0]).toMatchObject({ sourceTxId: 'sell-priced', costBasis: 300, proceeds: 500, gain: 200 });
+    expect(result.inventoryDisposals.map((row) => row.finalized)).toEqual([false, true]);
+    expect(result.lots.map((lot) => lot.amountRemaining)).toEqual([0, 0]);
+    expect(buildMatchedGainRows(result.disposals, result.lots, []).map((row) => row.buyTxId)).toEqual(['buy-new']);
   });
 
   it('nft_buy opens a lot consumed by a later nft_sell', () => {
@@ -135,15 +195,15 @@ describe('cost-basis engine', () => {
   it('rejects/flags a zero or negative acquisition instead of opening a lot', () => {
     const resZero = run([tx({ id: 'z', type: 'buy', amount: 0, fiatValue: 100, timestamp: 1 * DAY })]);
     expect(resZero.lots).toHaveLength(0);
-    expect(resZero.flags.some((f) => f.transactionId === 'z' && f.reason === 'missing_cost_basis')).toBe(true);
+    expect(resZero.flags.some((f) => f.transactionId === 'z' && f.reason === 'invalid_transaction_data')).toBe(true);
 
     const resNeg = run([tx({ id: 'n', type: 'buy', amount: -1, fiatValue: 100, timestamp: 1 * DAY })]);
     expect(resNeg.lots).toHaveLength(0);
-    expect(resNeg.flags.some((f) => f.transactionId === 'n')).toBe(true);
+    expect(resNeg.flags.some((f) => f.transactionId === 'n' && f.reason === 'invalid_transaction_data')).toBe(true);
 
     const resNaN = run([tx({ id: 'x', type: 'buy', amount: 1, fiatValue: Infinity, timestamp: 1 * DAY })]);
     expect(resNaN.lots).toHaveLength(0);
-    expect(resNaN.flags.some((f) => f.transactionId === 'x')).toBe(true);
+    expect(resNaN.flags.some((f) => f.transactionId === 'x' && f.reason === 'missing_market_value')).toBe(true);
   });
 
   it('clamps amountRemaining at 0, never negative, on over-disposal', () => {

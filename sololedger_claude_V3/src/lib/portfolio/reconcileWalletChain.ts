@@ -166,7 +166,7 @@ export async function reconcileSolanaWalletsFromChain(
             walletAddress: wallet,
             chain: 'solana',
             contractAddress: resolveSolanaMintAddress('SOL'),
-            flags: ['missing_cost_basis'] as FlagReason[],
+            flags: ['missing_market_value'] as FlagReason[],
             isInternalTransfer: false,
             notes: 'SOL balance reconciled from on-chain delta'
           });

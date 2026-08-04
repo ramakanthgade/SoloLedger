@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeEpochTimestamp, safeNumber, type ExchangeParser } from './types';
+import { exchangeSourceRef, makeId, optionalNumber, safeEpochTimestamp, safeNumber, type ExchangeParser } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 import { normalizeHeader } from './tableExtract';
 import { rowCol } from './headerMap';
@@ -14,10 +14,10 @@ export const htxParser: ExchangeParser = {
       // Timestamp must come from a real time column — never the order id.
       const amount = Math.abs(safeNumber(rowCol(row, 'filled', 'amount'))); const ts = safeEpochTimestamp(rowCol(row, 'time', 'timestamp'));
       if (!type || !pair.base || !amount || !Number.isFinite(ts)) { skippedRows++; continue; }
-      const price = Math.abs(safeNumber(rowCol(row, 'price'))); const total = amount * price; const fee = Math.abs(safeNumber(rowCol(row, 'fee'))); const transfer = type.startsWith('transfer_');
+      const priceRaw = optionalNumber(rowCol(row, 'price')); const total = priceRaw == null ? undefined : amount * Math.abs(priceRaw); const fee = Math.abs(safeNumber(rowCol(row, 'fee'))); const transfer = type.startsWith('transfer_');
       const quoteFiat = quoteToFiatCurrency(pair.quote);
-      transactions.push({ id: makeId('htx'), timestamp: ts, type, asset: pair.base, amount, counterAsset: pair.quote, counterAmount: total || undefined,
-        fiatCurrency: quoteFiat ?? 'USD', fiatValue: quoteFiat ? total || undefined : undefined,
+      transactions.push({ id: makeId('htx'), timestamp: ts, type, asset: pair.base, amount, counterAsset: pair.quote, counterAmount: total,
+        fiatCurrency: quoteFiat ?? 'USD', fiatValue: quoteFiat ? total : undefined,
         feeAmount: fee || undefined, feeAsset: fee ? rowCol(row, 'fee-asset').toUpperCase() || pair.quote : undefined,
         source: 'htx', sourceRef: rowCol(row, 'order-id', 'id') || exchangeSourceRef('htx', ts, type, pair.base, amount), flags: transfer ? ['possible_internal_transfer'] : [], isInternalTransfer: false, raw: row });
     }

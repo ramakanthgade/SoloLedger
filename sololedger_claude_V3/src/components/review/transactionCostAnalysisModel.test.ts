@@ -2,13 +2,14 @@ import { describe, expect, it } from 'vitest';
 import type { Disposal, Lot, TaxSettings, Transaction } from '@/types/transaction';
 import { defaultDerivativesTreatment } from '@/lib/tax/derivatives';
 import { buildTransactionCostAnalysisIndexes, buildTransactionCostAnalysisModel } from './transactionCostAnalysisModel';
+import type { InventoryDisposal } from '@/lib/costBasis/engine';
 
 const tx: Transaction = { id: 'sell', timestamp: Date.UTC(2025, 0, 2), type: 'sell', asset: 'BTC', amount: 1, fiatCurrency: 'USD', fiatValue: 100, source: 'manual', flags: [], isInternalTransfer: false };
 const buy: Transaction = { ...tx, id: 'buy', timestamp: Date.UTC(2024, 0, 1), type: 'buy', fiatValue: 60, source: 'coinbase' };
 const lot: Lot = { id: 'lot', asset: 'BTC', acquiredAt: buy.timestamp, amountRemaining: 0, amountOriginal: 1, costBasisPerUnit: 60, costBasisTotal: 60, sourceTxId: buy.id, acquisitionType: 'buy' };
 const disposal: Disposal = { id: 'd', asset: 'BTC', disposedAt: tx.timestamp, amount: 1, proceeds: 100, costBasis: 60, gain: 40, holdingPeriodDays: 367, lotConsumption: [{ lotId: lot.id, amount: 1, costBasis: 60 }], sourceTxId: tx.id, method: 'FIFO' };
 const settings = (jurisdiction: TaxSettings['jurisdiction'], derivativesTreatment?: TaxSettings['derivativesTreatment']): TaxSettings => ({ jurisdiction, reportingCurrency: { IN: 'INR', US: 'USD', CA: 'CAD', AE: 'AED' }[jurisdiction], defaultCostBasisMethod: 'FIFO', derivativesTreatment, priceApiEnabled: false, rpcLookupEnabled: false });
-const indexes = (transactions: Transaction[] = [buy, tx], disposals: Disposal[] = [disposal], lots: Lot[] = [lot]) => buildTransactionCostAnalysisIndexes({ transactions, disposals, lots });
+const indexes = (transactions: Transaction[] = [buy, tx], disposals: Disposal[] = [disposal], lots: Lot[] = [lot], inventoryDisposals: InventoryDisposal[] = []) => buildTransactionCostAnalysisIndexes({ transactions, disposals, lots, inventoryDisposals });
 
 describe('transaction cost analysis model', () => {
   it.each(['IN', 'US', 'CA', 'AE'] as const)('uses configured %s metadata and preindexed report-source gains', (jurisdiction) => {
@@ -26,11 +27,56 @@ describe('transaction cost analysis model', () => {
     const model = buildTransactionCostAnalysisModel({ transaction: lossTx, settings: settings('IN'), disposal: lossDisposal, indexes: indexes([buy, lossTx], [lossDisposal]) });
     expect(model.eventTreatment).toMatchObject({ rawGain: -20, taxableGain: 0, disallowedLoss: 20 });
   });
-  it('keeps every monetary disposal field unknown when unpriced', () => {
+  it('keeps proceeds and gain unknown while retaining known basis when unpriced', () => {
     const unpriced = { ...tx, fiatValue: undefined };
     const model = buildTransactionCostAnalysisModel({ transaction: unpriced, settings: settings('US'), disposal, indexes: indexes([buy, unpriced]) });
-    expect(model).toMatchObject({ pricingStatus: 'unpriced', proceeds: undefined, costBasis: undefined, gain: undefined });
-    expect(model.matchedRows[0]).toMatchObject({ proceeds: undefined, costBasis: undefined, gain: undefined, unitCost: undefined }); expect(model.warnings.join(' ')).toContain('remain unpriced');
+    expect(model).toMatchObject({ pricingStatus: 'unpriced', proceeds: undefined, costBasis: 60, gain: undefined });
+    expect(model.matchedRows[0]).toMatchObject({ proceeds: undefined, costBasis: 60, gain: undefined, unitCost: 60 }); expect(model.warnings.join(' ')).toContain('not finalized');
+  });
+  it('shows known inventory lot consumption and basis for a fully matched unpriced disposal', () => {
+    const unpriced = { ...tx, fiatValue: undefined };
+    const inventory: InventoryDisposal = {
+      asset: 'BTC', disposedAt: unpriced.timestamp, amount: 1, costBasis: 60,
+      holdingPeriodDays: 367, lotConsumption: [{ lotId: lot.id, amount: 1, costBasis: 60 }],
+      sourceTxId: unpriced.id, method: 'FIFO', finalized: false
+    };
+    const model = buildTransactionCostAnalysisModel({
+      transaction: unpriced,
+      settings: settings('US'),
+      indexes: indexes([buy, unpriced], [], [lot], [inventory])
+    });
+    expect(model).toMatchObject({
+      pricingStatus: 'unpriced', disposedQuantity: 1, costBasis: 60,
+      proceeds: undefined, gain: undefined
+    });
+    expect(model.matchedRows).toMatchObject([{
+      sellAmount: 1, costBasis: 60, unitCost: 60, sourceLabel: 'coinbase'
+    }]);
+  });
+  it('adds an explicit missing-basis remainder for a partially matched unpriced disposal', () => {
+    const unpriced = { ...tx, fiatValue: undefined };
+    const inventory: InventoryDisposal = {
+      asset: 'BTC', disposedAt: unpriced.timestamp, amount: 1, costBasis: 30,
+      holdingPeriodDays: 367, lotConsumption: [{ lotId: lot.id, amount: 0.5, costBasis: 30 }],
+      sourceTxId: unpriced.id, method: 'FIFO', finalized: false
+    };
+    const model = buildTransactionCostAnalysisModel({
+      transaction: unpriced,
+      settings: settings('US'),
+      indexes: indexes([buy, unpriced], [], [lot], [inventory])
+    });
+    expect(model).toMatchObject({
+      disposedQuantity: 1,
+      costBasis: 30,
+      costBasisCompleteness: 'partial'
+    });
+    expect(model.matchedRows).toMatchObject([
+      { sellAmount: 0.5, costBasis: 30, status: 'matched' },
+      { sellAmount: 0.5, status: 'missing_cost_basis', sourceLabel: 'Missing acquisition' }
+    ]);
+    expect(model.matchedRows[1].costBasis).toBeUndefined();
+    expect(model.matchedRows.reduce((sum, row) => sum + row.sellAmount, 0)).toBe(model.disposedQuantity);
+    expect(model.warnings.join(' ')).toContain('Acquisition basis is missing or incomplete');
   });
   it('shows confirmed zero basis without warning and warns for unmatched shortfall', () => {
     const zeroLot = { ...lot, costBasisPerUnit: 0, costBasisTotal: 0 };

@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
+import { exchangeSourceRef, makeId, optionalNumber, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 import { normalizeHeader } from './tableExtract';
 import { rowCol } from './headerMap';
@@ -16,11 +16,11 @@ export const bybitParser: ExchangeParser = {
       const pair = parseTradingPair(rowCol(row, 'Symbol'));
       const amount = Math.abs(safeNumber(rowCol(row, 'Volume'))); const ts = safeTimestampUtc(rowCol(row, 'Time'));
       if (!type || !pair.base || !amount || !Number.isFinite(ts)) { skippedRows++; continue; }
-      const total = Math.abs(safeNumber(rowCol(row, 'Total'))); const fee = Math.abs(safeNumber(rowCol(row, 'Fee')));
+      const totalRaw = optionalNumber(rowCol(row, 'Total')); const total = totalRaw == null ? undefined : Math.abs(totalRaw); const fee = Math.abs(safeNumber(rowCol(row, 'Fee')));
       const quoteFiat = quoteToFiatCurrency(pair.quote);
       transactions.push({ id: makeId('bb'), timestamp: ts, type, asset: pair.base, amount,
-        counterAsset: pair.quote, counterAmount: total || undefined, fiatCurrency: quoteFiat ?? 'USD',
-        fiatValue: quoteFiat ? total || undefined : undefined,
+        counterAsset: pair.quote, counterAmount: total, fiatCurrency: quoteFiat ?? 'USD',
+        fiatValue: quoteFiat ? total : undefined,
         feeAmount: fee || undefined, feeAsset: fee ? rowCol(row, 'Fee Currency').toUpperCase() || pair.quote : undefined,
         source: 'bybit', sourceRef: rowCol(row, 'Order ID') || exchangeSourceRef('bybit', ts, type, pair.base, amount), flags: [], isInternalTransfer: false, raw: row });
     }

@@ -318,7 +318,7 @@ export function parseBlockstreamTx(row: any, address: string, asset: string): Tr
     walletAddress: address,
     counterpartyAddress: counterparty,
     chain: 'bitcoin',
-    flags: ['possible_internal_transfer', 'missing_cost_basis'] as const,
+    flags: ['possible_internal_transfer', 'missing_market_value'] as const,
     isInternalTransfer: false,
     raw: row
   } as Transaction;
@@ -588,7 +588,7 @@ export async function fetchAlchemyEvmInner(
         ? []
         : unified || decodedIsSpecific
           ? (['needs_review'] as FlagReason[])
-        : ['possible_internal_transfer', 'missing_cost_basis'],
+        : ['possible_internal_transfer', 'missing_market_value'],
       isInternalTransfer: false,
       raw: t
     };
@@ -791,7 +791,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
           walletAddress: address,
           counterpartyAddress: solCounterparty,
           chain: 'solana',
-          flags: ['possible_internal_transfer', 'missing_cost_basis'],
+          flags: ['possible_internal_transfer', 'missing_market_value'],
           isInternalTransfer: false,
           raw: tx
         });
@@ -862,7 +862,7 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
         chain: 'solana',
         category: meta.isNft ? 'nft' : reward ? reward.kind : undefined,
         notes: reward ? `${reward.label} — auto-classified as income` : undefined,
-        flags: reward ? [] : ['possible_internal_transfer', 'missing_cost_basis'],
+        flags: reward ? [] : ['possible_internal_transfer', 'missing_market_value'],
         isInternalTransfer: false,
         raw: tx
       });
@@ -952,7 +952,7 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
       chain: chainId,
       counterpartyAddress: isOutgoing ? row.to : row.from,
       contractAddress: isToken ? row.contractAddress : undefined,
-      flags: ['possible_internal_transfer', 'missing_cost_basis'] as const,
+      flags: ['possible_internal_transfer', 'missing_market_value'] as const,
       isInternalTransfer: false,
       raw: row
     } as Transaction;
@@ -1165,7 +1165,7 @@ async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
       walletAddress: address,
       counterpartyAddress: from === addr ? row.to?.hash : row.from?.hash,
       chain: 'ethereum',
-      flags: ['possible_internal_transfer', 'missing_cost_basis'],
+      flags: ['possible_internal_transfer', 'missing_market_value'],
       isInternalTransfer: false,
       raw: row
     });
@@ -1196,7 +1196,7 @@ async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
       counterpartyAddress: from === addr ? row.to?.hash : row.from?.hash,
       contractAddress: row.token?.address_hash,
       chain: 'ethereum',
-      flags: ['possible_internal_transfer', 'missing_cost_basis'],
+      flags: ['possible_internal_transfer', 'missing_market_value'],
       isInternalTransfer: false,
       raw: row
     });

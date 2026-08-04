@@ -150,7 +150,7 @@ export const binanceOptionsParser: ExchangeParser = {
         source: 'binance_options',
         sourceRef: occurrence === 1 ? baseRef : `${baseRef}~${occurrence}`,
         notes: shape.notes,
-        flags: stable ? shape.flags : [...shape.flags, 'missing_cost_basis'],
+        flags: stable ? shape.flags : [...shape.flags, 'missing_market_value'],
         isInternalTransfer: shape.internal,
         category: shape.category,
         instrumentClass: 'derivative',

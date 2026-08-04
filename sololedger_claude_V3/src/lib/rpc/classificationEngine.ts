@@ -96,8 +96,8 @@ export const MORALIS_CATEGORY_MAP: Record<string, TxType | null> = {
 
 /** Infer flags based on classified type. */
 export function flagsForType(_type: TxType, classified: boolean): FlagReason[] {
-  if (classified) return ['missing_cost_basis'];
-  return ['possible_internal_transfer', 'missing_cost_basis'];
+  if (classified) return ['missing_market_value'];
+  return ['possible_internal_transfer', 'missing_market_value'];
 }
 
 /** Format a human-readable note from Helius transaction. */

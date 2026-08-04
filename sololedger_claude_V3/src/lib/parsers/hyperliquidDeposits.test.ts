@@ -20,11 +20,11 @@ describe('Hyperliquid deposits — non-USDC valuation (C1)', () => {
     expect(usdc.flags).not.toContain('missing_cost_basis');
   });
 
-  it('leaves a non-USDC deposit unpriced and flags missing_cost_basis', () => {
+  it('leaves a non-USDC transfer unpriced without requiring tax market value', () => {
     const rows = loadFixtureRows('hyperliquid/deposits.csv');
     const { transactions } = hyperliquidDepositsParser.parse(rows);
     const eth = transactions.find((t) => t.asset === 'ETH')!;
     expect(eth.fiatValue).toBeUndefined();
-    expect(eth.flags).toContain('missing_cost_basis');
+    expect(eth.flags).not.toContain('missing_market_value');
   });
 });

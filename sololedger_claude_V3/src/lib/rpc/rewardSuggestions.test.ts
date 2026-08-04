@@ -61,7 +61,7 @@ describe('applyDefiLlamaRewardSuggestions', () => {
         id: 'cand',
         contractAddress: REWARD_MINT,
         counterpartyAddress: SENDER,
-        flags: ['possible_internal_transfer', 'missing_cost_basis', 'duplicate_suspected']
+        flags: ['possible_internal_transfer', 'missing_market_value', 'duplicate_suspected']
       })
     ];
     const r = await applyDefiLlamaRewardSuggestions({ hints: HINTS });
@@ -73,19 +73,19 @@ describe('applyDefiLlamaRewardSuggestions', () => {
     // needs_review added; auto-derived flags dropped; unrelated flags kept
     expect(t.flags).toContain('needs_review');
     expect(t.flags).not.toContain('possible_internal_transfer');
-    expect(t.flags).not.toContain('missing_cost_basis');
+    expect(t.flags).not.toContain('missing_market_value');
     expect(t.flags).toContain('duplicate_suspected');
     expect(t.notes).toContain('DefiLlama');
     expect(t.notes).toContain('orca-dex');
   });
 
-  it('strips both auto-derived flags (possible_internal_transfer + missing_cost_basis) while preserving user-set flags', async () => {
+  it('strips both auto-derived flags (possible_internal_transfer + missing_market_value) while preserving user-set flags', async () => {
     store = [
       tx({
         id: 'cand',
         contractAddress: REWARD_MINT,
         counterpartyAddress: SENDER,
-        flags: ['possible_internal_transfer', 'missing_cost_basis', 'duplicate_suspected', 'unrecognized_asset']
+        flags: ['possible_internal_transfer', 'missing_market_value', 'duplicate_suspected', 'unrecognized_asset']
       })
     ];
     const r = await applyDefiLlamaRewardSuggestions({ hints: HINTS });
@@ -93,7 +93,7 @@ describe('applyDefiLlamaRewardSuggestions', () => {
     const t = store[0];
     expect(t.category).toBe('defi_reward');
     expect(t.flags).not.toContain('possible_internal_transfer');
-    expect(t.flags).not.toContain('missing_cost_basis');
+    expect(t.flags).not.toContain('missing_market_value');
     // User-set flags survive the suggestion pass.
     expect(t.flags).toContain('duplicate_suspected');
     expect(t.flags).toContain('unrecognized_asset');
@@ -173,7 +173,7 @@ describe('applyDefiLlamaRewardSuggestions', () => {
 describe('reclassifyTypePatch', () => {
   it('strips auto-derived + needs_review flags but returns no category (preserves the rejection marker)', () => {
     const patch = reclassifyTypePatch(
-      ['possible_internal_transfer', 'missing_cost_basis', 'needs_review', 'duplicate_suspected'],
+      ['possible_internal_transfer', 'missing_market_value', 'needs_review', 'duplicate_suspected'],
       'transfer_in'
     );
     expect(patch.type).toBe('transfer_in');
