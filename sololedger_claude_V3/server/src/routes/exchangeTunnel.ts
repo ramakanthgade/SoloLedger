@@ -33,6 +33,8 @@ interface ExchangeSpec {
   host: string;
   /** Headers the client may forward, sent as `x-exchange-<name>` (contract C2). */
   headers: readonly string[];
+  /** Optional exact endpoint allowlist. Prefix entries ending in `/` allow descendants. */
+  paths?: readonly string[];
 }
 
 /**
@@ -62,6 +64,20 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       'kc-api-partner',
       'kc-api-partner-sign',
       'kc-api-partner-verify'
+    ]
+  },
+  bybit: {
+    host: 'api.bybit.com',
+    headers: ['x-bapi-api-key', 'x-bapi-sign', 'x-bapi-timestamp', 'x-bapi-recv-window'],
+    // Only the V5 spot-sync endpoints exercised by ccxt. No order mutation,
+    // derivatives position, margin, lending, transfer or withdrawal-mutation paths.
+    paths: [
+      '/v5/market/time',
+      '/v5/market/instruments-info',
+      '/v5/account/wallet-balance',
+      '/v5/execution/list',
+      '/v5/asset/deposit/query-record',
+      '/v5/asset/withdraw/query-record'
     ]
   }
 };
@@ -148,6 +164,11 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
   }
   if (upstreamPath.length < 2) {
     fail(res, 'bad_path', 400, 'Missing upstream path');
+    return;
+  }
+  if (spec.paths && !spec.paths.some((allowed) =>
+    allowed.endsWith('/') ? upstreamPath.startsWith(allowed) : upstreamPath === allowed)) {
+    fail(res, 'bad_path', 400, 'Upstream path is not allowed for this exchange');
     return;
   }
 

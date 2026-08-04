@@ -45,6 +45,7 @@ describe('loadCcxt', () => {
     expect(typeof a.kraken).toBe('function');
     expect(typeof a.okx).toBe('function');
     expect(typeof a.kucoin).toBe('function');
+    expect(typeof a.bybit).toBe('function');
   });
 });
 
@@ -76,6 +77,22 @@ describe('createExchangeClient', () => {
       const client = await createExchangeClient(row({ exchange, passphrase: 'phrase' }));
       expect((client as unknown as Record<string, unknown>).password).toBe('phrase');
     }
+  });
+
+  it('configures Bybit as spot-only without signed currency discovery', async () => {
+    const client = await createExchangeClient(row({ exchange: 'bybit' }));
+    const options = (client as unknown as { options: Record<string, unknown> }).options;
+    expect(options.defaultType).toBe('spot');
+    expect(options.fetchMarkets).toMatchObject({ types: ['spot'] });
+    expect(options.fetchCurrencies).toBe(false);
+    expect((client as unknown as { has: Record<string, unknown> }).has.fetchCurrencies).toBe(false);
+    expect(options).toMatchObject({
+      enableUnifiedMargin: false,
+      enableUnifiedAccount: true,
+      unifiedMarginStatus: 6
+    });
+    expect((client as unknown as { requiredCredentials: Record<string, boolean> }).requiredCredentials)
+      .toMatchObject({ apiKey: true, secret: true, password: false });
   });
 
   it('does not set password for exchanges without a passphrase', async () => {

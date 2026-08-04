@@ -6,10 +6,10 @@ history + incremental syncs — with zero new dedup machinery: synced rows
 carry `sourceRef`s that collide with the CSV parsers' refs, so the existing
 `deduplicateTransactions()` removes API↔CSV twins automatically.
 
-Supported exchanges (v1): **binance, coinbase, kraken, okx, kucoin** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
-fully-validated path (CSV-twin zero-duplicate guarantee); the other four
-ship behind the same code paths.
+original live-validated path; Bybit adds a real-ccxt replay pipeline and an
+order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
 
 **Hosted-only.** All exchange traffic egresses through the SoloLedger relay
 (the browser can't reach the exchanges directly — CORS + user IP privacy),
@@ -72,14 +72,19 @@ a sync discards any staged preview (with a warning).
   transfer sitting just past the cursor would be re-fetched forever.
 - Forward window scan: `window = [since, min(since+cap, now)]`. Window caps:
   Binance transfers 89 d (their 90-day rule), trades 6.5 d for
-  binance/coinbase/okx/kucoin (Binance spot myTrades 7-day rule; KuCoin
-  "up to one week after since"). Kraken trades paginate by `ofs` (50 fills
-  per call) inside one window.
+  coinbase/okx/kucoin/bybit. Bybit V5 executions use 6.5 d windows plus the
+  opaque `nextPageCursor`; deposits/withdrawals use 29 d windows plus cursor
+  (limits 100 and 50 respectively). Kraken trades paginate by `ofs` (50 fills
+  per call) inside one window. Binance has its separate fromId/23.5 h plan.
 - Budgets: `MAX_PAGES_PER_PHASE = 200` caps **data pages** (pages with
   rows); empty-window probes have their own `MAX_EMPTY_HOPS_PER_PHASE =
   4000` so an initial sync can skip across silent years without going
-  partial. A tripped budget = PARTIAL success (rows kept, cursor = max ts
-  seen, warning) — never an error.
+  partial. A tripped budget = PARTIAL success (rows kept, warning) — never
+  an error. For Bybit, an unfinished opaque-cursor chain retains the start
+  of that time window as its durable timestamp cursor; the next sync replays
+  the window and cannot skip rows hidden behind the unpersisted token. Once
+  every window is exhausted, the cursor advances to the verified `now`
+  frontier even for empty accounts or accounts whose last activity is old.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -116,6 +121,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | kraken | aggregate fills by `trade.order` → `sourceRef = orderTxid` (== CSV `refid`) | `transfer.info?.refid ?? transfer.id` |
 | okx | `trade.order ?? trade.id ?? formula` (**order first** — okx.ts prefers `ordId`) | `transfer.id ?? formula` |
 | kucoin | `trade.id ?? formula` | `transfer.id ?? formula` |
+| bybit | aggregate executions by `trade.order` → `sourceRef = orderId` (== CSV `Order ID`); durable `execId` evidence is unioned across syncs and recomputes the order row | withdrawals prefer `withdrawId`; deposits use `txid + txIndex/native id` before formula fallback |
 
 `dedup.contract.test.ts` proves the collisions pairwise (real CSV parsers
 vs real ccxt parsing) and end-to-end: CSV import → replay sync → **zero
@@ -171,8 +177,9 @@ real responses (mask account ids/addresses) and flip `_recorded`.
 4. **KuCoin fills window** — KuCoin returns fills "up to one week after
    `since`" and never tells you a page was full; the engine paginates 6.5-day
    windows so a full page can never strand older rows.
-5. **API↔CSV zero-duplicate guarantee is Binance-only** this round; the
-   other four guarantee API↔API dedup and match CSV on native ids where
+5. **API↔CSV guarantees vary by export** — Binance Trade History and Bybit
+   order-history fixtures have explicit zero-net-new contracts. The remaining
+   connectors guarantee API↔API dedup and match CSV on native ids where
    present (Kraken `refid`). Their quirks surface in beta.
 6. **Coinbase** covers the current Advanced Trade API (api.coinbase.com);
    legacy retired APIs are out of scope. Simple buys/sells made without an
@@ -198,6 +205,22 @@ real responses (mask account ids/addresses) and flip `_recorded`.
     window per symbol back to the exchange's launch (worst case: 6.5-day
     trade windows). It's a one-time cost; incremental syncs only re-scan
     the overlap. Budgets above keep it bounded.
+11. **Bybit execution retention** — V5 advertises two years of execution
+    history. Any requested start (initial or incremental) older than
+    `now − 2 years` is clamped, records endpoint-level partial coverage, and
+    warns that older spot orders require a one-time CSV import. Spot itself
+    launched 2021-07-15, which remains the launch floor.
+12. **Bybit CSV scope** — the existing Bybit CSV parser covers spot order
+    history only, not deposits or withdrawals. API trade executions are
+    aggregated to the CSV's order granularity so `Order ID` refs collide.
+    A CSV survivor keeps the recoverable API execution evidence rather than
+    being overwritten; orders gaining later fills are safely updated without
+    double-counting overlap executions. Replays preserve the stored row's
+    complete review state (including reclassification, spam, manual fiat,
+    notes/category/flags, internal-transfer and TDS fields) while refreshing
+    only execution-derived economics/evidence. Transfer API rows remain
+    API-idempotent but have no CSV-twin guarantee. Complete withdrawal history
+    requires the read-only key to belong to the Bybit master account / master UID.
 
 ## Adding an exchange?
 

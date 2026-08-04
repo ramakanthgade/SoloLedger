@@ -51,6 +51,8 @@ import {
 } from './ccxtLoader';
 import {
   normalizeKrakenTradesByOrder,
+  mergeBybitOrderTransactions,
+  normalizeBybitTradesByOrder,
   normalizeTrade,
   normalizeTransfer,
   resolveMarket
@@ -88,6 +90,10 @@ const BINANCE_TRANSFER_WINDOW_MS = 89 * 86_400_000;
  * signed calls on big histories. Binance spot is NOT here — see below.
  */
 const TRADE_WINDOW_MS = 6.5 * 86_400_000;
+/** Bybit asset-history endpoints require ranges shorter than 30 days. */
+const BYBIT_TRANSFER_WINDOW_MS = 29 * 86_400_000;
+/** Bybit advertises two years of execution history for the V5 endpoint. */
+const BYBIT_TRADE_RETENTION_MS = 2 * 365 * 86_400_000;
 /**
  * Binance spot myTrades rejects startTime/endTime spans > 24 hours with
  * error -1127 ("More than 24 hours between startTime and endTime") —
@@ -109,7 +115,8 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   coinbase: Date.UTC(2012, 5, 1), // 2012-06-01
   kraken: Date.UTC(2011, 6, 28), // 2011-07-28
   okx: Date.UTC(2014, 0, 1), // 2014-01-01 (launched as OKEx)
-  kucoin: Date.UTC(2017, 8, 27) // 2017-09-27
+  kucoin: Date.UTC(2017, 8, 27), // 2017-09-27
+  bybit: Date.UTC(2021, 6, 15) // 2021-07-15 (spot launch)
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -320,6 +327,23 @@ export interface PaginateResult<T> {
   termination: 'exhausted' | 'page_budget' | 'empty_hop_budget' | 'nonadvancing';
 }
 
+export interface BybitOrderLookups {
+  directByRef: Map<string, Transaction>;
+  csvByRef: Map<string, Transaction>;
+}
+
+/** Build O(1) Bybit order lookups once per commit instead of scanning all transactions per order. */
+export function buildBybitOrderLookups(existing: readonly Transaction[]): BybitOrderLookups {
+  const directByRef = new Map<string, Transaction>();
+  const csvByRef = new Map<string, Transaction>();
+  for (const row of existing) {
+    if (!row.sourceRef) continue;
+    if (row.source === 'bybit_api' && !directByRef.has(row.sourceRef)) directByRef.set(row.sourceRef, row);
+    if (row.source === 'bybit' && !csvByRef.has(row.sourceRef)) csvByRef.set(row.sourceRef, row);
+  }
+  return { directByRef, csvByRef };
+}
+
 function maxTimestamp<T extends PageRow>(rows: T[]): number | null {
   let max: number | null = null;
   for (const row of rows) {
@@ -449,6 +473,79 @@ export async function paginatePhase<T extends PageRow>(args: {
   }
 }
 
+/** Cursor token ccxt's Bybit parser may leave on any unified row after sorting. */
+export function bybitNextCursor(rows: readonly PageRow[]): string | undefined {
+  for (const row of rows) {
+    const cursor = (row as { info?: Record<string, unknown> }).info?.nextPageCursor;
+    if (typeof cursor === 'string' && cursor.length > 0) return cursor;
+  }
+  return undefined;
+}
+
+/**
+ * Bybit V5 combines strict time windows with opaque cursor pagination. Each
+ * window is exhausted by cursor before moving forward; ids dedup inclusive
+ * boundaries. Exported for the exchange-specific engine tests.
+ */
+export async function paginateBybitWindows<T extends PageRow>(args: {
+  fetchPage: (since: number, until: number, cursor?: string) => Promise<T[]>;
+  since: number;
+  windowMs: number;
+  now: number;
+  maxPages?: number;
+  maxEmptyHops?: number;
+}): Promise<PaginateResult<T>> {
+  const rows: T[] = [];
+  const seenIds = new Set<string>();
+  const maxPages = args.maxPages ?? MAX_PAGES_PER_PHASE;
+  const maxEmptyHops = args.maxEmptyHops ?? MAX_EMPTY_HOPS_PER_PHASE;
+  let windowStart = args.since;
+  let pages = 0;
+  let dataPages = 0;
+  let emptyHops = 0;
+
+  while (windowStart <= args.now) {
+    const until = Math.min(windowStart + args.windowMs, args.now);
+    let cursor: string | undefined;
+    const seenCursors = new Set<string>();
+    do {
+      if (dataPages >= maxPages || emptyHops >= maxEmptyHops) {
+        return {
+          rows,
+          // A cursor chain in this window may still hide rows older than the
+          // rows already returned. Retain the window start so the next sync
+          // replays the unfinished window rather than skipping hidden rows.
+          maxTs: cursor ? windowStart : maxTimestamp(rows),
+          partial: true, pages,
+          termination: dataPages >= maxPages ? 'page_budget' : 'empty_hop_budget'
+        };
+      }
+      const page = await args.fetchPage(windowStart, until, cursor);
+      pages += 1;
+      if (page.length === 0) emptyHops += 1;
+      else dataPages += 1;
+      for (const row of page) {
+        const id = row.id == null ? undefined : String(row.id);
+        if (id && seenIds.has(id)) continue;
+        if (id) seenIds.add(id);
+        rows.push(row);
+      }
+      const next = bybitNextCursor(page);
+      if (next && (next === cursor || seenCursors.has(next))) {
+        return { rows, maxTs: windowStart, partial: true, pages, termination: 'nonadvancing' };
+      }
+      if (next) seenCursors.add(next);
+      cursor = next;
+    } while (cursor);
+
+    if (until >= args.now) break;
+    windowStart = until;
+  }
+  // Every window through `now` was exhausted, so coverage is verified through
+  // now even when the account is empty or its last activity is much older.
+  return { rows, maxTs: args.now, partial: false, pages, termination: 'exhausted' };
+}
+
 // ---- Per-exchange fetch plans ----
 
 interface FetchPlanOutcome<T extends PageRow> {
@@ -561,6 +658,20 @@ async function fetchTransferKind(
       now
     });
   }
+  if (exchange === 'bybit') {
+    // V5 deposit/withdraw records: <30-day windows, max 50, opaque cursor.
+    return paginateBybitWindows<UnifiedTransfer>({
+      fetchPage: (s, u, cursor) => {
+        const params = { until: u, ...(cursor ? { cursor } : {}) };
+        return fetchDeposits
+          ? client.fetchDeposits(undefined, s, 50, params)
+          : client.fetchWithdrawals(undefined, s, 50, params);
+      },
+      since,
+      windowMs: BYBIT_TRANSFER_WINDOW_MS,
+      now
+    });
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -664,6 +775,19 @@ async function fetchTradesForSymbol(
         since,
         windowMs: TRADE_WINDOW_MS,
         fullPage: 500,
+        now
+      });
+    case 'bybit':
+      // V5 execution list: <=7-day windows, max 100, opaque cursor. Explicit
+      // type/category keeps the no-symbol request strictly on spot history.
+      return paginateBybitWindows<UnifiedTrade>({
+        fetchPage: (s, u, cursor) => client.fetchMyTrades(undefined, s, 100, {
+          until: u,
+          type: 'spot',
+          ...(cursor ? { cursor } : {})
+        }),
+        since,
+        windowMs: TRADE_WINDOW_MS,
         now
       });
   }
@@ -833,7 +957,11 @@ export async function syncConnection(
     }
 
     // ---- trades ----
-    const tradeSince = Math.max(sinceFromCursor(oldCursors.trades, TRADE_OVERLAP_MS), launchFloor);
+    const requestedTradeSince = Math.max(sinceFromCursor(oldCursors.trades, TRADE_OVERLAP_MS), launchFloor);
+    let tradeSince = requestedTradeSince;
+    const bybitRetentionFloor = nowMs - BYBIT_TRADE_RETENTION_MS;
+    const bybitRetentionTruncated = exchange === 'bybit' && requestedTradeSince < bybitRetentionFloor;
+    if (exchange === 'bybit') tradeSince = Math.max(tradeSince, bybitRetentionFloor);
     const tradeRows: UnifiedTrade[] = [];
     const tradeOutcomes: FetchPlanOutcome<UnifiedTrade>[] = [];
     let newKnownSymbols: string[] | undefined;
@@ -921,6 +1049,11 @@ export async function syncConnection(
         outcome.termination = 'retention_truncated';
         outcome.retentionFloor = retentionFloor;
       }
+      if (bybitRetentionTruncated) {
+        outcome.partial = true;
+        outcome.termination = 'retention_truncated';
+        outcome.retentionFloor = bybitRetentionFloor;
+      }
       tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
@@ -930,9 +1063,17 @@ export async function syncConnection(
           'OKX keeps about 3 months of fill history — older OKX trades need a one-time CSV import.'
         );
       }
+      if (bybitRetentionTruncated) {
+        warnings.push(
+          'Bybit keeps about 2 years of execution history in this API — older Bybit spot trades need a one-time CSV import.'
+        );
+      }
     }
 
-    const mergedTrades = Math.max(oldCursors.trades ?? 0, maxTimestamp(tradeRows) ?? 0);
+    const tradeCursorCandidate = exchange === 'bybit'
+      ? tradeOutcomes.reduce((max, outcome) => Math.max(max, outcome.maxTs ?? 0), 0)
+      : maxTimestamp(tradeRows) ?? 0;
+    const mergedTrades = Math.max(oldCursors.trades ?? 0, tradeCursorCandidate);
     if (mergedTrades > 0) newCursors.trades = mergedTrades;
     if (partialHistory) {
       warnings.push('History continues — sync again to fetch more.');
@@ -950,6 +1091,16 @@ export async function syncConnection(
       tradeNormalizationDrops = krakenSkipped;
       if (krakenSkipped > 0) {
         warnings.push(`Skipped ${krakenSkipped} Kraken fill(s) with missing market/amount data.`);
+      }
+    } else if (exchange === 'bybit') {
+      const { transactions: bybitTxs, skipped: bybitSkipped } = normalizeBybitTradesByOrder(
+        tradeRows,
+        markets
+      );
+      transactions.push(...bybitTxs);
+      tradeNormalizationDrops = bybitSkipped;
+      if (bybitSkipped > 0) {
+        warnings.push(`Skipped ${bybitSkipped} Bybit fill(s) with missing market/amount data.`);
       }
     } else {
       for (const trade of tradeRows) {
@@ -1192,7 +1343,51 @@ export async function persistSyncedRows(args: {
         throw new Error('Connection changed after this operation started — sync again.');
       }
 
-      const fresh = await filterAlreadyImported(converted);
+      // Bybit's API is execution-level while its CSV and SoloLedger row are
+      // order-level. Reconcile execution identities before generic stable-ref
+      // filtering so a later fill updates the existing order instead of being
+      // discarded as a duplicate. CSV rows remain authoritative survivors;
+      // their recoverable API representation is refreshed in-place.
+      const candidates: Transaction[] = [];
+      const existing = converted.some((row) => row.source === 'bybit_api')
+        ? await db.transactions.toArray()
+        : [];
+      const bybitOrders = buildBybitOrderLookups(existing);
+      for (const incoming of converted) {
+        if (incoming.source !== 'bybit_api' || !incoming.sourceRef) {
+          candidates.push(incoming);
+          continue;
+        }
+        const direct = bybitOrders.directByRef.get(incoming.sourceRef);
+        const csv = bybitOrders.csvByRef.get(incoming.sourceRef);
+        const priorApi = csv?.dedupMatchedApiRow?.source === 'bybit_api'
+          ? csv.dedupMatchedApiRow
+          : direct;
+        const merged = priorApi ? mergeBybitOrderTransactions(priorApi, incoming) : incoming;
+
+        if (csv) {
+          await db.transactions.update(csv.id, {
+            dedupMatchedApiId: `${args.connectionId}:bybit-order:${incoming.sourceRef}`,
+            dedupMatchedApiRow: { ...merged, importBatchId: args.connectionId },
+            // A newly authenticated source is live evidence, not the deleted
+            // source represented by the prior tombstone.
+            deletedSourceEvidence: undefined
+          });
+          if (direct) await db.transactions.delete(direct.id);
+          continue;
+        }
+        if (direct) {
+          await db.transactions.put({
+            ...merged,
+            id: direct.id,
+            importBatchId: direct.importBatchId ?? args.connectionId
+          });
+          continue;
+        }
+        candidates.push(incoming);
+      }
+
+      const fresh = await filterAlreadyImported(candidates);
       alreadyImported = converted.length - fresh.length;
       if (fresh.length > 0) await db.transactions.bulkPut(fresh);
       dupsRemoved = await deduplicateTransactions();

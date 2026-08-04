@@ -1,7 +1,7 @@
 /**
  * Auto-sync exchange catalog (Section C, task 1) — mirrors importSources.ts.
  *
- * The five exchanges supported by Exchange Auto-Sync (contract C3/C5): the
+ * The exchanges supported by Exchange Auto-Sync (contract C3/C5): the
  * `id` IS the ccxt exchange id, `needsPassphrase` is true ONLY for OKX and
  * KuCoin (their `requiredCredentials` include `password`), and each entry
  * carries plain-language instructions for creating a READ-ONLY API key plus
@@ -102,6 +102,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['KuCoin', 'Profile', 'API Management', 'Create API'],
     docsUrl: 'https://www.kucoin.com/account/api'
+  },
+  {
+    id: 'bybit',
+    label: 'Bybit',
+    monogram: 'BB',
+    needsPassphrase: false,
+    formatHint: 'API key + secret',
+    keyInstructions: [
+      'Log in to Bybit on the web and open Account → API Management.',
+      'Create a System-generated API Key for API Transactions.',
+      'Create the key under the master account / master UID. Bybit exposes withdrawal history only to a master-account key; subaccount keys cannot provide complete withdrawal coverage.',
+      'Choose Read-Only and enable the assets and spot order/history permissions needed to view balances, deposits, withdrawals and spot executions. Never enable trading or withdrawals.',
+      'Copy the API Key and API Secret and paste them here.'
+    ],
+    path: ['Bybit', 'Account', 'API Management', 'Create New Key'],
+    docsUrl: 'https://www.bybit.com/app/user/api-management'
   }
 ];
 

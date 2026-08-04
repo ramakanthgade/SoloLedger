@@ -1,0 +1,21 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored minimal GET /v5/account/wallet-balance response used only by connector replay tests. No account identifiers are present.",
+  "response": {
+    "retCode": 0,
+    "retMsg": "OK",
+    "result": {
+      "list": [
+        {
+          "accountType": "UNIFIED",
+          "coin": [
+            { "coin": "BTC", "walletBalance": "0.1", "availableToWithdraw": "0.1" },
+            { "coin": "USDT", "walletBalance": "250", "availableToWithdraw": "250" }
+          ]
+        }
+      ]
+    },
+    "retExtInfo": {},
+    "time": 1735776001000
+  }
+}
