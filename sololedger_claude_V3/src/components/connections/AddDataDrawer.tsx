@@ -285,7 +285,7 @@ export function AddDataDrawer({
   })();
 
   return (
-    <Drawer open={open} onClose={onClose} label={drawerLabel} wide={guidedMode}>
+    <Drawer open={open} onClose={onClose} label={drawerLabel} wide>
       {guidedMode ? (
         <div className="flex h-full flex-col">
           <div className="flex items-center gap-2 border-b border-hi/10 px-4 py-3.5">

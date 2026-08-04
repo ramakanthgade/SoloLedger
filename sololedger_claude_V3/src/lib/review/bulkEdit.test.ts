@@ -11,6 +11,7 @@ import {
   needsPriceLine,
   summarizeBulkTypeChange
 } from '@/lib/review/bulkEdit';
+import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 
 let seq = 0;
 function tx(over: Partial<Transaction>): Transaction {
@@ -41,6 +42,17 @@ describe('bulkTypePatch', () => {
   it('leaves rows with no flags untouched apart from the type', () => {
     const t = tx({ flags: [] });
     expect(bulkTypePatch(t, 'sell')).toEqual({ type: 'sell', flags: [] });
+  });
+
+  it('clears incompatible Options deferral metadata during bulk reclassification', () => {
+    const premium = tx({
+      type: 'income', category: 'options_premium', instrumentClass: 'derivative', flags: ['needs_review']
+    });
+    const reclassified = { ...premium, ...bulkTypePatch(premium, 'transfer_in') };
+    expect(reclassified.type).toBe('transfer_in');
+    expect(reclassified.category).toBeUndefined();
+    expect(reclassified.instrumentClass).toBeUndefined();
+    expect(isDerivativeTransaction(reclassified)).toBe(false);
   });
 });
 

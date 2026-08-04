@@ -87,6 +87,7 @@ describe('DataHealthWorkspace', () => {
     expect(screen.getByText('What these statuses mean')).toBeInTheDocument();
     expect(screen.getByText(/does not confirm tax treatment, labels, prices, or cost basis/i)).toBeInTheDocument();
     expect(screen.getByText(/Opens Transactions with this source, account, and asset already selected/i)).toBeInTheDocument();
+    expect(screen.getByText(/open its flag menu and clear Needs review after you confirm it/i)).toBeInTheDocument();
     expect(screen.queryByText(/Sync all|Export health report/)).toBeNull();
   });
 

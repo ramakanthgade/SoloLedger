@@ -159,6 +159,9 @@ function transactionLegIdentity(
     : role === 'counter'
       ? transaction.counterAsset ?? asset
       : transaction.feeAsset ?? transaction.asset;
+  if (canonicalKey.startsWith('asset:')) {
+    return { asset: resolveAssetLabel(legAsset) };
+  }
   const rawContract = role === 'principal'
     ? transaction.contractAddress
     : rawString(transaction, role === 'counter'
@@ -171,6 +174,17 @@ function transactionLegIdentity(
     chain,
     contractAddress
   };
+}
+
+function postingMatchesTransactionLeg(
+  transaction: Transaction,
+  posting: DerivedPosting
+): posting is DerivedPosting & { role: 'principal' | 'counter' | 'fee' } {
+  if (posting.role === 'opening_balance') return false;
+  const exchangeSymbolKey = `asset:${posting.asset.toUpperCase()}`;
+  return transactionLegAssetKey(transaction, posting.role, {
+    exchangeCustody: posting.assetKey === exchangeSymbolKey
+  }) === posting.assetKey;
 }
 
 function displayIdentities(
@@ -198,8 +212,7 @@ function displayIdentities(
     ) continue;
     const transaction = posting.transactionId ? transactionsById.get(posting.transactionId) : undefined;
     if (
-      transaction && posting.role !== 'opening_balance' &&
-      transactionLegAssetKey(transaction, posting.role) === posting.assetKey
+      transaction && postingMatchesTransactionLeg(transaction, posting)
     ) {
       result.set(posting.assetKey, transactionLegIdentity(
         transaction, posting.role, posting.assetKey, posting.asset
@@ -439,8 +452,7 @@ export function appendHoldingsProjection(
   });
   const identities = new Map(previous.displayIdentityIndex);
   for (const posting of appended) {
-    if (posting.role !== 'opening_balance' &&
-        transactionLegAssetKey(transaction, posting.role) === posting.assetKey) {
+    if (postingMatchesTransactionLeg(transaction, posting)) {
       identities.set(posting.assetKey, transactionLegIdentity(
         transaction, posting.role, posting.assetKey, posting.asset
       ));

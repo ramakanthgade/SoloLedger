@@ -134,7 +134,7 @@ describe('AddDataDrawer — step routing', () => {
     expect(screen.getByTestId('addflow-search')).toBeInTheDocument();
 
     // Pick an API exchange (Binance) → Connect step renders the stubbed API form.
-    fireEvent.click(screen.getByRole('button', { name: /binance connect api · api sync/i }));
+    fireEvent.click(screen.getByRole('button', { name: /binance connect api/i }));
     expect(screen.getByTestId('step-exchange-api')).toHaveAttribute('data-exchange', 'binance');
     expect(screen.getByText('Step 3 of 3')).toBeInTheDocument();
     expect(screen.getByRole('dialog', { name: 'Connect Binance' })).toBeInTheDocument();
@@ -154,7 +154,7 @@ describe('AddDataDrawer — step routing', () => {
     fireEvent.click(screen.getByRole('button', { name: /exchange account/i }));
 
     expect(screen.getByRole('button', { name: /binance csv imported/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /binance connect api · api sync/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /binance connect api/i })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /binance csv imported/i }));
     expect(screen.getByTestId('step-file-flow')).toBeInTheDocument();
@@ -232,7 +232,7 @@ describe('AddDataDrawer — step routing', () => {
   it('Back walks Connect → Which → What', () => {
     renderDrawer();
     fireEvent.click(screen.getByRole('button', { name: /exchange account/i }));
-    fireEvent.click(screen.getByRole('button', { name: /binance connect api · api sync/i }));
+    fireEvent.click(screen.getByRole('button', { name: /binance connect api/i }));
     expect(screen.getByTestId('step-exchange-api')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));

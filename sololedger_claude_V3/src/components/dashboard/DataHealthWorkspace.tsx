@@ -115,7 +115,7 @@ function statusLabel(severity: DataHealthSource['severity']): string {
 }
 
 function destinationGuidance(finding: Finding): string {
-  if (finding.intent.destination === 'transactions') return 'Opens Transactions with this source, account, and asset already selected.';
+  if (finding.intent.destination === 'transactions') return 'Opens Transactions with this source, account, and asset already selected. If a row is marked Needs review, open its flag menu and clear Needs review after you confirm it.';
   if (finding.intent.destination === 'connections') {
     if (finding.intent.workspaceTab === 'overview' && finding.intent.focus.kind === 'sync') {
       return 'Opens this source and focuses Sync now.';

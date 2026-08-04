@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 import {
   buildTxSummary,
+  reviewTypeLabel,
   txFlow,
   truncateAddress,
   OWN_ACCOUNT_SIDE,
@@ -269,6 +270,43 @@ describe('buildTxSummary — plain-English one-liners per type', () => {
     expect(named.lead).toBe('You paid 0.001000 SOL as a network fee from Ledger wallet');
     const unnamed = buildTxSummary(t, summaryCtx({ assetLabel: 'SOL', sourceLabel: 'Solana' }));
     expect(unnamed.lead).toBe('You paid 0.001000 SOL as a network fee on Solana');
+  });
+
+  it('presents paid and received Binance Options premiums without changing stored tax semantics', () => {
+    const paid = tx({
+      type: 'fee', category: 'options_premium', instrumentClass: 'derivative',
+      asset: 'USDT', amount: 25, fiatValue: 25, source: 'binance_options'
+    });
+    const received = tx({
+      type: 'income', category: 'options_premium', instrumentClass: 'derivative',
+      asset: 'USDT', amount: 40, fiatValue: 40, source: 'binance_options'
+    });
+
+    expect(reviewTypeLabel(paid)).toBe('Options premium');
+    expect(reviewTypeLabel(received)).toBe('Options premium');
+    expect(buildTxSummary(paid, summaryCtx({ assetLabel: 'USDT', sourceLabel: 'Binance Options' })).lead)
+      .toBe('You paid an Options premium of 25.0000 USDT worth $25.00 on Binance Options');
+    expect(buildTxSummary(received, summaryCtx({ assetLabel: 'USDT', sourceLabel: 'Binance Options' })).lead)
+      .toBe('You received an Options premium of 40.0000 USDT worth $40.00 on Binance Options');
+    expect(paid).toMatchObject({ type: 'fee', category: 'options_premium', instrumentClass: 'derivative' });
+    expect(received).toMatchObject({ type: 'income', category: 'options_premium', instrumentClass: 'derivative' });
+  });
+
+  it('keeps Options commission rows presented as fees rather than premiums', () => {
+    const commission = tx({ type: 'fee', category: 'options_fee', asset: 'USDT', amount: 2, source: 'binance_options' });
+    expect(reviewTypeLabel(commission)).toBe('Fee');
+    expect(buildTxSummary(commission, summaryCtx({ assetLabel: 'USDT', sourceLabel: 'Binance Options' })).lead)
+      .toBe('You paid 2.0000 USDT as a network fee on Binance Options');
+  });
+
+  it('reflects a user-reclassified premium row instead of retaining the premium override', () => {
+    const reclassified = tx({
+      type: 'sell', category: 'options_premium', instrumentClass: 'derivative',
+      asset: 'USDT', amount: 25, fiatValue: 25, source: 'binance_options'
+    });
+    expect(reviewTypeLabel(reclassified)).toBe('Sell');
+    expect(buildTxSummary(reclassified, summaryCtx({ assetLabel: 'USDT', sourceLabel: 'Binance Options' })).lead)
+      .toBe('You sold 25.0000 USDT for $25.00 on Binance Options');
   });
 
   it('manual entries read "via manual entry", not "on Manual entry"', () => {

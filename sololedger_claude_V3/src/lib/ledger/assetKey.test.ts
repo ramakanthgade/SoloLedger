@@ -28,6 +28,16 @@ describe('assetKey', () => {
     expect(assetKey({ asset: ' usdt ' })).toBe('asset:USDT');
   });
 
+  it('uses symbol custody identity for exchange legs while retaining wallet contract identity', () => {
+    const transfer = {
+      id: 'exchange-transfer', timestamp: 1, type: 'transfer_in', asset: ' req ', amount: 1,
+      fiatCurrency: 'USD', source: 'binance_api', chain: 'ethereum', contractAddress: '0xReq',
+      flags: [], isInternalTransfer: false
+    } as Transaction;
+    expect(transactionLegAssetKey(transfer, 'principal', { exchangeCustody: true })).toBe('asset:REQ');
+    expect(transactionLegAssetKey(transfer, 'principal')).toBe('evm:1:0xreq');
+  });
+
   it('keeps EVM chain and contract identity so same symbols never collide', () => {
     expect(assetKey({ asset: 'USDC', chain: 'ethereum', contractAddress: '0xAbC' }))
       .toBe('evm:1:0xabc');

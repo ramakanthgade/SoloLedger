@@ -25,6 +25,7 @@ import {
   type LlamaRewardHint
 } from '@/lib/assets/defiLlamaRewards';
 import type { FlagReason, Transaction, TxType } from '@/types/transaction';
+import { reclassifiedOptionsPatch } from '@/lib/review/reclassification';
 
 /**
  * The transaction patch applied when a user reclassifies a row's type in the
@@ -32,7 +33,7 @@ import type { FlagReason, Transaction, TxType } from '@/types/transaction';
  * (reclassifying means the user acted on the row, so it should leave the
  * "Needs review" queue).
  *
- * It deliberately returns NO `category`: a row that was a `defi_reward`
+ * It normally returns NO `category`: a row that was a `defi_reward`
  * suggestion and is rejected back to `transfer_in` KEEPS its `defi_reward`
  * category (the update simply doesn't touch it), and that category is the
  * persistent "already reviewed this suggestion" marker the candidate filter in
@@ -42,17 +43,18 @@ import type { FlagReason, Transaction, TxType } from '@/types/transaction';
  * here would break reject-persistence).
  */
 export function reclassifyTypePatch(
-  flags: readonly FlagReason[] | undefined,
+  transaction: Pick<Transaction, 'flags' | 'category' | 'instrumentClass'>,
   next: TxType
 ): Partial<Transaction> {
   return {
     type: next,
-    flags: (flags ?? []).filter(
+    flags: (transaction.flags ?? []).filter(
       (f) =>
         f !== 'possible_internal_transfer' &&
         f !== 'missing_market_value' &&
         f !== 'needs_review'
-    ) as FlagReason[]
+    ) as FlagReason[],
+    ...reclassifiedOptionsPatch(transaction, next)
   };
 }
 

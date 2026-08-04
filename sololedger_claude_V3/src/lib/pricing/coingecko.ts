@@ -112,6 +112,11 @@ const SYMBOL_TO_ID: Record<string, string> = {
   ZRX: '0x',
   PUNDIX: 'pundi-x-2',
   KNC: 'kyber-network-crystal',
+  KNCL: 'kyber-network',
+  BTT: 'bittorrent',
+  BTTOLD: 'bittorrent-old',
+  BTTC: 'bittorrent',
+  POWR: 'power-ledger',
   NPXS: 'pundi-x',
   // Native assets of the newer supported chains (see rpc/providers CHAINS).
   FTM: 'fantom',
@@ -147,6 +152,56 @@ const SYMBOL_TO_ID: Record<string, string> = {
 
 const COIN_ID_CACHE_KEY = 'sololedger_gecko_coin_ids';
 const runtimeCoinIdCache = new Map<string, string>();
+
+// Identity-free exchange symbols are unsafe while old/new assets coexisted.
+// Binance kept old BTT activity through Jan 17 and started BTTC trading Jan 21.
+const BTT_AMBIGUITY_START = Date.UTC(2022, 0, 12);
+const BTT_AMBIGUITY_END = Date.UTC(2022, 0, 20);
+// KNC migration began Apr 20; exchanges migrated on different schedules.
+// Keep the overlap conservative through Kraken's new-contract reopening Jun 23.
+const KNC_AMBIGUITY_START = Date.UTC(2021, 3, 20);
+const KNC_AMBIGUITY_END = Date.UTC(2021, 5, 23);
+const LEGACY_KNC_CONTRACT = '0xdd974d5c2e2928dea5f71b9825b8b646686bd200';
+const CURRENT_KNC_CONTRACT = '0xdefa4e8a7bcba345f687a2f1456f5edd9ce97202';
+const LEGACY_BTT_IDENTITIES = new Set(['1002000']);
+const CURRENT_BTT_IDENTITIES = new Set(['tafjulxivgt4qwk6uzwjqwzxtsagaqnvp4']);
+
+/**
+ * Return a migration-aware canonical id. `null` means the migration day is
+ * genuinely ambiguous without token identity; `undefined` delegates to the
+ * ordinary canonical/search resolver.
+ */
+function historicalCanonicalId(
+  symbol: string,
+  timestampMs: number,
+  contractAddress?: string,
+  source?: string
+): string | null | undefined {
+  const upper = symbol.trim().toUpperCase();
+  if (upper === 'POWR') return 'power-ledger';
+  if (upper === 'BTTOLD') return 'bittorrent-old';
+  if (upper === 'BTTC') return 'bittorrent';
+  if (upper === 'KNCL') return 'kyber-network';
+  const identity = contractAddress?.trim().toLowerCase();
+  const timestamp = new Date(timestampMs);
+  const day = Date.UTC(timestamp.getUTCFullYear(), timestamp.getUTCMonth(), timestamp.getUTCDate());
+  const binanceSource = source === 'binance' || source === 'binance_spot' ||
+    source === 'binance_transfers' || source === 'binance_api';
+  if (upper === 'BTT') {
+    if (identity && LEGACY_BTT_IDENTITIES.has(identity)) return 'bittorrent-old';
+    if (identity && CURRENT_BTT_IDENTITIES.has(identity)) return 'bittorrent';
+    if (binanceSource && day <= Date.UTC(2022, 0, 17)) return 'bittorrent-old';
+    if (day >= BTT_AMBIGUITY_START && day <= BTT_AMBIGUITY_END) return null;
+    return day < BTT_AMBIGUITY_START ? 'bittorrent-old' : 'bittorrent';
+  }
+  if (upper === 'KNC') {
+    if (identity === LEGACY_KNC_CONTRACT) return 'kyber-network';
+    if (identity === CURRENT_KNC_CONTRACT) return 'kyber-network-crystal';
+    if (day >= KNC_AMBIGUITY_START && day <= KNC_AMBIGUITY_END) return null;
+    return day < KNC_AMBIGUITY_START ? 'kyber-network' : 'kyber-network-crystal';
+  }
+  return undefined;
+}
 
 function loadStoredCoinIds(): Record<string, string> {
   try {
@@ -268,10 +323,15 @@ export async function fetchHistoricalPrice(
   assetSymbol: string,
   timestampMs: number,
   fiatCurrency: string,
-  coingeckoApiKey?: string
+  coingeckoApiKey?: string,
+  contractAddress?: string,
+  source?: string
 ): Promise<PriceLookupResult> {
   const date = toCoinGeckoDate(timestampMs);
-  const coinId = await resolveCoinGeckoId(assetSymbol, coingeckoApiKey);
+  const canonical = historicalCanonicalId(assetSymbol, timestampMs, contractAddress, source);
+  const coinId = canonical === undefined
+    ? await resolveCoinGeckoId(assetSymbol, coingeckoApiKey)
+    : canonical;
 
   if (!coinId) {
     return {
@@ -365,6 +425,8 @@ export interface PriceRequest {
   contractAddress?: string;
   platform?: string;
   chain?: string;
+  /** Import source used only to avoid guessing identity during exchange migration overlap. */
+  source?: string;
   coingeckoApiKey?: string;
   alchemyApiKey?: string;
   alchemyNetwork?: string;
@@ -396,17 +458,31 @@ export async function usdToCurrencyRate(
 async function fetchOneHistoricalPrice(r: PriceRequest): Promise<PriceLookupResult> {
   const normalizedAsset = resolvePriceAsset(r.asset, r.contractAddress, r.chain);
   const date = toCoinGeckoDate(r.timestampMs);
+  const canonicalId = historicalCanonicalId(normalizedAsset, r.timestampMs, r.contractAddress, r.source);
+
+  if (canonicalId === null) {
+    return {
+      asset: r.asset, date, price: null, currency: r.fiatCurrency,
+      error: `Historical ${normalizedAsset.toUpperCase()} identity is ambiguous during its exchange migration window; explicit symbol or contract identity is required.`
+    };
+  }
 
   // --- Check persistent IndexedDB cache first (historical prices never change) ---
   const cacheKey = r.contractAddress && r.platform
-    ? buildPriceCacheKey('ctr', r.contractAddress, date, r.fiatCurrency, r.platform)
-    : buildPriceCacheKey('sym', normalizedAsset, date, r.fiatCurrency);
+    ? canonicalId != null
+      ? `ctr:v2:${canonicalId}:${r.platform}:${r.contractAddress.toLowerCase()}:${date}:${r.fiatCurrency.toUpperCase()}`
+      : buildPriceCacheKey('ctr', r.contractAddress, date, r.fiatCurrency, r.platform)
+    : canonicalId != null
+      ? `sym:v2:${canonicalId}:${date}:${r.fiatCurrency.toUpperCase()}`
+      : buildPriceCacheKey('sym', normalizedAsset, date, r.fiatCurrency);
   const cached = await getCachedPrice(cacheKey);
   if (cached != null) {
     return { asset: r.asset, date, price: cached, currency: r.fiatCurrency };
   }
 
-  let result = await fetchHistoricalPrice(normalizedAsset, r.timestampMs, r.fiatCurrency, r.coingeckoApiKey);
+  let result = await fetchHistoricalPrice(
+    normalizedAsset, r.timestampMs, r.fiatCurrency, r.coingeckoApiKey, r.contractAddress, r.source
+  );
 
   if (result.price == null && r.contractAddress && r.platform) {
     result = await fetchHistoricalPriceByContract(
@@ -470,7 +546,7 @@ async function fetchOneHistoricalPrice(r: PriceRequest): Promise<PriceLookupResu
 
 function priceLookupKey(r: PriceRequest): string {
   const date = toCoinGeckoDate(r.timestampMs);
-  return `${r.asset}|${date}|${r.fiatCurrency}|${r.contractAddress ?? ''}|${r.platform ?? ''}|${r.alchemyNetwork ?? ''}`;
+  return `${r.asset}|${date}|${r.fiatCurrency}|${r.contractAddress ?? ''}|${r.platform ?? ''}|${r.alchemyNetwork ?? ''}|${r.source ?? ''}`;
 }
 
 /** Fetches unique asset/date pairs once, then maps results back. */

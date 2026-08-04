@@ -20,6 +20,7 @@
  */
 
 import type { FlagReason, Transaction, TxType } from '@/types/transaction';
+import { reclassifiedOptionsPatch } from '@/lib/review/reclassification';
 
 /** Types that create a taxable disposal of the outgoing asset (display-level;
  *  matches ReviewTab's own DISPOSAL_TYPES, incl. trades). */
@@ -58,7 +59,8 @@ export function bulkTypePatch(t: Transaction, newType: TxType): Partial<Transact
     type: newType,
     flags: (t.flags ?? []).filter(
       (f) => !TYPE_CHANGE_STRIPPED_FLAGS.includes(f)
-    ) as FlagReason[]
+    ) as FlagReason[],
+    ...reclassifiedOptionsPatch(t, newType)
   };
 }
 

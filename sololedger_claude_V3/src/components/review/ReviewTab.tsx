@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
@@ -52,7 +52,7 @@ import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { AssetIcon, SourceIcon } from './brandIcons';
 import { sourceBrandInfo } from './brandIconMap';
 import { groupRowsByDate, formatGroupDateLabel, pageNumberList } from './reviewListUtils';
-import { buildTxSummary, txFlow, truncateAddress, OWN_ACCOUNT_SIDE, type RowLeg } from './rowAnatomy';
+import { buildTxSummary, reviewTypeLabel, txFlow, truncateAddress, OWN_ACCOUNT_SIDE, type RowLeg } from './rowAnatomy';
 import {
   Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles,
   ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, ArrowLeft, Search, Link2, Wallet
@@ -91,25 +91,6 @@ const FLAG_LABELS: Record<FlagReason, string> = {
   duplicate_suspected: 'Duplicate suspected',
   unrecognized_asset: 'Unrecognized asset',
   needs_review: 'Needs review'
-};
-
-/** Row-face type labels in the mockup's vocabulary (Buy / Sell / Send / Receive…). */
-const TYPE_LABEL: Record<TxType, string> = {
-  buy: 'Buy',
-  sell: 'Sell',
-  trade: 'Swap',
-  transfer_in: 'Receive',
-  transfer_out: 'Send',
-  income: 'Income',
-  gift_sent: 'Gift sent',
-  gift_received: 'Gift received',
-  fee: 'Fee',
-  nft_mint: 'NFT mint',
-  nft_buy: 'NFT buy',
-  nft_sell: 'NFT sell',
-  defi_deposit: 'DeFi deposit',
-  defi_withdraw: 'DeFi withdraw',
-  other: 'Other'
 };
 
 /** Directional dot color on the row-face type label (mockup: teal buy, rose sell…). */
@@ -175,42 +156,97 @@ function ChipSelect({
   );
 }
 
-function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; derivedFlags?: readonly FlagReason[] }) {
+export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; derivedFlags?: readonly FlagReason[] }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [localFlagState, setLocalFlagState] = useState<{
+    source: Transaction['flags'];
+    value: FlagReason[];
+  }>(() => ({ source: tx.flags, value: tx.flags ?? [] }));
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuId = useId();
 
-  const storedFlags = new Set(tx.flags ?? []);
-  const shownFlags = displayFlags(tx, derivedFlags);
+  const closeAndRestoreFocus = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  // Match TypeSelector: dismiss on Escape or a press outside the selector.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        closeAndRestoreFocus();
+      }
+    };
+    const onDown = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKey, true);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey, true);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
+
+  // A changed Dexie row supersedes the optimistic value without an extra
+  // synchronization render; while the prop is unchanged, the local value
+  // keeps the just-persisted deselection visible.
+  const localFlags = localFlagState.source === tx.flags
+    ? localFlagState.value
+    : tx.flags ?? [];
+  const storedFlags = new Set(localFlags);
+  const shownFlags = displayFlags({ ...tx, flags: localFlags }, derivedFlags);
 
   const patch = async (update: Partial<Transaction>) => {
     setSaving(true);
-    await db.transactions.update(tx.id, update);
-    setSaving(false);
+    try {
+      await db.transactions.update(tx.id, update);
+    } finally {
+      setSaving(false);
+    }
   };
 
   const toggleFlag = async (flag: FlagReason) => {
-    const next = new Set(tx.flags ?? []);
+    const previous = localFlags;
+    const next = new Set(previous);
     if (next.has(flag)) next.delete(flag);
     else next.add(flag);
-    await patch({ flags: [...next] as FlagReason[] });
+    const nextFlags = [...next] as FlagReason[];
+    setLocalFlagState({ source: tx.flags, value: nextFlags });
+    try {
+      await patch({ flags: nextFlags });
+    } catch {
+      setLocalFlagState({ source: tx.flags, value: previous });
+    }
   };
 
   return (
-    <div className="relative" onClick={(e) => e.stopPropagation()}>
+    <div className="relative" ref={rootRef} onClick={(e) => e.stopPropagation()}>
       <button
+        ref={triggerRef}
         type="button"
         onClick={() => setOpen((o) => !o)}
         title="Click to flag this transaction"
+        aria-label="Edit transaction flags"
+        aria-controls={open ? menuId : undefined}
         aria-expanded={open}
-        aria-haspopup="menu"
         className="flex min-h-[36px] max-w-[16rem] flex-wrap items-center gap-1 rounded-md px-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
       >
         {tx.isInternalTransfer && <Badge tone="neutral" className="text-[10px]">internal</Badge>}
         {tx.isSpam && <Badge tone="loss" className="text-[10px]">spam</Badge>}
         {tx.category === 'nft' && <Badge tone="accent" className="text-[10px]">nft</Badge>}
         {shownFlags.map((f) => (
-          <Badge key={f} tone={f === 'possible_internal_transfer' ? 'primary' : 'warn'} className="text-[10px]">
-            {f.replace(/_/g, ' ')}
+          <Badge
+            key={f}
+            tone={f === 'possible_internal_transfer' ? 'primary' : 'warn'}
+            className="text-[10px]"
+            title={ALL_FLAGS.includes(f) ? undefined : 'Automatically detected; resolve the underlying issue to clear it'}
+          >
+            {f.replace(/_/g, ' ')}{!ALL_FLAGS.includes(f) && ' · automatic'}
           </Badge>
         ))}
         {shownFlags.length === 0 && !tx.isInternalTransfer && !tx.isSpam && tx.category !== 'nft' && (
@@ -219,18 +255,21 @@ function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; derivedFlags
         {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
       </button>
       {open && (
-        <div className="absolute left-0 top-9 z-30 min-w-[15rem] rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
-          <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">Flag transaction</p>
+        <div id={menuId} role="group" aria-labelledby={`${menuId}-label`} className="absolute left-0 top-9 z-30 min-w-[15rem] rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+          <p id={`${menuId}-label`} className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">Flag transaction</p>
           {ALL_FLAGS.map((flag) => {
             const on = storedFlags.has(flag);
             return (
               <button
                 key={flag}
                 type="button"
+                aria-pressed={on}
                 onClick={() => void toggleFlag(flag)}
                 className={`flex min-h-[40px] w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-elev-3 ${on ? 'font-semibold text-gain' : 'text-mid'}`}
               >
-                <span className={`h-3.5 w-3.5 rounded border ${on ? 'border-primary bg-primary' : 'border-hi/25'}`} aria-hidden="true" />
+                <span className={`grid h-4 w-4 place-items-center rounded border ${on ? 'border-primary bg-primary text-white' : 'border-hi/25 bg-transparent'}`} aria-hidden="true">
+                  {on && <Check className="h-3 w-3" />}
+                </span>
                 {FLAG_LABELS[flag]}
               </button>
             );
@@ -238,6 +277,7 @@ function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; derivedFlags
           <div className="my-1 border-t border-hi/10" />
           <button
             type="button"
+            aria-pressed={tx.isInternalTransfer}
             onClick={() =>
               void patch({
                 isInternalTransfer: !tx.isInternalTransfer,
@@ -252,6 +292,7 @@ function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; derivedFlags
           </button>
           <button
             type="button"
+            aria-pressed={tx.isSpam === true}
             onClick={() => void patch({ isSpam: !tx.isSpam })}
             className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3"
           >
@@ -259,7 +300,7 @@ function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; derivedFlags
           </button>
           <button
             type="button"
-            onClick={() => setOpen(false)}
+            onClick={closeAndRestoreFocus}
             className="flex min-h-[36px] w-full items-center gap-1 border-t border-hi/10 px-3 py-1.5 text-[10px] text-low hover:text-mid"
           >
             <X className="h-3 w-3" /> Close
@@ -304,7 +345,7 @@ function TypeSelector({ tx }: { tx: Transaction }) {
     // does NOT clear a `defi_reward` category — that category persists as the
     // "already reviewed this suggestion" marker so a rejected row is never
     // re-flipped to income by applyDefiLlamaRewardSuggestions. See that helper.
-    await db.transactions.update(tx.id, reclassifyTypePatch(tx.flags, next));
+    await db.transactions.update(tx.id, reclassifyTypePatch(tx, next));
     setSaving(false);
     setOpen(false);
   };
@@ -319,7 +360,7 @@ function TypeSelector({ tx }: { tx: Transaction }) {
         className="inline-flex min-h-[32px] items-center gap-1.5 rounded-md px-1 text-[0.8125rem] font-bold text-hi transition-colors hover:bg-elev-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
       >
         <span className={cn('h-1.5 w-1.5 rounded-full', TYPE_DOT[current])} aria-hidden="true" />
-        {TYPE_LABEL[current]}
+        {reviewTypeLabel(tx)}
         {open
           ? <ChevronUp className="h-3 w-3 text-faint" aria-hidden="true" />
           : <ChevronDown className="h-3 w-3 text-faint" aria-hidden="true" />}
@@ -1399,7 +1440,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
       assetLabel,
       counterLabel,
       sourceLabel: src.label,
-      typeLabel: TYPE_LABEL[t.type],
+      typeLabel: reviewTypeLabel(t),
       resolveWallet,
       fromAddr,
       toAddr,

@@ -123,9 +123,11 @@ describe('ConnectionOverview', () => {
       verificationStatus: 'verified_authority'
     } as ConnectionWorkspaceSnapshot['overview']['holdings'][number], {
       assetKey: 'evm:1:0xabc', asset: 'USD', quantity: 2, amount: 2, costBasis: 20,
+      chain: '1', contractAddress: '0xabc',
       verificationStatus: 'verified_authority'
     } as ConnectionWorkspaceSnapshot['overview']['holdings'][number], {
       assetKey: 'evm:137:0xdef', asset: 'USD', quantity: 4, amount: 4, costBasis: 40,
+      chain: '137', contractAddress: '0xdef',
       verificationStatus: 'verified_authority'
     } as ConnectionWorkspaceSnapshot['overview']['holdings'][number]];
     zeroSnapshot.overview.slices = [{
@@ -150,12 +152,18 @@ describe('ConnectionOverview', () => {
     expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('4');
     expect(screen.getAllByText('BTC')).toHaveLength(1);
     expect(screen.getAllByText('USD')).toHaveLength(2);
+    expect(screen.getByText('Ethereum')).toBeInTheDocument();
+    expect(screen.getByText('Polygon')).toBeInTheDocument();
     expect(screen.queryByText('ETH')).not.toBeInTheDocument();
     expect(screen.getByTestId('zero-balance-control')).toHaveTextContent('1 asset with zero balances is hidden.');
+    const positiveRows = screen.getAllByRole('listitem');
+    expect(positiveRows[positiveRows.length - 1]?.compareDocumentPosition(screen.getByTestId('zero-balance-control')))
+      .toBe(Node.DOCUMENT_POSITION_FOLLOWING);
     expect(screen.queryByTestId('detail-source-row-source')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
     expect(screen.getAllByText('ETH')).toHaveLength(1);
     expect(screen.getByTestId('zero-balance-control')).toHaveTextContent('1 asset with zero balances is shown.');
+    expect(screen.getByRole('button', { name: 'Show less' })).toBeInTheDocument();
   });
 
   it('shows a zero-only source total without presenting an empty-state row', () => {
