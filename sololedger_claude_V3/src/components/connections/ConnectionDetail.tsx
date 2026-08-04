@@ -26,7 +26,7 @@ import {
 } from './connectionWorkspaceModel';
 import { ConnectionOverview } from './ConnectionOverview';
 import { ConnectionSyncHistory } from './ConnectionSyncHistory';
-import { ConnectionReconciliation } from './ConnectionReconciliation';
+import { ConnectionOpeningBalances } from './ConnectionOpeningBalances';
 import type { SourceNavigationIntent } from '@/lib/navigationIntent';
 
 const NO_TXS: Transaction[] = [];
@@ -34,7 +34,6 @@ const NO_PRICE_ROWS: PriceCacheRow[] = [];
 const NO_ROWS: never[] = [];
 const TABS = [
   { id: 'overview', label: 'Overview' },
-  { id: 'reconciliation', label: 'Reconciliation' },
   { id: 'sync-history', label: 'History' }
 ] as const;
 type WorkspaceTab = typeof TABS[number]['id'];
@@ -283,7 +282,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
 
   const [activeTab, setActiveTab] = useState<WorkspaceTab>('overview');
   const tabRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  const panelRefs = useRef<Record<WorkspaceTab, HTMLDivElement | null>>({ overview: null, reconciliation: null, 'sync-history': null });
+  const panelRefs = useRef<Record<WorkspaceTab, HTMLDivElement | null>>({ overview: null, 'sync-history': null });
   const appliedIntentRef = useRef<string | null>(null);
   const selectWorkspaceTab = (tab: WorkspaceTab, focus: 'none' | 'tab' | 'panel' = 'none') => {
     setActiveTab(tab);
@@ -305,21 +304,23 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   useEffect(() => {
     if (!snapshot || !navigationReady || !navigationIntent || appliedIntentRef.current === navigationIntent.id) return;
     appliedIntentRef.current = navigationIntent.id;
-    setActiveTab(navigationIntent.workspaceTab);
+    const intendedTab: WorkspaceTab = navigationIntent.workspaceTab === 'sync-history' ? 'sync-history' : 'overview';
+    setActiveTab(intendedTab);
     window.requestAnimationFrame(() => {
       const focus = navigationIntent.focus;
-      const assetRow = focus.kind === 'asset' || focus.kind === 'opening'
-        ? Array.from(document.querySelectorAll<HTMLElement>('[data-reconciliation-asset-key]'))
-          .find((row) => row.dataset.reconciliationScopeId === focus.scopeId &&
-            row.dataset.reconciliationAccountClass === focus.accountClass &&
-            row.dataset.reconciliationAssetKey === focus.assetKey)
+      const exactAsset = focus.kind === 'asset' || focus.kind === 'opening'
+        ? snapshot.reconciliation.find((asset) => asset.scopeId === focus.scopeId &&
+          asset.accountClass === focus.accountClass && asset.assetKey === focus.assetKey)
         : undefined;
-      if ((focus.kind === 'asset' || focus.kind === 'opening') && !assetRow) {
+      if ((focus.kind === 'asset' || focus.kind === 'opening') && !exactAsset) {
         onNavigationTargetNotFound?.(navigationIntent.id);
         return;
       }
-      if (focus.kind === 'opening' && assetRow) {
-        const openingButton = Array.from(assetRow.querySelectorAll<HTMLButtonElement>('[data-opening-action]')).find((button) =>
+      if (focus.kind === 'opening') {
+        const openingRow = Array.from(document.querySelectorAll<HTMLElement>('[data-opening-asset-key]')).find((row) =>
+          row.dataset.openingScopeId === focus.scopeId && row.dataset.openingAccountClass === focus.accountClass &&
+          row.dataset.openingAssetKey === focus.assetKey);
+        const openingButton = Array.from(openingRow?.querySelectorAll<HTMLButtonElement>('[data-opening-action]') ?? []).find((button) =>
           focus.action === 'edit'
             ? button.dataset.openingAction === 'edit' && button.dataset.openingId === focus.openingId
             : button.dataset.openingAction === 'add');
@@ -339,9 +340,24 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
         });
         return;
       }
+      const overviewAssetRow = (canonicalAssetKey: string) => Array.from(document.querySelectorAll<HTMLElement>('[data-overview-asset-key]'))
+        .find((row) => row.dataset.overviewAssetKey === canonicalAssetKey);
+      let assetRow = focus.kind === 'asset' ? overviewAssetRow(focus.assetKey) : undefined;
+      if (focus.kind === 'asset' && !assetRow) {
+        document.querySelector<HTMLButtonElement>('[data-testid="zero-balance-control"] button')?.click();
+        window.requestAnimationFrame(() => {
+          assetRow = overviewAssetRow(focus.assetKey);
+          if (!assetRow) onNavigationTargetNotFound?.(navigationIntent.id);
+          else {
+            assetRow.focus();
+            onNavigationIntentAcknowledged?.(navigationIntent.id);
+          }
+        });
+        return;
+      }
       const target = focus.kind === 'sync' ? document.querySelector<HTMLElement>('[data-testid="detail-sync-now"]')
         : focus.kind === 'import' ? document.querySelector<HTMLElement>('[data-testid="detail-import-file"]')
-        : assetRow ?? panelRefs.current[navigationIntent.workspaceTab];
+        : assetRow ?? panelRefs.current[intendedTab];
       if ((focus.kind === 'sync' || focus.kind === 'import') && !target) {
         onNavigationTargetNotFound?.(navigationIntent.id);
         return;
@@ -373,7 +389,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
         {TABS.map((tab, index) => <button key={tab.id} ref={(element) => { tabRefs.current[index] = element; }} id={`connection-tab-${tab.id}`} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`connection-panel-${tab.id}`} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => selectWorkspaceTab(tab.id)} onKeyDown={(event) => onTabKeyDown(event, index)} className={`min-h-[44px] rounded-t-lg border-b-2 px-4 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${activeTab === tab.id ? 'border-primary text-primary' : 'border-transparent text-low hover:text-hi'}`}>{tab.label}</button>)}
       </div></div>
       {TABS.map((tab) => <div ref={(element) => { panelRefs.current[tab.id] = element; }} key={tab.id} id={`connection-panel-${tab.id}`} role="tabpanel" aria-labelledby={`connection-tab-${tab.id}`} hidden={activeTab !== tab.id} tabIndex={0}>
-        {activeTab === tab.id && (tab.id === 'overview' ? <ConnectionOverview card={card} snapshot={snapshot} priceIndex={priceIndex} formatMoney={(value) => formatCurrency(value, currency)} syncing={syncing} syncDisabled={syncDisabled} onSync={() => void handleSync()} /> : tab.id === 'reconciliation' ? <ConnectionReconciliation snapshot={snapshot} sourceKind={card.kind} canSync={canSync} canImportFile={card.kind === 'file' && onImportFile != null} openingBalances={openingBalances} onSync={canSync ? () => void handleSync() : undefined} onImportFile={card.kind === 'file' ? onImportFile : undefined} onInspectHistory={() => selectWorkspaceTab('sync-history', 'panel')} /> : <ConnectionSyncHistory snapshot={snapshot} />)}
+        {activeTab === tab.id && (tab.id === 'overview' ? <><ConnectionOverview card={card} snapshot={snapshot} priceIndex={priceIndex} formatMoney={(value) => formatCurrency(value, currency)} syncing={syncing} syncDisabled={syncDisabled} onSync={() => void handleSync()} /><div className="mt-5"><ConnectionOpeningBalances snapshot={snapshot} openingBalances={openingBalances} /></div></> : <ConnectionSyncHistory snapshot={snapshot} />)}
       </div>)}
     </div>
   );

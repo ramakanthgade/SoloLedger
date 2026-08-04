@@ -39,6 +39,8 @@ export interface TdsReconciliationViewProps {
    * real gate.
    */
   guardExport?: (exportFn: () => void | Promise<void>) => void | Promise<void>;
+  /** Disables report exports while the parent filing report is incomplete. */
+  exportsDisabled?: boolean;
 }
 
 export function TdsReconciliationView({
@@ -46,7 +48,8 @@ export function TdsReconciliationView({
   fy,
   jurisdiction,
   currency,
-  guardExport
+  guardExport,
+  exportsDisabled = false
 }: TdsReconciliationViewProps) {
   const runExport = (fn: () => void | Promise<void>) =>
     guardExport ? void guardExport(fn) : void fn();
@@ -143,8 +146,8 @@ export function TdsReconciliationView({
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={() => runExport(exportCsv)}>CSV</Button>
-          <Button size="sm" onClick={() => runExport(exportPdf)}>Export PDF</Button>
+          <Button variant="secondary" size="sm" disabled={exportsDisabled} onClick={() => runExport(exportCsv)}>CSV</Button>
+          <Button size="sm" disabled={exportsDisabled} onClick={() => runExport(exportPdf)}>Export PDF</Button>
         </div>
       </div>
 

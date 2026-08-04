@@ -31,6 +31,7 @@ import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import { buildFallbackMessages, FixTheFileGuidance } from './importFallback';
 import { ImportPreviewCard } from './ImportPreviewCard';
 import type { Transaction } from '@/types/transaction';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -226,7 +227,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
     ) => {
       const distinctAssets = new Set(transactions.map((t) => t.asset)).size;
       const missingPriceCount = transactions.filter(
-        (t) => t.fiatValue == null && !t.isInternalTransfer
+        (t) => t.fiatValue == null && !t.isInternalTransfer && requiresMarketValue(t)
       ).length;
       const tdsTotalInr = transactions.reduce((sum, t) => sum + (t.tdsInr ?? 0), 0);
       setPreview({

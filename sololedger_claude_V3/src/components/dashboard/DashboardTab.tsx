@@ -14,6 +14,7 @@ import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/au
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { TaxSettings, Transaction } from '@/types/transaction';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
@@ -801,7 +802,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
 
   // Internal custody movements do not need historical tax cost basis.
   const needsPriceCount = useMemo(
-    () => deferredTransactions.filter((t) => !t.isInternalTransfer && t.fiatValue == null).length,
+    () => deferredTransactions.filter((t) => !t.isInternalTransfer && t.fiatValue == null && requiresMarketValue(t)).length,
     [deferredTransactions]
   );
   const needsReviewCount = useMemo(

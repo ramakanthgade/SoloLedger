@@ -20,10 +20,11 @@ import {
   buildDerivativeBusinessExpenseRows,
   buildDerivativeBusinessIncomeRows,
   buildDerivativeCapitalGainRows,
+  buildIncomeRows,
   buildMatchedGainRows,
   buildReceiptIncomeRows
 } from '@/lib/costBasis/matchedGains';
-import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
+import { resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 import { aggregateTds } from '@/lib/tax/tds';
 import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/scheduleVDA';
 import { ScheduleVdaView } from '@/components/reports/ScheduleVdaView';
@@ -31,6 +32,7 @@ import { TdsReconciliationView } from '@/components/reports/TdsReconciliationVie
 import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
 import { useExportGuard } from '@/components/billing/ExportGateDialog';
 import { useAuth } from '@/lib/saas/authContext';
+import { assertTaxExportsComplete, isFullyMatchedInventoryDisposal, unpricedTaxableReceiptsInPeriod } from '@/lib/costBasis/unpricedDisposals';
 
 export function ReportsTab() {
   const { goToImport } = useTabNav();
@@ -61,7 +63,7 @@ export function ReportsTab() {
     });
   }, []);
 
-  const { disposals, lots, shortfalls } = useMemo(
+  const { disposals, inventoryDisposals, lots, shortfalls } = useMemo(
     () => calculateCostBasis(transactions, { method, specIdHints: hints }),
     [transactions, method, hints]
   );
@@ -72,10 +74,10 @@ export function ReportsTab() {
   );
 
   const incomeEvents = useMemo(
-    () =>
-      transactions
-        .filter((t) => t.type === 'income' && !isDerivativeTransaction(t))
-        .map((t) => ({ fiatValue: t.fiatValue ?? 0, timestamp: t.timestamp })),
+    () => buildIncomeRows(transactions).map((row) => ({
+      fiatValue: row.fiatValue,
+      timestamp: row.date
+    })),
     [transactions]
   );
 
@@ -125,6 +127,20 @@ export function ReportsTab() {
     () => disposals.filter((d) => isInFy(d.disposedAt, year, jurisdiction)),
     [disposals, year, jurisdiction]
   );
+  const yearUnpricedDisposals = useMemo(
+    () => inventoryDisposals.filter((row) => !row.finalized && isInFy(row.disposedAt, year, jurisdiction)),
+    [inventoryDisposals, year, jurisdiction]
+  );
+  const fullyMatchedUnpriced = useMemo(
+    () => yearUnpricedDisposals.filter(isFullyMatchedInventoryDisposal),
+    [yearUnpricedDisposals]
+  );
+  const yearUnpricedReceipts = useMemo(
+    () => unpricedTaxableReceiptsInPeriod(transactions, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+      .filter((row) => isInFy(row.timestamp, year, jurisdiction)),
+    [transactions, year, jurisdiction]
+  );
+  const exportsBlocked = yearUnpricedDisposals.length > 0 || yearUnpricedReceipts.length > 0;
 
   const rules = JURISDICTIONS[jurisdiction];
   const yearLabel = getFyLabel(year, jurisdiction);
@@ -171,6 +187,10 @@ export function ReportsTab() {
     jurisdiction,
     auth: authSnapshot
   });
+  const guardTaxExport = (exportFn: () => void | Promise<void>) => {
+    assertTaxExportsComplete(yearUnpricedDisposals, yearUnpricedReceipts);
+    return runGuarded(exportFn);
+  };
 
   const buildDeidentifiedTxMap = async () => {
     if (!deidentify) return new Map(transactions.map((t) => [t.id, t]));
@@ -180,6 +200,7 @@ export function ReportsTab() {
   };
 
   const exportPdf = async () => {
+    assertTaxExportsComplete(yearUnpricedDisposals, yearUnpricedReceipts);
     const txMap = await buildDeidentifiedTxMap();
     const fmt = (n: number) => formatAmountForExport(n, rules.currency);
     const { doc, startY } = await createBrandedPdf({
@@ -273,6 +294,7 @@ export function ReportsTab() {
 
 
   const exportCsv = async () => {
+    assertTaxExportsComplete(yearUnpricedDisposals, yearUnpricedReceipts);
     const txMap = await buildDeidentifiedTxMap();
     const cur = rules.currency.toUpperCase();
     const header = [
@@ -308,6 +330,7 @@ export function ReportsTab() {
   };
 
   const exportJson = async () => {
+    assertTaxExportsComplete(yearUnpricedDisposals, yearUnpricedReceipts);
     const txMap = await buildDeidentifiedTxMap();
     const payload = {
       jurisdiction,
@@ -330,6 +353,7 @@ export function ReportsTab() {
   };
 
   const exportScheduleVdaCsv = () => {
+    assertTaxExportsComplete(yearUnpricedDisposals, yearUnpricedReceipts);
     if (!scheduleVda) return;
     downloadBlob(
       serializeScheduleVdaCsv(scheduleVda),
@@ -428,12 +452,12 @@ export function ReportsTab() {
           Light header for print
         </label>
         <div className="ml-auto flex flex-wrap gap-2">
-          <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportCsv)}>CSV</Button>
-          <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportJson)}>JSON</Button>
+          <Button variant="secondary" size="sm" disabled={exportsBlocked} onClick={() => void runGuarded(exportCsv)}>CSV</Button>
+          <Button variant="secondary" size="sm" disabled={exportsBlocked} onClick={() => void runGuarded(exportJson)}>JSON</Button>
           {isIndia && (
-            <Button variant="secondary" size="sm" onClick={() => void runGuarded(exportScheduleVdaCsv)}>Schedule VDA CSV</Button>
+            <Button variant="secondary" size="sm" disabled={exportsBlocked} onClick={() => void runGuarded(exportScheduleVdaCsv)}>Schedule VDA CSV</Button>
           )}
-          <Button size="sm" onClick={() => void runGuarded(exportPdf)}>Export PDF</Button>
+          <Button size="sm" disabled={exportsBlocked} onClick={() => void runGuarded(exportPdf)}>Export PDF</Button>
         </div>
       </div>
 
@@ -453,6 +477,31 @@ export function ReportsTab() {
             <p className="mt-1 text-sm leading-relaxed text-mid">
               {shortfalls.length} disposal(s) reference more of an asset than your import history shows acquired.
               Review flagged transactions to fix.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {yearUnpricedDisposals.length > 0 && (
+        <div className="alert-warning" role="alert">
+          <AlertTriangle className="h-4 w-4 text-loss" />
+          <div>
+            <p className="text-sm font-semibold text-hi">Taxable disposals are missing proceeds</p>
+            <p className="mt-1 text-sm leading-relaxed text-mid">
+              {yearUnpricedDisposals.length} disposal(s) are absent from gain totals because market value is missing.
+              {' '}{fullyMatchedUnpriced.length} are fully matched to inventory lots. All report exports are blocked until proceeds are supplied.
+            </p>
+          </div>
+        </div>
+      )}
+
+      {yearUnpricedReceipts.length > 0 && (
+        <div className="alert-warning" role="alert">
+          <AlertTriangle className="h-4 w-4 text-loss" />
+          <div>
+            <p className="text-sm font-semibold text-hi">Taxable receipts are missing market value</p>
+            <p className="mt-1 text-sm leading-relaxed text-mid">
+              {yearUnpricedReceipts.length} non-mining income or gift receipt(s) are absent from income totals because receipt FMV is missing. All report exports are blocked until those values are supplied.
             </p>
           </div>
         </div>
@@ -598,7 +647,8 @@ export function ReportsTab() {
           fy={year}
           jurisdiction={jurisdiction}
           currency={rules.currency}
-          guardExport={runGuarded}
+          guardExport={guardTaxExport}
+          exportsDisabled={exportsBlocked}
         />
       )}
 
@@ -608,7 +658,8 @@ export function ReportsTab() {
           fy={year}
           jurisdiction={jurisdiction}
           currency={rules.currency}
-          guardExport={runGuarded}
+          guardExport={guardTaxExport}
+          exportsDisabled={exportsBlocked}
         />
       )}
 

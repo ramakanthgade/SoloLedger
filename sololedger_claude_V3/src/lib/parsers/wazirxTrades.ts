@@ -10,6 +10,7 @@
 import type { Transaction } from '@/types/transaction';
 import {
   makeId,
+  optionalNumber,
   safeQuantity,
   safeTimestampIst,
   exchangeSourceRef,
@@ -91,8 +92,10 @@ export const wazirxTradesParser: ExchangeParser = {
       const pairRaw = (row[pairCol] || '').trim();
       const { base, quote } = parseTradingPair(pairRaw);
       const qty = safeQuantity(row[volumeCol]);
-      const price = priceCol ? safeQuantity(row[priceCol]) : 0;
-      const quoteTotal = totalCol ? safeQuantity(row[totalCol]) : 0;
+      const priceRaw = priceCol ? optionalNumber(row[priceCol]) : undefined;
+      const totalRaw = totalCol ? optionalNumber(row[totalCol]) : undefined;
+      const price = priceRaw == null ? undefined : Math.abs(priceRaw);
+      const quoteTotal = totalRaw == null ? undefined : Math.abs(totalRaw);
 
       if (!base || !Number.isFinite(timestamp) || qty === 0) {
         skippedRows++;
@@ -101,11 +104,11 @@ export const wazirxTradesParser: ExchangeParser = {
 
       const fiatCurrency = quoteToFiatCurrency(quote) ?? 'INR';
       let fiatValue: number | undefined;
-      if (quoteTotal > 0 && quoteToFiatCurrency(quote)) {
+      if (quoteTotal != null && quoteToFiatCurrency(quote)) {
         fiatValue = quoteTotal;
-      } else if (price > 0 && qty > 0 && quoteToFiatCurrency(quote)) {
+      } else if (price != null && qty > 0 && quoteToFiatCurrency(quote)) {
         fiatValue = price * qty;
-      } else if (quoteTotal > 0 && quote === 'INR') {
+      } else if (quoteTotal != null && quote === 'INR') {
         fiatValue = quoteTotal;
       }
 
@@ -127,7 +130,7 @@ export const wazirxTradesParser: ExchangeParser = {
         asset: base,
         amount: qty,
         counterAsset: quote,
-        counterAmount: quoteTotal > 0 ? quoteTotal : price > 0 ? price * qty : undefined,
+        counterAmount: quoteTotal != null ? quoteTotal : price != null ? price * qty : undefined,
         fiatCurrency,
         fiatValue,
         feeAmount: feeAmount && feeAmount > 0 ? feeAmount : undefined,
@@ -138,7 +141,7 @@ export const wazirxTradesParser: ExchangeParser = {
         source: 'wazirx_trades',
         sourceRef: exchangeSourceRef('wazirx', timestamp, isBuy ? 'buy' : 'sell', base, qty),
         notes: notesParts.join(' · '),
-        flags: fiatValue != null && fiatValue > 0 ? [] : ['missing_cost_basis'],
+        flags: fiatValue != null ? [] : ['missing_market_value'],
         isInternalTransfer: false,
         raw: { ...row, _sheetFormat: 'exchange_trades' }
       });

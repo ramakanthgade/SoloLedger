@@ -1,8 +1,9 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { makeId, normalizeFiatMagnitude, safeNumber, safeTimestamp, contentHashRef } from './types';
+import { makeId, normalizeFiatMagnitude, optionalNumber, safeNumber, safeTimestamp, contentHashRef } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 import { headerMap, col } from './headerMap';
 import { normalizeChain, isRealTxHash, isValidTxHashForChain } from './explorer';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 
 /** User-defined mapping from their CSV's headers to our fields, used when
  * auto-detection fails and the person manually maps columns in the UI. */
@@ -148,13 +149,14 @@ export function guessTypeValueMap(distinctValues: string[]): Record<string, TxTy
   return map;
 }
 
-function resolveFiat(
+export function resolveFiat(
   row: Record<string, string>,
   mapping: ColumnMapping,
   quote?: string
 ): { fiatValue?: number; fiatCurrency: string } {
-  const explicit = mapping.fiatValue ? Math.abs(safeNumber(row[mapping.fiatValue])) : 0;
-  if (explicit > 0) {
+  const explicitRaw = mapping.fiatValue ? optionalNumber(row[mapping.fiatValue]) : undefined;
+  if (explicitRaw != null) {
+    const explicit = Math.abs(explicitRaw);
     const cur =
       (mapping.fiatCurrency && row[mapping.fiatCurrency]?.trim().toUpperCase()) ||
       quoteToFiatCurrency(quote) ||
@@ -162,8 +164,9 @@ function resolveFiat(
     return { fiatValue: explicit, fiatCurrency: cur };
   }
 
-  const total = mapping.totalValue ? Math.abs(safeNumber(row[mapping.totalValue])) : 0;
-  if (total > 0) {
+  const totalRaw = mapping.totalValue ? optionalNumber(row[mapping.totalValue]) : undefined;
+  if (totalRaw != null) {
+    const total = Math.abs(totalRaw);
     return { fiatValue: total, fiatCurrency: quoteToFiatCurrency(quote) ?? 'USD' };
   }
 
@@ -292,7 +295,7 @@ export function parseWithMapping(
       walletAddress,
       counterpartyAddress,
       notes: mapping.notes ? row[mapping.notes] : assetRaw !== base ? `Pair ${assetRaw}` : undefined,
-      flags: fiatValue != null && Math.abs(fiatValue) > 0 ? [] : ['missing_cost_basis'],
+      flags: fiatValue != null || !requiresMarketValue(mapped) ? [] : ['missing_market_value'],
       isInternalTransfer: false,
       raw: row
     });

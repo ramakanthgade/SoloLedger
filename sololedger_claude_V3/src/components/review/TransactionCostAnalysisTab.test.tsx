@@ -18,4 +18,29 @@ describe('TransactionCostAnalysisTab', () => {
     expect(screen.getAllByText(/CA\$0\.00/).length).toBeGreaterThanOrEqual(2);
     expect(screen.getAllByText(/CA\$100\.00/).length).toBeGreaterThanOrEqual(1);
   });
+  it('renders known lot basis while an unpriced disposal keeps proceeds and gain unresolved', () => {
+    render(<TransactionCostAnalysisTab model={{
+      ...base,
+      costBasis: 60,
+      matchedRows: [{ ...base.matchedRows[0], costBasis: 60, unitCost: 60 }]
+    }} />);
+    expect(screen.getAllByText(/CA\$60\.00/).length).toBeGreaterThanOrEqual(2);
+    expect(screen.getAllByText('N/A — unpriced').length).toBeGreaterThanOrEqual(3);
+  });
+  it('labels known allowable cost as partial when an unmatched remainder is present', () => {
+    render(<TransactionCostAnalysisTab model={{
+      ...base,
+      costBasis: 30,
+      costBasisCompleteness: 'partial',
+      matchedRows: [
+        { ...base.matchedRows[0], sellAmount: 0.5, buyAmount: 0.5, costBasis: 30, unitCost: 60 },
+        { ...base.matchedRows[0], id: 'missing', sellAmount: 0.5, buyAmount: 0, buyTxId: '', costBasis: undefined, status: 'missing_cost_basis', sourceLabel: 'Missing acquisition', acquisitionType: 'basis unavailable' }
+      ],
+      warnings: ['Acquisition basis is missing or incomplete.']
+    }} />);
+    expect(screen.getByText('Allowable cost (partial)')).toBeInTheDocument();
+    expect(screen.getAllByText(/0\.500000 BTC/)).toHaveLength(2);
+    expect(screen.getAllByText('N/A — missing acquisition')).toHaveLength(2);
+    expect(screen.getByText(/Acquisition basis is missing or incomplete/)).toBeInTheDocument();
+  });
 });

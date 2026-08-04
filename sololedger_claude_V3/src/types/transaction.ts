@@ -23,7 +23,9 @@ export type TxType =
 
 export type FlagReason =
   | 'possible_internal_transfer'
+  | 'missing_market_value'
   | 'missing_cost_basis'
+  | 'invalid_transaction_data'
   | 'duplicate_suspected'
   | 'unrecognized_asset'
   | 'needs_review';

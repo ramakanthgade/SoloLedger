@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
+import { exchangeSourceRef, makeId, optionalNumber, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
 import { parseTradingPair, quoteToFiatCurrency } from './pairUtils';
 import { normalizeHeader } from './tableExtract';
 import { rowCol } from './headerMap';
@@ -13,10 +13,10 @@ export const gateioParser: ExchangeParser = {
       const type = TYPE_MAP[rowCol(row, 'Type').trim().toLowerCase()]; const pair = parseTradingPair(rowCol(row, 'Pair')); const asset = pair.base;
       const amount = Math.abs(safeNumber(rowCol(row, 'Amount'))); const ts = safeTimestampUtc(rowCol(row, 'Time'));
       if (!type || !asset || !amount || !Number.isFinite(ts)) { skippedRows++; continue; }
-      const total = Math.abs(safeNumber(rowCol(row, 'Total'))); const fee = Math.abs(safeNumber(rowCol(row, 'Fee'))); const transfer = type.startsWith('transfer_');
+      const totalRaw = optionalNumber(rowCol(row, 'Total')); const total = totalRaw == null ? undefined : Math.abs(totalRaw); const fee = Math.abs(safeNumber(rowCol(row, 'Fee'))); const transfer = type.startsWith('transfer_');
       const quoteFiat = quoteToFiatCurrency(pair.quote);
-      transactions.push({ id: makeId('gate'), timestamp: ts, type, asset, amount, counterAsset: pair.quote, counterAmount: total || undefined,
-        fiatCurrency: quoteFiat ?? 'USD', fiatValue: quoteFiat ? total || undefined : undefined,
+      transactions.push({ id: makeId('gate'), timestamp: ts, type, asset, amount, counterAsset: pair.quote, counterAmount: total,
+        fiatCurrency: quoteFiat ?? 'USD', fiatValue: quoteFiat ? total : undefined,
         feeAmount: fee || undefined, feeAsset: fee ? rowCol(row, 'Fee Currency').toUpperCase() || pair.quote : undefined,
         source: 'gateio', sourceRef: rowCol(row, 'ID') || exchangeSourceRef('gateio', ts, type, asset, amount), flags: transfer ? ['possible_internal_transfer'] : [], isInternalTransfer: false, raw: row });
     }

@@ -33,7 +33,7 @@ describe('Helius unified owner-level classification', () => {
     expect(result.transactions).toHaveLength(1);
     expect(result.transactions[0]).toMatchObject({
       source: 'rpc:helius', type: 'transfer_in', amount: 1.5, contractAddress: mint,
-      counterpartyAddress: sender, flags: ['possible_internal_transfer', 'missing_cost_basis']
+      counterpartyAddress: sender, flags: ['possible_internal_transfer', 'missing_market_value']
     });
   });
 

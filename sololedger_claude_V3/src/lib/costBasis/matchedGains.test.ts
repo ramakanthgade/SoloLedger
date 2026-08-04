@@ -163,6 +163,11 @@ describe('buildReceiptIncomeRows — Section 56(2)(x) inclusion/exclusion', () =
 });
 
 describe('buildIncomeRows — reward kind + label', () => {
+  it('does not report a missing receipt FMV as confirmed zero income', () => {
+    expect(buildIncomeRows([tx({ id: 'unpriced-income', type: 'income', fiatValue: undefined })])).toEqual([]);
+    expect(buildIncomeRows([tx({ id: 'zero-income', type: 'income', fiatValue: 0 })])[0].fiatValue).toBe(0);
+  });
+
   it('GEOD mining_reward row yields kind mining_reward and label "Mining reward"', () => {
     const rows = buildIncomeRows([
       tx({ id: 'geod', type: 'income', category: 'mining_reward', asset: 'GEOD', fiatValue: 250, timestamp: 9 * DAY })

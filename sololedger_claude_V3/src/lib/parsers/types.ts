@@ -134,8 +134,14 @@ export function safeNumber(v: string | undefined): number {
 /** Fiat value magnitude — exchanges often export outflows as negative subtotals. */
 export function normalizeFiatMagnitude(value: number | undefined | null): number | undefined {
   if (value == null || !Number.isFinite(value)) return undefined;
-  const abs = Math.abs(value);
-  return abs < 1e-12 ? undefined : abs;
+  return Math.abs(value);
+}
+
+/** Parse only source-present, nonblank numeric fields; unlike safeNumber, absence stays absent. */
+export function optionalNumber(v: string | undefined): number | undefined {
+  if (v == null || String(v).trim() === '') return undefined;
+  const n = Number(String(v).replace(/[,$]/g, '').trim());
+  return Number.isFinite(n) ? n : undefined;
 }
 
 /** Parse values like "0.34SOL", "49.2286USDT", or plain "144.79". */

@@ -1,5 +1,6 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { makeId, normalizeFiatMagnitude, safeNumber, safeTimestamp, type ExchangeParser } from './types';
+import { makeId, normalizeFiatMagnitude, optionalNumber, safeNumber, safeTimestamp, type ExchangeParser } from './types';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 
 /**
  * Coinbase "Transaction History" CSV export.
@@ -73,6 +74,10 @@ export const coinbaseParser: ExchangeParser = {
 
       const notes = col(row, 'Notes') || undefined;
       const counter = parseCounterLeg(notes);
+      const fiatRaw = optionalNumber(
+        col(row, 'Subtotal', 'Total (inclusive of fees)', 'Total (inclusive of fees and/or spread)', 'Total')
+      );
+      const fiatValue = normalizeFiatMagnitude(fiatRaw);
 
       transactions.push({
         id: makeId('cb'),
@@ -83,17 +88,15 @@ export const coinbaseParser: ExchangeParser = {
         counterAsset: counter.counterAsset,
         counterAmount: counter.counterAmount,
         fiatCurrency: (col(row, 'Spot Price Currency', 'Price Currency', 'Currency') || 'USD').trim(),
-        fiatValue: normalizeFiatMagnitude(
-          safeNumber(
-            col(row, 'Subtotal', 'Total (inclusive of fees)', 'Total (inclusive of fees and/or spread)', 'Total')
-          )
-        ),
+        fiatValue,
         feeAsset: undefined,
-        feeAmount: normalizeFiatMagnitude(safeNumber(col(row, 'Fees', 'Fees and/or Spread'))),
+        feeAmount: normalizeFiatMagnitude(optionalNumber(col(row, 'Fees', 'Fees and/or Spread'))),
         source: 'coinbase',
         sourceRef: col(row, 'ID') || undefined,
         notes,
-        flags: mapped === 'transfer_in' || mapped === 'transfer_out' ? ['possible_internal_transfer'] : [],
+        flags: mapped === 'transfer_in' || mapped === 'transfer_out'
+          ? ['possible_internal_transfer']
+          : fiatValue == null && requiresMarketValue(mapped) ? ['missing_market_value'] : [],
         isInternalTransfer: false,
         raw: row
       });

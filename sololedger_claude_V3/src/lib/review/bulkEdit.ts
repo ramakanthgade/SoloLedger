@@ -3,9 +3,8 @@
  * "Set type" (with impact summary) and "Set flags" bulk actions.
  *
  * Semantics deliberately mirror the per-row controls in ReviewTab.tsx:
- *  - Type change: sets `type` and strips the auto-derived flags
- *    (`possible_internal_transfer`, `missing_cost_basis`). `bulkTypePatch` is
- *    the single implementation — the per-row `TypeSelector` calls it too, so
+ *  - Type change: sets `type` and strips auto-derived compatibility flags.
+ *    `bulkTypePatch` is the single implementation — the per-row `TypeSelector` calls it too, so
  *    bulk and per-row edits can never diverge.
  *  - Flag change: absolute apply — a checked flag is added to every selected
  *    row, an unchecked one is removed. `isInternalTransfer` / `isSpam` are real
@@ -16,9 +15,8 @@
  *    marking internal clears the hint). The full contract lives on
  *    `bulkFlagsPatch`; the initial checkbox state rules on
  *    `initialBulkFlagsSelection`.
- *  - `missing_cost_basis` is partly DERIVED (see `displayFlags`: shown whenever
- *    a row has no fiat value and isn't internal). Storing/removing it here only
- *    affects the stored flag; the derived badge still appears on unpriced rows.
+ *  - Market-value and cost-basis findings are read-only derived flags and are
+ *    intentionally absent from the editable checkbox lists.
  */
 
 import type { FlagReason, Transaction, TxType } from '@/types/transaction';
@@ -32,11 +30,9 @@ export const DISPOSAL_TYPES: ReadonlySet<TxType> = new Set([
   'nft_sell'
 ]);
 
-/** All stored flags, in display order — the single list behind the per-row
- *  FlagSelector checkboxes. */
+/** User-editable stored flags, in display order. */
 export const ALL_FLAGS: readonly FlagReason[] = [
   'possible_internal_transfer',
-  'missing_cost_basis',
   'duplicate_suspected',
   'unrecognized_asset',
   'needs_review'
@@ -51,6 +47,7 @@ export const BULK_FLAG_CHECKBOXES: readonly FlagReason[] = ALL_FLAGS;
  *  new type / fiat state by the rest of the app). */
 const TYPE_CHANGE_STRIPPED_FLAGS: readonly FlagReason[] = [
   'possible_internal_transfer',
+  'missing_market_value',
   'missing_cost_basis'
 ];
 

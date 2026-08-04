@@ -39,8 +39,8 @@ const SEED = vi.hoisted(() => {
       fiatCurrency: 'INR', fiatValue: 12000, source: 'binance', flags: [], isInternalTransfer: false
     },
     {
-      id: 't-doge-in', timestamp: dayFn(2026, 6, 10), type: 'transfer_in', asset: 'DOGE', amount: 500,
-      fiatCurrency: 'INR', fiatValue: undefined, source: 'manual', flags: ['missing_cost_basis'],
+      id: 't-doge-gift', timestamp: dayFn(2026, 6, 10), type: 'gift_received', asset: 'DOGE', amount: 500,
+      fiatCurrency: 'INR', fiatValue: undefined, source: 'manual', flags: ['missing_market_value'],
       isInternalTransfer: false
     }
   ];
@@ -602,11 +602,11 @@ describe('DashboardTab — insights', () => {
     );
   });
 
-  it('excludes internal custody transfers from the historical-price count', async () => {
+  it('excludes transfer classifications from the historical-price count', async () => {
     SEED.txs.push({
-      id: 't-sol-internal', timestamp: Date.UTC(2026, 6, 12, 12, 0, 0), type: 'transfer_in',
+      id: 't-sol-transfer', timestamp: Date.UTC(2026, 6, 12, 12, 0, 0), type: 'transfer_in',
       asset: 'SOL', amount: 10, fiatCurrency: 'INR', fiatValue: undefined, source: 'manual',
-      flags: ['missing_cost_basis'], isInternalTransfer: true
+      flags: ['missing_market_value'], isInternalTransfer: false
     } as never);
     try {
       await renderTab();

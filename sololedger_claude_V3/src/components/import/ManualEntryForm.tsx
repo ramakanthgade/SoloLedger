@@ -6,6 +6,7 @@ import type { Transaction, TxType } from '@/types/transaction';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { BrandIcon, symbolIconId } from '@/components/connections/brandIcons';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 
 const TX_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out', 'income',
@@ -37,7 +38,7 @@ const labelCls = 'block text-xs font-semibold text-mid';
  * friendly chip row (Buy/Sell/Send/Receive/Swap/Reward) with the full TxType
  * list behind "More"; the asset field shows the real brand glyph when the
  * symbol is known. Save logic is unchanged: db.transactions.put with
- * source 'manual' (+ missing_cost_basis flag when no fiat value).
+ * source 'manual' (+ missing_market_value when its classification requires FMV).
  */
 export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
   const [type, setType] = useState<TxType>('buy');
@@ -70,7 +71,7 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
       counterAmount: isTrade && counterAmount ? Number(counterAmount) : undefined,
       source: 'manual',
       notes: notes || undefined,
-      flags: fiatValue ? [] : ['missing_cost_basis'],
+      flags: fiatValue || !requiresMarketValue(type) ? [] : ['missing_market_value'],
       isInternalTransfer: false
     };
     await db.transactions.put(tx);

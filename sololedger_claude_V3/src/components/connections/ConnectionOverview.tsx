@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Loader2, RefreshCw, Wallet } from 'lucide-react';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
 import { Button } from '@/components/ui/button';
@@ -59,10 +60,6 @@ interface SourceAssetView {
   amount: number;
   value: number | null;
   atCost: boolean;
-  postingQuantity: number;
-  authorityQuantity?: number;
-  verificationStatus: 'verified_authority' | 'reconstructed_authority' | 'posting_fallback';
-  fallbackReason?: AuthorityBalanceFallbackReason;
 }
 
 export interface ConnectionOverviewProps {
@@ -77,6 +74,7 @@ export interface ConnectionOverviewProps {
 
 /** Presentation-only Overview tab. All custody and transaction work is read from one parent snapshot. */
 export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, syncing, syncDisabled, onSync }: ConnectionOverviewProps) {
+  const [showZeroBalances, setShowZeroBalances] = useState(false);
   const holdingsByAssetKey = new Map(snapshot.overview.holdings.map((holding) => [holding.assetKey, holding]));
   const rowsByScope = new Map((card.walletRows ?? []).map((row) => [
     `wallet:${canonicalWalletIdentity(row.chain, row.address)}`,
@@ -129,31 +127,40 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
   const valuedRows = valueHoldings([...snapshot.overview.holdings], priceIndex);
   const valuedHoldings = new Map(snapshot.overview.holdings.map((holding, index) =>
     [holding.assetKey, valuedRows[index]]));
-  const sourceAssets: SourceAssetView[] = card.kind === 'wallet' ? [] : snapshot.overview.slices.map((slice) => {
-    const holding = valuedHoldings.get(slice.assetKey);
-    const costBasis = holding && holding.amount > 1e-9
-      ? holding.costBasis * (slice.quantity / holding.amount)
-      : 0;
+  const sourceAssets: SourceAssetView[] = card.kind === 'wallet' ? [] : snapshot.overview.holdings.filter((holding) =>
+    Math.abs(holding.quantity) > 1e-9
+  ).map((sourceHolding) => {
+    const holding = valuedHoldings.get(sourceHolding.assetKey)!;
     const current = currentPriceFor({
-      asset: holding?.asset ?? slice.asset,
-      contractAddress: holding?.contractAddress,
-      chain: holding?.chain
+      asset: holding.asset,
+      contractAddress: holding.contractAddress,
+      chain: holding.chain
     }, priceIndex);
     return {
-      key: `${slice.scopeId}:${slice.accountClass}:${slice.assetKey}`,
-      asset: holding?.asset ?? slice.asset,
-      chain: holding?.chain,
-      amount: slice.quantity,
-      value: current ? slice.quantity * current.price : costBasis > 0 ? costBasis : slice.quantity === 0 ? 0 : null,
-      atCost: current == null && costBasis > 0,
-      postingQuantity: slice.postingQuantity,
-      authorityQuantity: slice.authorityQuantity,
-      verificationStatus: slice.verificationStatus,
-      fallbackReason: slice.fallbackReason
+      key: sourceHolding.assetKey,
+      asset: holding.asset,
+      chain: holding.chain,
+      amount: holding.amount,
+      value: current ? holding.amount * current.price : holding.costBasis > 0 ? holding.costBasis : null,
+      atCost: current == null && holding.costBasis > 0
     };
   }).sort((left, right) =>
     (right.value ?? -1) - (left.value ?? -1) || Math.abs(right.amount) - Math.abs(left.amount) ||
     left.key.localeCompare(right.key));
+  const sourceAssetKeys = new Set(sourceAssets.map((asset) => asset.key));
+  const zeroAssetsByKey = new Map<string, { asset: string; amount: number }>();
+  if (card.kind !== 'wallet') {
+    for (const slice of snapshot.overview.slices) {
+      if (sourceAssetKeys.has(slice.assetKey)) continue;
+      const current = zeroAssetsByKey.get(slice.assetKey) ?? { asset: slice.asset, amount: 0 };
+      current.amount += slice.quantity;
+      zeroAssetsByKey.set(slice.assetKey, current);
+    }
+  }
+  const zeroAssets: SourceAssetView[] = [...zeroAssetsByKey].flatMap(([key, row]) =>
+    Math.abs(row.amount) <= 1e-9 ? [{ key, asset: row.asset, amount: 0, value: 0, atCost: false }] : []
+  ).sort((left, right) => left.asset.localeCompare(right.asset) || left.key.localeCompare(right.key));
+  const visibleSourceAssets = showZeroBalances ? [...sourceAssets, ...zeroAssets] : sourceAssets;
   const walletTotal = addressGroups.reduce((sum, group) => sum + group.total, 0);
   const walletAssetCount = addressGroups.reduce((sum, group) => sum + group.assets.length, 0);
   const walletUnpriced = addressGroups.reduce((sum, group) => sum + group.unpriced, 0);
@@ -175,11 +182,11 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
   const historyUpdateCount = snapshot.syncHistory.filter((event) => event.kind === 'source-operation').length;
 
   return (
-    <div className="space-y-5" data-testid="connection-overview">
+    <div className="space-y-5" data-testid="connection-overview" tabIndex={-1}>
       <section aria-label="Source summary" className="grid grid-cols-1 gap-3 sm:grid-cols-3" data-testid="overview-metrics">
         {([
           ['Transactions', snapshot.overview.transactionCount],
-          ['Assets', snapshot.overview.slices.length],
+          ['Assets', card.kind === 'wallet' ? snapshot.overview.slices.length : sourceAssets.length],
           ['History updates', historyUpdateCount]
         ] as const).map(([label, value]) => (
           <div key={label} className="rounded-2xl border border-hi/10 bg-elev-2 px-4 py-3.5">
@@ -196,13 +203,14 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
       </section>
       <section aria-label="Holdings" className="rounded-2xl border border-hi/10 bg-elev-2" data-testid="detail-holdings">
         <div className="flex flex-wrap items-end justify-between gap-2 border-b border-hi/10 px-5 py-4">
-          <div><p className="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-faint">Holdings</p><p className="mt-1 text-lg font-bold tabular-figures text-hi" data-testid="detail-holdings-total">{card.kind === 'wallet' ? addressGroups.length > 0 ? formatMoney(walletTotal) : '—' : sourceAssets.length > 0 ? formatMoney(sourceTotal) : '—'}</p>
+          <div><p className="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-faint">Holdings</p><p className="mt-1 text-lg font-bold tabular-figures text-hi" data-testid="detail-holdings-total">{card.kind === 'wallet' ? addressGroups.length > 0 ? formatMoney(walletTotal) : '—' : sourceAssets.length > 0 || zeroAssets.length > 0 ? formatMoney(sourceTotal) : '—'}</p>
             {card.kind === 'wallet' && walletAllCurrentAuthority && latestCurrentBalanceAsOf != null && <p className="mt-0.5 text-[0.6875rem] text-faint" data-testid="detail-wallet-authority-status">{plural(walletAssetCount, 'asset')} · on-chain balances as of {relativeTime(latestCurrentBalanceAsOf)}</p>}
             {card.kind === 'wallet' && walletHasPostingFallback && <div className="mt-0.5 text-[0.6875rem] text-warn" data-testid="detail-wallet-fallback-status"><p>{plural(walletAssetCount, 'asset')} · Includes quantities estimated from ledger postings.</p><p>Reason: {walletFallbackReasons.join('; ')}.</p>{latestStaleEvidenceAsOf != null && <p>A balance snapshot from {relativeTime(latestStaleEvidenceAsOf)} is stale evidence and is not used as the quantity source.</p>}</div>}
           </div>
           <div className="text-right text-[0.6875rem] leading-relaxed text-faint">{card.kind === 'wallet' && walletAtCost && <p>Some assets valued at cost — no live price cached yet.</p>}{card.kind === 'wallet' && walletUnpriced > 0 && <p>{walletUnpriced} asset{walletUnpriced === 1 ? '' : 's'} without a price — not in the total.</p>}{card.kind !== 'wallet' && sourceAtCost && <p>Valued at cost where no live price is cached.</p>}{card.kind === 'file' && card.csvImport?.optionsBalanceUnavailable && <p className="text-warn" data-testid="detail-options-balance-unavailable">Options balance unavailable — add a current-balance authority to include it.</p>}</div>
         </div>
-        {card.kind === 'wallet' ? addressGroups.length === 0 ? <WalletEmpty syncing={syncing} disabled={syncDisabled} onSync={onSync} /> : <div>{addressGroups.map((group) => <div key={group.key} data-testid="detail-address-group">{addressGroups.length > 1 && <div className="flex items-center justify-between gap-3 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5"><p className="truncate font-mono text-xs text-low">{shortAddress(group.address)}</p><p className="text-xs font-semibold tabular-figures text-mid">{formatMoney(group.total)}</p></div>}<ul>{group.assets.map((asset) => <WalletAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul></div>)}</div> : sourceAssets.length === 0 ? <div className="px-6 py-12 text-center" data-testid="detail-empty-balances"><p className="text-sm font-bold text-hi">No holdings from this source yet</p><p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-low">{card.kind === 'file' ? 'The imported file has no open positions.' : 'Sync to pull this exchange’s current activity.'}</p></div> : <ul>{sourceAssets.map((asset) => <SourceAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul>}
+        {card.kind !== 'wallet' && zeroAssets.length > 0 && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-hi/10 bg-elev-1/50 px-5 py-2.5 text-xs text-low" data-testid="zero-balance-control"><span>{showZeroBalances ? `${plural(zeroAssets.length, 'asset')} with zero balances ${zeroAssets.length === 1 ? 'is' : 'are'} shown.` : `${plural(zeroAssets.length, 'asset')} with zero balances ${zeroAssets.length === 1 ? 'is' : 'are'} hidden.`}</span><Button type="button" size="sm" variant="ghost" onClick={() => setShowZeroBalances((shown) => !shown)}>{showZeroBalances ? 'Hide zeros' : 'Show all'}</Button></div>}
+        {card.kind === 'wallet' ? addressGroups.length === 0 ? <WalletEmpty syncing={syncing} disabled={syncDisabled} onSync={onSync} /> : <div>{addressGroups.map((group) => <div key={group.key} data-testid="detail-address-group">{addressGroups.length > 1 && <div className="flex items-center justify-between gap-3 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5"><p className="truncate font-mono text-xs text-low">{shortAddress(group.address)}</p><p className="text-xs font-semibold tabular-figures text-mid">{formatMoney(group.total)}</p></div>}<ul>{group.assets.map((asset) => <WalletAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul></div>)}</div> : sourceAssets.length === 0 && zeroAssets.length === 0 ? <div className="px-6 py-12 text-center" data-testid="detail-empty-balances"><p className="text-sm font-bold text-hi">No holdings from this source yet</p><p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-low">{card.kind === 'file' ? 'The imported file has no open positions.' : 'Sync to pull this exchange’s current activity.'}</p></div> : visibleSourceAssets.length > 0 ? <ul>{visibleSourceAssets.map((asset) => <SourceAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul> : null}
       </section>
     </div>
   );
@@ -217,12 +225,5 @@ function WalletAssetRow({ asset, formatMoney }: { asset: WalletAssetView; format
 }
 
 function SourceAssetRow({ asset, formatMoney }: { asset: SourceAssetView; formatMoney: (value: number) => string }) {
-  const hasAuthorityDiscrepancy = asset.authorityQuantity != null &&
-    Math.abs(asset.postingQuantity - asset.authorityQuantity) > 1e-9;
-  const quantityLabel = asset.verificationStatus === 'verified_authority'
-    ? 'Current source balance'
-    : asset.verificationStatus === 'reconstructed_authority'
-      ? 'Reconstructed journal balance · not verified current'
-      : `Estimated from ledger postings${asset.fallbackReason ? ` · ${walletFallbackLabel(asset.fallbackReason)}` : ''}`;
-  return <li className="flex items-center gap-3 border-b border-hi/10 px-5 py-3 last:border-b-0"><AssetIcon symbol={asset.asset} size={32} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-hi">{asset.asset}</p>{asset.chain && <p className="text-xs capitalize text-low">{chainLabel(asset.chain)}</p>}<p className={cn('text-[0.6875rem]', asset.verificationStatus === 'verified_authority' ? 'text-faint' : 'text-warn')} data-testid="detail-source-row-source">{quantityLabel}{hasAuthorityDiscrepancy ? ` · Ledger postings: ${formatCompactAmount(asset.postingQuantity)}` : ''}</p></div><div className="text-right"><p className="text-sm font-semibold tabular-figures text-hi">{formatCompactAmount(asset.amount)}</p><p className={cn('text-xs tabular-figures', asset.value == null ? 'text-faint' : 'text-low')}>{asset.value != null ? formatMoney(asset.value) : '—'}{asset.atCost && asset.value != null ? ' · at cost' : ''}</p></div></li>;
+  return <li className="flex items-center gap-3 border-b border-hi/10 px-5 py-3 last:border-b-0" data-overview-asset-key={asset.key} tabIndex={-1}><AssetIcon symbol={asset.asset} size={32} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-hi">{asset.asset}</p></div><div className="text-right"><p className="text-sm font-semibold tabular-figures text-hi">{formatCompactAmount(asset.amount)}</p><p className={cn('text-xs tabular-figures', asset.value == null ? 'text-faint' : 'text-low')}>{asset.value != null ? formatMoney(asset.value) : '—'}</p></div></li>;
 }

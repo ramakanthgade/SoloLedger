@@ -81,7 +81,7 @@ describe('coinbase', () => {
     expect(row.counterAsset).toBe('ETH');
     expect(row.counterAmount).toBe(0.5);
     expect(row.fiatValue).toBeUndefined();
-    expect(row.flags).toEqual(['missing_cost_basis']);
+    expect(row.flags).toEqual(['missing_market_value']);
     expect(row.sourceRef).toBe('cb-trade-0003');
   });
 

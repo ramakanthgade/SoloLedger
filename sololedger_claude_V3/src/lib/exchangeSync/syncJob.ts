@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react';
 import { filterAlreadyImported } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { connectionSourceToken, getConnectionRow } from './connections';
 import type { UnifiedBalance } from './ccxtLoader';
 import { persistSyncedRows, syncConnection, type SyncEngineDeps } from './engine';
@@ -220,7 +221,7 @@ function buildPreview(
     if (to == null || t.timestamp > to) to = t.timestamp;
     typeBreakdown[t.type] = (typeBreakdown[t.type] ?? 0) + 1;
     assets.add(t.asset);
-    if (t.fiatValue == null) missingPriceCount += 1;
+    if (t.fiatValue == null && !t.isInternalTransfer && requiresMarketValue(t)) missingPriceCount += 1;
   }
   return {
     connectionId,

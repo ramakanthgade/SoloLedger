@@ -17,7 +17,8 @@ export type ReconciliationFocus =
 
 /** Tab and focus are correlated so impossible combinations cannot compile. */
 export type SourceNavigationIntent =
-  | { id: string; destination: 'connections'; target: ConnectionSourceTarget; workspaceTab: 'overview'; focus: { kind: 'none' } | { kind: 'sync' } | { kind: 'import' } }
+  | { id: string; destination: 'connections'; target: ConnectionSourceTarget; workspaceTab: 'overview'; focus: { kind: 'none' } | { kind: 'sync' } | { kind: 'import' } | Exclude<ReconciliationFocus, { kind: 'none' }> }
+  /** Accepted for persisted/legacy intents; the connection workspace remaps it to Overview. */
   | { id: string; destination: 'connections'; target: ConnectionSourceTarget; workspaceTab: 'reconciliation'; focus: ReconciliationFocus }
   | { id: string; destination: 'connections'; target: ConnectionSourceTarget; workspaceTab: 'sync-history'; focus: { kind: 'none' } };
 

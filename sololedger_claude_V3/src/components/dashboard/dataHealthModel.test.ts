@@ -108,6 +108,34 @@ describe('buildDataHealthModel', () => {
     expect(model.sources[0].findings.filter((finding) => finding.remediation === 'complete_source_history')).toHaveLength(1);
   });
 
+  it.each([
+    ['add_timestamped_authority', { authorityStatus: 'missing' }],
+    ['capture_coherent_authority', { authorityStatus: 'non_comparable' }],
+    ['complete_source_history', { coverageStatus: 'partial' }],
+    ['establish_source_coverage', { coverageStatus: 'unknown' }]
+  ] as const)('routes %s to the source-specific exchange Sync control', (remediation, status) => {
+    const model = buildDataHealthModel([{
+      id: 'x', title: 'X', target: { kind: 'exchange', connectionId: 'x' },
+      snapshot: snapshot([result(status)])
+    }]);
+    expect(model.sources[0].findings.find((finding) => finding.remediation === remediation)?.intent)
+      .toEqual({ destination: 'connections', target: { kind: 'exchange', connectionId: 'x' }, workspaceTab: 'overview', focus: { kind: 'sync' } });
+  });
+
+  it.each([
+    ['add_timestamped_authority', { authorityStatus: 'missing' }],
+    ['capture_coherent_authority', { authorityStatus: 'non_comparable' }],
+    ['complete_source_history', { coverageStatus: 'partial' }],
+    ['establish_source_coverage', { coverageStatus: 'unknown' }]
+  ] as const)('routes %s to the source-specific CSV Import control', (remediation, status) => {
+    const model = buildDataHealthModel([{
+      id: 'csv', title: 'CSV', target: { kind: 'csv', importId: 'csv' },
+      snapshot: snapshot([result(status)])
+    }]);
+    expect(model.sources[0].findings.find((finding) => finding.remediation === remediation)?.intent)
+      .toEqual({ destination: 'connections', target: { kind: 'csv', importId: 'csv' }, workspaceTab: 'overview', focus: { kind: 'import' } });
+  });
+
   it('targets the exact chain for each scope in a grouped multi-chain EVM wallet', () => {
     const address = '0xAbC';
     const polygonScope = `wallet:${canonicalWalletIdentity('polygon', address)}`;
@@ -142,6 +170,25 @@ describe('buildDataHealthModel', () => {
     expect(model.sources[0].title).toBe('Linked CSV');
     expect(model.sources[0].findings.find((finding) => finding.remediation === 'retry_source_operation')?.intent)
       .toEqual({ destination: 'connections', target: { kind: 'exchange', connectionId: 'api-owner' }, workspaceTab: 'overview', focus: { kind: 'sync' } });
+  });
+
+  it('routes asset and opening-balance findings to Overview controls', () => {
+    const input = snapshot([result({
+      scopeId: 'exchange:api-owner', coverageStatus: 'opening_balance_required',
+      assetKey: 'asset:BTC', asset: 'BTC'
+    })]);
+    const model = buildDataHealthModel([{
+      id: 'exchange:api-owner', title: 'Live API',
+      target: { kind: 'exchange', connectionId: 'api-owner' }, snapshot: input
+    }]);
+    const opening = model.sources[0].findings.find((finding) => finding.remediation === 'add_evidence_backed_opening_balance');
+    expect(opening?.intent).toEqual({
+      destination: 'connections', target: { kind: 'exchange', connectionId: 'api-owner' },
+      workspaceTab: 'overview', focus: {
+        kind: 'opening', scopeId: 'exchange:api-owner', accountClass: 'spot',
+        assetKey: 'asset:BTC', action: 'add'
+      }
+    });
   });
 
   it('maps file-owned retry remediation to Import file rather than Sync', () => {

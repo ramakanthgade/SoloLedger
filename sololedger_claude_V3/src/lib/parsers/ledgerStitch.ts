@@ -442,7 +442,7 @@ export function makeTx(
 ): Transaction {
   const fiatCurrency = partial.fiatCurrency ?? 'USD';
   const flags =
-    partial.flags ?? (partial.fiatValue != null && partial.fiatValue > 0 ? [] : ['missing_cost_basis']);
+    partial.flags ?? (partial.fiatValue != null && partial.fiatValue > 0 ? [] : ['missing_market_value']);
   return {
     ...partial,
     id: makeId(ctx.exchange.slice(0, 2)),
@@ -660,7 +660,7 @@ function stitchSimpleTrades(
       feeAsset: feeRow?.coin,
       sourceRef: srcRef(ctx, sell.timestamp, isStableQuote ? 'sell' : 'trade', sell.coin, amount),
       notes: isStableQuote ? undefined : 'Crypto-for-crypto trade',
-      flags: isStableQuote ? [] : ['missing_cost_basis'],
+      flags: isStableQuote ? [] : ['missing_market_value'],
       raw: { sell: sell.raw, buy: buyRow?.raw, fee: feeRow?.raw }
     });
   });
@@ -733,7 +733,7 @@ function stitchCrossGroupSimpleTrades(
         fiatCurrency: isStableQuote ? fiatFromCoin(best.coin) : 'USD',
         sourceRef: srcRef(ctx, sell.timestamp, isStableQuote ? 'sell' : 'trade', sell.coin, Math.abs(sell.change)),
         notes: `Cross-group paired simple trade (Δ${Math.round(bestDist / 1000)}s)`,
-        flags: isStableQuote ? [] : ['missing_cost_basis'],
+        flags: isStableQuote ? [] : ['missing_market_value'],
         raw: { sell: sell.raw, buy: best.raw }
       })
     );
@@ -764,7 +764,7 @@ function stitchConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[] {
       counterAmount: inRow ? Math.abs(inRow.change) : pairedAmount,
       sourceRef: srcRef(ctx, out.timestamp, 'trade', out.coin, amount),
       notes: out.operation,
-      flags: ['missing_cost_basis'],
+      flags: ['missing_market_value'],
       raw: { out: out.raw, in: inRow?.raw }
     });
   });
@@ -840,7 +840,7 @@ function stitchDustConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
           counterAmount,
           sourceRef: srcRef(ctx, r.timestamp, 'trade', r.coin, amount),
           notes: `Small assets (dust) converted to ${dc.toAsset} (group total +${receivedTotal} ${dc.toAsset})`,
-          flags: ['missing_cost_basis'],
+          flags: ['missing_market_value'],
           raw: exactCredit
             ? { spent: r.raw, received: exactCredit.raw }
             : { spent: r.raw, receivedAggregate: residualCredits.map((credit) => credit.raw) }
@@ -868,7 +868,7 @@ function stitchDustConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
           amount: credit.change,
           sourceRef: srcRef(ctx, credit.timestamp, 'transfer_in', dc.toAsset, credit.change),
           notes: 'Unmatched small-assets (dust) credit; no residual debit in group',
-          flags: ['needs_review', 'missing_cost_basis'],
+          flags: ['needs_review', 'missing_market_value'],
           raw: { received: credit.raw }
         }));
       }
@@ -974,7 +974,7 @@ function stitchP2pRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] {
         amount,
         sourceRef: srcRef(ctx, r.timestamp, type, r.coin, amount),
         notes: r.remark ? `P2P: ${r.remark}` : 'P2P trading',
-        flags: ['missing_cost_basis'],
+        flags: ['missing_market_value'],
         category: 'p2p',
         raw: r.raw
       })
@@ -1004,7 +1004,7 @@ function stitchSignSplits(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
         fiatCurrency: fiatFromCoin(r.coin),
         sourceRef: srcRef(ctx, r.timestamp, type, r.coin, amount),
         notes: r.remark ? `${r.operation}: ${r.remark}` : r.operation,
-        flags: positive || isPnl ? (positive ? ['missing_cost_basis'] : []) : [],
+        flags: positive || isPnl ? (positive ? ['missing_market_value'] : []) : [],
         category: rule.category,
         instrumentClass: rule.derivative ? 'derivative' : undefined,
         raw: r.raw
@@ -1154,7 +1154,7 @@ function stitchSimpleRows(ctx: StitchContext, rows: LedgerRow[]): Transaction[] 
       type === 'transfer_in' || type === 'transfer_out'
         ? ['possible_internal_transfer']
         : type === 'buy' || type === 'sell'
-          ? ['missing_cost_basis']
+          ? ['missing_market_value']
           : [];
 
     out.push(

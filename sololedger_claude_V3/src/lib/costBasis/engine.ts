@@ -77,7 +77,7 @@ function expandTrades(transactions: Transaction[]): ExpandResult {
       expanded.push(tx);
       continue;
     }
-    const fmv = Math.abs(tx.fiatValue ?? 0);
+    const fmv = tx.fiatValue == null ? undefined : Math.abs(tx.fiatValue);
     expanded.push({
       ...tx,
       id: `${tx.id}__disposal`,
@@ -105,7 +105,7 @@ function expandTrades(transactions: Transaction[]): ExpandResult {
       droppedTradeLegs.push({
         transactionId: tx.id,
         asset: tx.counterAsset,
-        reason: 'missing_cost_basis'
+        reason: 'invalid_transaction_data'
       });
     }
   }
@@ -138,9 +138,25 @@ export interface EngineFlag {
   reason: FlagReason;
 }
 
+/** Lot-selection facts for every disposal, including rows whose proceeds are unpriced. */
+export interface InventoryDisposal {
+  asset: string;
+  disposedAt: number;
+  amount: number;
+  costBasis: number;
+  holdingPeriodDays: number;
+  lotConsumption: Disposal['lotConsumption'];
+  sourceTxId: string;
+  method: CostBasisMethod;
+  finalized: boolean;
+}
+
 export interface EngineResult {
   lots: Lot[];
+  /** Finalized report rows. Unpriced disposals are deliberately excluded. */
   disposals: Disposal[];
+  /** Inventory chronology for all disposals, whether or not proceeds are priced. */
+  inventoryDisposals: InventoryDisposal[];
   /** Disposals that couldn't be fully matched to cost basis (insufficient lots). */
   shortfalls: { transactionId: string; asset: string; unmatchedAmount: number }[];
   /**
@@ -198,6 +214,7 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
   const feePolicy: FeePolicy = options.feePolicy ?? 'exclude';
   const lots: Lot[] = [];
   const disposals: Disposal[] = [];
+  const inventoryDisposals: InventoryDisposal[] = [];
   const shortfalls: EngineResult['shortfalls'] = [];
   const flags: EngineFlag[] = [...droppedTradeLegs];
   const disposalCandidates: EngineResult['disposalCandidates'] = {};
@@ -231,9 +248,13 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
         // Validate the acquisition: a lot needs a positive quantity and a finite
         // fiat cost basis. Reject anything else with a flag rather than opening a
         // zero/negative lot that would silently distort later disposals.
-        const rawFiat = tx.fiatValue ?? 0;
-        if (!Number.isFinite(tx.amount) || !isPositive(tx.amount) || !Number.isFinite(rawFiat)) {
-          flags.push({ transactionId: originalTxId(tx.id), asset, reason: 'missing_cost_basis' });
+        const rawFiat = tx.fiatValue;
+        if (!Number.isFinite(tx.amount) || !isPositive(tx.amount)) {
+          flags.push({ transactionId: originalTxId(tx.id), asset, reason: 'invalid_transaction_data' });
+          continue;
+        }
+        if (!isMiningIncome(tx) && (rawFiat == null || !Number.isFinite(rawFiat))) {
+          flags.push({ transactionId: originalTxId(tx.id), asset, reason: 'missing_market_value' });
           continue;
         }
 
@@ -244,7 +265,7 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
         // full consideration.
         const costBasisTotal = isMiningIncome(tx)
           ? D(0)
-          : add(Math.abs(rawFiat), feeForBasis(tx, feePolicy));
+          : add(Math.abs(rawFiat!), feeForBasis(tx, feePolicy));
         const amount = D(tx.amount);
         const lot: Lot = {
           id: makeId('lot'),
@@ -263,6 +284,9 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
 
       if (DISPOSAL_TYPES.includes(tx.type)) {
         const origId = originalTxId(tx.id);
+
+        const finalized = tx.fiatValue != null && Number.isFinite(tx.fiatValue);
+        if (!finalized) flags.push({ transactionId: origId, asset, reason: 'missing_market_value' });
 
         disposalCandidates[origId] = openLots
           .filter((l) => isPositive(l.amountRemaining))
@@ -296,13 +320,26 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
           return { lotId: lot.id, amount: sel.amount, costBasis: toNumber(consumedCost) };
         });
 
-        const proceeds = Math.abs(tx.fiatValue ?? 0);
         const earliestLotDate = lotConsumption.length
           ? Math.min(...lotConsumption.map((lc) => openLots.find((l) => l.id === lc.lotId)!.acquiredAt))
           : tx.timestamp;
         const holdingPeriodDays = Math.max(0, Math.round((tx.timestamp - earliestLotDate) / 86_400_000));
 
         const costBasisNum = toNumber(costBasis);
+        inventoryDisposals.push({
+          asset,
+          disposedAt: tx.timestamp,
+          amount: tx.amount,
+          costBasis: costBasisNum,
+          holdingPeriodDays,
+          lotConsumption,
+          sourceTxId: origId,
+          method: options.method,
+          finalized
+        });
+        if (!finalized) continue;
+
+        const proceeds = Math.abs(tx.fiatValue!);
         disposals.push({
           id: makeId('disp'),
           asset,
@@ -320,5 +357,9 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
     }
   }
 
-  return { lots, disposals, shortfalls, flags, disposalCandidates };
+  const uniqueFlags = [...new Map(flags.map((flag) => [
+    `${flag.transactionId}\u001f${flag.asset}\u001f${flag.reason}`,
+    flag
+  ])).values()];
+  return { lots, disposals, inventoryDisposals, shortfalls, flags: uniqueFlags, disposalCandidates };
 }

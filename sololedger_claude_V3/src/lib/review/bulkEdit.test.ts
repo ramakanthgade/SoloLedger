@@ -446,7 +446,7 @@ describe('initialBulkFlagsSelection', () => {
     ];
     const init = initialBulkFlagsSelection(sel);
     expect(init.flags.get('needs_review')).toBe(true);
-    expect(init.flags.get('missing_cost_basis')).toBe(false);
+    expect(init.flags.has('missing_cost_basis')).toBe(false);
     expect(init.internal).toBe(false);
     expect(init.spam).toBe(false);
   });

@@ -14,6 +14,7 @@
  */
 import { db, getSettings } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { buildMatchedGainRows, buildIncomeRows } from '@/lib/costBasis/matchedGains';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
 import { formatCurrency, getCurrentFy, getFyLabel, isInFy } from '@/lib/utils';
@@ -151,7 +152,7 @@ export async function buildTaxContextFromDb(year?: number): Promise<string> {
     .map(([asset, { qty, cost }]) => ({ asset, qty, cost }));
 
   const missingCount = allTxs.filter(
-    (t) => t.fiatValue == null && !t.isInternalTransfer
+    (t) => t.fiatValue == null && !t.isInternalTransfer && requiresMarketValue(t)
   ).length;
 
   const spamCount = allTxs.filter((t) => (t.flags ?? []).includes('possible_internal_transfer')).length;

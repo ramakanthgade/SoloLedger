@@ -1,8 +1,9 @@
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { buildPriceIndex } from '@/lib/dashboard/dashboardModel';
 import type { ConnectionCardData } from './connectionModel';
 import { ConnectionOverview } from './ConnectionOverview';
+import { ConnectionOpeningBalances } from './ConnectionOpeningBalances';
 import type { ConnectionWorkspaceSnapshot } from './connectionWorkspaceModel';
 
 const card: ConnectionCardData = {
@@ -80,20 +81,75 @@ describe('ConnectionOverview', () => {
     expect(screen.getByLabelText('History coverage status')).toHaveTextContent('1 not checked');
   });
 
-  it.each([
-    ['file', card],
-    ['exchange', {
-      ...card,
-      id: 'exchange:conn-1', kind: 'exchange-api',
-      csvImport: undefined,
-      exchange: { id: 'conn-1', exchange: 'binance', createdAt: 1, txCount: 1, lastError: null }
-    } as ConnectionCardData]
-  ])('renders exact zero authority discrepancy rows for %s sources', (_label, sourceCard) => {
+  it('keeps a required dated starting balance accessible from Overview', () => {
+    const openingSnapshot = snapshot();
+    const asset = {
+      kind: 'asset', key: 'file:file-1:spot\u001fspot\u001fasset:BTC', scopeId: 'file:file-1:spot',
+      accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', openingStatus: 'required',
+      openingCutoff: Date.UTC(2025, 0, 1), reconciliation: { scopeStatus: 'resolved' },
+      presentation: { primaryRemediation: 'add_evidence_backed_opening_balance', secondaryRemediations: [] }
+    };
+    openingSnapshot.scopes = [{
+      key: 'file:file-1:spot', scopeId: 'file:file-1:spot', accountClass: 'spot', scopeStatus: 'resolved',
+      assets: [asset]
+    }] as unknown as ConnectionWorkspaceSnapshot['scopes'];
+    openingSnapshot.reconciliation = [asset] as unknown as ConnectionWorkspaceSnapshot['reconciliation'];
+
+    render(<ConnectionOpeningBalances snapshot={openingSnapshot} openingBalances={[]} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Add starting balance' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('dialog')).toHaveTextContent('BTC');
+  });
+
+  it('renders one canonical nonzero row per asset key and hides grouped zero-only assets by default', () => {
+    const sourceCard = card;
     const zeroSnapshot = snapshot();
     zeroSnapshot.id = sourceCard.id;
     zeroSnapshot.kind = sourceCard.kind;
+    zeroSnapshot.overview.holdings = [{
+      assetKey: 'asset:BTC', asset: 'BTC', quantity: 3, amount: 3, costBasis: 300,
+      verificationStatus: 'verified_authority'
+    } as ConnectionWorkspaceSnapshot['overview']['holdings'][number], {
+      assetKey: 'evm:1:0xabc', asset: 'USD', quantity: 2, amount: 2, costBasis: 20,
+      verificationStatus: 'verified_authority'
+    } as ConnectionWorkspaceSnapshot['overview']['holdings'][number], {
+      assetKey: 'evm:137:0xdef', asset: 'USD', quantity: 4, amount: 4, costBasis: 40,
+      verificationStatus: 'verified_authority'
+    } as ConnectionWorkspaceSnapshot['overview']['holdings'][number]];
     zeroSnapshot.overview.slices = [{
-      scopeId: sourceCard.kind === 'file' ? 'file:file-1:spot' : 'exchange:conn-1',
+      scopeId: 'file:file-1:spot', accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', quantity: 1,
+      postingQuantity: 1, verificationStatus: 'posting_fallback'
+    }, {
+      scopeId: 'file:file-1:funding', accountClass: 'funding', assetKey: 'asset:BTC', asset: 'BTC', quantity: 2,
+      postingQuantity: 2, verificationStatus: 'posting_fallback'
+    }, {
+      scopeId: 'file:file-1:spot', accountClass: 'spot', assetKey: 'asset:ETH', asset: 'ETH', quantity: 0,
+      postingQuantity: 2, authorityQuantity: 0, verificationStatus: 'verified_authority'
+    }, {
+      scopeId: 'file:file-1:funding', accountClass: 'funding', assetKey: 'asset:ETH', asset: 'ETH', quantity: 0,
+      postingQuantity: 0, authorityQuantity: 0, verificationStatus: 'verified_authority'
+    } as ConnectionWorkspaceSnapshot['overview']['slices'][number]] as ConnectionWorkspaceSnapshot['overview']['slices'];
+
+    render(
+      <ConnectionOverview card={sourceCard} snapshot={zeroSnapshot} priceIndex={buildPriceIndex([], 'INR')}
+        formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()} />
+    );
+
+    expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('3');
+    expect(screen.getAllByText('BTC')).toHaveLength(1);
+    expect(screen.getAllByText('USD')).toHaveLength(2);
+    expect(screen.queryByText('ETH')).not.toBeInTheDocument();
+    expect(screen.getByTestId('zero-balance-control')).toHaveTextContent('1 asset with zero balances is hidden.');
+    expect(screen.queryByTestId('detail-source-row-source')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
+    expect(screen.getAllByText('ETH')).toHaveLength(1);
+    expect(screen.getByTestId('zero-balance-control')).toHaveTextContent('1 asset with zero balances is shown.');
+  });
+
+  it('shows a zero-only source total without presenting an empty-state row', () => {
+    const zeroSnapshot = snapshot();
+    zeroSnapshot.overview.slices = [{
+      scopeId: 'file:file-1:spot',
       accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', quantity: 0,
       postingQuantity: 2, authorityQuantity: 0, verificationStatus: 'verified_authority',
       authorityStatus: 'current', coverageStatus: 'complete', scopeStatus: 'resolved'
@@ -101,7 +157,7 @@ describe('ConnectionOverview', () => {
 
     render(
       <ConnectionOverview
-        card={sourceCard}
+        card={card}
         snapshot={zeroSnapshot}
         priceIndex={buildPriceIndex([], 'INR')}
         formatMoney={(value) => `₹${value}`}
@@ -112,10 +168,9 @@ describe('ConnectionOverview', () => {
     );
 
     expect(screen.queryByTestId('detail-empty-balances')).not.toBeInTheDocument();
-    expect(screen.getByText('BTC')).toBeInTheDocument();
+    expect(screen.queryByText('BTC')).not.toBeInTheDocument();
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹0');
-    expect(screen.getByTestId('detail-source-row-source')).toHaveTextContent(
-      'Current source balance · Ledger postings: 2'
-    );
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
+    expect(screen.getByText('BTC')).toBeInTheDocument();
   });
 });

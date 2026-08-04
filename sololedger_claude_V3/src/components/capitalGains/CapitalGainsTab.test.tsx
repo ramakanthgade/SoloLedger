@@ -253,6 +253,74 @@ describe('CapitalGainsTab (Ember & Slate)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   });
 
+  it('surfaces a fully matched unpriced disposal without adding it to totals and blocks exports', async () => {
+    SEED.txs.push({
+      id: 't-btc-unpriced',
+      timestamp: Date.UTC(2026, 6, 1, 10),
+      type: 'sell',
+      asset: 'BTC',
+      amount: 0.5,
+      fiatCurrency: 'INR',
+      fiatValue: undefined,
+      source: 'manual',
+      flags: [],
+      isInternalTransfer: false
+    } as never);
+    try {
+      await renderTab();
+      const warning = screen.getByRole('alert');
+      expect(warning).toHaveTextContent('Taxable disposals are missing proceeds');
+      expect(warning).toHaveTextContent('1 are fully matched to acquisition lots');
+      expect(screen.getByTestId('cg-card-gains')).toHaveTextContent('+₹5,00,000.00');
+
+      const exportButtons = screen.getAllByRole('button').filter((button) =>
+        /^(Download CSV|Export CSV|Export JSON|Export PDF →)$/.test(button.textContent?.trim() ?? '')
+      );
+      expect(exportButtons).toHaveLength(4);
+      for (const button of exportButtons) expect(button).toBeDisabled();
+    } finally {
+      SEED.txs.pop();
+    }
+  });
+
+  it('surfaces unpriced non-mining receipts, prevents ready-to-file copy, and blocks exports', async () => {
+    SEED.txs.push({
+      id: 't-unpriced-gift', timestamp: Date.UTC(2026, 7, 1, 10), type: 'gift_received',
+      asset: 'SOL', amount: 2, fiatCurrency: 'INR', fiatValue: undefined,
+      source: 'manual', flags: [], isInternalTransfer: false
+    } as never);
+    try {
+      await renderTab();
+      expect(screen.getByText('Taxable receipts are missing market value')).toBeInTheDocument();
+      expect(screen.queryByText(/Ready to file/)).not.toBeInTheDocument();
+      expect(screen.getByText(/Complete missing tax values/)).toBeInTheDocument();
+      expect(screen.getByTestId('capital-gains-income')).toHaveTextContent('₹15,000.00');
+      const exportButtons = screen.getAllByRole('button').filter((button) =>
+        /^(Download CSV|Export CSV|Export JSON|Export PDF →)$/.test(button.textContent?.trim() ?? '')
+      );
+      expect(exportButtons).toHaveLength(4);
+      for (const button of exportButtons) expect(button).toBeDisabled();
+    } finally {
+      SEED.txs.pop();
+    }
+  });
+
+  it('preserves intentional unpriced mining semantics without blocking filing', async () => {
+    SEED.txs.push({
+      id: 't-unpriced-mining', timestamp: Date.UTC(2026, 7, 2, 10), type: 'income',
+      category: 'mining', asset: 'BTC', amount: 0.01, fiatCurrency: 'INR', fiatValue: undefined,
+      source: 'manual', flags: [], isInternalTransfer: false
+    } as never);
+    try {
+      await renderTab();
+      expect(screen.queryByText('Taxable receipts are missing market value')).not.toBeInTheDocument();
+      expect(screen.getByText(/Ready to file/)).toBeInTheDocument();
+      expect(within(screen.getByTestId('capital-gains-export')).getByRole('button', { name: /Export CSV/ })).toBeEnabled();
+    } finally {
+      SEED.txs.pop();
+    }
+  });
+
   it('keeps the per-FY selector and shows the empty state when the ledger is empty', async () => {
     await renderTab();
     expect(screen.getByLabelText('Financial year')).toBeInTheDocument();

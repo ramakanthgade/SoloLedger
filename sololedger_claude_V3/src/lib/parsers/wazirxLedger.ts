@@ -320,7 +320,7 @@ function emitTradeFromLegs(
     amount = primaryReceived.income;
     counterAsset = primarySpent.asset;
     counterAmount = primarySpent.expense;
-    flags = ['missing_cost_basis'];
+    flags = ['missing_market_value'];
   }
 
   // Extra spent/received legs beyond the primary pair → additional trades
@@ -359,7 +359,7 @@ function emitTradeFromLegs(
       source: 'wazirx_ledger',
       sourceRef: exchangeSourceRef('wazirx', timestamp, 'sell', extra.asset, extra.expense),
       notes: extra.remarks || 'Extra trade leg',
-      flags: isFiat(extra.asset) ? [] : ['missing_cost_basis'],
+      flags: isFiat(extra.asset) ? [] : ['missing_market_value'],
       isInternalTransfer: false,
       raw: extra.raw
     });
@@ -398,7 +398,7 @@ function stitchRebalanceGroup(
       source: 'wazirx_ledger',
       sourceRef: exchangeSourceRef('wazirx', timestamp, 'trade', s.asset, s.expense),
       notes: `Portfolio rebalance → ${primaryPlus.asset}`,
-      flags: ['missing_cost_basis'],
+      flags: ['missing_market_value'],
       isInternalTransfer: false,
       category: 'rebalance',
       raw: { from: s.raw, to: primaryPlus.raw }
@@ -500,7 +500,7 @@ function emitSimpleLeg(timestamp: number, leg: LedgerLeg, out: Transaction[]): v
       source: 'wazirx_ledger',
       sourceRef: exchangeSourceRef('wazirx', timestamp, 'income', leg.asset, amount),
       notes: leg.remarks || leg.reason,
-      flags: ['missing_cost_basis'],
+      flags: ['missing_market_value'],
       isInternalTransfer: false,
       raw: leg.raw
     });

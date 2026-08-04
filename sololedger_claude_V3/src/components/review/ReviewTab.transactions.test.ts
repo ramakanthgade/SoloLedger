@@ -125,6 +125,31 @@ describe('ReviewTab — grammar fix: needs-price banner is plural-aware', () => 
   });
 });
 
+describe('ReviewTab — market value and acquisition basis are distinct', () => {
+  it('clears only missing market value after manual pricing and labels the total field accurately', () => {
+    expect(source).toContain('parseManualMarketValue(editValue)');
+    expect(source).toContain("f !== 'missing_market_value'");
+    expect(source).not.toContain("f !== 'missing_cost_basis'");
+    expect(source).toContain('aria-label="Total transaction market value"');
+    expect(source).toContain('Add market value');
+  });
+
+  it('offers a direct Cost Analysis action and hosted missing-basis guidance', () => {
+    expect(source).toContain('Review Cost Analysis');
+    expect(source).toContain("[t.id]: 'cost'");
+    expect(source).toContain('transactions are missing cost basis');
+    expect(source).toContain("setFlagFilter('missing_cost_basis')");
+    expect(source).toContain('Automatic historical pricing was attempted');
+    expect(source).toContain('A transaction market value is not a replacement for lot basis.');
+  });
+
+  it('includes runtime-derived flags in CSV, JSON, and PDF exports', () => {
+    expect(source).toContain('displayFlags(t, derivedFlagsByTxId.get(t.id)).join(\'|\')');
+    expect(source).toContain('flags: displayFlags(t, derivedFlagsByTxId.get(t.id))');
+    expect(source).toContain('displayFlags(t, derivedFlagsByTxId.get(t.id)).join(\', \')');
+  });
+});
+
 describe('ReviewTab — transaction reconciliation and mobile overlays', () => {
   it('does not reconcile custody history for collapsed rows', () => {
     expect(source).toContain('const reconciliation = expanded && principalPosting && selectedAuthority ? reconcileDerivedPostings({');

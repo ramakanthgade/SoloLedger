@@ -30,7 +30,7 @@ const actionableManual: DataHealthModel = {
   }]
 };
 
-const secondaryIntent = { destination: 'connections' as const, target: { kind: 'csv' as const, importId: 'one' }, workspaceTab: 'reconciliation' as const, focus: { kind: 'asset' as const, scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC' } };
+const secondaryIntent = { destination: 'connections' as const, target: { kind: 'csv' as const, importId: 'one' }, workspaceTab: 'overview' as const, focus: { kind: 'asset' as const, scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC' } };
 const importIntent = { destination: 'connections' as const, target: { kind: 'csv' as const, importId: 'one' }, workspaceTab: 'overview' as const, focus: { kind: 'import' as const } };
 const syncIntent = { destination: 'connections' as const, target: { kind: 'csv' as const, importId: 'one' }, workspaceTab: 'overview' as const, focus: { kind: 'sync' as const } };
 const withSecondary: DataHealthModel = {
@@ -39,8 +39,8 @@ const withSecondary: DataHealthModel = {
     ...actionable.sources[0],
     findings: [
       ...actionable.sources[0].findings,
-      { key: 'secondary-a', severity: 'warning', remediation: 'add_timestamped_authority', scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC', intent: secondaryIntent },
-      { key: 'secondary-b', severity: 'info', remediation: 'refresh_authority', scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC', intent: secondaryIntent }
+      { key: 'secondary-a', severity: 'warning', remediation: 'add_timestamped_authority', scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC', intent: importIntent },
+      { key: 'secondary-b', severity: 'info', remediation: 'refresh_authority', scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC', intent: importIntent }
     ]
   }]
 };
@@ -50,8 +50,8 @@ const withDistinctClasses: DataHealthModel = {
     ...actionable.sources[0],
     findings: [
       ...actionable.sources[0].findings,
-      { key: 'spot-authority', severity: 'warning', remediation: 'add_timestamped_authority', scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC', intent: secondaryIntent },
-      { key: 'options-authority', severity: 'warning', remediation: 'add_timestamped_authority', scopeId: 'file:one:options', accountClass: 'options', assetKey: 'asset:BTC', intent: { ...secondaryIntent, focus: { ...secondaryIntent.focus, scopeId: 'file:one:options', accountClass: 'options' } } }
+      { key: 'spot-authority', severity: 'warning', remediation: 'add_timestamped_authority', scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC', intent: importIntent },
+      { key: 'options-authority', severity: 'warning', remediation: 'add_timestamped_authority', scopeId: 'file:one:options', accountClass: 'options', assetKey: 'asset:BTC', intent: importIntent }
     ]
   }]
 };
@@ -210,11 +210,12 @@ describe('DataHealthWorkspace', () => {
     }
   });
 
-  it('distinguishes equivalent remediation labels for exact account-class scopes', () => {
+  it('groups account-class findings that share the same actionable Import control', () => {
     render(<DataHealthWorkspace model={withDistinctClasses} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
-    fireEvent.click(screen.getByText('More actions (2)'));
-    expect(screen.getByRole('button', { name: /Add a dated balance record · Spot account/ })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Add a dated balance record · Options account/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByText('More actions (1)'));
+    expect(screen.getByRole('button', { name: /Add a dated balance record/ })).toBeInTheDocument();
+    expect(screen.getByText(/Helps with The balance record needs a date, The balance record needs a date/)).toBeInTheDocument();
+    expect(screen.getByText('Opens this source and focuses Import file.')).toBeVisible();
     expect(screen.queryByText(/file:one:/)).not.toBeInTheDocument();
   });
 
@@ -293,7 +294,7 @@ describe('DataHealthWorkspace', () => {
     expect(screen.queryByRole('button', { name: /^Retry Binance API/ })).toBeNull();
   });
 
-  it('describes sync and reconciliation destinations exactly', () => {
+  it('describes Sync and passive asset destinations exactly', () => {
     const model: DataHealthModel = {
       ...actionable,
       sources: [{
@@ -307,6 +308,13 @@ describe('DataHealthWorkspace', () => {
     render(<DataHealthWorkspace model={model} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
     expect(screen.getByText('Opens this source and focuses Sync now.')).toBeVisible();
     fireEvent.click(screen.getByText('More actions (1)'));
-    expect(screen.getByText(/Opens this source’s Reconciliation view/)).toBeVisible();
+    expect(screen.getByText(/Opens this source’s Overview/)).toBeVisible();
+  });
+
+  it('describes the relocated opening-balance control exactly', () => {
+    const openingIntent = { destination: 'connections' as const, target: { kind: 'csv' as const, importId: 'one' }, workspaceTab: 'overview' as const, focus: { kind: 'opening' as const, scopeId: 'file:one:spot', accountClass: 'spot', assetKey: 'asset:BTC', action: 'add' as const } };
+    const model: DataHealthModel = { ...actionable, sources: [{ ...actionable.sources[0], findings: [{ ...actionable.sources[0].findings[0], remediation: 'add_evidence_backed_opening_balance', intent: openingIntent }] }] };
+    render(<DataHealthWorkspace model={model} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
+    expect(screen.getByText('Opens this source’s Overview and focuses the dated starting balance control.')).toBeVisible();
   });
 });

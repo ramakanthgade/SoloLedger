@@ -35,6 +35,7 @@ import {
   type SyncEngineDeps
 } from './engine';
 import { loadCcxt, type ExchangeClient, type UnifiedTrade, type UnifiedTransfer } from './ccxtLoader';
+import type { Transaction } from '@/types/transaction';
 
 const DAY = 86_400_000;
 const NOW = 1_700_300_000_000;
@@ -283,6 +284,27 @@ describe('paginatePhase — scripted pages', () => {
 });
 
 describe('syncConnection — cursor safety with a fake client', () => {
+  it('persists explicit zero fiat while keeping absent exchange fiat absent', async () => {
+    await db.exchangeConnections.put(makeRow({ cursors: {} }));
+    const { client } = fakeClient();
+    const staged = await syncConnection('exc_cursor_test', { mode: 'stage' }, {}, deps(client));
+    expect(staged.mode).toBe('stage');
+    if (staged.mode !== 'stage') return;
+    const row = (id: string, fiatValue?: number): Transaction => ({
+      id, timestamp: NOW, type: 'buy', asset: 'BTC', amount: 1,
+      fiatCurrency: 'INR', fiatValue, source: 'okx_api', sourceRef: id,
+      flags: fiatValue == null ? ['missing_market_value'] : [], isInternalTransfer: false
+    });
+
+    await persistSyncedRows({
+      connectionId: 'exc_cursor_test', rows: [row('zero', 0), row('absent')],
+      cursors: staged.outcome.cursors, operation: staged.outcome.operation, deps: deps(client)
+    });
+
+    expect((await db.transactions.get('zero'))?.fiatValue).toBe(0);
+    expect((await db.transactions.get('absent'))?.fiatValue).toBeUndefined();
+  });
+
   it('does not let a stale stage completion or failure overwrite a newer reservation state', async () => {
     for (const failAfterAdvance of [false, true]) {
       await db.exchangeConnections.put(makeRow({ cursors: {} }));

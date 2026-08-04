@@ -316,3 +316,23 @@ describe('genericHistoryParser.detect — withdrawal headers', () => {
     expect(genericHistoryParser.detect(WITHDRAW_HEADERS)).toBe(true);
   });
 });
+
+describe('parseWithMapping — explicit zero fiat values', () => {
+  const mapping: ColumnMapping = {
+    timestamp: 'Date', type: 'Type', asset: 'Asset', amount: 'Amount', fiatValue: 'Value',
+    typeValueMap: DEFAULT_TYPE_VALUE_MAP, assetIsTradingPair: false
+  };
+
+  it('preserves source-present zero but keeps blank and invalid values absent', () => {
+    const base = { Date: '2024-01-01T00:00:00Z', Type: 'buy', Asset: 'BTC', Amount: '1' };
+    const { transactions } = parseWithMapping([
+      { ...base, Value: '0' },
+      { ...base, Date: '2024-01-02T00:00:00Z', Value: '' },
+      { ...base, Date: '2024-01-03T00:00:00Z', Value: 'not-a-number' }
+    ], mapping, 'USD');
+    expect(transactions.map((row) => row.fiatValue)).toEqual([0, undefined, undefined]);
+    expect(transactions.map((row) => row.flags)).toEqual([
+      [], ['missing_market_value'], ['missing_market_value']
+    ]);
+  });
+});

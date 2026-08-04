@@ -1,5 +1,5 @@
 import type { Transaction, TxType } from '@/types/transaction';
-import { exchangeSourceRef, makeId, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
+import { exchangeSourceRef, makeId, optionalNumber, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
 import { normalizeHeader } from './tableExtract';
 import { rowCol } from './headerMap';
 const TYPE_MAP: Record<string, TxType> = { buy: 'buy', sell: 'sell', deposit: 'transfer_in', withdrawal: 'transfer_out', send: 'transfer_out', receive: 'transfer_in' };
@@ -12,9 +12,9 @@ export const coinspotParser: ExchangeParser = {
       const type = TYPE_MAP[rowCol(row, 'Action').trim().toLowerCase()]; const asset = rowCol(row, 'Coin').trim().toUpperCase();
       const amount = Math.abs(safeNumber(rowCol(row, 'Amount'))); const ts = safeTimestampUtc(rowCol(row, 'Date'));
       if (!type || !asset || !amount || !Number.isFinite(ts)) { skippedRows++; continue; }
-      const aud = Math.abs(safeNumber(rowCol(row, 'AUD'))); const fee = Math.abs(safeNumber(rowCol(row, 'AUD Fee'))); const transfer = type.startsWith('transfer_');
+      const audRaw = optionalNumber(rowCol(row, 'AUD')); const aud = audRaw == null ? undefined : Math.abs(audRaw); const fee = Math.abs(safeNumber(rowCol(row, 'AUD Fee'))); const transfer = type.startsWith('transfer_');
       transactions.push({ id: makeId('csp'), timestamp: ts, type, asset, amount, counterAsset: type === 'buy' || type === 'sell' ? 'AUD' : undefined,
-        counterAmount: aud || undefined, fiatCurrency: 'AUD', fiatValue: aud || undefined,
+        counterAmount: aud, fiatCurrency: 'AUD', fiatValue: aud,
         feeAmount: fee || undefined, feeAsset: fee ? 'AUD' : undefined, source: 'coinspot', sourceRef: exchangeSourceRef('coinspot', ts, type, asset, amount),
         flags: transfer ? ['possible_internal_transfer'] : [], isInternalTransfer: false, raw: row });
     }

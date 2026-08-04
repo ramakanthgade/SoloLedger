@@ -142,7 +142,7 @@ describe('normalizeTrade — binance (real ccxt parse of myTrades fixture)', () 
     expect(row!.fiatValue).toBeUndefined();
     expect(row!.fiatCurrency).toBe('USD');
     expect(row!.notes).toBe('Crypto-for-crypto trade');
-    expect(row!.flags).toEqual(['missing_cost_basis']);
+    expect(row!.flags).toEqual(['missing_market_value']);
     expect(row!.feeAmount).toBe(0.0005);
     expect(row!.feeAsset).toBe('ETH');
     // Ref uses side token + BASE asset + gross base amount (binanceSpot.ts parity).

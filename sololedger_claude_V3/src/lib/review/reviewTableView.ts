@@ -15,6 +15,7 @@
 import type { FlagReason, Transaction, TxType } from '@/types/transaction';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { matchesFlagFilter } from '@/lib/review/displayFlags';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 
 export interface RowFilterOptions {
   showSpam: boolean;
@@ -31,6 +32,8 @@ export interface RowFilterOptions {
   isNeedsReview: (t: Transaction) => boolean;
   /** Injected so this module avoids importing the tax/derivatives helpers. */
   isDerivative: (t: Transaction) => boolean;
+  /** Cost-engine flags derived at runtime, keyed by transaction id. */
+  derivedFlagsById?: ReadonlyMap<string, readonly FlagReason[]>;
 }
 
 /** Keep only the rows visible for the current filter selection. */
@@ -42,11 +45,11 @@ export function filterRows(txs: Transaction[], opts: RowFilterOptions): Transact
       if (!opts.showSpam && t.isSpam) return false;
       if (opts.showSpam && !t.isSpam) return false;
     }
-    if (opts.showNeedsPrice && !(t.fiatValue == null && !t.isSpam && !t.isInternalTransfer)) return false;
+    if (opts.showNeedsPrice && !(t.fiatValue == null && !t.isSpam && !t.isInternalTransfer && requiresMarketValue(t))) return false;
     if (opts.showNeedsReview && !opts.isNeedsReview(t)) return false;
     if (opts.assetFilter !== 'all' && t.asset !== opts.assetFilter) return false;
     if (opts.typeFilter !== 'all' && t.type !== opts.typeFilter) return false;
-    if (opts.flagFilter !== 'all' && !matchesFlagFilter(t, opts.flagFilter)) return false;
+    if (opts.flagFilter !== 'all' && !matchesFlagFilter(t, opts.flagFilter, opts.derivedFlagsById?.get(t.id))) return false;
     if (
       opts.walletFilter !== 'all' &&
       (t.walletAddress == null ||

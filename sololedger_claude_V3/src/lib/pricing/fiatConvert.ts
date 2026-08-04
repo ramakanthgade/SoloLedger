@@ -14,6 +14,12 @@ const AED_USD_PEG = 3.6725;
 
 const frankfurterCache = new Map<string, number>();
 
+function clearLegacyPricingFlags(t: Transaction) {
+  return (t.flags ?? []).filter((flag) =>
+    flag !== 'missing_market_value' && flag !== 'missing_cost_basis'
+  );
+}
+
 /** Free historical fiat FX fallback when CoinGecko is unavailable (no API key). */
 async function usdToCurrencyRateFrankfurter(
   timestampMs: number,
@@ -221,7 +227,7 @@ export async function convertTransactionsToReportingCurrency(
       ...t,
       fiatValue: result.amount,
       fiatCurrency: result.currency,
-      flags: (t.flags ?? []).filter((f) => f !== 'missing_cost_basis')
+      flags: clearLegacyPricingFlags(t)
     });
   }
 
@@ -234,7 +240,7 @@ function normalizeReportingRow(
   magnitude: number,
   reporting: string
 ): Transaction {
-  return { ...t, fiatValue: magnitude, fiatCurrency: reporting };
+  return { ...t, fiatValue: magnitude, fiatCurrency: reporting, flags: clearLegacyPricingFlags(t) };
 }
 
 /**
@@ -258,6 +264,9 @@ export function normalizeFiatToReportingCurrencyLocal(
     if (!needsFiatConversion(t.fiatCurrency, reporting)) {
       return normalizeReportingRow(t, magnitude, reporting);
     }
+    // Currency conversion cannot change a confirmed zero magnitude. Preserve
+    // that source-present fact and normalize its currency without an FX lookup.
+    if (magnitude === 0) return normalizeReportingRow(t, magnitude, reporting);
     // Foreign fiat without live lookup — leave unpriced (no network conversion),
     // but stamp the reporting currency so a manual Review entry lands in it.
     return { ...t, fiatValue: undefined, fiatCurrency: reporting };

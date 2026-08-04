@@ -42,6 +42,7 @@ import { useTabNav } from '@/lib/tabNav';
 import { AlertCircle, AlertTriangle, PieChart, RefreshCw, ShieldCheck } from 'lucide-react';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
+import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { createBrandedPdf, pdfTableStyles } from '@/lib/export/pdfTheme';
 import autoTable from 'jspdf-autotable';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
@@ -552,7 +553,7 @@ export function PortfolioTab() {
   }, [balanceVariances, liveBalanceStatus, selectedFy, repairingBalances, crossCheckMode]);
 
   const missingPriceCount = filteredTxs.filter(
-    (t) => t.fiatValue == null && (t.flags ?? []).includes('missing_cost_basis') && !t.isInternalTransfer
+    (t) => t.fiatValue == null && !t.isInternalTransfer && requiresMarketValue(t)
   ).length;
 
   // The loss-toned alert is visible while a repair runs or while on-chain

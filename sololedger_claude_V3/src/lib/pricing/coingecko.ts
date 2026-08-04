@@ -41,6 +41,7 @@ async function coingeckoFetch(url: string, headers?: HeadersInit, retries = 2): 
 // CoinGecko internal coin ids (not tickers). Extended set + dynamic search fallback.
 const SYMBOL_TO_ID: Record<string, string> = {
   BTC: 'bitcoin',
+  WBTC: 'wrapped-bitcoin',
   ETH: 'ethereum',
   USDT: 'tether',
   USDC: 'usd-coin',
