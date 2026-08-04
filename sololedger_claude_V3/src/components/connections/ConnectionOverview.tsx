@@ -180,13 +180,17 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
   }, { complete: 0, partial: 0, failed: 0, unknown: 0 });
   const attentionCoverage = coverageCounts.partial + coverageCounts.failed;
   const historyUpdateCount = snapshot.syncHistory.filter((event) => event.kind === 'source-operation').length;
+  const uniqueAssetCount = new Set([
+    ...snapshot.overview.holdings.map((holding) => holding.assetKey),
+    ...snapshot.overview.slices.map((slice) => slice.assetKey)
+  ]).size;
 
   return (
     <div className="space-y-5" data-testid="connection-overview" tabIndex={-1}>
       <section aria-label="Source summary" className="grid grid-cols-1 gap-3 sm:grid-cols-3" data-testid="overview-metrics">
         {([
           ['Transactions', snapshot.overview.transactionCount],
-          ['Assets', card.kind === 'wallet' ? snapshot.overview.slices.length : sourceAssets.length + zeroAssets.length],
+          ['Assets', uniqueAssetCount],
           ['History updates', historyUpdateCount]
         ] as const).map(([label, value]) => (
           <div key={label} className="rounded-2xl border border-hi/10 bg-elev-2 px-4 py-3.5">
