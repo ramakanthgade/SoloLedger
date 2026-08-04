@@ -135,7 +135,7 @@ describe('ConnectionOverview', () => {
         formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()} />
     );
 
-    expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('3');
+    expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('4');
     expect(screen.getAllByText('BTC')).toHaveLength(1);
     expect(screen.getAllByText('USD')).toHaveLength(2);
     expect(screen.queryByText('ETH')).not.toBeInTheDocument();

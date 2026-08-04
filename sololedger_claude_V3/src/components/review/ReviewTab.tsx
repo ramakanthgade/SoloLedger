@@ -1602,6 +1602,13 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               onClick={() => {
                 setExpandedId(t.id);
                 setDetailTabByTxId((current) => ({ ...current, [t.id]: 'cost' }));
+                window.requestAnimationFrame(() => {
+                  const row = Array.from(document.querySelectorAll<HTMLElement>('[data-transaction-id]'))
+                    .find((element) => element.dataset.transactionId === t.id);
+                  const costTab = row?.querySelector<HTMLButtonElement>('[role="tab"][aria-controls="transaction-panel-cost"]');
+                  costTab?.focus();
+                  costTab?.scrollIntoView?.({ block: 'center' });
+                });
               }}
               className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
             >
