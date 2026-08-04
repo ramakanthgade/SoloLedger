@@ -16,6 +16,8 @@ export interface ImportSource {
   monogram: string;
   /** Short format hint shown under the name in the picker. */
   formatHint: string;
+  /** Honest catalog maturity shown as a capability badge. */
+  fileSupport: 'verified' | 'schema-beta' | 'flexible';
   region: 'india' | 'global';
   /** Ordered, plain-language export steps. */
   steps: string[];
@@ -45,6 +47,7 @@ function schemaCompatibleCsvSource(config: {
     label,
     monogram,
     formatHint: formatHint ?? `${reportType} CSV · schema-compatible beta`,
+    fileSupport: 'schema-beta',
     region: 'global',
     steps: [
       `Export the ${reportType} report from ${label} as CSV. The exact vendor menu path has not been verified.`,
@@ -64,6 +67,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'CoinDCX',
     monogram: 'DC',
     formatHint: 'CSV · TDS included',
+    fileSupport: 'verified',
     region: 'india',
     steps: [
       'Open CoinDCX and go to Profile → Reports.',
@@ -79,6 +83,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'CoinSwitch',
     monogram: 'CS',
     formatHint: 'CSV export',
+    fileSupport: 'verified',
     region: 'india',
     steps: [
       'Open the CoinSwitch app and go to Profile → Reports & Statements.',
@@ -94,6 +99,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'ZebPay',
     monogram: 'ZP',
     formatHint: 'CSV / XLSX',
+    fileSupport: 'verified',
     region: 'india',
     steps: [
       'Open ZebPay and go to Profile → Reports.',
@@ -109,6 +115,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'WazirX',
     monogram: 'WX',
     formatHint: 'XLSX ledger',
+    fileSupport: 'verified',
     region: 'india',
     steps: [
       'Log in to WazirX on the web and open Funds → Transaction History.',
@@ -124,6 +131,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'Mudrex',
     monogram: 'MX',
     formatHint: 'CSV export',
+    fileSupport: 'verified',
     region: 'india',
     steps: [
       'Open Mudrex and go to Profile → Reports / Statements.',
@@ -139,6 +147,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'Binance',
     monogram: 'BN',
     formatHint: 'CSV · multiple files OK',
+    fileSupport: 'verified',
     region: 'global',
     steps: [
       'Open Binance on the web and go to Orders → Spot Orders → Trade History, and export that report as CSV.',
@@ -146,13 +155,14 @@ export const IMPORT_SOURCES: ImportSource[] = [
       'Download the CSV files and drop them together into the next step — each file is detected automatically.'
     ],
     path: ['Orders / Wallet', 'Trade History', 'Deposit & Withdrawal History', 'CSV'],
-    note: 'Trade History plus Deposit & Withdrawal History covers everything. Prefer one file? The full-ledger "Transaction History" export still works on its own.'
+    note: 'Spot Trade History plus Deposit & Withdrawal History covers spot activity and on-chain transfers. For P2P or Options, also export the relevant Binance report. For the broadest single-file history, use the full Transaction History export; import Binance Options History separately when applicable.'
   },
   {
     id: 'coinbase',
     label: 'Coinbase',
     monogram: 'CB',
     formatHint: 'CSV export',
+    fileSupport: 'verified',
     region: 'global',
     steps: [
       'Open Coinbase and go to Settings → Reports (or Statements).',
@@ -243,6 +253,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'Hyperliquid',
     monogram: 'HL',
     formatHint: 'Two CSV reports · schema-compatible beta',
+    fileSupport: 'schema-beta',
     region: 'global',
     steps: [
       'Export the Hyperliquid Trade History CSV for perpetual fills, fees and closed PnL.',
@@ -258,6 +269,7 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'Other / any exchange',
     monogram: 'OT',
     formatHint: 'Any CSV / Excel',
+    fileSupport: 'flexible',
     region: 'global',
     steps: [
       'In your exchange, open the reports/statements section.',

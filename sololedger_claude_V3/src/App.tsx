@@ -110,6 +110,12 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
     setActive(intent.destination === 'connections' ? 'import' : 'review');
   };
 
+  const beginDashboardNavigation = (intent: NavigationIntent) => {
+    setDataHealthOrigin(undefined);
+    setNavigationIntent(intent);
+    setActive(intent.destination === 'connections' ? 'import' : 'review');
+  };
+
   const acknowledgeNavigationIntent = (id: string) => {
     setNavigationIntent((current) => current?.id === id ? undefined : current);
   };
@@ -287,6 +293,7 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
             active === 'dashboard' ? (
               <DashboardTab
                 onNavigationIntent={beginRemediationNavigation}
+                onDashboardNavigationIntent={beginDashboardNavigation}
                 restoredDataHealthState={dataHealthOrigin}
                 openDataHealthOnMount={dataHealthOrigin != null}
               />

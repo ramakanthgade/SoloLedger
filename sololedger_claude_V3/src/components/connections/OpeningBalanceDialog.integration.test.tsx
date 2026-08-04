@@ -226,9 +226,9 @@ describe('OpeningBalanceDialog production IndexedDB isolation', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Confirm delete' }));
 
     await waitFor(() => expect(screen.queryByTestId('reconciliation-scope')).not.toBeInTheDocument());
-    const destination = screen.getByRole('heading', { name: 'Connection reconciliation', level: 2 });
+    const destination = screen.getByRole('heading', { name: 'Does recorded activity explain the source balance?', level: 2 });
     await waitFor(() => expect(destination).toHaveFocus());
-    expect(destination).toHaveAccessibleName('Connection reconciliation');
+    expect(destination).toHaveAccessibleName('Does recorded activity explain the source balance?');
     expect(destination).toHaveAttribute('tabindex', '-1');
   });
 });

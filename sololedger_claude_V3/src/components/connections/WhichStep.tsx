@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Check, ChevronRight, Globe2, Search, Wallet } from 'lucide-react';
+import { Check, ChevronRight, Search, Wallet } from 'lucide-react';
 import { Badge } from '@/components/ui/card';
 import { cn } from '@/lib/utils';
 import type { ExchangeId } from '@/lib/exchangeSync';
@@ -34,13 +34,16 @@ interface Cell {
   iconId: string | null;
   searchText?: string;
   /** Generic affordance (not a brand) — render the neutral lucide glyph chip. */
-  genericGlyph?: 'wallet' | 'chain';
+  genericGlyph?: 'wallet';
+  capability?: { label: string; tone: 'neutral' | 'primary' | 'warn' };
   added?: boolean;
   selection: WhichSelection;
   modes?: Array<{
     kind: 'file' | 'api';
     label: string;
     hint: string;
+    capability: string;
+    capabilityTone: 'neutral' | 'primary' | 'warn';
     active: boolean;
     tone?: 'primary' | 'gain' | 'warn';
     selection: WhichSelection;
@@ -59,9 +62,6 @@ const POPULAR_CHAIN_IDS = [
   'avalanche'
 ] as const;
 
-/** File-only exchanges that have a real brand logo in the registry. */
-const FILE_SOURCE_ICONS = new Set(['coindcx', 'coinswitch', 'zebpay', 'wazirx']);
-
 /** Merge catalogs by exchange identity while keeping each mode independent. */
 function exchangeCells(
   apiExchangeStates: ApiExchangeStates,
@@ -75,10 +75,23 @@ function exchangeCells(
       label: source.label,
       meta: source.id === 'other' ? 'Any CSV / Excel' : source.formatHint,
       searchText: `${source.id} ${source.formatHint}`,
-      iconId: FILE_SOURCE_ICONS.has(source.id) || source.id === 'binance' || source.id === 'coinbase' ? source.id : null,
+      iconId: source.id === 'other' ? null : source.id,
       added: fileImported.has(source.id),
       selection,
-      modes: [{ kind: 'file', label: fileImported.has(source.id) ? 'CSV imported' : 'File import', hint: source.formatHint, active: fileImported.has(source.id), selection }]
+      modes: [{
+        kind: 'file',
+        label: fileImported.has(source.id) ? 'CSV imported' : 'Import file',
+        hint: source.formatHint,
+        capability:
+          source.fileSupport === 'verified'
+            ? 'Verified file import'
+            : source.fileSupport === 'schema-beta'
+              ? 'Schema-compatible beta'
+              : 'Flexible file import',
+        capabilityTone: source.fileSupport === 'schema-beta' ? 'warn' : source.fileSupport === 'verified' ? 'primary' : 'neutral',
+        active: fileImported.has(source.id),
+        selection
+      }]
     });
   }
   for (const exchange of AUTO_SYNC_EXCHANGES) {
@@ -94,21 +107,23 @@ function exchangeCells(
             ? 'API connected'
             : apiState === 'attention'
               ? 'Needs attention'
-              : 'API auto-sync',
+              : 'Connect API',
       hint: apiState === 'connected' ? 'Ready to sync' : 'Read-only key',
+      capability: 'API sync',
+      capabilityTone: 'primary' as const,
       active: apiState !== undefined,
       tone: apiState === 'synced' ? 'gain' as const : apiState === 'attention' ? 'warn' as const : 'primary' as const,
       selection
     };
     if (existing) {
-      existing.meta = 'Supports file import and API auto-sync';
+      existing.meta = 'File import + API sync';
       existing.iconId = exchange.id;
       existing.modes = [...(existing.modes ?? []), apiMode];
     } else {
       byId.set(exchange.id, {
         id: exchange.id,
         label: exchange.label,
-        meta: 'API auto-sync',
+        meta: 'API sync with read-only credentials',
         iconId: exchange.id,
         added: apiState !== undefined,
         selection,
@@ -189,11 +204,11 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
       label: chain.label,
       meta:
         chain.id === 'bitcoin'
-          ? 'Address or xPub · no key needed'
-          : 'Public address · configured wallet-data provider',
+          ? 'Bitcoin address or xPub'
+          : 'Public wallet address',
       searchText: `${chain.id} ${chain.asset} ${chain.provider}`,
       iconId: chainIconId(chain.id) ?? null,
-      genericGlyph: chainIconId(chain.id) ? undefined : 'chain',
+      capability: { label: 'Address support', tone: 'primary' },
       added: false,
       selection: { kind: 'chain', id: chain.id, label: chain.label }
     });
@@ -244,6 +259,14 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
         />
       </label>
 
+      {flow === 'exchange' && (
+        <div className="rounded-xl border border-hi/10 bg-elev-2 px-3.5 py-3 text-xs leading-relaxed text-low">
+          <strong className="font-bold text-mid">Choose how to add data.</strong>{' '}
+          API sync is easiest to maintain; always use read-only keys. File import works best for
+          one-time setup or historical data.
+        </div>
+      )}
+
       {visible.length === 0 && (
         <p className="py-6 text-center text-sm text-low">
           Nothing matches “{query.trim()}”. Try a different name.
@@ -257,11 +280,11 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
               {section.heading}
             </p>
           )}
-          <div className="flex flex-col gap-2">
+          <div className={cn(flow === 'exchange' ? 'flex flex-col gap-2' : 'grid grid-cols-1 gap-2 sm:grid-cols-2')}>
             {section.cells.map((cell) => cell.modes && cell.modes.length > 0 ? (
               <div
                 key={cell.id}
-                className="flex min-h-11 flex-wrap items-start gap-3 rounded-xl border border-hi/10 bg-elev-1 px-3.5 py-2.5"
+                className="grid min-h-11 grid-cols-[32px_minmax(0,1fr)] items-center gap-x-3 gap-y-2 rounded-xl border border-hi/10 bg-elev-1 px-3 py-2"
                 aria-label={`${cell.label} import options`}
                 data-testid={`exchange-row-${cell.id}`}
               >
@@ -270,16 +293,17 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                   <span className="block text-sm font-bold text-hi">{cell.label}</span>
                   <span className="block text-[11px] text-low">{cell.meta}</span>
                 </span>
-                <span className="flex flex-wrap gap-2">
+                <span className="col-span-2 grid grid-cols-1 gap-2">
                   {cell.modes.map((mode) => (
                     <button
                       key={mode.kind}
                       type="button"
                       onClick={() => onPick(mode.selection)}
-                      aria-label={`${cell.label} ${mode.label}`}
+                      aria-label={`${cell.label} ${mode.label} · ${mode.capability}`}
+                      title={mode.hint}
                       data-testid={`${cell.id}-mode-${mode.kind}`}
                       className={cn(
-                        'flex min-w-[118px] items-center gap-2 rounded-lg border px-2.5 py-2 text-left text-xs font-semibold transition-colors',
+                        'flex min-w-0 items-center gap-1.5 rounded-lg border px-2 py-1.5 text-left text-xs font-semibold transition-colors',
                         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
                         mode.active
                           ? mode.kind === 'file' || mode.tone === 'primary'
@@ -291,10 +315,10 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                       )}
                     >
                       {mode.active && <Check className="h-3.5 w-3.5 shrink-0" strokeWidth={3} aria-hidden="true" />}
-                      <span className="min-w-0 flex-1">
-                        <span className="block">{mode.label}</span>
-                        <span className="block text-[10px] font-normal opacity-70">{mode.hint}</span>
-                      </span>
+                      <Badge tone={mode.capabilityTone} className="px-1.5 py-0 text-[9px] leading-3">
+                        <span>{mode.capability}</span>
+                      </Badge>
+                      <span className="min-w-0 flex-1 truncate">{mode.label}</span>
                       {!mode.active && <ChevronRight className="h-3.5 w-3.5 shrink-0 text-faint" aria-hidden="true" />}
                     </button>
                   ))}
@@ -307,32 +331,35 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                 data-testid={`choice-${flow}-${cell.id}`}
                 onClick={() => onPick(cell.selection)}
                 className={cn(
-                  'relative flex min-h-11 w-full items-center gap-3 rounded-xl border border-hi/10 bg-elev-1 px-3.5 py-2.5 text-left',
+                  'relative min-h-11 w-full rounded-xl border border-hi/10 bg-elev-1 px-3 py-2.5 text-left',
+                  cell.capability
+                    ? 'grid grid-cols-[32px_minmax(0,1fr)] items-center gap-x-2.5 gap-y-1.5'
+                    : 'flex items-center gap-3',
                   'transition-colors hover:border-primary/40 hover:bg-primary/[0.04]',
                   'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60'
                 )}
               >
                 {cell.genericGlyph ? (
-                  // Generic wallet/chain affordances use a neutral lucide glyph;
-                  // unmapped chains must not look like invented brand initials.
+                  // Generic wallet affordances use a neutral lucide glyph.
                   <span
                     aria-hidden="true"
-                    data-testid={cell.genericGlyph === 'wallet' ? 'any-wallet-glyph' : 'neutral-chain-glyph'}
+                    data-testid="any-wallet-glyph"
                     className="grid h-8 w-8 shrink-0 place-items-center rounded-lg border border-hi/10 bg-elev-2 text-mid"
                   >
-                    {cell.genericGlyph === 'wallet' ? (
-                      <Wallet className="h-4 w-4" aria-hidden="true" />
-                    ) : (
-                      <Globe2 className="h-4 w-4" aria-hidden="true" />
-                    )}
+                    <Wallet className="h-4 w-4" aria-hidden="true" />
                   </span>
                 ) : (
                   <BrandIcon id={cell.iconId} fallback={cell.label} size={32} />
                 )}
                 <span className="min-w-0 flex-1">
                   <span className="block text-sm font-bold text-hi">{cell.label}</span>
-                  <span className="block text-[11px] text-low">{cell.meta}</span>
+                  <span className={cn('text-[11px] text-low', cell.capability ? 'sr-only' : 'block')}>{cell.meta}</span>
                 </span>
+                {cell.capability && (
+                  <Badge tone={cell.capability.tone} className="col-span-2 justify-self-start px-2 py-0 text-[10px]">
+                    {cell.capability.label}
+                  </Badge>
+                )}
                 {cell.added ? (
                   <Badge
                     tone={
@@ -343,9 +370,9 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                   >
                     {cell.modes?.[0]?.label ?? 'Added'}
                   </Badge>
-                ) : (
+                ) : !cell.capability ? (
                   <ChevronRight className="h-4 w-4 shrink-0 text-faint" aria-hidden="true" />
-                )}
+                ) : null}
               </button>
             ))}
           </div>

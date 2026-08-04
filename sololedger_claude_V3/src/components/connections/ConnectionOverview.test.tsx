@@ -54,7 +54,7 @@ function snapshot(): ConnectionWorkspaceSnapshot {
 }
 
 describe('ConnectionOverview', () => {
-  it('renders approved snapshot metrics and a structural coverage summary without rescanning transactions', () => {
+  it('renders a plain-language source summary and history coverage without exposing ledger internals', () => {
     render(
       <ConnectionOverview
         card={card}
@@ -69,17 +69,15 @@ describe('ConnectionOverview', () => {
 
     const metrics = screen.getByTestId('overview-metrics');
     expect(within(metrics).getByText('Transactions').parentElement).toHaveTextContent('3');
-    expect(within(metrics).getByText('Ledger postings').parentElement).toHaveTextContent('5');
-    expect(within(metrics).getByText('Posting evidence').parentElement).toHaveTextContent('4');
-    expect(within(metrics).getByText('Current authority scopes').parentElement).toHaveTextContent('0');
-    expect(within(metrics).getByText('Stale authority scopes').parentElement).toHaveTextContent('0');
-    expect(within(metrics).getByText('Reconciled assets').parentElement).toHaveTextContent('0');
-    expect(within(metrics).getByText('Persisted source operations').parentElement).toHaveTextContent('1');
+    expect(within(metrics).getByText('Assets').parentElement).toHaveTextContent('0');
+    expect(within(metrics).getByText('History updates').parentElement).toHaveTextContent('1');
+    expect(within(metrics).queryByText('Ledger postings')).not.toBeInTheDocument();
+    expect(metrics).toHaveClass('grid-cols-1', 'sm:grid-cols-3');
     expect(screen.getByTestId('overview-coverage-summary')).toHaveTextContent(
-      '1 of 3 custody scopes have complete history coverage.'
+      '1 of 3 account areas have complete history.'
     );
-    expect(screen.getByLabelText('Coverage status counts')).toHaveTextContent('1 need attention');
-    expect(screen.getByLabelText('Coverage status counts')).toHaveTextContent('1 unknown');
+    expect(screen.getByLabelText('History coverage status')).toHaveTextContent('1 need review');
+    expect(screen.getByLabelText('History coverage status')).toHaveTextContent('1 not checked');
   });
 
   it.each([

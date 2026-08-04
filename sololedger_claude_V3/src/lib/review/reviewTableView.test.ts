@@ -86,6 +86,14 @@ describe('filterRows', () => {
     expect(rows).toEqual([spam]);
   });
 
+  it('excludes internal transfers from the needs-price queue', () => {
+    const missingPrice = tx({ fiatValue: undefined, isInternalTransfer: false });
+    const internal = tx({ fiatValue: undefined, isInternalTransfer: true });
+    const priced = tx({ fiatValue: 100, isInternalTransfer: false });
+    expect(filterRows([missingPrice, internal, priced], opts({ showNeedsPrice: true })))
+      .toEqual([missingPrice]);
+  });
+
   it('applies asset/type/query filters as before', () => {
     const a = tx({ asset: 'ETH', type: 'buy', fiatValue: 100 });
     const b = tx({ asset: 'SOL', type: 'sell', fiatValue: 100 });

@@ -25,7 +25,8 @@ export interface TransactionScopeFilter {
   /** Durable resolved account scope. Never a display/source label. */
   scopeId?: string;
   accountClass?: string;
-  sourceTarget: TransactionSourceTarget;
+  /** Omitted for Dashboard-wide filters such as “needs review” or “needs price”. */
+  sourceTarget?: TransactionSourceTarget;
   assetKey?: string;
   needsPrice?: boolean;
   needsReview?: boolean;

@@ -42,7 +42,7 @@ export function filterRows(txs: Transaction[], opts: RowFilterOptions): Transact
       if (!opts.showSpam && t.isSpam) return false;
       if (opts.showSpam && !t.isSpam) return false;
     }
-    if (opts.showNeedsPrice && !(t.fiatValue == null && !t.isSpam)) return false;
+    if (opts.showNeedsPrice && !(t.fiatValue == null && !t.isSpam && !t.isInternalTransfer)) return false;
     if (opts.showNeedsReview && !opts.isNeedsReview(t)) return false;
     if (opts.assetFilter !== 'all' && t.asset !== opts.assetFilter) return false;
     if (opts.typeFilter !== 'all' && t.type !== opts.typeFilter) return false;

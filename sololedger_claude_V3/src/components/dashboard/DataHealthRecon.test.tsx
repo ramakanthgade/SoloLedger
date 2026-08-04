@@ -71,7 +71,8 @@ describe('buildConnectionRecons', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent('Updating Data Health…');
     expect(screen.queryByText(/0 sources/)).toBeNull();
-    expect(screen.getByRole('button', { name: /Open aggregate Data Health/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Review sources in Data Health/ })).toBeInTheDocument();
+    expect(screen.getByText(/What these statuses mean/)).toBeInTheDocument();
   });
 
   it('returns one recon per connection that has a balance anchor', () => {

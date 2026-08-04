@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { render, fireEvent } from '@testing-library/react';
 import {
@@ -13,6 +13,8 @@ import {
   symbolIconId
 } from './brandIcons';
 import { WALLET_CATALOG, WALLET_GROUP_ORDER } from './walletCatalog';
+import { IMPORT_SOURCES } from '@/components/import/importSources';
+import { CHAINS, DROPDOWN_HIDDEN_CHAINS } from '@/lib/rpc/providers';
 
 /**
  * Wallet apps whose logo genuinely could not be sourced (documented in
@@ -26,6 +28,15 @@ const LETTER_CHIP_WALLETS = new Set(['typhon', 'martian']);
  * the aurora letter chip must never kick in for these.
  */
 const GENERIC_GLYPH_WALLETS = new Set(['any-wallet']);
+
+const publicDir = resolve(__dirname, '../../../public');
+const provenanceRows = readFileSync(resolve(publicDir, 'assets/brand-icons/SOURCES.md'), 'utf8').split('\n');
+
+function expectDocumented(file: string, id: string) {
+  const row = provenanceRows.find((line) => line.startsWith(`| \`${file}\``));
+  expect(row, `${id} provenance`).toBeDefined();
+  expect(row, `${id} retrieval date`).toContain('2026-08-04');
+}
 
 /**
  * Brand-icon registry + the BrandIcon component: real logos everywhere
@@ -42,7 +53,6 @@ describe('brandIcons registry', () => {
   });
 
   it('every catalog wallet ships a bundled logo that exists on disk, or is a documented letter-chip fallback', () => {
-    const publicDir = resolve(__dirname, '../../../public');
     for (const app of WALLET_CATALOG) {
       if (LETTER_CHIP_WALLETS.has(app.id) || GENERIC_GLYPH_WALLETS.has(app.id)) {
         expect(app.logo, app.id).toBeUndefined();
@@ -85,21 +95,44 @@ describe('brandIcons registry', () => {
 });
 
 describe('chainIconId', () => {
-  it('maps the headline chains to their logos', () => {
-    expect(chainIconId('bitcoin')).toBe('bitcoin');
-    expect(chainIconId('ethereum')).toBe('ethereum');
-    expect(chainIconId('solana')).toBe('solana');
-    expect(chainIconId('polygon')).toBe('polygon');
+  it('maps every actionable chain to a distinct bundled chain logo', () => {
+    const actionable = CHAINS.filter(
+      (chain) =>
+        !DROPDOWN_HIDDEN_CHAINS.has(chain.id) &&
+        ['blockstream', 'alchemy_solana', 'alchemy_evm'].includes(chain.provider)
+    );
+    const iconIds = actionable.map((chain) => chainIconId(chain.id));
+
+    expect(actionable).toHaveLength(47);
+    expect(iconIds.every(Boolean)).toBe(true);
+    expect(new Set(iconIds).size).toBe(actionable.length);
+    for (const [index, chain] of actionable.entries()) {
+      const iconId = iconIds[index]!;
+      const def = BRAND_ICONS[iconId];
+      expect(def, chain.id).toBeDefined();
+      expect(existsSync(resolve(publicDir, `.${def.src}`)), chain.id).toBe(true);
+      expectDocumented(def.src.split('/').pop()!, chain.id);
+      if (chain.id !== 'ethereum') expect(iconId, chain.id).not.toBe('ethereum');
+    }
   });
 
-  it('maps BSC-family chains to the BNB logo', () => {
-    expect(chainIconId('bsc')).toBe('bnb');
-    expect(chainIconId('opbnb')).toBe('bnb');
-  });
-
-  it('returns undefined for chains without a logo', () => {
+  it('does not invent mappings for hidden or generic chains', () => {
     expect(chainIconId('fantom')).toBeUndefined();
-    expect(chainIconId('arbitrum')).toBeUndefined();
+    expect(chainIconId('starknet')).toBeUndefined();
+    expect(chainIconId('custom_evm')).toBeUndefined();
+  });
+});
+
+describe('exchange logo coverage', () => {
+  it('maps every named import exchange to a bundled logo', () => {
+    const named = IMPORT_SOURCES.filter((source) => source.id !== 'other');
+    expect(named.length).toBeGreaterThan(0);
+    for (const source of named) {
+      const def = BRAND_ICONS[source.id];
+      expect(def, source.id).toBeDefined();
+      expect(existsSync(resolve(publicDir, `.${def.src}`)), source.id).toBe(true);
+      expectDocumented(def.src.split('/').pop()!, source.id);
+    }
   });
 });
 
@@ -111,11 +144,12 @@ describe('parserIconId', () => {
     expect(parserIconId('coindcx')).toBe('coindcx');
     expect(parserIconId('coinswitch')).toBe('coinswitch');
     expect(parserIconId('zebpay')).toBe('zebpay');
+    expect(parserIconId('mudrex')).toBe('mudrex');
+    expect(parserIconId('hyperliquid_trades')).toBe('hyperliquid');
   });
 
   it('returns undefined for generic/unknown formats and nullish ids', () => {
     expect(parserIconId('generic_history')).toBeUndefined();
-    expect(parserIconId('mudrex')).toBeUndefined();
     expect(parserIconId(null)).toBeUndefined();
     expect(parserIconId(undefined)).toBeUndefined();
   });
@@ -158,8 +192,8 @@ describe('BrandIcon', () => {
     expect(img).toHaveAttribute('width', '27');
   });
 
-  it('renders no-alpha rasters on a white chip in both themes', () => {
-    const { container } = render(<BrandIcon id="kraken" fallback="Kraken" size={40} />);
+  it('renders configured no-alpha rasters on a white chip in both themes', () => {
+    const { container } = render(<BrandIcon id="trezor" fallback="Trezor" size={40} />);
     const chip = container.firstChild as HTMLElement;
     expect(chip.style.backgroundColor).toBe('rgb(255, 255, 255)');
   });

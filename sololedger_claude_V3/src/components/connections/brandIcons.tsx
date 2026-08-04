@@ -33,13 +33,22 @@ export const BRAND_ICONS: Record<string, BrandIconDef> = {
   // Exchanges
   binance: { src: `${ICONS}/binance.svg`, label: 'Binance', tile: '#F0B90B' },
   coinbase: { src: `${ICONS}/coinbase.svg`, label: 'Coinbase', tile: '#0052FF' },
-  kraken: { src: `${ICONS}/kraken.jpg`, label: 'Kraken', lightChip: true },
+  kraken: { src: `${ICONS}/kraken.png`, label: 'Kraken' },
   okx: { src: `${ICONS}/okx.svg`, label: 'OKX', tile: '#FFFFFF' },
   kucoin: { src: `${ICONS}/kucoin.svg`, label: 'KuCoin', tile: '#01BC8D' },
   coindcx: { src: `${ICONS}/coindcx.png`, label: 'CoinDCX' },
   coinswitch: { src: `${ICONS}/coinswitch.svg`, label: 'CoinSwitch' },
   zebpay: { src: `${ICONS}/zebpay.svg`, label: 'ZebPay', tile: '#2072EF' },
   wazirx: { src: `${ICONS}/wazirx.svg`, label: 'WazirX', tile: '#3067F0' },
+  mudrex: { src: `${ICONS}/mudrex.png`, label: 'Mudrex' },
+  cryptocom: { src: `${ICONS}/cryptocom.png`, label: 'Crypto.com' },
+  bybit: { src: `${ICONS}/bybit.png`, label: 'Bybit' },
+  gateio: { src: `${ICONS}/gateio.svg`, label: 'Gate.io' },
+  bitfinex: { src: `${ICONS}/bitfinex.png`, label: 'Bitfinex' },
+  gemini: { src: `${ICONS}/gemini.png`, label: 'Gemini' },
+  htx: { src: `${ICONS}/htx.png`, label: 'HTX' },
+  coinspot: { src: `${ICONS}/coinspot.png`, label: 'CoinSpot' },
+  hyperliquid: { src: `${ICONS}/hyperliquid.png`, label: 'Hyperliquid' },
   // Wallet apps
   metamask: { src: `${ICONS}/metamask.svg`, label: 'MetaMask' },
   trustwallet: { src: `${ICONS}/trustwallet.svg`, label: 'Trust Wallet' },
@@ -55,6 +64,70 @@ export const BRAND_ICONS: Record<string, BrandIconDef> = {
   tether: { src: `${ICONS}/tether.svg`, label: 'Tether', tile: '#50AF95' },
   usdc: { src: `${ICONS}/usdc.png`, label: 'USDC' }
 };
+
+/**
+ * Every provider-wired chain shown by WhichStep has its own local brand mark.
+ * Keep this explicit: sharing the ETH asset icon across EVM networks would be
+ * technically recognizable but would misrepresent the selected chain.
+ */
+export const CHAIN_ICON_IDS: Readonly<Record<string, string>> = {
+  bitcoin: 'bitcoin',
+  ethereum: 'ethereum',
+  polygon: 'chain-polygon',
+  arbitrum: 'chain-arbitrum',
+  base: 'chain-base',
+  bsc: 'bnb',
+  optimism: 'chain-optimism',
+  avalanche: 'chain-avalanche',
+  celo: 'chain-celo',
+  zksync: 'chain-zksync',
+  linea: 'chain-linea',
+  scroll: 'chain-scroll',
+  blast: 'chain-blast',
+  mantle: 'chain-mantle',
+  cronos: 'chain-cronos',
+  gnosis: 'chain-gnosis',
+  moonbeam: 'chain-moonbeam',
+  metis: 'chain-metis',
+  opbnb: 'chain-opbnb',
+  solana: 'solana',
+  abstract: 'chain-abstract',
+  apechain: 'chain-apechain',
+  anime: 'chain-anime',
+  berachain: 'chain-berachain',
+  hyperevm: 'chain-hyperevm',
+  ink: 'chain-ink',
+  lens: 'chain-lens',
+  monad: 'chain-monad',
+  mythos: 'chain-mythos',
+  robinhood: 'chain-robinhood',
+  rootstock: 'chain-rootstock',
+  ronin: 'chain-ronin',
+  shape: 'chain-shape',
+  settlus: 'chain-settlus',
+  soneium: 'chain-soneium',
+  story: 'chain-story',
+  unichain: 'chain-unichain',
+  worldchain: 'chain-worldchain',
+  zora: 'chain-zora',
+  zetachain: 'chain-zetachain',
+  fraxtal: 'chain-fraxtal',
+  sei: 'chain-sei',
+  sonic: 'chain-sonic',
+  plasma: 'chain-plasma',
+  stable: 'chain-stable',
+  megaeth: 'chain-megaeth',
+  katana: 'chain-katana'
+};
+
+for (const [chainId, iconId] of Object.entries(CHAIN_ICON_IDS)) {
+  if (iconId.startsWith('chain-')) {
+    BRAND_ICONS[iconId] = {
+      src: `${ICONS}/${iconId}.png`,
+      label: chainId
+    };
+  }
+}
 
 /**
  * Wallet-catalog logos join the registry (id → bundled asset). The catalog
@@ -82,21 +155,7 @@ export const WALLET_APP_NAMES = WALLET_CATALOG.flatMap((w) =>
 
 /** Map a chain id (lib/rpc/providers) to a brand-icon key, if we have its logo. */
 export function chainIconId(chainId: string): string | undefined {
-  switch (chainId) {
-    case 'bitcoin':
-      return 'bitcoin';
-    case 'ethereum':
-      return 'ethereum';
-    case 'solana':
-      return 'solana';
-    case 'polygon':
-      return 'polygon';
-    case 'bsc':
-    case 'opbnb':
-      return 'bnb';
-    default:
-      return undefined;
-  }
+  return CHAIN_ICON_IDS[chainId];
 }
 
 /**

@@ -62,10 +62,15 @@ describe('WhichStep — registry-derived chain catalog', () => {
     expect(onPick).toHaveBeenCalledWith({ kind: 'chain', id: 'monad', label: 'Monad' });
   });
 
-  it('uses real mapped chain logos and a neutral glyph for unmapped chains', () => {
+  it('uses a real mapped logo for every actionable chain without globe or monogram fallbacks', () => {
     renderChains();
-    expect(screen.getByTestId('choice-chain-ethereum').querySelector('img')).not.toBeNull();
-    expect(screen.getByTestId('choice-chain-arbitrum').querySelector('[data-testid="neutral-chain-glyph"]')).not.toBeNull();
-    expect(screen.getByTestId('choice-chain-arbitrum').querySelector('.bg-aurora')).toBeNull();
+    const choices = screen.getAllByTestId(/choice-chain-/);
+    expect(choices).toHaveLength(47);
+    for (const choice of choices) {
+      expect(choice.querySelector('img'), choice.getAttribute('data-testid') ?? '').not.toBeNull();
+      expect(choice.querySelector('[data-testid="neutral-chain-glyph"]')).toBeNull();
+      expect(choice.querySelector('.bg-aurora')).toBeNull();
+      expect(choice).toHaveTextContent('Address support');
+    }
   });
 });
