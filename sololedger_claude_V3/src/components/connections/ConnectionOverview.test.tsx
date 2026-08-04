@@ -81,6 +81,18 @@ describe('ConnectionOverview', () => {
     expect(screen.getByLabelText('History coverage status')).toHaveTextContent('1 not checked');
   });
 
+  it('counts canonical wallet assets once across repeated address slices', () => {
+    const walletSnapshot = snapshot();
+    walletSnapshot.overview.holdings = [{ assetKey: 'asset:BTC', asset: 'BTC', quantity: 2 }] as unknown as typeof walletSnapshot.overview.holdings;
+    walletSnapshot.overview.slices = [{ scopeId: 'wallet:a', accountClass: 'wallet', assetKey: 'asset:BTC', asset: 'BTC', quantity: 1 },
+      { scopeId: 'wallet:b', accountClass: 'wallet', assetKey: 'asset:BTC', asset: 'BTC', quantity: 1 },
+      { scopeId: 'wallet:a', accountClass: 'wallet', assetKey: 'asset:ETH', asset: 'ETH', quantity: 0 }] as typeof walletSnapshot.overview.slices;
+    render(<ConnectionOverview card={{ ...card, kind: 'wallet' }} snapshot={walletSnapshot}
+      priceIndex={buildPriceIndex([], 'INR')} formatMoney={(value) => `₹${value}`}
+      syncing={false} syncDisabled={false} onSync={vi.fn()} />);
+    expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('2');
+  });
+
   it('keeps a required dated starting balance accessible from Overview', () => {
     const openingSnapshot = snapshot();
     const asset = {
