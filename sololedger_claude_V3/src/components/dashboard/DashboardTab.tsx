@@ -12,13 +12,13 @@ import type { CsvImportRow, ExchangeBalanceRow, ExchangeConnectionRow, PriceCach
 import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
-import type { TaxSettings } from '@/types/transaction';
+import type { TaxSettings, Transaction } from '@/types/transaction';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
-import type { HoldingsProjectionInput } from '@/lib/portfolio/holdingsProjection';
+import { buildHoldingsProjection, type HoldingsProjectionInput } from '@/lib/portfolio/holdingsProjection';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
@@ -40,6 +40,10 @@ import { canonicalWalletAddress, normalizeChainIdentity } from '@/lib/ledger/cha
 import { resolveAccountScope } from '@/lib/ledger/derivedPostings';
 import { createHoldingsProjector, createTransactionViewsProjector } from './dashboardProjectionCache';
 import { createDashboardTransactionsSubscription } from './dashboardTransactionsQuery';
+import {
+  createCoherentDashboardLedgerPublisher,
+  readDashboardHoldingsSnapshot
+} from './dashboardHoldingsSnapshot';
 import { useCoherentDataHealthSnapshot } from './useCoherentDataHealthSnapshot';
 import {
   cn,
@@ -408,6 +412,7 @@ function DashboardEmpty({ onAddSource }: { onAddSource: () => void }) {
 }
 
 const NO_WALLETS: Awaited<ReturnType<typeof getLookupAddresses>> = [];
+const NO_TRANSACTIONS: Transaction[] = [];
 const NO_CSV_IMPORTS: CsvImportRow[] = [];
 const NO_EXCHANGE_CONNS: ExchangeConnectionRow[] = [];
 const NO_PRICE_ROWS: PriceCacheRow[] = [];
@@ -417,6 +422,10 @@ const NO_AUTHORITY_ASSETS: AuthorityAssetRow[] = [];
 const NO_SOURCE_COVERAGE: SourceCoverageRow[] = [];
 const NO_OPENING_BALANCES: OpeningBalanceRow[] = [];
 const EMPTY_DATA_HEALTH_MODEL = buildDataHealthModel([]);
+const EMPTY_HOLDINGS_PROJECTION = buildHoldingsProjection({
+  transactions: [], exchangeConnections: [], openingBalances: [], snapshots: [],
+  assets: [], coverage: [], now: 0
+});
 
 export interface DashboardInstrumentation {
   measureChartPreparation?: <T>(callback: () => T) => T;
@@ -448,30 +457,18 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
     return transactionSubscription.deactivate;
   }, [transactionSubscription]);
   const transactions = useLiveQuery(transactionSubscription.query, [transactionSubscription]);
-  // Holdings and the rest of the Dashboard retain their established stable
-  // subscriptions. In particular, a transaction-only revision must not get
-  // fresh evidence-array identities from the aggregate Data Health read or it
-  // would invalidate the chronological append projector.
+  // Keep the optimized ledger materialization separate: the coherent holdings
+  // read observes only its count alongside the much smaller evidence tables.
   const walletRowsQuery = useLiveQuery(() => getLookupAddresses(), []);
-  const csvImportsQuery = useLiveQuery(() => db.csvImports.toArray(), []);
-  const exchangeConnsQuery = useLiveQuery(() => db.exchangeConnections.toArray(), []);
-  const authoritySnapshotsQuery = useLiveQuery(() => db.authoritySnapshots.toArray(), []);
-  const authorityAssetsQuery = useLiveQuery(() => db.authorityAssets.toArray(), []);
-  const sourceCoverageQuery = useLiveQuery(() => db.sourceCoverage.toArray(), []);
-  const openingBalancesQuery = useLiveQuery(() => db.openingBalances.toArray(), []);
+  const holdingsSnapshot = useLiveQuery(readDashboardHoldingsSnapshot, []);
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
   const exchangeBalanceRows = useLiveQuery(() => db.exchangeBalances.toArray(), []) ?? NO_EXCHANGE_BALANCES;
   const wallets = walletRowsQuery ?? NO_WALLETS;
-  const csvImports = csvImportsQuery ?? NO_CSV_IMPORTS;
-  const exchangeConns = exchangeConnsQuery ?? NO_EXCHANGE_CONNS;
-  const authoritySnapshots = authoritySnapshotsQuery ?? NO_AUTHORITY_SNAPSHOTS;
-  const authorityAssets = authorityAssetsQuery ?? NO_AUTHORITY_ASSETS;
-  const sourceCoverageRows = sourceCoverageQuery ?? NO_SOURCE_COVERAGE;
-  const openingBalances = openingBalancesQuery ?? NO_OPENING_BALANCES;
-  const activeExchangeBalanceRows = useMemo(() => {
-    const activeIds = new Set(exchangeConns.map((connection) => connection.id));
-    return exchangeBalanceRows.filter((row) => activeIds.has(row.connectionId));
-  }, [exchangeBalanceRows, exchangeConns]);
+  const snapshotExchangeConns = holdingsSnapshot?.exchangeConnections ?? NO_EXCHANGE_CONNS;
+  const snapshotAuthoritySnapshots = holdingsSnapshot?.authoritySnapshots ?? NO_AUTHORITY_SNAPSHOTS;
+  const snapshotAuthorityAssets = holdingsSnapshot?.authorityAssets ?? NO_AUTHORITY_ASSETS;
+  const snapshotSourceCoverageRows = holdingsSnapshot?.sourceCoverage ?? NO_SOURCE_COVERAGE;
+  const snapshotOpeningBalances = holdingsSnapshot?.openingBalances ?? NO_OPENING_BALANCES;
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [period, setPeriod] = useState<DashboardPeriod>('FY');
@@ -492,12 +489,12 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
   const autoPriceAttemptedRef = useRef(false);
   const [projectTransactionViews] = useState(createTransactionViewsProjector);
   const [projectHoldings] = useState(createHoldingsProjector);
+  const [publishCoherentLedger] = useState(() =>
+    createCoherentDashboardLedgerPublisher(projectHoldings));
   const dataHealthInvalidationSignal = useMemo(() => [
-    transactions, walletRowsQuery, csvImportsQuery, exchangeConnsQuery,
-    authoritySnapshotsQuery, authorityAssetsQuery, sourceCoverageQuery, openingBalancesQuery
+    transactions, walletRowsQuery, holdingsSnapshot
   ] as const, [
-    transactions, walletRowsQuery, csvImportsQuery, exchangeConnsQuery,
-    authoritySnapshotsQuery, authorityAssetsQuery, sourceCoverageQuery, openingBalancesQuery
+    transactions, walletRowsQuery, holdingsSnapshot
   ]);
   useEffect(() => {
     const timer = window.setInterval(() => setSpotRefreshTick(Date.now()), 5 * 60_000);
@@ -511,7 +508,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
     document.addEventListener('visibilitychange', onVisibility);
     const now = Date.now();
     let nearest: number | undefined;
-    for (const snapshot of authoritySnapshots) {
+    for (const snapshot of snapshotAuthoritySnapshots) {
       if (snapshot.asOf == null || snapshot.authorityKind === 'csv') continue;
       const expires = snapshot.asOf + 24 * 60 * 60_000 + 1;
       if (expires > now && (nearest == null || expires < nearest)) nearest = expires;
@@ -522,7 +519,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
       window.removeEventListener('focus', refresh);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [authoritySnapshots, nowMs]);
+  }, [snapshotAuthoritySnapshots, nowMs]);
 
   useEffect(() => {
     getSettings().then(setSettings);
@@ -531,34 +528,49 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
   const currency = settings?.reportingCurrency ?? 'INR';
   const jurisdiction = settings?.jurisdiction ?? 'IN';
 
-  const transactionViews = useMemo(() => {
+  const candidateTransactionViews = useMemo(() => {
     const source = transactions ?? [];
     return projectTransactionViews(source);
   }, [projectTransactionViews, transactions]);
-  const nonSpamTxs = transactionViews.nonSpam;
-  const projectionTransactions = transactionViews.projection;
 
-  const projection = useMemo(() => {
+  const coherentLedgerRevision = useMemo(() => {
+    if (!transactions || !holdingsSnapshot) return undefined;
     const input: HoldingsProjectionInput = {
-      transactions: projectionTransactions,
-      exchangeConnections: exchangeConns,
-      openingBalances,
-      snapshots: authoritySnapshots,
-      assets: authorityAssets,
-      coverage: sourceCoverageRows,
+      transactions: candidateTransactionViews.projection,
+      exchangeConnections: snapshotExchangeConns,
+      openingBalances: snapshotOpeningBalances,
+      snapshots: snapshotAuthoritySnapshots,
+      assets: snapshotAuthorityAssets,
+      coverage: snapshotSourceCoverageRows,
       now: nowMs
     };
-    return projectHoldings(input, transactionViews.appendProof);
+    return publishCoherentLedger({
+      ledgerTransactions: transactions,
+      transactionViews: candidateTransactionViews,
+      snapshot: holdingsSnapshot,
+      projectionInput: input
+    });
   }, [
-    projectHoldings, projectionTransactions, transactionViews.appendProof, exchangeConns,
-    openingBalances, authoritySnapshots, authorityAssets, sourceCoverageRows, nowMs
+    publishCoherentLedger, transactions, candidateTransactionViews, holdingsSnapshot,
+    snapshotExchangeConns, snapshotOpeningBalances, snapshotAuthoritySnapshots,
+    snapshotAuthorityAssets, snapshotSourceCoverageRows, nowMs
   ]);
+  const acceptedSnapshot = coherentLedgerRevision?.snapshot;
+  const csvImports = acceptedSnapshot?.csvImports ?? NO_CSV_IMPORTS;
+  const exchangeConns = acceptedSnapshot?.exchangeConnections ?? NO_EXCHANGE_CONNS;
+  const openingBalances = acceptedSnapshot?.openingBalances ?? NO_OPENING_BALANCES;
+  const activeExchangeBalanceRows = useMemo(() => {
+    const activeIds = new Set(exchangeConns.map((connection) => connection.id));
+    return exchangeBalanceRows.filter((row) => activeIds.has(row.connectionId));
+  }, [exchangeBalanceRows, exchangeConns]);
+  const projection = coherentLedgerRevision?.projection ?? EMPTY_HOLDINGS_PROJECTION;
+  const nonSpamTxs = coherentLedgerRevision?.transactionViews.nonSpam ?? NO_TRANSACTIONS;
   const holdings = projection.holdings;
   const ledgerRevision = useMemo(() => ({
-    transactionCount: transactions?.length ?? 0,
+    transactionCount: coherentLedgerRevision?.transactionCount ?? 0,
     transactions: nonSpamTxs,
     projection
-  }), [transactions?.length, nonSpamTxs, projection]);
+  }), [coherentLedgerRevision?.transactionCount, nonSpamTxs, projection]);
   // Holdings and valued totals stay in the urgent render. Historical chart,
   // FIFO/tax, and ledger insights may reuse the previous committed revision
   // while React schedules their more expensive follow-up render.
@@ -917,7 +929,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
   }
 
   // Initial Dexie resolution — mirror Portfolio's skeleton rather than flashing empty.
-  if (transactions === undefined) {
+  if (transactions === undefined || coherentLedgerRevision === undefined) {
     return (
       <div className="space-y-5" aria-busy="true">
         <Skeleton className="h-9 w-48" />
@@ -927,7 +939,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, restoredData
     );
   }
 
-  if (transactions.length === 0 && openingBalances.length === 0) {
+  if (coherentLedgerRevision.transactionCount === 0 && openingBalances.length === 0) {
     return <DashboardEmpty onAddSource={goToImport} />;
   }
 

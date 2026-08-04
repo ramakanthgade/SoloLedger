@@ -1182,7 +1182,7 @@ export async function persistSyncedRows(args: {
   try {
     await db.transaction(
       'rw',
-      [db.transactions, db.exchangeConnections, db.exchangeBalances, db.authoritySnapshots,
+      [db.transactions, db.csvImports, db.exchangeConnections, db.exchangeBalances, db.authoritySnapshots,
         db.authorityAssets, db.sourceCoverage],
       async () => {
       const connection = await db.exchangeConnections.get(args.connectionId);

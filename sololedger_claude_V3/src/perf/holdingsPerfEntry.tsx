@@ -38,6 +38,13 @@ async function seedDatabase() {
     await clearAllData();
     await db.transactions.bulkPut(buildPostingPerformanceFixtures());
   }
+  // The fixture's manual-perf rows model one CSV source. Keep its source
+  // metadata coherent with the ledger so the production Dashboard's initial
+  // CSV identity barrier is exercised rather than bypassed by the perf harness.
+  await db.csvImports.put({
+    id: 'manual-perf', fileName: 'holdings-perf.csv', importedAt: 1,
+    txCount: 15_000, parserId: 'test'
+  });
   const [transactionCount, settings] = await Promise.all([db.transactions.count(), getSettings()]);
   if (transactionCount !== 30_000) {
     throw new Error(`Expected 30000 seeded transactions, received ${transactionCount}`);

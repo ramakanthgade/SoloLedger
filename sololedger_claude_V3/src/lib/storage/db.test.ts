@@ -4,10 +4,12 @@ import {
   clearAllData,
   commitWalletBalanceOperation,
   commitCsvImportGeneration,
+  deduplicateTransactions,
   db,
   deleteCsvImportAndTransactions,
   deleteLookupAddressAndTransactions,
   deleteOpeningBalance,
+  deleteTransactionsByIds,
   getAuthorityAssetsForSnapshot,
   getAuthoritySnapshotsForScope,
   getSourceCoverageForGeneration,
@@ -278,6 +280,76 @@ describe('v11 authority persistence', () => {
     expect((await db.sourceCoverage.toArray())[0]).toMatchObject({
       scopeId: 'file:csv-atomic:spot', authoritySnapshotId: snapshot.snapshotId
     });
+  });
+
+  it('atomically reconciles every CSV survivor count when a newer import dedups an older import to zero', async () => {
+    const commit = async (id: string, transaction: Transaction) => commitCsvImportGeneration({
+      id, fileName: `${id}.csv`, parserId: 'binance', transactions: [transaction], completedAt: 100,
+      buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
+        buildCsvImportEvidenceGeneration({
+          sourceIdentityId: id, parserId: 'binance', parsedBeforeDedup: 1,
+          savedAfterDedup, savedTransactions, generation, completedAt,
+          evidence: {
+            declaredHistory: { completeHistory: true }, coveredAccountClasses: ['spot'],
+            requiredOutcomes: [{
+              id: 'history', accountClass: 'spot', required: true, status: 'complete',
+              recognizedCount: 1, parsedCount: 1, excludedCount: 0, skippedCount: 0, failedCount: 0,
+              parsedTransactionRows: [{ transactionId: transaction.id, sourceRowCount: 1 }]
+            }],
+            recognizedCount: 1, parsedCount: 1, excludedCount: 0, skippedCount: 0, failedCount: 0,
+            exclusionReasons: [], skippedReasons: [], failureReasons: []
+          }
+        })
+    });
+    const older = manualTransaction('older-row', 100);
+    Object.assign(older, { source: 'binance', sourceRef: 'same-economic-row', importBatchId: 'older-import' });
+    await commit('older-import', older);
+    const newer = {
+      ...older, id: 'newer-row', importBatchId: 'newer-import', fiatValue: 100
+    };
+
+    await commit('newer-import', newer);
+
+    expect(await db.transactions.toArray()).toEqual([expect.objectContaining({ id: 'newer-row' })]);
+    expect(await db.csvImports.bulkGet(['older-import', 'newer-import'])).toEqual([
+      expect.objectContaining({ id: 'older-import', txCount: 0 }),
+      expect.objectContaining({ id: 'newer-import', txCount: 1 })
+    ]);
+  });
+
+  it('reconciles CSV counts when Review deletes transaction rows by id', async () => {
+    const rows = [manualTransaction('review-delete-1', 100), manualTransaction('review-delete-2', 101)]
+      .map((row) => ({ ...row, source: 'binance', importBatchId: 'review-csv' }));
+    await db.csvImports.put({
+      id: 'review-csv', fileName: 'review.csv', importedAt: 1, txCount: 2, parserId: 'binance'
+    });
+    await db.transactions.bulkPut(rows);
+
+    expect(await deleteTransactionsByIds([rows[0].id])).toBe(1);
+
+    expect(await db.csvImports.get('review-csv')).toMatchObject({ txCount: 1 });
+  });
+
+  it('reconciles an affected CSV count for standalone dedup from a non-CSV caller', async () => {
+    const csv = manualTransaction('older-csv-row', 100);
+    Object.assign(csv, {
+      source: 'binance', sourceRef: 'standalone-shared', importBatchId: 'older-csv'
+    });
+    const nonCsv = {
+      ...csv, id: 'manual-winner', source: 'manual_mapping', importBatchId: undefined,
+      sourceRef: 'standalone-shared', fiatValue: 100
+    };
+    // Both stable-ref sources share one exchange dedup key; fiatValue makes the
+    // non-CSV row survive even though dedup runs outside a CSV commit.
+    await db.csvImports.put({
+      id: 'older-csv', fileName: 'older.csv', importedAt: 1, txCount: 1, parserId: 'binance'
+    });
+    await db.transactions.bulkPut([csv, nonCsv]);
+
+    expect(await deduplicateTransactions()).toBe(1);
+
+    expect(await db.transactions.toArray()).toEqual([expect.objectContaining({ id: 'manual-winner' })]);
+    expect(await db.csvImports.get('older-csv')).toMatchObject({ txCount: 0 });
   });
 
   it('atomically persists one exact CSV coverage row per account class', async () => {

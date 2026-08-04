@@ -2,7 +2,8 @@ import {
   db, getSettings, type CsvImportRow, type ExchangeBalanceRow, type ExchangeConnectionRow,
   openingBalanceLogicalKey, validateOpeningBalanceInput, validateOpeningBalanceSource,
   type LookupAddressRow, type PriceCacheRow, type SpecIdHintRow,
-  type WalletBalanceRow
+  type WalletBalanceRow,
+  reconcileCsvImportTransactionCounts
 } from './db';
 import type { Transaction, Lot, Disposal, TaxSettings } from '@/types/transaction';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
@@ -513,6 +514,7 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
     await db.sourceCoverage.bulkPut(sourceCoverage);
     await db.openingBalances.bulkPut(v3?.openingBalances ?? []);
     await db.settings.put({ ...safeSettings(parsed.settings), id: 'singleton' });
+    await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
   });
   return { imported: parsed.transactions.length };
 }

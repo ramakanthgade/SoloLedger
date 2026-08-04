@@ -152,6 +152,47 @@ const V10_STORES = {
   exchangeBalances: 'id, connectionId, exchange, asset'
 };
 
+const V11_STORES = {
+  ...V10_STORES,
+  authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+  authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+  sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+  openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]'
+};
+
+describe('Dexie v11 → v12 CSV survivor-count migration', () => {
+  it('backfills stale positive and zero-survivor metadata from matching importBatchId rows', async () => {
+    const name = `migration_v12_test_${Math.random().toString(36).slice(2)}`;
+    const legacy = new Dexie(name);
+    legacy.version(11).stores(V11_STORES);
+    await legacy.open();
+    await legacy.table('csvImports').bulkPut([
+      { id: 'partial', fileName: 'partial.csv', importedAt: 1, txCount: 7, parserId: 'binance' },
+      { id: 'zero', fileName: 'zero.csv', importedAt: 1, txCount: 3, parserId: 'binance' }
+    ]);
+    await legacy.table('transactions').bulkPut([
+      makeTx('partial-1', { importBatchId: 'partial' }),
+      makeTx('partial-2', { importBatchId: 'partial' }),
+      makeTx('unrelated', { importBatchId: 'not-a-csv-import' })
+    ]);
+    legacy.close();
+
+    const { createDb } = await import('@/lib/storage/db');
+    const upgraded = createDb(name);
+    await upgraded.open();
+
+    expect(upgraded.verno).toBe(12);
+    expect(await upgraded.csvImports.bulkGet(['partial', 'zero'])).toEqual([
+      expect.objectContaining({ id: 'partial', txCount: 2 }),
+      expect.objectContaining({ id: 'zero', txCount: 0 })
+    ]);
+    expect(await upgraded.transactions.get('unrelated')).toBeDefined();
+
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+});
+
 describe('Dexie v10 → v11 reconciliation evidence migration', () => {
   it('preserves legacy consumers and migrates only exact coherent asOf sets', async () => {
     const name = `migration_v11_test_${Math.random().toString(36).slice(2)}`;
@@ -190,7 +231,7 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(11);
+    expect(upgraded.verno).toBe(12);
     expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
     expect(await upgraded.table('exchangeBalances').count()).toBe(4);
     const connection = await upgraded.table('exchangeConnections').get('coherent');

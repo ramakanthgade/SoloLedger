@@ -112,6 +112,22 @@ vi.mock('./dashboardTransactionsQuery', () => ({
   })
 }));
 
+vi.mock('./dashboardHoldingsSnapshot', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./dashboardHoldingsSnapshot')>();
+  return {
+    ...actual,
+    readDashboardHoldingsSnapshot: () => ({
+      transactionCount: SEED.txs.length,
+      csvImports: SEED.csvImports,
+      exchangeConnections: SEED.exchangeConns,
+      authoritySnapshots: SEED.authoritySnapshots,
+      authorityAssets: SEED.authorityAssets,
+      sourceCoverage: SEED.sourceCoverage,
+      openingBalances: SEED.openingBalances
+    })
+  };
+});
+
 vi.mock('./useCoherentDataHealthSnapshot', () => {
   let coherentSnapshot: unknown;
   return {

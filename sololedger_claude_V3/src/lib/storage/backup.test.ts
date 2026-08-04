@@ -201,6 +201,27 @@ describe('importFullBackup', () => {
     expect(restored.reportingCurrency).toBe('USD');
   });
 
+  it('repairs stale partial and zero-survivor CSV counts while restoring a backup', async () => {
+    const transactions = [
+      makeTx('partial-1', { importBatchId: 'partial-csv' }),
+      makeTx('partial-2', { importBatchId: 'partial-csv' })
+    ];
+    const payload = {
+      ...v2Payload(transactions),
+      csvImports: [
+        { id: 'partial-csv', fileName: 'partial.csv', importedAt: 1, txCount: 9, parserId: 'wazirx' },
+        { id: 'zero-csv', fileName: 'zero.csv', importedAt: 1, txCount: 4, parserId: 'binance' }
+      ]
+    };
+
+    await importFullBackup(backupFile(payload));
+
+    expect(await db.csvImports.bulkGet(['partial-csv', 'zero-csv'])).toEqual([
+      expect.objectContaining({ id: 'partial-csv', txCount: 2 }),
+      expect.objectContaining({ id: 'zero-csv', txCount: 0 })
+    ]);
+  });
+
   it('rolls back atomically when a bulkPut fails partway through', async () => {
     // Seed pre-existing data that must survive a failed restore.
     await db.transactions.bulkPut([makeTx('keep-1'), makeTx('keep-2')]);
