@@ -83,7 +83,7 @@ export interface CsvImportRow {
  */
 export interface ExchangeConnectionRow {
   id: string;           // makeId('exc')
-  exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio' | 'htx')
+  exchange: string;     // ExchangeId (see lib/exchangeSync/types.ts)
   label?: string;       // user-assigned friendly name, e.g. "My Binance"
   apiKey?: string;
   secret?: string;
@@ -105,6 +105,8 @@ export interface ExchangeConnectionRow {
     windowEnd: number;
     completedSymbols: string[];
   };
+  /** Oldest still-pending Crypto.com transfer per endpoint, replayed until terminal. */
+  cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
@@ -640,7 +642,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'kucoin_api',
   'bybit_api',
   'gateio_api',
-  'htx_api'
+  'htx_api',
+  'cryptocom_api'
 ]);
 
 /**
@@ -667,7 +670,8 @@ export function isStableRefSource(source: string): boolean {
 
 /** Dedup key for exchange CSV rows (Binance, Coinbase) — uses sourceRef when set. */
 export function transactionExchangeKey(
-  t: Pick<Transaction, 'source' | 'sourceRef' | 'importBatchId'>
+  t: Pick<Transaction, 'source' | 'sourceRef' | 'importBatchId'> &
+    Partial<Pick<Transaction, 'type' | 'raw' | 'notes'>>
 ): string | null {
   if (!t.sourceRef) return null;
   // HTX order/transfer ids are account-local. Keep API replay idempotent only
@@ -676,6 +680,31 @@ export function transactionExchangeKey(
   // (or two accounts') equal native ids.
   if (t.source === 'htx_api') {
     return `ex-api:${t.importBatchId ?? 'unscoped'}:htx:${t.sourceRef}`;
+  }
+  // Crypto.com App CSV (`cryptocom`) and Crypto.com Exchange API are
+  // different products and must never cross-dedup. Native Exchange ids are
+  // account-local and may overlap between endpoint kinds, so scope all three.
+  if (t.source === 'cryptocom_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind
+      // Migration-safe legacy recovery prefers immutable source evidence.
+      // Crypto.com trade rows always persisted tradeId; newer transfer rows
+      // preserve the CCXT endpoint type/client_wid. Rows created by the first
+      // connector revision lack transfer endpoint evidence, so only that final
+      // compatibility case falls back to the mutable type.
+      : t.raw?.tradeId != null
+        ? 'trade'
+        : t.raw?.transferType === 'deposit'
+          ? 'deposit'
+          : t.raw?.transferType === 'withdrawal' || t.raw?.clientWid != null
+            ? 'withdrawal'
+            : t.type === 'transfer_in'
+              ? 'deposit'
+              : t.type === 'transfer_out'
+                ? 'withdrawal'
+                : 'trade';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:cryptocom:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;

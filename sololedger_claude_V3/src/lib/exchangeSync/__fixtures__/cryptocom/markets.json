@@ -1,0 +1,16 @@
+{
+  "_recorded": false,
+  "_note": "Mixed public/get-instruments response: one active spot pair, one inactive spot pair and one perpetual derivative.",
+  "response": {
+    "id": 1,
+    "method": "public/get-instruments",
+    "code": 0,
+    "result": {
+      "data": [
+        { "symbol": "BTC_USDT", "inst_type": "CCY_PAIR", "display_name": "BTC/USDT", "base_ccy": "BTC", "quote_ccy": "USDT", "quote_decimals": 2, "quantity_decimals": 6, "price_tick_size": "0.01", "qty_tick_size": "0.000001", "tradable": true, "expiry_timestamp_ms": 0, "beta_product": false, "margin_buy_enabled": false, "margin_sell_enabled": false },
+        { "symbol": "OLD_USDT", "inst_type": "CCY_PAIR", "display_name": "OLD/USDT", "base_ccy": "OLD", "quote_ccy": "USDT", "quote_decimals": 2, "quantity_decimals": 2, "price_tick_size": "0.01", "qty_tick_size": "0.01", "tradable": false, "expiry_timestamp_ms": 0, "beta_product": false, "margin_buy_enabled": false, "margin_sell_enabled": false },
+        { "symbol": "ETHUSD-PERP", "inst_type": "PERPETUAL_SWAP", "display_name": "ETHUSD Perpetual", "base_ccy": "ETH", "quote_ccy": "USD", "quote_decimals": 2, "quantity_decimals": 4, "price_tick_size": "0.01", "qty_tick_size": "0.0001", "tradable": true, "expiry_timestamp_ms": 0, "beta_product": false, "underlying_symbol": "ETHUSD-INDEX", "contract_size": "1", "margin_buy_enabled": false, "margin_sell_enabled": false }
+      ]
+    }
+  }
+}

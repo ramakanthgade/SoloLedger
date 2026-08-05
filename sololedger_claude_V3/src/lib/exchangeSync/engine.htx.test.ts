@@ -201,11 +201,16 @@ describe('paginateHtxNativeWindows', () => {
     expect(progress).toMatchObject({ windowStart: 100, windowEnd: 150, completedSymbols: [] });
   });
 
-  it('ignores malformed or unreasonably wide stale HTX checkpoints', async () => {
+  it.each([
+    ['equal bounds', { windowStart: 10, windowEnd: 10, completedSymbols: ['AAA/USDT'] }],
+    ['overwide bounds', {
+      windowStart: 10, windowEnd: 10 + HTX_TRADE_WINDOW_MS + 1, completedSymbols: ['AAA/USDT']
+    }]
+  ] as const)('ignores malformed HTX checkpoints with %s without looping', async (_label, priorProgress) => {
     const calls: Array<[number, number]> = [];
     const result = await fetchHtxTradesFair({
       symbols: ['AAA/USDT'], since: 10, now: 100,
-      priorProgress: { windowStart: 10, windowEnd: 10 + HTX_TRADE_WINDOW_MS + 1, completedSymbols: ['AAA/USDT'] },
+      priorProgress: { ...priorProgress, completedSymbols: [...priorProgress.completedSymbols] },
       requestBudget: { used: 0, max: 1 },
       fetchPage: async (_symbol, since, until) => { calls.push([since, until]); return { rows: [] }; }
     });

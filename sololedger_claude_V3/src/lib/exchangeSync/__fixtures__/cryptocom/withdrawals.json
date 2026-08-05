@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "private/get-withdrawal-history settled status 5 plus pending status 1; numeric id intentionally overlaps deposit id 42.",
+  "response": { "id": 1785542400003, "method": "private/get-withdrawal-history", "code": 0, "result": { "withdrawal_list": [
+    { "currency": "BTC", "client_wid": "", "fee": 0.0005, "create_time": 1783036800000, "id": "42", "update_time": 1783036900000, "amount": 0.005, "address": "bc1qdestination", "status": "5", "txid": "withdrawal-txid", "network_id": "BTC" },
+    { "currency": "BTC", "client_wid": "", "fee": 0.0005, "create_time": 1783036801000, "id": "44", "update_time": 1783036801000, "amount": 0.006, "address": "bc1qpending", "status": "1", "txid": "", "network_id": "BTC" }
+  ] } }
+}

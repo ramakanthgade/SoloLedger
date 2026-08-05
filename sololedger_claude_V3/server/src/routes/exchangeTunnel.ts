@@ -37,6 +37,8 @@ interface ExchangeSpec {
   paths?: readonly string[];
   /** Optional HTTP-method allowlist (used when a connector is read-only). */
   methods?: readonly string[];
+  /** Optional exact per-path methods for exchanges mixing public GET/private POST. */
+  pathMethods?: Readonly<Record<string, readonly string[]>>;
 }
 
 /**
@@ -111,6 +113,25 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/v1/order/matchresults',
       '/v1/query/deposit-withdraw'
     ]
+  },
+  cryptocom: {
+    host: 'api.crypto.com',
+    // Crypto.com signs the exact JSON body; no private auth headers exist.
+    headers: [],
+    paths: [
+      '/exchange/v1/public/get-instruments',
+      '/exchange/v1/private/user-balance',
+      '/exchange/v1/private/get-trades',
+      '/exchange/v1/private/get-deposit-history',
+      '/exchange/v1/private/get-withdrawal-history'
+    ],
+    pathMethods: {
+      '/exchange/v1/public/get-instruments': ['GET'],
+      '/exchange/v1/private/user-balance': ['POST'],
+      '/exchange/v1/private/get-trades': ['POST'],
+      '/exchange/v1/private/get-deposit-history': ['POST'],
+      '/exchange/v1/private/get-withdrawal-history': ['POST']
+    }
   }
 };
 
@@ -213,6 +234,11 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
   }
   if (spec.methods && !spec.methods.includes(method)) {
     fail(res, 'bad_path', 400, 'Upstream method is not allowed for this exchange');
+    return;
+  }
+  const allowedPathMethods = spec.pathMethods?.[upstreamPath];
+  if (allowedPathMethods && !allowedPathMethods.includes(method)) {
+    fail(res, 'bad_path', 400, 'Upstream method is not allowed for this exchange path');
     return;
   }
 

@@ -85,6 +85,15 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
     },
     knownAssets: Array.isArray(row.knownAssets) ? row.knownAssets.filter((value): value is string => typeof value === 'string') : undefined,
     knownSymbols: Array.isArray(row.knownSymbols) ? row.knownSymbols.filter((value): value is string => typeof value === 'string') : undefined,
+    htxTradeProgress: row.htxTradeProgress == null ? undefined : {
+      windowStart: row.htxTradeProgress.windowStart,
+      windowEnd: row.htxTradeProgress.windowEnd,
+      completedSymbols: [...row.htxTradeProgress.completedSymbols]
+    },
+    cryptocomPendingTransfers: row.cryptocomPendingTransfers == null ? undefined : {
+      deposits: row.cryptocomPendingTransfers.deposits,
+      withdrawals: row.cryptocomPendingTransfers.withdrawals
+    },
     lastSyncAt: row.lastSyncAt, status: row.status,
     lastError: typeof row.lastError === 'string' ? row.lastError : undefined
   };
@@ -262,6 +271,20 @@ function validateV3(payload: BackupFileV3): void {
   for (const row of payload.exchangeConnections) {
     if (!row.exchange.trim() || !Number.isFinite(row.createdAt) || typeof row.cursors !== 'object' || row.cursors == null) {
       throw new Error('Invalid backup file: exchange source shape is malformed.');
+    }
+    const pending = row.cryptocomPendingTransfers;
+    if (pending != null && (typeof pending !== 'object' ||
+      (['deposits', 'withdrawals'] as const).some((kind) =>
+        Object.prototype.hasOwnProperty.call(pending, kind) &&
+        (!Number.isSafeInteger(pending[kind]) || pending[kind]! < 0)))) {
+      throw new Error('Invalid backup file: Crypto.com pending-transfer checkpoint is malformed.');
+    }
+    const progress = row.htxTradeProgress;
+    if (progress != null && (!Number.isSafeInteger(progress.windowStart) || progress.windowStart < 0 ||
+      !Number.isSafeInteger(progress.windowEnd) || progress.windowEnd <= progress.windowStart ||
+      !Array.isArray(progress.completedSymbols) ||
+      progress.completedSymbols.some((symbol) => typeof symbol !== 'string' || !symbol.trim()))) {
+      throw new Error('Invalid backup file: HTX trade progress is malformed.');
     }
   }
   for (const row of payload.priceCache) {

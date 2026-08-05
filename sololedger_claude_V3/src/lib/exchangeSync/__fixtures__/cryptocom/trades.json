@@ -1,0 +1,14 @@
+{
+  "_recorded": false,
+  "_note": "private/get-trades response includes an active spot fill, a derivative fill and an unresolved instrument that SoloLedger must exclude.",
+  "response": {
+    "id": 1785542400001,
+    "method": "private/get-trades",
+    "code": 0,
+    "result": { "data": [
+      { "account_id": "fixture-account", "event_date": "2026-07-01", "journal_type": "TRADING", "side": "BUY", "instrument_name": "BTC_USDT", "fees": "-0.0001", "trade_id": "90001", "trade_match_id": "80001", "create_time": 1782864001000, "traded_price": "60000", "traded_quantity": "0.01", "fee_instrument_name": "BTC", "client_oid": "fixture-spot", "taker_side": "TAKER", "order_id": "70001", "create_time_ns": "1782864001000000000" },
+      { "account_id": "fixture-account", "event_date": "2026-07-01", "journal_type": "TRADING", "side": "SELL", "instrument_name": "ETHUSD-PERP", "fees": "-0.02", "trade_id": "90002", "trade_match_id": "80002", "create_time": 1782864000000, "traded_price": "3000", "traded_quantity": "1", "fee_instrument_name": "USD", "client_oid": "fixture-perp", "taker_side": "TAKER", "order_id": "70002", "create_time_ns": "1782864000000000000" },
+      { "account_id": "fixture-account", "event_date": "2026-07-01", "journal_type": "TRADING", "side": "BUY", "instrument_name": "MYSTERY_USDT", "fees": "-0.01", "trade_id": "90003", "trade_match_id": "80003", "create_time": 1782863999000, "traded_price": "1", "traded_quantity": "10", "fee_instrument_name": "USDT", "client_oid": "fixture-unresolved", "taker_side": "TAKER", "order_id": "70003", "create_time_ns": "1782863999000000000" }
+    ] }
+  }
+}

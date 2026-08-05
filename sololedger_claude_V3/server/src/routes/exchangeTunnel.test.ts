@@ -196,7 +196,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['kucoin', 'api.kucoin.com', '/api/v1/timestamp'],
     ['bybit', 'api.bybit.com', '/v5/market/time'],
     ['gateio', 'api.gateio.ws', '/api/v4/spot/time'],
-    ['htx', 'api.huobi.pro', '/v1/common/timestamp']
+    ['htx', 'api.huobi.pro', '/v1/common/timestamp'],
+    ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -357,6 +358,20 @@ describe('3. header allowlist', () => {
     expect(url).toBe(`https://api.huobi.pro/v1/account/accounts?${query}`);
     expect(init.headers).toEqual({ 'content-type': 'application/x-www-form-urlencoded' });
   });
+
+  it('cryptocom: preserves signed JSON body byte-exact and forwards no private auth headers', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"code":40101,"message":"Authentication failure"}', 401));
+    const body = '{"id":1,"method":"private/user-balance","api_key":"dummy","sig":"Ab+/=","nonce":1}';
+    await rawRequest({
+      method: 'POST', path: '/cryptocom/exchange/v1/private/user-balance',
+      headers: { ...AUTH, 'content-type': 'application/json', 'x-exchange-api-key': 'never-forward' }, body
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.crypto.com/exchange/v1/private/user-balance');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({ 'content-type': 'application/json' });
+    expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -446,6 +461,20 @@ describe('4. exchangeId and path validation', () => {
     }
     const post = await client('/htx/v1/order/matchresults', { method: 'POST', headers: AUTH });
     expect(post.status).toBe(400);
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('Crypto.com enforces exact read-only paths with per-path GET/POST methods', async () => {
+    for (const [path, method] of [
+      ['/cryptocom/exchange/v1/private/create-order', 'POST'],
+      ['/cryptocom/exchange/v1/private/create-withdrawal', 'POST'],
+      ['/cryptocom/exchange/v1/private/user-balance', 'GET'],
+      ['/cryptocom/exchange/v1/public/get-instruments', 'POST']
+    ] as const) {
+      const res = await client(path, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 });

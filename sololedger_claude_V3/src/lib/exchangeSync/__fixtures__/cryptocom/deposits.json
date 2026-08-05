@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "private/get-deposit-history settled status 1 plus pending status 0.",
+  "response": { "id": 1785542400002, "method": "private/get-deposit-history", "code": 0, "result": { "deposit_list": [
+    { "currency": "BTC", "fee": 0, "create_time": 1782950400000, "id": "42", "update_time": 1782950500000, "amount": 0.02, "address": "bc1qfixture", "status": "1", "txid": "same-economic-txid/0" },
+    { "currency": "ETH", "fee": 0, "create_time": 1782950401000, "id": "43", "update_time": 1782950401000, "amount": 1, "address": "0xfixture", "status": "0", "txid": "pending-txid" }
+  ] } }
+}

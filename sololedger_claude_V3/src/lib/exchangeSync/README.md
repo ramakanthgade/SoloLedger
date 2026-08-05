@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -111,6 +111,22 @@ a sync discards any staged preview (with a warning).
   the window and cannot skip rows hidden behind the unpersisted token. Once
   every window is exhausted, the cursor advances to the verified `now`
   frontier even for empty accounts or accounts whose last activity is old.
+- Crypto.com Exchange retains only active spot markets from its mixed public
+  instruments catalog and strictly excludes derivative or unresolved private
+  trades. `private/get-trades` uses 23.5-hour windows, limit 100, and walks
+  newest-first pages backward by the oldest returned millisecond; native
+  `trade_id` dedups inclusive boundaries. A dense full page sharing one oldest
+  millisecond returns partial/nonadvancing. Deposits and withdrawals each scan
+  independent 89-day windows with `page_size=200`, zero-based pages, and their
+  own verified frontiers. Every physical attempt, including retries, consumes
+  the phase cap. All three endpoints clamp initial and stale incremental starts
+  to the Exchange API's 180-day retention floor. Pending transfers keep an
+  endpoint-specific durable checkpoint at the oldest pending timestamp, even
+  after the normal seven-day overlap has passed; each successful sync clears
+  the checkpoint only after every observed pending row settles or becomes a
+  known terminal failure/cancellation. Structural request-cap interruption
+  retains the prior checkpoint. Terminal failed/canceled rows do not hold the
+  cursor back.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -150,6 +166,21 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | bybit | aggregate executions by `trade.order` → `sourceRef = orderId` (== CSV `Order ID`); durable `execId` evidence is unioned across syncs and recomputes the order row | withdrawals prefer `withdrawId`; deposits use `txid + txIndex/native id` before formula fallback |
 | gateio | `trade.id` (closest available counterpart to beta CSV `ID`; equivalence is not live-verified) | `transfer.id` (same beta caveat) |
 | htx | aggregate fills by `trade.order` → `sourceRef = orderId`; durable raw `id` evidence is unioned across syncs; API identity is connection-scoped while explicit sourceRef matching preserves CSV reconciliation | native wallet record `transfer.id` (fixture-matched to CSV `order-id`/`id`) |
+| cryptocom | native Exchange `trade_id`; identity is connection- and immutable `raw.exchangeSyncKind=trade`-scoped | native Exchange wallet record `id`; identity is connection- and immutable `raw.exchangeSyncKind=deposit/withdrawal`-scoped, with txid retained as evidence |
+
+Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
+provenance, so later user reclassification of `Transaction.type` cannot change
+dedup identity. For rows written before that field existed, key migration first
+recovers kind from immutable raw evidence (`tradeId`, `transferType`, or
+`clientWid`). Only legacy transfer rows from the connector's earliest revision,
+which retained no endpoint marker at all, use `type` as a final compatibility
+fallback.
+
+Crypto.com's `private/user-balance` response covers whole Exchange-account
+custody and does not prove an exhaustive spot-only subledger. Sync still calls
+it for credential validation and asset discovery, but omits it from spot
+operation coverage entirely, creates no spot authority snapshot, and does not
+persist `exchangeBalances` that could replace history-derived holdings.
 
 `dedup.contract.test.ts` proves the established connector collisions pairwise
 (real CSV parsers vs real ccxt parsing) and end-to-end: CSV import → replay
@@ -203,6 +234,12 @@ live Gate.io account.
 HTX fixtures carry `htx/provenance.json` plus per-file `_recorded: false`
 markers. They transcribe official spot examples and CCXT 4.5.68 parser comments;
 real-CCXT replay proves request/parse behavior, not live export equivalence.
+
+Crypto.com Exchange fixtures carry `cryptocom/provenance.json` and
+`_recorded: false` markers. They are schema-faithful official-example
+transcriptions. There is intentionally no CSV twin: the existing `cryptocom`
+CSV parser imports Crypto.com **App** history, which is a separate product and
+must never auto-dedup with `cryptocom_api` Exchange rows.
 
 ## Known limitations / caveats
 
@@ -281,6 +318,13 @@ real-CCXT replay proves request/parse behavior, not live export equivalence.
     fee-bearing fills use one currency; pure/net rebates remain evidence-only
     and produce an explicit sync warning because the transaction fee model is
     expense-only.
+15. **Crypto.com Exchange is not the Crypto.com App** — Exchange API balances
+    are whole Exchange-account wallet truth, not an isolated spot subledger.
+    Only deposit status `1` and withdrawal status `5` settle. The API exposes
+    180 days; older Exchange history requires a Crypto.com Exchange export or
+    Exchange Support. The App CSV parser cannot backfill it, and identical
+    txids/economics across App CSV and Exchange API intentionally remain two
+    rows.
 
 ## Adding an exchange?
 

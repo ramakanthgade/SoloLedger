@@ -57,6 +57,7 @@ import {
   normalizeHtxTradesByOrder,
   normalizeTrade,
   normalizeTransfer,
+  cryptocomTransferDisposition,
   resolveMarket
 } from './normalize';
 import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols, flattenBalanceTotals } from './binanceSymbols';
@@ -109,6 +110,13 @@ export const GATEIO_MAX_OFFSET = 100_000;
 export const GATEIO_MAX_REQUESTS_PER_PHASE = 8_000;
 /** HTX phases count physical attempts (including retries) against this cap. */
 export const HTX_MAX_REQUESTS_PER_PHASE = 8_000;
+/** Crypto.com phases count every physical attempt, including retries. */
+export const CRYPTOCOM_MAX_REQUESTS_PER_PHASE = 8_000;
+export const CRYPTOCOM_TRADE_WINDOW_MS = 23.5 * 3_600_000;
+export const CRYPTOCOM_TRANSFER_WINDOW_MS = 89 * 86_400_000;
+export const CRYPTOCOM_RETENTION_MS = 180 * 86_400_000;
+const CRYPTOCOM_TRADE_LIMIT = 100;
+const CRYPTOCOM_TRANSFER_LIMIT = 200;
 /** HTX matchresults requires a range no wider than 48 hours. */
 export const HTX_TRADE_WINDOW_MS = 47.5 * 3_600_000;
 const HTX_TRADE_LIMIT = 500;
@@ -146,7 +154,8 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   // Gate launched in April 2013. The exact first spot-market day is not
   // published, so use the conservative beginning of that launch month.
   gateio: Date.UTC(2013, 3, 1),
-  htx: Date.UTC(2013, 8, 1) // Huobi/HTX launched in September 2013
+  htx: Date.UTC(2013, 8, 1), // Huobi/HTX launched in September 2013
+  cryptocom: Date.UTC(2019, 10, 14) // Crypto.com Exchange public beta
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -160,6 +169,8 @@ export interface SyncEngineDeps {
   now?: () => number;
   /** Test seam; production uses HTX_MAX_REQUESTS_PER_PHASE. */
   htxMaxTradeRequests?: number;
+  /** Test seam; production uses CRYPTOCOM_MAX_REQUESTS_PER_PHASE. */
+  cryptocomMaxRequests?: number;
 }
 
 export interface SyncHooks {
@@ -239,6 +250,7 @@ function operationCoverage(args: {
   discoveryUniverseCount?: number;
   discoveredCount?: number;
   skippedCount: number;
+  excludedCount?: number;
   recognizedCount: number;
   parsedCount: number;
   failedCount: number;
@@ -274,6 +286,7 @@ function operationCoverage(args: {
     discoveryUniverseCount: args.discoveryUniverseCount,
     discoveredCount: args.discoveredCount,
     skippedCount: args.skippedCount,
+    excludedCount: args.excludedCount,
     recognizedCount: args.recognizedCount,
     parsedCount: args.parsedCount,
     failedCount: args.failedCount,
@@ -294,6 +307,9 @@ async function appendFailedCoverage(args: {
   return db.transaction('rw', [db.exchangeConnections, db.sourceCoverage], async () => {
     const source = await db.exchangeConnections.get(args.connectionId);
     if (!matchesReservation(source, args.expectedRevision, args.generation)) return false;
+    const endpoints = source.exchange === 'cryptocom'
+      ? ['deposits', 'withdrawals', 'trades']
+      : ['balance', 'deposits', 'withdrawals', 'trades'];
     const coverage: SourceCoverageRow = {
       id: `${args.connectionId}:sync:${args.generation}`,
       generation: args.generation,
@@ -302,18 +318,16 @@ async function appendFailedCoverage(args: {
       evidenceId: `sync:${args.generation}`,
       kind: 'api',
       accountClasses: ['spot'],
-      endpoints: ['balance', 'deposits', 'withdrawals', 'trades'],
+      endpoints,
       startedAt: args.startedAt,
       completedAt: args.completedAt,
       status: 'failed',
       failureKind: args.kind,
       warnings: [args.message],
-      endpointOutcomes: [
-        { endpoint: 'balance', accountClass: 'spot', required: true, status: 'failed', warning: args.message },
-        { endpoint: 'deposits', accountClass: 'spot', required: true, status: 'failed', warning: args.message },
-        { endpoint: 'withdrawals', accountClass: 'spot', required: true, status: 'failed', warning: args.message },
-        { endpoint: 'trades', accountClass: 'spot', required: true, status: 'failed', warning: args.message }
-      ]
+      endpointOutcomes: endpoints.map((endpoint) => ({
+        endpoint, accountClass: 'spot' as const, required: true, status: 'failed' as const,
+        warning: args.message
+      }))
     };
     assertValidSourceCoverageRow(coverage);
     await db.sourceCoverage.add(coverage);
@@ -426,7 +440,12 @@ function endpointOutcome(
   const structuralWarning = outcome.termination && outcome.termination !== 'exhausted'
     ? outcome.termination
     : undefined;
-  const warning = structuralWarning ?? (outcome.retentionFloor != null ? 'retention_truncated' : undefined);
+  // Structural pagination and retention describe the endpoint's primary
+  // coverage boundary. Semantic filtering remains available through the
+  // counts/reasons in `extras`, but must not replace that primary warning.
+  const warning = structuralWarning ??
+    (outcome.retentionFloor != null ? 'retention_truncated' : undefined) ??
+    extras.warning;
   const partial = outcome.partial || !!structuralWarning || outcome.retentionFloor != null;
   return {
     endpoint,
@@ -439,8 +458,8 @@ function endpointOutcome(
     paginationRequired: true,
     paginationExhausted: !partial && (outcome.termination == null || outcome.termination === 'exhausted'),
     retentionFloor: outcome.retentionFloor,
-    ...(warning ? { warning } : {}),
-    ...extras
+    ...extras,
+    ...(warning ? { warning } : {})
   };
 }
 
@@ -729,6 +748,113 @@ export async function paginateGateioWindows<T extends PageRow>(args: {
   return { rows, maxTs: args.now, partial: false, pages: fetches, termination: 'exhausted' };
 }
 
+async function physicalPage<T>(args: {
+  request: () => Promise<T[]>;
+  attempts: { used: number; max: number };
+  sleep: (ms: number) => Promise<void>;
+}): Promise<T[] | null> {
+  let retry = 0;
+  for (;;) {
+    if (args.attempts.used >= args.attempts.max) return null;
+    args.attempts.used += 1;
+    try {
+      return await args.request();
+    } catch (err) {
+      const kind = classifySyncError(err);
+      if (retry >= MAX_RETRIES || !RETRYABLE_KINDS.has(kind)) throw err;
+      if (args.attempts.used >= args.attempts.max) return null;
+      await args.sleep(RETRY_BACKOFF_MS[retry] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]);
+      retry += 1;
+    }
+  }
+}
+
+/**
+ * Crypto.com private/get-trades is newest-first. Exhaust each 23.5-hour
+ * window backwards by moving end_time to the oldest returned millisecond.
+ * Inclusive boundaries are deduped by native trade_id. A full page with 100+
+ * rows sharing that oldest millisecond cannot advance safely, so it returns a
+ * replayable partial result instead of skipping fills or looping.
+ */
+export async function paginateCryptocomTrades<T extends PageRow>(args: {
+  fetchPage: (since: number, until: number) => Promise<T[]>;
+  since: number;
+  now: number;
+  maxRequests?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<PaginateResult<T>> {
+  const rows: T[] = [];
+  const seenIds = new Set<string>();
+  const attempts = { used: 0, max: args.maxRequests ?? CRYPTOCOM_MAX_REQUESTS_PER_PHASE };
+  const sleep = args.sleep ?? (async () => {});
+  for (let start = args.since; start <= args.now;) {
+    const windowEnd = Math.min(start + CRYPTOCOM_TRADE_WINDOW_MS, args.now);
+    let end = windowEnd;
+    for (;;) {
+      const page = await physicalPage({ request: () => args.fetchPage(start, end), attempts, sleep });
+      if (page == null) {
+        return { rows, maxTs: start, partial: true, pages: attempts.used, termination: 'page_budget' };
+      }
+      for (const row of page) {
+        const id = row.id == null ? undefined : String(row.id);
+        if (id && seenIds.has(id)) continue;
+        if (id) seenIds.add(id);
+        rows.push(row);
+      }
+      if (page.length < CRYPTOCOM_TRADE_LIMIT) break;
+      const timestamps = page.map((row) => row.timestamp).filter((ts): ts is number =>
+        ts != null && Number.isFinite(ts));
+      if (timestamps.length === 0) {
+        return { rows, maxTs: start, partial: true, pages: attempts.used, termination: 'nonadvancing' };
+      }
+      const oldest = Math.min(...timestamps);
+      const atOldest = page.filter((row) => row.timestamp === oldest).length;
+      if (oldest <= start || oldest >= end || atOldest >= CRYPTOCOM_TRADE_LIMIT) {
+        return { rows, maxTs: start, partial: true, pages: attempts.used, termination: 'nonadvancing' };
+      }
+      end = oldest;
+    }
+    if (windowEnd >= args.now) break;
+    start = windowEnd;
+  }
+  return { rows, maxTs: args.now, partial: false, pages: attempts.used, termination: 'exhausted' };
+}
+
+/** Crypto.com transfer history: independent zero-based page chains per 89-day window. */
+export async function paginateCryptocomTransfers<T extends PageRow>(args: {
+  fetchPage: (since: number, until: number, page: number) => Promise<T[]>;
+  since: number;
+  now: number;
+  maxRequests?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<PaginateResult<T>> {
+  const rows: T[] = [];
+  const seenIds = new Set<string>();
+  const attempts = { used: 0, max: args.maxRequests ?? CRYPTOCOM_MAX_REQUESTS_PER_PHASE };
+  const sleep = args.sleep ?? (async () => {});
+  for (let start = args.since; start <= args.now;) {
+    const end = Math.min(start + CRYPTOCOM_TRANSFER_WINDOW_MS, args.now);
+    for (let pageNumber = 0;; pageNumber += 1) {
+      const page = await physicalPage({
+        request: () => args.fetchPage(start, end, pageNumber), attempts, sleep
+      });
+      if (page == null) {
+        return { rows, maxTs: start, partial: true, pages: attempts.used, termination: 'page_budget' };
+      }
+      for (const row of page) {
+        const id = row.id == null ? undefined : String(row.id);
+        if (id && seenIds.has(id)) continue;
+        if (id) seenIds.add(id);
+        rows.push(row);
+      }
+      if (page.length < CRYPTOCOM_TRANSFER_LIMIT) break;
+    }
+    if (end >= args.now) break;
+    start = end;
+  }
+  return { rows, maxTs: args.now, partial: false, pages: attempts.used, termination: 'exhausted' };
+}
+
 function htxNativeRecordId(row: PageRow): string | undefined {
   const native = (row as { info?: Record<string, unknown> }).info?.id;
   return native == null || String(native).length === 0 ? undefined : String(native);
@@ -879,7 +1005,7 @@ function usableHtxTradeProgress(
   return progress != null &&
     (expectedStart == null || progress.windowStart === expectedStart) &&
     Number.isFinite(progress.windowStart) && Number.isFinite(progress.windowEnd) &&
-    progress.windowEnd >= progress.windowStart &&
+    progress.windowEnd > progress.windowStart &&
     progress.windowEnd - progress.windowStart <= HTX_TRADE_WINDOW_MS &&
     progress.windowEnd <= now &&
     Array.isArray(progress.completedSymbols);
@@ -946,6 +1072,15 @@ function sinceFromCursor(cursor: number | undefined, overlapMs: number): number 
   return cursor != null && cursor > 0 ? Math.max(cursor - overlapMs, 0) : 0;
 }
 
+export function cryptocomRetainedSince(requested: number, now: number): {
+  since: number;
+  floor: number;
+  truncated: boolean;
+} {
+  const floor = now - CRYPTOCOM_RETENTION_MS;
+  return { since: Math.max(requested, floor), floor, truncated: requested < floor };
+}
+
 /** Coinbase v2 send/receive rows are the only in-scope transfer shapes. */
 function isCoinbaseChainTransfer(row: UnifiedTransfer): boolean {
   const t = row.info?.type;
@@ -960,7 +1095,8 @@ async function fetchTransferKind(
   now: number,
   coinbaseCurrencies: string[],
   warnings: string[],
-  sleep?: (ms: number) => Promise<void>
+  sleep?: (ms: number) => Promise<void>,
+  cryptocomMaxRequests?: number
 ): Promise<FetchPlanOutcome<UnifiedTransfer>> {
   const fetchDeposits = kind === 'deposits';
   if (exchange === 'kraken') {
@@ -1089,6 +1225,17 @@ async function fetchTransferKind(
       sleep
     });
   }
+  if (exchange === 'cryptocom') {
+    return paginateCryptocomTransfers<UnifiedTransfer>({
+      fetchPage: (s, u, page) => fetchDeposits
+        ? client.fetchDeposits(undefined, s, CRYPTOCOM_TRANSFER_LIMIT, { until: u, page })
+        : client.fetchWithdrawals(undefined, s, CRYPTOCOM_TRANSFER_LIMIT, { until: u, page }),
+      since,
+      now,
+      maxRequests: cryptocomMaxRequests,
+      sleep
+    });
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -1147,7 +1294,12 @@ async function fetchTradesForSymbol(
   symbol: string | undefined,
   since: number,
   now: number,
-  opts?: { firstSync?: boolean; sleep?: (ms: number) => Promise<void>; htxBudget?: HtxRequestBudget }
+  opts?: {
+    firstSync?: boolean;
+    sleep?: (ms: number) => Promise<void>;
+    htxBudget?: HtxRequestBudget;
+    cryptocomMaxRequests?: number;
+  }
 ): Promise<FetchPlanOutcome<UnifiedTrade>> {
   switch (exchange) {
     case 'binance':
@@ -1238,6 +1390,14 @@ async function fetchTradesForSymbol(
         requestBudget: opts?.htxBudget,
         sleep: opts?.sleep
       });
+    case 'cryptocom':
+      return paginateCryptocomTrades<UnifiedTrade>({
+        fetchPage: (s, u) => client.fetchMyTrades(undefined, s, CRYPTOCOM_TRADE_LIMIT, { until: u }),
+        since,
+        now,
+        maxRequests: opts?.cryptocomMaxRequests,
+        sleep: opts?.sleep
+      });
   }
 }
 
@@ -1273,6 +1433,7 @@ export interface SyncFetchOutcome {
   knownAssets: string[] | undefined;
   knownSymbols: string[] | undefined;
   htxTradeProgress?: HtxTradeProgress;
+  cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   skippedUnsettled: number;
   /**
    * Balance fetched during validation. Stage mode keeps this in the private
@@ -1323,7 +1484,13 @@ export async function syncConnection(
     // ---- validating ----
     hooks.onPhase?.('validating');
     const client = await createClient(row);
-    const markets = (await client.loadMarkets()) as Record<string, UnifiedMarket>;
+    const loadedMarkets = (await client.loadMarkets()) as Record<string, UnifiedMarket>;
+    // Crypto.com's public instrument catalog is intentionally mixed. Keep a
+    // strict active-spot market map for every downstream resolution step.
+    const markets = exchange === 'cryptocom'
+      ? Object.fromEntries(Object.entries(loadedMarkets).filter(([, market]) =>
+          market.spot === true && market.active !== false))
+      : loadedMarkets;
     const balance = await withRetries(() => client.fetchBalance(), sleep);
 
     // ---- fetching ----
@@ -1338,7 +1505,6 @@ export async function syncConnection(
     const transferRows: UnifiedTransfer[] = [];
     const transferOutcomes = new Map<'deposits' | 'withdrawals', FetchPlanOutcome<UnifiedTransfer>>();
     const newCursors: ExchangeSyncCursors = { ...oldCursors };
-    let partialHistory = false;
     let sharedTransferUnclassified = 0;
     let discoveryUniverseCount: number | undefined;
     let discoveredCount: number | undefined;
@@ -1349,23 +1515,37 @@ export async function syncConnection(
       deposits: Math.max(sinceFromCursor(oldCursors.deposits, TRANSFER_OVERLAP_MS), launchFloor),
       withdrawals: Math.max(sinceFromCursor(oldCursors.withdrawals, TRANSFER_OVERLAP_MS), launchFloor)
     };
+    const cryptocomPendingTransfers: { deposits?: number; withdrawals?: number } = {};
     const coinbaseSharedTransferStart = Math.min(
       transferRequestedStarts.deposits,
       transferRequestedStarts.withdrawals
     );
 
     for (const kind of ['deposits', 'withdrawals'] as const) {
-      const since = exchange === 'coinbase'
+      let since = exchange === 'coinbase'
         ? coinbaseSharedTransferStart
         : transferRequestedStarts[kind];
+      if (exchange === 'cryptocom' && row.cryptocomPendingTransfers?.[kind] != null) {
+        since = Math.min(since, row.cryptocomPendingTransfers[kind]!);
+      }
+      const retainedTransfer = cryptocomRetainedSince(since, nowMs);
+      const cryptocomRetentionFloor = retainedTransfer.floor;
+      const cryptocomRetentionTruncated = exchange === 'cryptocom' && retainedTransfer.truncated;
+      if (exchange === 'cryptocom') since = retainedTransfer.since;
       const cbAssets = [...new Set([...balanceAssets, ...(row.knownAssets ?? [])])];
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
       if (exchange === 'coinbase' && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
-      } else if (exchange === 'gateio' || exchange === 'htx') {
-        // Gate/HTX retry each physical page request inside their paginator so
+      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom') {
+        // Gate/HTX/Crypto.com retry each physical request inside their paginator so
         // a retry cannot restart pagination or reset the attempt cap.
-        outcome = await fetchTransferKind(client, exchange, kind, since, nowMs, cbAssets, warnings, sleep);
+        outcome = await fetchTransferKind(
+          client, exchange, kind, since, nowMs, cbAssets, warnings, sleep, deps.cryptocomMaxRequests
+        );
+        if (cryptocomRetentionTruncated) {
+          outcome.partial = true;
+          outcome.retentionFloor = cryptocomRetentionFloor;
+        }
         transferOutcomes.set(kind, outcome);
       } else {
         outcome = await withRetries(
@@ -1401,13 +1581,30 @@ export async function syncConnection(
         }
       }
       transferRows.push(...outcome.rows);
+      if (exchange === 'cryptocom') {
+        const pendingTimestamps = outcome.rows
+          .filter((transfer) => cryptocomTransferDisposition(transfer) === 'pending')
+          .map((transfer) => transfer.timestamp)
+          .filter((timestamp): timestamp is number => timestamp != null && Number.isFinite(timestamp));
+        const structurallyPartial = outcome.termination === 'page_budget' || outcome.termination === 'nonadvancing';
+        const priorPending = row.cryptocomPendingTransfers?.[kind];
+        const candidates = [
+          ...pendingTimestamps,
+          ...(structurallyPartial && priorPending != null ? [priorPending] : [])
+        ];
+        if (candidates.length > 0) cryptocomPendingTransfers[kind] = Math.min(...candidates);
+      }
       for (const t of outcome.rows) {
         if (t.currency) transferAssets.add(t.currency.toUpperCase());
       }
       const merged = Math.max(oldCursors[kind] ?? 0, outcome.maxTs ?? 0);
       if (merged > 0) newCursors[kind] = merged;
-      if (outcome.partial) partialHistory = true;
       fetchedCount += outcome.rows.length;
+      if (cryptocomRetentionTruncated) {
+        warnings.push(
+          `Crypto.com Exchange keeps 180 days of ${kind} API history. Older Exchange history requires a Crypto.com Exchange export or Exchange Support; Crypto.com App CSV is a separate product and cannot backfill it.`
+        );
+      }
     }
 
     // ---- trades ----
@@ -1422,6 +1619,10 @@ export async function syncConnection(
     const htxRetentionFloor = nowMs - HTX_TRADE_RETENTION_MS;
     const htxRetentionTruncated = exchange === 'htx' && requestedTradeSince < htxRetentionFloor;
     if (exchange === 'htx') tradeSince = Math.max(tradeSince, htxRetentionFloor);
+    const retainedTrades = cryptocomRetainedSince(requestedTradeSince, nowMs);
+    const cryptocomRetentionFloor = retainedTrades.floor;
+    const cryptocomRetentionTruncated = exchange === 'cryptocom' && retainedTrades.truncated;
+    if (exchange === 'cryptocom') tradeSince = retainedTrades.since;
     const tradeRows: UnifiedTrade[] = [];
     const tradeOutcomes: FetchPlanOutcome<UnifiedTrade>[] = [];
     let newKnownSymbols: string[] | undefined;
@@ -1484,7 +1685,6 @@ export async function syncConnection(
         if (outcome.rows.length > 0) symbolHits.add(symbol);
         tradeRows.push(...outcome.rows);
         fetchedCount += outcome.rows.length;
-        if (outcome.partial) partialHistory = true;
         done += 1;
         hooks.onProgress?.({ done, total: symbols.length });
       }
@@ -1535,7 +1735,6 @@ export async function syncConnection(
       tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
-      if (outcome.partial) partialHistory = true;
       discoveredCount = symbols.length;
       if (htxRetentionTruncated) {
         warnings.push(
@@ -1547,10 +1746,11 @@ export async function syncConnection(
       tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
-      if (outcome.partial) partialHistory = true;
     } else {
-      const outcome = exchange === 'gateio'
-        ? await fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs, { sleep })
+      const outcome = exchange === 'gateio' || exchange === 'cryptocom'
+        ? await fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs, {
+            sleep, cryptocomMaxRequests: deps.cryptocomMaxRequests
+          })
         : await withRetries(
             () => fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs),
             sleep
@@ -1566,10 +1766,13 @@ export async function syncConnection(
         outcome.termination = 'retention_truncated';
         outcome.retentionFloor = bybitRetentionFloor;
       }
+      if (cryptocomRetentionTruncated) {
+        outcome.partial = true;
+        outcome.retentionFloor = cryptocomRetentionFloor;
+      }
       tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
-      if (outcome.partial) partialHistory = true;
       if (exchange === 'okx' && oldCursors.trades == null) {
         warnings.push(
           'OKX keeps about 3 months of fill history — older OKX trades need a one-time CSV import.'
@@ -1580,6 +1783,11 @@ export async function syncConnection(
           'Bybit keeps about 2 years of execution history in this API — older Bybit spot trades need a one-time CSV import.'
         );
       }
+      if (cryptocomRetentionTruncated) {
+        warnings.push(
+          'Crypto.com Exchange keeps 180 days of trade API history. Older Exchange trades require a Crypto.com Exchange export or Exchange Support; Crypto.com App CSV is a separate product and cannot backfill them.'
+        );
+      }
     }
 
     const tradeCursorCandidate = exchange === 'htx'
@@ -1588,18 +1796,24 @@ export async function syncConnection(
       ? (tradeOutcomes.length > 0
           ? tradeOutcomes.reduce((min, outcome) => Math.min(min, outcome.maxTs ?? tradeSince), nowMs)
           : nowMs)
-      : exchange === 'bybit' || exchange === 'gateio'
+      : exchange === 'bybit' || exchange === 'gateio' || exchange === 'cryptocom'
       ? tradeOutcomes.reduce((max, outcome) => Math.max(max, outcome.maxTs ?? 0), 0)
       : maxTimestamp(tradeRows) ?? 0;
     const mergedTrades = Math.max(oldCursors.trades ?? 0, tradeCursorCandidate);
     if (mergedTrades > 0) newCursors.trades = mergedTrades;
-    if (partialHistory) {
+    const allHistoryOutcomes = [...transferOutcomes.values(), ...tradeOutcomes];
+    const hasRetryableStructuralPartial = exchange === 'cryptocom'
+      ? allHistoryOutcomes.some((outcome) =>
+          outcome.termination === 'page_budget' || outcome.termination === 'nonadvancing')
+      : allHistoryOutcomes.some((outcome) => outcome.partial);
+    if (hasRetryableStructuralPartial) {
       warnings.push('History continues — sync again to fetch more.');
     }
 
     // ---- normalize (pure) ----
     const transactions: Transaction[] = [];
     let tradeNormalizationDrops = 0;
+    let cryptocomDerivativeExcluded = 0;
     if (exchange === 'kraken') {
       const { transactions: krakenTxs, skipped: krakenSkipped } = normalizeKrakenTradesByOrder(
         tradeRows,
@@ -1631,25 +1845,51 @@ export async function syncConnection(
         );
       }
     } else {
+      let cryptocomUnresolvedTrades = 0;
       for (const trade of tradeRows) {
         const market = resolveMarket(markets, trade.symbol);
+        if (exchange === 'cryptocom' && !market) {
+          const mixedMarket = resolveMarket(loadedMarkets, trade.symbol);
+          if (mixedMarket && mixedMarket.spot !== true) {
+            cryptocomDerivativeExcluded += 1;
+          } else {
+            cryptocomUnresolvedTrades += 1;
+            tradeNormalizationDrops += 1;
+          }
+          continue;
+        }
         const tx = normalizeTrade(exchange, trade, market);
         if (tx) transactions.push(tx);
         else tradeNormalizationDrops += 1;
+      }
+      if (cryptocomDerivativeExcluded > 0) {
+        warnings.push(`Excluded ${cryptocomDerivativeExcluded} Crypto.com Exchange derivative trade(s); auto-sync imports active spot markets only.`);
+      }
+      if (cryptocomUnresolvedTrades > 0) {
+        warnings.push(`Excluded ${cryptocomUnresolvedTrades} Crypto.com Exchange trade(s) whose active spot market could not be resolved.`);
       }
     }
     const skippedTransfersByKind: Record<'deposits' | 'withdrawals', number> = {
       deposits: 0,
       withdrawals: 0
     };
+    const terminalTransfersByKind: Record<'deposits' | 'withdrawals', number> = {
+      deposits: 0,
+      withdrawals: 0
+    };
     for (const kind of ['deposits', 'withdrawals'] as const) {
       for (const transfer of transferOutcomes.get(kind)?.rows ?? []) {
+        if (exchange === 'cryptocom' && cryptocomTransferDisposition(transfer) === 'terminal') {
+          terminalTransfersByKind[kind] += 1;
+          continue;
+        }
         const tx = normalizeTransfer(exchange, transfer);
         if (tx) transactions.push(tx);
         else skippedTransfersByKind[kind] += 1;
       }
     }
     const skippedUnsettled = skippedTransfersByKind.deposits + skippedTransfersByKind.withdrawals;
+    const terminalTransferExclusions = terminalTransfersByKind.deposits + terminalTransfersByKind.withdrawals;
     if (skippedUnsettled > 0) {
       warnings.push(
         `Skipped ${skippedUnsettled} transfer${skippedUnsettled === 1 ? '' : 's'} that ${
@@ -1672,50 +1912,67 @@ export async function syncConnection(
       outcome.termination && outcome.termination !== 'exhausted');
     const tradeRetention = tradeOutcomes.find((outcome) => outcome.retentionFloor != null);
     const endpointOutcomes: EndpointCoverageOutcome[] = [
-      { endpoint: 'balance', accountClass: 'spot', required: true, status: 'complete' },
+      ...(exchange === 'cryptocom'
+        ? []
+        : [{ endpoint: 'balance', accountClass: 'spot', required: true, status: 'complete' } as EndpointCoverageOutcome]),
       endpointOutcome('deposits', requestedStarts[0], nowMs, transferOutcomes.get('deposits')!,
-        skippedTransfersByKind.deposits > 0 || (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0) > 0 ? {
-          status: 'partial', paginationExhausted: false,
+        skippedTransfersByKind.deposits > 0 || terminalTransfersByKind.deposits > 0 ||
+          (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0) > 0 ? {
+          ...(skippedTransfersByKind.deposits > 0 || (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0) > 0
+            ? { status: 'partial' as const, paginationExhausted: false }
+            : {}),
           skippedCount: skippedTransfersByKind.deposits + (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0),
+          excludedCount: terminalTransfersByKind.deposits,
           exclusionReasons: [
             ...(skippedTransfersByKind.deposits > 0 ? ['unsettled_transfer'] : []),
+            ...(terminalTransfersByKind.deposits > 0 ? ['terminal_status_out_of_scope'] : []),
             ...((transferOutcomes.get('deposits')?.unclassifiedCount ?? 0) > 0 ? ['unknown_transfer_direction'] : [])
           ]
         } : {}),
       endpointOutcome('withdrawals', requestedStarts[1], nowMs, transferOutcomes.get('withdrawals')!,
-        skippedTransfersByKind.withdrawals > 0 || (transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0) > 0 ? {
-          status: 'partial', paginationExhausted: false,
+        skippedTransfersByKind.withdrawals > 0 || terminalTransfersByKind.withdrawals > 0 ||
+          (transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0) > 0 ? {
+          ...(skippedTransfersByKind.withdrawals > 0 || (transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0) > 0
+            ? { status: 'partial' as const, paginationExhausted: false }
+            : {}),
           skippedCount: skippedTransfersByKind.withdrawals + (transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0),
+          excludedCount: terminalTransfersByKind.withdrawals,
           exclusionReasons: [
             ...(skippedTransfersByKind.withdrawals > 0 ? ['unsettled_transfer'] : []),
+            ...(terminalTransfersByKind.withdrawals > 0 ? ['terminal_status_out_of_scope'] : []),
             ...((transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0) > 0 ? ['unknown_transfer_direction'] : [])
           ]
         } : {}),
       endpointOutcome('trades', requestedStarts[2], nowMs, {
         rows: tradeRows,
         maxTs: maxTimestamp(tradeRows),
-        partial: tradeOutcomes.some((outcome) => outcome.partial) || skippedSymbols > 0 ||
-          tradeNormalizationDrops > 0,
+        partial: tradeOutcomes.some((outcome) => outcome.partial) || skippedSymbols > 0 || tradeNormalizationDrops > 0,
         termination: tradeStructuralFailure?.termination,
         retentionFloor: tradeRetention?.retentionFloor
-      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 ? {
-        status: 'partial',
-        paginationExhausted: false,
+      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 || cryptocomDerivativeExcluded > 0 ? {
+        ...(skippedSymbols > 0 || tradeNormalizationDrops > 0
+          ? { status: 'partial' as const, paginationExhausted: false }
+          : {}),
         skippedCount: skippedSymbols + tradeNormalizationDrops,
+        excludedCount: cryptocomDerivativeExcluded,
         failedCount: tradeNormalizationDrops,
         exclusionReasons: [
           ...(skippedSymbols > 0 ? ['binance_symbol_unavailable'] : []),
+          ...(cryptocomDerivativeExcluded > 0 ? ['derivative_out_of_scope'] : []),
           ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
         ],
-        warning: tradeNormalizationDrops > 0 ? 'trade_normalization_failed' : 'binance_symbol_unavailable'
+        warning: tradeNormalizationDrops > 0
+          ? 'trade_normalization_failed'
+          : skippedSymbols > 0 ? 'binance_symbol_unavailable' : undefined
       } : {})
     ];
-    const structuralPartial = endpointOutcomes.some((outcome) => outcome.status !== 'complete');
+    const structuralPartial = endpointOutcomes.some((outcome) => outcome.required && outcome.status !== 'complete');
     const rawTransferCount = [...transferOutcomes.values()]
       .reduce((count, outcome) => count + outcome.rows.length, 0) + sharedTransferUnclassified;
     const transferNormalizationDrops = skippedUnsettled + sharedTransferUnclassified;
     const recognizedCount = tradeRows.length + rawTransferCount;
-    const parsedCount = recognizedCount - tradeNormalizationDrops - transferNormalizationDrops;
+    const explainedExclusions = cryptocomDerivativeExcluded + terminalTransferExclusions;
+    const parsedCount = recognizedCount - tradeNormalizationDrops - transferNormalizationDrops - explainedExclusions;
     const coverage = operationCoverage({
       connectionId,
       generation: reservation.generation,
@@ -1729,10 +1986,16 @@ export async function syncConnection(
       discoveryUniverseCount,
       discoveredCount,
       skippedCount: skippedUnsettled + sharedTransferUnclassified + skippedSymbols + tradeNormalizationDrops,
+      excludedCount: explainedExclusions,
       recognizedCount,
       parsedCount,
       failedCount: tradeNormalizationDrops,
-      exclusionReasons: tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : undefined
+      exclusionReasons: cryptocomDerivativeExcluded > 0 || terminalTransferExclusions > 0 ||
+        tradeNormalizationDrops > 0 ? [
+        ...(cryptocomDerivativeExcluded > 0 ? ['derivative_out_of_scope'] : []),
+        ...(terminalTransferExclusions > 0 ? ['terminal_status_out_of_scope'] : []),
+        ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
+      ] : undefined
     });
     const operation: SyncOperationEvidence = {
       generation: reservation.generation,
@@ -1748,6 +2011,7 @@ export async function syncConnection(
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
       htxTradeProgress,
+      cryptocomPendingTransfers: exchange === 'cryptocom' ? cryptocomPendingTransfers : undefined,
       skippedUnsettled,
       balance,
       operation
@@ -1774,6 +2038,7 @@ export async function syncConnection(
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
       htxTradeProgress,
+      cryptocomPendingTransfers: exchange === 'cryptocom' ? cryptocomPendingTransfers : undefined,
       balance,
       operation,
       hooks,
@@ -1833,6 +2098,7 @@ export async function persistSyncedRows(args: {
   knownAssets?: string[];
   knownSymbols?: string[];
   htxTradeProgress?: HtxTradeProgress;
+  cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
   /** Reserved generation and source revision/state captured by this operation. */
@@ -1933,7 +2199,13 @@ export async function persistSyncedRows(args: {
 
       const asOf = args.operation.asOf;
       let authorityBalances: Array<{ asset: string; amount: number }> = [];
-      if (args.balance) {
+      if (connection.exchange === 'cryptocom') {
+        // Crypto.com's default balance endpoint is whole Exchange-account
+        // custody, not a proven exhaustive spot subledger. Remove any rows
+        // written by the initial connector revision so dashboard quantity
+        // authority cannot suppress history-derived holdings.
+        await db.exchangeBalances.where('connectionId').equals(args.connectionId).delete();
+      } else if (args.balance) {
         const freshBalances = flat.map(({ asset, amount }) => ({
           id: exchangeBalanceId(args.connectionId, asset), connectionId: args.connectionId,
           exchange: connection.exchange, asset: asset.toUpperCase(), amount, asOf,
@@ -1997,6 +2269,7 @@ export async function persistSyncedRows(args: {
         knownAssets: args.knownAssets,
         knownSymbols: args.knownSymbols,
         htxTradeProgress: args.htxTradeProgress,
+        cryptocomPendingTransfers: args.cryptocomPendingTransfers,
         lastSyncAt: asOf,
         status: 'ok',
         lastError: undefined,

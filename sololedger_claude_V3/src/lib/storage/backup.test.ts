@@ -314,6 +314,53 @@ describe('importFullBackup', () => {
     }).authorityStatus).toBe('stale');
   });
 
+  it('round-trips validated exchange replay checkpoints without credentials', async () => {
+    await db.exchangeConnections.bulkPut([{
+      id: 'cryptocom-source', exchange: 'cryptocom', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', cryptocomPendingTransfers: { deposits: 100, withdrawals: 200 }
+    }, {
+      id: 'htx-source', exchange: 'htx', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', htxTradeProgress: {
+        windowStart: 300, windowEnd: 400, completedSymbols: ['BTC/USDT']
+      }
+    }]);
+    const payload = await createFullBackupPayload();
+    await importFullBackup(backupFile(payload));
+
+    expect(await db.exchangeConnections.get('cryptocom-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      cryptocomPendingTransfers: { deposits: 100, withdrawals: 200 }
+    });
+    expect(await db.exchangeConnections.get('htx-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      htxTradeProgress: { windowStart: 300, windowEnd: 400, completedSymbols: ['BTC/USDT'] }
+    });
+  });
+
+  it.each([NaN, -1, 1.5])('rejects malformed Crypto.com pending checkpoint %s', async (timestamp) => {
+    await db.exchangeConnections.put({
+      id: 'cryptocom-source', exchange: 'cryptocom', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    payload.exchangeConnections[0].cryptocomPendingTransfers = { deposits: timestamp };
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Crypto.com pending-transfer checkpoint is malformed'
+    );
+  });
+
+  it('rejects restored HTX progress with equal window bounds', async () => {
+    await db.exchangeConnections.put({
+      id: 'htx-source', exchange: 'htx', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    payload.exchangeConnections[0].htxTradeProgress = {
+      windowStart: 100, windowEnd: 100, completedSymbols: []
+    };
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'HTX trade progress is malformed'
+    );
+  });
+
   it('does not reactivate exported v10 wallet or exchange balance anchors on restore', async () => {
     await db.transactions.put(makeTx('history-kept'));
     await db.lookupAddresses.put({
