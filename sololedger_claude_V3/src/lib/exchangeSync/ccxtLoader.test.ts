@@ -47,6 +47,7 @@ describe('loadCcxt', () => {
     expect(typeof a.kucoin).toBe('function');
     expect(typeof a.bybit).toBe('function');
     expect(typeof a.gate).toBe('function');
+    expect(typeof a.htx).toBe('function');
   });
 });
 
@@ -112,6 +113,26 @@ describe('createExchangeClient', () => {
     expect(raw.has.fetchCurrencies).toBe(false);
     expect(await raw.publicMarginGetCurrencyPairs()).toEqual([]);
     expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+  });
+
+  it('configures HTX for spot-only markets and account discovery without currency probes', async () => {
+    const client = await createExchangeClient(row({ exchange: 'htx' }));
+    const raw = client as unknown as {
+      options: Record<string, unknown>;
+      has: Record<string, unknown>;
+      requiredCredentials: Record<string, boolean>;
+      enableLastJsonResponse: boolean;
+      password?: string;
+    };
+    expect(raw.options).toMatchObject({
+      defaultType: 'spot',
+      fetchMarkets: { types: { spot: true, linear: false, inverse: false } },
+      fetchCurrencies: false
+    });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.enableLastJsonResponse).toBe(true);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    expect(raw.password).toBeUndefined();
   });
 
   it('does not set password for exchanges without a passphrase', async () => {
@@ -209,6 +230,7 @@ describe('syncErrorMessage', () => {
     expect(syncErrorMessage('network', 'kucoin')).toContain('KuCoin');
     expect(syncErrorMessage('relay_auth', 'kraken')).toContain('sign in');
     expect(syncErrorMessage('invalid_key', 'gateio')).toContain('Gate.io');
+    expect(syncErrorMessage('invalid_key', 'htx')).toContain('HTX');
   });
 
   it('region_blocked copy points users at CSV import', () => {

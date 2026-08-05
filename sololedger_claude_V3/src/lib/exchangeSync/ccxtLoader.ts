@@ -89,6 +89,8 @@ export interface UnifiedBalance {
 export interface ExchangeClient {
   id: string;
   markets?: Record<string, UnifiedMarket>;
+  /** Enabled for HTX so pagination can use the raw response's final item before CCXT sorts parsed rows. */
+  last_json_response?: unknown;
   loadMarkets(reload?: boolean): Promise<Record<string, UnifiedMarket>>;
   fetchBalance(params?: Record<string, unknown>): Promise<UnifiedBalance>;
   fetchMyTrades(
@@ -121,7 +123,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   okx: 'OKX',
   kucoin: 'KuCoin',
   bybit: 'Bybit',
-  gateio: 'Gate.io'
+  gateio: 'Gate.io',
+  htx: 'HTX'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -155,7 +158,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     timeout: 30_000
   };
   if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio') {
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -180,6 +183,19 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
             unifiedAccount: false,
             fetchCurrencies: false
           }
+        : exchangeId === 'htx'
+          ? {
+              defaultType: 'spot',
+              fetchMarkets: { types: { spot: true, linear: false, inverse: false } },
+              // Market symbols are sufficient for sync. Avoid the unrelated
+              // currency/reference probe and pin every account call to spot.
+              fetchCurrencies: false,
+              // HTX's transaction parser expects these maps to have been
+              // initialized by fetchCurrencies. A sentinel keeps its normal
+              // raw-chain fallback working without that unnecessary probe.
+              networkNamesByChainIds: { __sololedger__: '__sololedger__' },
+              networkChainIdsByNames: { __sololedger__: {} }
+            }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -206,6 +222,10 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // normalization. Pin the capability off as well as the option so
     // loadMarkets performs only the spot currency-pairs request.
     config.has = { fetchCurrencies: false };
+  }
+  if (exchangeId === 'htx') {
+    config.has = { fetchCurrencies: false };
+    config.enableLastJsonResponse = true;
   }
   const exchange = new Ctor(config) as ExchangeClient;
   if (exchangeId === 'gateio') {

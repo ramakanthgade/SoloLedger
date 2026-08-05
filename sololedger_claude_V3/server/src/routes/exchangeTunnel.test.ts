@@ -195,7 +195,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['okx', 'www.okx.com', '/api/v5/public/time'],
     ['kucoin', 'api.kucoin.com', '/api/v1/timestamp'],
     ['bybit', 'api.bybit.com', '/v5/market/time'],
-    ['gateio', 'api.gateio.ws', '/api/v4/spot/time']
+    ['gateio', 'api.gateio.ws', '/api/v4/spot/time'],
+    ['htx', 'api.huobi.pro', '/v1/common/timestamp']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -344,6 +345,18 @@ describe('3. header allowlist', () => {
     const [, init] = lastUpstreamCall();
     expect(init.headers).toEqual({ key: 'GATE_KEY', timestamp: '1700000000', sign: 'signature' });
   });
+
+  it('htx: preserves signed raw query and forwards no private auth headers', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"status":"error","err-code":"api-signature-not-valid"}'));
+    const query = 'AccessKeyId=dummy&Signature=Ab%2B%2F%3D&Timestamp=2026-08-04T00%3A00%3A00';
+    await rawRequest({
+      path: `/htx/v1/account/accounts?${query}`,
+      headers: { ...AUTH, 'content-type': 'application/x-www-form-urlencoded', 'x-exchange-cookie': 'never' }
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe(`https://api.huobi.pro/v1/account/accounts?${query}`);
+    expect(init.headers).toEqual({ 'content-type': 'application/x-www-form-urlencoded' });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -416,6 +429,23 @@ describe('4. exchangeId and path validation', () => {
     const post = await client('/gateio/api/v4/spot/my_trades', { method: 'POST', headers: AUTH });
     expect(post.status).toBe(400);
     expect(post.headers.get('x-sololedger-error')).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('HTX allows only exact read-only spot/account/history GET endpoints', async () => {
+    for (const path of [
+      '/htx/v1/order/orders/place',
+      '/htx/v1/dw/withdraw/api/create',
+      '/htx/v1/margin/accounts/balance',
+      '/htx/swap-api/v1/swap_account_info',
+      '/htx/v1/account/accounts/123/balance/extra'
+    ]) {
+      const res = await client(path, { headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    const post = await client('/htx/v1/order/matchresults', { method: 'POST', headers: AUTH });
+    expect(post.status).toBe(400);
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 });

@@ -51,8 +51,10 @@ import {
 } from './ccxtLoader';
 import {
   normalizeKrakenTradesByOrder,
+  mergeHtxOrderTransactions,
   mergeBybitOrderTransactions,
   normalizeBybitTradesByOrder,
+  normalizeHtxTradesByOrder,
   normalizeTrade,
   normalizeTransfer,
   resolveMarket
@@ -105,6 +107,13 @@ export const GATEIO_MAX_OFFSET = 100_000;
  * request trees.
  */
 export const GATEIO_MAX_REQUESTS_PER_PHASE = 8_000;
+/** HTX phases count physical attempts (including retries) against this cap. */
+export const HTX_MAX_REQUESTS_PER_PHASE = 8_000;
+/** HTX matchresults requires a range no wider than 48 hours. */
+export const HTX_TRADE_WINDOW_MS = 47.5 * 3_600_000;
+const HTX_TRADE_LIMIT = 500;
+const HTX_TRANSFER_LIMIT = 100;
+const HTX_TRADE_RETENTION_MS = 120 * 86_400_000;
 const GATEIO_TRADE_LIMIT = 1000;
 const GATEIO_DEPOSIT_LIMIT = 500;
 /** Official wallet docs cap withdrawal-history responses at 100 rows. */
@@ -136,7 +145,8 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   bybit: Date.UTC(2021, 6, 15), // 2021-07-15 (spot launch)
   // Gate launched in April 2013. The exact first spot-market day is not
   // published, so use the conservative beginning of that launch month.
-  gateio: Date.UTC(2013, 3, 1)
+  gateio: Date.UTC(2013, 3, 1),
+  htx: Date.UTC(2013, 8, 1) // Huobi/HTX launched in September 2013
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -148,6 +158,8 @@ export interface SyncEngineDeps {
   createClient?: (row: ExchangeConnectionRow) => Promise<ExchangeClient>;
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
+  /** Test seam; production uses HTX_MAX_REQUESTS_PER_PHASE. */
+  htxMaxTradeRequests?: number;
 }
 
 export interface SyncHooks {
@@ -364,6 +376,28 @@ export function buildBybitOrderLookups(existing: readonly Transaction[]): BybitO
   return { directByRef, csvByRef };
 }
 
+/** Same order-level survivor contract as Bybit, scoped to HTX sources. */
+export function buildHtxOrderLookups(
+  existing: readonly Transaction[],
+  connectionId: string
+): BybitOrderLookups {
+  const directByRef = new Map<string, Transaction>();
+  const csvByRef = new Map<string, Transaction>();
+  for (const row of existing) {
+    if (!row.sourceRef) continue;
+    if (row.source === 'htx_api' && row.importBatchId === connectionId && !directByRef.has(row.sourceRef)) {
+      directByRef.set(row.sourceRef, row);
+    }
+    if (
+      row.source === 'htx' &&
+      row.dedupMatchedApiRow?.source === 'htx_api' &&
+      row.dedupMatchedApiRow.importBatchId === connectionId &&
+      !csvByRef.has(row.sourceRef)
+    ) csvByRef.set(row.sourceRef, row);
+  }
+  return { directByRef, csvByRef };
+}
+
 function maxTimestamp<T extends PageRow>(rows: T[]): number | null {
   let max: number | null = null;
   for (const row of rows) {
@@ -389,8 +423,11 @@ function endpointOutcome(
   outcome: FetchPlanOutcome<PageRow>,
   extras: Partial<EndpointCoverageOutcome> = {}
 ): EndpointCoverageOutcome {
-  const partial = outcome.partial || outcome.termination === 'nonadvancing' ||
-    outcome.termination === 'retention_truncated' || outcome.termination === 'full_page_truncated';
+  const structuralWarning = outcome.termination && outcome.termination !== 'exhausted'
+    ? outcome.termination
+    : undefined;
+  const warning = structuralWarning ?? (outcome.retentionFloor != null ? 'retention_truncated' : undefined);
+  const partial = outcome.partial || !!structuralWarning || outcome.retentionFloor != null;
   return {
     endpoint,
     accountClass: 'spot',
@@ -402,7 +439,7 @@ function endpointOutcome(
     paginationRequired: true,
     paginationExhausted: !partial && (outcome.termination == null || outcome.termination === 'exhausted'),
     retentionFloor: outcome.retentionFloor,
-    ...(partial && outcome.termination ? { warning: outcome.termination } : {}),
+    ...(warning ? { warning } : {}),
     ...extras
   };
 }
@@ -692,6 +729,130 @@ export async function paginateGateioWindows<T extends PageRow>(args: {
   return { rows, maxTs: args.now, partial: false, pages: fetches, termination: 'exhausted' };
 }
 
+function htxNativeRecordId(row: PageRow): string | undefined {
+  const native = (row as { info?: Record<string, unknown> }).info?.id;
+  return native == null || String(native).length === 0 ? undefined : String(native);
+}
+
+export interface HtxNativePage<T> {
+  rows: T[];
+  /** Exact `id` of the final item in HTX's raw response, before CCXT sorting. */
+  cursor?: string;
+}
+
+export interface HtxRequestBudget {
+  used: number;
+  max: number;
+}
+
+export function htxRawResponseCursor(client: ExchangeClient): string | undefined {
+  const data = (client.last_json_response as { data?: unknown } | undefined)?.data;
+  if (!Array.isArray(data) || data.length === 0) return undefined;
+  const id = (data[data.length - 1] as { id?: unknown } | null)?.id;
+  return id == null || String(id).length === 0 ? undefined : String(id);
+}
+
+const htxRequestTails = new WeakMap<ExchangeClient, Promise<void>>();
+
+export async function htxCapturedPage<T>(
+  client: ExchangeClient,
+  request: () => Promise<T[]>
+): Promise<HtxNativePage<T>> {
+  // CCXT exposes one mutable response slot per client. Serialize the complete
+  // clear → request → capture critical section so concurrent callers cannot
+  // steal or overwrite each other's cursor. Callbacks must not recursively
+  // invoke htxCapturedPage for the same client (the exchange request itself
+  // does not do so); that would be a conventional non-reentrant mutex deadlock.
+  const previous = htxRequestTails.get(client) ?? Promise.resolve();
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const tail = previous.then(() => gate);
+  htxRequestTails.set(client, tail);
+  await previous;
+  try {
+    client.last_json_response = undefined;
+    const rows = await request();
+    return { rows, cursor: htxRawResponseCursor(client) };
+  } finally {
+    release();
+    if (htxRequestTails.get(client) === tail) htxRequestTails.delete(client);
+  }
+}
+
+/**
+ * HTX native-id pagination. `from` is the raw response `id` (never ccxt's
+ * unified trade id, which maps to `trade-id`). Requests are newest-first with
+ * `direct=next`; each time window is exhausted before moving forward. The
+ * physical-attempt cap includes retries, so retry storms cannot reset safety
+ * accounting. Transfer callers set stopAtSince because HTX ignores ccxt's
+ * `since` for server filtering on that endpoint.
+ */
+export async function paginateHtxNativeWindows<T extends PageRow>(args: {
+  fetchPage: (since: number, until: number, from?: string) => Promise<HtxNativePage<T>>;
+  since: number;
+  now: number;
+  windowMs: number;
+  fullPage: number;
+  stopAtSince?: boolean;
+  maxRequests?: number;
+  requestBudget?: HtxRequestBudget;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<PaginateResult<T>> {
+  const rows: T[] = [];
+  const seen = new Set<string>();
+  const budget = args.requestBudget ?? { used: 0, max: args.maxRequests ?? HTX_MAX_REQUESTS_PER_PHASE };
+  const sleep = args.sleep ?? (async () => {});
+  const initialRequests = budget.used;
+  for (let start = args.since; start <= args.now;) {
+    const end = Math.min(start + args.windowMs, args.now);
+    let from: string | undefined;
+    const seenCursors = new Set<string>();
+    for (;;) {
+      let retry = 0;
+      let response: HtxNativePage<T> | undefined;
+      while (response == null) {
+        if (budget.used >= budget.max) {
+          return { rows, maxTs: start, partial: true, pages: budget.used - initialRequests, termination: 'page_budget' };
+        }
+        budget.used += 1;
+        try {
+          response = await args.fetchPage(start, end, from);
+        } catch (err) {
+          const kind = classifySyncError(err);
+          if (retry >= MAX_RETRIES || !RETRYABLE_KINDS.has(kind)) throw err;
+          if (budget.used >= budget.max) {
+            return { rows, maxTs: start, partial: true, pages: budget.used - initialRequests, termination: 'page_budget' };
+          }
+          await sleep(RETRY_BACKOFF_MS[retry] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]);
+          retry += 1;
+        }
+      }
+      const page = response.rows;
+      let crossedSince = false;
+      for (const row of page) {
+        if (args.stopAtSince && row.timestamp != null && row.timestamp < args.since) {
+          crossedSince = true;
+          continue;
+        }
+        const key = htxNativeRecordId(row) ?? (row.id == null ? undefined : String(row.id));
+        if (key && seen.has(key)) continue;
+        if (key) seen.add(key);
+        rows.push(row);
+      }
+      if (page.length < args.fullPage || crossedSince) break;
+      const next = response.cursor;
+      if (!next || next === from || seenCursors.has(next)) {
+        return { rows, maxTs: start, partial: true, pages: budget.used - initialRequests, termination: 'nonadvancing' };
+      }
+      seenCursors.add(next);
+      from = next;
+    }
+    if (end >= args.now || args.stopAtSince) break;
+    start = end;
+  }
+  return { rows, maxTs: args.now, partial: false, pages: budget.used - initialRequests, termination: 'exhausted' };
+}
+
 // ---- Per-exchange fetch plans ----
 
 interface FetchPlanOutcome<T extends PageRow> {
@@ -702,6 +863,83 @@ interface FetchPlanOutcome<T extends PageRow> {
     'currency_universe_unproven';
   retentionFloor?: number;
   unclassifiedCount?: number;
+}
+
+export interface HtxTradeProgress {
+  windowStart: number;
+  windowEnd: number;
+  completedSymbols: string[];
+}
+
+function usableHtxTradeProgress(
+  progress: HtxTradeProgress | undefined,
+  now: number,
+  expectedStart?: number
+): progress is HtxTradeProgress {
+  return progress != null &&
+    (expectedStart == null || progress.windowStart === expectedStart) &&
+    Number.isFinite(progress.windowStart) && Number.isFinite(progress.windowEnd) &&
+    progress.windowEnd >= progress.windowStart &&
+    progress.windowEnd - progress.windowStart <= HTX_TRADE_WINDOW_MS &&
+    progress.windowEnd <= now &&
+    Array.isArray(progress.completedSymbols);
+}
+
+/**
+ * Fair HTX traversal: time windows are outermost, symbols are inner. A window
+ * advances only after every active symbol exhausts it. The additive durable
+ * checkpoint records symbols already exhausted in the first unfinished
+ * window, which is necessary for progress when the shared budget is smaller
+ * than one request per market.
+ */
+export async function fetchHtxTradesFair(args: {
+  symbols: string[];
+  since: number;
+  now: number;
+  priorProgress?: HtxTradeProgress;
+  requestBudget: HtxRequestBudget;
+  fetchPage: (symbol: string, since: number, until: number, from?: string) => Promise<HtxNativePage<UnifiedTrade>>;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<{ outcome: FetchPlanOutcome<UnifiedTrade>; progress?: HtxTradeProgress }> {
+  const rows: UnifiedTrade[] = [];
+  const prior = args.priorProgress;
+  const priorIsUsable = usableHtxTradeProgress(prior, args.now, args.since);
+  for (let start = args.since; start <= args.now;) {
+    // A tail window was bounded by the previous run's `now`. Freeze that end
+    // until every symbol completes it; otherwise an advancing clock silently
+    // widens the checkpoint and can create gaps/starvation at the old tail.
+    const end = priorIsUsable && prior!.windowStart === start
+      ? prior!.windowEnd
+      : Math.min(start + HTX_TRADE_WINDOW_MS, args.now);
+    const completed = new Set(
+      priorIsUsable && prior!.windowStart === start && prior!.windowEnd === end
+        ? prior!.completedSymbols.filter((symbol) => args.symbols.includes(symbol))
+        : []
+    );
+    for (const symbol of args.symbols) {
+      if (completed.has(symbol)) continue;
+      const result = await paginateHtxNativeWindows<UnifiedTrade>({
+        fetchPage: (s, u, from) => args.fetchPage(symbol, s, u, from),
+        since: start,
+        now: end,
+        windowMs: Number.POSITIVE_INFINITY,
+        fullPage: HTX_TRADE_LIMIT,
+        requestBudget: args.requestBudget,
+        sleep: args.sleep
+      });
+      rows.push(...result.rows);
+      if (result.partial) {
+        return {
+          outcome: { rows, maxTs: start, partial: true, termination: result.termination },
+          progress: { windowStart: start, windowEnd: end, completedSymbols: [...completed] }
+        };
+      }
+      completed.add(symbol);
+    }
+    if (end >= args.now) break;
+    start = end;
+  }
+  return { outcome: { rows, maxTs: args.now, partial: false, termination: 'exhausted' } };
 }
 
 function sinceFromCursor(cursor: number | undefined, overlapMs: number): number {
@@ -832,6 +1070,25 @@ async function fetchTransferKind(
       sleep
     });
   }
+  if (exchange === 'htx') {
+    // This endpoint does not use `since` for server filtering. Exhaust its
+    // native record-id chain and stop only after observing the overlap floor.
+    return paginateHtxNativeWindows<UnifiedTransfer>({
+      fetchPage: (_s, _u, from) => htxCapturedPage(client, () => fetchDeposits
+        ? client.fetchDeposits(undefined, undefined, HTX_TRANSFER_LIMIT, {
+            direct: 'next', ...(from ? { from } : {})
+          })
+        : client.fetchWithdrawals(undefined, undefined, HTX_TRANSFER_LIMIT, {
+            direct: 'next', ...(from ? { from } : {})
+          })),
+      since,
+      now,
+      windowMs: Number.POSITIVE_INFINITY,
+      fullPage: HTX_TRANSFER_LIMIT,
+      stopAtSince: since > EXCHANGE_LAUNCH_MS.htx,
+      sleep
+    });
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -890,7 +1147,7 @@ async function fetchTradesForSymbol(
   symbol: string | undefined,
   since: number,
   now: number,
-  opts?: { firstSync?: boolean; sleep?: (ms: number) => Promise<void> }
+  opts?: { firstSync?: boolean; sleep?: (ms: number) => Promise<void>; htxBudget?: HtxRequestBudget }
 ): Promise<FetchPlanOutcome<UnifiedTrade>> {
   switch (exchange) {
     case 'binance':
@@ -966,6 +1223,21 @@ async function fetchTradesForSymbol(
         now,
         sleep: opts?.sleep
       });
+    case 'htx':
+      return paginateHtxNativeWindows<UnifiedTrade>({
+        fetchPage: (s, u, from) => htxCapturedPage(client, () => client.fetchMyTrades(symbol, s, HTX_TRADE_LIMIT, {
+          until: u,
+          type: 'spot',
+          direct: 'next',
+          ...(from ? { from } : {})
+        })),
+        since,
+        now,
+        windowMs: HTX_TRADE_WINDOW_MS,
+        fullPage: HTX_TRADE_LIMIT,
+        requestBudget: opts?.htxBudget,
+        sleep: opts?.sleep
+      });
   }
 }
 
@@ -1000,6 +1272,7 @@ export interface SyncFetchOutcome {
   cursors: ExchangeSyncCursors;
   knownAssets: string[] | undefined;
   knownSymbols: string[] | undefined;
+  htxTradeProgress?: HtxTradeProgress;
   skippedUnsettled: number;
   /**
    * Balance fetched during validation. Stage mode keeps this in the private
@@ -1089,9 +1362,9 @@ export async function syncConnection(
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
       if (exchange === 'coinbase' && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
-      } else if (exchange === 'gateio') {
-        // Gate retries each physical page request inside its paginator so a
-        // retry cannot restart subdivision or reset the 8,000-attempt cap.
+      } else if (exchange === 'gateio' || exchange === 'htx') {
+        // Gate/HTX retry each physical page request inside their paginator so
+        // a retry cannot restart pagination or reset the attempt cap.
         outcome = await fetchTransferKind(client, exchange, kind, since, nowMs, cbAssets, warnings, sleep);
         transferOutcomes.set(kind, outcome);
       } else {
@@ -1138,14 +1411,21 @@ export async function syncConnection(
     }
 
     // ---- trades ----
-    const requestedTradeSince = Math.max(sinceFromCursor(oldCursors.trades, TRADE_OVERLAP_MS), launchFloor);
+    const cursorTradeSince = Math.max(sinceFromCursor(oldCursors.trades, TRADE_OVERLAP_MS), launchFloor);
+    const requestedTradeSince = exchange === 'htx' && usableHtxTradeProgress(row.htxTradeProgress, nowMs)
+      ? Math.max(row.htxTradeProgress.windowStart, launchFloor)
+      : cursorTradeSince;
     let tradeSince = requestedTradeSince;
     const bybitRetentionFloor = nowMs - BYBIT_TRADE_RETENTION_MS;
     const bybitRetentionTruncated = exchange === 'bybit' && requestedTradeSince < bybitRetentionFloor;
     if (exchange === 'bybit') tradeSince = Math.max(tradeSince, bybitRetentionFloor);
+    const htxRetentionFloor = nowMs - HTX_TRADE_RETENTION_MS;
+    const htxRetentionTruncated = exchange === 'htx' && requestedTradeSince < htxRetentionFloor;
+    if (exchange === 'htx') tradeSince = Math.max(tradeSince, htxRetentionFloor);
     const tradeRows: UnifiedTrade[] = [];
     const tradeOutcomes: FetchPlanOutcome<UnifiedTrade>[] = [];
     let newKnownSymbols: string[] | undefined;
+    let htxTradeProgress: HtxTradeProgress | undefined = row.htxTradeProgress;
     let skippedSymbols = 0;
 
     if (exchange === 'binance') {
@@ -1213,6 +1493,55 @@ export async function syncConnection(
         ...new Set([...(row.knownSymbols ?? []).filter((s) => symbols.includes(s)), ...symbolHits])
       ].sort();
       discoveredCount = done;
+    } else if (exchange === 'htx') {
+      // HTX's spot matchresults endpoint requires `symbol`. Iterate the full
+      // loaded active-spot universe (plus still-known symbols) and share one
+      // physical request budget across every symbol; the 8,000 cap is for the
+      // whole trade phase, never multiplied by market count.
+      const symbols = [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])]
+        .filter((symbol) => markets[symbol]?.spot === true && markets[symbol]?.active !== false)
+        .sort();
+      const budget: HtxRequestBudget = {
+        used: 0,
+        max: deps.htxMaxTradeRequests ?? HTX_MAX_REQUESTS_PER_PHASE
+      };
+      discoveryUniverseCount = symbols.length;
+      newKnownSymbols = symbols;
+      const fair = await fetchHtxTradesFair({
+        symbols,
+        since: tradeSince,
+        now: nowMs,
+        priorProgress: usableHtxTradeProgress(row.htxTradeProgress, nowMs, tradeSince)
+          ? row.htxTradeProgress
+          : undefined,
+        requestBudget: budget,
+        fetchPage: (symbol, since, until, from) => htxCapturedPage(client, () =>
+          client.fetchMyTrades(symbol, since, HTX_TRADE_LIMIT, {
+            until,
+            type: 'spot',
+            direct: 'next',
+            ...(from ? { from } : {})
+          })),
+        sleep
+      });
+      const outcome = fair.outcome;
+      htxTradeProgress = fair.progress;
+      if (htxRetentionTruncated) {
+        // Retention is an independent coverage dimension. Never overwrite a
+        // structural page_budget/nonadvancing termination.
+        outcome.partial = true;
+        outcome.retentionFloor = htxRetentionFloor;
+      }
+      tradeOutcomes.push(outcome);
+      tradeRows.push(...outcome.rows);
+      fetchedCount += outcome.rows.length;
+      if (outcome.partial) partialHistory = true;
+      discoveredCount = symbols.length;
+      if (htxRetentionTruncated) {
+        warnings.push(
+          'HTX keeps about 120 days of match-result history — older HTX spot orders need a one-time CSV import.'
+        );
+      }
     } else if (exchange === 'kraken') {
       const outcome = await withRetries(() => fetchKrakenTrades(client, tradeSince, nowMs), sleep);
       tradeOutcomes.push(outcome);
@@ -1253,7 +1582,13 @@ export async function syncConnection(
       }
     }
 
-    const tradeCursorCandidate = exchange === 'bybit' || exchange === 'gateio'
+    const tradeCursorCandidate = exchange === 'htx'
+      // Every symbol must have been verified through the same frontier. A
+      // max would skip an interrupted symbol; min keeps its window replayable.
+      ? (tradeOutcomes.length > 0
+          ? tradeOutcomes.reduce((min, outcome) => Math.min(min, outcome.maxTs ?? tradeSince), nowMs)
+          : nowMs)
+      : exchange === 'bybit' || exchange === 'gateio'
       ? tradeOutcomes.reduce((max, outcome) => Math.max(max, outcome.maxTs ?? 0), 0)
       : maxTimestamp(tradeRows) ?? 0;
     const mergedTrades = Math.max(oldCursors.trades ?? 0, tradeCursorCandidate);
@@ -1284,6 +1619,16 @@ export async function syncConnection(
       tradeNormalizationDrops = bybitSkipped;
       if (bybitSkipped > 0) {
         warnings.push(`Skipped ${bybitSkipped} Bybit fill(s) with missing market/amount data.`);
+      }
+    } else if (exchange === 'htx') {
+      const { transactions: htxTxs, skipped: htxSkipped, rebateFills } = normalizeHtxTradesByOrder(tradeRows, markets);
+      transactions.push(...htxTxs);
+      tradeNormalizationDrops = htxSkipped;
+      if (htxSkipped > 0) warnings.push(`Skipped ${htxSkipped} HTX fill(s) with missing market/amount data.`);
+      if (rebateFills > 0) {
+        warnings.push(
+          `HTX returned ${rebateFills} maker rebate fill(s). Signed rebate evidence was retained; only a positive net fee is posted.`
+        );
       }
     } else {
       for (const trade of tradeRows) {
@@ -1325,6 +1670,7 @@ export async function syncConnection(
     ];
     const tradeStructuralFailure = tradeOutcomes.find((outcome) =>
       outcome.termination && outcome.termination !== 'exhausted');
+    const tradeRetention = tradeOutcomes.find((outcome) => outcome.retentionFloor != null);
     const endpointOutcomes: EndpointCoverageOutcome[] = [
       { endpoint: 'balance', accountClass: 'spot', required: true, status: 'complete' },
       endpointOutcome('deposits', requestedStarts[0], nowMs, transferOutcomes.get('deposits')!,
@@ -1351,7 +1697,7 @@ export async function syncConnection(
         partial: tradeOutcomes.some((outcome) => outcome.partial) || skippedSymbols > 0 ||
           tradeNormalizationDrops > 0,
         termination: tradeStructuralFailure?.termination,
-        retentionFloor: tradeStructuralFailure?.retentionFloor
+        retentionFloor: tradeRetention?.retentionFloor
       }, skippedSymbols > 0 || tradeNormalizationDrops > 0 ? {
         status: 'partial',
         paginationExhausted: false,
@@ -1401,6 +1747,7 @@ export async function syncConnection(
       cursors: newCursors,
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
+      htxTradeProgress,
       skippedUnsettled,
       balance,
       operation
@@ -1426,6 +1773,7 @@ export async function syncConnection(
       cursors: newCursors,
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
+      htxTradeProgress,
       balance,
       operation,
       hooks,
@@ -1484,6 +1832,7 @@ export async function persistSyncedRows(args: {
   cursors: ExchangeSyncCursors;
   knownAssets?: string[];
   knownSymbols?: string[];
+  htxTradeProgress?: HtxTradeProgress;
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
   /** Reserved generation and source revision/state captured by this operation. */
@@ -1532,25 +1881,30 @@ export async function persistSyncedRows(args: {
       // discarded as a duplicate. CSV rows remain authoritative survivors;
       // their recoverable API representation is refreshed in-place.
       const candidates: Transaction[] = [];
-      const existing = converted.some((row) => row.source === 'bybit_api')
+      const existing = converted.some((row) => row.source === 'bybit_api' || row.source === 'htx_api')
         ? await db.transactions.toArray()
         : [];
       const bybitOrders = buildBybitOrderLookups(existing);
+      const htxOrders = buildHtxOrderLookups(existing, args.connectionId);
       for (const incoming of converted) {
-        if (incoming.source !== 'bybit_api' || !incoming.sourceRef) {
+        if ((incoming.source !== 'bybit_api' && incoming.source !== 'htx_api') || !incoming.sourceRef) {
           candidates.push(incoming);
           continue;
         }
-        const direct = bybitOrders.directByRef.get(incoming.sourceRef);
-        const csv = bybitOrders.csvByRef.get(incoming.sourceRef);
-        const priorApi = csv?.dedupMatchedApiRow?.source === 'bybit_api'
+        const isHtx = incoming.source === 'htx_api';
+        const lookups = isHtx ? htxOrders : bybitOrders;
+        const direct = lookups.directByRef.get(incoming.sourceRef);
+        const csv = lookups.csvByRef.get(incoming.sourceRef);
+        const priorApi = csv?.dedupMatchedApiRow?.source === incoming.source
           ? csv.dedupMatchedApiRow
           : direct;
-        const merged = priorApi ? mergeBybitOrderTransactions(priorApi, incoming) : incoming;
+        const merged = priorApi
+          ? (isHtx ? mergeHtxOrderTransactions(priorApi, incoming) : mergeBybitOrderTransactions(priorApi, incoming))
+          : incoming;
 
         if (csv) {
           await db.transactions.update(csv.id, {
-            dedupMatchedApiId: `${args.connectionId}:bybit-order:${incoming.sourceRef}`,
+            dedupMatchedApiId: `${args.connectionId}:${isHtx ? 'htx' : 'bybit'}-order:${incoming.sourceRef}`,
             dedupMatchedApiRow: { ...merged, importBatchId: args.connectionId },
             // A newly authenticated source is live evidence, not the deleted
             // source represented by the prior tombstone.
@@ -1642,6 +1996,7 @@ export async function persistSyncedRows(args: {
         cursors: args.cursors,
         knownAssets: args.knownAssets,
         knownSymbols: args.knownSymbols,
+        htxTradeProgress: args.htxTradeProgress,
         lastSyncAt: asOf,
         status: 'ok',
         lastError: undefined,

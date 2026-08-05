@@ -80,6 +80,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'bybit_api',
       'coinbase_api',
       'gateio_api',
+      'htx_api',
       'kraken_api',
       'kucoin_api',
       'okx_api'

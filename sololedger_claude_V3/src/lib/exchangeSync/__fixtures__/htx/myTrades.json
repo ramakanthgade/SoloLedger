@@ -1,0 +1,11 @@
+{
+  "_recorded": false,
+  "_note": "Schema-faithful HTX GET /v1/order/matchresults response; synthetic values.",
+  "response": {
+    "status": "ok",
+    "data": [
+      { "id": 900003, "symbol": "btcusdt", "fee-currency": "btc", "filled-fees": "0.00004", "source": "spot-api", "type": "buy-limit", "order-id": 700001, "filled-amount": "0.04", "price": "50000", "created-at": 1735862460000, "match-id": 800002, "role": "taker", "trade-id": 600002 },
+      { "id": 900017, "symbol": "btcusdt", "fee-currency": "btc", "filled-fees": "0.00006", "source": "spot-api", "type": "buy-limit", "order-id": 700001, "filled-amount": "0.06", "price": "50000", "created-at": 1735862400000, "match-id": 800001, "role": "maker", "trade-id": 600001 }
+    ]
+  }
+}

@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(7);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(8);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -50,6 +50,7 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('kucoin')?.needsPassphrase).toBe(true);
     expect(getAutoSyncExchange('bybit')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('gateio')?.needsPassphrase).toBe(false);
+    expect(getAutoSyncExchange('htx')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange(null)).toBeUndefined();
     expect(getAutoSyncExchange('nope')).toBeUndefined();
   });
@@ -65,5 +66,12 @@ describe('autoSyncExchanges catalog', () => {
     expect(gateio.docsUrl).toBe('https://www.gate.io/myaccount/api_key_manage');
     expect(gateio.keyInstructions.join(' ')).toMatch(/read-only.*never enable.*trading.*withdrawals.*margin.*futures/i);
     expect(gateio.keyInstructions.join(' ')).toMatch(/does not require a passphrase/i);
+  });
+
+  it('documents HTX read-only setup and official API URL', () => {
+    const htx = getAutoSyncExchange('htx')!;
+    expect(htx.docsUrl).toBe('https://www.htx.com/apikey');
+    expect(htx.keyInstructions.join(' ')).toMatch(/read-only.*never enable.*trading.*withdrawals.*margin.*futures/i);
+    expect(htx.keyInstructions.join(' ')).toMatch(/does not require a passphrase/i);
   });
 });

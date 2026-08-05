@@ -1,0 +1,4 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful transcription of HTX spot API documentation examples and CCXT 4.5.68 htx parser comments. Sanitized synthetic ids/amounts; not captured from a live account. CSV equivalence is beta and fixture-demonstrated, not vendor-export verified."
+}

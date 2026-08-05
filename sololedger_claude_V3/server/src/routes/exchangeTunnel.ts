@@ -96,6 +96,21 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/api/v4/wallet/deposits',
       '/api/v4/wallet/withdrawals'
     ]
+  },
+  htx: {
+    host: 'api.huobi.pro',
+    // HTX v1 authentication is entirely in the signed raw query. CCXT sends
+    // no private auth header; content-type is handled by the common tunnel.
+    headers: [],
+    methods: ['GET'],
+    paths: [
+      '/v1/common/timestamp',
+      '/v1/common/symbols',
+      '/v1/account/accounts',
+      '/v1/account/accounts/{account-id}/balance',
+      '/v1/order/matchresults',
+      '/v1/query/deposit-withdraw'
+    ]
   }
 };
 
@@ -107,6 +122,15 @@ const UPSTREAM_TIMEOUT_MS = 30_000;
 const MAX_UPSTREAM_BODY_BYTES = 25 * 1024 * 1024;
 
 export const exchangeTunnelRouter = Router();
+
+function pathAllowed(path: string, allowed: string): boolean {
+  if (allowed.endsWith('/')) return path.startsWith(allowed);
+  if (!allowed.includes('{account-id}')) return path === allowed;
+  const [prefix, suffix] = allowed.split('{account-id}');
+  if (!path.startsWith(prefix) || !path.endsWith(suffix)) return false;
+  const accountId = path.slice(prefix.length, path.length - suffix.length);
+  return /^[0-9]+$/.test(accountId);
+}
 
 /** Set the error kind for this failure site, then send the JSON error. */
 function fail(res: Response, kind: TunnelErrorKind, status: number, message: string): void {
@@ -183,8 +207,7 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
     fail(res, 'bad_path', 400, 'Missing upstream path');
     return;
   }
-  if (spec.paths && !spec.paths.some((allowed) =>
-    allowed.endsWith('/') ? upstreamPath.startsWith(allowed) : upstreamPath === allowed)) {
+  if (spec.paths && !spec.paths.some((allowed) => pathAllowed(upstreamPath, allowed))) {
     fail(res, 'bad_path', 400, 'Upstream path is not allowed for this exchange');
     return;
   }

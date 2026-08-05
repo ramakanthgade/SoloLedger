@@ -47,6 +47,7 @@ interface StagedMeta {
   cursors: ExchangeSyncCursors;
   knownAssets?: string[];
   knownSymbols?: string[];
+  htxTradeProgress?: import('./engine').HtxTradeProgress;
   /** Private current-balance authority fetched with the staged rows. */
   balance: UnifiedBalance;
   /** Non-secret source revision/state token captured with operation evidence. */
@@ -280,6 +281,7 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         cursors: outcome.cursors,
         knownAssets: outcome.knownAssets,
         knownSymbols: outcome.knownSymbols,
+        htxTradeProgress: outcome.htxTradeProgress,
         // Keep only normalized totals in memory. ccxt's raw `info` can carry
         // account metadata (for example a Binance UID) and is not needed for
         // confirmation.
@@ -326,6 +328,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       cursors: staged.meta?.cursors ?? {},
       knownAssets: staged.meta?.knownAssets,
       knownSymbols: staged.meta?.knownSymbols,
+      htxTradeProgress: staged.meta?.htxTradeProgress,
       balance: staged.meta?.balance,
       operation: staged.meta.operation,
       hooks: hooks(),
