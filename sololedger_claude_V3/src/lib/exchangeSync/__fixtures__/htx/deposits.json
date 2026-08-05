@@ -1,0 +1,11 @@
+{
+  "_recorded": false,
+  "_note": "Schema-faithful HTX GET /v1/query/deposit-withdraw response; synthetic values.",
+  "response": {
+    "status": "ok",
+    "data": [
+      { "id": "75115912", "type": "deposit", "sub-type": "NORMAL", "request-id": "synthetic-deposit", "currency": "usdt", "chain": "trc20usdt", "tx-hash": "a2e229a44ef2a948c874366230bb56aa73631cc0a03d177bd8b4c9d38262d7ff", "amount": "1250", "address": "TSyntheticDeposit", "address-tag": "", "fee": "0", "state": "safe", "created-at": "1735862520000", "updated-at": "1735862580000" },
+      { "id": "75115999", "type": "deposit", "sub-type": "NORMAL", "currency": "btc", "chain": "btc", "tx-hash": "pending", "amount": "0.1", "address": "bc1pending", "fee": "0", "state": "confirming", "created-at": "1735862000000", "updated-at": "1735862000000" }
+    ]
+  }
+}

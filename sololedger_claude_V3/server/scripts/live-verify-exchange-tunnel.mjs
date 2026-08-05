@@ -135,6 +135,12 @@ const TIER2 = [
     probe: 'GET /api/v4/spot/time',
     path: '/api/v4/spot/time',
     check: (r, json) => r.status === 200 && typeof json?.server_time === 'number'
+  },
+  {
+    exchange: 'htx',
+    probe: 'GET /v1/common/timestamp',
+    path: '/v1/common/timestamp',
+    check: (r, json) => r.status === 200 && json?.status === 'ok' && typeof json?.data === 'number'
   }
 ];
 
@@ -294,6 +300,26 @@ const tier3 = [
     // Gate's exchange-origin unknown-key label. SIGNATURE_ERROR would mean
     // the signed bytes changed, while relay errors carry x-sololedger-error.
     check: (r) => (r.status === 401 || r.status === 400) && r.text.includes('"label":"INVALID_KEY"')
+  },
+  {
+    exchange: 'htx',
+    probe: 'GET /v1/account/accounts (query HmacSHA256 signature)',
+    build() {
+      const apiKey = 'dummy-htx-key';
+      const secret = 'dummy-htx-secret';
+      const requestPath = '/v1/account/accounts';
+      const request = {
+        AccessKeyId: apiKey,
+        SignatureMethod: 'HmacSHA256',
+        SignatureVersion: '2',
+        Timestamp: new Date().toISOString().slice(0, 19)
+      };
+      const query = Object.entries(request).sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(value)}`).join('&');
+      const signature = hmacB64('sha256', secret, `GET\napi.huobi.pro\n${requestPath}\n${query}`);
+      return { path: `${requestPath}?${query}&Signature=${encodeURIComponent(signature)}` };
+    },
+    check: (r) => r.text.includes('"err-code":"api-signature-not-valid"')
   }
 ];
 

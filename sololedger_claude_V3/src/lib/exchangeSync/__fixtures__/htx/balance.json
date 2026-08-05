@@ -1,0 +1,12 @@
+{
+  "_recorded": false,
+  "_note": "Schema-faithful HTX spot balance response; synthetic values.",
+  "response": {
+    "status": "ok",
+    "data": { "id": 123456, "type": "spot", "state": "working", "list": [
+      { "currency": "btc", "type": "trade", "balance": "0.1", "seq-num": "1" },
+      { "currency": "btc", "type": "frozen", "balance": "0", "seq-num": "2" },
+      { "currency": "usdt", "type": "trade", "balance": "1250", "seq-num": "3" }
+    ] }
+  }
+}

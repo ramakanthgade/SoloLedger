@@ -133,6 +133,21 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['Gate.io', 'Profile', 'API Management', 'APIv4 Keys'],
     docsUrl: 'https://www.gate.io/myaccount/api_key_manage'
+  },
+  {
+    id: 'htx',
+    label: 'HTX',
+    monogram: 'HX',
+    needsPassphrase: false,
+    formatHint: 'API key + secret',
+    keyInstructions: [
+      'Log in to HTX on the web and open Profile → API Management.',
+      'Create a new API key and give it a recognizable note.',
+      'Select Read-only only. Never enable trading, withdrawals, margin, futures or contract permissions.',
+      'Copy the Access Key and Secret Key and paste them here. HTX does not require a passphrase.'
+    ],
+    path: ['HTX', 'Profile', 'API Management', 'Create API Key'],
+    docsUrl: 'https://www.htx.com/apikey'
   }
 ];
 

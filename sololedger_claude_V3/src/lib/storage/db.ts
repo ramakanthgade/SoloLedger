@@ -83,7 +83,7 @@ export interface CsvImportRow {
  */
 export interface ExchangeConnectionRow {
   id: string;           // makeId('exc')
-  exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio')
+  exchange: string;     // ExchangeId ('binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio' | 'htx')
   label?: string;       // user-assigned friendly name, e.g. "My Binance"
   apiKey?: string;
   secret?: string;
@@ -99,6 +99,12 @@ export interface ExchangeConnectionRow {
   cursors: { trades?: number; deposits?: number; withdrawals?: number };
   knownAssets?: string[];   // assets seen in balance/deposits/withdrawals (Binance symbol discovery)
   knownSymbols?: string[];  // spot symbols that returned >= 1 trade (Binance symbol discovery)
+  /** Durable HTX fairness checkpoint for the first not-yet-verified trade window. */
+  htxTradeProgress?: {
+    windowStart: number;
+    windowEnd: number;
+    completedSymbols: string[];
+  };
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
@@ -633,7 +639,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'okx_api',
   'kucoin_api',
   'bybit_api',
-  'gateio_api'
+  'gateio_api',
+  'htx_api'
 ]);
 
 /**
@@ -660,9 +667,16 @@ export function isStableRefSource(source: string): boolean {
 
 /** Dedup key for exchange CSV rows (Binance, Coinbase) — uses sourceRef when set. */
 export function transactionExchangeKey(
-  t: Pick<Transaction, 'source' | 'sourceRef'>
+  t: Pick<Transaction, 'source' | 'sourceRef' | 'importBatchId'>
 ): string | null {
   if (!t.sourceRef) return null;
+  // HTX order/transfer ids are account-local. Keep API replay idempotent only
+  // inside one durable connection; explicit HTX API↔CSV reconciliation below
+  // still matches sourceRef across source types without collapsing two users'
+  // (or two accounts') equal native ids.
+  if (t.source === 'htx_api') {
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:htx:${t.sourceRef}`;
+  }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;
   }
@@ -1868,7 +1882,7 @@ export async function deduplicateTransactions(): Promise<number> {
   return mutateTransactionsAndReconcileCsv(async () => {
   const all = await db.transactions.toArray();
   const seen = new Map<string, string>();
-  const toDelete: string[] = [];
+  const toDelete = new Set<string>();
 
   const csvByEconomicKey = new Map<string, Transaction[]>();
   const apiByEconomicKey = new Map<string, Transaction[]>();
@@ -1886,7 +1900,7 @@ export async function deduplicateTransactions(): Promise<number> {
   }
   for (const api of all) {
     const identity = binanceApiIdentity(api);
-    if (identity && durableReservations.has(identity)) toDelete.push(api.id);
+    if (identity && durableReservations.has(identity)) toDelete.add(api.id);
   }
   const reservationUpdates: Array<{ id: string; dedupMatchedApiId: string; dedupMatchedApiRow: Transaction }> = [];
   for (const [key, csvRows] of csvByEconomicKey) {
@@ -1896,7 +1910,7 @@ export async function deduplicateTransactions(): Promise<number> {
       const identity = binanceApiIdentity(api);
       if (!identity) continue;
       if (reserved.has(identity)) {
-        toDelete.push(api.id);
+        toDelete.add(api.id);
         continue;
       }
       const csv = csvRows.find((row) => !row.dedupMatchedApiId);
@@ -1905,7 +1919,7 @@ export async function deduplicateTransactions(): Promise<number> {
       csv.dedupMatchedApiRow = api;
       reserved.add(identity);
       reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
-      toDelete.push(api.id);
+      toDelete.add(api.id);
     }
   }
 
@@ -1923,7 +1937,7 @@ export async function deduplicateTransactions(): Promise<number> {
     specializedCsvByRef.set(row.sourceRef, bucket);
   }
   for (const api of all) {
-    if (api.source !== 'binance_api' || !api.sourceRef || toDelete.includes(api.id)) continue;
+    if (api.source !== 'binance_api' || !api.sourceRef || toDelete.has(api.id)) continue;
     const csv = specializedCsvByRef.get(api.sourceRef)?.shift();
     if (!csv) continue;
     const identity = binanceApiIdentity(api);
@@ -1931,7 +1945,68 @@ export async function deduplicateTransactions(): Promise<number> {
     csv.dedupMatchedApiId = identity;
     csv.dedupMatchedApiRow = api;
     reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
-    toDelete.push(api.id);
+    toDelete.add(api.id);
+  }
+
+  // HTX matchresults are fills while its CSV rows are filled-order economics.
+  // Preserve the CSV survivor only when one connection can be established.
+  // Native order ids are account-local, so arbitrary first-candidate binding
+  // would silently attach another HTX account's evidence.
+  const htxEconomicsMatch = (csv: Transaction, api: Transaction): boolean => {
+    const close = (a: number | undefined, b: number | undefined): boolean => {
+      if (a == null || b == null) return a == null && b == null;
+      const scale = Math.max(1, Math.abs(a), Math.abs(b));
+      return Math.abs(a - b) <= scale * 1e-9;
+    };
+    return csv.type === api.type &&
+      csv.asset.toUpperCase() === api.asset.toUpperCase() &&
+      (csv.counterAsset?.toUpperCase() ?? '') === (api.counterAsset?.toUpperCase() ?? '') &&
+      close(csv.amount, api.amount) && close(csv.counterAmount, api.counterAmount);
+  };
+  const htxCsvByRef = new Map<string, Transaction[]>();
+  const htxApiByRef = new Map<string, Map<string, Transaction[]>>();
+  for (const row of all) {
+    if (!row.sourceRef || row.deletedSourceEvidence) continue;
+    if (row.source === 'htx') {
+      const bucket = htxCsvByRef.get(row.sourceRef) ?? [];
+      bucket.push(row);
+      htxCsvByRef.set(row.sourceRef, bucket);
+    } else if (row.source === 'htx_api' && row.importBatchId) {
+      let byConnection = htxApiByRef.get(row.sourceRef);
+      if (!byConnection) {
+        byConnection = new Map<string, Transaction[]>();
+        htxApiByRef.set(row.sourceRef, byConnection);
+      }
+      const bucket = byConnection.get(row.importBatchId) ?? [];
+      bucket.push(row);
+      byConnection.set(row.importBatchId, bucket);
+    }
+  }
+  for (const [sourceRef, csvRows] of htxCsvByRef) {
+    const indexed = htxApiByRef.get(sourceRef);
+    if (!indexed) continue;
+    const byConnection = new Map<string, Transaction[]>();
+    for (const [connectionId, rows] of indexed) {
+      const remaining = rows.filter((row) => !toDelete.has(row.id));
+      if (remaining.length > 0) byConnection.set(connectionId, remaining);
+    }
+    for (const csv of csvRows.filter((row) => !row.dedupMatchedApiRow)) {
+      const connectionCandidates = [...byConnection.entries()].filter(([, rows]) =>
+        rows.some((api) => htxEconomicsMatch(csv, api)));
+      const eligible = connectionCandidates.length > 0
+        ? connectionCandidates
+        : byConnection.size === 1 ? [...byConnection.entries()] : [];
+      if (eligible.length !== 1) continue;
+      const [connectionId, rows] = eligible[0];
+      const matchingRows = rows.filter((api) => htxEconomicsMatch(csv, api));
+      const api = matchingRows[0] ?? rows[0];
+      const identity = `${connectionId}:htx-order:${sourceRef}`;
+      csv.dedupMatchedApiId = identity;
+      csv.dedupMatchedApiRow = api;
+      reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
+      for (const row of rows) toDelete.add(row.id);
+      byConnection.delete(connectionId);
+    }
   }
 
   // Bybit executions are reconciled into one durable API row per Order ID.
@@ -1945,14 +2020,14 @@ export async function deduplicateTransactions(): Promise<number> {
     bybitCsvByRef.set(row.sourceRef, bucket);
   }
   for (const api of all) {
-    if (api.source !== 'bybit_api' || !api.sourceRef || !api.importBatchId || toDelete.includes(api.id)) continue;
+    if (api.source !== 'bybit_api' || !api.sourceRef || !api.importBatchId || toDelete.has(api.id)) continue;
     const csv = bybitCsvByRef.get(api.sourceRef)?.find((row) => !row.dedupMatchedApiRow);
     if (!csv) continue;
     const identity = `${api.importBatchId}:bybit-order:${api.sourceRef}`;
     csv.dedupMatchedApiId = identity;
     csv.dedupMatchedApiRow = api;
     reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
-    toDelete.push(api.id);
+    toDelete.add(api.id);
   }
 
   const score = (row: Transaction) =>
@@ -1963,7 +2038,7 @@ export async function deduplicateTransactions(): Promise<number> {
     (row.flags.length === 0 ? 1 : 0);
 
   for (const t of all) {
-    if (toDelete.includes(t.id)) continue;
+    if (toDelete.has(t.id)) continue;
     const exchangeKey = transactionExchangeKey(t);
     const sourceKey = transactionSourceKey(t);
     const apiIdentity = binanceApiIdentity(t);
@@ -1980,17 +2055,17 @@ export async function deduplicateTransactions(): Promise<number> {
       const firstId = seen.get(key)!;
       const first = all.find((x) => x.id === firstId)!;
       if (score(t) > score(first)) {
-        toDelete.push(firstId);
+        toDelete.add(firstId);
         seen.set(key, t.id);
       } else {
-        toDelete.push(t.id);
+        toDelete.add(t.id);
       }
     } else {
       seen.set(key, t.id);
     }
   }
 
-  const uniqueDeletes = [...new Set(toDelete)];
+  const uniqueDeletes = [...toDelete];
   if (uniqueDeletes.length > 0 || reservationUpdates.length > 0) {
     for (const update of reservationUpdates) {
       await db.transactions.update(update.id, {
@@ -2055,6 +2130,8 @@ export async function filterAlreadyImported(transactions: Transaction[]): Promis
     ) return true;
     if (t.source === 'bybit' && t.sourceRef && existing.some((row) =>
       row.source === 'bybit_api' && row.sourceRef === t.sourceRef)) return true;
+    if (t.source === 'htx' && t.sourceRef && existing.some((row) =>
+      row.source === 'htx_api' && row.sourceRef === t.sourceRef)) return true;
     const exKey = exactExchangeKey;
     if (exKey && existingExchangeKeys.has(exKey)) return false;
     const sourceKey = transactionSourceKey(t);

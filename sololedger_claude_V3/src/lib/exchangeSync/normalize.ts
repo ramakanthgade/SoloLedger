@@ -38,7 +38,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   okx: 'exok',
   kucoin: 'exkc',
   bybit: 'exbb',
-  gateio: 'exgt'
+  gateio: 'exgt',
+  htx: 'exhx'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -96,6 +97,10 @@ function tradeSourceRef(
       // Existing Gate.io CSV is a beta generic schema whose `ID` provenance
       // is not documented. Prefer Gate's native fill id; formula is fallback.
       return trade.id ?? exchangeSourceRef('gateio', floorToSeconds(ts), side, base, amount);
+    case 'htx':
+      // HTX's CSV is order-level. API matchresults are fill-level, so the
+      // order id is the stable cross-source identity; fill id is fallback.
+      return trade.order ?? trade.id ?? exchangeSourceRef('htx', floorToSeconds(ts), side, base, amount);
   }
 }
 
@@ -358,6 +363,74 @@ export function normalizeBybitTradesByOrder(
   return { transactions, skipped };
 }
 
+/** HTX matchresults fills → one durable order-level row matching HTX CSV. */
+export function normalizeHtxTradesByOrder(
+  trades: UnifiedTrade[],
+  markets: Record<string, UnifiedMarket>
+): { transactions: Transaction[]; skipped: number; rebateFills: number } {
+  const groups = new Map<string, UnifiedTrade[]>();
+  for (const trade of trades) {
+    const key = trade.order ?? `__fill__${trade.id ?? groups.size}`;
+    const group = groups.get(key) ?? [];
+    group.push(trade);
+    groups.set(key, group);
+  }
+  const transactions: Transaction[] = [];
+  let skipped = 0;
+  let rebateFills = 0;
+  for (const [key, fills] of groups) {
+    const first = fills[0];
+    const feeCurrencies = new Set(
+      fills.filter((fill) => fill.fee?.cost != null).map((fill) => fill.fee?.currency?.toUpperCase() ?? '')
+    );
+    const signedFees = fills
+      .map((fill) => fill.fee?.cost)
+      .filter((fee): fee is number => fee != null && Number.isFinite(fee));
+    const groupRebateFills = signedFees.filter((fee) => fee < 0).length;
+    const netFee = signedFees.reduce((sum, fee) => sum + fee, 0);
+    const synthetic: UnifiedTrade = {
+      ...first,
+      order: key.startsWith('__fill__') ? first.order : key,
+      timestamp: Math.min(...fills.map((fill) => fill.timestamp ?? Number.POSITIVE_INFINITY)),
+      amount: fills.reduce((sum, fill) => sum + (fill.amount ?? 0), 0),
+      cost: fills.reduce((sum, fill) => sum + (fill.cost ?? ((fill.price ?? 0) * (fill.amount ?? 0))), 0),
+      // The transaction model posts fees as expenses only. Preserve every
+      // signed fill below, but post only a positive same-currency net fee so a
+      // maker rebate can never be turned into a positive expense.
+      fee: feeCurrencies.size === 1 && netFee > 0 ? {
+        cost: netFee,
+        currency: [...feeCurrencies][0] || undefined
+      } : undefined
+    };
+    const market = resolveMarket(markets, synthetic.symbol);
+    const transaction = normalizeTrade('htx', synthetic, market);
+    if (!transaction) {
+      skipped += fills.length;
+      continue;
+    }
+    transaction.raw = {
+      ...transaction.raw,
+      htxBase: market?.base.toUpperCase(),
+      htxQuote: market?.quote.toUpperCase(),
+      htxFills: fills.map((fill) => ({
+        id: fill.id,
+        nativeId: fill.info?.id != null ? String(fill.info.id) : undefined,
+        timestamp: fill.timestamp,
+        side: fill.side,
+        amount: fill.amount,
+        cost: fill.cost ?? ((fill.price ?? 0) * (fill.amount ?? 0)),
+        feeAmount: fill.fee?.cost,
+        feeAsset: fill.fee?.currency?.toUpperCase()
+      }))
+    };
+    transactions.push(transaction);
+    // Count only evidence attached to a successfully normalized transaction;
+    // skipped fills were not retained and must not produce that warning.
+    rebateFills += groupRebateFills;
+  }
+  return { transactions, skipped, rebateFills };
+}
+
 interface BybitExecutionEvidence {
   id?: string;
   timestamp?: number;
@@ -366,6 +439,52 @@ interface BybitExecutionEvidence {
   cost?: number;
   feeAmount?: number;
   feeAsset?: string;
+}
+
+interface HtxFillEvidence extends BybitExecutionEvidence {
+  nativeId?: string;
+}
+
+function htxFillEvidence(transaction: Transaction): HtxFillEvidence[] {
+  const value = transaction.raw?.htxFills;
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is HtxFillEvidence => item != null && typeof item === 'object');
+}
+
+/** Union HTX fill evidence while preserving every user-owned stored field. */
+export function mergeHtxOrderTransactions(existing: Transaction, incoming: Transaction): Transaction {
+  const fills = new Map<string, HtxFillEvidence>();
+  for (const fill of [...htxFillEvidence(existing), ...htxFillEvidence(incoming)]) {
+    const identity = fill.nativeId ? `native:${fill.nativeId}` : bybitExecutionIdentity(fill);
+    fills.set(identity, fill);
+  }
+  if (fills.size === 0) return { ...incoming, ...existing, raw: incoming.raw };
+  const evidence = [...fills.values()];
+  const side = evidence.find((fill) => fill.side === 'buy' || fill.side === 'sell')?.side;
+  const base = String(incoming.raw?.htxBase ?? existing.raw?.htxBase ?? '').toUpperCase();
+  const quote = String(incoming.raw?.htxQuote ?? existing.raw?.htxQuote ?? '').toUpperCase();
+  const amount = evidence.reduce((sum, fill) => sum + (fill.amount ?? 0), 0);
+  const cost = evidence.reduce((sum, fill) => sum + (fill.cost ?? 0), 0);
+  const timestamps = evidence.map((fill) => fill.timestamp).filter((value): value is number =>
+    value != null && Number.isFinite(value));
+  const feeFills = evidence.filter((fill) => fill.feeAmount != null && Number.isFinite(fill.feeAmount));
+  const feeAssets = new Set(feeFills.map((fill) => fill.feeAsset ?? ''));
+  const signedFeeTotal = feeFills.reduce((sum, fill) => sum + (fill.feeAmount ?? 0), 0);
+  const feeAmount = feeAssets.size === 1 && signedFeeTotal > 0 ? signedFeeTotal : undefined;
+  const feeAsset = feeAssets.size === 1 ? [...feeAssets][0] || undefined : undefined;
+  let economic: Partial<Transaction>;
+  if (incoming.type === 'buy' || incoming.type === 'sell') economic = { amount, counterAmount: cost };
+  else if (side === 'buy') economic = { asset: quote || incoming.asset, amount: cost, counterAsset: base || incoming.counterAsset, counterAmount: amount };
+  else economic = { asset: base || incoming.asset, amount, counterAsset: quote || incoming.counterAsset, counterAmount: cost };
+  return {
+    ...incoming,
+    ...existing,
+    ...economic,
+    timestamp: timestamps.length ? Math.min(...timestamps) : incoming.timestamp,
+    feeAmount,
+    feeAsset,
+    raw: { ...incoming.raw, htxBase: base || undefined, htxQuote: quote || undefined, htxFills: evidence }
+  };
 }
 
 function bybitExecutionEvidence(transaction: Transaction): BybitExecutionEvidence[] {
@@ -483,6 +602,9 @@ function transferSourceRef(
       // closest available counterpart to the beta CSV `ID` field, but actual
       // export equivalence has not been live-verified (README limitation).
       return transfer.id ?? exchangeSourceRef('gateio', floorToSeconds(ts), type, asset, amount);
+    case 'htx':
+      // The HTX CSV fixture's ID column carries this native wallet record id.
+      return transfer.id ?? exchangeSourceRef('htx', floorToSeconds(ts), type, asset, amount);
   }
 }
 

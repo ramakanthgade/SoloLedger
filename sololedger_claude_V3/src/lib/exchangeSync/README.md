@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -84,6 +84,24 @@ a sync discards any staged preview (with a warning).
   ~100,000 maximum offset would be exceeded, a still-dense window is bisected
   and replayed; an unsplittable same-second window returns partial/nonadvancing
   instead of skipping data or looping. Binance has its separate fromId/23.5 h plan.
+- HTX matchresults require a symbol, so sync iterates every loaded active spot
+  market (plus persisted still-active known symbols). Each symbol uses
+  47.5-hour windows, limit 500, and raw response `id` pagination via `from` +
+  `direct=next` (never ccxt's unified trade id). CCXT sorts parsed results, so
+  the client captures the exact final item `id` from `last_json_response`
+  before consuming the parsed page; it never guesses by numeric min/max. A
+  per-client async mutex owns the complete clear/request/capture section, so
+  concurrent calls cannot steal CCXT's shared response slot. All symbols
+  share one 8,000-physical-attempt trade budget. Time windows are outermost;
+  every active symbol must exhaust a window before its durable frontier can
+  advance. A small additive connection checkpoint records completed symbols
+  in the first unfinished window, so capped follow-up syncs resume fairly and
+  later symbols cannot starve. The
+  120-day retention floor clamps initial and stale incremental cursors with
+  explicit CSV guidance. Deposit/withdraw history uses native record-id
+  pagination at limit 100; `since` is treated as a local stop floor because
+  it does not filter that endpoint server-side. Physical attempts, including
+  retries, share a hard cap and interrupted windows remain replayable.
 - Budgets: `MAX_PAGES_PER_PHASE = 200` caps **data pages** (pages with
   rows); empty-window probes have their own `MAX_EMPTY_HOPS_PER_PHASE =
   4000` so an initial sync can skip across silent years without going
@@ -131,6 +149,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | kucoin | `trade.id ?? formula` | `transfer.id ?? formula` |
 | bybit | aggregate executions by `trade.order` → `sourceRef = orderId` (== CSV `Order ID`); durable `execId` evidence is unioned across syncs and recomputes the order row | withdrawals prefer `withdrawId`; deposits use `txid + txIndex/native id` before formula fallback |
 | gateio | `trade.id` (closest available counterpart to beta CSV `ID`; equivalence is not live-verified) | `transfer.id` (same beta caveat) |
+| htx | aggregate fills by `trade.order` → `sourceRef = orderId`; durable raw `id` evidence is unioned across syncs; API identity is connection-scoped while explicit sourceRef matching preserves CSV reconciliation | native wallet record `transfer.id` (fixture-matched to CSV `order-id`/`id`) |
 
 `dedup.contract.test.ts` proves the established connector collisions pairwise
 (real CSV parsers vs real ccxt parsing) and end-to-end: CSV import → replay
@@ -180,6 +199,10 @@ schema-faithful transcriptions of official API v4 examples and CCXT 4.5.68's
 `gate` parser comments, with `_recorded: false`. The replay tests still drive
 the real CCXT client and signing/tunnel path; they are not evidence from a
 live Gate.io account.
+
+HTX fixtures carry `htx/provenance.json` plus per-file `_recorded: false`
+markers. They transcribe official spot examples and CCXT 4.5.68 parser comments;
+real-CCXT replay proves request/parse behavior, not live export equivalence.
 
 ## Known limitations / caveats
 
@@ -247,6 +270,17 @@ live Gate.io account.
     references available, and hand-authored CSV twins exercise the intended
     collision. Real exports may diverge; do not treat the fixture collision as
     a universal zero-duplicate guarantee. API↔API replay remains idempotent.
+14. **HTX export equivalence is beta/unverified** — API fills are aggregated
+    to the existing CSV parser's filled-order granularity and native wallet
+    record IDs are mapped to its generic ID fields. Hand-authored CSV/API twins
+    prove collision in both import orders, but no live HTX export was available
+    to establish universal parity. Durable raw fill evidence still makes API
+    replay and later-fill reconciliation safe while preserving user review state.
+    HTX `filled-fees` remain signed in `raw.htxFills`: maker rebates are never
+    converted to expenses. SoloLedger posts only a positive net fee when all
+    fee-bearing fills use one currency; pure/net rebates remain evidence-only
+    and produce an explicit sync warning because the transaction fee model is
+    expense-only.
 
 ## Adding an exchange?
 
