@@ -164,6 +164,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['Crypto.com Exchange', 'Settings', 'API Keys', 'Create read-only key'],
     docsUrl: 'https://crypto.com/exchange/user/settings/api-management'
+  },
+  {
+    id: 'bitfinex',
+    label: 'Bitfinex',
+    monogram: 'BF',
+    needsPassphrase: false,
+    formatHint: 'API key + secret · retention-limited beta',
+    keyInstructions: [
+      'Log in to Bitfinex and open Account → API Keys, then create a new key.',
+      'Enable read-only access for wallets, account history and orders/trades only. Never enable trading, transfers or withdrawals.',
+      'Copy the API Key and API Secret and paste them here. Bitfinex does not require a passphrase.',
+      'Retention beta: Trades API history is approximately 7 days and Movements API history is approximately 90 days. Older activity needs an export or other records.',
+      'The existing CSV beta supports the Trades schema only. It cannot backfill Movements, and API↔CSV trade ID parity is unverified, so SoloLedger does not auto-deduplicate Bitfinex API rows with CSV rows.'
+    ],
+    path: ['Bitfinex', 'Account', 'API Keys', 'Create New Key'],
+    docsUrl: 'https://setting.bitfinex.com/api'
   }
 ];
 

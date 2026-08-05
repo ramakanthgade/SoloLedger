@@ -77,6 +77,7 @@ describe('EXCHANGE_API_SOURCES', () => {
   it('registers every <exchange>_api source', () => {
     expect([...EXCHANGE_API_SOURCES].sort()).toEqual([
       'binance_api',
+      'bitfinex_api',
       'bybit_api',
       'coinbase_api',
       'cryptocom_api',

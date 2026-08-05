@@ -323,6 +323,9 @@ describe('importFullBackup', () => {
       cursors: {}, status: 'ok', htxTradeProgress: {
         windowStart: 300, windowEnd: 400, completedSymbols: ['BTC/USDT']
       }
+    }, {
+      id: 'bitfinex-source', exchange: 'bitfinex', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', bitfinexPendingTransfers: { deposits: 500, withdrawals: 600 }
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -335,6 +338,10 @@ describe('importFullBackup', () => {
       credentialsState: 'reauthorization_required',
       htxTradeProgress: { windowStart: 300, windowEnd: 400, completedSymbols: ['BTC/USDT'] }
     });
+    expect(await db.exchangeConnections.get('bitfinex-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      bitfinexPendingTransfers: { deposits: 500, withdrawals: 600 }
+    });
   });
 
   it.each([NaN, -1, 1.5])('rejects malformed Crypto.com pending checkpoint %s', async (timestamp) => {
@@ -345,6 +352,65 @@ describe('importFullBackup', () => {
     payload.exchangeConnections[0].cryptocomPendingTransfers = { deposits: timestamp };
     await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
       'Crypto.com pending-transfer checkpoint is malformed'
+    );
+  });
+
+  it('rejects an array Crypto.com pending checkpoint', async () => {
+    await db.exchangeConnections.put({
+      id: 'cryptocom-source', exchange: 'cryptocom', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { cryptocomPendingTransfers: unknown })
+      .cryptocomPendingTransfers = [];
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Crypto.com pending-transfer checkpoint is malformed'
+    );
+  });
+
+  it('rejects an unexpected Crypto.com pending checkpoint shape', async () => {
+    await db.exchangeConnections.put({
+      id: 'cryptocom-source', exchange: 'cryptocom', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { cryptocomPendingTransfers: unknown })
+      .cryptocomPendingTransfers = { deposits: 1, unexpected: 2 };
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Crypto.com pending-transfer checkpoint is malformed'
+    );
+  });
+
+  it.each([NaN, -1, 1.5])('rejects malformed Bitfinex pending checkpoint %s', async (timestamp) => {
+    await db.exchangeConnections.put({
+      id: 'bitfinex-source', exchange: 'bitfinex', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    payload.exchangeConnections[0].bitfinexPendingTransfers = { deposits: timestamp };
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Bitfinex pending-movement checkpoint is malformed'
+    );
+  });
+
+  it('rejects an array Bitfinex pending checkpoint', async () => {
+    await db.exchangeConnections.put({
+      id: 'bitfinex-source', exchange: 'bitfinex', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { bitfinexPendingTransfers: unknown })
+      .bitfinexPendingTransfers = [];
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Bitfinex pending-movement checkpoint is malformed'
+    );
+  });
+
+  it('rejects an unexpected Bitfinex pending checkpoint shape', async () => {
+    await db.exchangeConnections.put({
+      id: 'bitfinex-source', exchange: 'bitfinex', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { bitfinexPendingTransfers: unknown })
+      .bitfinexPendingTransfers = { withdrawals: 1, unexpected: 2 };
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Bitfinex pending-movement checkpoint is malformed'
     );
   });
 

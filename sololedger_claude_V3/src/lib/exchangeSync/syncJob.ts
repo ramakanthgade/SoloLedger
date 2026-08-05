@@ -49,6 +49,7 @@ interface StagedMeta {
   knownSymbols?: string[];
   htxTradeProgress?: import('./engine').HtxTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** Private current-balance authority fetched with the staged rows. */
   balance: UnifiedBalance;
   /** Non-secret source revision/state token captured with operation evidence. */
@@ -284,6 +285,7 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         knownSymbols: outcome.knownSymbols,
         htxTradeProgress: outcome.htxTradeProgress,
         cryptocomPendingTransfers: outcome.cryptocomPendingTransfers,
+        bitfinexPendingTransfers: outcome.bitfinexPendingTransfers,
         // Keep only normalized totals in memory. ccxt's raw `info` can carry
         // account metadata (for example a Binance UID) and is not needed for
         // confirmation.
@@ -332,6 +334,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       knownSymbols: staged.meta?.knownSymbols,
       htxTradeProgress: staged.meta?.htxTradeProgress,
       cryptocomPendingTransfers: staged.meta?.cryptocomPendingTransfers,
+      bitfinexPendingTransfers: staged.meta?.bitfinexPendingTransfers,
       balance: staged.meta?.balance,
       operation: staged.meta.operation,
       hooks: hooks(),

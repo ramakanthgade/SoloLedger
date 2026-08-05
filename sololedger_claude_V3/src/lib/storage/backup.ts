@@ -58,6 +58,12 @@ export interface BackupFileV3 {
 
 type BackupFile = BackupFileV1V2 | BackupFileV3;
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  if (typeof value !== 'object' || value == null || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
 function safeSettings(settings: TaxSettings): SettingsBackup {
   return {
     jurisdiction: settings.jurisdiction,
@@ -93,6 +99,10 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
     cryptocomPendingTransfers: row.cryptocomPendingTransfers == null ? undefined : {
       deposits: row.cryptocomPendingTransfers.deposits,
       withdrawals: row.cryptocomPendingTransfers.withdrawals
+    },
+    bitfinexPendingTransfers: row.bitfinexPendingTransfers == null ? undefined : {
+      deposits: row.bitfinexPendingTransfers.deposits,
+      withdrawals: row.bitfinexPendingTransfers.withdrawals
     },
     lastSyncAt: row.lastSyncAt, status: row.status,
     lastError: typeof row.lastError === 'string' ? row.lastError : undefined
@@ -273,11 +283,20 @@ function validateV3(payload: BackupFileV3): void {
       throw new Error('Invalid backup file: exchange source shape is malformed.');
     }
     const pending = row.cryptocomPendingTransfers;
-    if (pending != null && (typeof pending !== 'object' ||
+    if (pending != null && (!isPlainObject(pending) ||
+      Object.keys(pending).some((key) => key !== 'deposits' && key !== 'withdrawals') ||
       (['deposits', 'withdrawals'] as const).some((kind) =>
         Object.prototype.hasOwnProperty.call(pending, kind) &&
         (!Number.isSafeInteger(pending[kind]) || pending[kind]! < 0)))) {
       throw new Error('Invalid backup file: Crypto.com pending-transfer checkpoint is malformed.');
+    }
+    const bitfinexPending = row.bitfinexPendingTransfers;
+    if (bitfinexPending != null && (!isPlainObject(bitfinexPending) ||
+      Object.keys(bitfinexPending).some((key) => key !== 'deposits' && key !== 'withdrawals') ||
+      (['deposits', 'withdrawals'] as const).some((kind) =>
+        Object.prototype.hasOwnProperty.call(bitfinexPending, kind) &&
+        (!Number.isSafeInteger(bitfinexPending[kind]) || bitfinexPending[kind]! < 0)))) {
+      throw new Error('Invalid backup file: Bitfinex pending-movement checkpoint is malformed.');
     }
     const progress = row.htxTradeProgress;
     if (progress != null && (!Number.isSafeInteger(progress.windowStart) || progress.windowStart < 0 ||

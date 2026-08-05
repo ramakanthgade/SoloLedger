@@ -49,6 +49,7 @@ describe('loadCcxt', () => {
     expect(typeof a.gate).toBe('function');
     expect(typeof a.htx).toBe('function');
     expect(typeof a.cryptocom).toBe('function');
+    expect(typeof a.bitfinex).toBe('function');
   });
 });
 
@@ -146,6 +147,28 @@ describe('createExchangeClient', () => {
     expect(raw.has.fetchCurrencies).toBe(false);
     expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
     expect(raw.password).toBeUndefined();
+  });
+
+  it('pins Bitfinex to api.bitfinex.com with exchange-wallet spot scope and no currency/passphrase probe', async () => {
+    const client = await createExchangeClient(row({ exchange: 'bitfinex' }));
+    const raw = client as unknown as {
+      options: Record<string, unknown>;
+      has: Record<string, unknown>;
+      requiredCredentials: Record<string, boolean>;
+      urls: { api: Record<string, string> };
+      password?: string;
+      fetchDepositsWithdrawals?: unknown;
+    };
+    expect(raw.options).toMatchObject({ defaultType: 'spot', fetchCurrencies: false });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    expect(raw.password).toBeUndefined();
+    expect(raw.urls.api).toMatchObject({
+      v1: 'https://api.bitfinex.com',
+      public: 'https://api.bitfinex.com',
+      private: 'https://api.bitfinex.com'
+    });
+    expect(typeof raw.fetchDepositsWithdrawals).toBe('function');
   });
 
   it('does not set password for exchanges without a passphrase', async () => {

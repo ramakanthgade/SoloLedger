@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -167,6 +167,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | gateio | `trade.id` (closest available counterpart to beta CSV `ID`; equivalence is not live-verified) | `transfer.id` (same beta caveat) |
 | htx | aggregate fills by `trade.order` → `sourceRef = orderId`; durable raw `id` evidence is unioned across syncs; API identity is connection-scoped while explicit sourceRef matching preserves CSV reconciliation | native wallet record `transfer.id` (fixture-matched to CSV `order-id`/`id`) |
 | cryptocom | native Exchange `trade_id`; identity is connection- and immutable `raw.exchangeSyncKind=trade`-scoped | native Exchange wallet record `id`; identity is connection- and immutable `raw.exchangeSyncKind=deposit/withdrawal`-scoped, with txid retained as evidence |
+| bitfinex | native Trade id; connection- and immutable-kind scoped; intentionally does **not** collide with beta CSV because parity is unverified | native Movement id; connection- and immutable-kind scoped; no Movements CSV backfill exists |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -194,8 +195,11 @@ current vendor export populates its beta `ID` column with the same native ids.
 1. **Fixture tests (CI)** — everything under `src/lib/exchangeSync/*.test.ts`.
 2. **Public-endpoint tunnel probes (live)** — relay repo
    `server/scripts/live-verify-exchange-tunnel.mjs` tier 2.
-3. **Signature-integrity probes (live, dummy keys)** — same script tier 3;
-   assert each exchange's DISTINCTIVE auth error.
+3. **Auth-path probes (live, dummy keys)** — same script tier 3; assert each
+   exchange's distinctive auth response. Evidence is exchange-specific:
+   Bitfinex `10100` / `digest invalid` proves bfx auth-header/key reachability,
+   not signature/body integrity. Byte-exact Bitfinex signed-body forwarding is
+   covered by `server/src/routes/exchangeTunnel.test.ts`.
 4. **Full live flow (Binance, hosted site, read-only key)** — manual:
    1. Hosted sign-in → Import → Auto-sync → add Binance key → "✓ Connected".
    2. Initial sync → preview counts match exchange history → confirm → row `ok`.
@@ -325,6 +329,13 @@ must never auto-dedup with `cryptocom_api` Exchange rows.
     Exchange Support. The App CSV parser cannot backfill it, and identical
     txids/economics across App CSV and Exchange API intentionally remain two
     rows.
+16. **Bitfinex is explicitly retention-limited beta** — `auth/r/trades/hist`
+    exposes approximately 7 days and `auth/r/movements/hist` approximately
+    90 days. Movements are fetched once and split by signed amount into
+    deposits/withdrawals; only settled statuses import. The existing Bitfinex
+    CSV beta supports the Trades schema only, cannot backfill Movements, and
+    API↔CSV trade-ID parity is unverified. API rows are therefore idempotent
+    within a connection/kind but never auto-deduplicated against CSV rows.
 
 ## Adding an exchange?
 
