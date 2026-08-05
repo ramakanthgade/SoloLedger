@@ -8,6 +8,7 @@
  *    on fill trades (still used for capital-gains elsewhere).
  */
 import type { Transaction } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { detectDcaGroups, type DcaDetectionMetrics } from '@/lib/rpc/dcaDetection';
 
 export interface PortfolioDcaContext {
@@ -27,7 +28,7 @@ export function buildPortfolioDcaContext(
   txs: Transaction[],
   metrics?: DcaDetectionMetrics
 ): PortfolioDcaContext {
-  const groups = detectDcaGroups(txs.filter((t) => !t.isSpam), metrics);
+  const groups = detectDcaGroups(txs.filter((t) => !isTransactionExcluded(t)), metrics);
   const internalDepositIds = new Set<string>();
   const dcaFillIds = new Set<string>();
 

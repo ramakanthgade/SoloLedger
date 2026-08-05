@@ -181,13 +181,41 @@ describe('Dexie v11 → v12 CSV survivor-count migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(12);
+    expect(upgraded.verno).toBe(13);
     expect(await upgraded.csvImports.bulkGet(['partial', 'zero'])).toEqual([
       expect.objectContaining({ id: 'partial', txCount: 2 }),
       expect.objectContaining({ id: 'zero', txCount: 0 })
     ]);
     expect(await upgraded.transactions.get('unrelated')).toBeDefined();
 
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+});
+
+describe('Dexie v12 → v13 safety migration', () => {
+  it('migrates isSpam=true to a user-hidden event decision without fabricating provider evidence', async () => {
+    const name = `migration_v13_test_${Math.random().toString(36).slice(2)}`;
+    const legacy = new Dexie(name);
+    legacy.version(12).stores(V11_STORES);
+    await legacy.open();
+    await legacy.table('transactions').bulkPut([
+      makeTx('spam', { isSpam: true, chain: 'ethereum', txHash: '0xabc', contractAddress: '0xToken', type: 'transfer_in' }),
+      makeTx('visible', { isSpam: false })
+    ]);
+    legacy.close();
+
+    const { createDb } = await import('@/lib/storage/db');
+    const upgraded = createDb(name);
+    await upgraded.open();
+    const spam = await upgraded.transactions.get('spam');
+    expect(spam).toMatchObject({ safetyState: 'user_hidden' });
+    expect(spam?.safetySubjectKey).toBe('event:ethereum:0xabc:0xtoken:0:in');
+    expect(await upgraded.safetyDecisions.get(spam!.safetySubjectKey!)).toMatchObject({
+      state: 'user_hidden', origin: 'migration'
+    });
+    expect(await upgraded.providerEvidence.count()).toBe(0);
+    expect((await upgraded.transactions.get('visible'))?.safetyState).toBeUndefined();
     upgraded.close();
     await Dexie.delete(name);
   });
@@ -231,7 +259,7 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(12);
+    expect(upgraded.verno).toBe(13);
     expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
     expect(await upgraded.table('exchangeBalances').count()).toBe(4);
     const connection = await upgraded.table('exchangeConnections').get('coherent');

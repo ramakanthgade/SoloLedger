@@ -16,6 +16,7 @@ import type { FlagReason, Transaction, TxType } from '@/types/transaction';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { matchesFlagFilter } from '@/lib/review/displayFlags';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 export interface RowFilterOptions {
   showSpam: boolean;
@@ -42,10 +43,10 @@ export function filterRows(txs: Transaction[], opts: RowFilterOptions): Transact
     // Spam gates: skipped entirely when the Flags filter itself targets spam,
     // so the "Spam" filter surfaces spam rows even while `showSpam` is off.
     if (opts.flagFilter !== 'spam') {
-      if (!opts.showSpam && t.isSpam) return false;
-      if (opts.showSpam && !t.isSpam) return false;
+      if (!opts.showSpam && isTransactionExcluded(t)) return false;
+      if (opts.showSpam && !isTransactionExcluded(t)) return false;
     }
-    if (opts.showNeedsPrice && !(t.fiatValue == null && !t.isSpam && !t.isInternalTransfer && requiresMarketValue(t))) return false;
+    if (opts.showNeedsPrice && !(t.fiatValue == null && !isTransactionExcluded(t) && !t.isInternalTransfer && requiresMarketValue(t))) return false;
     if (opts.showNeedsReview && !opts.isNeedsReview(t)) return false;
     if (opts.assetFilter !== 'all' && t.asset !== opts.assetFilter) return false;
     if (opts.typeFilter !== 'all' && t.type !== opts.typeFilter) return false;

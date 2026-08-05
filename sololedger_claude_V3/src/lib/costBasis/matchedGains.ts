@@ -1,6 +1,7 @@
 import type { Disposal, Lot, Transaction } from '@/types/transaction';
 import { identifyDabbaProgram, DABBA_KIND_LABEL, type DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
 import { REWARD_KIND_LABEL } from '@/lib/assets/rewardRegistry';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 /** Display labels for income kinds (Dabba kinds + generic reward kinds). */
 const INCOME_KIND_LABEL: Record<string, string> = { ...DABBA_KIND_LABEL, ...REWARD_KIND_LABEL };
@@ -176,7 +177,7 @@ export function buildIncomeRows(
   const rows: IncomeRow[] = [];
 
   for (const t of transactions) {
-    if (t.isInternalTransfer || t.isSpam) continue;
+    if (t.isInternalTransfer || isTransactionExcluded(t)) continue;
     // Derivatives have their own report sections
     if (isDerivativeTransaction(t)) continue;
 
@@ -359,7 +360,7 @@ export function buildDerivativeCapitalGainRows(transactions: Transaction[]): Mat
   const rows: MatchedGainRow[] = [];
 
   for (const t of transactions) {
-    if (t.isSpam || t.isInternalTransfer || !isDerivativeTransaction(t)) continue;
+    if (isTransactionExcluded(t) || t.isInternalTransfer || !isDerivativeTransaction(t)) continue;
 
     // Only realized close PnL — not per-fill trading fees
     const isProfit = isDerivativeProfit(t);

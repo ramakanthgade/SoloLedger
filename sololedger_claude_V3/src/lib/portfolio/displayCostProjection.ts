@@ -1,4 +1,5 @@
 import type { AccountClass, DerivedPosting } from '@/lib/ledger/derivedPostings';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import {
   postingBalanceKey,
   preparePostingAggregation,
@@ -56,7 +57,7 @@ const SIMPLE_MANUAL_CHART_TYPES = new Set<Transaction['type']>([
 
 function requiresCustodyChartCostSemantics(transaction: Transaction): boolean {
   return Boolean(
-    transaction.isSpam || transaction.isInternalTransfer ||
+    isTransactionExcluded(transaction) || transaction.isInternalTransfer ||
     !SIMPLE_MANUAL_CHART_TYPES.has(transaction.type) ||
     transaction.source !== 'manual' || transaction.importBatchId != null ||
     transaction.raw != null || transaction.parserAccountClass != null ||

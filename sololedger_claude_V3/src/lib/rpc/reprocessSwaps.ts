@@ -1,4 +1,5 @@
 import { db, mutateTransactionsAndReconcileCsv } from '@/lib/storage/db';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import { batchClassifyNoves } from '@/lib/rpc/noves';
 import { classifyRewardIncome, isKnownRewardToken } from '@/lib/assets/rewardRegistry';
@@ -31,7 +32,7 @@ export async function reprocessRewardIncome(): Promise<number> {
       t.type === 'transfer_in' &&
       isKnownRewardToken(t.contractAddress) &&
       !t.isInternalTransfer &&
-      !t.isSpam
+      !isTransactionExcluded(t)
   );
 
   let updated = 0;

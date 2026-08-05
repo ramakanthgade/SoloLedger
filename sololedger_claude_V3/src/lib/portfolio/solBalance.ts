@@ -11,6 +11,7 @@
  *  7. Trade + fee rows on the same tx are separate legs; transfers drop when trade covers SOL
  */
 import { db, transactionSourceKey } from '@/lib/storage/db';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import type { Transaction } from '@/types/transaction';
 import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 
@@ -77,7 +78,7 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
   const feeKeys = new Set<string>();
   const tradeKeys = new Set<string>();
   for (const t of txs) {
-    if (t.isSpam || !t.sourceRef || !t.walletAddress) continue;
+    if (isTransactionExcluded(t) || !t.sourceRef || !t.walletAddress) continue;
     // Key by wallet|sig only (not asset) so USDC→SOL trades mark the sig as covered.
     const sigKey = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
     if (!sigKey) continue;
@@ -87,7 +88,7 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
 
   const best = new Map<string, Transaction>();
   for (const t of txs) {
-    if (t.isSpam || !isNativeSolAsset(t.asset)) continue;
+    if (isTransactionExcluded(t) || !isNativeSolAsset(t.asset)) continue;
     if (t.type === 'fee' || t.type === 'trade') continue;
     const sk = transactionSourceKey(t);
     if (!sk) continue;
@@ -95,7 +96,7 @@ export function collapseSolTxRows(txs: Transaction[]): Transaction[] {
     if (!prev || solRowScore(t) > solRowScore(prev)) best.set(sk, t);
   }
   return txs.filter((t) => {
-    if (t.isSpam) return true;
+    if (isTransactionExcluded(t)) return true;
     // Non-SOL rows (including USDC→SOL trades) always pass through.
     if (!isNativeSolAsset(t.asset)) return true;
     if (t.type === 'fee' || t.type === 'trade') return true;
@@ -133,7 +134,7 @@ export function computeMainWalletSolFromTransactions(txs: Transaction[]): number
   let sol = 0;
 
   for (const t of [...collapsed].sort((a, b) => a.timestamp - b.timestamp)) {
-    if (t.isSpam) continue;
+    if (isTransactionExcluded(t)) continue;
 
     // USDC→SOL trades have asset=USDC but still move native SOL via counterAsset —
     // same debit/credit idea as DBT→USDC, just on the SOL side of the pair.

@@ -61,6 +61,7 @@ const findingLabel: Record<string, string> = {
   capture_coherent_authority: 'The balance record cannot be compared', retry_source_operation: 'The latest update did not finish',
   add_timestamped_authority: 'The balance record needs a date', complete_source_history: 'Some activity may be missing',
   establish_source_coverage: 'The history range is not confirmed', add_evidence_backed_opening_balance: 'A starting balance is needed',
+  inspect_negative_posting_fallback: 'A posting-derived deficit is not current custody',
   inspect_evidence_history: 'Recorded activity does not match the source balance', refresh_authority: 'The source balance is out of date'
 };
 
@@ -69,10 +70,14 @@ const remediationCta: Record<string, string> = {
   capture_coherent_authority: 'Review the balance record', retry_source_operation: 'Retry this source update',
   add_timestamped_authority: 'Add a dated balance record', complete_source_history: 'Import the missing activity',
   establish_source_coverage: 'Confirm the history range', add_evidence_backed_opening_balance: 'Add a dated starting balance',
+  inspect_negative_posting_fallback: 'Review the deficit transactions',
   inspect_evidence_history: 'Review the related transactions', refresh_authority: 'Update this source balance'
 };
 
 function findingCta(source: DataHealthSource, finding: DataHealthSource['findings'][number]): string {
+  if (finding.remediation === 'inspect_negative_posting_fallback') {
+    return remediationCta.inspect_negative_posting_fallback;
+  }
   if (source.target.kind === 'manual' && finding.intent.destination === 'transactions') {
     if (finding.remediation === 'add_timestamped_authority' || finding.remediation === 'capture_coherent_authority' || finding.remediation === 'refresh_authority') {
       return 'Review manual balance transactions';
@@ -102,7 +107,8 @@ function axisChips(source: DataHealthSource): string[] {
     axes.unknownCoverage > 0 && `${axes.unknownCoverage} unconfirmed history ${axes.unknownCoverage === 1 ? 'range' : 'ranges'}`,
     axes.openingBalanceRequired > 0 && `${axes.openingBalanceRequired} starting ${axes.openingBalanceRequired === 1 ? 'balance' : 'balances'} needed`,
     axes.unresolvedScope > 0 && `${axes.unresolvedScope} account ${axes.unresolvedScope === 1 ? 'type' : 'types'} to confirm`,
-    axes.deletedScope > 0 && `${axes.deletedScope} unavailable ${axes.deletedScope === 1 ? 'connection' : 'connections'}`
+    axes.deletedScope > 0 && `${axes.deletedScope} unavailable ${axes.deletedScope === 1 ? 'connection' : 'connections'}`,
+    axes.negativePostingFallback > 0 && `${axes.negativePostingFallback} posting-derived ${axes.negativePostingFallback === 1 ? 'deficit' : 'deficits'}`
   ].filter((value): value is string => Boolean(value));
 }
 
@@ -151,6 +157,9 @@ function groupedActions(source: DataHealthSource): FindingActionGroup[] {
 
 function actionLabel(source: DataHealthSource, group: FindingActionGroup, groups: readonly FindingActionGroup[]): string {
   const base = findingCta(source, group.finding);
+  if (group.finding.remediation === 'inspect_negative_posting_fallback') {
+    return `${base}${group.finding.asset ? ` · ${group.finding.asset}` : ''} · ${group.finding.accountClass} account`;
+  }
   const sameLabel = groups.filter((candidate) => findingCta(source, candidate.finding) === base);
   if (sameLabel.length < 2) return base;
   const account = group.finding.accountClass === 'unknown'
@@ -286,7 +295,7 @@ export function DataHealthWorkspace({ model, loading = false, updating = false, 
             return <article key={source.id} className="flex min-w-0 flex-col rounded-2xl border border-hi/10 bg-elev-2 p-3 shadow-card sm:p-4" data-testid={`data-health-source-${source.id}`}>
               <div className="flex items-start gap-3"><span className={cn('grid h-10 w-10 shrink-0 place-items-center rounded-xl', source.severity === 'clean' ? 'bg-gain/10 text-gain' : source.severity === 'blocked' || source.severity === 'error' ? 'bg-loss/10 text-loss' : 'bg-warn/10 text-warn')}>{source.severity === 'clean' ? <CheckCircle2 className="h-5 w-5" aria-hidden="true" /> : <AlertTriangle className="h-5 w-5" aria-hidden="true" />}</span><div className="min-w-0 flex-1"><h2 className="truncate text-sm font-extrabold text-hi">{source.title}</h2>{source.subtitle && <p className="mt-0.5 truncate text-xs text-low">{source.subtitle}</p>}<Badge tone={source.severity === 'clean' ? 'gain' : source.severity === 'blocked' || source.severity === 'error' ? 'loss' : 'warn'} className="mt-2">{statusLabel(source.severity)}</Badge></div></div>
               {chips.length > 0 && <ul className="mt-3 flex flex-wrap gap-1.5" aria-label="Independent findings">{chips.map((chip) => <li key={chip} className="rounded-full bg-elev-3 px-2 py-1 text-[0.6875rem] font-semibold text-mid">{chip}</li>)}</ul>}
-              {source.findings.length > 0 && <div className="mt-3 rounded-xl bg-elev-1 p-3 text-xs text-low"><p className="font-bold text-hi">{findingLabel[source.findings[0].remediation] ?? 'Review needed'}</p>{secondaryActions.length > 0 && <p className="mt-1">{secondaryActions.length} more {secondaryActions.length === 1 ? 'step is' : 'steps are'} available below.</p>}</div>}
+              {source.findings.length > 0 && <div className="mt-3 rounded-xl bg-elev-1 p-3 text-xs text-low"><p className="font-bold text-hi">{findingLabel[source.findings[0].remediation] ?? 'Review needed'}{source.findings[0].asset ? ` · ${source.findings[0].asset}` : ''}{source.findings[0].accountClass ? ` · ${source.findings[0].accountClass} account` : ''}</p>{secondaryActions.length > 0 && <p className="mt-1">{secondaryActions.length} more {secondaryActions.length === 1 ? 'step is' : 'steps are'} available below.</p>}</div>}
               <div className="mt-auto pt-1">{actions.slice(0, 1).map((group) => {
                 const actionKey = `${source.id}:${group.finding.key}`;
                 return <div key={group.finding.key} className="mt-3"><button type="button" disabled={updating} data-data-health-action={actionKey} aria-describedby={`${actionKey}-destination`} onClick={() => onNavigate(createNavigationIntent(group.finding.intent), { filter: effectiveFilter, scrollTop: workspaceScrollTop(shellScroll), focusActionKey: actionKey })} className="inline-flex min-h-[44px] w-full items-center justify-between rounded-xl border border-primary/30 bg-primary/10 px-3 text-left text-xs font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 disabled:cursor-wait disabled:opacity-60">{actionLabel(source, group, actions)} <ChevronRight className="h-4 w-4" aria-hidden="true" /></button><p id={`${actionKey}-destination`} className="mt-1 px-1 text-[0.6875rem] leading-relaxed text-low">{destinationGuidance(group.finding)}</p></div>;

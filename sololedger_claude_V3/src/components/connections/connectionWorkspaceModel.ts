@@ -41,6 +41,7 @@ import {
 } from '@/lib/reconcile/sourceReconcile';
 import type { CsvImportRow, LookupAddressRow } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
+import type { SafetyDecisionRow } from '@/lib/safety/types';
 import type { ConnectionCardData } from './connectionModel';
 
 const KEY_SEPARATOR = '\u001f';
@@ -82,6 +83,7 @@ export interface ConnectionWorkspaceInput {
   snapshots: readonly AuthoritySnapshotRow[];
   assets: readonly AuthorityAssetRow[];
   sourceCoverage: readonly SourceCoverageRow[];
+  safetyDecisions?: readonly SafetyDecisionRow[];
   now: number;
   comparisonAt?: number;
   metrics?: ConnectionWorkspaceMetrics;
@@ -159,6 +161,7 @@ export interface ConnectionWorkspaceOverview {
   holdings: readonly ProjectedPortfolioHolding[];
   /** Exact custody evidence, including exhaustive authority-confirmed zero balances. */
   slices: HoldingsProjection['slices'];
+  diagnostics?: HoldingsProjection['diagnostics'];
   postingCount: number;
   transactionCount: number;
   evidenceCount: number;
@@ -496,6 +499,7 @@ function buildEvidenceEmptyWorkspace(
     scopes: scopeViews,
     overview: {
       holdings: EMPTY_WORKSPACE_ROWS, slices: EMPTY_WORKSPACE_ROWS,
+      diagnostics: EMPTY_WORKSPACE_ROWS,
       postingCount: 0, transactionCount: 0, evidenceCount: 0,
       transactionBreakdown: EMPTY_WORKSPACE_BREAKDOWN
     },
@@ -539,6 +543,7 @@ export function buildConnectionWorkspaceSnapshot(input: ConnectionWorkspaceInput
     snapshots: input.snapshots,
     assets: input.assets,
     coverage: input.sourceCoverage,
+    safetyDecisions: input.safetyDecisions,
     now: input.now,
     comparisonAt: input.comparisonAt,
     scopeFilter: {
@@ -770,6 +775,7 @@ export function buildConnectionWorkspaceSnapshot(input: ConnectionWorkspaceInput
     overview: {
       holdings: projection.holdings,
       slices: projection.slices,
+      diagnostics: projection.diagnostics,
       postingCount: [...postingsByAsset.values()].reduce((sum, rows) => sum + rows.length, 0),
       transactionCount: selectedTransactions.length,
       evidenceCount: postingEvidence.size,
@@ -796,6 +802,7 @@ export interface ConnectionWorkspaceCardAdapterInput {
   snapshots: readonly AuthoritySnapshotRow[];
   assets: readonly AuthorityAssetRow[];
   sourceCoverage: readonly SourceCoverageRow[];
+  safetyDecisions?: readonly SafetyDecisionRow[];
   now: number;
   comparisonAt?: number;
   liveExchangeConnections?: readonly ExchangeConnectionView[];
@@ -1225,6 +1232,7 @@ export function prepareConnectionWorkspaceFromCard(
     snapshots: selectedSnapshots,
     assets: selectedAssets,
     sourceCoverage: selectedCoverage,
+    safetyDecisions: input.safetyDecisions,
     comparisonAt,
     metrics: input.metrics
   };
@@ -1251,6 +1259,7 @@ export function prepareConnectionWorkspaceFromCard(
         snapshots: selectedSnapshots,
         assets: selectedAssets,
         coverage: selectedCoverage,
+        safetyDecisions: input.safetyDecisions,
         now: input.now,
         comparisonAt,
         scopeFilter: { scopePairs: scopes.map(({ scopeId, accountClass }) => ({ scopeId, accountClass })) },

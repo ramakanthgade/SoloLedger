@@ -416,6 +416,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
       ) : detail ? (
         <ConnectionDetail
           card={detail}
+          onOpenDataHealth={onNavigationBack}
           navigationIntent={externalDetailIntentId === navigationIntent?.id ? navigationIntent : undefined}
           onNavigationIntentAcknowledged={(id) => {
             acknowledgedIntent.current = id;

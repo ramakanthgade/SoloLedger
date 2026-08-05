@@ -22,6 +22,8 @@ import {
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
+import { assetSubjectKey, isCanonicalTrustedAsset } from '@/lib/safety/canonicalAssets';
+import { isExcludedSafetyState, type SafetyDecisionRow, type SafetyState } from '@/lib/safety/types';
 import {
   buildDisplayCostProjections,
   appendDisplayCostProjections,
@@ -43,6 +45,8 @@ export interface HoldingsProjectionInput {
   snapshots: readonly AuthoritySnapshotRow[];
   assets: readonly AuthorityAssetRow[];
   coverage: readonly SourceCoverageRow[];
+  /** Only exact asset-subject decisions may control authority-backed visibility. */
+  safetyDecisions?: readonly SafetyDecisionRow[];
   now: number;
   comparisonAt?: number;
   scopeFilter?: HoldingsScopeFilter;
@@ -80,6 +84,7 @@ export interface ProjectedPortfolioHolding {
   contractAddress?: string;
   verificationStatus: AuthorityBalanceVerificationStatus | 'mixed';
   sourceVerification: HoldingSourceVerification[];
+  safetyState: SafetyState;
 }
 
 export interface HoldingsProjection {
@@ -87,6 +92,17 @@ export interface HoldingsProjection {
   slices: AuthorityBalanceSlice[];
   /** Non-zero aggregates plus zero-quantity assets carrying conflicting authority evidence. */
   holdings: ProjectedPortfolioHolding[];
+  /** Includes hidden/spam rows for review and reversible presentation groups. */
+  allHoldings: ProjectedPortfolioHolding[];
+  diagnostics: Array<{
+    kind: 'negative_posting_quantity';
+    assetKey: string;
+    asset: string;
+    scopeId: string;
+    accountClass: AccountClass;
+    quantity: number;
+    message: string;
+  }>;
   /** One immutable posting projection, useful to downstream chart consumers. */
   postings: readonly DerivedPosting[];
   preparedPostings: PreparedPostingAggregation;
@@ -102,6 +118,21 @@ export interface DisplayIdentity {
   asset: string;
   chain?: string;
   contractAddress?: string;
+}
+
+export function countQuantityAuthorityIssues(
+  projection: Pick<HoldingsProjection, 'slices' | 'diagnostics'>
+): number {
+  const issues = new Set<string>();
+  for (const slice of projection.slices) {
+    if (slice.verificationStatus !== 'verified_authority') {
+      issues.add(`${slice.scopeId}\u001f${slice.accountClass}\u001f${slice.assetKey}`);
+    }
+  }
+  for (const diagnostic of projection.diagnostics) {
+    issues.add(`${diagnostic.scopeId}\u001f${diagnostic.accountClass}\u001f${diagnostic.assetKey}`);
+  }
+  return issues.size;
 }
 
 const CUSTOM_EVM_KEY_PREFIX = 'evm:custom:';
@@ -344,17 +375,35 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
   const unresolvedDisplayCosts = displayCostProjections.unresolved;
   const openingAffected = displayCostProjections.openingAffected;
 
-  const holdings: ProjectedPortfolioHolding[] = [];
+  const allHoldings: ProjectedPortfolioHolding[] = [];
+  const diagnostics: HoldingsProjection['diagnostics'] = [];
+  const assetDecisions = new Map((input.safetyDecisions ?? [])
+    .filter((decision) => decision.subjectKey.startsWith('asset:'))
+    .map((decision) => [decision.subjectKey, decision]));
   for (const [canonicalKey, assetSlices] of slicesByAsset) {
-    const quantity = assetSlices.reduce((sum, slice) => sum + slice.quantity, 0);
+    const negativeFallbackSlices = assetSlices.filter((slice) =>
+      slice.verificationStatus === 'posting_fallback' && slice.quantity < 0);
+    for (const slice of negativeFallbackSlices) diagnostics.push({
+      kind: 'negative_posting_quantity', assetKey: canonicalKey, asset: slice.asset,
+      scopeId: slice.scopeId, accountClass: slice.accountClass, quantity: slice.quantity,
+      message: 'Negative posting-derived quantity is diagnostic evidence, not current positive custody.'
+    });
+    const custodialSlices = assetSlices.filter((slice) => !negativeFallbackSlices.includes(slice));
+    const quantity = custodialSlices.reduce((sum, slice) => sum + slice.quantity, 0);
     const visibleNonComparableEvidence = assetSlices.some((slice) =>
       slice.authorityStatus === 'non_comparable' && slice.fallbackReason === 'non_comparable_authority');
     if (quantity === 0 && !visibleNonComparableEvidence) continue;
     const canonicalIdentity = identities.get(canonicalKey) ?? { asset: assetSlices[0].asset };
     const identity = canonicalIdentity;
-    const statuses = new Set(assetSlices.map((slice) => slice.verificationStatus));
+    const exactAssetDecision = identity.chain
+      ? assetDecisions.get(assetSubjectKey(identity.chain, identity.contractAddress))
+      : undefined;
+    const safetyState: SafetyState = identity.chain && isCanonicalTrustedAsset(identity.chain, identity.contractAddress)
+      ? 'trusted'
+      : exactAssetDecision?.state ?? 'unverified';
+    const statuses = new Set(custodialSlices.map((slice) => slice.verificationStatus));
     let unresolvedQuantity = 0;
-    const exactCost = assetSlices.reduce((sum, slice) => {
+    const exactCost = custodialSlices.reduce((sum, slice) => {
       const key = postingBalanceKey({
         accountScopeId: slice.scopeId,
         accountClass: slice.accountClass,
@@ -385,7 +434,7 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     const cost = quantity > 0
       ? exactCost + Math.max(0, unresolvedQuantity) * unresolvedPerUnitCost
       : 0;
-    holdings.push({
+    allHoldings.push({
       assetKey: canonicalKey,
       asset: identity.asset,
       quantity,
@@ -394,14 +443,18 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
       chain: identity.chain,
       contractAddress: identity.contractAddress,
       verificationStatus: statuses.size === 1 ? [...statuses][0] : 'mixed',
-      sourceVerification: assetSlices.map(sourceVerification)
+      sourceVerification: assetSlices.map(sourceVerification),
+      safetyState
     });
   }
-  holdings.sort((left, right) =>
+  allHoldings.sort((left, right) =>
     right.costBasis - left.costBasis || left.assetKey.localeCompare(right.assetKey));
+  const holdings = allHoldings.filter((holding) => !isExcludedSafetyState(holding.safetyState));
   return {
     slices,
     holdings,
+    allHoldings,
+    diagnostics,
     postings,
     preparedPostings,
     chartPostingCostsEquivalent: reusable?.chartPostingCostsEquivalent ??
@@ -473,14 +526,31 @@ export function appendHoldingsProjection(
     rows.push(slice);
     slicesByAsset.set(slice.assetKey, rows);
   }
-  const holdings: ProjectedPortfolioHolding[] = [];
+  const allHoldings: ProjectedPortfolioHolding[] = [];
+  const diagnostics: HoldingsProjection['diagnostics'] = [];
+  const assetDecisions = new Map((input.safetyDecisions ?? [])
+    .filter((decision) => decision.subjectKey.startsWith('asset:'))
+    .map((decision) => [decision.subjectKey, decision]));
   for (const [canonicalKey, assetSlices] of slicesByAsset) {
-    const quantity = assetSlices.reduce((sum, slice) => sum + slice.quantity, 0);
+    const negativeFallbackSlices = assetSlices.filter((slice) =>
+      slice.verificationStatus === 'posting_fallback' && slice.quantity < 0);
+    for (const slice of negativeFallbackSlices) diagnostics.push({
+      kind: 'negative_posting_quantity', assetKey: canonicalKey, asset: slice.asset,
+      scopeId: slice.scopeId, accountClass: slice.accountClass, quantity: slice.quantity,
+      message: 'Negative posting-derived quantity is diagnostic evidence, not current positive custody.'
+    });
+    const custodialSlices = assetSlices.filter((slice) => !negativeFallbackSlices.includes(slice));
+    const quantity = custodialSlices.reduce((sum, slice) => sum + slice.quantity, 0);
     if (quantity === 0) continue;
     const identity = identities.get(canonicalKey) ?? { asset: assetSlices[0].asset };
-    const statuses = new Set(assetSlices.map((slice) => slice.verificationStatus));
+    const exactAssetDecision = identity.chain
+      ? assetDecisions.get(assetSubjectKey(identity.chain, identity.contractAddress))
+      : undefined;
+    const safetyState: SafetyState = identity.chain && isCanonicalTrustedAsset(identity.chain, identity.contractAddress)
+      ? 'trusted' : exactAssetDecision?.state ?? 'unverified';
+    const statuses = new Set(custodialSlices.map((slice) => slice.verificationStatus));
     let unresolvedQuantity = 0;
-    const exactCost = assetSlices.reduce((sum, slice) => {
+    const exactCost = custodialSlices.reduce((sum, slice) => {
       const key = postingBalanceKey({
         accountScopeId: slice.scopeId, accountClass: slice.accountClass, assetKey: slice.assetKey
       });
@@ -497,7 +567,7 @@ export function appendHoldingsProjection(
     const unresolvedCost = displayCostProjections.unresolved.get(canonicalKey);
     const unresolvedPerUnit = unresolvedCost && unresolvedCost.amount > 0 && unresolvedCost.costBasis > 0
       ? unresolvedCost.costBasis / unresolvedCost.amount : 0;
-    holdings.push({
+    allHoldings.push({
       assetKey: canonicalKey,
       asset: identity.asset,
       quantity,
@@ -506,14 +576,17 @@ export function appendHoldingsProjection(
       chain: identity.chain,
       contractAddress: identity.contractAddress,
       verificationStatus: statuses.size === 1 ? [...statuses][0] : 'mixed',
-      sourceVerification: assetSlices.map(sourceVerification)
+      sourceVerification: assetSlices.map(sourceVerification), safetyState
     });
   }
-  holdings.sort((left, right) => right.costBasis - left.costBasis ||
+  allHoldings.sort((left, right) => right.costBasis - left.costBasis ||
     left.assetKey.localeCompare(right.assetKey));
+  const holdings = allHoldings.filter((holding) => !isExcludedSafetyState(holding.safetyState));
   return {
     slices: allSlices,
     holdings,
+    allHoldings,
+    diagnostics,
     postings,
     preparedPostings,
     chartPostingCostsEquivalent: displayCostProjections.chartPostingCostsEquivalent,

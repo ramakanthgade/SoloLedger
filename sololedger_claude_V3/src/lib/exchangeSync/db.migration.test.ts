@@ -29,14 +29,18 @@ describe('Dexie v8 — exchangeConnections', () => {
 
   it('opens at the current version with the exchangeConnections table', async () => {
     // v9 added walletBalances; v10 added exchangeBalances; v11 added coherent
-    // reconciliation evidence stores. The
-    // exchangeConnections schema below is unchanged since v8.
-    expect(db.verno).toBe(12);
+    // reconciliation evidence, v12 finalized CSV survivor counts, and v13
+    // added immutable safety evidence/decisions. The exchangeConnections
+    // schema below remains unchanged since v8.
+    expect(db.verno).toBe(13);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
     expect(tableNames).toContain('exchangeBalances');
     for (const table of ['authoritySnapshots', 'authorityAssets', 'sourceCoverage', 'openingBalances']) {
+      expect(tableNames).toContain(table);
+    }
+    for (const table of ['providerEvidence', 'safetyDecisions']) {
       expect(tableNames).toContain(table);
     }
     // All v7 tables carried over unchanged.
@@ -56,6 +60,15 @@ describe('Dexie v8 — exchangeConnections', () => {
     const schema = db.exchangeConnections.schema;
     expect(schema.primKey.name).toBe('id');
     expect(schema.indexes.map((i) => i.name).sort()).toEqual(['exchange', 'lastSyncAt']);
+    expect(db.providerEvidence.schema.primKey.name).toBe('id');
+    expect(db.providerEvidence.schema.indexes.map((index) => index.name).sort()).toEqual([
+      '[subjectKey+provider]', 'confidence', 'observedAt', 'provider', 'ruleId', 'ruleVersion',
+      'subjectKey', 'subjectKind'
+    ]);
+    expect(db.safetyDecisions.schema.primKey.name).toBe('subjectKey');
+    expect(db.safetyDecisions.schema.indexes.map((index) => index.name).sort()).toEqual([
+      '[state+updatedAt]', 'state', 'updatedAt'
+    ]);
   });
 
   it('stores and reads back a connection row (credentials local-only)', async () => {

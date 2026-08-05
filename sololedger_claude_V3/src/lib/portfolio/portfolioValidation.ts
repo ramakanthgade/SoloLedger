@@ -6,6 +6,7 @@
  * against a single wallet's chain state.
  */
 import type { Transaction } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import type { LookupAddressRow } from '@/lib/storage/db';
 import { canonicalWalletAddress, canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { SOL_MAIN_WALLET_TOLERANCE } from '@/lib/portfolio/solBalance';
@@ -63,7 +64,7 @@ export function summarizePortfolioSources(
   transactions: Transaction[],
   lookupAddresses: LookupAddressRow[]
 ): PortfolioSourceSummary {
-  const txs = transactions.filter((t) => !t.isSpam);
+  const txs = transactions.filter((t) => !isTransactionExcluded(t));
   let rpcTxCount = 0;
   let manualTxCount = 0;
   let csvExchangeTxCount = 0;
@@ -106,7 +107,7 @@ export function walletHasOnlyRpcTxs(
 ): boolean {
   const identity = canonicalWalletIdentity(chain, walletAddress);
   const walletTxs = transactions.filter(
-    (t) => !t.isSpam && t.walletAddress != null &&
+    (t) => !isTransactionExcluded(t) && t.walletAddress != null &&
       canonicalWalletIdentity(t.chain ?? '', t.walletAddress) === identity
   );
   if (walletTxs.length === 0) return false;

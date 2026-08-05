@@ -9,6 +9,7 @@
  * so filtering by "Missing cost basis" catches the derived case too.
  */
 import type { FlagReason, Transaction } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 
 /** All flags shown for a row: stored flags plus derived pricing/engine flags. */
@@ -29,7 +30,7 @@ export function matchesFlagFilter(
   derivedFlags: readonly FlagReason[] = []
 ): boolean {
   if (flagFilter === 'all') return true;
-  if (flagFilter === 'spam') return t.isSpam === true;
+  if (flagFilter === 'spam') return isTransactionExcluded(t) === true;
   if (flagFilter === 'internal') return t.isInternalTransfer === true;
   return displayFlags(t, derivedFlags).includes(flagFilter);
 }

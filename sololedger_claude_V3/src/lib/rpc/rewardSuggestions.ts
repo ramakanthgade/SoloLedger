@@ -20,6 +20,7 @@
  */
 
 import { db } from '@/lib/storage/db';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import {
   fetchSolanaRewardHints,
   type LlamaRewardHint
@@ -90,7 +91,7 @@ export function isUnclassifiedSolanaTransferIn(t: Transaction): boolean {
     t.chain === 'solana' &&
     !!t.contractAddress &&
     !t.isInternalTransfer &&
-    !t.isSpam
+    !isTransactionExcluded(t)
   );
 }
 
@@ -178,7 +179,7 @@ export async function applyDefiLlamaRewardSuggestions(opts?: {
 
 /** True when a row sits in the needs_review queue (flagged, not spam). */
 export function isNeedsReview(t: Transaction): boolean {
-  return !t.isSpam && (t.flags ?? []).includes('needs_review');
+  return !isTransactionExcluded(t) && (t.flags ?? []).includes('needs_review');
 }
 
 /** Count of transactions currently sitting in the needs_review queue. */

@@ -3,12 +3,13 @@
  * Fixes overstated balances (e.g. USDC credited on both trade and transfer_in).
  */
 import { db, mutateTransactionsAndReconcileCsv } from '@/lib/storage/db';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import type { Transaction } from '@/types/transaction';
 import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 
 export async function collapseDuplicateTradeTransferLegs(): Promise<number> {
   const all = await db.transactions
-    .filter((t) => !t.isSpam && !!t.sourceRef && !!t.walletAddress)
+    .filter((t) => !isTransactionExcluded(t) && !!t.sourceRef && !!t.walletAddress)
     .toArray();
   const trades = all.filter((t) => t.type === 'trade' && t.counterAsset && (t.counterAmount ?? 0) > 0);
   const tradeByRef = new Map<string, Transaction>();

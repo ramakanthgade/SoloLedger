@@ -19,7 +19,11 @@ import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
-import { buildHoldingsProjection, type HoldingsProjectionInput } from '@/lib/portfolio/holdingsProjection';
+import {
+  buildHoldingsProjection,
+  countQuantityAuthorityIssues,
+  type HoldingsProjectionInput
+} from '@/lib/portfolio/holdingsProjection';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
@@ -89,6 +93,7 @@ import {
   TrendingDown,
   Wallet
 } from 'lucide-react';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 const PRIVACY_KEY = 'sololedger_dashboard_privacy';
 const DISMISS_KEY = 'sololedger_dashboard_dismissed_insights';
@@ -291,24 +296,7 @@ function HoldingExpansion({
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
         <p className={eyebrowClass}>Where it lives</p>
-        <p className="text-[0.6875rem] text-faint" data-testid="holding-qty-caption">
-          {holding.sourceVerification?.every((slice) => slice.verificationStatus === 'verified_authority')
-            ? 'Verified from current source balances'
-            : holding.sourceVerification?.every((slice) => slice.verificationStatus === 'reconstructed_authority')
-              ? 'Reconstructed from complete source journals · not a current balance verification'
-            : holding.sourceVerification?.some((slice) => slice.verificationStatus === 'verified_authority')
-              ? 'Partly verified · remaining quantities use reconstructed journals or ledger postings'
-              : holding.sourceVerification?.some((slice) => slice.verificationStatus === 'reconstructed_authority')
-                ? 'Partly reconstructed from source journals · reconciliation still needs review'
-              : 'Unverified · estimated from ledger postings'}
-        </p>
       </div>
-      {visualSlices.some((slice) => slice.isDeficit) && (
-        <p className="mt-1 text-[0.6875rem] text-faint" data-testid="source-allocation-caption">
-          Shares use absolute quantities; deficits are negative source balances.
-        </p>
-      )}
-
       {slices.length === 0 ? (
         <p className="mt-2 text-xs text-low">No source breakdown available for this asset yet.</p>
       ) : (
@@ -422,6 +410,7 @@ const NO_AUTHORITY_SNAPSHOTS: AuthoritySnapshotRow[] = [];
 const NO_AUTHORITY_ASSETS: AuthorityAssetRow[] = [];
 const NO_SOURCE_COVERAGE: SourceCoverageRow[] = [];
 const NO_OPENING_BALANCES: OpeningBalanceRow[] = [];
+const NO_SAFETY_DECISIONS: never[] = [];
 const EMPTY_DATA_HEALTH_MODEL = buildDataHealthModel([]);
 const EMPTY_HOLDINGS_PROJECTION = buildHoldingsProjection({
   transactions: [], exchangeConnections: [], openingBalances: [], snapshots: [],
@@ -485,6 +474,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const snapshotAuthorityAssets = holdingsSnapshot?.authorityAssets ?? NO_AUTHORITY_ASSETS;
   const snapshotSourceCoverageRows = holdingsSnapshot?.sourceCoverage ?? NO_SOURCE_COVERAGE;
   const snapshotOpeningBalances = holdingsSnapshot?.openingBalances ?? NO_OPENING_BALANCES;
+  const snapshotSafetyDecisions = holdingsSnapshot?.safetyDecisions ?? NO_SAFETY_DECISIONS;
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [period, setPeriod] = useState<DashboardPeriod>('FY');
@@ -558,6 +548,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
       snapshots: snapshotAuthoritySnapshots,
       assets: snapshotAuthorityAssets,
       coverage: snapshotSourceCoverageRows,
+      safetyDecisions: snapshotSafetyDecisions,
       now: nowMs
     };
     return publishCoherentLedger({
@@ -569,7 +560,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   }, [
     publishCoherentLedger, transactions, candidateTransactionViews, holdingsSnapshot,
     snapshotExchangeConns, snapshotOpeningBalances, snapshotAuthoritySnapshots,
-    snapshotAuthorityAssets, snapshotSourceCoverageRows, nowMs
+    snapshotAuthorityAssets, snapshotSourceCoverageRows, snapshotSafetyDecisions, nowMs
   ]);
   const acceptedSnapshot = coherentLedgerRevision?.snapshot;
   const csvImports = acceptedSnapshot?.csvImports ?? NO_CSV_IMPORTS;
@@ -582,6 +573,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const projection = coherentLedgerRevision?.projection ?? EMPTY_HOLDINGS_PROJECTION;
   const nonSpamTxs = coherentLedgerRevision?.transactionViews.nonSpam ?? NO_TRANSACTIONS;
   const holdings = projection.holdings;
+  const quantityAuthorityIssueCount = countQuantityAuthorityIssues(projection);
   const ledgerRevision = useMemo(() => ({
     transactionCount: coherentLedgerRevision?.transactionCount ?? 0,
     transactions: nonSpamTxs,
@@ -621,7 +613,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
       sourceCoverage: dataHealthSourceCoverage,
       openingBalances: dataHealthOpeningBalances
     } = deferredDataHealthSnapshot;
-    const dataHealthTransactions = dataHealthRows.filter((transaction) => !transaction.isSpam);
+    const dataHealthTransactions = dataHealthRows.filter((transaction) => !isTransactionExcluded(transaction));
     const transactionCountByImport = new Map<string, number>();
     for (const transaction of dataHealthTransactions) if (transaction.importBatchId) {
       transactionCountByImport.set(transaction.importBatchId, (transactionCountByImport.get(transaction.importBatchId) ?? 0) + 1);
@@ -1403,6 +1395,12 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               {marketMode ? 'Current prices · refreshed automatically' : 'Valued at cost'}
             </span>
           </div>
+          {quantityAuthorityIssueCount > 0 && (
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-warn/20 bg-warn/10 px-5 py-2.5 text-xs text-mid" data-testid="quantity-authority-summary">
+              <span>{quantityAuthorityIssueCount} quantity authority issue{quantityAuthorityIssueCount === 1 ? '' : 's'} retained for review.</span>
+              <button type="button" onClick={() => setDataHealthOpen(true)} className="min-h-[44px] font-bold text-primary hover:underline">Review in Data Health →</button>
+            </div>
+          )}
           {optionsBalanceUnavailable && (
             <div
               className="border-b border-warn/25 bg-warn/10 px-5 py-3 text-xs text-warn"

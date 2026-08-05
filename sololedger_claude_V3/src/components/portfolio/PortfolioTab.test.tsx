@@ -325,9 +325,7 @@ describe('PortfolioTab (Ember & Slate)', () => {
     try {
       await renderTab();
       expect(screen.getAllByText('7.00000000').length).toBeGreaterThanOrEqual(1);
-      expect(screen.getAllByTestId('holding-quantity-source').some((row) =>
-        row.textContent?.includes('Verified current authority · quantity source only')
-      )).toBe(true);
+      expect(screen.queryByTestId('holding-quantity-source')).not.toBeInTheDocument();
     } finally {
       SEED.txs.splice(originalTxCount);
       clearProjectionEvidence();
@@ -378,11 +376,7 @@ describe('PortfolioTab (Ember & Slate)', () => {
     });
     try {
       await renderTab();
-      const captions = screen.getAllByTestId('holding-quantity-source').map((row) => row.textContent ?? '');
-      expect(captions.some((caption) => caption.includes(
-        'Partly verified · quantity source only · remainder reconstructed from journals · not verified current'
-      ))).toBe(true);
-      expect(captions.some((caption) => caption.includes('remainder posting-derived'))).toBe(false);
+      expect(screen.queryByTestId('holding-quantity-source')).not.toBeInTheDocument();
     } finally {
       SEED.txs.splice(originalTxCount);
       clearProjectionEvidence();
@@ -401,9 +395,7 @@ describe('PortfolioTab (Ember & Slate)', () => {
       await renderTab();
       expect(screen.getAllByText('2.00000000').length).toBeGreaterThanOrEqual(1);
       expect(screen.queryByText('7.00000000')).not.toBeInTheDocument();
-      expect(screen.getAllByTestId('holding-quantity-source').some((row) =>
-        row.textContent?.includes('Unverified posting-derived · quantity source only · stale authority')
-      )).toBe(true);
+      expect(screen.queryByTestId('holding-quantity-source')).not.toBeInTheDocument();
     } finally {
       SEED.txs.splice(originalTxCount);
       clearProjectionEvidence();
@@ -425,11 +417,7 @@ describe('PortfolioTab (Ember & Slate)', () => {
       await renderTab();
       expect(screen.getAllByText('2.00000000').length).toBeGreaterThanOrEqual(1);
       expect(screen.queryByText('7.00000000')).not.toBeInTheDocument();
-      expect(screen.getAllByTestId('holding-quantity-source').some((row) =>
-        row.textContent?.includes(
-          'Unverified posting-derived · quantity source only · incomplete source coverage'
-        )
-      )).toBe(true);
+      expect(screen.queryByTestId('holding-quantity-source')).not.toBeInTheDocument();
     } finally {
       SEED.txs.splice(originalTxCount);
       clearProjectionEvidence();

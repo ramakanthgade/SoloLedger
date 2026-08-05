@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { TaxSettings, Transaction } from '@/types/transaction';
+import type { ProviderEvidenceRow, SafetyDecisionRow } from '@/lib/safety/types';
 import { lookupManyAddresses, type ChainDef, type LookupConfig } from '@/lib/rpc/providers';
 import { deduplicateTransactions } from '@/lib/storage/db';
 
@@ -97,6 +98,8 @@ vi.mock('@/lib/pricing/autoFetch', () => ({
 
 // Minimal in-memory DB stub so we don't depend on the full Dexie schema.
 const store = new Map<string, Transaction>();
+const providerEvidenceStore = new Map<string, ProviderEvidenceRow>();
+const safetyDecisionStore = new Map<string, SafetyDecisionRow>();
 let lookupRows: Array<{ id: string; chain: string; address: string; lastSyncedSignature?: string }> = [];
 let coverageRows: Array<{ sourceIdentityId: string; generation: number; endpointOutcomes: Array<{
   endpoint: string; required: boolean; status: string;
@@ -109,6 +112,29 @@ const reserveWalletBalanceOperation = vi.fn(async (chain: string, address: strin
 const appendFailedWalletBalanceCoverage = vi.fn(async (_args: unknown) => true);
 vi.mock('@/lib/storage/db', () => ({
   db: {
+    transaction: async (
+      _mode: 'rw',
+      _tables: unknown[],
+      operation: () => Promise<void>
+    ) => {
+      // Match the production contract closely enough that tests cannot
+      // accidentally rely on partial writes: restore every participating
+      // in-memory table when the transactional callback rejects.
+      const transactionSnapshot = new Map(store);
+      const evidenceSnapshot = new Map(providerEvidenceStore);
+      const decisionSnapshot = new Map(safetyDecisionStore);
+      try {
+        await operation();
+      } catch (error) {
+        store.clear();
+        transactionSnapshot.forEach((row, id) => store.set(id, row));
+        providerEvidenceStore.clear();
+        evidenceSnapshot.forEach((row, id) => providerEvidenceStore.set(id, row));
+        safetyDecisionStore.clear();
+        decisionSnapshot.forEach((row, id) => safetyDecisionStore.set(id, row));
+        throw error;
+      }
+    },
     lookupAddresses: {
       get: async (id: string) => lookupRows.find((row) => row.id === id),
       filter: (predicate: (row: typeof lookupRows[number]) => boolean) => ({
@@ -129,6 +155,16 @@ vi.mock('@/lib/storage/db', () => ({
       filter: (predicate: (row: Transaction) => boolean) => ({
         toArray: async () => Array.from(store.values()).filter(predicate)
       })
+    },
+    providerEvidence: {
+      bulkPut: async (rows: ProviderEvidenceRow[]) => {
+        for (const row of rows) providerEvidenceStore.set(row.id, row);
+      }
+    },
+    safetyDecisions: {
+      bulkPut: async (rows: SafetyDecisionRow[]) => {
+        for (const row of rows) safetyDecisionStore.set(row.subjectKey, row);
+      }
     }
   },
   getLookupAddresses: vi.fn(async () => lookupRows),
@@ -165,6 +201,8 @@ const SOL_CHAIN: ChainDef = {
 beforeEach(() => {
   lookupRows = [];
   coverageRows = [];
+  providerEvidenceStore.clear();
+  safetyDecisionStore.clear();
 });
 
 function settings(overrides: Partial<TaxSettings> = {}): TaxSettings {

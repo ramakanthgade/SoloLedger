@@ -2,6 +2,7 @@ import type { InventoryDisposal } from './engine';
 import type { Transaction } from '@/types/transaction';
 import { isMiningIncome } from './matchedGains';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 const MATCH_EPSILON = 1e-10;
 
@@ -29,7 +30,7 @@ export function unpricedTaxableReceiptsInPeriod(
   return transactions.filter((row) =>
     (row.type === 'income' || row.type === 'gift_received') &&
     !row.isInternalTransfer &&
-    !row.isSpam &&
+    !isTransactionExcluded(row) &&
     !isDerivativeTransaction(row) &&
     !isMiningIncome(row) &&
     (row.fiatValue == null || !Number.isFinite(row.fiatValue)) &&

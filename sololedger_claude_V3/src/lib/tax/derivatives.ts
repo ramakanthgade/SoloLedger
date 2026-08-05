@@ -3,6 +3,7 @@
  * Treatment is resolved at report time from Settings — stored txs are not rewritten.
  */
 import type { Jurisdiction, TaxSettings, Transaction } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 export type InstrumentClass = 'spot' | 'derivative';
 export type DerivativesTreatment = 'business_income' | 'capital_gains';
@@ -32,7 +33,7 @@ export function isDerivativeTransaction(t: Pick<Transaction, 'instrumentClass' |
 export function isDerivativeProfit(t: Transaction): boolean {
   return (
     isDerivativeTransaction(t) &&
-    !t.isSpam &&
+    !isTransactionExcluded(t) &&
     !t.isInternalTransfer &&
     t.type === 'income' &&
     t.category !== 'perp_loss' &&
@@ -45,7 +46,7 @@ export function isDerivativeProfit(t: Transaction): boolean {
 
 /** Trading fees + realized perp losses (business expenses). */
 export function isDerivativeExpense(t: Transaction): boolean {
-  if (!isDerivativeTransaction(t) || t.isSpam || t.isInternalTransfer) return false;
+  if (!isDerivativeTransaction(t) || isTransactionExcluded(t) || t.isInternalTransfer) return false;
   if (t.category === 'perp_loss') return true;
   if (t.category === 'options_fee') return t.type === 'fee';
   return t.type === 'fee' && (t.category === 'perp' || t.category === 'perp_loss' || !t.category);

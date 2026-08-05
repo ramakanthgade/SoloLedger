@@ -43,6 +43,7 @@ const mocks = vi.hoisted(() => ({
   authoritySnapshots: { current: [] as AuthoritySnapshotRow[] },
   authorityAssets: { current: [] as AuthorityAssetRow[] },
   sourceCoverage: { current: [] as SourceCoverageRow[] },
+  safetyDecisions: { current: [] as import('@/lib/safety/types').SafetyDecisionRow[] },
   openingBalances: { current: [] as OpeningBalanceRow[] },
   exchangeConnections: {
     current: [
@@ -124,6 +125,7 @@ vi.mock('@/lib/storage/db', () => ({
     authoritySnapshots: { toArray: () => mocks.authoritySnapshots.current },
     authorityAssets: { toArray: () => mocks.authorityAssets.current },
     sourceCoverage: { toArray: () => mocks.sourceCoverage.current },
+    safetyDecisions: { toArray: () => mocks.safetyDecisions.current },
     openingBalances: { toArray: () => mocks.openingBalances.current },
     exchangeConnections: {
       toArray: () => mocks.exchangeConnections.current,
@@ -417,6 +419,7 @@ beforeEach(() => {
   mocks.authoritySnapshots.current = [];
   mocks.authorityAssets.current = [];
   mocks.sourceCoverage.current = [];
+  mocks.safetyDecisions.current = [];
   mocks.openingBalances.current = [];
   mocks.exchangeConnections.current = [
     { id: 'exc_1', exchange: 'binance', lastSyncAt: undefined },
@@ -436,6 +439,34 @@ beforeEach(() => {
 });
 
 describe('ConnectionDetail — wallet kind', () => {
+  it('matches Dashboard visibility for positive authority with exact asset-level high-confidence spam', () => {
+    const address = '0xabc';
+    const contract = '0x1111111111111111111111111111111111111111';
+    const now = Date.now();
+    const scopeId = `wallet:${canonicalWalletIdentity('ethereum', address)}`;
+    authority(scopeId, `ethereum:${address}`, 'wallet', 'rpc', now, [
+      { asset: 'TOK', quantity: 5, chain: 'ethereum', contractAddress: contract }
+    ]);
+    mocks.safetyDecisions.current = [{
+      subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam',
+      updatedAt: now, origin: 'automatic', evidenceIds: ['evidence']
+    }];
+    mocks.lookupRows.current = [{ id: `ethereum:${address}`, chain: 'ethereum', address, lastSyncedAt: now }];
+    const card = walletCard({
+      id: `wallet:ethereum:${address}`,
+      title: 'Ethereum wallet',
+      walletRows: [{
+        id: `ethereum:${address}`, chain: 'ethereum', address,
+        label: 'Ethereum wallet', lastSyncedAt: now, txCount: 0
+      }]
+    });
+
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+
+    expect(screen.queryByText('TOK')).not.toBeInTheDocument();
+    expect(screen.getByTestId('detail-empty-balances')).toBeInTheDocument();
+  });
+
   function seedWalletScene() {
     mocks.txs.current = [
       makeTx({ id: 't1', type: 'transfer_in', asset: 'BTC', amount: 0.5, chain: 'bitcoin', walletAddress: 'bc1qaaa1111111111111', source: 'rpc:blockstream' }),
@@ -486,7 +517,7 @@ describe('ConnectionDetail — wallet kind', () => {
     ];
   }
 
-  it('renders header facts, count chips, per-address holdings and the total', () => {
+  it('renders header facts, positive per-address holdings, local zero visibility and the total', async () => {
     seedWalletScene();
     render(<ConnectionDetail card={walletCard()} onBack={() => {}} />);
 
@@ -504,11 +535,10 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(within(chips).getByText('3 transfers')).toBeInTheDocument();
     expect(within(chips).getByText('1 trade')).toBeInTheDocument();
 
-    // Two address groups (>1 address → sub-group headers).
+    // Positive custody is shown by default; the confirmed-zero address remains
+    // reachable through this component's local visibility control.
     const groups = screen.getAllByTestId('detail-address-group');
-    expect(groups).toHaveLength(2);
-    expect(within(groups[0]).getByText('bc1qaa…1111')).toBeInTheDocument();
-    expect(within(groups[1]).getByText('bc1qbb…2222')).toBeInTheDocument();
+    expect(groups).toHaveLength(1);
 
     // Group 1 (bc1qaaa): BTC 0.5 × 9,000,000 = ₹45,00,000; DOGE at cost
     // (per-unit ₹10 from t4); XYZ unpriced → '—' + disclosure.
@@ -521,8 +551,12 @@ describe('ConnectionDetail — wallet kind', () => {
     const xyzRow = within(g1).getByText('XYZ').closest('li')!;
     expect(xyzRow).toHaveTextContent('—');
 
-    // Group 2 (bc1qbbb): the confirmed-zero BTC row still renders at ₹0.
-    const zeroRow = within(groups[1]).getByText('BTC').closest('li')!;
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
+    const expandedGroups = screen.getAllByTestId('detail-address-group');
+    expect(expandedGroups).toHaveLength(2);
+    expect(within(expandedGroups[0]).getByText('bc1qaa…1111')).toBeInTheDocument();
+    expect(within(expandedGroups[1]).getByText('bc1qbb…2222')).toBeInTheDocument();
+    const zeroRow = within(expandedGroups[1]).getByText('BTC').closest('li')!;
     expect(zeroRow).toHaveTextContent('0');
     expect(zeroRow).toHaveTextContent('₹0.00');
 
@@ -531,9 +565,7 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(screen.getByTestId('detail-wallet-authority-status')).toHaveTextContent(
       'on-chain balances as of'
     );
-    expect(screen.queryByTestId('detail-wallet-fallback-status')).not.toBeInTheDocument();
-    expect(screen.getAllByTestId('detail-wallet-row-source').every((row) =>
-      row.textContent?.includes('Current on-chain balance'))).toBe(true);
+    expect(screen.queryByText(/estimated from ledger postings/i)).not.toBeInTheDocument();
     expect(screen.getByText('1 asset without a price — not in the total.')).toBeInTheDocument();
     expect(
       screen.getByText('Some assets valued at cost — no live price cached yet.')
@@ -567,7 +599,7 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹45,00,000.00');
   });
 
-  it('renders current exhaustive zero authority as a synced zero balance, not a sync prompt', () => {
+  it('renders current exhaustive zero authority as a synced hidden-zero group, not a sync prompt', async () => {
     const address = 'bc1qzero111111111111111';
     authority(
       `wallet:${canonicalWalletIdentity('bitcoin', address)}`,
@@ -585,9 +617,11 @@ describe('ConnectionDetail — wallet kind', () => {
 
     expect(screen.queryByText('No on-chain balances yet')).not.toBeInTheDocument();
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹0.00');
+    expect(screen.queryByText('BTC')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
     expect(screen.getByText('BTC').closest('li')).toHaveTextContent('0');
     expect(screen.getByTestId('detail-wallet-authority-status')).toHaveTextContent('on-chain balances as of');
-    expect(screen.getByTestId('detail-wallet-row-source')).toHaveTextContent('Current on-chain balance');
+    expect(screen.queryByText(/estimated from ledger postings/i)).not.toBeInTheDocument();
   });
 
   it('closes after the final represented wallet row is deleted and never syncs stale card rows', () => {
@@ -629,21 +663,9 @@ describe('ConnectionDetail — wallet kind', () => {
     const btcRow = screen.getByText('BTC').closest('li')!;
     expect(btcRow).toHaveTextContent('0.4');
     expect(btcRow).not.toHaveTextContent('9');
-    expect(within(btcRow).getByTestId('detail-wallet-row-source')).toHaveTextContent(
-      'Estimated from ledger postings'
-    );
-    expect(within(btcRow).getByTestId('detail-wallet-row-source')).toHaveTextContent(
-      'stale snapshot'
-    );
-    expect(screen.getByTestId('detail-wallet-fallback-status')).toHaveTextContent(
-      'Includes quantities estimated from ledger postings.'
-    );
-    expect(screen.getByTestId('detail-wallet-fallback-status')).toHaveTextContent(
-      'Reason: source balance is stale.'
-    );
-    expect(screen.getByTestId('detail-wallet-fallback-status')).toHaveTextContent(
-      'stale evidence and is not used as the quantity source'
-    );
+    expect(within(btcRow).queryByTestId('detail-wallet-row-source')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('detail-wallet-fallback-status')).not.toBeInTheDocument();
+    expect(screen.queryByText(/estimated from ledger postings/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/on-chain balances as of/)).not.toBeInTheDocument();
   });
 

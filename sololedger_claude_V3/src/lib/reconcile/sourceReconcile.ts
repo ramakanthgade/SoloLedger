@@ -1,4 +1,5 @@
 import type { Transaction } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import type { ExchangeBalanceRow } from '@/lib/storage/db';
 import type { DerivedPosting } from '@/lib/ledger/derivedPostings';
 import type {
@@ -77,7 +78,7 @@ export function ledgerImpliedQty(txs: Transaction[]): Map<string, number> {
   };
 
   for (const t of txs) {
-    if (t.isSpam) continue;
+    if (isTransactionExcluded(t)) continue;
     if (t.isInternalTransfer) continue;
     if (t.type === 'trade' && t.counterAsset && t.counterAmount != null) {
       add(t.asset, -Math.abs(t.amount));

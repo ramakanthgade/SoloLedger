@@ -48,7 +48,7 @@ function plural(count: number, noun: string): string {
 }
 
 /** Live-query and job orchestrator shared by all connection workspace tabs. */
-export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics, navigationIntent, onNavigationIntentAcknowledged, onNavigationTargetNotFound }: {
+export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics, navigationIntent, onNavigationIntentAcknowledged, onNavigationTargetNotFound, onOpenDataHealth }: {
   card: ConnectionCardData;
   onBack: () => void;
   onImportFile?: () => void;
@@ -57,6 +57,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   navigationIntent?: SourceNavigationIntent;
   onNavigationIntentAcknowledged?: (id: string) => void;
   onNavigationTargetNotFound?: (id: string) => void;
+  onOpenDataHealth?: () => void;
 }) {
   const [snapshotNow, setSnapshotNow] = useState(Date.now);
   const [priceNow, setPriceNow] = useState(Date.now);
@@ -67,6 +68,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   const authoritySnapshotsQuery = useLiveQuery(() => db.authoritySnapshots.toArray(), []);
   const authorityAssetsQuery = useLiveQuery(() => db.authorityAssets.toArray(), []);
   const sourceCoverageQuery = useLiveQuery(() => db.sourceCoverage.toArray(), []);
+  const safetyDecisionsQuery = useLiveQuery(() => db.safetyDecisions.toArray(), []);
   const openingBalancesQuery = useLiveQuery(() => db.openingBalances.toArray(), []);
   const exchangeConnectionRowsQuery = useLiveQuery(() => db.exchangeConnections.toArray(), []);
   const liveWalletRows = useLiveQuery(() => db.lookupAddresses.toArray(), []);
@@ -78,11 +80,12 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   const authoritySnapshots = authoritySnapshotsQuery ?? NO_ROWS;
   const authorityAssets = authorityAssetsQuery ?? NO_ROWS;
   const sourceCoverage = sourceCoverageQuery ?? NO_ROWS;
+  const safetyDecisions = safetyDecisionsQuery ?? NO_ROWS;
   const openingBalances = openingBalancesQuery ?? NO_ROWS;
   const exchangeConnectionRows = exchangeConnectionRowsQuery ?? NO_ROWS;
   const workspaceReady = transactionsQuery !== undefined && authoritySnapshotsQuery !== undefined &&
     authorityAssetsQuery !== undefined && sourceCoverageQuery !== undefined && openingBalancesQuery !== undefined &&
-    exchangeConnectionRowsQuery !== undefined;
+    exchangeConnectionRowsQuery !== undefined && safetyDecisionsQuery !== undefined;
   const navigationReady = workspaceReady && (card.kind !== 'wallet' || liveWalletRows !== undefined);
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
@@ -104,7 +107,6 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
     () => exchangeConnectionRows.map(({ id, exchange }) => ({ id, exchange })),
     [exchangeConnectionRows]
   );
-  const cleanTransactions = useMemo(() => transactions.filter((transaction) => !transaction.isSpam), [transactions]);
   const representedWalletRows = useMemo(() => {
     if (card.kind !== 'wallet' || liveWalletRows == null) return undefined;
     const cardRowIds = new Set((card.walletRows ?? []).map((row) => row.id));
@@ -118,18 +120,19 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   }, [card.kind, onBack, representedWalletRows]);
   const preparedWorkspace = useMemo(() => workspaceReady ? prepareConnectionWorkspaceFromCard({
     card,
-    transactions: cleanTransactions,
+    transactions,
     exchangeConnections: redactedExchangeSources,
     openingBalances,
     snapshots: authoritySnapshots,
     assets: authorityAssets,
     sourceCoverage,
+    safetyDecisions,
     // Preparation caches only immutable posting/cost work; live authority
     // freshness is applied by buildPreparedConnectionWorkspace below.
     now: 0,
     liveWalletRows: representedWalletRows,
     metrics: workspaceMetrics
-  }) : undefined, [card, cleanTransactions, redactedExchangeSources, openingBalances, authoritySnapshots, authorityAssets, sourceCoverage, representedWalletRows, workspaceMetrics, workspaceReady]);
+  }) : undefined, [card, transactions, redactedExchangeSources, openingBalances, authoritySnapshots, authorityAssets, sourceCoverage, safetyDecisions, representedWalletRows, workspaceMetrics, workspaceReady]);
   const snapshot = useMemo(() => preparedWorkspace == null ? undefined :
     buildPreparedConnectionWorkspace(preparedWorkspace, snapshotNow),
   [preparedWorkspace, snapshotNow]);
@@ -389,7 +392,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
         {TABS.map((tab, index) => <button key={tab.id} ref={(element) => { tabRefs.current[index] = element; }} id={`connection-tab-${tab.id}`} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`connection-panel-${tab.id}`} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => selectWorkspaceTab(tab.id)} onKeyDown={(event) => onTabKeyDown(event, index)} className={`min-h-[44px] rounded-t-lg border-b-2 px-4 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${activeTab === tab.id ? 'border-primary text-primary' : 'border-transparent text-low hover:text-hi'}`}>{tab.label}</button>)}
       </div></div>
       {TABS.map((tab) => <div ref={(element) => { panelRefs.current[tab.id] = element; }} key={tab.id} id={`connection-panel-${tab.id}`} role="tabpanel" aria-labelledby={`connection-tab-${tab.id}`} hidden={activeTab !== tab.id} tabIndex={0}>
-        {activeTab === tab.id && (tab.id === 'overview' ? <><ConnectionOverview card={card} snapshot={snapshot} priceIndex={priceIndex} formatMoney={(value) => formatCurrency(value, currency)} syncing={syncing} syncDisabled={syncDisabled} onSync={() => void handleSync()} /><div className="mt-5"><ConnectionOpeningBalances snapshot={snapshot} openingBalances={openingBalances} /></div></> : <ConnectionSyncHistory snapshot={snapshot} />)}
+        {activeTab === tab.id && (tab.id === 'overview' ? <><ConnectionOverview card={card} snapshot={snapshot} priceIndex={priceIndex} formatMoney={(value) => formatCurrency(value, currency)} syncing={syncing} syncDisabled={syncDisabled} onSync={() => void handleSync()} onOpenDataHealth={onOpenDataHealth} /><div className="mt-5"><ConnectionOpeningBalances snapshot={snapshot} openingBalances={openingBalances} /></div></> : <ConnectionSyncHistory snapshot={snapshot} />)}
       </div>)}
     </div>
   );

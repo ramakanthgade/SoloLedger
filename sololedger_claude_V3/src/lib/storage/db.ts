@@ -18,6 +18,8 @@ import {
   walletAddressEquals
 } from '@/lib/ledger/chainNamespace';
 import { binanceApiIdentity, binanceEconomicKey } from './binanceEconomicDedup';
+import type { ProviderEvidenceRow, SafetyDecisionRow } from '@/lib/safety/types';
+import { transactionSafetySubject } from '@/lib/safety/assetSafety';
 
 function newSourceIncarnation(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -183,6 +185,8 @@ class SoloLedgerDB extends Dexie {
   authorityAssets!: Table<AuthorityAssetRow, string>;
   sourceCoverage!: Table<SourceCoverageRow, string>;
   openingBalances!: Table<OpeningBalanceRow, string>;
+  providerEvidence!: Table<ProviderEvidenceRow, string>;
+  safetyDecisions!: Table<SafetyDecisionRow, string>;
 
   constructor(name: string) {
     super(name);
@@ -441,6 +445,44 @@ class SoloLedgerDB extends Dexie {
         tx.table<CsvImportRow, string>('csvImports')
       );
     });
+    // v13: immutable provider safety evidence and reversible five-state decisions.
+    this.version(13).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName',
+      exchangeConnections: 'id, exchange, lastSyncAt',
+      walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset',
+      authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+      authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+      sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+      openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]',
+      providerEvidence: 'id, subjectKey, subjectKind, provider, ruleId, ruleVersion, confidence, observedAt, [subjectKey+provider]',
+      safetyDecisions: 'subjectKey, state, updatedAt, [state+updatedAt]'
+    }).upgrade(async (tx) => {
+      const decisions = tx.table<SafetyDecisionRow, string>('safetyDecisions');
+      const legacySpam = await tx.table<Transaction, string>('transactions').filter((row) => row.isSpam === true).toArray();
+      const migratedDecisions: SafetyDecisionRow[] = [];
+      await tx.table<Transaction, string>('transactions').toCollection().modify((row) => {
+        if (!row.isSpam) return;
+        const subjectKey = transactionSafetySubject(row);
+        row.safetySubjectKey = subjectKey;
+        row.safetyState = 'user_hidden';
+      });
+      for (const row of legacySpam) {
+        const subjectKey = transactionSafetySubject(row);
+        migratedDecisions.push({
+          subjectKey, state: 'user_hidden', updatedAt: row.timestamp,
+          origin: 'migration', reason: 'Migrated from legacy isSpam=true.'
+        });
+      }
+      if (migratedDecisions.length > 0) await decisions.bulkPut(migratedDecisions);
+    });
   }
 }
 
@@ -532,6 +574,29 @@ export async function saveSettings(settings: TaxSettings): Promise<void> {
   await db.settings.put({ id: 'singleton', ...settings });
 }
 
+export async function setTransactionSafetyVisibility(
+  transaction: Transaction,
+  visible: boolean,
+  updatedAt = Date.now()
+): Promise<void> {
+  const subjectKey = transactionSafetySubject(transaction);
+  const prior = await db.safetyDecisions.get(subjectKey);
+  const state = visible ? 'user_visible' as const : 'user_hidden' as const;
+  await db.transaction('rw', [db.transactions, db.safetyDecisions], async () => {
+    await db.safetyDecisions.put({
+      subjectKey, state, updatedAt, origin: 'user',
+      reason: visible ? 'User restored this item.' : 'User hid this item.',
+      evidenceIds: prior?.evidenceIds,
+      previousAutomaticState: visible && (prior?.state === 'high_confidence_spam' ||
+        transaction.safetyState === 'high_confidence_spam') ? 'high_confidence_spam' : undefined
+    });
+    await db.transactions.update(transaction.id, {
+      safetySubjectKey: subjectKey, safetyState: state,
+      isSpam: visible ? false : true
+    });
+  });
+}
+
 /**
  * Write the settings singleton ONLY when no row exists yet (first run for
  * this database). Returns true when the row was written. Never overwrites an
@@ -550,7 +615,7 @@ export async function seedSettingsIfAbsent(seed: TaxSettings): Promise<boolean> 
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.settings],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.providerEvidence, db.safetyDecisions, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -566,6 +631,8 @@ export async function clearAllData(): Promise<void> {
       await db.authorityAssets.clear();
       await db.sourceCoverage.clear();
       await db.openingBalances.clear();
+      await db.providerEvidence.clear();
+      await db.safetyDecisions.clear();
       // "Delete all data" promises to remove everything — reset settings to defaults too.
       await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
     }
@@ -587,6 +654,10 @@ export async function saveSpecIdHint(txId: string, preferredLotIds: string[]): P
 
 export function buildCurrentPriceCacheKey(asset: string, currency: string): string {
   return `spot:sym:${asset.toUpperCase()}:${currency.toUpperCase()}`;
+}
+
+export function buildCurrentContractPriceCacheKey(platform: string, contractAddress: string, currency: string): string {
+  return `spot:ctr:${platform.trim().toLowerCase()}:${contractAddress.trim().toLowerCase()}:${currency.toUpperCase()}`;
 }
 
 export function buildPriceCacheKey(

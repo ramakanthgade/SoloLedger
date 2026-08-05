@@ -20,6 +20,7 @@
  */
 
 import type { FlagReason, Transaction, TxType } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { reclassifiedOptionsPatch } from '@/lib/review/reclassification';
 
 /** Types that create a taxable disposal of the outgoing asset (display-level;
@@ -108,7 +109,7 @@ export function summarizeBulkTypeChange(
     if (t.fiatValue == null) missingFiat++;
     // The cost-basis engine skips internal-transfer / spam rows, so a type
     // change on them never affects taxable disposals or income.
-    if (t.isInternalTransfer || t.isSpam) continue;
+    if (t.isInternalTransfer || isTransactionExcluded(t)) continue;
     const wasDisposal = DISPOSAL_TYPES.has(t.type);
     if (!wasDisposal && newIsDisposal) disposalsCreated++;
     if (wasDisposal && !newIsDisposal) disposalsRemoved++;
@@ -269,6 +270,6 @@ export function initialBulkFlagsSelection(selectedTxs: Transaction[]): BulkFlags
     flags,
     hint,
     internal: selectedTxs.length > 0 && selectedTxs.every((t) => t.isInternalTransfer),
-    spam: selectedTxs.length > 0 && selectedTxs.every((t) => !!t.isSpam)
+    spam: selectedTxs.length > 0 && selectedTxs.every(isTransactionExcluded)
   };
 }

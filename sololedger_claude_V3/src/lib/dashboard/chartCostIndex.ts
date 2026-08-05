@@ -1,4 +1,5 @@
 import { resolveSolanaMintAddress } from '@/lib/assets/solanaMints';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 import { isDcaEscrowDeposit, isDcaFillTrade, buildPortfolioDcaContext } from '@/lib/portfolio/portfolioHoldings';
 import { collapseSolTxRows, isNativeSolAsset, isSolRentRefund } from '@/lib/portfolio/solBalance';
@@ -51,7 +52,7 @@ export function buildCustodyCostSamples(
   let mayContainSol = false;
   for (let index = 0; index < transactions.length; index++) {
     const transaction = transactions[index];
-    if (transaction.isSpam) {
+    if (isTransactionExcluded(transaction)) {
       if (!filtered) filtered = transactions.slice(0, index) as Transaction[];
       continue;
     }

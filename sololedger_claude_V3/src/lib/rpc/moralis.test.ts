@@ -61,6 +61,95 @@ describe('Moralis native transfer mapping', () => {
     ]);
     expect(rows.map((row) => row.txHash)).toEqual(['0xhash', '0xhash']);
   });
+
+  it('retains a fake outbound log for Spam review but marks it excluded and non-custodial', () => {
+    const [row] = moralisTxToRows({
+      ...txBase,
+      from_address: '0xattacker',
+      erc20_transfers: [{
+        token_name: 'Fake TOKEN', token_symbol: 'TOKEN', from_address: wallet,
+        to_address: '0xattacker', address: '0x2222222222222222222222222222222222222222',
+        value_formatted: '999', possible_spam: true, log_index: 7
+      }]
+    }, wallet, 'ETH', 'ethereum');
+    expect(row).toMatchObject({
+      type: 'transfer_out',
+      outboundInitiation: 'spoofed_outbound_log',
+      safetySubjectKey: 'event:ethereum:0xhash:0x2222222222222222222222222222222222222222:7:out'
+    });
+    expect(row.safetyState).toBeUndefined();
+    expect(row.raw?.safetyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: 'possible_spam', ruleVersion: '1', confidence: 0.95 }),
+      expect.objectContaining({ ruleId: 'spoofed_outbound_log', confidence: 1 })
+    ]));
+  });
+
+  it('keeps a wallet-initiated suspicious send as initiated custody evidence', () => {
+    const [row] = moralisTxToRows({
+      ...txBase, from_address: wallet, nonce: 5, expected_nonce: 5, initiator_address: wallet,
+      erc20_transfers: [{
+        token_name: 'Unknown', token_symbol: 'UNK', from_address: wallet,
+        to_address: '0xrecipient', address: '0x3333333333333333333333333333333333333333',
+        value_formatted: '1', possible_spam: true, log_index: 4
+      }]
+    }, wallet, 'ETH', 'ethereum');
+    expect(row).toMatchObject({ outboundInitiation: 'wallet_initiated' });
+    expect(row.safetyState).toBeUndefined();
+    expect(row.raw?.safetyEvidence).toEqual(expect.arrayContaining([
+      expect.objectContaining({ ruleId: 'possible_spam' })
+    ]));
+  });
+
+  it('does not prove a wallet-called-contract outbound without independent nonce proof', () => {
+    const [row] = moralisTxToRows({
+      ...txBase, from_address: wallet,
+      erc20_transfers: [{
+        token_name: 'Unknown', token_symbol: 'UNK', from_address: wallet,
+        to_address: '0xcontract', address: '0x3333333333333333333333333333333333333333',
+        value_formatted: '1', possible_spam: false, log_index: 5
+      }]
+    }, wallet, 'ETH', 'ethereum');
+    expect(row.outboundInitiation).toBe('unverified');
+  });
+
+  it('marks contradicted nonce proof as spoofed even when the top-level sender is the wallet', () => {
+    const [row] = moralisTxToRows({
+      ...txBase, from_address: wallet, initiator_address: wallet, nonce: 5, expected_nonce: 6,
+      erc20_transfers: [{
+        token_name: 'Unknown', token_symbol: 'UNK', from_address: wallet,
+        to_address: '0xcontract', address: '0x3333333333333333333333333333333333333333',
+        value_formatted: '1', possible_spam: false, log_index: 6
+      }]
+    }, wallet, 'ETH', 'ethereum');
+    expect(row.outboundInitiation).toBe('spoofed_outbound_log');
+  });
+
+  it('does not fabricate an exact safety subject when Moralis omits log_index', () => {
+    const [row] = moralisTxToRows({
+      ...txBase,
+      erc20_transfers: [{
+        token_name: 'Unknown', token_symbol: 'UNK', from_address: txBase.from_address,
+        to_address: wallet, address: '0x3333333333333333333333333333333333333333',
+        value_formatted: '1', possible_spam: true
+      }]
+    }, wallet, 'ETH', 'ethereum');
+    expect(row.safetySubjectKey).toBeUndefined();
+    expect(row.safetyState).toBeUndefined();
+    expect(row.raw?.safetyEvidence).toEqual([]);
+  });
+
+  it('keeps exact subjects separate across a multi-log receipt', () => {
+    const transfer = (log_index: number) => ({
+      token_name: 'Unknown', token_symbol: 'UNK', from_address: txBase.from_address,
+      to_address: wallet, address: '0x3333333333333333333333333333333333333333',
+      value_formatted: '1', possible_spam: true, log_index
+    });
+    const rows = moralisTxToRows({ ...txBase, erc20_transfers: [transfer(2), transfer(9)] }, wallet, 'ETH', 'ethereum');
+    expect(rows.map((row) => row.safetySubjectKey)).toEqual([
+      'event:ethereum:0xhash:0x3333333333333333333333333333333333333333:2:in',
+      'event:ethereum:0xhash:0x3333333333333333333333333333333333333333:9:in'
+    ]);
+  });
 });
 
 describe('fetchMoralisEvm pagination', () => {

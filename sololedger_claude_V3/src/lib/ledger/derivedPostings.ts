@@ -1,4 +1,5 @@
 import type { Transaction } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { binanceApiIdentity } from '@/lib/storage/binanceEconomicDedup';
 import { normalizeAssetSymbol, transactionLegAssetKey } from './assetKey';
 import { canonicalWalletAddress, canonicalWalletChainScope } from './chainNamespace';
@@ -324,7 +325,9 @@ function postingLegAssetKey(
 }
 
 function legsFor(transaction: Transaction, scope: AccountScopeResolution): PostingLeg[] {
-  if (transaction.isSpam) return [];
+  if (isTransactionExcluded(transaction) ||
+      (transaction.type === 'transfer_out' && transaction.outboundInitiation != null &&
+        transaction.outboundInitiation !== 'wallet_initiated')) return [];
   const legs: PostingLeg[] = [];
   if (transaction.type === 'fee') {
     const quantity = -Math.abs(transaction.amount);
@@ -412,7 +415,9 @@ function appendTransactionPostings(
   connectionById: ReadonlyMap<string, ExchangeSourceIdentity>,
   liveBinanceConnections: readonly ExchangeSourceIdentity[]
 ): void {
-  if (transaction.isSpam) return;
+  if (isTransactionExcluded(transaction) ||
+      (transaction.type === 'transfer_out' && transaction.outboundInitiation != null &&
+        transaction.outboundInitiation !== 'wallet_initiated')) return;
   const simpleManual = transaction.source === 'manual' && transaction.raw == null &&
     transaction.parserAccountClass == null &&
     transaction.deletedSourceEvidence == null && transaction.dedupMatchedApiRow == null &&

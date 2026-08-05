@@ -4,10 +4,10 @@ import type { DataHealthModel } from './dataHealthModel';
 import { DataHealthWorkspace } from './DataHealthWorkspace';
 
 const clean: DataHealthModel = {
-  summary: { sourceCount: 1, scopeCount: 1, assetCount: 1, actionSourceCount: 0, divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0, partialCoverage: 0, failedCoverage: 0, unknownCoverage: 0, openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0, reconciled: 1 },
+  summary: { sourceCount: 1, scopeCount: 1, assetCount: 1, actionSourceCount: 0, divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0, partialCoverage: 0, failedCoverage: 0, unknownCoverage: 0, openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0, negativePostingFallback: 0, reconciled: 1 },
   sources: [{
     id: 'manual', title: 'Manual entry', target: { kind: 'manual', singletonId: 'manual' },
-    axes: { divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0, partialCoverage: 0, failedCoverage: 0, unknownCoverage: 0, openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0, reconciled: 1 },
+    axes: { divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0, partialCoverage: 0, failedCoverage: 0, unknownCoverage: 0, openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0, negativePostingFallback: 0, reconciled: 1 },
     severity: 'clean', findings: []
   }]
 };
@@ -26,6 +26,26 @@ const actionableManual: DataHealthModel = {
     findings: [{
       key: 'manual-authority', severity: 'warning', remediation: 'add_timestamped_authority', scopeId: 'manual', accountClass: 'manual',
       intent: { destination: 'transactions', filter: { sourceTarget: { kind: 'manual', singletonId: 'manual' }, scopeId: 'manual' }, focus: 'filters' }
+    }]
+  }]
+};
+
+const negativeFallback: DataHealthModel = {
+  summary: { ...clean.summary, actionSourceCount: 1, negativePostingFallback: 1, reconciled: 0 },
+  sources: [{
+    ...clean.sources[0], id: 'exchange:x', title: 'Binance',
+    target: { kind: 'exchange', connectionId: 'x' }, severity: 'warning',
+    axes: { ...clean.sources[0].axes, negativePostingFallback: 1, reconciled: 0 },
+    findings: [{
+      key: 'negative-fallback', severity: 'warning', remediation: 'inspect_negative_posting_fallback',
+      scopeId: 'exchange:x', accountClass: 'spot', asset: 'BTC', assetKey: 'asset:BTC',
+      intent: {
+        destination: 'transactions', focus: 'filters',
+        filter: {
+          sourceTarget: { kind: 'exchange', connectionId: 'x' },
+          scopeId: 'exchange:x', accountClass: 'spot', assetKey: 'asset:BTC'
+        }
+      }
     }]
   }]
 };
@@ -57,6 +77,22 @@ const withDistinctClasses: DataHealthModel = {
 };
 
 describe('DataHealthWorkspace', () => {
+  it('shows negative fallback asset context and opens its exact transaction filters', () => {
+    const onNavigate = vi.fn();
+    render(<DataHealthWorkspace model={negativeFallback} onClose={vi.fn()} onNavigate={onNavigate} focusOnMount={false} />);
+
+    expect(screen.getByText('A posting-derived deficit is not current custody · BTC · spot account')).toBeInTheDocument();
+    expect(screen.getByText('1 posting-derived deficit')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Review the deficit transactions · BTC · spot account' }));
+    expect(onNavigate).toHaveBeenCalledWith(expect.objectContaining({
+      destination: 'transactions',
+      filter: expect.objectContaining({
+        sourceTarget: { kind: 'exchange', connectionId: 'x' },
+        scopeId: 'exchange:x', accountClass: 'spot', assetKey: 'asset:BTC'
+      })
+    }), expect.anything());
+  });
+
   it('renders loading, empty, clean, and live-updated actionable states', () => {
     const props = { onClose: vi.fn(), onNavigate: vi.fn(), focusOnMount: false };
     const view = render(<DataHealthWorkspace {...props} model={{ ...clean, sources: [], summary: { ...clean.summary, sourceCount: 0 } }} loading />);
