@@ -6,6 +6,7 @@ import type { Transaction } from '@/types/transaction';
 import {
   appendHoldingsProjection,
   buildHoldingsProjection,
+  countQuantityAuthorityIssues,
   type HoldingsProjectionInput
 } from './holdingsProjection';
 
@@ -94,6 +95,55 @@ describe('buildHoldingsProjection', () => {
     }));
     expect(zero.holdings).toEqual([]);
     expect(zero.slices[0]).toMatchObject({ quantity: 0, authorityQuantity: 0, verificationStatus: 'verified_authority' });
+  });
+
+  it('preserves negative verified authority for the liability projection path', () => {
+    const result = buildHoldingsProjection(input({
+      transactions: [apiTx()], snapshots: [snapshot()],
+      assets: [authorityAsset({ quantity: -7 })], coverage: [coverage()]
+    }));
+
+    expect(result.holdings).toEqual([
+      expect.objectContaining({ quantity: -7, verificationStatus: 'verified_authority' })
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('preserves negative reconstructed authority for the liability projection path', () => {
+    const csvSnapshot = snapshot({
+      authorityKind: 'csv', authorityClass: 'journal_final_balance', asOf: undefined,
+      endpointProof: proof({ authorityKind: 'csv', provider: 'binance_csv' })
+    });
+    const csvCoverage = coverage({
+      kind: 'csv', parserId: 'binance', supportedParser: true, declaredCompleteHistory: true,
+      requiredSheets: ['history'], presentSheets: ['history'], recognizedCount: 1, parsedCount: 1,
+      dedupedCount: 0, excludedCount: 0, skippedCount: 0, failedCount: 0
+    });
+    const result = buildHoldingsProjection(input({
+      transactions: [apiTx()], snapshots: [csvSnapshot],
+      assets: [authorityAsset({ quantity: -3 })], coverage: [csvCoverage]
+    }));
+
+    expect(result.holdings).toEqual([
+      expect.objectContaining({ quantity: -3, verificationStatus: 'reconstructed_authority' })
+    ]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('keeps authoritative negatives in chronological append projections', () => {
+    const first = apiTx({ id: 'first', timestamp: NOW - 2_000 });
+    const appended = apiTx({ id: 'appended', timestamp: NOW - 1_000 });
+    const authorityRows = [authorityAsset({ quantity: -2 })];
+    const previous = buildHoldingsProjection(input({
+      transactions: [first], snapshots: [snapshot()], assets: authorityRows, coverage: [coverage()]
+    }));
+    const nextInput = input({
+      transactions: [first, appended], snapshots: [snapshot()], assets: authorityRows, coverage: [coverage()]
+    });
+
+    expect(appendHoldingsProjection(previous, nextInput, appended)?.holdings).toEqual([
+      expect.objectContaining({ quantity: -2, verificationStatus: 'verified_authority' })
+    ]);
   });
 
   it('matches symbol-keyed Binance authority for routed assets in full and incremental projections', () => {
@@ -233,7 +283,7 @@ describe('buildHoldingsProjection', () => {
     ]);
   });
 
-  it('keeps manual holdings additive and preserves negative posting quantities', () => {
+  it('keeps manual holdings additive and classifies negative posting quantities as diagnostics', () => {
     const additive = buildHoldingsProjection(input({
       transactions: [apiTx(), tx({ id: 'manual', amount: 3 })], snapshots: [snapshot()],
       assets: [authorityAsset()], coverage: [coverage()]
@@ -243,7 +293,42 @@ describe('buildHoldingsProjection', () => {
     const negative = buildHoldingsProjection(input({
       transactions: [tx({ type: 'transfer_out', amount: 4 })]
     }));
-    expect(negative.holdings[0]).toMatchObject({ quantity: -4, amount: -4, costBasis: 0 });
+    expect(negative.holdings).toEqual([]);
+    expect(negative.diagnostics).toEqual([expect.objectContaining({
+      kind: 'negative_posting_quantity', quantity: -4, asset: 'BTC',
+      scopeId: 'manual', accountClass: 'manual'
+    })]);
+    expect(countQuantityAuthorityIssues(negative)).toBe(1);
+
+    const verifiedAlongsideDeficit = buildHoldingsProjection(input({
+      transactions: [apiTx(), tx({ id: 'manual-deficit', type: 'transfer_out', amount: 4 })],
+      snapshots: [snapshot()], assets: [authorityAsset()], coverage: [coverage()]
+    }));
+    expect(verifiedAlongsideDeficit.holdings.find((row) => row.assetKey === 'asset:BTC')?.quantity).toBe(7);
+    expect(verifiedAlongsideDeficit.diagnostics).toEqual([expect.objectContaining({ quantity: -4 })]);
+  });
+
+  it('does not collapse an exact event visibility decision into asset-wide authority visibility', () => {
+    const contract = '0x1111111111111111111111111111111111111111';
+    const walletTx = tx({
+      source: 'rpc:moralis', chain: 'ethereum', walletAddress: '0xabc', asset: 'TOK',
+      contractAddress: contract, safetySubjectKey: `event:ethereum:0xhash:${contract}:1:in`,
+      safetyState: 'user_visible'
+    });
+    const visible = buildHoldingsProjection(input({
+      exchangeConnections: [], transactions: [walletTx], safetyDecisions: [{
+        subjectKey: walletTx.safetySubjectKey!, state: 'user_hidden', updatedAt: NOW, origin: 'user'
+      }]
+    }));
+    expect(visible.holdings[0]).toMatchObject({ asset: 'TOK', safetyState: 'unverified' });
+
+    const hidden = buildHoldingsProjection(input({
+      exchangeConnections: [], transactions: [{ ...walletTx, safetyState: 'user_visible' }], safetyDecisions: [{
+        subjectKey: `asset:ethereum:${contract}`, state: 'user_hidden', updatedAt: NOW, origin: 'user'
+      }]
+    }));
+    expect(hidden.holdings).toEqual([]);
+    expect(hidden.allHoldings[0].safetyState).toBe('user_hidden');
   });
 
   it('preserves wallet contract identity, Base58 case, and native SOL separation', () => {
@@ -318,10 +403,8 @@ describe('buildHoldingsProjection', () => {
         contractAddress: usdcMint, feeAsset: 'SOL', raw: { feeMint: wrappedSolMint }
       })]
     }));
-    expect(result.holdings[0]).toMatchObject({
-      assetKey: `solana:${usdcMint}`, contractAddress: usdcMint, quantity: -1
-    });
-    expect(result.holdings[0].asset).not.toBe('SOL');
+    expect(result.holdings).toEqual([]);
+    expect(result.diagnostics[0]).toMatchObject({ assetKey: `solana:${usdcMint}`, quantity: -1 });
   });
 
   it('resolves a known Solana mint label while preserving its export identity', () => {
@@ -473,7 +556,7 @@ describe('buildHoldingsProjection', () => {
     expect(result.holdings[0]).toMatchObject({ quantity: 7, amount: 7, costBasis: 700 });
   });
 
-  it('preserves legacy canonical cost reduction across unresolved transaction scopes', () => {
+  it('keeps unresolved outbound slices diagnostic-only across transaction scopes', () => {
     const result = buildHoldingsProjection(input({
       exchangeConnections: [],
       transactions: [
@@ -483,12 +566,15 @@ describe('buildHoldingsProjection', () => {
       ]
     }));
     expect(result.holdings.find((holding) => holding.assetKey === 'asset:BTC')).toMatchObject({
-      quantity: 0.3, costBasis: 15_000
+      quantity: 0.5, costBasis: 25_000
     });
     expect(result.holdings.find((holding) => holding.assetKey === 'asset:ETH')).toMatchObject({
       quantity: 1, costBasis: 10_000
     });
-    expect(result.holdings.reduce((sum, holding) => sum + holding.costBasis, 0)).toBe(25_000);
+    expect(result.holdings.reduce((sum, holding) => sum + holding.costBasis, 0)).toBe(35_000);
+    expect(result.diagnostics).toEqual([
+      expect.objectContaining({ assetKey: 'asset:BTC', quantity: -0.2 })
+    ]);
   });
 
   it('uses the ordered single-pass cost path without changing unordered projection semantics', () => {
@@ -586,12 +672,9 @@ describe('buildHoldingsProjection', () => {
       asset: 'USDC', chain: 'solana', contractAddress: usdcMint
     });
     expect(incremental).toEqual(rebuilt);
-    expect(incremental?.holdings[0]).toMatchObject({
-      assetKey: `solana:${usdcMint}`,
-      asset: 'USDC',
-      chain: 'solana',
-      contractAddress: usdcMint,
-      quantity: -1
+    expect(incremental?.holdings).toEqual([]);
+    expect(incremental?.diagnostics[0]).toMatchObject({
+      assetKey: `solana:${usdcMint}`, quantity: -1
     });
   });
 

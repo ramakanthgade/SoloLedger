@@ -1,6 +1,7 @@
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { getCachedTokenSymbol } from '@/lib/assets/tokenSymbols';
+import type { SafetyState } from '@/lib/safety/types';
 
 /** Common ERC-20 stablecoin contracts (lowercase) → ticker. */
 const EVM_STABLE_CONTRACTS: Record<string, string> = {
@@ -17,7 +18,10 @@ const EVM_STABLE_CONTRACTS: Record<string, string> = {
 };
 
 /** Normalize asset ticker for price lookup (stable mints, cached symbols, etc.). */
-export function resolvePriceAsset(asset: string, contractAddress?: string, chain?: string): string {
+export function resolvePriceAsset(asset: string, contractAddress?: string, chain?: string, safetyState?: SafetyState): string {
+  // An unverified contract must never inherit a ticker price. Returning its
+  // exact normalized identity makes accidental symbol requests fail closed.
+  if (safetyState === 'unverified' && contractAddress) return contractAddress.trim().toLowerCase();
   if (contractAddress) {
     const evm = EVM_STABLE_CONTRACTS[contractAddress.toLowerCase()];
     if (evm) return evm;
@@ -36,4 +40,8 @@ export function resolvePriceAsset(asset: string, contractAddress?: string, chain
   const upper = asset.trim().toUpperCase();
   if (['USDC', 'USDT', 'DAI', 'BUSD', 'USDP', 'TUSD'].includes(upper)) return upper;
   return asset.trim();
+}
+
+export function canUseSymbolPrice(contractAddress: string | undefined, safetyState: SafetyState): boolean {
+  return !contractAddress || safetyState === 'trusted' || safetyState === 'user_visible';
 }

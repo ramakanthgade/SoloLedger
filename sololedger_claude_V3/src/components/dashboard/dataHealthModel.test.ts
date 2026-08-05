@@ -74,6 +74,34 @@ describe('buildDataHealthModel', () => {
       .toMatchObject({ destination: 'transactions', filter: { assetKey: 'asset:BTC', sourceTarget: { kind: 'csv', importId: 'csv' } } });
   });
 
+  it('turns negative posting fallback diagnostics into exact source and asset actions', () => {
+    const diagnosticSnapshot = snapshot([result({
+      scopeId: 'exchange:x', accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC'
+    })]);
+    diagnosticSnapshot.overview.diagnostics = [{
+      kind: 'negative_posting_quantity', assetKey: 'asset:BTC', asset: 'BTC',
+      scopeId: 'exchange:x', accountClass: 'spot', quantity: -2,
+      message: 'Negative posting-derived quantity is diagnostic evidence, not current positive custody.'
+    }];
+    const model = buildDataHealthModel([{
+      id: 'x', title: 'X', target: { kind: 'exchange', connectionId: 'x' },
+      snapshot: diagnosticSnapshot
+    }]);
+
+    expect(model.summary.negativePostingFallback).toBe(1);
+    expect(model.sources[0].findings).toContainEqual(expect.objectContaining({
+      remediation: 'inspect_negative_posting_fallback', asset: 'BTC', assetKey: 'asset:BTC',
+      scopeId: 'exchange:x', accountClass: 'spot',
+      intent: {
+        destination: 'transactions', focus: 'filters',
+        filter: {
+          sourceTarget: { kind: 'exchange', connectionId: 'x' },
+          scopeId: 'exchange:x', accountClass: 'spot', assetKey: 'asset:BTC'
+        }
+      }
+    }));
+  });
+
   it('counts asset-level non-comparable authority and filters from effective findings', () => {
     const model = buildDataHealthModel([{
       id: 'x', title: 'X', target: { kind: 'exchange', connectionId: 'x' },

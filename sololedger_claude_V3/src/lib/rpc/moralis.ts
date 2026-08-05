@@ -30,6 +30,8 @@ import {
 } from '@/lib/rpc/providers';
 import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 import { collectSequentialCursor } from '@/lib/rpc/pagination';
+import { eventSubjectKey } from '@/lib/safety/canonicalAssets';
+import { resolveOutboundInitiation } from '@/lib/safety/outboundInitiation';
 
 const MORALIS_BASE = 'https://deep-index.moralis.io/api/v2.2';
 
@@ -445,6 +447,8 @@ interface MoralisErc20Transfer {
   value_formatted: string;
   possible_spam: boolean;
   verified_contract?: boolean;
+  log_index?: number | string;
+  direction?: 'send' | 'receive';
 }
 
 export interface MoralisNativeTransfer {
@@ -470,6 +474,10 @@ export interface MoralisTransaction {
   nft_transfers: any[];
   from_address_label?: string;
   to_address_label?: string;
+  nonce?: string | number;
+  /** Independently normalized expected wallet nonce from initiation proof. */
+  expected_nonce?: string | number;
+  initiator_address?: string;
 }
 
 export function moralisTxToRows(
@@ -529,7 +537,39 @@ export function moralisTxToRows(
     const isReceive = t.to_address.toLowerCase() === walletLower;
     if (!isSend && !isReceive) continue;
 
-    const spamFlag = t.possible_spam;
+    const hasStableEventIndex = t.log_index != null && String(t.log_index).trim() !== '';
+    const outboundInitiation = isSend ? resolveOutboundInitiation({
+      watchedAddress: walletAddress,
+      transferFrom: t.from_address,
+      topLevelSender: mtx.from_address,
+      nonce: mtx.nonce,
+      expectedNonce: mtx.expected_nonce,
+      initiatorAddress: mtx.initiator_address
+    }) : 'unverified';
+    const subjectKey = hasStableEventIndex ? eventSubjectKey({
+      chain: chainId, txHash: mtx.hash, contractAddress: t.address,
+      eventIndex: t.log_index!, direction: isSend ? 'out' : 'in'
+    }) : undefined;
+    const observedAt = Number.isFinite(ts) ? ts : Date.now();
+    const safetyEvidence = [
+      ...(subjectKey && t.possible_spam ? [{
+        id: `moralis:possible_spam:1:${subjectKey}`,
+        provider: 'moralis', ruleId: 'possible_spam', ruleVersion: '1', confidence: 0.95,
+        observedAt, raw: { possible_spam: t.possible_spam, verified_contract: t.verified_contract,
+          token_name: t.token_name, token_symbol: t.token_symbol, token_logo: t.token_logo,
+          direction: t.direction, log_index: t.log_index }
+      }] : []),
+      ...(subjectKey && t.verified_contract != null ? [{
+        id: `moralis:verified_contract:1:${subjectKey}`,
+        provider: 'moralis', ruleId: 'verified_contract', ruleVersion: '1', confidence: 1,
+        observedAt, raw: { verified_contract: t.verified_contract }
+      }] : []),
+      ...(subjectKey && outboundInitiation === 'spoofed_outbound_log' ? [{
+        id: `sololedger:spoofed_outbound_log:1:${subjectKey}`,
+        provider: 'sololedger', ruleId: 'spoofed_outbound_log', ruleVersion: '1', confidence: 1,
+        observedAt, raw: { transfer_from: t.from_address, top_level_sender: mtx.from_address, nonce: mtx.nonce }
+      }] : [])
+    ];
     const txType: TxType =
       classified?.type === 'income' && isReceive
         ? 'income'
@@ -555,7 +595,9 @@ export function moralisTxToRows(
       notes: mtx.summary,
       flags: ['possible_internal_transfer', 'missing_market_value'] as FlagReason[],
       isInternalTransfer: false,
-      isSpam: spamFlag || undefined
+      safetySubjectKey: subjectKey,
+      outboundInitiation,
+      raw: { safetyEvidence }
     });
   }
 

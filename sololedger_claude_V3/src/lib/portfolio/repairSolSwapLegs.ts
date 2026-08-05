@@ -3,6 +3,7 @@
  * Uses Vite `/solana-rpc` on localhost (no API key / no SaaS login required).
  */
 import { db, mutateTransactionsAndReconcileCsv } from '@/lib/storage/db';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import type { Transaction } from '@/types/transaction';
 import { makeId } from '@/lib/parsers/types';
 import { isNativeSolAsset } from '@/lib/portfolio/solBalance';
@@ -37,7 +38,7 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
         t.chain === 'solana' &&
         !!t.sourceRef &&
         !!t.walletAddress &&
-        !t.isSpam &&
+        !isTransactionExcluded(t) &&
         !isNativeSolAsset(t.asset) &&
         (t.type === 'trade' || t.type === 'transfer_out')
     )
@@ -56,7 +57,7 @@ export async function repairMissingSolSwapLegs(_alchemyApiKey?: string): Promise
   }
 
   const allSolana = await db.transactions
-    .filter((t) => t.chain === 'solana' && !!t.sourceRef && !t.isSpam)
+    .filter((t) => t.chain === 'solana' && !!t.sourceRef && !isTransactionExcluded(t))
     .toArray();
 
   const solCovered = new Set<string>();
@@ -226,7 +227,7 @@ export async function repairUsdcOvercount(
         t.chain === 'solana' &&
         !!t.sourceRef &&
         !!t.walletAddress &&
-        !t.isSpam &&
+        !isTransactionExcluded(t) &&
         (t.asset.toUpperCase() === 'USDC' || t.counterAsset?.toUpperCase() === 'USDC')
     )
     .toArray();

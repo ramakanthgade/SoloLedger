@@ -1,10 +1,13 @@
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { commitCsvImportGeneration, db, DEFAULT_SETTINGS, getSettings } from '@/lib/storage/db';
+import { commitCsvImportGeneration, db, DEFAULT_SETTINGS, getSettings, setTransactionSafetyVisibility } from '@/lib/storage/db';
 import { createFullBackupPayload, importFullBackup } from '@/lib/storage/backup';
 import { selectAuthoritySnapshot } from '@/lib/reconcile/authoritySelection';
 import type { Transaction } from '@/types/transaction';
 import { buildCsvImportEvidenceGeneration } from '@/lib/parsers/importEvidence';
+import { filterRows, type RowFilterOptions } from '@/lib/review/reviewTableView';
+import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
+import { calculateCostBasis } from '@/lib/costBasis/engine';
 
 function makeTx(id: string, overrides: Partial<Transaction> = {}): Transaction {
   return {
@@ -60,6 +63,8 @@ async function clearDb() {
       db.authorityAssets,
       db.sourceCoverage,
       db.openingBalances,
+      db.providerEvidence,
+      db.safetyDecisions,
       db.settings
     ],
     async () => {
@@ -78,6 +83,8 @@ async function clearDb() {
         db.authorityAssets.clear(),
         db.sourceCoverage.clear(),
         db.openingBalances.clear(),
+        db.providerEvidence.clear(),
+        db.safetyDecisions.clear(),
         db.settings.clear()
       ]);
     }
@@ -96,6 +103,117 @@ describe('importFullBackup', () => {
     expect(imported).toBe(2);
     const stored = await db.transactions.toArray();
     expect(stored.map((t) => t.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('round-trips v4 provider evidence, all five states, and user-restore audit losslessly', async () => {
+    const spamSubject = 'event:ethereum:0xspam:0xdead:3:in';
+    await db.transactions.put(makeTx('safety-tx', {
+      chain: 'ethereum', txHash: '0xspam', contractAddress: '0xdead',
+      safetySubjectKey: spamSubject, safetyState: 'high_confidence_spam', isSpam: true
+    }));
+    await db.providerEvidence.put({
+      id: 'evidence:spam', subjectKey: spamSubject, subjectKind: 'event',
+      provider: 'moralis', ruleId: 'possible_spam', ruleVersion: '1',
+      confidence: 0.95, observedAt: 1_700_000_000_000,
+      raw: { possible_spam: true, unknown_provider_field: { retained: 7 } }
+    });
+    await db.safetyDecisions.bulkPut([
+      { subjectKey: 'asset:ethereum:native', state: 'trusted', updatedAt: 1, origin: 'automatic' },
+      { subjectKey: 'asset:ethereum:0xbeef', state: 'unverified', updatedAt: 3, origin: 'automatic' },
+      { subjectKey: 'event:ethereum:0xhidden:0xdead:1:out', state: 'user_hidden', updatedAt: 4, origin: 'user' },
+      {
+        subjectKey: 'event:ethereum:0xvisible:0xbeef:2:in', state: 'user_visible',
+        updatedAt: 5, origin: 'user'
+      },
+      {
+        subjectKey: spamSubject, state: 'high_confidence_spam', updatedAt: 2, origin: 'automatic',
+        evidenceIds: ['evidence:spam'], reason: 'Allowlisted provider evidence met the threshold.'
+      }
+    ]);
+
+    const payload = await createFullBackupPayload();
+    expect(payload.formatVersion).toBe(4);
+    await clearDb();
+    await importFullBackup(backupFile(payload));
+
+    expect((await db.safetyDecisions.toArray()).map((row) => row.state).sort()).toEqual([
+      'high_confidence_spam', 'trusted', 'unverified', 'user_hidden', 'user_visible'
+    ]);
+    expect(await db.safetyDecisions.get(spamSubject)).toMatchObject({
+      state: 'high_confidence_spam', origin: 'automatic', evidenceIds: ['evidence:spam']
+    });
+    expect(await db.providerEvidence.get('evidence:spam')).toMatchObject({
+      raw: { possible_spam: true, unknown_provider_field: { retained: 7 } }
+    });
+    const restoredHidden = (await db.transactions.get('safety-tx'))!;
+    expect(restoredHidden).toMatchObject({ safetyState: 'high_confidence_spam' });
+    const reviewOptions: RowFilterOptions = {
+      showSpam: false, showNeedsPrice: false, showNeedsReview: false,
+      assetFilter: 'all', typeFilter: 'all', flagFilter: 'all', walletFilter: 'all',
+      fyBounds: null, instrumentFilter: 'all', query: '',
+      isNeedsReview: () => false, isDerivative: () => false
+    };
+    expect(filterRows([restoredHidden], reviewOptions)).toEqual([]);
+    expect(filterRows([restoredHidden], { ...reviewOptions, showSpam: true })).toEqual([restoredHidden]);
+    expect(buildHoldingsProjection({
+      transactions: [restoredHidden], exchangeConnections: [], openingBalances: [],
+      snapshots: [], assets: [], coverage: [], now: Date.now()
+    }).holdings).toEqual([]);
+    expect(calculateCostBasis([restoredHidden], { method: 'FIFO' }).lots).toEqual([]);
+
+    await setTransactionSafetyVisibility(restoredHidden, true, 6);
+    const restoredVisible = (await db.transactions.get('safety-tx'))!;
+    expect(restoredVisible).toMatchObject({ safetyState: 'user_visible', isSpam: false });
+    expect(await db.safetyDecisions.get(spamSubject)).toMatchObject({
+      state: 'user_visible', origin: 'user', evidenceIds: ['evidence:spam'],
+      previousAutomaticState: 'high_confidence_spam'
+    });
+    expect(await db.providerEvidence.get('evidence:spam')).toBeDefined();
+    expect(filterRows([restoredVisible], reviewOptions)).toEqual([restoredVisible]);
+    expect(buildHoldingsProjection({
+      transactions: [restoredVisible], exchangeConnections: [], openingBalances: [],
+      snapshots: [], assets: [], coverage: [], now: Date.now()
+    }).holdings).toEqual([expect.objectContaining({ asset: 'BTC', quantity: 1 })]);
+    expect(calculateCostBasis([restoredVisible], { method: 'FIFO' }).lots).toHaveLength(1);
+  });
+
+  it.each([
+    ['malformed subject keys', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.providerEvidence[0].subjectKey = 'not-an-exact-subject';
+    }],
+    ['out-of-range confidence', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.providerEvidence[0].confidence = 1.01;
+    }],
+    ['missing evidence references', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.safetyDecisions[0].evidenceIds = ['missing-evidence'];
+    }],
+    ['cross-subject evidence references', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.safetyDecisions[0].subjectKey = 'asset:ethereum:0xbeef';
+    }],
+    ['nonallowlisted automatic evidence', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.providerEvidence[0].ruleVersion = 'revoked';
+    }],
+    ['contradictory transaction materialization', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.transactions[0].safetySubjectKey = payload.safetyDecisions[0].subjectKey;
+      payload.transactions[0].safetyState = 'user_visible';
+      payload.transactions[0].isSpam = false;
+    }]
+  ])('rejects v4 %s before destructive restore', async (_label, corrupt) => {
+    await db.transactions.put(makeTx('existing'));
+    await db.providerEvidence.put({
+      id: 'evidence:one', subjectKey: 'asset:ethereum:0xdead', subjectKind: 'asset',
+      provider: 'moralis', ruleId: 'possible_spam', ruleVersion: '1',
+      confidence: 0.95, observedAt: 1
+    });
+    await db.safetyDecisions.put({
+      subjectKey: 'asset:ethereum:0xdead', state: 'high_confidence_spam', updatedAt: 1,
+      origin: 'automatic', evidenceIds: ['evidence:one']
+    });
+    const payload = await createFullBackupPayload();
+    corrupt(payload);
+
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(/safety|evidence/i);
+    expect(await db.transactions.get('existing')).toBeDefined();
   });
 
   it('REPLACES existing data rather than merging', async () => {
@@ -245,7 +363,7 @@ describe('importFullBackup', () => {
     expect(await db.csvImports.count()).toBe(0);
   });
 
-  it('exports v3 source/evidence tables while recursively removing every credential class', async () => {
+  it('exports v4 source/evidence tables while recursively removing every credential class', async () => {
     await db.settings.put({
       id: 'singleton', ...DEFAULT_SETTINGS, alchemyApiKey: 'provider-secret',
       customExplorerApiKey: 'custom-secret', licenseKey: 'license-secret',
@@ -267,7 +385,7 @@ describe('importFullBackup', () => {
 
     const payload = await createFullBackupPayload();
     const serialized = JSON.stringify(payload);
-    expect(payload.formatVersion).toBe(3);
+    expect(payload.formatVersion).toBe(4);
     expect(payload.exchangeConnections[0]).toMatchObject({ id: 'source-1', exchange: 'binance', label: 'Safe label' });
     expect(payload.csvImports[0].id).toBe('csv-1');
     expect(payload.lookupAddresses[0].id).toBe('bitcoin:abc');

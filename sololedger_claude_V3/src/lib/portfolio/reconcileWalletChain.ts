@@ -3,6 +3,7 @@
  * Scans every signature for the wallet — works even when a swap was never imported.
  */
 import { db, getLookupAddresses, mutateTransactionsAndReconcileCsv } from '@/lib/storage/db';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { makeId } from '@/lib/parsers/types';
 import type { FlagReason, Transaction } from '@/types/transaction';
 import {
@@ -24,7 +25,7 @@ const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 function ledgerSolForSig(rows: Transaction[]): number {
   let sol = 0;
   for (const t of rows) {
-    if (t.isSpam) continue;
+    if (isTransactionExcluded(t)) continue;
     if (t.type === 'fee' && t.asset === 'SOL') {
       sol -= t.amount;
       continue;
@@ -48,7 +49,7 @@ function ledgerSolForSig(rows: Transaction[]): number {
 function ledgerUsdcForSig(rows: Transaction[]): number {
   let u = 0;
   for (const t of rows) {
-    if (t.isSpam) continue;
+    if (isTransactionExcluded(t)) continue;
     if (t.type === 'trade') {
       if (t.asset.toUpperCase() === 'USDC') u -= t.amount;
       if (t.counterAsset?.toUpperCase() === 'USDC') u += t.counterAmount ?? 0;
@@ -80,7 +81,7 @@ export async function reconcileSolanaWalletsFromChain(
   runTransactionMutation: TransactionMutationRunner = mutateTransactionsAndReconcileCsv
 ): Promise<WalletChainReconcileResult> {
   const wallets = (await getLookupAddresses()).filter((w) => w.chain === 'solana');
-  const allTxs = await db.transactions.filter((t) => t.chain === 'solana' && !t.isSpam).toArray();
+  const allTxs = await db.transactions.filter((t) => t.chain === 'solana' && !isTransactionExcluded(t)).toArray();
   const updates = new Map<string, Partial<Transaction>>();
   const inserts: Transaction[] = [];
   const deletionIds = new Set<string>();

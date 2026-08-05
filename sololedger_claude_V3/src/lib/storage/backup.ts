@@ -16,6 +16,9 @@ import {
 } from '@/lib/ledger/chainNamespace';
 import { assetKey as canonicalAssetKey } from '@/lib/ledger/assetKey';
 import { binanceApiIdentity } from './binanceEconomicDedup';
+import { isExcludedSafetyState, type ProviderEvidenceRow, type SafetyDecisionRow, type SafetyState } from '@/lib/safety/types';
+import { safetySubjectKind } from '@/lib/safety/canonicalAssets';
+import { qualifiesForAutomaticSpam } from '@/lib/safety/assetSafety';
 
 type SettingsBackup = Omit<TaxSettings,
   | 'alchemyApiKey' | 'coingeckoApiKey' | 'birdeyeApiKey' | 'novesApiKey'
@@ -56,7 +59,13 @@ export interface BackupFileV3 {
   settings: SettingsBackup;
 }
 
-type BackupFile = BackupFileV1V2 | BackupFileV3;
+export interface BackupFileV4 extends Omit<BackupFileV3, 'formatVersion'> {
+  formatVersion: 4;
+  providerEvidence: ProviderEvidenceRow[];
+  safetyDecisions: SafetyDecisionRow[];
+}
+
+type BackupFile = BackupFileV1V2 | BackupFileV3 | BackupFileV4;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value == null || Array.isArray(value)) return false;
@@ -135,25 +144,26 @@ function redactedCsvSource(row: CsvImportRow): CsvImportRow {
   };
 }
 
-/** Build a serializable v3 payload. Exported for deterministic backup tests. */
-export async function createFullBackupPayload(): Promise<BackupFileV3> {
+/** Build a serializable v4 payload. Exported for deterministic backup tests. */
+export async function createFullBackupPayload(): Promise<BackupFileV4> {
   const [
     transactions, lots, disposals, specIdHints, lookupAddresses, priceCache, csvImports,
     exchangeConnections, walletBalances, exchangeBalances, authoritySnapshots, authorityAssets,
-    sourceCoverage, openingBalances, settings
+    sourceCoverage, openingBalances, providerEvidence, safetyDecisions, settings
   ] = await Promise.all([
     db.transactions.toArray(), db.lots.toArray(), db.disposals.toArray(), db.specIdHints.toArray(),
     db.lookupAddresses.toArray(), db.priceCache.toArray(), db.csvImports.toArray(),
     db.exchangeConnections.toArray(), db.walletBalances.toArray(), db.exchangeBalances.toArray(),
     db.authoritySnapshots.toArray(), db.authorityAssets.toArray(), db.sourceCoverage.toArray(),
-    db.openingBalances.toArray(), getSettings()
+    db.openingBalances.toArray(), db.providerEvidence.toArray(), db.safetyDecisions.toArray(), getSettings()
   ]);
   return {
-    formatVersion: 3, exportedAt: new Date().toISOString(), transactions, lots, disposals,
+    formatVersion: 4, exportedAt: new Date().toISOString(), transactions, lots, disposals,
     specIdHints, lookupAddresses: lookupAddresses.map(redactedLookupSource), priceCache,
     csvImports: csvImports.map(redactedCsvSource),
     exchangeConnections: exchangeConnections.map(redactedExchangeSource), walletBalances,
     exchangeBalances, authoritySnapshots, authorityAssets, sourceCoverage, openingBalances,
+    providerEvidence, safetyDecisions,
     settings: safeSettings(settings)
   };
 }
@@ -177,15 +187,16 @@ function requireArray(p: Record<string, unknown>, key: string, optional = false)
 function assertValidBackup(parsed: unknown): asserts parsed is BackupFile {
   if (typeof parsed !== 'object' || parsed === null) throw new Error('Invalid backup file: not a JSON object.');
   const p = parsed as Record<string, unknown>;
-  if (p.formatVersion !== 1 && p.formatVersion !== 2 && p.formatVersion !== 3) {
+  if (p.formatVersion !== 1 && p.formatVersion !== 2 && p.formatVersion !== 3 && p.formatVersion !== 4) {
     throw new Error('Unrecognized backup format version. This file may be from a newer version of SoloLedger.');
   }
   for (const key of ['transactions', 'lots', 'disposals', 'specIdHints']) requireArray(p, key);
-  for (const key of ['lookupAddresses', 'priceCache', 'csvImports']) requireArray(p, key, p.formatVersion !== 3);
-  if (p.formatVersion === 3) {
+  for (const key of ['lookupAddresses', 'priceCache', 'csvImports']) requireArray(p, key, p.formatVersion !== 3 && p.formatVersion !== 4);
+  if (p.formatVersion === 3 || p.formatVersion === 4) {
     for (const key of ['exchangeConnections', 'walletBalances', 'exchangeBalances', 'authoritySnapshots',
       'authorityAssets', 'sourceCoverage', 'openingBalances']) requireArray(p, key);
   }
+  if (p.formatVersion === 4) for (const key of ['providerEvidence', 'safetyDecisions']) requireArray(p, key);
   if (typeof p.settings !== 'object' || p.settings === null) {
     throw new Error('Invalid backup file: "settings" is missing or malformed.');
   }
@@ -237,7 +248,7 @@ function assertApiTransactionMatchesConnection(
 }
 
 /** Validate identity, logical-key, and evidence references before any table is cleared. */
-function validateV3(payload: BackupFileV3): void {
+function validateV3(payload: BackupFileV3 | BackupFileV4): void {
   const transactionIds = unique(payload.transactions, 'id', 'transactions');
   const lotIds = unique(payload.lots, 'id', 'lots');
   unique(payload.disposals, 'id', 'disposals');
@@ -512,6 +523,71 @@ function validateV3(payload: BackupFileV3): void {
   }
 }
 
+const SAFETY_STATES = new Set<SafetyState>([
+  'trusted', 'high_confidence_spam', 'unverified', 'user_hidden', 'user_visible'
+]);
+
+function validateV4(payload: BackupFileV4): void {
+  validateV3(payload);
+  const evidenceIds = unique(payload.providerEvidence, 'id', 'providerEvidence');
+  unique(payload.safetyDecisions, 'subjectKey', 'safetyDecisions');
+  const evidenceById = new Map(payload.providerEvidence.map((row) => [row.id, row]));
+  const decisionBySubject = new Map(payload.safetyDecisions.map((row) => [row.subjectKey, row]));
+  for (const row of payload.providerEvidence) {
+    if (safetySubjectKind(row.subjectKey) !== row.subjectKind || !row.provider.trim() ||
+      !row.ruleId.trim() || !row.ruleVersion.trim() || !Number.isFinite(row.confidence) ||
+      row.confidence < 0 || row.confidence > 1 || !Number.isFinite(row.observedAt)) {
+      throw new Error('Invalid backup file: provider safety evidence is malformed.');
+    }
+  }
+  for (const row of payload.safetyDecisions) {
+    const linkedEvidence = (row.evidenceIds ?? []).flatMap((id) => {
+      const evidence = evidenceById.get(id);
+      return evidence ? [evidence] : [];
+    });
+    if (!safetySubjectKind(row.subjectKey) || !SAFETY_STATES.has(row.state) || !Number.isFinite(row.updatedAt) ||
+      !['automatic', 'user', 'migration'].includes(row.origin) ||
+      (row.evidenceIds != null && (!Array.isArray(row.evidenceIds) ||
+        row.evidenceIds.some((id) => typeof id !== 'string' || !evidenceIds.has(id)) ||
+        new Set(row.evidenceIds).size !== row.evidenceIds.length)) ||
+      (row.state === 'user_visible' && row.previousAutomaticState != null &&
+        row.previousAutomaticState !== 'high_confidence_spam') ||
+      (row.previousAutomaticState != null && row.origin !== 'user') ||
+      linkedEvidence.some((evidence) => evidence.subjectKey !== row.subjectKey) ||
+      (row.origin === 'automatic' && row.state === 'high_confidence_spam' &&
+        !linkedEvidence.some(qualifiesForAutomaticSpam)) ||
+      (row.origin === 'automatic' && row.state !== 'high_confidence_spam' && linkedEvidence.length > 0) ||
+      (row.origin === 'user' && !['trusted', 'user_hidden', 'user_visible'].includes(row.state)) ||
+      (row.origin === 'migration' && (row.state !== 'user_hidden' || linkedEvidence.length > 0)) ||
+      (row.previousAutomaticState === 'high_confidence_spam' &&
+        !linkedEvidence.some(qualifiesForAutomaticSpam))) {
+      throw new Error('Invalid backup file: safety decision or its audit references are malformed.');
+    }
+  }
+  for (const transaction of payload.transactions) {
+    if (!transaction.safetySubjectKey && transaction.safetyState != null) {
+      throw new Error('Invalid backup file: materialized transaction safety has no exact subject.');
+    }
+    if (!transaction.safetySubjectKey || transaction.safetyState == null) continue;
+    const decision = decisionBySubject.get(transaction.safetySubjectKey);
+    if (transaction.safetyState === 'high_confidence_spam' &&
+        (!decision || decision.state !== transaction.safetyState || decision.origin !== 'automatic')) {
+      throw new Error('Invalid backup file: transaction automatic safety disagrees with its decision graph.');
+    }
+    if ((transaction.safetyState === 'user_hidden' || transaction.safetyState === 'user_visible') &&
+        (!decision || decision.state !== transaction.safetyState ||
+          (decision.origin !== 'user' && decision.origin !== 'migration'))) {
+      throw new Error('Invalid backup file: transaction safety visibility disagrees with its decision graph.');
+    }
+    if (decision && decision.state !== transaction.safetyState) {
+      throw new Error('Invalid backup file: transaction safety materialization contradicts its decision.');
+    }
+    if (Boolean(transaction.isSpam) !== isExcludedSafetyState(transaction.safetyState)) {
+      throw new Error('Invalid backup file: legacy transaction spam materialization is inconsistent.');
+    }
+  }
+}
+
 export async function importFullBackup(file: File): Promise<{ imported: number }> {
   let parsed: unknown;
   try {
@@ -521,8 +597,10 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
   }
   assertValidBackup(parsed);
   if (parsed.formatVersion === 3) validateV3(parsed);
+  if (parsed.formatVersion === 4) validateV4(parsed);
 
-  const v3 = parsed.formatVersion === 3 ? parsed : undefined;
+  const v3 = parsed.formatVersion === 3 || parsed.formatVersion === 4 ? parsed : undefined;
+  const v4 = parsed.formatVersion === 4 ? parsed : undefined;
   const restoredAt = Date.now();
   const exchangeConnections = (v3?.exchangeConnections ?? []).map((row) => ({
     ...redactedExchangeSource(row), credentialsState: 'reauthorization_required' as const,
@@ -536,7 +614,8 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
   }));
   const tables = [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses,
     db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances,
-    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.settings];
+    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances,
+    db.providerEvidence, db.safetyDecisions, db.settings];
 
   await db.transaction('rw', tables, async () => {
     await Promise.all(tables.map((table) => table.clear()));
@@ -557,6 +636,8 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
     await db.authorityAssets.bulkPut(v3?.authorityAssets ?? []);
     await db.sourceCoverage.bulkPut(sourceCoverage);
     await db.openingBalances.bulkPut(v3?.openingBalances ?? []);
+    await db.providerEvidence.bulkPut(v4?.providerEvidence ?? []);
+    await db.safetyDecisions.bulkPut(v4?.safetyDecisions ?? []);
     await db.settings.put({ ...safeSettings(parsed.settings), id: 'singleton' });
     await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
   });

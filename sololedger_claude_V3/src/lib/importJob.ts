@@ -27,6 +27,7 @@ import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { canonicalWalletAddress, canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 import type { EndpointCoverageOutcome } from '@/lib/reconcile/sourceCoverage';
+import { materializeImportedTransactionSafety } from '@/lib/safety/assetSafety';
 
 // ---- State shape ----
 
@@ -358,7 +359,14 @@ async function runWalletImportCore(
     stagedCount = txsToStore.length;
     stagedIds = txsToStore.map((transaction) => transaction.id);
     if (txsToStore.length > 0) {
-      await db.transactions.bulkPut(txsToStore);
+      const materialized = materializeImportedTransactionSafety(txsToStore);
+      txsToStore = materialized.transactions;
+      const { providerEvidence, automaticDecisions } = materialized;
+      await db.transaction('rw', [db.transactions, db.providerEvidence, db.safetyDecisions], async () => {
+        await db.transactions.bulkPut(txsToStore);
+        if (providerEvidence.length > 0) await db.providerEvidence.bulkPut(providerEvidence);
+        if (automaticDecisions.length > 0) await db.safetyDecisions.bulkPut(automaticDecisions);
+      });
     }
   }
 
@@ -418,7 +426,7 @@ async function runWalletImportCore(
   );
 
   // --- Phase 2: Classification + DCA auto-detection ---
-  importJob._setPhase('classifying');
+importJob._setPhase('classifying');
   let swapsDetected = 0;
 
   if (txsToStore.length > 0) {

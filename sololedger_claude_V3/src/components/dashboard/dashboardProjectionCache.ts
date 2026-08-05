@@ -5,6 +5,7 @@ import {
   type HoldingsProjectionInput
 } from '@/lib/portfolio/holdingsProjection';
 import type { Transaction } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 function chronologicallyOrderedProjectionTransactions(transactions: Transaction[]): Transaction[] {
   for (let index = 1; index < transactions.length; index++) {
@@ -46,6 +47,8 @@ function transactionValueEqual(left: Transaction, right: Transaction): boolean {
     left.contractAddress === right.contractAddress && left.chain === right.chain &&
     left.txHash === right.txHash && left.notes === right.notes &&
     left.isInternalTransfer === right.isInternalTransfer && left.isSpam === right.isSpam &&
+    left.safetyState === right.safetyState && left.safetySubjectKey === right.safetySubjectKey &&
+    left.outboundInitiation === right.outboundInitiation &&
     left.category === right.category && left.instrumentClass === right.instrumentClass &&
     left.parserAccountClass === right.parserAccountClass && left.importBatchId === right.importBatchId &&
     Object.is(left.tdsAmount, right.tdsAmount) && left.tdsAsset === right.tdsAsset &&
@@ -94,9 +97,10 @@ export function createTransactionViewsProjector() {
       const inserted = insertion.transaction;
       let nonSpamInsertionIndex = 0;
       for (let index = 0; index < insertion.index; index++) {
-        if (!source[index].isSpam) nonSpamInsertionIndex += 1;
+        if (!isTransactionExcluded(source[index])) nonSpamInsertionIndex += 1;
       }
-      const nonSpam = inserted.isSpam
+      const excluded = isTransactionExcluded(inserted);
+      const nonSpam = excluded
         ? cached.nonSpam
         : [
             ...cached.nonSpam.slice(0, nonSpamInsertionIndex),
@@ -104,19 +108,17 @@ export function createTransactionViewsProjector() {
             ...cached.nonSpam.slice(nonSpamInsertionIndex)
           ];
       const lastProjected = cached.projection[cached.projection.length - 1];
-      const projection = inserted.isSpam
-        ? cached.projection
-        : lastProjected == null || lastProjected.timestamp < inserted.timestamp
+      const projection = lastProjected == null || lastProjected.timestamp < inserted.timestamp
           ? [...cached.projection, inserted]
-          : chronologicallyOrderedProjectionTransactions(nonSpam);
-      const appendProof = !inserted.isSpam && projection[projection.length - 1] === inserted
+          : chronologicallyOrderedProjectionTransactions([...source]);
+      const appendProof = projection[projection.length - 1] === inserted
         ? { previousProjection: cached.projection, transaction: inserted }
         : undefined;
       cached = { source, nonSpam, projection, appendProof };
       return cached;
     }
-    const nonSpam = source.filter((transaction) => !transaction.isSpam);
-    cached = { source, nonSpam, projection: chronologicallyOrderedProjectionTransactions(nonSpam) };
+    const nonSpam = source.filter((transaction) => !isTransactionExcluded(transaction));
+    cached = { source, nonSpam, projection: chronologicallyOrderedProjectionTransactions([...source]) };
     return cached;
   };
 }

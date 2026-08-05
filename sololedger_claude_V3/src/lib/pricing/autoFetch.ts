@@ -4,6 +4,7 @@
  * so it isn't duplicated.
  */
 import { db } from '@/lib/storage/db';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { fetchHistoricalPricesBatch } from './coingecko';
 import { convertTransactionsToReportingCurrency, normalizeFiatCurrency } from './fiatConvert';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
@@ -28,7 +29,7 @@ export function buildPriceRequestsForTransactions(
   settings: PricingSettings
 ): PriceRequestWithMeta[] {
   return transactions.map((t) => {
-    const priceAsset = resolvePriceAsset(t.asset, t.contractAddress, t.chain);
+    const priceAsset = resolvePriceAsset(t.asset, t.contractAddress, t.chain, t.safetyState);
     const stableCounter =
       t.type === 'trade' &&
       !!t.counterAsset &&
@@ -129,13 +130,13 @@ export async function fetchMissingPricesForAllTransactions(
 ): Promise<AutoFetchResult> {
   const all = await db.transactions.toArray();
   const needsPrice = all.filter((t) =>
-    t.fiatValue == null && !t.isSpam && !t.isInternalTransfer && requiresMarketValue(t)
+    t.fiatValue == null && !isTransactionExcluded(t) && !t.isInternalTransfer && requiresMarketValue(t)
   );
   const needsConversion = all.filter(
     (t) =>
       t.fiatValue != null &&
       Math.abs(t.fiatValue) > 1e-12 &&
-      !t.isSpam &&
+      !isTransactionExcluded(t) &&
       t.fiatCurrency.toUpperCase() !== settings.reportingCurrency.toUpperCase() &&
       normalizeFiatCurrency(t.fiatCurrency) !== settings.reportingCurrency.toUpperCase()
   );

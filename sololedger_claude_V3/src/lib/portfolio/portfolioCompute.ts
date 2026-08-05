@@ -16,6 +16,7 @@ import {
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
 import type { Transaction } from '@/types/transaction';
 import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 export interface PortfolioHolding {
   amount: number;
@@ -113,7 +114,7 @@ function applyTxToHoldings(
   tradeCoveredLegs: Set<string>,
   dcaCtx: { dcaFillIds: Set<string>; internalDepositIds: Set<string> }
 ) {
-  if (t.isSpam) return;
+  if (isTransactionExcluded(t)) return;
   if (isNativeSolAsset(t.asset) && t.type !== 'trade') return;
 
   const sourceKey = transactionSourceKey(t);
@@ -367,7 +368,7 @@ export function buildPortfolioHoldings(
     const solKey = `solana:mint:${solMint.toLowerCase()}`;
     const solCost = [...filteredTxs]
       .filter((t) => {
-        if (t.isSpam || (t.fiatValue ?? 0) <= 0) return false;
+        if (isTransactionExcluded(t) || (t.fiatValue ?? 0) <= 0) return false;
         if (isNativeSolAsset(t.asset) && t.type === 'buy') return true;
         return t.type === 'trade' && isNativeSolAsset(t.counterAsset);
       })

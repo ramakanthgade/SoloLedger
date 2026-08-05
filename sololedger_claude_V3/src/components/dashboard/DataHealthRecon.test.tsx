@@ -11,7 +11,7 @@ const emptyAggregateModel: DataHealthModel = {
     sourceCount: 0, scopeCount: 0, assetCount: 0, actionSourceCount: 0,
     divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0,
     partialCoverage: 0, failedCoverage: 0, unknownCoverage: 0,
-    openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0, reconciled: 0
+    openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0, negativePostingFallback: 0, reconciled: 0
   }
 };
 

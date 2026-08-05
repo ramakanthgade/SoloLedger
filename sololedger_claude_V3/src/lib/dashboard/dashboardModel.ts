@@ -14,6 +14,8 @@
  *    source — an estimate derived from transaction history, labeled as such.
  */
 import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
+import type { SafetyState } from '@/lib/safety/types';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import type { CsvImportRow, ExchangeBalanceRow, LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import type { ExchangeConnectionRow } from '@/lib/storage/db';
 import {
@@ -59,6 +61,8 @@ export interface PriceIndex {
   byContract: Map<string, PricePoint[]>;
   /** Current spot marks keyed by symbol. Kept separate from immutable history. */
   currentBySymbol: Map<string, PricePoint>;
+  /** Current exact-contract marks keyed by `${platform}:${contractLower}`. */
+  currentByContract: Map<string, PricePoint>;
 }
 
 export const CURRENT_PRICE_MAX_AGE_MS = 15 * 60_000;
@@ -75,6 +79,7 @@ export function buildPriceIndex(rows: PriceCacheRow[], currency: string): PriceI
   const bySymbol = new Map<string, PricePoint[]>();
   const byContract = new Map<string, PricePoint[]>();
   const currentBySymbol = new Map<string, PricePoint>();
+  const currentByContract = new Map<string, PricePoint>();
 
   for (const row of rows) {
     const parts = row.key.split(':');
@@ -87,6 +92,12 @@ export function buildPriceIndex(rows: PriceCacheRow[], currency: string): PriceI
       if (!Number.isFinite(row.price) || row.price <= 0) continue;
       if (Date.now() - row.fetchedAt > CURRENT_PRICE_MAX_AGE_MS) continue;
       currentBySymbol.set(parts[2].toUpperCase(), { dateMs: row.fetchedAt, price: row.price });
+      continue;
+    } else if (parts[0] === 'spot' && parts[1] === 'ctr' && parts.length === 5) {
+      if (parts[4].toUpperCase() !== cur) continue;
+      if (!Number.isFinite(row.price) || row.price <= 0) continue;
+      if (Date.now() - row.fetchedAt > CURRENT_PRICE_MAX_AGE_MS) continue;
+      currentByContract.set(`${parts[2]}:${parts[3].toLowerCase()}`, { dateMs: row.fetchedAt, price: row.price });
       continue;
     } else if (parts[0] === 'sym' && parts.length === 4) {
       if (parts[3].toUpperCase() !== cur) continue;
@@ -109,12 +120,12 @@ export function buildPriceIndex(rows: PriceCacheRow[], currency: string): PriceI
   for (const list of [...bySymbol.values(), ...byContract.values()]) {
     list.sort((a, b) => a.dateMs - b.dateMs);
   }
-  return { bySymbol, byContract, currentBySymbol };
+  return { bySymbol, byContract, currentBySymbol, currentByContract };
 }
 
 /** Daily-close history for a holding: contract-keyed first, symbol fallback. */
 export function priceHistoryFor(
-  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
+  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'> & { safetyState?: SafetyState },
   index: PriceIndex
 ): PricePoint[] | null {
   if (holding.contractAddress && holding.chain) {
@@ -124,18 +135,24 @@ export function priceHistoryFor(
       if (points && points.length > 0) return points;
     }
   }
-  const symbol = resolvePriceAsset(holding.asset, holding.contractAddress, holding.chain).toUpperCase();
+  const symbol = resolvePriceAsset(holding.asset, holding.contractAddress, holding.chain, holding.safetyState).toUpperCase();
   const points = index.bySymbol.get(symbol);
   return points && points.length > 0 ? points : null;
 }
 
 /** Current spot mark for a holding, separate from immutable historical closes. */
 export function currentPriceFor(
-  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'>,
+  holding: Pick<PortfolioHolding, 'asset' | 'contractAddress' | 'chain'> & { safetyState?: SafetyState },
   index: PriceIndex
 ): PricePoint | null {
-  if (holding.contractAddress && !isNativeSolHolding(holding)) return null;
-  const symbol = resolvePriceAsset(holding.asset, holding.contractAddress, holding.chain).toUpperCase();
+  if (holding.contractAddress && !isNativeSolHolding(holding)) {
+    if (holding.safetyState !== 'unverified' || !holding.chain) return null;
+    const platform = COINGECKO_PLATFORM[holding.chain as ChainId];
+    return platform
+      ? index.currentByContract.get(`${platform}:${holding.contractAddress.toLowerCase()}`) ?? null
+      : null;
+  }
+  const symbol = resolvePriceAsset(holding.asset, holding.contractAddress, holding.chain, holding.safetyState).toUpperCase();
   return index.currentBySymbol.get(symbol) ?? null;
 }
 
@@ -309,7 +326,7 @@ export function buildChartSeries(
   maxSamples = 72
 ): ChartPoint[] {
   const sorted = transactions
-    .filter((t) => !t.isSpam)
+    .filter((t) => !isTransactionExcluded(t))
     .slice()
     .sort((a, b) => a.timestamp - b.timestamp);
   if (sorted.length === 0 || end <= start) return [];
@@ -459,7 +476,7 @@ export function moneyStrip(
   const inRange = (ts: number) => ts >= start && ts <= end;
   const strip: MoneyStrip = { moneyIn: 0, moneyOut: 0, income: 0, fees: 0, realizedGains: 0 };
   for (const t of transactions) {
-    if (t.isSpam || !inRange(t.timestamp)) continue;
+    if (isTransactionExcluded(t) || !inRange(t.timestamp)) continue;
     // Premium cash flows are deferred until the Options lifecycle can be
     // matched (close/exercise/expiry). Do not mislabel them as income/fees.
     if (t.category === 'options_premium') continue;
@@ -708,7 +725,7 @@ export function sourceBreakdown(
   };
 
   for (const t of transactions) {
-    if (t.isSpam || pairedInternalIds.has(t.id)) continue;
+    if (isTransactionExcluded(t) || pairedInternalIds.has(t.id)) continue;
     const chainlessNativeSol = mergesChainlessNativeSol && !t.chain;
     if (holding.chain && t.chain !== holding.chain && !chainlessNativeSol) continue;
     if (
@@ -765,7 +782,7 @@ export function sourceBreakdown(
         t.source !== 'binance' ||
         !t.importBatchId ||
         !authoritativeBatches.has(t.importBatchId) ||
-        t.isSpam ||
+        isTransactionExcluded(t) ||
         pairedInternalIds.has(t.id) ||
         (t.isInternalTransfer &&
           (t.type === 'transfer_out' || t.type === 'sell' || t.type === 'gift_sent'))
@@ -1078,7 +1095,7 @@ export function reconcileHoldings(
     // counted here — filtering them out zeroed the holding (D-3).
     const chainMergedSol = holdingChainKey === 'solana' && isNativeSolAsset(h.asset);
     for (const t of transactions) {
-      if (t.isSpam || pairedInternalIds.has(t.id)) continue;
+      if (isTransactionExcluded(t) || pairedInternalIds.has(t.id)) continue;
       // Mirror buildPortfolioHoldings: unmatched internal transfer-outs never built qty
       // (except DCA escrow deposits — an edge case we don't replicate here).
       if (

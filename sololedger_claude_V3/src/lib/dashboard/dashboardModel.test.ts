@@ -9,6 +9,7 @@ import {
   buildPostingChartSeries,
   buildInsights,
   buildPriceIndex,
+  currentPriceFor,
   formatRelativeTime,
   itrDeadline,
   latestSyncAt,
@@ -87,6 +88,16 @@ describe('buildPriceIndex', () => {
     ], 'INR');
     expect(index.currentBySymbol.get('UNI')?.price).toBe(405);
     expect(index.bySymbol.get('UNI')?.map((point) => point.price)).toEqual([1_282.25]);
+  });
+
+  it('indexes current exact-contract marks by platform and ignores contract-as-symbol fallbacks', () => {
+    const index = buildPriceIndex([
+      priceRow('spot:ctr:ethereum:0xsame:USD', 10),
+      priceRow('spot:ctr:polygon-pos:0xsame:USD', 20),
+      priceRow('spot:sym:0XSAME:USD', 999)
+    ], 'USD');
+    expect(currentPriceFor({ asset: 'ONE', chain: 'ethereum', contractAddress: '0xsame', safetyState: 'unverified' }, index)?.price).toBe(10);
+    expect(currentPriceFor({ asset: 'TWO', chain: 'polygon', contractAddress: '0xsame', safetyState: 'unverified' }, index)?.price).toBe(20);
   });
 });
 

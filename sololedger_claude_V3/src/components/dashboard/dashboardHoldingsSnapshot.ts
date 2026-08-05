@@ -5,6 +5,7 @@ import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/au
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { HoldingsProjection, HoldingsProjectionInput } from '@/lib/portfolio/holdingsProjection';
 import type { Transaction } from '@/types/transaction';
+import type { SafetyDecisionRow } from '@/lib/safety/types';
 import type { TransactionViews } from './dashboardProjectionCache';
 
 export interface DashboardHoldingsSnapshot {
@@ -15,6 +16,7 @@ export interface DashboardHoldingsSnapshot {
   readonly authorityAssets: AuthorityAssetRow[];
   readonly sourceCoverage: SourceCoverageRow[];
   readonly openingBalances: OpeningBalanceRow[];
+  readonly safetyDecisions?: SafetyDecisionRow[];
 }
 
 /**
@@ -25,19 +27,19 @@ export interface DashboardHoldingsSnapshot {
 export async function readDashboardHoldingsSnapshot(): Promise<DashboardHoldingsSnapshot> {
   return db.transaction('r', [
     db.transactions, db.csvImports, db.exchangeConnections, db.authoritySnapshots,
-    db.authorityAssets, db.sourceCoverage, db.openingBalances
+    db.authorityAssets, db.sourceCoverage, db.openingBalances, db.safetyDecisions
   ], async () => {
     const [
       transactionCount, csvImports, exchangeConnections, authoritySnapshots,
-      authorityAssets, sourceCoverage, openingBalances
+      authorityAssets, sourceCoverage, openingBalances, safetyDecisions
     ] = await Promise.all([
       db.transactions.count(), db.csvImports.toArray(), db.exchangeConnections.toArray(),
       db.authoritySnapshots.toArray(), db.authorityAssets.toArray(),
-      db.sourceCoverage.toArray(), db.openingBalances.toArray()
+      db.sourceCoverage.toArray(), db.openingBalances.toArray(), db.safetyDecisions.toArray()
     ]);
     return {
       transactionCount, csvImports, exchangeConnections, authoritySnapshots,
-      authorityAssets, sourceCoverage, openingBalances
+      authorityAssets, sourceCoverage, openingBalances, safetyDecisions
     };
   });
 }
@@ -124,7 +126,8 @@ function canonicalSnapshot(
     authoritySnapshots: reuseLogicalArray(previous.authoritySnapshots, next.authoritySnapshots),
     authorityAssets: reuseLogicalArray(previous.authorityAssets, next.authorityAssets),
     sourceCoverage: reuseLogicalArray(previous.sourceCoverage, next.sourceCoverage),
-    openingBalances: reuseLogicalArray(previous.openingBalances, next.openingBalances)
+    openingBalances: reuseLogicalArray(previous.openingBalances, next.openingBalances),
+    safetyDecisions: reuseLogicalArray(previous.safetyDecisions ?? [], next.safetyDecisions ?? [])
   };
 }
 
@@ -151,7 +154,8 @@ export function createCoherentDashboardLedgerPublisher(
       openingBalances: acceptedSnapshot.openingBalances,
       snapshots: acceptedSnapshot.authoritySnapshots,
       assets: acceptedSnapshot.authorityAssets,
-      coverage: acceptedSnapshot.sourceCoverage
+      coverage: acceptedSnapshot.sourceCoverage,
+      safetyDecisions: acceptedSnapshot.safetyDecisions
     };
     lastCoherent = {
       transactionCount: snapshot.transactionCount,

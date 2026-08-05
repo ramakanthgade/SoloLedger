@@ -61,6 +61,7 @@ const SEED = vi.hoisted(() => {
     authoritySnapshots: [] as unknown[],
     authorityAssets: [] as unknown[],
     sourceCoverage: [] as unknown[],
+    safetyDecisions: [] as import('@/lib/safety/types').SafetyDecisionRow[],
     openingBalances: [] as unknown[]
   };
 });
@@ -98,6 +99,7 @@ vi.mock('@/lib/storage/db', () => ({
     authoritySnapshots: { toArray: () => SEED.authoritySnapshots },
     authorityAssets: { toArray: () => SEED.authorityAssets },
     sourceCoverage: { toArray: () => SEED.sourceCoverage },
+    safetyDecisions: { toArray: () => SEED.safetyDecisions },
     openingBalances: { toArray: () => SEED.openingBalances }
   },
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
@@ -123,6 +125,7 @@ vi.mock('./dashboardHoldingsSnapshot', async (importOriginal) => {
       authoritySnapshots: SEED.authoritySnapshots,
       authorityAssets: SEED.authorityAssets,
       sourceCoverage: SEED.sourceCoverage,
+      safetyDecisions: SEED.safetyDecisions,
       openingBalances: SEED.openingBalances
     })
   };
@@ -141,6 +144,7 @@ vi.mock('./useCoherentDataHealthSnapshot', () => {
         authoritySnapshots: SEED.authoritySnapshots,
         authorityAssets: SEED.authorityAssets,
         sourceCoverage: SEED.sourceCoverage,
+        safetyDecisions: SEED.safetyDecisions,
         openingBalances: SEED.openingBalances
       };
       return { snapshot: coherentSnapshot, updating: false };
@@ -228,6 +232,7 @@ beforeEach(() => {
   SEED.authoritySnapshots.length = 0;
   SEED.authorityAssets.length = 0;
   SEED.sourceCoverage.length = 0;
+  SEED.safetyDecisions.length = 0;
   SEED.openingBalances.length = 0;
   COST_BASIS_INPUTS.length = 0;
   QUERY_READINESS.coherentDataHealth = true;
@@ -411,20 +416,20 @@ describe('DashboardTab — hero honesty', () => {
   it('values everything at cost and says so when no prices are cached', async () => {
     await renderTab();
     const hero = screen.getByTestId('dashboard-hero');
-    // 0.3 BTC @ 15,000 + 2 ETH @ 10,000 + 500 DOGE @ 0 = ₹25,000 at cost.
+    // The unresolved outbound BTC slice is diagnostic-only: 0.5 BTC @ 25,000 + 2 ETH @ 10,000.
     expect(within(hero).getByText('Total value · at cost')).toBeInTheDocument();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹25,000.00');
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹35,000.00');
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-transaction-count',
       '4'
     );
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-net-worth',
-      '25000'
+      '35000'
     );
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-btc-quantity',
-      '0.3'
+      '0.5'
     );
     const deferredGeneration = screen.getByTestId('dashboard-deferred-generation');
     expect(deferredGeneration).toHaveAttribute(
@@ -471,10 +476,10 @@ describe('DashboardTab — hero honesty', () => {
     await renderTab();
     const hero = screen.getByTestId('dashboard-hero');
     expect(within(hero).getByText('Total net worth')).toBeInTheDocument();
-    // 0.3 BTC × 100,000 + 2 ETH × 6,000 + DOGE at cost 0 = ₹42,000.
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹42,000.00');
-    // Unrealized = 42,000 − 25,000 = +₹17,000 (stat + change caption).
-    expect(within(hero).getAllByText('+₹17,000.00').length).toBeGreaterThanOrEqual(1);
+    // 0.5 BTC × 100,000 + 2 ETH × 6,000 + DOGE at cost 0 = ₹62,000.
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹62,000.00');
+    // Unrealized = 62,000 − 35,000 = +₹27,000 (stat + change caption).
+    expect(within(hero).getAllByText('+₹27,000.00').length).toBeGreaterThanOrEqual(1);
     // DOGE has no stored price → honesty note counts it at cost.
     expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(/1 asset.*at cost/i);
   });
@@ -675,7 +680,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     fireEvent.click(btcToggle!);
     const expansion = screen.getByTestId('holding-expansion');
     expect(within(expansion).getByText('Where it lives')).toBeInTheDocument();
-    expect(within(expansion).getByText(/Unverified · estimated from ledger postings/)).toBeInTheDocument();
+    expect(within(expansion).queryByText(/estimated from ledger postings/i)).not.toBeInTheDocument();
     // BTC: 0.5 bought − 0.2 sold on Binance → 0.3 netted there.
     expect(within(expansion).getByText('Binance')).toBeInTheDocument();
     expect(within(expansion).getByText(/0\.30/)).toBeInTheDocument();
@@ -693,7 +698,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
-      expect(within(holdings).getAllByText(/6\.0000/).length).toBeGreaterThan(0);
+      expect(within(holdings).getAllByText(/10\.0000/).length).toBeGreaterThan(0);
       fireEvent.click(within(holdings).getAllByRole('button', { expanded: false })[0]);
       const positive = screen.getByTestId('source-allocation-manual:manual');
       const deficit = screen.getByTestId('source-allocation-unverified:wazirx:unknown');
@@ -701,9 +706,8 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       expect(deficit).toHaveTextContent('Deficit');
       expect(deficit).toHaveTextContent('-4.0000 BTC');
       expect(deficit).toHaveTextContent('28.6%');
-      expect(screen.getByTestId('source-allocation-caption')).toHaveTextContent(
-        'Shares use absolute quantities; deficits are negative source balances.'
-      );
+      expect(screen.queryByTestId('source-allocation-caption')).toBeNull();
+      expect(screen.getByTestId('quantity-authority-summary')).toHaveTextContent('quantity authority issue');
       expect(screen.getByTestId('source-allocation-bar-manual:manual')).toHaveStyle({
         width: `${(10 / 14) * 100}%`
       });
@@ -715,7 +719,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     }
   });
 
-  it('renders meaningful magnitude shares when every source slice is negative', async () => {
+  it('does not render all-negative posting-derived rows as current custody', async () => {
     const backup = [...SEED.txs];
     SEED.txs.length = 0;
     SEED.txs.push(
@@ -727,14 +731,101 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
-      expect(within(holdings).getAllByText(/-5\.0000/).length).toBeGreaterThan(0);
-      fireEvent.click(within(holdings).getAllByRole('button', { expanded: false })[0]);
-      const manual = screen.getByTestId('source-allocation-manual:manual');
-      const wazirx = screen.getByTestId('source-allocation-unverified:wazirx:unknown');
-      expect(manual).toHaveTextContent('Deficit');
-      expect(manual).toHaveTextContent('40.0%');
-      expect(wazirx).toHaveTextContent('Deficit');
-      expect(wazirx).toHaveTextContent('60.0%');
+      expect(within(holdings).getByText('No holdings yet — imports appear here.')).toBeInTheDocument();
+      expect(within(holdings).queryByText(/-5\.0000/)).not.toBeInTheDocument();
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
+  });
+
+  it('opens negative posting fallback diagnostics from the consolidated count in Data Health', async () => {
+    const backup = [...SEED.txs];
+    SEED.txs.length = 0;
+    SEED.txs.push({
+      id: 'manual-out', timestamp: Date.now() - 1, type: 'transfer_out', asset: 'BTC', amount: 2,
+      fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false
+    });
+    try {
+      await renderTab();
+      expect(screen.getByTestId('quantity-authority-summary')).toHaveTextContent('1 quantity authority issue');
+      fireEvent.click(screen.getByRole('button', { name: 'Review in Data Health →' }));
+      expect(screen.getByRole('heading', { name: 'Data Health' })).toBeInTheDocument();
+      fireEvent.click(screen.getByText('More actions (1)'));
+      expect(screen.getByRole('button', {
+        name: 'Review the deficit transactions · BTC · manual account'
+      })).toBeInTheDocument();
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
+  });
+
+  it('hides positive authority when its exact asset decision is high-confidence spam', async () => {
+    const contract = '0x1111111111111111111111111111111111111111';
+    const address = '0xabc';
+    const scopeId = `wallet:evm:${address}`;
+    const now = Date.now();
+    SEED.wallets.push({
+      id: `ethereum:${address}`, chain: 'ethereum', address, label: 'Test wallet',
+      lastSyncedAt: now, txCount: 0
+    });
+    SEED.authoritySnapshots.push({
+      snapshotId: 'wallet-spam-snapshot', generation: 1, scopeId,
+      authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet',
+      coveredAccountClasses: ['wallet'], asOf: now, capturedAt: now,
+      sourceIdentityId: `ethereum:${address}`, status: 'complete', endpointProof: {
+        authorityKind: 'rpc', provider: 'alchemy', operation: 'balance', parametersClass: 'wallet',
+        requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true
+      }
+    });
+    SEED.authorityAssets.push({
+      id: 'wallet-spam-asset', snapshotId: 'wallet-spam-snapshot', generation: 1, scopeId,
+      accountClass: 'wallet', assetKey: `evm:ethereum:${contract}`, asset: 'TOK', quantity: 5
+    });
+    SEED.sourceCoverage.push({
+      id: 'wallet-spam-coverage', generation: 1, scopeId,
+      sourceIdentityId: `ethereum:${address}`, evidenceId: 'wallet-spam-evidence', kind: 'rpc',
+      accountClasses: ['wallet'], endpoints: ['history'], authoritySnapshotId: 'wallet-spam-snapshot',
+      authorityAsOf: now, requestedHistoryStart: 0, requestedHistoryEnd: now,
+      observedHistoryStart: 0, observedHistoryEnd: now, startedAt: 0, completedAt: now,
+      status: 'complete', paginationExhausted: true, endpointOutcomes: [{
+        endpoint: 'history', accountClass: 'wallet', required: true, status: 'complete',
+        requestedStart: 0, requestedEnd: now, observedStart: 0, observedEnd: now,
+        paginationRequired: true, paginationExhausted: true
+      }]
+    });
+    SEED.safetyDecisions.push({
+      subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam',
+      updatedAt: now, origin: 'automatic', evidenceIds: ['evidence']
+    });
+
+    try {
+      await renderTab();
+      expect(within(screen.getByTestId('dashboard-holdings')).queryByText('TOK')).not.toBeInTheDocument();
+    } finally {
+      SEED.wallets.length = 0;
+    }
+  });
+
+  it('excludes high-confidence fake TOKEN activity and negative posting quantities from holdings and net worth', async () => {
+    const backup = [...SEED.txs];
+    SEED.txs.length = 0;
+    SEED.txs.push(
+      { id: 'real', timestamp: Date.now() - 3, type: 'buy', asset: 'GOOD', amount: 2,
+        fiatValue: 100, fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'fake-token', timestamp: Date.now() - 2, type: 'buy', asset: 'TOKEN', amount: 1_000_000,
+        fiatValue: 9_999_999, fiatCurrency: 'INR', source: 'rpc:moralis', chain: 'ethereum',
+        safetyState: 'high_confidence_spam', flags: [], isInternalTransfer: false } as never,
+      { id: 'negative-only', timestamp: Date.now() - 1, type: 'transfer_out', asset: 'NEG', amount: 50,
+        fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false }
+    );
+    try {
+      await renderTab();
+      const holdings = screen.getByTestId('dashboard-holdings');
+      expect(within(holdings).getAllByText('GOOD').length).toBeGreaterThan(0);
+      expect(within(holdings).queryByText('TOKEN')).not.toBeInTheDocument();
+      expect(within(holdings).queryByText('NEG')).not.toBeInTheDocument();
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹100.00');
+      expect(screen.getByText('Money in').parentElement).toHaveTextContent('₹100.00');
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...backup);
     }
@@ -762,7 +853,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       const expansion = screen.getByTestId('holding-expansion');
       expect(within(expansion).getByText('Binance Spot')).toBeInTheDocument();
       expect(within(expansion).getByText('Binance Options')).toBeInTheDocument();
-      expect(screen.getByTestId('holding-qty-caption')).toHaveTextContent('Partly verified');
+      expect(screen.queryByTestId('holding-qty-caption')).not.toBeInTheDocument();
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...backup);
       SEED.exchangeConns.length = 0;
@@ -803,9 +894,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       const expansion = screen.getByTestId('holding-expansion');
       expect(within(expansion).getByText('Binance Spot')).toBeInTheDocument();
       expect(within(expansion).getByText(/119\.5193 USDT/)).toBeInTheDocument();
-      expect(screen.getByTestId('holding-qty-caption')).toHaveTextContent(
-        'Verified from current source balances'
-      );
+      expect(screen.queryByTestId('holding-qty-caption')).not.toBeInTheDocument();
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...txBackup);
       SEED.exchangeBalanceRows.length = 0;
@@ -835,7 +924,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       const expansion = screen.getByTestId('holding-expansion');
       expect(within(expansion).getByText('Binance Spot')).toBeInTheDocument();
       expect(within(expansion).getByText('Manual entry')).toBeInTheDocument();
-      expect(screen.getByTestId('holding-qty-caption')).toHaveTextContent('Unverified');
+      expect(screen.queryByTestId('holding-qty-caption')).not.toBeInTheDocument();
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...backup);
       SEED.exchangeConns.length = 0;

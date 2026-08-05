@@ -77,6 +77,12 @@ export interface Transaction {
   flags: FlagReason[];
   isInternalTransfer: boolean;  // user-confirmed non-taxable transfer between own wallets
   isSpam?: boolean;             // user-confirmed spam/phishing — excluded from all calculations
+  /** Exact event subject used by the v13 safety resolver. */
+  safetySubjectKey?: string;
+  /** Materialized five-state result for deterministic offline calculation consumers. */
+  safetyState?: import('@/lib/safety/types').SafetyState;
+  /** Why an outbound-looking event was accepted or rejected as custody evidence. */
+  outboundInitiation?: import('@/lib/safety/outboundInitiation').OutboundInitiationState;
   category?: string;            // user-editable free-form tag
   /**
    * Spot vs derivatives (perps/futures). Set by exchange parsers (e.g. Hyperliquid).

@@ -90,7 +90,7 @@ describe('ConnectionOverview', () => {
     render(<ConnectionOverview card={{ ...card, kind: 'wallet' }} snapshot={walletSnapshot}
       priceIndex={buildPriceIndex([], 'INR')} formatMoney={(value) => `₹${value}`}
       syncing={false} syncDisabled={false} onSync={vi.fn()} />);
-    expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('2');
+    expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('1');
   });
 
   it('keeps a required dated starting balance accessible from Overview', () => {
@@ -149,7 +149,7 @@ describe('ConnectionOverview', () => {
         formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()} />
     );
 
-    expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('4');
+    expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('3');
     expect(screen.getAllByText('BTC')).toHaveLength(1);
     expect(screen.getAllByText('USD')).toHaveLength(2);
     expect(screen.getByText('Ethereum')).toBeInTheDocument();

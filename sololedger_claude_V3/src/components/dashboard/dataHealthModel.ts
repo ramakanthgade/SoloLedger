@@ -9,7 +9,7 @@ export interface DataHealthSourceInput { id: string; title: string; subtitle?: s
 export interface DataHealthAxisCounts {
   divergent: number; stale: number; missingAuthority: number; nonComparableAuthority: number;
   partialCoverage: number; failedCoverage: number; unknownCoverage: number; openingBalanceRequired: number;
-  unresolvedScope: number; deletedScope: number; reconciled: number;
+  unresolvedScope: number; deletedScope: number; negativePostingFallback: number; reconciled: number;
 }
 export interface DataHealthFinding {
   key: string; severity: ReconSeverity; remediation: string; scopeId: string; accountClass: string;
@@ -25,12 +25,13 @@ export interface DataHealthModel { sources: readonly DataHealthSource[]; summary
 const emptyCounts = (): DataHealthAxisCounts => ({
   divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0, partialCoverage: 0,
   failedCoverage: 0, unknownCoverage: 0, openingBalanceRequired: 0, unresolvedScope: 0,
-  deletedScope: 0, reconciled: 0
+  deletedScope: 0, negativePostingFallback: 0, reconciled: 0
 });
 const REMEDIATION_ORDER = [
   'reconnect_source', 'resolve_source_scope', 'capture_coherent_authority', 'retry_source_operation',
   'add_timestamped_authority', 'complete_source_history', 'establish_source_coverage',
-  'add_evidence_backed_opening_balance', 'inspect_evidence_history', 'refresh_authority', 'none'
+  'add_evidence_backed_opening_balance', 'inspect_negative_posting_fallback',
+  'inspect_evidence_history', 'refresh_authority', 'none'
 ];
 function findingOrder(left: DataHealthFinding, right: DataHealthFinding): number {
   return compareReconSeverity(left.severity, right.severity) || REMEDIATION_ORDER.indexOf(left.remediation) - REMEDIATION_ORDER.indexOf(right.remediation) || left.key.localeCompare(right.key);
@@ -162,6 +163,26 @@ function sourceFromInput(input: DataHealthSourceInput, owners: ReadonlyMap<strin
         authority: assetSpecificAuthority, coverage: result.coverageStatus === 'opening_balance_required', divergence: true
       });
     }
+  }
+  for (const diagnostic of input.snapshot.overview.diagnostics ?? []) {
+    if (owners.get(scopeKey(diagnostic.scopeId, diagnostic.accountClass)) !== input.id) continue;
+    const target = targetForScope(input, diagnostic.scopeId);
+    axes.negativePostingFallback++;
+    findings.push({
+      key: `diagnostic:${diagnostic.scopeId}:${diagnostic.accountClass}:${diagnostic.assetKey}:negative-posting-fallback`,
+      severity: 'warning',
+      remediation: 'inspect_negative_posting_fallback',
+      scopeId: diagnostic.scopeId,
+      accountClass: diagnostic.accountClass,
+      assetKey: diagnostic.assetKey,
+      asset: diagnostic.asset,
+      intent: transactionFilterIntent(
+        target,
+        diagnostic.scopeId,
+        diagnostic.accountClass,
+        diagnostic.assetKey
+      )
+    });
   }
   const unique = [...new Map(findings.map((finding) => [finding.key, finding])).values()].sort(findingOrder);
   return { id: input.id, title: input.title, subtitle: input.subtitle, target: input.target, axes, severity: unique[0]?.severity ?? 'clean', findings: unique, primaryFinding: unique[0] };

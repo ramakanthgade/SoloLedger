@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds } from '@/lib/storage/db';
+import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds, setTransactionSafetyVisibility } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -76,6 +76,7 @@ import { TransactionDetailPanel, type DetailTab } from './TransactionDetailPanel
 import { LotPicker } from './LotPicker';
 import { type TransactionNavigationIntent, type TransactionScopeFilter } from '@/lib/navigationIntent';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { hasDurableNavigationScope, resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
 
 const ALL_TYPES: TxType[] = [
@@ -202,6 +203,7 @@ export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; deriv
     : tx.flags ?? [];
   const storedFlags = new Set(localFlags);
   const shownFlags = displayFlags({ ...tx, flags: localFlags }, derivedFlags);
+  const spam = isTransactionExcluded(tx);
 
   const patch = async (update: Partial<Transaction>) => {
     setSaving(true);
@@ -239,7 +241,7 @@ export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; deriv
         className="flex min-h-[36px] max-w-[16rem] flex-wrap items-center gap-1 rounded-md px-0.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
       >
         {tx.isInternalTransfer && <Badge tone="neutral" className="text-[10px]">internal</Badge>}
-        {tx.isSpam && <Badge tone="loss" className="text-[10px]">spam</Badge>}
+        {spam && <Badge tone="loss" className="text-[10px]">spam</Badge>}
         {tx.category === 'nft' && <Badge tone="accent" className="text-[10px]">nft</Badge>}
         {shownFlags.map((f) => (
           <Badge
@@ -251,7 +253,7 @@ export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; deriv
             {f.replace(/_/g, ' ')}{!ALL_FLAGS.includes(f) && ' · automatic'}
           </Badge>
         ))}
-        {shownFlags.length === 0 && !tx.isInternalTransfer && !tx.isSpam && tx.category !== 'nft' && (
+        {shownFlags.length === 0 && !tx.isInternalTransfer && !spam && tx.category !== 'nft' && (
           <span className="text-[10px] text-faint">—</span>
         )}
         {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
@@ -294,11 +296,11 @@ export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; deriv
           </button>
           <button
             type="button"
-            aria-pressed={tx.isSpam === true}
-            onClick={() => void patch({ isSpam: !tx.isSpam })}
+            aria-pressed={spam}
+            onClick={() => void setTransactionSafetyVisibility(tx, spam)}
             className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3"
           >
-            {tx.isSpam ? '↩ Unmark spam' : '🚫 Mark as spam'}
+            {spam ? '↩ Restore visibility' : 'Hide as spam'}
           </button>
           <button
             type="button"
@@ -694,11 +696,11 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
   /** Tax-relevant rows missing historical fiat value; internal custody moves do not need basis. */
   const missingPriceTxs = useMemo(
-    () => transactions.filter((t) => !t.isSpam && !t.isInternalTransfer && t.fiatValue == null && requiresMarketValue(t)),
+    () => transactions.filter((t) => !isTransactionExcluded(t) && !t.isInternalTransfer && t.fiatValue == null && requiresMarketValue(t)),
     [transactions]
   );
 
-  const spamTxCount = useMemo(() => transactions.filter((t) => t.isSpam).length, [transactions]);
+  const spamTxCount = useMemo(() => transactions.filter(isTransactionExcluded).length, [transactions]);
 
   const rpcTransferCount = useMemo(
     () =>
@@ -1198,9 +1200,14 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     const sel = bulkFlagsSel;
     setApplyingBulk(true);
     try {
-      await Promise.all(
-        selectedTxs.map((t) => db.transactions.update(t.id, bulkFlagsPatch(t, sel)))
-      );
+      await Promise.all(selectedTxs.map(async (t) => {
+        const patch = bulkFlagsPatch(t, sel);
+        const { isSpam: nextSpam, ...nonSafetyPatch } = patch;
+        await db.transactions.update(t.id, nonSafetyPatch);
+        if (nextSpam !== isTransactionExcluded(t)) {
+          await setTransactionSafetyVisibility(t, !nextSpam);
+        }
+      }));
     } finally {
       setApplyingBulk(false);
       setBulkFlagsMenuOpen(false);
@@ -1248,7 +1255,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
         t.sourceRef ?? '',
         displayFlags(t, derivedFlagsByTxId.get(t.id)).join('|'),
         t.isInternalTransfer ? 'yes' : 'no',
-        t.isSpam ? 'yes' : 'no',
+        isTransactionExcluded(t) ? 'yes' : 'no',
         (t.notes ?? '')
       ].map((v) => csvField(String(v))).join(',');
     });
@@ -1422,7 +1429,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     const disposal = disposalByTxId.get(t.id);
     const isEditing = editingFiat === t.id;
     const expanded = expandedId === t.id;
-    const needsPrice = t.fiatValue == null && !t.isSpam && !t.isInternalTransfer && requiresMarketValue(t);
+    const needsPrice = t.fiatValue == null && !isTransactionExcluded(t) && !t.isInternalTransfer && requiresMarketValue(t);
     const derivedFlags = derivedFlagsByTxId.get(t.id) ?? [];
     const missingCostBasis = derivedFlags.includes('missing_cost_basis');
     const invalidTransactionData = derivedFlags.includes('invalid_transaction_data');
@@ -1433,7 +1440,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     const isSelected = selected.has(t.id);
     const timeUtc = new Date(t.timestamp).toISOString().slice(11, 16);
     const dateUtc = formatGroupDateLabel(new Date(t.timestamp).toISOString().slice(0, 10));
-    const spam = t.isSpam === true;
+    const spam = isTransactionExcluded(t);
     const resolveWallet = (addr: string) => walletLabelFor(walletLabels, t, addr);
     // Cost basis / gain only surface once the disposal is priced.
     const pricedDisposal = disposal && t.fiatValue != null ? disposal : null;

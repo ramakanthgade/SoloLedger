@@ -7,6 +7,7 @@ import { specIdStrategy } from './specId';
 import { makeId } from '@/lib/parsers/types';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 import { D, add, sub, mul, div, toNumber, isPositive, isDust } from './decimal';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 export type CostBasisMethod = 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
 
@@ -221,7 +222,7 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
 
   const byAsset = new Map<string, Transaction[]>();
   for (const tx of transactions) {
-    if (tx.isInternalTransfer || tx.isSpam || tx.type === 'transfer_in' || tx.type === 'transfer_out' || tx.type === 'fee') {
+    if (tx.isInternalTransfer || isTransactionExcluded(tx) || tx.type === 'transfer_in' || tx.type === 'transfer_out' || tx.type === 'fee') {
       continue; // non-taxable or excluded
     }
     if (!byAsset.has(tx.asset)) byAsset.set(tx.asset, []);

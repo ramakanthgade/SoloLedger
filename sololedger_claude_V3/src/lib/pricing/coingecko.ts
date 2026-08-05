@@ -258,6 +258,8 @@ export interface CurrentPriceResult {
   price: number | null;
   currency: string;
   error?: string;
+  /** Present only for exact-contract current price responses. */
+  platform?: string;
 }
 
 /** Batch current spot prices. This is valuation-only and never mutates tax rows. */
@@ -293,6 +295,38 @@ export async function fetchCurrentPrices(
     const error = err instanceof Error ? err.message : 'Network request failed.';
     return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error }));
   }
+}
+
+export interface CurrentContractPriceRequest {
+  contractAddress: string;
+  platform: string;
+}
+
+/** Current marks keyed by an exact contract address; never resolves by ticker. */
+export async function fetchCurrentContractPrices(
+  requests: CurrentContractPriceRequest[],
+  fiatCurrency: string,
+  coingeckoApiKey?: string
+): Promise<CurrentPriceResult[]> {
+  const currency = fiatCurrency.toLowerCase();
+  return Promise.all(requests.map(async ({ contractAddress, platform }) => {
+    const address = contractAddress.trim().toLowerCase();
+    try {
+      const base = coingeckoBase(coingeckoApiKey);
+      const url = `${base}/simple/token_price/${encodeURIComponent(platform)}?contract_addresses=${encodeURIComponent(address)}&vs_currencies=${encodeURIComponent(currency)}`;
+      const res = await fetchWithRetry(url, coingeckoHeaders(coingeckoApiKey));
+      if (!res.ok) {
+        return { asset: address, platform, price: null, currency: fiatCurrency, error: `Price API returned ${res.status} for contract lookup` };
+      }
+      const data = await res.json() as Record<string, Record<string, number | undefined> | undefined>;
+      return { asset: address, platform, price: data[address]?.[currency] ?? null, currency: fiatCurrency };
+    } catch (err) {
+      return {
+        asset: address, platform, price: null, currency: fiatCurrency,
+        error: err instanceof Error ? err.message : 'Network request failed.'
+      };
+    }
+  }));
 }
 
 export interface PriceLookupResult {

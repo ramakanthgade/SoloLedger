@@ -27,6 +27,7 @@
  * Pass 3: Helius SWAP imports — deposit + trade fills (no vault on fill counterparty).
  */
 import type { Transaction, FlagReason } from '@/types/transaction';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { db } from '@/lib/storage/db';
 import {
   fetchJupiterRecurringHistory,
@@ -312,7 +313,7 @@ export function detectDcaGroups(
   const groups: DcaGroup[] = [];
   const groupedDepositIds = new Set<string>();
   const groupedScopeKeys = new Set<string>();
-  const pool = transactions.filter((t) => !t.isSpam);
+  const pool = transactions.filter((t) => !isTransactionExcluded(t));
   const ownWallets = new Set(
     pool.flatMap((t) =>
       t.chain && t.walletAddress ? [canonicalWalletIdentity(t.chain, t.walletAddress)] : []

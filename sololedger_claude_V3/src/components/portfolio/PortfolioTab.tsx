@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
@@ -57,7 +58,7 @@ async function runPortfolioLedgerRepairs(): Promise<string> {
   const reconcile = await reconcileSolanaWalletsFromChain();
   await collapseDuplicateTradeTransferLegs();
   const all = await db.transactions.toArray();
-  const groups = detectDcaGroups(all.filter((t) => !t.isSpam));
+  const groups = detectDcaGroups(all.filter((t) => !isTransactionExcluded(t)));
   const needsDca = groups.some(
     (g) =>
       !g.depositTx.isInternalTransfer ||
@@ -118,81 +119,12 @@ function formatShare(sharePct: number | null): string {
   return `${sharePct.toFixed(1)}%`;
 }
 
-const QUANTITY_FALLBACK_REASON: Record<
-  NonNullable<ProjectedPortfolioHolding['sourceVerification'][number]['fallbackReason']>,
-  string
-> = {
-  stale_authority: 'stale authority',
-  incomplete_coverage: 'incomplete source coverage',
-  unresolved_scope: 'unresolved source',
-  missing_authority: 'no current authority',
-  non_comparable_authority: 'non-comparable authority',
-  source_deleted: 'deleted source'
-};
-
-function quantitySourceLabel(holding: ProjectedPortfolioHolding): {
-  status: string;
-  detail: string;
-  tone: string;
-} {
-  if (holding.verificationStatus === 'verified_authority') {
-    return {
-      status: 'Verified current authority',
-      detail: 'quantity source only',
-      tone: 'text-gain'
-    };
-  }
-  if (holding.verificationStatus === 'reconstructed_authority') {
-    return {
-      status: 'Reconstructed journal balance',
-      detail: 'quantity source only · not verified as a current balance',
-      tone: 'text-warn'
-    };
-  }
-  const reasons = Array.from(new Set(holding.sourceVerification.flatMap((source) =>
-    source.verificationStatus === 'posting_fallback' && source.fallbackReason
-      ? [QUANTITY_FALLBACK_REASON[source.fallbackReason]]
-      : []
-  )));
-  const reason = reasons.length > 0 ? reasons.join(', ') : 'no current authority';
-  const hasVerified = holding.sourceVerification.some((source) => source.verificationStatus === 'verified_authority');
-  const hasReconstructed = holding.sourceVerification.some((source) =>
-    source.verificationStatus === 'reconstructed_authority');
-  const hasPostingFallback = holding.sourceVerification.some((source) =>
-    source.verificationStatus === 'posting_fallback');
-  return holding.verificationStatus === 'mixed'
-    ? {
-        status: hasVerified ? 'Partly verified' : 'Mixed quantity sources',
-        detail: hasReconstructed && !hasPostingFallback
-          ? 'quantity source only · remainder reconstructed from journals · not verified current'
-          : hasReconstructed
-            ? `quantity source only · remainder reconstructed or posting-derived · ${reason}`
-            : `quantity source only · remainder posting-derived · ${reason}`,
-        tone: 'text-warn'
-      }
-    : {
-        status: 'Unverified posting-derived',
-        detail: `quantity source only · ${reason}`,
-        tone: 'text-low'
-      };
-}
-
-function QuantitySourceIndicator({ holding }: { holding: ProjectedPortfolioHolding }) {
-  const source = quantitySourceLabel(holding);
-  return (
-    <p className="mt-1 text-[0.6875rem] leading-snug text-faint" data-testid="holding-quantity-source">
-      <span className={cn('font-semibold', source.tone)}>{source.status}</span>
-      {' · '}{source.detail}
-    </p>
-  );
-}
-
 /** Aggregate one exact authority scope without re-running transaction quantity arithmetic. */
 function holdingsForProjectionScope(
   projection: HoldingsProjection,
   scopeId: string
 ): ProjectedPortfolioHolding[] {
-  const displayByAsset = new Map(projection.holdings.map((holding) => [holding.assetKey, holding]));
+  const displayByAsset = new Map(projection.allHoldings.map((holding) => [holding.assetKey, holding]));
   const quantities = new Map<string, number>();
   for (const slice of projection.slices) {
     if (slice.scopeId !== scopeId) continue;
@@ -213,9 +145,11 @@ function holdingsForProjectionScope(
       chain: display?.chain ?? (assetKey.startsWith('solana:') ? 'solana' : undefined),
       contractAddress: display?.contractAddress ?? solanaContract,
       verificationStatus: display?.verificationStatus ?? 'posting_fallback',
-      sourceVerification: display?.sourceVerification ?? []
+      sourceVerification: display?.sourceVerification ?? [],
+      safetyState: display?.safetyState ?? 'unverified' as const
     };
-  }).filter((holding) => holding.quantity !== 0);
+  }).filter((holding) => holding.quantity > 0 && holding.safetyState !== 'high_confidence_spam' &&
+    holding.safetyState !== 'user_hidden');
 }
 
 export function PortfolioTab() {
@@ -298,7 +232,7 @@ export function PortfolioTab() {
   };
 
   const nonSpamTxs = useMemo(
-    () => transactions.filter((t) => !t.isSpam),
+    () => transactions.filter((t) => !isTransactionExcluded(t)),
     [transactions]
   );
 
@@ -425,7 +359,7 @@ export function PortfolioTab() {
   };
 
   const filteredTxs = useMemo(() => {
-    let txs = transactions.filter((t) => !t.isSpam);
+    let txs = transactions.filter((t) => !isTransactionExcluded(t));
     if (selectedWallet !== ALL_WALLETS)
       txs = txs.filter((t) => t.walletAddress != null &&
         canonicalWalletIdentity(t.chain ?? '', t.walletAddress) === selectedWallet);
@@ -939,7 +873,6 @@ export function PortfolioTab() {
                             {h.chain && (
                               <p className="text-xs capitalize text-low">{h.chain}</p>
                             )}
-                            <QuantitySourceIndicator holding={h} />
                           </div>
                         </div>
                       </td>
@@ -997,7 +930,6 @@ export function PortfolioTab() {
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-sm font-semibold text-hi">{label}</p>
                       {h.chain && <p className="text-xs capitalize text-low">{h.chain}</p>}
-                      <QuantitySourceIndicator holding={h} />
                     </div>
                     <p className="text-sm font-semibold tabular-figures text-hi">
                       {formatCurrency(h.costBasis, reportingCurrency)}

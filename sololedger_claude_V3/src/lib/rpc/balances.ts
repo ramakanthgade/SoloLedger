@@ -18,6 +18,7 @@
  *  - A fetch failure NEVER touches previously stored balances and never
  *    fails the surrounding sync — the caller gets a per-address failure.
  */
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import {
   appendFailedWalletBalanceCoverage,
   commitWalletBalanceOperation,
@@ -458,7 +459,7 @@ async function txHistoryZeroFill(
   );
   const txs = await db.transactions
     .filter((t) => t.chain === chain && t.walletAddress != null &&
-      canonicalWalletAddress(chain, t.walletAddress) === canonicalAddress && !t.isSpam)
+      canonicalWalletAddress(chain, t.walletAddress) === canonicalAddress && !isTransactionExcluded(t))
     .toArray();
   const unresolved = new Set(unresolvedContracts.map((contract) => contract.toLowerCase()));
   const candidates = new Map<string, { asset: string; contractAddress?: string; nft: boolean }>();
