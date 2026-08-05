@@ -62,6 +62,8 @@ const SEED = vi.hoisted(() => {
     authorityAssets: [] as unknown[],
     sourceCoverage: [] as unknown[],
     safetyDecisions: [] as import('@/lib/safety/types').SafetyDecisionRow[],
+    defiPositionSnapshots: [] as import('@/lib/defi/types').DefiPositionSnapshot[],
+    defiPositionRows: [] as import('@/lib/defi/types').DefiPositionRow[],
     openingBalances: [] as unknown[]
   };
 });
@@ -126,6 +128,8 @@ vi.mock('./dashboardHoldingsSnapshot', async (importOriginal) => {
       authorityAssets: SEED.authorityAssets,
       sourceCoverage: SEED.sourceCoverage,
       safetyDecisions: SEED.safetyDecisions,
+      defiPositionSnapshots: SEED.defiPositionSnapshots,
+      defiPositionRows: SEED.defiPositionRows,
       openingBalances: SEED.openingBalances
     })
   };
@@ -233,6 +237,8 @@ beforeEach(() => {
   SEED.authorityAssets.length = 0;
   SEED.sourceCoverage.length = 0;
   SEED.safetyDecisions.length = 0;
+  SEED.defiPositionSnapshots.length = 0;
+  SEED.defiPositionRows.length = 0;
   SEED.openingBalances.length = 0;
   COST_BASIS_INPUTS.length = 0;
   QUERY_READINESS.coherentDataHealth = true;
@@ -498,6 +504,30 @@ describe('DashboardTab — hero honesty', () => {
 });
 
 describe('DashboardTab — header, money strip and tax rail', () => {
+  it('does not fall back to raw custody total when a known DeFi liability is unpriced', async () => {
+    const scope = `wallet:evm:0x${'1'.repeat(40)}`;
+    const reserve = `0x${'2'.repeat(40)}`;
+    const token = (contractAddress: string, symbol: string) => ({ chainId: 1 as const, contractAddress, symbol, decimals: 6 });
+    SEED.defiPositionSnapshots.push({
+      snapshotId: 'unpriced-debt-snapshot', generation: 1, accountIdentityScope: scope,
+      protocolId: 'aave-v3-ethereum', chainId: 1, status: 'complete', capturedAt: 1, blockNumber: 1,
+      evidence: [{ provider: 'ethereum-rpc', status: 'complete', blockNumber: 1, detail: 'fixture' }]
+    });
+    SEED.defiPositionRows.push({
+      id: 'priced-supply', snapshotId: 'unpriced-debt-snapshot', protocolId: 'aave-v3-ethereum', reserveKey: reserve,
+      role: 'supply', underlying: token(reserve, 'USDC'), protocolToken: token(`0x${'3'.repeat(40)}`, 'aUSDC'),
+      quantity: 100, rawQuantity: '100000000', isCollateral: true,
+      valueEvidence: { currency: 'USD', value: 100, observedAt: 1, provider: 'fixture' }
+    }, {
+      id: 'unpriced-debt', snapshotId: 'unpriced-debt-snapshot', protocolId: 'aave-v3-ethereum', reserveKey: reserve,
+      role: 'debt', underlying: token(reserve, 'USDC'), protocolToken: token(`0x${'4'.repeat(40)}`, 'variableDebtUSDC'),
+      quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable'
+    });
+    await renderTab();
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
+    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', 'incomplete');
+    expect(screen.getByTestId('defi-net-worth-incomplete')).toHaveTextContent('Raw custody is not shown as debt-free');
+  });
   it('shows an honest "Not synced yet" chip and routes Add source to Connections', async () => {
     const goToImport = vi.fn();
     await renderTab({ goToImport, goTo: () => {} });

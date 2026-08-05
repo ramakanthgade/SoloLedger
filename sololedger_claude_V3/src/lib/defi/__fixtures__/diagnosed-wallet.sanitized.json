@@ -1,0 +1,17 @@
+{
+  "capturedAt": 1785945600000,
+  "blockNumber": 23100000,
+  "accountIdentityScope": "wallet:evm:0x1111111111111111111111111111111111111111",
+  "expectations": {
+    "plainWbtcQuantity": 0,
+    "canonicalLiquidUsdc": 93076,
+    "totalDebtUsdc": 90005,
+    "lookalikesExcluded": true
+  },
+  "protocolClaims": [
+    { "protocolId": "aave-v3-ethereum", "asset": "WBTC", "role": "supply", "quantity": 0.4, "isCollateral": true },
+    { "protocolId": "spark-v1-ethereum", "asset": "WBTC", "role": "supply", "quantity": 0.6, "isCollateral": false },
+    { "protocolId": "aave-v3-ethereum", "asset": "USDC", "role": "supply", "quantity": 100000, "isCollateral": true },
+    { "protocolId": "aave-v3-ethereum", "asset": "USDC", "role": "debt", "debtRateMode": "variable", "quantity": 90005 }
+  ]
+}

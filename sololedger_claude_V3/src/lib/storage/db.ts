@@ -20,6 +20,7 @@ import {
 import { binanceApiIdentity, binanceEconomicKey } from './binanceEconomicDedup';
 import type { ProviderEvidenceRow, SafetyDecisionRow } from '@/lib/safety/types';
 import { transactionSafetySubject } from '@/lib/safety/assetSafety';
+import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
 
 function newSourceIncarnation(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -187,6 +188,8 @@ class SoloLedgerDB extends Dexie {
   openingBalances!: Table<OpeningBalanceRow, string>;
   providerEvidence!: Table<ProviderEvidenceRow, string>;
   safetyDecisions!: Table<SafetyDecisionRow, string>;
+  defiPositionSnapshots!: Table<DefiPositionSnapshot, string>;
+  defiPositionRows!: Table<DefiPositionRow, string>;
 
   constructor(name: string) {
     super(name);
@@ -483,6 +486,28 @@ class SoloLedgerDB extends Dexie {
       }
       if (migratedDecisions.length > 0) await decisions.bulkPut(migratedDecisions);
     });
+    // v14: immutable Ethereum protocol position evidence generations.
+    this.version(14).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName',
+      exchangeConnections: 'id, exchange, lastSyncAt',
+      walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset',
+      authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+      authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+      sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+      openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]',
+      providerEvidence: 'id, subjectKey, subjectKind, provider, ruleId, ruleVersion, confidence, observedAt, [subjectKey+provider]',
+      safetyDecisions: 'subjectKey, state, updatedAt, [state+updatedAt]',
+      defiPositionSnapshots: 'snapshotId, generation, accountIdentityScope, protocolId, chainId, status, [accountIdentityScope+protocolId]',
+      defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]'
+    });
   }
 }
 
@@ -615,7 +640,7 @@ export async function seedSettingsIfAbsent(seed: TaxSettings): Promise<boolean> 
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.providerEvidence, db.safetyDecisions, db.settings],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.providerEvidence, db.safetyDecisions, db.defiPositionSnapshots, db.defiPositionRows, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -633,6 +658,8 @@ export async function clearAllData(): Promise<void> {
       await db.openingBalances.clear();
       await db.providerEvidence.clear();
       await db.safetyDecisions.clear();
+      await db.defiPositionSnapshots.clear();
+      await db.defiPositionRows.clear();
       // "Delete all data" promises to remove everything — reset settings to defaults too.
       await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
     }
@@ -943,7 +970,7 @@ export async function deleteLookupAddress(id: string): Promise<void> {
 
 export async function deleteLookupAddressAndTransactions(id: string): Promise<number> {
   return db.transaction('rw', [db.transactions, db.lots, db.disposals, db.lookupAddresses, db.specIdHints, db.walletBalances, db.csvImports,
-    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances], async () => {
+    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.defiPositionSnapshots, db.defiPositionRows], async () => {
     const row = await db.lookupAddresses.get(id);
     if (!row) return 0;
     const canonicalAddress = canonicalWalletAddress(row.chain, row.address);
@@ -965,6 +992,15 @@ export async function deleteLookupAddressAndTransactions(id: string): Promise<nu
     }
     await db.sourceCoverage.where('sourceIdentityId').equals(id).delete();
     for (const ownedScope of ownedScopes) await db.openingBalances.where('scopeId').equals(ownedScope).delete();
+    if (row.chain === 'ethereum') {
+      const defiScope = `wallet:evm:${canonicalAddress}`;
+      const positionSnapshots = await db.defiPositionSnapshots.where('accountIdentityScope').equals(defiScope).toArray();
+      const positionSnapshotIds = positionSnapshots.map((snapshot) => snapshot.snapshotId);
+      if (positionSnapshotIds.length > 0) {
+        await db.defiPositionRows.where('snapshotId').anyOf(positionSnapshotIds).delete();
+        await db.defiPositionSnapshots.bulkDelete(positionSnapshotIds);
+      }
+    }
     const balanceIds = (await db.walletBalances
       .filter((b) => b.chain === row.chain && walletAddressEquals(row.chain, b.address, row.address))
       .toArray()).map((b) => b.id);

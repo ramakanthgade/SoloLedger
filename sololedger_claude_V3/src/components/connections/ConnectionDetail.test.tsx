@@ -44,6 +44,8 @@ const mocks = vi.hoisted(() => ({
   authorityAssets: { current: [] as AuthorityAssetRow[] },
   sourceCoverage: { current: [] as SourceCoverageRow[] },
   safetyDecisions: { current: [] as import('@/lib/safety/types').SafetyDecisionRow[] },
+  defiPositionSnapshots: { current: [] as import('@/lib/defi/types').DefiPositionSnapshot[] },
+  defiPositionRows: { current: [] as import('@/lib/defi/types').DefiPositionRow[] },
   openingBalances: { current: [] as OpeningBalanceRow[] },
   exchangeConnections: {
     current: [
@@ -111,6 +113,12 @@ vi.mock('dexie-react-hooks', () => ({
 
 vi.mock('@/lib/storage/db', () => ({
   db: {
+    // Model the production two-table Dexie transaction as one coherent
+    // synchronous revision for this in-memory useLiveQuery test harness.
+    transaction: (_mode: string, _tables: unknown[], _reader: () => unknown) => ({
+      snapshots: mocks.defiPositionSnapshots.current,
+      rows: mocks.defiPositionRows.current
+    }),
     transactions: { toArray: () => mocks.txs.current },
     priceCache: { toArray: () => mocks.priceRows.current },
     walletBalances: { toArray: () => mocks.balanceRows.current },
@@ -126,6 +134,8 @@ vi.mock('@/lib/storage/db', () => ({
     authorityAssets: { toArray: () => mocks.authorityAssets.current },
     sourceCoverage: { toArray: () => mocks.sourceCoverage.current },
     safetyDecisions: { toArray: () => mocks.safetyDecisions.current },
+    defiPositionSnapshots: { toArray: () => mocks.defiPositionSnapshots.current },
+    defiPositionRows: { toArray: () => mocks.defiPositionRows.current },
     openingBalances: { toArray: () => mocks.openingBalances.current },
     exchangeConnections: {
       toArray: () => mocks.exchangeConnections.current,
@@ -420,6 +430,8 @@ beforeEach(() => {
   mocks.authorityAssets.current = [];
   mocks.sourceCoverage.current = [];
   mocks.safetyDecisions.current = [];
+  mocks.defiPositionSnapshots.current = [];
+  mocks.defiPositionRows.current = [];
   mocks.openingBalances.current = [];
   mocks.exchangeConnections.current = [
     { id: 'exc_1', exchange: 'binance', lastSyncAt: undefined },

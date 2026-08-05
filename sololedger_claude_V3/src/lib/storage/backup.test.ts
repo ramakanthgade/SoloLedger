@@ -65,6 +65,8 @@ async function clearDb() {
       db.openingBalances,
       db.providerEvidence,
       db.safetyDecisions,
+      db.defiPositionSnapshots,
+      db.defiPositionRows,
       db.settings
     ],
     async () => {
@@ -85,6 +87,8 @@ async function clearDb() {
         db.openingBalances.clear(),
         db.providerEvidence.clear(),
         db.safetyDecisions.clear(),
+        db.defiPositionSnapshots.clear(),
+        db.defiPositionRows.clear(),
         db.settings.clear()
       ]);
     }
@@ -132,7 +136,7 @@ describe('importFullBackup', () => {
     ]);
 
     const payload = await createFullBackupPayload();
-    expect(payload.formatVersion).toBe(4);
+    expect(payload.formatVersion).toBe(5);
     await clearDb();
     await importFullBackup(backupFile(payload));
 
@@ -175,6 +179,73 @@ describe('importFullBackup', () => {
       snapshots: [], assets: [], coverage: [], now: Date.now()
     }).holdings).toEqual([expect.objectContaining({ asset: 'BTC', quantity: 1 })]);
     expect(calculateCostBasis([restoredVisible], { method: 'FIFO' }).lots).toHaveLength(1);
+  });
+
+  it('round-trips v5 coherent DeFi generations and marks restored authority stale', async () => {
+    const scope = `wallet:evm:0x${'1'.repeat(40)}`;
+    await db.lookupAddresses.add({ id: `ethereum:0x${'1'.repeat(40)}`, chain: 'ethereum', address: `0x${'1'.repeat(40)}`, lastSyncedAt: 100, txCount: 0 });
+    await db.defiPositionSnapshots.add({
+      snapshotId: 'defi-1', generation: 1, accountIdentityScope: scope,
+      protocolId: 'aave-v3-ethereum', chainId: 1, status: 'complete', capturedAt: 100,
+      blockNumber: 20_000_000, evidence: [{ provider: 'ethereum-rpc', status: 'complete', blockNumber: 20_000_000, detail: 'fixture' }]
+    });
+    await db.defiPositionRows.add({
+      id: 'defi-row-1', snapshotId: 'defi-1', protocolId: 'aave-v3-ethereum',
+      reserveKey: `0x${'2'.repeat(40)}`, role: 'supply',
+      underlying: { chainId: 1, contractAddress: `0x${'2'.repeat(40)}`, symbol: 'USDC', decimals: 6 },
+      protocolToken: { chainId: 1, contractAddress: `0x${'3'.repeat(40)}`, symbol: 'aUSDC', decimals: 6 },
+      quantity: 10, rawQuantity: '10000000', isCollateral: true
+    });
+    const payload = await createFullBackupPayload();
+    expect(payload).toMatchObject({ formatVersion: 5, defiPositionSnapshots: [{ snapshotId: 'defi-1' }], defiPositionRows: [{ id: 'defi-row-1' }] });
+    await clearDb();
+    await importFullBackup(backupFile(payload));
+    expect(await db.defiPositionSnapshots.get('defi-1')).toMatchObject({ status: 'complete', restoredAt: expect.any(Number) });
+    expect(await db.defiPositionRows.get('defi-row-1')).toMatchObject({ role: 'supply', isCollateral: true });
+  });
+
+  it('rejects malformed v5 role identities before clearing existing data', async () => {
+    const wallet = `0x${'1'.repeat(40)}`;
+    const underlying = `0x${'2'.repeat(40)}`;
+    const scope = `wallet:evm:${wallet}`;
+    await db.lookupAddresses.add({ id: `ethereum:${wallet}`, chain: 'ethereum', address: wallet, lastSyncedAt: 100, txCount: 0 });
+    await db.defiPositionSnapshots.add({
+      snapshotId: 'strict-snapshot', generation: 1, accountIdentityScope: scope,
+      protocolId: 'aave-v3-ethereum', chainId: 1, status: 'complete', capturedAt: 100,
+      blockNumber: 20_000_000, evidence: [{ provider: 'ethereum-rpc', status: 'complete', blockNumber: 20_000_000, detail: 'fixture' }]
+    });
+    await db.defiPositionRows.bulkAdd([{
+      id: 'strict-supply', snapshotId: 'strict-snapshot', protocolId: 'aave-v3-ethereum', reserveKey: underlying, role: 'supply',
+      underlying: { chainId: 1, contractAddress: underlying, symbol: 'USDC', decimals: 6 },
+      protocolToken: { chainId: 1, contractAddress: `0x${'3'.repeat(40)}`, symbol: 'aUSDC', decimals: 6 },
+      quantity: 1, rawQuantity: '1000000', isCollateral: true
+    }, {
+      id: 'strict-debt', snapshotId: 'strict-snapshot', protocolId: 'aave-v3-ethereum', reserveKey: underlying, role: 'debt',
+      underlying: { chainId: 1, contractAddress: underlying, symbol: 'USDC', decimals: 6 },
+      protocolToken: { chainId: 1, contractAddress: `0x${'4'.repeat(40)}`, symbol: 'variableDebtUSDC', decimals: 6 },
+      quantity: 1, rawQuantity: '1000000', debtRateMode: 'variable'
+    }]);
+    const valid = await createFullBackupPayload();
+    await db.transactions.put(makeTx('must-survive-invalid-v5'));
+    const corruptions: Array<[string, (payload: typeof valid) => void]> = [
+      ['snapshot scope', (payload) => { payload.defiPositionSnapshots[0].accountIdentityScope = `wallet:evm:0x${'A'.repeat(40)}`; }],
+      ['underlying address', (payload) => { payload.defiPositionRows[0].underlying.contractAddress = `0x${'A'.repeat(40)}`; }],
+      ['protocol-token address', (payload) => { payload.defiPositionRows[0].protocolToken.contractAddress = `0x${'B'.repeat(40)}`; }],
+      ['underlying symbol', (payload) => { payload.defiPositionRows[0].underlying.symbol = ' '; }],
+      ['protocol-token symbol', (payload) => { payload.defiPositionRows[0].protocolToken.symbol = ''; }],
+      ['decimals', (payload) => { payload.defiPositionRows[0].underlying.decimals = Number.MAX_SAFE_INTEGER; }],
+      ['supply collateral', (payload) => { (payload.defiPositionRows.find((row) => row.role === 'supply') as { isCollateral?: boolean }).isCollateral = undefined; }],
+      ['debt rate mode', (payload) => { (payload.defiPositionRows.find((row) => row.role === 'debt') as { debtRateMode?: string }).debtRateMode = 'floating'; }],
+      ['debt magnitude', (payload) => { payload.defiPositionRows.find((row) => row.role === 'debt')!.quantity = 0; }]
+    ];
+    for (const [label, corrupt] of corruptions) {
+      const payload = structuredClone(valid);
+      corrupt(payload);
+      let rejected = false;
+      try { await importFullBackup(backupFile(payload)); } catch { rejected = true; }
+      expect(rejected, label).toBe(true);
+      expect(await db.transactions.get('must-survive-invalid-v5')).toBeDefined();
+    }
   });
 
   it.each([
@@ -385,7 +456,7 @@ describe('importFullBackup', () => {
 
     const payload = await createFullBackupPayload();
     const serialized = JSON.stringify(payload);
-    expect(payload.formatVersion).toBe(4);
+    expect(payload.formatVersion).toBe(5);
     expect(payload.exchangeConnections[0]).toMatchObject({ id: 'source-1', exchange: 'binance', label: 'Safe label' });
     expect(payload.csvImports[0].id).toBe('csv-1');
     expect(payload.lookupAddresses[0].id).toBe('bitcoin:abc');

@@ -19,6 +19,7 @@ import { binanceApiIdentity } from './binanceEconomicDedup';
 import { isExcludedSafetyState, type ProviderEvidenceRow, type SafetyDecisionRow, type SafetyState } from '@/lib/safety/types';
 import { safetySubjectKind } from '@/lib/safety/canonicalAssets';
 import { qualifiesForAutomaticSpam } from '@/lib/safety/assetSafety';
+import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
 
 type SettingsBackup = Omit<TaxSettings,
   | 'alchemyApiKey' | 'coingeckoApiKey' | 'birdeyeApiKey' | 'novesApiKey'
@@ -65,7 +66,13 @@ export interface BackupFileV4 extends Omit<BackupFileV3, 'formatVersion'> {
   safetyDecisions: SafetyDecisionRow[];
 }
 
-type BackupFile = BackupFileV1V2 | BackupFileV3 | BackupFileV4;
+export interface BackupFileV5 extends Omit<BackupFileV4, 'formatVersion'> {
+  formatVersion: 5;
+  defiPositionSnapshots: DefiPositionSnapshot[];
+  defiPositionRows: DefiPositionRow[];
+}
+
+type BackupFile = BackupFileV1V2 | BackupFileV3 | BackupFileV4 | BackupFileV5;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value == null || Array.isArray(value)) return false;
@@ -144,26 +151,28 @@ function redactedCsvSource(row: CsvImportRow): CsvImportRow {
   };
 }
 
-/** Build a serializable v4 payload. Exported for deterministic backup tests. */
-export async function createFullBackupPayload(): Promise<BackupFileV4> {
+/** Build a serializable v5 payload. Exported for deterministic backup tests. */
+export async function createFullBackupPayload(): Promise<BackupFileV5> {
   const [
     transactions, lots, disposals, specIdHints, lookupAddresses, priceCache, csvImports,
     exchangeConnections, walletBalances, exchangeBalances, authoritySnapshots, authorityAssets,
-    sourceCoverage, openingBalances, providerEvidence, safetyDecisions, settings
+    sourceCoverage, openingBalances, providerEvidence, safetyDecisions,
+    defiPositionSnapshots, defiPositionRows, settings
   ] = await Promise.all([
     db.transactions.toArray(), db.lots.toArray(), db.disposals.toArray(), db.specIdHints.toArray(),
     db.lookupAddresses.toArray(), db.priceCache.toArray(), db.csvImports.toArray(),
     db.exchangeConnections.toArray(), db.walletBalances.toArray(), db.exchangeBalances.toArray(),
     db.authoritySnapshots.toArray(), db.authorityAssets.toArray(), db.sourceCoverage.toArray(),
-    db.openingBalances.toArray(), db.providerEvidence.toArray(), db.safetyDecisions.toArray(), getSettings()
+    db.openingBalances.toArray(), db.providerEvidence.toArray(), db.safetyDecisions.toArray(),
+    db.defiPositionSnapshots.toArray(), db.defiPositionRows.toArray(), getSettings()
   ]);
   return {
-    formatVersion: 4, exportedAt: new Date().toISOString(), transactions, lots, disposals,
+    formatVersion: 5, exportedAt: new Date().toISOString(), transactions, lots, disposals,
     specIdHints, lookupAddresses: lookupAddresses.map(redactedLookupSource), priceCache,
     csvImports: csvImports.map(redactedCsvSource),
     exchangeConnections: exchangeConnections.map(redactedExchangeSource), walletBalances,
     exchangeBalances, authoritySnapshots, authorityAssets, sourceCoverage, openingBalances,
-    providerEvidence, safetyDecisions,
+    providerEvidence, safetyDecisions, defiPositionSnapshots, defiPositionRows,
     settings: safeSettings(settings)
   };
 }
@@ -187,16 +196,17 @@ function requireArray(p: Record<string, unknown>, key: string, optional = false)
 function assertValidBackup(parsed: unknown): asserts parsed is BackupFile {
   if (typeof parsed !== 'object' || parsed === null) throw new Error('Invalid backup file: not a JSON object.');
   const p = parsed as Record<string, unknown>;
-  if (p.formatVersion !== 1 && p.formatVersion !== 2 && p.formatVersion !== 3 && p.formatVersion !== 4) {
+  if (p.formatVersion !== 1 && p.formatVersion !== 2 && p.formatVersion !== 3 && p.formatVersion !== 4 && p.formatVersion !== 5) {
     throw new Error('Unrecognized backup format version. This file may be from a newer version of SoloLedger.');
   }
   for (const key of ['transactions', 'lots', 'disposals', 'specIdHints']) requireArray(p, key);
-  for (const key of ['lookupAddresses', 'priceCache', 'csvImports']) requireArray(p, key, p.formatVersion !== 3 && p.formatVersion !== 4);
-  if (p.formatVersion === 3 || p.formatVersion === 4) {
+  for (const key of ['lookupAddresses', 'priceCache', 'csvImports']) requireArray(p, key, ![3, 4, 5].includes(p.formatVersion as number));
+  if (p.formatVersion === 3 || p.formatVersion === 4 || p.formatVersion === 5) {
     for (const key of ['exchangeConnections', 'walletBalances', 'exchangeBalances', 'authoritySnapshots',
       'authorityAssets', 'sourceCoverage', 'openingBalances']) requireArray(p, key);
   }
-  if (p.formatVersion === 4) for (const key of ['providerEvidence', 'safetyDecisions']) requireArray(p, key);
+  if (p.formatVersion === 4 || p.formatVersion === 5) for (const key of ['providerEvidence', 'safetyDecisions']) requireArray(p, key);
+  if (p.formatVersion === 5) for (const key of ['defiPositionSnapshots', 'defiPositionRows']) requireArray(p, key);
   if (typeof p.settings !== 'object' || p.settings === null) {
     throw new Error('Invalid backup file: "settings" is missing or malformed.');
   }
@@ -248,7 +258,7 @@ function assertApiTransactionMatchesConnection(
 }
 
 /** Validate identity, logical-key, and evidence references before any table is cleared. */
-function validateV3(payload: BackupFileV3 | BackupFileV4): void {
+function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5): void {
   const transactionIds = unique(payload.transactions, 'id', 'transactions');
   const lotIds = unique(payload.lots, 'id', 'lots');
   unique(payload.disposals, 'id', 'disposals');
@@ -527,7 +537,7 @@ const SAFETY_STATES = new Set<SafetyState>([
   'trusted', 'high_confidence_spam', 'unverified', 'user_hidden', 'user_visible'
 ]);
 
-function validateV4(payload: BackupFileV4): void {
+function validateV4(payload: BackupFileV4 | BackupFileV5): void {
   validateV3(payload);
   const evidenceIds = unique(payload.providerEvidence, 'id', 'providerEvidence');
   unique(payload.safetyDecisions, 'subjectKey', 'safetyDecisions');
@@ -588,6 +598,60 @@ function validateV4(payload: BackupFileV4): void {
   }
 }
 
+function validateV5(payload: BackupFileV5): void {
+  validateV4(payload);
+  const snapshotIds = unique(payload.defiPositionSnapshots, 'snapshotId', 'defiPositionSnapshots');
+  unique(payload.defiPositionRows, 'id', 'defiPositionRows');
+  const snapshots = new Map(payload.defiPositionSnapshots.map((row) => [row.snapshotId, row]));
+  const snapshotLogical = new Set<string>();
+  const ownedScopes = new Set(payload.lookupAddresses.filter((row) => row.chain === 'ethereum').map((row) =>
+    `wallet:evm:${canonicalWalletAddress(row.chain, row.address)}`));
+  for (const snapshot of payload.defiPositionSnapshots) {
+    if (!/^wallet:evm:0x[0-9a-f]{40}$/.test(snapshot.accountIdentityScope) || snapshot.chainId !== 1 ||
+      !['aave-v2-ethereum', 'aave-v3-ethereum', 'spark-v1-ethereum'].includes(snapshot.protocolId) ||
+      !['complete', 'partial', 'unsupported'].includes(snapshot.status) || !Number.isSafeInteger(snapshot.generation) ||
+      snapshot.generation < 1 || !Number.isFinite(snapshot.capturedAt) || !Array.isArray(snapshot.evidence) ||
+      !ownedScopes.has(snapshot.accountIdentityScope) ||
+      (snapshot.status === 'complete' && (!Number.isSafeInteger(snapshot.blockNumber) ||
+        !snapshot.evidence.some((item) => item.provider === 'ethereum-rpc' && item.status === 'complete' && item.blockNumber === snapshot.blockNumber)))) {
+      throw new Error('Invalid backup file: DeFi position snapshot is malformed.');
+    }
+    const logical = `${snapshot.accountIdentityScope}\u001f${snapshot.protocolId}\u001f${snapshot.generation}`;
+    if (snapshotLogical.has(logical)) throw new Error('Invalid backup file: duplicate DeFi position generation.');
+    snapshotLogical.add(logical);
+    if (snapshot.supersedesSnapshotId != null && !snapshotIds.has(snapshot.supersedesSnapshotId)) {
+      throw new Error('Invalid backup file: DeFi supersedes reference is missing.');
+    }
+    if (snapshot.supersedesSnapshotId != null) {
+      const prior = snapshots.get(snapshot.supersedesSnapshotId);
+      if (!prior || prior.status !== 'complete' || snapshot.status !== 'complete' ||
+        prior.accountIdentityScope !== snapshot.accountIdentityScope || prior.protocolId !== snapshot.protocolId ||
+        prior.generation >= snapshot.generation) {
+        throw new Error('Invalid backup file: DeFi supersedes reference is incoherent.');
+      }
+    }
+  }
+  const uniqueness = new Set<string>();
+  for (const row of payload.defiPositionRows) {
+    const snapshot = snapshots.get(row.snapshotId);
+    const validToken = (token: DefiPositionRow['underlying']) =>
+      token.chainId === 1 && /^0x[0-9a-f]{40}$/.test(token.contractAddress) &&
+      typeof token.symbol === 'string' && token.symbol.trim().length > 0 &&
+      Number.isSafeInteger(token.decimals) && token.decimals >= 0 && token.decimals <= 255;
+    if (!snapshot || row.protocolId !== snapshot.protocolId || row.reserveKey !== row.underlying.contractAddress.toLowerCase() ||
+      row.quantity <= 0 || !Number.isFinite(row.quantity) || !/^\d+$/.test(row.rawQuantity) ||
+      !validToken(row.underlying) || !validToken(row.protocolToken) ||
+      (row.role !== 'supply' && row.role !== 'debt') ||
+      (row.role === 'supply' && typeof row.isCollateral !== 'boolean') ||
+      (row.role === 'debt' && !['stable', 'variable'].includes(row.debtRateMode))) {
+      throw new Error('Invalid backup file: DeFi position row is malformed or incoherent.');
+    }
+    const key = `${row.snapshotId}\u001f${row.reserveKey}\u001f${row.role}\u001f${row.role === 'debt' ? row.debtRateMode : 'supply'}`;
+    if (uniqueness.has(key)) throw new Error('Invalid backup file: duplicate DeFi reserve role.');
+    uniqueness.add(key);
+  }
+}
+
 export async function importFullBackup(file: File): Promise<{ imported: number }> {
   let parsed: unknown;
   try {
@@ -598,9 +662,11 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
   assertValidBackup(parsed);
   if (parsed.formatVersion === 3) validateV3(parsed);
   if (parsed.formatVersion === 4) validateV4(parsed);
+  if (parsed.formatVersion === 5) validateV5(parsed);
 
-  const v3 = parsed.formatVersion === 3 || parsed.formatVersion === 4 ? parsed : undefined;
-  const v4 = parsed.formatVersion === 4 ? parsed : undefined;
+  const v3 = parsed.formatVersion === 3 || parsed.formatVersion === 4 || parsed.formatVersion === 5 ? parsed : undefined;
+  const v4 = parsed.formatVersion === 4 || parsed.formatVersion === 5 ? parsed : undefined;
+  const v5 = parsed.formatVersion === 5 ? parsed : undefined;
   const restoredAt = Date.now();
   const exchangeConnections = (v3?.exchangeConnections ?? []).map((row) => ({
     ...redactedExchangeSource(row), credentialsState: 'reauthorization_required' as const,
@@ -612,10 +678,11 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
   const sourceCoverage = (v3?.sourceCoverage ?? []).map((row) => ({
     ...row, authorityAsOf: row.authorityAsOf
   }));
+  const defiPositionSnapshots = (v5?.defiPositionSnapshots ?? []).map((row) => ({ ...row, restoredAt }));
   const tables = [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses,
     db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances,
     db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances,
-    db.providerEvidence, db.safetyDecisions, db.settings];
+    db.providerEvidence, db.safetyDecisions, db.defiPositionSnapshots, db.defiPositionRows, db.settings];
 
   await db.transaction('rw', tables, async () => {
     await Promise.all(tables.map((table) => table.clear()));
@@ -638,6 +705,8 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
     await db.openingBalances.bulkPut(v3?.openingBalances ?? []);
     await db.providerEvidence.bulkPut(v4?.providerEvidence ?? []);
     await db.safetyDecisions.bulkPut(v4?.safetyDecisions ?? []);
+    await db.defiPositionSnapshots.bulkPut(defiPositionSnapshots);
+    await db.defiPositionRows.bulkPut(v5?.defiPositionRows ?? []);
     await db.settings.put({ ...safeSettings(parsed.settings), id: 'singleton' });
     await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
   });

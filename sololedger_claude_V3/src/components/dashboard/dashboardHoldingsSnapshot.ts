@@ -6,6 +6,7 @@ import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { HoldingsProjection, HoldingsProjectionInput } from '@/lib/portfolio/holdingsProjection';
 import type { Transaction } from '@/types/transaction';
 import type { SafetyDecisionRow } from '@/lib/safety/types';
+import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
 import type { TransactionViews } from './dashboardProjectionCache';
 
 export interface DashboardHoldingsSnapshot {
@@ -17,6 +18,8 @@ export interface DashboardHoldingsSnapshot {
   readonly sourceCoverage: SourceCoverageRow[];
   readonly openingBalances: OpeningBalanceRow[];
   readonly safetyDecisions?: SafetyDecisionRow[];
+  readonly defiPositionSnapshots?: DefiPositionSnapshot[];
+  readonly defiPositionRows?: DefiPositionRow[];
 }
 
 /**
@@ -27,19 +30,21 @@ export interface DashboardHoldingsSnapshot {
 export async function readDashboardHoldingsSnapshot(): Promise<DashboardHoldingsSnapshot> {
   return db.transaction('r', [
     db.transactions, db.csvImports, db.exchangeConnections, db.authoritySnapshots,
-    db.authorityAssets, db.sourceCoverage, db.openingBalances, db.safetyDecisions
+    db.authorityAssets, db.sourceCoverage, db.openingBalances, db.safetyDecisions,
+    db.defiPositionSnapshots, db.defiPositionRows
   ], async () => {
     const [
       transactionCount, csvImports, exchangeConnections, authoritySnapshots,
-      authorityAssets, sourceCoverage, openingBalances, safetyDecisions
+      authorityAssets, sourceCoverage, openingBalances, safetyDecisions, defiPositionSnapshots, defiPositionRows
     ] = await Promise.all([
       db.transactions.count(), db.csvImports.toArray(), db.exchangeConnections.toArray(),
       db.authoritySnapshots.toArray(), db.authorityAssets.toArray(),
-      db.sourceCoverage.toArray(), db.openingBalances.toArray(), db.safetyDecisions.toArray()
+      db.sourceCoverage.toArray(), db.openingBalances.toArray(), db.safetyDecisions.toArray(),
+      db.defiPositionSnapshots.toArray(), db.defiPositionRows.toArray()
     ]);
     return {
       transactionCount, csvImports, exchangeConnections, authoritySnapshots,
-      authorityAssets, sourceCoverage, openingBalances, safetyDecisions
+      authorityAssets, sourceCoverage, openingBalances, safetyDecisions, defiPositionSnapshots, defiPositionRows
     };
   });
 }
@@ -127,7 +132,9 @@ function canonicalSnapshot(
     authorityAssets: reuseLogicalArray(previous.authorityAssets, next.authorityAssets),
     sourceCoverage: reuseLogicalArray(previous.sourceCoverage, next.sourceCoverage),
     openingBalances: reuseLogicalArray(previous.openingBalances, next.openingBalances),
-    safetyDecisions: reuseLogicalArray(previous.safetyDecisions ?? [], next.safetyDecisions ?? [])
+    safetyDecisions: reuseLogicalArray(previous.safetyDecisions ?? [], next.safetyDecisions ?? []),
+    defiPositionSnapshots: reuseLogicalArray(previous.defiPositionSnapshots ?? [], next.defiPositionSnapshots ?? []),
+    defiPositionRows: reuseLogicalArray(previous.defiPositionRows ?? [], next.defiPositionRows ?? [])
   };
 }
 

@@ -17,6 +17,7 @@ import {
 } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef, type ProviderStreamOutcome } from '@/lib/rpc/providers';
 import { refreshWalletBalancesForAddresses } from '@/lib/rpc/balances';
+import { refreshEthereumPositionAuthority } from '@/lib/defi/positionAuthority';
 import { reprocessSwapDetectionInDb, reprocessRewardIncome } from '@/lib/rpc/reprocessSwaps';
 import { applyDefiLlamaRewardSuggestions } from '@/lib/rpc/rewardSuggestions';
 import { isAbsorbedTradeLeg } from '@/lib/rpc/swapDetection';
@@ -572,6 +573,16 @@ importJob._setPhase('classifying');
       apiWarnings.push(
         `Balance refresh failed (${err instanceof Error ? err.message : 'network error'}) — prior balances kept.`
       );
+    }
+    if (chain.id === 'ethereum') {
+      for (const address of succeeded) {
+        try {
+          const outcome = await refreshEthereumPositionAuthority(address, settings);
+          apiWarnings.push(...outcome.warnings);
+        } catch (err) {
+          apiWarnings.push(`${address.slice(0, 8)}…${address.slice(-4)}: protocol position refresh failed (${err instanceof Error ? err.message : 'network error'}) — prior complete positions kept.`);
+        }
+      }
     }
   }
 

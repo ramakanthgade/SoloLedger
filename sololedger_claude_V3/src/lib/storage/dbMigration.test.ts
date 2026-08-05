@@ -181,7 +181,7 @@ describe('Dexie v11 → v12 CSV survivor-count migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(13);
+    expect(upgraded.verno).toBe(14);
     expect(await upgraded.csvImports.bulkGet(['partial', 'zero'])).toEqual([
       expect.objectContaining({ id: 'partial', txCount: 2 }),
       expect.objectContaining({ id: 'zero', txCount: 0 })
@@ -259,7 +259,7 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(13);
+    expect(upgraded.verno).toBe(14);
     expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
     expect(await upgraded.table('exchangeBalances').count()).toBe(4);
     const connection = await upgraded.table('exchangeConnections').get('coherent');

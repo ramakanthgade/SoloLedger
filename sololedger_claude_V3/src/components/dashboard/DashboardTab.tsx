@@ -19,6 +19,7 @@ import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import { projectScopedEconomicExposure } from '@/lib/portfolio/economicExposureProjection';
 import {
   buildHoldingsProjection,
   countQuantityAuthorityIssues,
@@ -28,6 +29,7 @@ import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
+import { HoldingsList } from '@/components/holdings/HoldingsList';
 import { BrandIcon } from '@/components/connections/brandIcons';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -36,6 +38,7 @@ import { useTabNav } from '@/lib/tabNav';
 import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
 import { DataHealthWorkspace, type DataHealthViewState } from './DataHealthWorkspace';
+import { reaggregateUnreplacedCustody } from './dashboardEconomicRows';
 import { buildDataHealthModel } from './dataHealthModel';
 import { buildCards } from '@/components/connections/connectionModel';
 import { buildConnectionWorkspaceFromCard, buildConnectionWorkspaceSnapshot, prepareConnectionWorkspaceCollectionIndex } from '@/components/connections/connectionWorkspaceModel';
@@ -724,12 +727,40 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     ),
     [holdings, priceIndex]
   );
+  const economicExposure = useMemo(() => {
+    const valueByKey = new Map(valued.map((row) => [portfolioHoldingKey(row), row]));
+    const custody = holdings.flatMap((holding) => {
+      const valuedHolding = valueByKey.get(portfolioHoldingKey(holding));
+      const unitValue = holding.quantity > 1e-9
+        ? (valuedHolding?.valueNow ?? valuedHolding?.costBasis ?? holding.costBasis) / holding.quantity
+        : 0;
+      const scopes = holding.sourceVerification.length > 0
+        ? holding.sourceVerification.map((source) => ({ scopeId: source.scopeId, quantity: source.quantity }))
+        : [{ scopeId: 'unscoped', quantity: holding.quantity }];
+      return scopes.filter((source) => source.quantity > 1e-9).map((source) => ({
+        id: `${source.scopeId}:${holding.assetKey}`, scopeId: source.scopeId,
+        chainId: holding.chain === 'ethereum' ? 1 : 0,
+        contractAddress: holding.contractAddress, symbol: holding.asset,
+        quantity: source.quantity, value: source.quantity * unitValue
+      }));
+    });
+    const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
+      ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
+    return projectScopedEconomicExposure({
+      custody, snapshots: acceptedSnapshot?.defiPositionSnapshots ?? [],
+      rows: acceptedSnapshot?.defiPositionRows ?? [], prices
+    });
+  }, [acceptedSnapshot?.defiPositionRows, acceptedSnapshot?.defiPositionSnapshots, holdings, valued]);
+  const replacedCustodyIds = new Set([...economicExposure.assets, ...economicExposure.liabilities]
+    .flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : []));
+  const displayedValued = reaggregateUnreplacedCustody(valued, holdings, replacedCustodyIds);
 
   const totalCost = valued.reduce((s, h) => s + h.costBasis, 0);
   const unpriced = valued.filter((h) => h.valueNow == null);
   const marketMode = valued.some((h) => h.valueNow != null);
-  const netWorth = valued.reduce((s, h) => s + (h.valueNow ?? h.costBasis), 0);
-  const unrealizedTotal = marketMode ? netWorth - totalCost : null;
+  const adjustedNetWorth = economicExposure.netWorth;
+  const netWorth = adjustedNetWorth ?? 0;
+  const unrealizedTotal = marketMode && adjustedNetWorth != null ? netWorth - totalCost : null;
   const pricesAsOf = valued.reduce<number | null>(
     (acc, h) => (h.priceAsOf != null && (acc == null || h.priceAsOf > acc) ? h.priceAsOf : acc),
     null
@@ -1091,7 +1122,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         data-testid="dashboard-holdings-generation"
         data-transaction-count={ledgerRevision.transactionCount}
         data-projection-revision={`${ledgerRevision.transactionCount}:${projection.postings.length}`}
-        data-net-worth={netWorth}
+        data-net-worth={adjustedNetWorth ?? 'incomplete'}
         data-btc-quantity={btcQuantity}
       >
         Holdings projection revision {ledgerRevision.transactionCount}
@@ -1161,7 +1192,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
                 className="text-4xl font-extrabold tabular-figures tracking-tight text-hi sm:text-[2.625rem] sm:leading-[1.05]"
                 data-testid="net-worth-value"
               >
-                {fm(netWorth)}
+                {adjustedNetWorth == null ? 'Incomplete' : fm(netWorth)}
               </p>
               {changePct != null && (
                 <Badge tone={changeAbs >= 0 ? 'gain' : 'loss'} className="tabular-figures">
@@ -1173,12 +1204,17 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               {hideBalances ? '••••' : fmtSigned(changeAbs)}{' '}
               <span className="font-medium text-low">{range.sinceCaption}</span>
             </p>
-            {!marketMode && (
+            {economicExposure.hasUnpricedLiabilities && (
+              <p className="mt-1.5 text-xs text-warn" data-testid="defi-net-worth-incomplete" role="status">
+                Adjusted net worth is incomplete because a known liability has no verified price. Raw custody is not shown as debt-free.
+              </p>
+            )}
+            {!economicExposure.hasUnpricedLiabilities && !marketMode && (
               <p className="mt-1.5 text-xs text-low" data-testid="hero-honesty-note">
                 At cost — enable live prices in Settings for market value.
               </p>
             )}
-            {marketMode && unpriced.length > 0 && (
+            {!economicExposure.hasUnpricedLiabilities && marketMode && unpriced.length > 0 && (
               <p className="mt-1.5 text-xs text-low" data-testid="hero-honesty-note">
                 {unpriced.length} asset{unpriced.length === 1 ? '' : 's'} shown at cost — no stored
                 price.
@@ -1388,7 +1424,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
             <div className="flex items-center gap-2.5">
               <h3 className="text-sm font-semibold tracking-tight text-hi">Holdings</h3>
               <Badge tone="neutral" className="tabular-figures">
-                {valued.length} asset{valued.length === 1 ? '' : 's'}
+                {economicExposure.assets.length + economicExposure.liabilities.length} asset{economicExposure.assets.length + economicExposure.liabilities.length === 1 ? '' : 's'}
               </Badge>
             </div>
             <span className="text-xs text-low">
@@ -1409,7 +1445,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               Binance Options balance unavailable — this CSV omits premiums and settlements. Import your Binance Options Transaction History CSV to include Options.
             </div>
           )}
-          {valued.length > 0 && (
+          {displayedValued.length > 0 && (
             <div
               className="hidden grid-cols-[minmax(0,1.3fr)_minmax(0,.9fr)_minmax(0,.75fr)_minmax(0,.85fr)_minmax(7.5rem,1.3fr)_3.25rem] gap-2 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5 text-[0.6875rem] font-bold uppercase tracking-[0.06em] text-faint sm:grid"
               data-testid="dashboard-holdings-columns"
@@ -1422,13 +1458,17 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               <span className="text-right">Share</span>
             </div>
           )}
-          {valued.length === 0 ? (
+          {displayedValued.length === 0 && economicExposure.assets.length === 0 && economicExposure.liabilities.length === 0 ? (
             <p className="px-5 py-8 text-center text-sm text-low">
               No holdings yet — imports appear here.
             </p>
           ) : (
-            valued.map(holdingRow)
+            displayedValued.map(holdingRow)
           )}
+          <HoldingsList
+            projection={economicExposure}
+            formatMoney={fm}
+          />
         </section>
 
         <aside className="flex flex-col gap-5">
