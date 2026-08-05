@@ -69,6 +69,12 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   const authorityAssetsQuery = useLiveQuery(() => db.authorityAssets.toArray(), []);
   const sourceCoverageQuery = useLiveQuery(() => db.sourceCoverage.toArray(), []);
   const safetyDecisionsQuery = useLiveQuery(() => db.safetyDecisions.toArray(), []);
+  const defiPositionEvidenceQuery = useLiveQuery(() => db.transaction(
+    'r', [db.defiPositionSnapshots, db.defiPositionRows], async () => ({
+      snapshots: await db.defiPositionSnapshots.toArray(),
+      rows: await db.defiPositionRows.toArray()
+    })
+  ), []);
   const openingBalancesQuery = useLiveQuery(() => db.openingBalances.toArray(), []);
   const exchangeConnectionRowsQuery = useLiveQuery(() => db.exchangeConnections.toArray(), []);
   const liveWalletRows = useLiveQuery(() => db.lookupAddresses.toArray(), []);
@@ -85,7 +91,8 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   const exchangeConnectionRows = exchangeConnectionRowsQuery ?? NO_ROWS;
   const workspaceReady = transactionsQuery !== undefined && authoritySnapshotsQuery !== undefined &&
     authorityAssetsQuery !== undefined && sourceCoverageQuery !== undefined && openingBalancesQuery !== undefined &&
-    exchangeConnectionRowsQuery !== undefined && safetyDecisionsQuery !== undefined;
+    exchangeConnectionRowsQuery !== undefined && safetyDecisionsQuery !== undefined &&
+    defiPositionEvidenceQuery !== undefined;
   const navigationReady = workspaceReady && (card.kind !== 'wallet' || liveWalletRows !== undefined);
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
@@ -392,7 +399,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
         {TABS.map((tab, index) => <button key={tab.id} ref={(element) => { tabRefs.current[index] = element; }} id={`connection-tab-${tab.id}`} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`connection-panel-${tab.id}`} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => selectWorkspaceTab(tab.id)} onKeyDown={(event) => onTabKeyDown(event, index)} className={`min-h-[44px] rounded-t-lg border-b-2 px-4 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${activeTab === tab.id ? 'border-primary text-primary' : 'border-transparent text-low hover:text-hi'}`}>{tab.label}</button>)}
       </div></div>
       {TABS.map((tab) => <div ref={(element) => { panelRefs.current[tab.id] = element; }} key={tab.id} id={`connection-panel-${tab.id}`} role="tabpanel" aria-labelledby={`connection-tab-${tab.id}`} hidden={activeTab !== tab.id} tabIndex={0}>
-        {activeTab === tab.id && (tab.id === 'overview' ? <><ConnectionOverview card={card} snapshot={snapshot} priceIndex={priceIndex} formatMoney={(value) => formatCurrency(value, currency)} syncing={syncing} syncDisabled={syncDisabled} onSync={() => void handleSync()} onOpenDataHealth={onOpenDataHealth} /><div className="mt-5"><ConnectionOpeningBalances snapshot={snapshot} openingBalances={openingBalances} /></div></> : <ConnectionSyncHistory snapshot={snapshot} />)}
+        {activeTab === tab.id && (tab.id === 'overview' ? <><ConnectionOverview card={card} snapshot={snapshot} priceIndex={priceIndex} formatMoney={(value) => formatCurrency(value, currency)} syncing={syncing} syncDisabled={syncDisabled} onSync={() => void handleSync()} onOpenDataHealth={onOpenDataHealth} defiPositionSnapshots={defiPositionEvidenceQuery?.snapshots ?? []} defiPositionRows={defiPositionEvidenceQuery?.rows ?? []} /><div className="mt-5"><ConnectionOpeningBalances snapshot={snapshot} openingBalances={openingBalances} /></div></> : <ConnectionSyncHistory snapshot={snapshot} />)}
       </div>)}
     </div>
   );

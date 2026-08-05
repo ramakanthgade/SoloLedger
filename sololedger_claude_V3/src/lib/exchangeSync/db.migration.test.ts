@@ -29,10 +29,11 @@ describe('Dexie v8 — exchangeConnections', () => {
 
   it('opens at the current version with the exchangeConnections table', async () => {
     // v9 added walletBalances; v10 added exchangeBalances; v11 added coherent
-    // reconciliation evidence, v12 finalized CSV survivor counts, and v13
-    // added immutable safety evidence/decisions. The exchangeConnections
-    // schema below remains unchanged since v8.
-    expect(db.verno).toBe(13);
+    // reconciliation evidence, v12 finalized CSV survivor counts, v13 added
+    // immutable safety evidence/decisions, and v14 added immutable Ethereum
+    // protocol position generations. The exchangeConnections schema below
+    // remains unchanged since v8.
+    expect(db.verno).toBe(14);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
@@ -41,6 +42,9 @@ describe('Dexie v8 — exchangeConnections', () => {
       expect(tableNames).toContain(table);
     }
     for (const table of ['providerEvidence', 'safetyDecisions']) {
+      expect(tableNames).toContain(table);
+    }
+    for (const table of ['defiPositionSnapshots', 'defiPositionRows']) {
       expect(tableNames).toContain(table);
     }
     // All v7 tables carried over unchanged.
@@ -68,6 +72,15 @@ describe('Dexie v8 — exchangeConnections', () => {
     expect(db.safetyDecisions.schema.primKey.name).toBe('subjectKey');
     expect(db.safetyDecisions.schema.indexes.map((index) => index.name).sort()).toEqual([
       '[state+updatedAt]', 'state', 'updatedAt'
+    ]);
+    expect(db.defiPositionSnapshots.schema.primKey.name).toBe('snapshotId');
+    expect(db.defiPositionSnapshots.schema.indexes.map((index) => index.name).sort()).toEqual([
+      '[accountIdentityScope+protocolId]', 'accountIdentityScope', 'chainId', 'generation',
+      'protocolId', 'status'
+    ]);
+    expect(db.defiPositionRows.schema.primKey.name).toBe('id');
+    expect(db.defiPositionRows.schema.indexes.map((index) => index.name).sort()).toEqual([
+      '[snapshotId+role]', 'protocolId', 'reserveKey', 'role', 'snapshotId'
     ]);
   });
 

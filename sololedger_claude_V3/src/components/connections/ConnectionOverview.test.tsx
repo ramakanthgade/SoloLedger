@@ -5,6 +5,7 @@ import type { ConnectionCardData } from './connectionModel';
 import { ConnectionOverview } from './ConnectionOverview';
 import { ConnectionOpeningBalances } from './ConnectionOpeningBalances';
 import type { ConnectionWorkspaceSnapshot } from './connectionWorkspaceModel';
+import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
 
 const card: ConnectionCardData = {
   id: 'file:file-1',
@@ -192,5 +193,54 @@ describe('ConnectionOverview', () => {
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹0');
     fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
     expect(screen.getByText('BTC')).toBeInTheDocument();
+  });
+
+  it('filters DeFi evidence to the exact wallet and replaces mapped custody once in rows and total', () => {
+    const address = `0x${'1'.repeat(40)}`;
+    const otherAddress = `0x${'9'.repeat(40)}`;
+    const scope = `wallet:evm:${address}`;
+    const otherScope = `wallet:evm:${otherAddress}`;
+    const authorityScope = `wallet:evm:1:${address}`;
+    const usdc = `0x${'2'.repeat(40)}`;
+    const receipt = `0x${'3'.repeat(40)}`;
+    const debtToken = `0x${'4'.repeat(40)}`;
+    const walletCard: ConnectionCardData = {
+      ...card, id: `wallet:${address}`, kind: 'wallet', lane: 'wallets',
+      walletRows: [{ id: `ethereum:${address}`, chain: 'ethereum', address, lastSyncedAt: 1, txCount: 0 }]
+    };
+    const walletSnapshot = snapshot();
+    walletSnapshot.id = walletCard.id;
+    walletSnapshot.kind = 'wallet';
+    walletSnapshot.overview.holdings = [{
+      assetKey: `evm:1:${usdc}`, asset: 'USDC', chain: 'ethereum', contractAddress: usdc,
+      quantity: 50, amount: 50, costBasis: 50, verificationStatus: 'verified_authority'
+    }, {
+      assetKey: `evm:1:${receipt}`, asset: 'aUSDC', chain: 'ethereum', contractAddress: receipt,
+      quantity: 100, amount: 100, costBasis: 100, verificationStatus: 'verified_authority'
+    }] as unknown as ConnectionWorkspaceSnapshot['overview']['holdings'];
+    walletSnapshot.overview.slices = walletSnapshot.overview.holdings.map((holding) => ({
+      scopeId: authorityScope, accountClass: 'wallet', assetKey: holding.assetKey, asset: holding.asset,
+      quantity: holding.quantity, postingQuantity: holding.quantity, authorityQuantity: holding.quantity,
+      verificationStatus: 'verified_authority', authorityStatus: 'current', coverageStatus: 'complete', scopeStatus: 'resolved'
+    })) as ConnectionWorkspaceSnapshot['overview']['slices'];
+    const snapshots: DefiPositionSnapshot[] = [scope, otherScope].map((accountIdentityScope, index) => ({
+      snapshotId: `snapshot-${index}`, generation: 1, accountIdentityScope,
+      protocolId: 'aave-v3-ethereum', chainId: 1, status: 'complete', capturedAt: 1, blockNumber: 1,
+      evidence: [{ provider: 'ethereum-rpc', status: 'complete', blockNumber: 1, detail: 'fixture' }]
+    }));
+    const token = (contractAddress: string, symbol: string) => ({ chainId: 1 as const, contractAddress, symbol, decimals: 6 });
+    const rows: DefiPositionRow[] = [
+      { id: 'supply-this', snapshotId: 'snapshot-0', protocolId: 'aave-v3-ethereum', reserveKey: usdc, role: 'supply', underlying: token(usdc, 'USDC'), protocolToken: token(receipt, 'aUSDC'), quantity: 100, rawQuantity: '100000000', isCollateral: true },
+      { id: 'debt-this', snapshotId: 'snapshot-0', protocolId: 'aave-v3-ethereum', reserveKey: usdc, role: 'debt', underlying: token(usdc, 'USDC'), protocolToken: token(debtToken, 'variableDebtUSDC'), quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable' },
+      { id: 'supply-other', snapshotId: 'snapshot-1', protocolId: 'aave-v3-ethereum', reserveKey: usdc, role: 'supply', underlying: token(usdc, 'USDC'), protocolToken: token(`0x${'5'.repeat(40)}`, 'aUSDC'), quantity: 1000, rawQuantity: '1000000000', isCollateral: true }
+    ];
+    render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([], 'USD')}
+      formatMoney={(value) => `$${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
+      defiPositionSnapshots={snapshots} defiPositionRows={rows} />);
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('$60');
+    expect(screen.queryByText('aUSDC')).not.toBeInTheDocument();
+    expect(screen.getByText('Owed 90.0000')).toBeInTheDocument();
+    expect(screen.queryByText('1,000.0000')).not.toBeInTheDocument();
+    expect(screen.getAllByRole('region', { name: 'Aave v3 positions' })).toHaveLength(1);
   });
 });
