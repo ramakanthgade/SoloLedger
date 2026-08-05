@@ -55,16 +55,26 @@ vi.mock('./ExchangeConnectStep', () => ({
 vi.mock('./WalletAddressForm', () => ({
   WalletAddressForm: ({
     preselectChain,
-    defaultLabel
+    defaultLabel,
+    walletAppId,
+    onAddAnother,
+    onContinueInBackground
   }: {
     preselectChain?: string;
     defaultLabel?: string;
+    walletAppId?: string;
+    onAddAnother?: () => void;
+    onContinueInBackground?: () => void;
   }) => (
     <div
       data-testid="step-wallet-form"
       data-chain={preselectChain ?? 'none'}
       data-label={defaultLabel ?? 'none'}
-    />
+      data-wallet-app-id={walletAppId ?? 'none'}
+    >
+      <button onClick={onAddAnother}>Add another from form</button>
+      <button onClick={onContinueInBackground}>Continue in background</button>
+    </div>
   )
 }));
 vi.mock('./FileImportFlow', () => ({
@@ -168,7 +178,11 @@ describe('AddDataDrawer — step routing', () => {
 
     expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-label', 'MetaMask');
     expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-chain', 'ethereum');
+    expect(screen.getByTestId('step-wallet-form')).toHaveAttribute('data-wallet-app-id', 'metamask');
     expect(screen.getByRole('dialog', { name: 'Watch a MetaMask address' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add another from form' }));
+    expect(screen.getByRole('dialog', { name: 'Add data — choose source' })).toBeInTheDocument();
   });
 
   it('wallet-app flow preselects Bitcoin for a hardware wallet and nothing for Cardano', () => {

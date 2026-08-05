@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { getLookupAddresses, updateWalletLabel } from '@/lib/storage/db';
+import { getLookupAddresses } from '@/lib/storage/db';
 import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveSettings';
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import { isSaasMode } from '@/lib/saas/config';
@@ -14,8 +14,14 @@ import {
   toggleChain,
   type ChainImportOutcome
 } from '@/lib/rpc/multiChainImport';
-import { runWalletImport, useImportJob, importJob } from '@/lib/importJob';
+import {
+  runWalletImport,
+  useImportJob,
+  importJob,
+  type WalletInitialIdentity
+} from '@/lib/importJob';
 import { Button } from '@/components/ui/button';
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import { Toast, ToastViewport } from '@/components/ui/toast';
 import { AlertTriangle, Check, Eye, RefreshCw } from 'lucide-react';
 import { syncCoinGeckoRewardRegistryInBackground } from '@/lib/assets/coingeckoRewardRegistry';
@@ -82,6 +88,12 @@ interface WalletAddressFormProps {
   preselectChain?: ChainId;
   /** Wallet-name prefill (required field) — the wallet-app flow passes the app name ("MetaMask"). */
   defaultLabel?: string;
+  /** Wallet catalog identity selected in step 2; persisted independently of the editable label. */
+  walletAppId?: string;
+  /** Return to the wallet-app picker while the import continues in the background. */
+  onAddAnother?: () => void;
+  /** Close Add data and return to Connections while the import continues. */
+  onContinueInBackground?: () => void;
 }
 
 /**
@@ -99,7 +111,13 @@ interface WalletAddressFormProps {
  * opt-in checkbox reveals the multi-address paste with a warning that one
  * name for many addresses muddies the Transactions tab.
  */
-export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddressFormProps) {
+export function WalletAddressForm({
+  preselectChain,
+  defaultLabel,
+  walletAppId,
+  onAddAnother,
+  onContinueInBackground
+}: WalletAddressFormProps) {
   const [settings, setSettings] = useState<Awaited<ReturnType<typeof getEffectiveSettings>> | null>(null);
   const [chainId, setChainId] = useState<ChainId>(preselectChain ?? 'solana');
   const [addressText, setAddressText] = useState('');
@@ -121,6 +139,9 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   const [chainSummary, setChainSummary] = useState<ChainImportOutcome[] | null>(null);
   /** Chain currently importing (multi-chain progress line). */
   const [importingChain, setImportingChain] = useState<ChainId | null>(null);
+  const [showBackgroundPrompt, setShowBackgroundPrompt] = useState(false);
+  /** Address snapshot whose terminal global-job messages belong to this form. */
+  const [visibleJobAddress, setVisibleJobAddress] = useState<string | null>(null);
   /** Previous detected chain set — preserves checkbox choices across re-detects. */
   const detectedRef = useRef<ChainId[]>([]);
 
@@ -144,6 +165,16 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   };
 
   useEffect(() => { getEffectiveSettings().then(setSettings); }, []);
+
+  const changeAddressText = (next: string) => {
+    setAddressText(next);
+    setChainSummary(null);
+    setToasts([]);
+    setVisibleJobAddress(null);
+    detectedRef.current = [];
+    setDetection({ status: 'idle' });
+    setCheckedChains(new Set());
+  };
 
   // Auto-detect chain when addresses are typed
   useEffect(() => {
@@ -189,6 +220,32 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     (hasEvm && !manualChainMode
       ? allEvmDuplicate
       : parsedAddresses.every((a) => isImportedOn(a, chainId)));
+  const importedEvmChains = useMemo(
+    () => hasEvm
+      ? enabledEvmChainIds.filter((cid) => evmAddresses.some((address) => isImportedOn(address, cid)))
+      : [],
+    // lookedUp is a live-query snapshot; addressText covers the parsed EVM address identities.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [addressText, hasEvm, lookedUp]
+  );
+  const hasExistingEvmWallet = importedEvmChains.length > 0;
+  const initialIdentityForAddress = (address: string): WalletInitialIdentity => {
+    const existingEvmIdentity = isEvmAddress(address) ? [...lookedUp]
+      .filter((row) => isEvmAddress(row.address) &&
+        canonicalWalletAddress(row.chain, row.address) === canonicalWalletAddress(row.chain, address) &&
+        (row.label?.trim() || row.walletAppId?.trim()))
+      .sort((a, b) => a.chain.localeCompare(b.chain) || a.id.localeCompare(b.id))[0] : undefined;
+    // Existing grouped metadata is one authoritative pair. Never fill a
+    // missing half from the currently selected wallet app: that could create
+    // combinations such as a Ledger title with a persisted MetaMask icon.
+    if (existingEvmIdentity) {
+      return {
+        label: existingEvmIdentity.label?.trim() || undefined,
+        walletAppId: existingEvmIdentity.walletAppId?.trim() || undefined
+      };
+    }
+    return { label: nickname.trim(), walletAppId };
+  };
   const duplicateMessage = (() => {
     if (!allDuplicate) return '';
     const evmMulti = hasEvm && !manualChainMode;
@@ -230,9 +287,9 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
       return;
     }
     if (!lookupLoaded || allEvmDuplicate) {
-      // All-duplicate short-circuit: zero network calls for a wallet already
-      // imported on every supported EVM chain (and wait for the registry to
-      // load before deciding, so a duplicate paste never fires a burst).
+      // Fully covered short-circuit: zero network calls when every supported
+      // EVM chain is already connected. Partial duplicates are announced
+      // immediately, then detection may discover fresh active chains.
       detectedRef.current = [];
       setDetection({ status: 'idle' });
       return;
@@ -299,9 +356,6 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [addressText, manualChainMode, canDetectChains, settings, allEvmDuplicate, lookupLoaded]);
 
-  // A new paste invalidates the previous multi-chain summary.
-  useEffect(() => { setChainSummary(null); }, [addressText]);
-
   if (settings === null) return <p className="text-sm text-low">Loading wallet lookup…</p>;
 
   if (!settings.rpcLookupEnabled) {
@@ -362,20 +416,6 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
   const multiImportWalletCount =
     multiFreshWallets.length > 0 ? multiFreshWallets.length : evmAddresses.length;
 
-  /** Apply the wallet name to freshly imported rows (existing updateWalletLabel). */
-  const applyNickname = (addresses: string[], chains: ChainId[]) => {
-    const label = nickname.trim();
-    if (!label) return;
-    for (const addr of addresses) {
-      for (const cid of chains) {
-        void updateWalletLabel(
-          `${cid}:${canonicalWalletAddress(cid, addr)}`,
-          label
-        ).catch(() => undefined);
-      }
-    }
-  };
-
   /** Wallet name is required — block the connect and flag the field inline. */
   const requireName = (): boolean => {
     if (nickname.trim()) return true;
@@ -391,14 +431,25 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     // CoinGecko requests. Seven-day cache + single-flight keep this best effort.
     syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
     importJob.reset();
+    const operationToken = importJob._beginBatch();
     setChainSummary(null);
-    void runWalletImport(addrs, chain, settings, buildLookupConfig(chain, settings, {
-      customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
-      customApiKey: customApiKey || settings.customExplorerApiKey,
-      customAsset
-    }))
-      .then(() => applyNickname(addrs, [chain.id]))
-      .catch(() => undefined);
+    setVisibleJobAddress(addressText);
+    setShowBackgroundPrompt(true);
+    void runWalletImport(
+      addrs,
+      chain,
+      settings,
+      buildLookupConfig(chain, settings, {
+        customBaseUrl: customBaseUrl || settings.customExplorerBaseUrl,
+        customApiKey: customApiKey || settings.customExplorerApiKey,
+        customAsset
+      }),
+      false,
+      initialIdentityForAddress,
+      operationToken
+    )
+      .catch(() => undefined)
+      .finally(() => importJob._endBatch(operationToken));
   };
 
   /**
@@ -411,6 +462,8 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
     syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
     importJob.reset();
     setChainSummary(null);
+    setVisibleJobAddress(addressText);
+    setShowBackgroundPrompt(true);
     try {
       const outcomes = await runSequentialChainImport(evmAddresses, selectedChains, {
         settings,
@@ -419,10 +472,10 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
           customApiKey: customApiKey || settings.customExplorerApiKey,
           customAsset
         },
-        onChainStart: (cid) => setImportingChain(cid)
+        onChainStart: (cid) => setImportingChain(cid),
+        initialIdentity: initialIdentityForAddress
       });
       setChainSummary(outcomes);
-      applyNickname(evmAddresses, selectedChains);
     } catch (err) {
       // The orchestrator itself failed outside a per-chain import (e.g. the
       // lookup-registry read rejected) — surface it like a single-chain error
@@ -448,6 +501,20 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
         >
           <AlertTriangle className="mt-0.5 h-[18px] w-[18px] shrink-0 text-warn" aria-hidden="true" />
           <p className="text-[13px] leading-relaxed text-hi">{duplicateMessage}</p>
+        </div>
+      )}
+      {!allDuplicate && hasExistingEvmWallet && (
+        <div
+          className="flex items-start gap-3 rounded-xl border border-warn/40 bg-elev-2 px-3.5 py-3 shadow-xs"
+          data-testid="existing-wallet-warning"
+          role="alert"
+        >
+          <AlertTriangle className="mt-0.5 h-[18px] w-[18px] shrink-0 text-warn" aria-hidden="true" />
+          <p className="text-[13px] leading-relaxed text-hi">
+            This wallet is already imported on {importedEvmChains.map((cid) =>
+              CHAINS.find((chain) => chain.id === cid)?.label ?? cid
+            ).join(', ')}. Checking other active chains now; Import stays disabled unless new chain coverage is available or selected.
+          </p>
         </div>
       )}
 
@@ -480,7 +547,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
           <input
             className={`${inputCls} font-mono`}
             value={addressText}
-            onChange={(e) => setAddressText(e.target.value.split(/[\n,]/)[0]?.trim() ?? '')}
+            onChange={(e) => changeAddressText(e.target.value.split(/[\n,]/)[0]?.trim() ?? '')}
             placeholder="Paste one wallet address or xPub — BTC, Solana and EVM chains are auto-detected."
           />
         </label>
@@ -490,7 +557,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
           <textarea
             className={`${inputCls} h-24 font-mono`}
             value={addressText}
-            onChange={(e) => setAddressText(e.target.value)}
+            onChange={(e) => changeAddressText(e.target.value)}
             placeholder={
               'Paste any wallet addresses here.\nThe app auto-detects BTC, Solana, and the active chains of EVM wallets.\nYou can always pick a chain manually below.'
             }
@@ -507,7 +574,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
             setMultiAddress(on);
             // Back to one address — keep only the first so a hidden extra
             // line cannot silently import with it.
-            if (!on) setAddressText((t) => t.split(/[\n,]/)[0]?.trim() ?? '');
+            if (!on) changeAddressText(addressText.split(/[\n,]/)[0]?.trim() ?? '');
           }}
         />
         <span>
@@ -677,6 +744,7 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
         <Button
           disabled={
             job.active ||
+            showDetecting ||
             allDuplicate ||
             (showChainPicker
               ? selectedChains.length === 0 || multiFreshTotal === 0
@@ -728,24 +796,24 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
 
       {/* Job result (shown after job completes) — hidden when the per-chain summary is up,
           and suppressed mid-batch (importingChain set) so chain N's result doesn't flash between chains */}
-      {!job.active && job.result && !chainSummary && !importingChain && (
+      {!job.active && job.result && visibleJobAddress === addressText && !chainSummary && !importingChain && (
         <div className="rounded-lg border border-primary/30 bg-primary/10 px-3 py-2 text-xs text-gain">
           <strong>{job.result.imported}</strong> transactions imported
           {job.result.swapsDetected > 0 ? `, ${job.result.swapsDetected} swaps detected` : ''}
           {job.result.pricesUpdated > 0 ? `, ${job.result.pricesUpdated} prices fetched` : ''}.
         </div>
       )}
-      {job.error && !chainSummary && (
+      {job.error && visibleJobAddress === addressText && !chainSummary && (
         <div className="rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-xs text-loss">
           {job.error}
         </div>
       )}
-      {!job.active && job.warnings.length > 0 && (
+      {!job.active && visibleJobAddress === addressText && job.warnings.length > 0 && (
         <div className="space-y-1 text-xs text-warn">
           {job.warnings.slice(0, 6).map((w, i) => <p key={i}>{w}</p>)}
         </div>
       )}
-      {!job.active && job.failed.length > 0 && (
+      {!job.active && visibleJobAddress === addressText && job.failed.length > 0 && (
         <div className="space-y-1 rounded-lg border border-loss/30 bg-loss/10 px-3 py-2 text-xs text-loss">
           {job.failed.map((f, i) => <p key={i}>{f.address}: {f.message}</p>)}
         </div>
@@ -775,6 +843,21 @@ export function WalletAddressForm({ preselectChain, defaultLabel }: WalletAddres
           />
         ))}
       </ToastViewport>
+      <ConfirmDialog
+        open={showBackgroundPrompt}
+        title="Add another wallet?"
+        body="Your wallet import is continuing in the background. Would you like to choose another wallet or address now?"
+        confirmLabel="Yes"
+        cancelLabel="No"
+        onConfirm={() => {
+          setShowBackgroundPrompt(false);
+          onAddAnother?.();
+        }}
+        onCancel={() => {
+          setShowBackgroundPrompt(false);
+          onContinueInBackground?.();
+        }}
+      />
     </div>
   );
 }

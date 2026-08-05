@@ -135,6 +135,25 @@ describe('groupWallets', () => {
     expect(groups.map((group) => group.address).sort()).toEqual(['Base58Case', 'base58Case']);
     expect(groups.every((group) => group.rows.length === 1 && group.chains.length === 1)).toBe(true);
   });
+
+  it('resolves conflicting EVM metadata from one stable row regardless of sync order', () => {
+    const ethereum = walletRow({
+      id: 'ethereum:0xaaa', chain: 'ethereum', address: '0xaaa',
+      label: 'MetaMask savings', walletAppId: 'metamask', lastSyncedAt: 1
+    });
+    const polygon = walletRow({
+      id: 'polygon:0xaaa', chain: 'polygon', address: '0xaaa',
+      label: 'Ledger savings', walletAppId: 'ledger', lastSyncedAt: 999
+    });
+
+    const forward = groupWallets([ethereum, polygon])[0];
+    const reversed = groupWallets([
+      { ...polygon, lastSyncedAt: 2 },
+      { ...ethereum, lastSyncedAt: 1000 }
+    ])[0];
+    expect(forward).toMatchObject({ label: 'MetaMask savings', walletAppId: 'metamask' });
+    expect(reversed).toMatchObject({ label: 'MetaMask savings', walletAppId: 'metamask' });
+  });
 });
 
 describe('walletLane', () => {
@@ -277,7 +296,8 @@ describe('buildCards', () => {
 
     const app = cards.find((c) => c.lane === 'wallets')!;
     expect(app.title).toBe('MetaMask · Main');
-    expect(app.subtitle).toContain('Ethereum');
+    expect(app.iconId).toBe('metamask');
+    expect(app.subtitle).toBe('0xAAA · Multi-chain');
     expect(app.tags).toContain('2 chains');
     expect(app.status).toEqual({ tone: 'gain', label: 'Watching' });
     expect(app.txLine).toBe('47 transactions');
@@ -287,6 +307,23 @@ describe('buildCards', () => {
     expect(chain.title).toBe('bc1qxy2k');
     expect(chain.iconId).toBe('bitcoin');
     expect(chain.tags).toEqual(['Blockchain', 'Address']);
+  });
+
+  it('preserves persisted wallet-app identity independently of a custom label', () => {
+    const [card] = buildCards(input({
+      wallets: [walletRow({
+        chain: 'ethereum',
+        address: '0xAAA',
+        label: 'Long-term savings',
+        walletAppId: 'metamask'
+      })]
+    }));
+    expect(card).toMatchObject({
+      lane: 'wallets',
+      iconId: 'metamask',
+      title: 'Long-term savings',
+      subtitle: '0xAAA · Ethereum'
+    });
   });
 
   it('says "Not synced yet" (never an epoch date) for a wallet that has never synced', () => {

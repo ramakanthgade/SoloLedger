@@ -299,6 +299,11 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
 
   const saveRename = async () => {
     if (!renaming) return;
+    if (importJob.get().active) {
+      setRenaming(null);
+      pushToast({ tone: 'warn', title: 'Wait for wallet import to finish' });
+      return;
+    }
     const label = renameDraft.trim();
     await Promise.all(renaming.rows.map((r) => updateWalletLabel(r.id, label)));
     setRenaming(null);
@@ -375,6 +380,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
         {
           label: 'Rename',
           icon: <Pencil className="h-4 w-4" aria-hidden="true" />,
+          disabled: walletJob.active,
           onSelect: () => {
             setRenaming({ cardId: card.id, rows });
             setRenameDraft(rows.map((r) => r.label).find((l) => l?.trim())?.trim() ?? '');
@@ -384,6 +390,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
           label: 'Remove',
           icon: <Trash2 className="h-4 w-4" aria-hidden="true" />,
           danger: true,
+          disabled: walletJob.active,
           onSelect: () => setRemoveWallet(card)
         }
       ];
@@ -801,17 +808,26 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
         confirmLabel="Remove wallet"
         onConfirm={async () => {
           if (!removeWallet) return;
+          if (importJob.get().active) {
+            setRemoveWallet(null);
+            pushToast({ tone: 'warn', title: 'Wait for wallet import to finish' });
+            return;
+          }
           const rows = removeWallet.walletRows ?? [];
-          // Race guard (ported from WalletLookupPanel): an import could FINISH
-          // during the delete await, flipping active to false — resetting then
-          // would erase that just-finished import's completion banner. Only
-          // reset when the job was idle before AND after the await.
-          const hadActiveJob = importJob.get().active;
-          for (const row of rows) {
-            await deleteLookupAddressAndTransactions(row.id);
+          // Serialize deletion with imports and automatic sync. A stale sync
+          // already queued ahead of this token finishes first; later syncs see
+          // the source missing and skip rather than resurrecting it.
+          const operationToken = importJob._beginBatch();
+          try {
+            await importJob._waitForBatch(operationToken);
+            for (const row of rows) {
+              await deleteLookupAddressAndTransactions(row.id);
+            }
+          } finally {
+            importJob._endBatch(operationToken);
           }
           setRemoveWallet(null);
-          if (!hadActiveJob && !importJob.get().active) importJob.reset();
+          if (!importJob.get().active) importJob.reset();
           pushToast({ tone: 'primary', title: 'Wallet removed' });
         }}
         onCancel={() => setRemoveWallet(null)}

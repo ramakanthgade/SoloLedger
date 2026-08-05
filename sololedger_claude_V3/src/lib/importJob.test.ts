@@ -322,6 +322,7 @@ describe('runWalletImport post-dedup imported count', () => {
   });
 
   it('reports no new transactions when sync dedup removes every staged row', async () => {
+    lookupRows = [{ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' }];
     vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
       transactions: [importedTx, secondImportedTx],
       warnings: [],
@@ -439,11 +440,23 @@ describe('runWalletImport wallet-registry gating (Item 5g — never persist fail
   });
 
   it('still refreshes the registry row after a successful Sync (existing-wallet path intact)', async () => {
+    lookupRows = [{ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' }];
     await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
 
     expect(upsertLookupAddress).toHaveBeenCalled();
     const upsertedAddresses = vi.mocked(upsertLookupAddress).mock.calls.map((c) => c[1]);
     expect(new Set(upsertedAddresses)).toEqual(new Set(['0xabc']));
+  });
+
+  it('does not fetch or recreate a wallet removed before a queued Sync starts', async () => {
+    lookupRows = [];
+    vi.mocked(lookupManyAddresses).mockClear();
+
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
+
+    expect(lookupManyAddresses).not.toHaveBeenCalled();
+    expect(upsertLookupAddress).not.toHaveBeenCalled();
+    expect(importJob.get().warnings).toContain('0xabc…xabc: wallet was removed — sync skipped.');
   });
 
   it('does not skip a case-distinct Base58 wallet that is already registered', async () => {
@@ -457,6 +470,7 @@ describe('runWalletImport wallet-registry gating (Item 5g — never persist fail
   });
 
   it('keeps incremental cursors and skip signatures scoped to exact chain/address identity', async () => {
+    lookupRows = [{ id: 'solana:Base58Case', chain: 'solana', address: 'Base58Case' }];
     store.set('exact', {
       ...importedTx, id: 'exact', chain: 'solana', walletAddress: 'Base58Case',
       source: 'rpc:helius', sourceRef: 'exact-sig', timestamp: 20
@@ -516,10 +530,63 @@ describe('wallet-remove reset guard', () => {
   });
 });
 
+describe('multi-chain batch lock', () => {
+  it('keeps the shared job active across per-chain completion gaps', () => {
+    importJob.reset();
+    const token = importJob._beginBatch();
+    importJob._setPhase('importing');
+
+    importJob._finish(
+      { imported: 2, pricesUpdated: 0, swapsDetected: 0 },
+      [],
+      []
+    );
+
+    expect(importJob.get()).toMatchObject({ active: true, batchActive: true });
+    importJob._endBatch(token);
+    expect(importJob.get()).toMatchObject({ active: false, batchActive: false });
+  });
+
+  it('releases only the matching owner and reset cannot clear live ownership', () => {
+    importJob.reset();
+    const first = importJob._beginBatch();
+    const second = importJob._beginBatch();
+    importJob.reset();
+    expect(importJob.get()).toMatchObject({ active: true, batchActive: true });
+    importJob._endBatch(first);
+    expect(importJob.get()).toMatchObject({ active: true, batchActive: true });
+    importJob._endBatch(second);
+    expect(importJob.get()).toMatchObject({ active: false, batchActive: false });
+  });
+
+  it('queues a later owner until the current owner releases', async () => {
+    importJob.reset();
+    const first = importJob._beginBatch();
+    const second = importJob._beginBatch();
+    let secondReady = false;
+    void importJob._waitForBatch(second).then(() => { secondReady = true; });
+    await Promise.resolve();
+    expect(secondReady).toBe(false);
+
+    importJob._endBatch(first);
+    await Promise.resolve();
+    expect(secondReady).toBe(true);
+    importJob._endBatch(second);
+  });
+});
+
 describe('runWalletImport post-sync balance refresh (round 4)', () => {
   beforeEach(() => {
     store.clear();
+    lookupRows = [{ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' }];
     importJob.reset();
+    vi.mocked(lookupManyAddresses).mockReset().mockResolvedValue({
+      transactions: [importedTx],
+      warnings: [],
+      failed: [],
+      perAddress: [{ address: '0xabc', count: 1 }]
+    });
+    vi.mocked(deduplicateTransactions).mockReset().mockResolvedValue(0);
     refreshWalletBalancesForAddresses.mockClear();
     refreshWalletBalancesForAddresses.mockResolvedValue({ updated: 1, skipped: [], failed: [] });
   });

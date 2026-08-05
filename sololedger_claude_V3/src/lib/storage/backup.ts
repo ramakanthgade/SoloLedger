@@ -113,6 +113,7 @@ function redactedLookupSource(row: LookupAddressRow): LookupAddressRow {
   return {
     id: row.id, chain: row.chain, address: row.address,
     label: typeof row.label === 'string' ? row.label : undefined,
+    walletAppId: typeof row.walletAppId === 'string' ? row.walletAppId : undefined,
     lastSyncedAt: row.lastSyncedAt, txCount: row.txCount,
     lastSyncedSignature: typeof row.lastSyncedSignature === 'string' ? row.lastSyncedSignature : undefined,
     authorityGeneration: row.authorityGeneration, revision: row.revision,
@@ -266,6 +267,7 @@ function validateV3(payload: BackupFileV3): void {
   for (const row of payload.lookupAddresses) {
     if (!row.chain.trim() || !row.address.trim() || !Number.isFinite(row.lastSyncedAt) ||
       !Number.isSafeInteger(row.txCount) || row.txCount < 0 ||
+      (row.walletAppId != null && (typeof row.walletAppId !== 'string' || !row.walletAppId.trim())) ||
       (row.sourceIncarnation != null && (typeof row.sourceIncarnation !== 'string' || !row.sourceIncarnation.trim()))) {
       throw new Error('Invalid backup file: lookup source shape is malformed.');
     }

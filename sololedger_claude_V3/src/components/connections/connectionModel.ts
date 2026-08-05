@@ -20,6 +20,7 @@ import { getAutoSyncExchange } from '@/components/import/autoSyncExchanges';
 import { getImportSource } from '@/components/import/importSources';
 import { CHAINS } from '@/lib/rpc/providers';
 import { brandLabel, chainIconId, parserIconId, WALLET_APP_NAMES } from './brandIcons';
+import { WALLET_CATALOG } from './walletCatalog';
 import {
   walletConnectionGroupKey
 } from '@/lib/ledger/chainNamespace';
@@ -72,6 +73,7 @@ export interface WalletGroup {
   key: string;
   address: string;
   label?: string;
+  walletAppId?: string;
   rows: LookupAddressRow[];
   chains: string[];
   txCount: number;
@@ -107,7 +109,11 @@ export function relativeTime(ts: number | null | undefined, now: number = Date.n
 /** Group EVM rows across chains; preserve exact non-EVM chain/address identities. */
 export function groupWallets(rows: LookupAddressRow[]): WalletGroup[] {
   const byAddress = new Map<string, LookupAddressRow[]>();
-  for (const row of rows) {
+  // Sync timestamps reorder storage reads. Resolve conflicting metadata in a
+  // stable chain/id order so refreshing one chain cannot flip card identity.
+  const stableRows = [...rows].sort((a, b) =>
+    a.chain.localeCompare(b.chain) || a.id.localeCompare(b.id));
+  for (const row of stableRows) {
     const key = walletConnectionGroupKey(row.chain, row.address);
     const group = byAddress.get(key) ?? [];
     group.push(row);
@@ -115,11 +121,14 @@ export function groupWallets(rows: LookupAddressRow[]): WalletGroup[] {
   }
   return Array.from(byAddress.entries()).map(([key, groupRows]) => {
     const chains = Array.from(new Set(groupRows.map((r) => r.chain)));
-    const label = groupRows.map((r) => r.label?.trim()).find((l) => l);
+    const metadataRow = groupRows.find((row) => row.label?.trim() || row.walletAppId?.trim());
+    const label = metadataRow?.label?.trim();
+    const walletAppId = metadataRow?.walletAppId?.trim();
     return {
       key,
       address: groupRows[0].address,
       label: label || undefined,
+      walletAppId: walletAppId || undefined,
       rows: groupRows,
       chains,
       txCount: groupRows.reduce((sum, r) => sum + r.txCount, 0),
@@ -146,9 +155,19 @@ export function containsWord(label: string, name: string): boolean {
 
 /** Wallet-app heuristic: labeled after a known wallet app, or multi-chain. */
 export function walletLane(group: WalletGroup): 'wallets' | 'chains' {
+  if (group.walletAppId) return 'wallets';
   const label = group.label?.toLowerCase() ?? '';
   if (label && WALLET_APP_NAMES.some((name) => containsWord(label, name))) return 'wallets';
   return group.chains.length > 1 ? 'wallets' : 'chains';
+}
+
+/** Resolve legacy wallet-app rows that predate persisted catalog identity. */
+function walletAppIdFromLabel(label: string | undefined): string | undefined {
+  const normalized = label?.toLowerCase() ?? '';
+  if (!normalized) return undefined;
+  return WALLET_CATALOG.find((wallet) =>
+    [wallet.name, ...(wallet.aliases ?? [])].some((name) => containsWord(normalized, name.toLowerCase()))
+  )?.id;
 }
 
 function chainLabel(chainId: string): string {
@@ -284,16 +303,18 @@ export function buildCards(input: BuildCardsInput): ConnectionCardData[] {
   for (const group of groupWallets(input.wallets)) {
     const lane = walletLane(group);
     const primaryChain = group.chains[0];
+    const walletAppId = group.walletAppId ?? walletAppIdFromLabel(group.label);
+    const chainSubtitle = group.chains.length > 1 ? 'Multi-chain' : chainLabel(primaryChain);
     cards.push({
       id: `wallet:${group.key}`,
       kind: 'wallet',
       lane,
-      iconId: chainIconId(primaryChain) ?? null,
+      iconId: lane === 'wallets' && walletAppId ? walletAppId : (chainIconId(primaryChain) ?? null),
       iconFallback: group.label ?? chainLabel(primaryChain),
       title: group.label ?? shortAddress(group.address),
       subtitle: group.label
-        ? `${shortAddress(group.address)} · ${chainLabel(primaryChain)}`
-        : chainLabel(primaryChain),
+        ? `${shortAddress(group.address)} · ${chainSubtitle}`
+        : chainSubtitle,
       tags: [
         lane === 'wallets' ? 'Wallet app' : 'Blockchain',
         group.chains.length > 1 ? `${group.chains.length} chains` : 'Address'

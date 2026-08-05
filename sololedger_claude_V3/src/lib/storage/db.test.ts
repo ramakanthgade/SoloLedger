@@ -25,6 +25,7 @@ import {
   transactionExchangeKey,
   transactionSourceKey,
   transactionImportKey,
+  updateWalletLabel,
   upsertLookupAddress,
   upsertOpeningBalance,
   walletBalanceId
@@ -206,6 +207,67 @@ describe('v11 authority persistence', () => {
     expect(walletBalanceId('ethereum', '0xAbC', 'USDC', '0x00000000000000000000000000000000000000AA')).toBe(
       walletBalanceId('ethereum', '0xabc', 'USDC', '0x00000000000000000000000000000000000000aa')
     );
+  });
+
+  it('writes wallet-app identity and preserves it when a connection is renamed', async () => {
+    const id = 'ethereum:0xabc';
+    await db.lookupAddresses.put({
+      id,
+      chain: 'ethereum',
+      address: '0xabc',
+      lastSyncedAt: 1,
+      txCount: 0
+    });
+
+    await updateWalletLabel(id, 'MetaMask', 'metamask');
+    expect(await db.lookupAddresses.get(id)).toMatchObject({
+      label: 'MetaMask',
+      walletAppId: 'metamask'
+    });
+
+    await updateWalletLabel(id, 'Long-term savings');
+
+    expect(await db.lookupAddresses.get(id)).toMatchObject({
+      label: 'Long-term savings',
+      walletAppId: 'metamask'
+    });
+  });
+
+  it('sets initial wallet identity at row creation without overwriting existing metadata', async () => {
+    await upsertLookupAddress('ethereum', '0xAbC', 0, undefined, {
+      label: 'MetaMask',
+      walletAppId: 'metamask'
+    });
+    expect(await db.lookupAddresses.get('ethereum:0xabc')).toMatchObject({
+      label: 'MetaMask',
+      walletAppId: 'metamask'
+    });
+
+    await upsertLookupAddress('ethereum', '0xabc', 0, undefined, {
+      label: 'Stale form name',
+      walletAppId: 'ledger'
+    });
+    expect(await db.lookupAddresses.get('ethereum:0xabc')).toMatchObject({
+      label: 'MetaMask',
+      walletAppId: 'metamask'
+    });
+  });
+
+  it('serializes competing initial identities without replacing the committed winner', async () => {
+    await Promise.all([
+      upsertLookupAddress('ethereum', '0xAbC', 0, undefined, {
+        label: 'MetaMask wallet', walletAppId: 'metamask'
+      }),
+      upsertLookupAddress('ethereum', '0xabc', 0, undefined, {
+        label: 'Ledger wallet', walletAppId: 'ledger'
+      })
+    ]);
+
+    const stored = await db.lookupAddresses.get('ethereum:0xabc');
+    expect([
+      ['MetaMask wallet', 'metamask'],
+      ['Ledger wallet', 'ledger']
+    ]).toContainEqual([stored?.label, stored?.walletAppId]);
   });
 
   it('rejects incoherent generations without a partial write', async () => {

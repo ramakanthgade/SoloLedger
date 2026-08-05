@@ -11,7 +11,13 @@
  * the lookup-address registry, which `runWalletImport` re-checks internally).
  */
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
-import { importJob, runWalletImport } from '@/lib/importJob';
+import {
+  importJob,
+  runWalletImport,
+  type ImportOperationToken,
+  type WalletInitialIdentity,
+  type WalletInitialIdentityResolver
+} from '@/lib/importJob';
 import { getLookupAddresses } from '@/lib/storage/db';
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import type { TaxSettings } from '@/types/transaction';
@@ -76,6 +82,8 @@ export interface SequentialChainImportConfig {
   };
   /** Progress hook fired just before each chain's import starts. */
   onChainStart?: (chainId: ChainId, index: number, total: number) => void;
+  initialIdentity?: WalletInitialIdentity | WalletInitialIdentityResolver;
+  operationToken?: ImportOperationToken;
 }
 
 /**
@@ -92,45 +100,58 @@ export async function runSequentialChainImport(
   config: SequentialChainImportConfig
 ): Promise<ChainImportOutcome[]> {
   const outcomes: ChainImportOutcome[] = [];
+  const operationToken = config.operationToken ?? importJob._beginBatch();
 
-  for (let i = 0; i < chainIds.length; i++) {
-    const chainId = chainIds[i];
-    const chain = CHAINS.find((c) => c.id === chainId);
-    if (!chain) continue;
+  try {
+    await importJob._waitForBatch(operationToken);
+    for (let i = 0; i < chainIds.length; i++) {
+      const chainId = chainIds[i];
+      const chain = CHAINS.find((c) => c.id === chainId);
+      if (!chain) continue;
 
     // Re-read the registry per chain: earlier iterations may have just added
     // (chain, address) pairs, and a fresh read mirrors runWalletImport's own
     // already-imported check.
     // eslint-disable-next-line no-await-in-loop
-    const existing = await getLookupAddresses();
-    const known = new Set(
-      existing.filter((r) => r.chain === chainId).map((r) => r.address.toLowerCase())
-    );
-    const fresh = addresses.filter((a) => !known.has(a.toLowerCase()));
-    const skippedAddresses = addresses.length - fresh.length;
-
-    if (fresh.length === 0) {
-      outcomes.push({
-        chainId,
-        chainLabel: chain.label,
-        status: 'skipped',
-        imported: 0,
-        skippedAddresses,
-        warnings: [],
-        failures: []
-      });
-      continue;
-    }
-
-    config.onChainStart?.(chainId, i, chainIds.length);
-    try {
-      // eslint-disable-next-line no-await-in-loop
-      await runWalletImport(
-        fresh,
-        chain,
-        config.settings,
-        buildLookupConfig(chain, config.settings, config.lookupExtras)
+      const existing = await getLookupAddresses();
+      const known = new Set(
+        existing.filter((r) => r.chain === chainId).map((r) => r.address.toLowerCase())
       );
+      const fresh = addresses.filter((a) => !known.has(a.toLowerCase()));
+      const skippedAddresses = addresses.length - fresh.length;
+
+      if (fresh.length === 0) {
+        outcomes.push({
+          chainId,
+          chainLabel: chain.label,
+          status: 'skipped',
+          imported: 0,
+          skippedAddresses,
+          warnings: [],
+          failures: []
+        });
+        continue;
+      }
+
+      config.onChainStart?.(chainId, i, chainIds.length);
+      try {
+      // eslint-disable-next-line no-await-in-loop
+      const lookupConfig = buildLookupConfig(chain, config.settings, config.lookupExtras);
+      if (config.initialIdentity) {
+        await runWalletImport(
+          fresh,
+          chain,
+          config.settings,
+          lookupConfig,
+          false,
+          config.initialIdentity,
+          operationToken
+        );
+      } else {
+        await runWalletImport(
+          fresh, chain, config.settings, lookupConfig, false, undefined, operationToken
+        );
+      }
       const state = importJob.get();
       // importJob._error leaves the PREVIOUS chain's result/warnings/failed in
       // place — attach them only when this chain actually succeeded.
@@ -145,18 +166,21 @@ export async function runSequentialChainImport(
         // `error` is present only on failure (the summary reads it via ??).
         ...(state.error ? { error: state.error } : {})
       });
-    } catch (err) {
-      outcomes.push({
-        chainId,
-        chainLabel: chain.label,
-        status: 'failed',
-        imported: 0,
-        skippedAddresses,
-        warnings: [],
-        failures: [],
-        error: err instanceof Error ? err.message : 'Import failed.'
-      });
+      } catch (err) {
+        outcomes.push({
+          chainId,
+          chainLabel: chain.label,
+          status: 'failed',
+          imported: 0,
+          skippedAddresses,
+          warnings: [],
+          failures: [],
+          error: err instanceof Error ? err.message : 'Import failed.'
+        });
+      }
     }
+  } finally {
+    if (!config.operationToken) importJob._endBatch(operationToken);
   }
 
   return outcomes;
