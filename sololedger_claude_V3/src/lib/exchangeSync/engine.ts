@@ -26,7 +26,7 @@ import {
   exchangeBalanceId,
   type ExchangeConnectionRow
 } from '@/lib/storage/db';
-import { binanceSpotEndpointProof, type AuthorityAssetRow, type AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
+import { binanceSpotEndpointProof, bitfinexSpotEndpointProof, type AuthorityAssetRow, type AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import {
   assertValidSourceCoverageRow,
   type EndpointCoverageOutcome,
@@ -115,6 +115,11 @@ export const CRYPTOCOM_MAX_REQUESTS_PER_PHASE = 8_000;
 export const CRYPTOCOM_TRADE_WINDOW_MS = 23.5 * 3_600_000;
 export const CRYPTOCOM_TRANSFER_WINDOW_MS = 89 * 86_400_000;
 export const CRYPTOCOM_RETENTION_MS = 180 * 86_400_000;
+export const BITFINEX_TRADE_RETENTION_MS = 7 * 86_400_000;
+export const BITFINEX_MOVEMENT_RETENTION_MS = 90 * 86_400_000;
+/** Bitfinex phases count every physical request attempt, including retries. */
+export const BITFINEX_MAX_REQUESTS_PER_PHASE = 200;
+const BITFINEX_HISTORY_LIMIT = 1000;
 const CRYPTOCOM_TRADE_LIMIT = 100;
 const CRYPTOCOM_TRANSFER_LIMIT = 200;
 /** HTX matchresults requires a range no wider than 48 hours. */
@@ -155,7 +160,8 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   // published, so use the conservative beginning of that launch month.
   gateio: Date.UTC(2013, 3, 1),
   htx: Date.UTC(2013, 8, 1), // Huobi/HTX launched in September 2013
-  cryptocom: Date.UTC(2019, 10, 14) // Crypto.com Exchange public beta
+  cryptocom: Date.UTC(2019, 10, 14), // Crypto.com Exchange public beta
+  bitfinex: Date.UTC(2012, 8, 1) // Bitfinex launched in 2012
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -171,6 +177,8 @@ export interface SyncEngineDeps {
   htxMaxTradeRequests?: number;
   /** Test seam; production uses CRYPTOCOM_MAX_REQUESTS_PER_PHASE. */
   cryptocomMaxRequests?: number;
+  /** Test seam; production uses BITFINEX_MAX_REQUESTS_PER_PHASE per history phase. */
+  bitfinexMaxRequests?: number;
 }
 
 export interface SyncHooks {
@@ -371,6 +379,30 @@ export interface PaginateResult<T> {
   partial: boolean;
   pages: number;
   termination: 'exhausted' | 'page_budget' | 'empty_hop_budget' | 'nonadvancing';
+}
+
+const RETRYABLE_HISTORY_TERMINATIONS = new Set<string>([
+  'page_budget',
+  'empty_hop_budget'
+]);
+
+export function historyContinuationWarnings(
+  exchange: ExchangeId,
+  outcomes: ReadonlyArray<{ termination?: string }>
+): string[] {
+  const warnings: string[] = [];
+  const bitfinexNonadvancing = exchange === 'bitfinex' &&
+    outcomes.some((outcome) => outcome.termination === 'nonadvancing');
+  if (bitfinexNonadvancing) {
+    warnings.push(
+      'Bitfinex API cannot paginate this timestamp safely. Export Bitfinex Trades or Movements and review the affected timestamp manually before API retention expires.'
+    );
+  }
+  const retryable = outcomes.some((outcome) =>
+    (outcome.termination != null && RETRYABLE_HISTORY_TERMINATIONS.has(outcome.termination)) ||
+    (exchange !== 'bitfinex' && outcome.termination === 'nonadvancing'));
+  if (retryable) warnings.push('History continues — sync again to fetch more.');
+  return warnings;
 }
 
 export interface BybitOrderLookups {
@@ -770,6 +802,50 @@ async function physicalPage<T>(args: {
 }
 
 /**
+ * Bitfinex history is ascending and uses an inclusive `start` boundary. Keep
+ * one retry-inclusive physical-attempt budget for the complete phase; retries
+ * resume the current page and never restart the paginator. Native ids dedup
+ * inclusive boundaries. On interruption, the last requested boundary is the
+ * only safe frontier because a full page can hide more rows at that same ms.
+ */
+export async function paginateBitfinexHistory<T extends PageRow>(args: {
+  fetchPage: (start: number, end: number) => Promise<T[]>;
+  since: number;
+  now: number;
+  fullPage?: number;
+  maxRequests?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<PaginateResult<T>> {
+  const rows: T[] = [];
+  const seenIds = new Set<string>();
+  const attempts = { used: 0, max: args.maxRequests ?? BITFINEX_MAX_REQUESTS_PER_PHASE };
+  const sleep = args.sleep ?? (async () => {});
+  const fullPage = args.fullPage ?? BITFINEX_HISTORY_LIMIT;
+  let start = args.since;
+
+  for (;;) {
+    const page = await physicalPage({ request: () => args.fetchPage(start, args.now), attempts, sleep });
+    if (page == null) {
+      return { rows, maxTs: start, partial: true, pages: attempts.used, termination: 'page_budget' };
+    }
+    for (const row of page) {
+      const id = row.id == null ? undefined : String(row.id);
+      if (id && seenIds.has(id)) continue;
+      if (id) seenIds.add(id);
+      rows.push(row);
+    }
+    if (page.length < fullPage) {
+      return { rows, maxTs: args.now, partial: false, pages: attempts.used, termination: 'exhausted' };
+    }
+    const pageMax = maxTimestamp(page);
+    if (pageMax == null || pageMax <= start) {
+      return { rows, maxTs: start, partial: true, pages: attempts.used, termination: 'nonadvancing' };
+    }
+    start = pageMax;
+  }
+}
+
+/**
  * Crypto.com private/get-trades is newest-first. Exhaust each 23.5-hour
  * window backwards by moving end_time to the oldest returned millisecond.
  * Inclusive boundaries are deduped by native trade_id. A full page with 100+
@@ -1081,6 +1157,23 @@ export function cryptocomRetainedSince(requested: number, now: number): {
   return { since: Math.max(requested, floor), floor, truncated: requested < floor };
 }
 
+export function bitfinexRetainedSince(requested: number, now: number, retentionMs: number): {
+  since: number;
+  floor: number;
+  truncated: boolean;
+} {
+  const floor = now - retentionMs;
+  return { since: Math.max(requested, floor), floor, truncated: requested < floor };
+}
+
+export type BitfinexMovementDisposition = 'settled' | 'pending' | 'terminal';
+
+export function bitfinexMovementDisposition(transfer: UnifiedTransfer): BitfinexMovementDisposition {
+  if (transfer.status === 'ok') return 'settled';
+  if (transfer.status === 'failed' || transfer.status === 'canceled') return 'terminal';
+  return 'pending';
+}
+
 /** Coinbase v2 send/receive rows are the only in-scope transfer shapes. */
 function isCoinbaseChainTransfer(row: UnifiedTransfer): boolean {
   const t = row.info?.type;
@@ -1096,7 +1189,8 @@ async function fetchTransferKind(
   coinbaseCurrencies: string[],
   warnings: string[],
   sleep?: (ms: number) => Promise<void>,
-  cryptocomMaxRequests?: number
+  cryptocomMaxRequests?: number,
+  bitfinexMaxRequests?: number
 ): Promise<FetchPlanOutcome<UnifiedTransfer>> {
   const fetchDeposits = kind === 'deposits';
   if (exchange === 'kraken') {
@@ -1236,6 +1330,21 @@ async function fetchTransferKind(
       sleep
     });
   }
+  if (exchange === 'bitfinex') {
+    if (!client.fetchDepositsWithdrawals) {
+      throw new Error('Bitfinex Movements history is unavailable in this CCXT build.');
+    }
+    return paginateBitfinexHistory<UnifiedTransfer>({
+      fetchPage: (start, end) => client.fetchDepositsWithdrawals!(undefined, start, BITFINEX_HISTORY_LIMIT, {
+        end,
+        sort: 1
+      }),
+      since,
+      now,
+      maxRequests: bitfinexMaxRequests,
+      sleep
+    });
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -1285,7 +1394,7 @@ async function fetchBinanceTradesById(
     advanceOnFullPage: false
   });
   const rows = since > 0 ? outcome.rows.filter((t) => (t.timestamp ?? 0) >= since) : outcome.rows;
-  return { rows, maxTs: maxTimestamp(rows), partial: outcome.partial };
+  return { ...outcome, rows, maxTs: maxTimestamp(rows) };
 }
 
 async function fetchTradesForSymbol(
@@ -1299,6 +1408,7 @@ async function fetchTradesForSymbol(
     sleep?: (ms: number) => Promise<void>;
     htxBudget?: HtxRequestBudget;
     cryptocomMaxRequests?: number;
+    bitfinexMaxRequests?: number;
   }
 ): Promise<FetchPlanOutcome<UnifiedTrade>> {
   switch (exchange) {
@@ -1398,6 +1508,17 @@ async function fetchTradesForSymbol(
         maxRequests: opts?.cryptocomMaxRequests,
         sleep: opts?.sleep
       });
+    case 'bitfinex':
+      return paginateBitfinexHistory<UnifiedTrade>({
+        fetchPage: (start, end) => client.fetchMyTrades(undefined, start, BITFINEX_HISTORY_LIMIT, {
+          end,
+          sort: 1
+        }),
+        since,
+        now,
+        maxRequests: opts?.bitfinexMaxRequests,
+        sleep: opts?.sleep
+      });
   }
 }
 
@@ -1434,6 +1555,7 @@ export interface SyncFetchOutcome {
   knownSymbols: string[] | undefined;
   htxTradeProgress?: HtxTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
   skippedUnsettled: number;
   /**
    * Balance fetched during validation. Stage mode keeps this in the private
@@ -1485,13 +1607,16 @@ export async function syncConnection(
     hooks.onPhase?.('validating');
     const client = await createClient(row);
     const loadedMarkets = (await client.loadMarkets()) as Record<string, UnifiedMarket>;
-    // Crypto.com's public instrument catalog is intentionally mixed. Keep a
+    // Crypto.com and Bitfinex public catalogs are mixed. Keep a
     // strict active-spot market map for every downstream resolution step.
-    const markets = exchange === 'cryptocom'
+    const markets = exchange === 'cryptocom' || exchange === 'bitfinex'
       ? Object.fromEntries(Object.entries(loadedMarkets).filter(([, market]) =>
           market.spot === true && market.active !== false))
       : loadedMarkets;
-    const balance = await withRetries(() => client.fetchBalance(), sleep);
+    const balance = await withRetries(
+      () => client.fetchBalance(exchange === 'bitfinex' ? { type: 'exchange' } : undefined),
+      sleep
+    );
 
     // ---- fetching ----
     phase = 'fetching';
@@ -1516,14 +1641,23 @@ export async function syncConnection(
       withdrawals: Math.max(sinceFromCursor(oldCursors.withdrawals, TRANSFER_OVERLAP_MS), launchFloor)
     };
     const cryptocomPendingTransfers: { deposits?: number; withdrawals?: number } = {};
+    const bitfinexPendingTransfers: { deposits?: number; withdrawals?: number } = {};
     const coinbaseSharedTransferStart = Math.min(
       transferRequestedStarts.deposits,
       transferRequestedStarts.withdrawals
+    );
+    const bitfinexSharedTransferStart = Math.min(
+      transferRequestedStarts.deposits,
+      transferRequestedStarts.withdrawals,
+      row.bitfinexPendingTransfers?.deposits ?? Number.POSITIVE_INFINITY,
+      row.bitfinexPendingTransfers?.withdrawals ?? Number.POSITIVE_INFINITY
     );
 
     for (const kind of ['deposits', 'withdrawals'] as const) {
       let since = exchange === 'coinbase'
         ? coinbaseSharedTransferStart
+        : exchange === 'bitfinex'
+          ? bitfinexSharedTransferStart
         : transferRequestedStarts[kind];
       if (exchange === 'cryptocom' && row.cryptocomPendingTransfers?.[kind] != null) {
         since = Math.min(since, row.cryptocomPendingTransfers[kind]!);
@@ -1532,21 +1666,38 @@ export async function syncConnection(
       const cryptocomRetentionFloor = retainedTransfer.floor;
       const cryptocomRetentionTruncated = exchange === 'cryptocom' && retainedTransfer.truncated;
       if (exchange === 'cryptocom') since = retainedTransfer.since;
+      const bitfinexRetainedMovement = bitfinexRetainedSince(since, nowMs, BITFINEX_MOVEMENT_RETENTION_MS);
+      const bitfinexRetentionTruncated = exchange === 'bitfinex' && bitfinexRetainedMovement.truncated;
+      if (exchange === 'bitfinex') since = bitfinexRetainedMovement.since;
       const cbAssets = [...new Set([...balanceAssets, ...(row.knownAssets ?? [])])];
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
-      if (exchange === 'coinbase' && kind === 'withdrawals') {
+      if ((exchange === 'coinbase' || exchange === 'bitfinex') && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
-      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom') {
-        // Gate/HTX/Crypto.com retry each physical request inside their paginator so
+      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex') {
+        // Gate/HTX/Crypto.com/Bitfinex retry each physical request inside their paginator so
         // a retry cannot restart pagination or reset the attempt cap.
         outcome = await fetchTransferKind(
-          client, exchange, kind, since, nowMs, cbAssets, warnings, sleep, deps.cryptocomMaxRequests
+          client, exchange, kind, since, nowMs, cbAssets, warnings, sleep,
+          deps.cryptocomMaxRequests, deps.bitfinexMaxRequests
         );
         if (cryptocomRetentionTruncated) {
           outcome.partial = true;
           outcome.retentionFloor = cryptocomRetentionFloor;
         }
-        transferOutcomes.set(kind, outcome);
+        if (exchange === 'bitfinex') {
+          const shared = (rows: UnifiedTransfer[]): FetchPlanOutcome<UnifiedTransfer> => ({
+            rows,
+            maxTs: outcome.maxTs,
+            partial: outcome.partial || bitfinexRetentionTruncated,
+            termination: outcome.termination,
+            retentionFloor: bitfinexRetentionTruncated ? bitfinexRetainedMovement.floor : undefined
+          });
+          transferOutcomes.set('deposits', shared(outcome.rows.filter((item) => item.type === 'deposit')));
+          transferOutcomes.set('withdrawals', shared(outcome.rows.filter((item) => item.type === 'withdrawal')));
+          outcome = transferOutcomes.get(kind)!;
+        } else {
+          transferOutcomes.set(kind, outcome);
+        }
       } else {
         outcome = await withRetries(
           () => fetchTransferKind(client, exchange, kind, since, nowMs, cbAssets, warnings),
@@ -1594,6 +1745,19 @@ export async function syncConnection(
         ];
         if (candidates.length > 0) cryptocomPendingTransfers[kind] = Math.min(...candidates);
       }
+      if (exchange === 'bitfinex') {
+        const pendingTimestamps = outcome.rows
+          .filter((transfer) => bitfinexMovementDisposition(transfer) === 'pending')
+          .map((transfer) => transfer.timestamp)
+          .filter((timestamp): timestamp is number => timestamp != null && Number.isFinite(timestamp));
+        const structurallyPartial = outcome.termination === 'page_budget' || outcome.termination === 'nonadvancing';
+        const priorPending = row.bitfinexPendingTransfers?.[kind];
+        const candidates = [
+          ...pendingTimestamps,
+          ...(structurallyPartial && priorPending != null ? [priorPending] : [])
+        ];
+        if (candidates.length > 0) bitfinexPendingTransfers[kind] = Math.min(...candidates);
+      }
       for (const t of outcome.rows) {
         if (t.currency) transferAssets.add(t.currency.toUpperCase());
       }
@@ -1603,6 +1767,11 @@ export async function syncConnection(
       if (cryptocomRetentionTruncated) {
         warnings.push(
           `Crypto.com Exchange keeps 180 days of ${kind} API history. Older Exchange history requires a Crypto.com Exchange export or Exchange Support; Crypto.com App CSV is a separate product and cannot backfill it.`
+        );
+      }
+      if (bitfinexRetentionTruncated && kind === 'deposits') {
+        warnings.push(
+          'Bitfinex keeps approximately 90 days of Movements API history. The existing beta CSV supports Trades only and cannot backfill deposits or withdrawals.'
         );
       }
     }
@@ -1623,6 +1792,9 @@ export async function syncConnection(
     const cryptocomRetentionFloor = retainedTrades.floor;
     const cryptocomRetentionTruncated = exchange === 'cryptocom' && retainedTrades.truncated;
     if (exchange === 'cryptocom') tradeSince = retainedTrades.since;
+    const retainedBitfinexTrades = bitfinexRetainedSince(requestedTradeSince, nowMs, BITFINEX_TRADE_RETENTION_MS);
+    const bitfinexTradeRetentionTruncated = exchange === 'bitfinex' && retainedBitfinexTrades.truncated;
+    if (exchange === 'bitfinex') tradeSince = retainedBitfinexTrades.since;
     const tradeRows: UnifiedTrade[] = [];
     const tradeOutcomes: FetchPlanOutcome<UnifiedTrade>[] = [];
     let newKnownSymbols: string[] | undefined;
@@ -1747,9 +1919,11 @@ export async function syncConnection(
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
     } else {
-      const outcome = exchange === 'gateio' || exchange === 'cryptocom'
+      const outcome = exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex'
         ? await fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs, {
-            sleep, cryptocomMaxRequests: deps.cryptocomMaxRequests
+            sleep,
+            cryptocomMaxRequests: deps.cryptocomMaxRequests,
+            bitfinexMaxRequests: deps.bitfinexMaxRequests
           })
         : await withRetries(
             () => fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs),
@@ -1758,17 +1932,19 @@ export async function syncConnection(
       if (exchange === 'okx' && oldCursors.trades == null) {
         const retentionFloor = nowMs - 90 * 86_400_000;
         outcome.partial = true;
-        outcome.termination = 'retention_truncated';
         outcome.retentionFloor = retentionFloor;
       }
       if (bybitRetentionTruncated) {
         outcome.partial = true;
-        outcome.termination = 'retention_truncated';
         outcome.retentionFloor = bybitRetentionFloor;
       }
       if (cryptocomRetentionTruncated) {
         outcome.partial = true;
         outcome.retentionFloor = cryptocomRetentionFloor;
+      }
+      if (bitfinexTradeRetentionTruncated) {
+        outcome.partial = true;
+        outcome.retentionFloor = retainedBitfinexTrades.floor;
       }
       tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
@@ -1788,6 +1964,11 @@ export async function syncConnection(
           'Crypto.com Exchange keeps 180 days of trade API history. Older Exchange trades require a Crypto.com Exchange export or Exchange Support; Crypto.com App CSV is a separate product and cannot backfill them.'
         );
       }
+      if (bitfinexTradeRetentionTruncated) {
+        warnings.push(
+          'Bitfinex keeps approximately 7 days of Trades API history. The existing beta Trades CSV may help with older trades, but API↔CSV ID parity is unverified and rows are not auto-deduplicated.'
+        );
+      }
     }
 
     const tradeCursorCandidate = exchange === 'htx'
@@ -1796,24 +1977,19 @@ export async function syncConnection(
       ? (tradeOutcomes.length > 0
           ? tradeOutcomes.reduce((min, outcome) => Math.min(min, outcome.maxTs ?? tradeSince), nowMs)
           : nowMs)
-      : exchange === 'bybit' || exchange === 'gateio' || exchange === 'cryptocom'
+      : exchange === 'bybit' || exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex'
       ? tradeOutcomes.reduce((max, outcome) => Math.max(max, outcome.maxTs ?? 0), 0)
       : maxTimestamp(tradeRows) ?? 0;
     const mergedTrades = Math.max(oldCursors.trades ?? 0, tradeCursorCandidate);
     if (mergedTrades > 0) newCursors.trades = mergedTrades;
     const allHistoryOutcomes = [...transferOutcomes.values(), ...tradeOutcomes];
-    const hasRetryableStructuralPartial = exchange === 'cryptocom'
-      ? allHistoryOutcomes.some((outcome) =>
-          outcome.termination === 'page_budget' || outcome.termination === 'nonadvancing')
-      : allHistoryOutcomes.some((outcome) => outcome.partial);
-    if (hasRetryableStructuralPartial) {
-      warnings.push('History continues — sync again to fetch more.');
-    }
+    warnings.push(...historyContinuationWarnings(exchange, allHistoryOutcomes));
 
     // ---- normalize (pure) ----
     const transactions: Transaction[] = [];
     let tradeNormalizationDrops = 0;
     let cryptocomDerivativeExcluded = 0;
+    let bitfinexNonSpotExcluded = 0;
     if (exchange === 'kraken') {
       const { transactions: krakenTxs, skipped: krakenSkipped } = normalizeKrakenTradesByOrder(
         tradeRows,
@@ -1848,6 +2024,15 @@ export async function syncConnection(
       let cryptocomUnresolvedTrades = 0;
       for (const trade of tradeRows) {
         const market = resolveMarket(markets, trade.symbol);
+        if (exchange === 'bitfinex') {
+          const rawInfo = trade.info as unknown;
+          const rawOrderType = Array.isArray(rawInfo) ? rawInfo[6] : trade.info?.orderType;
+          if (!market || market.spot !== true || market.active === false ||
+            typeof rawOrderType !== 'string' || !rawOrderType.startsWith('EXCHANGE ')) {
+            bitfinexNonSpotExcluded += 1;
+            continue;
+          }
+        }
         if (exchange === 'cryptocom' && !market) {
           const mixedMarket = resolveMarket(loadedMarkets, trade.symbol);
           if (mixedMarket && mixedMarket.spot !== true) {
@@ -1868,6 +2053,9 @@ export async function syncConnection(
       if (cryptocomUnresolvedTrades > 0) {
         warnings.push(`Excluded ${cryptocomUnresolvedTrades} Crypto.com Exchange trade(s) whose active spot market could not be resolved.`);
       }
+      if (bitfinexNonSpotExcluded > 0) {
+        warnings.push(`Excluded ${bitfinexNonSpotExcluded} Bitfinex margin, derivative or inactive-market trade(s); auto-sync imports active spot EXCHANGE orders only.`);
+      }
     }
     const skippedTransfersByKind: Record<'deposits' | 'withdrawals', number> = {
       deposits: 0,
@@ -1879,7 +2067,10 @@ export async function syncConnection(
     };
     for (const kind of ['deposits', 'withdrawals'] as const) {
       for (const transfer of transferOutcomes.get(kind)?.rows ?? []) {
-        if (exchange === 'cryptocom' && cryptocomTransferDisposition(transfer) === 'terminal') {
+        const terminal = exchange === 'cryptocom'
+          ? cryptocomTransferDisposition(transfer) === 'terminal'
+          : exchange === 'bitfinex' && bitfinexMovementDisposition(transfer) === 'terminal';
+        if (terminal) {
           terminalTransfersByKind[kind] += 1;
           continue;
         }
@@ -1904,8 +2095,8 @@ export async function syncConnection(
 
     const completedAt = now();
     const requestedStarts = [
-      exchange === 'coinbase' ? coinbaseSharedTransferStart : transferRequestedStarts.deposits,
-      exchange === 'coinbase' ? coinbaseSharedTransferStart : transferRequestedStarts.withdrawals,
+      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : transferRequestedStarts.deposits,
+      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : transferRequestedStarts.withdrawals,
       tradeSince
     ];
     const tradeStructuralFailure = tradeOutcomes.find((outcome) =>
@@ -1949,16 +2140,16 @@ export async function syncConnection(
         partial: tradeOutcomes.some((outcome) => outcome.partial) || skippedSymbols > 0 || tradeNormalizationDrops > 0,
         termination: tradeStructuralFailure?.termination,
         retentionFloor: tradeRetention?.retentionFloor
-      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 || cryptocomDerivativeExcluded > 0 ? {
+      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 || cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? {
         ...(skippedSymbols > 0 || tradeNormalizationDrops > 0
           ? { status: 'partial' as const, paginationExhausted: false }
           : {}),
         skippedCount: skippedSymbols + tradeNormalizationDrops,
-        excludedCount: cryptocomDerivativeExcluded,
+        excludedCount: cryptocomDerivativeExcluded + bitfinexNonSpotExcluded,
         failedCount: tradeNormalizationDrops,
         exclusionReasons: [
           ...(skippedSymbols > 0 ? ['binance_symbol_unavailable'] : []),
-          ...(cryptocomDerivativeExcluded > 0 ? ['derivative_out_of_scope'] : []),
+          ...(cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? ['derivative_out_of_scope'] : []),
           ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
         ],
         warning: tradeNormalizationDrops > 0
@@ -1971,7 +2162,7 @@ export async function syncConnection(
       .reduce((count, outcome) => count + outcome.rows.length, 0) + sharedTransferUnclassified;
     const transferNormalizationDrops = skippedUnsettled + sharedTransferUnclassified;
     const recognizedCount = tradeRows.length + rawTransferCount;
-    const explainedExclusions = cryptocomDerivativeExcluded + terminalTransferExclusions;
+    const explainedExclusions = cryptocomDerivativeExcluded + bitfinexNonSpotExcluded + terminalTransferExclusions;
     const parsedCount = recognizedCount - tradeNormalizationDrops - transferNormalizationDrops - explainedExclusions;
     const coverage = operationCoverage({
       connectionId,
@@ -1990,9 +2181,9 @@ export async function syncConnection(
       recognizedCount,
       parsedCount,
       failedCount: tradeNormalizationDrops,
-      exclusionReasons: cryptocomDerivativeExcluded > 0 || terminalTransferExclusions > 0 ||
+      exclusionReasons: cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 || terminalTransferExclusions > 0 ||
         tradeNormalizationDrops > 0 ? [
-        ...(cryptocomDerivativeExcluded > 0 ? ['derivative_out_of_scope'] : []),
+        ...(cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? ['derivative_out_of_scope'] : []),
         ...(terminalTransferExclusions > 0 ? ['terminal_status_out_of_scope'] : []),
         ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
       ] : undefined
@@ -2012,6 +2203,7 @@ export async function syncConnection(
       knownSymbols: newKnownSymbols,
       htxTradeProgress,
       cryptocomPendingTransfers: exchange === 'cryptocom' ? cryptocomPendingTransfers : undefined,
+      bitfinexPendingTransfers: exchange === 'bitfinex' ? bitfinexPendingTransfers : undefined,
       skippedUnsettled,
       balance,
       operation
@@ -2039,6 +2231,7 @@ export async function syncConnection(
       knownSymbols: newKnownSymbols,
       htxTradeProgress,
       cryptocomPendingTransfers: exchange === 'cryptocom' ? cryptocomPendingTransfers : undefined,
+      bitfinexPendingTransfers: exchange === 'bitfinex' ? bitfinexPendingTransfers : undefined,
       balance,
       operation,
       hooks,
@@ -2099,6 +2292,7 @@ export async function persistSyncedRows(args: {
   knownSymbols?: string[];
   htxTradeProgress?: HtxTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
   /** Reserved generation and source revision/state captured by this operation. */
@@ -2220,7 +2414,7 @@ export async function persistSyncedRows(args: {
       }
 
       let authoritySnapshotId: string | undefined;
-      if (connection.exchange === 'binance' && args.balance) {
+      if ((connection.exchange === 'binance' || connection.exchange === 'bitfinex') && args.balance) {
         const snapshotId = `${args.connectionId}:authority:${args.operation.generation}`;
         authoritySnapshotId = snapshotId;
         const snapshot: AuthoritySnapshotRow = {
@@ -2234,7 +2428,7 @@ export async function persistSyncedRows(args: {
           asOf,
           capturedAt: asOf,
           sourceIdentityId: args.connectionId,
-          endpointProof: binanceSpotEndpointProof(),
+          endpointProof: connection.exchange === 'bitfinex' ? bitfinexSpotEndpointProof() : binanceSpotEndpointProof(),
           status: 'complete'
         };
         const assets: AuthorityAssetRow[] = authorityBalances.map(({ asset, amount }) => {
@@ -2270,6 +2464,7 @@ export async function persistSyncedRows(args: {
         knownSymbols: args.knownSymbols,
         htxTradeProgress: args.htxTradeProgress,
         cryptocomPendingTransfers: args.cryptocomPendingTransfers,
+        bitfinexPendingTransfers: args.bitfinexPendingTransfers,
         lastSyncAt: asOf,
         status: 'ok',
         lastError: undefined,

@@ -1,0 +1,9 @@
+{
+  "_recorded": false,
+  "_note": "Mixed exchange-spot, margin and derivative private fills. Native trade ids intentionally overlap Movement ids to test kind scoping.",
+  "response": [
+    [42, "tBTCUSD", 1785542401000, 5001, 0.01, 64000, "EXCHANGE LIMIT", 64000, 1, -1.28, "USD"],
+    [43, "tETHUSD", 1785628802000, 5002, -0.5, 3500, "LIMIT", 3500, 0, -0.001, "ETH"],
+    [44, "tBTCF0:USTF0", 1785715203000, 5003, 0.1, 65000, "EXCHANGE MARKET", 0, 0, -2, "UST"]
+  ]
+}

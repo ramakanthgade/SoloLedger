@@ -222,3 +222,12 @@ export function binanceSpotEndpointProof(): EndpointProof {
     requestedAccountClasses: ['spot'], provenAccountClasses: ['spot'], exhaustiveBalances: true
   };
 }
+
+export function bitfinexSpotEndpointProof(): EndpointProof {
+  return {
+    authorityKind: 'api', provider: 'bitfinex', operation: 'ccxt.fetchBalance',
+    parametersClass: 'type=exchange', requestedAccountClasses: ['spot'],
+    provenAccountClasses: ['spot'], responseShapeVersion: 'v2 wallets/exchange-only',
+    exhaustiveBalances: true
+  };
+}

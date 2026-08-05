@@ -40,7 +40,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   bybit: 'exbb',
   gateio: 'exgt',
   htx: 'exhx',
-  cryptocom: 'excx'
+  cryptocom: 'excx',
+  bitfinex: 'exbf'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -106,6 +107,10 @@ function tradeSourceRef(
       // Exchange-native trade_id. Deliberately never mapped to the unrelated
       // Crypto.com App CSV parser/source.
       return trade.id ?? exchangeSourceRef('cryptocom-exchange', ts, side, base, amount);
+    case 'bitfinex':
+      // Native trade id is stable for API replay. CSV parity is explicitly
+      // unverified and the storage key is connection/kind scoped.
+      return trade.id ?? exchangeSourceRef('bitfinex-api', ts, side, base, amount);
   }
 }
 
@@ -193,7 +198,9 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' ? { exchangeSyncKind: 'trade' as const } : {})
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex'
+        ? { exchangeSyncKind: 'trade' as const }
+        : {})
     }
   };
 }
@@ -617,6 +624,8 @@ function transferSourceRef(
     case 'cryptocom':
       // Native Exchange wallet record id is primary; txid remains evidence.
       return transfer.id ?? exchangeSourceRef('cryptocom-exchange', ts, type, asset, amount);
+    case 'bitfinex':
+      return transfer.id ?? exchangeSourceRef('bitfinex-api', ts, type, asset, amount);
   }
 }
 
@@ -650,6 +659,7 @@ function isSettledTransfer(
       ? status === '1' || rawStatus === '1'
       : status === '5' || rawStatus === '5';
   }
+  if (exchange === 'bitfinex') return status === 'ok';
   return false;
 }
 
@@ -736,7 +746,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

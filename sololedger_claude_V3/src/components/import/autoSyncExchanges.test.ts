@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(9);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(10);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -52,6 +52,7 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('gateio')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('htx')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('cryptocom')?.label).toBe('Crypto.com Exchange');
+    expect(getAutoSyncExchange('bitfinex')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange(null)).toBeUndefined();
     expect(getAutoSyncExchange('nope')).toBeUndefined();
   });
@@ -82,5 +83,15 @@ describe('autoSyncExchanges catalog', () => {
     expect(exchange.keyInstructions.join(' ')).toMatch(/Exchange.*not the Crypto\.com App.*read-only.*never enable.*App CSV.*separate/i);
     expect(exchange.keyInstructions.join(' ')).toMatch(/whole Exchange account.*not a complete spot-only subledger.*does not replace history-derived holdings/i);
     expect(exchange.needsPassphrase).toBe(false);
+  });
+
+  it('shows the complete Bitfinex retention and CSV beta limitations', () => {
+    const bitfinex = getAutoSyncExchange('bitfinex')!;
+    const copy = bitfinex.keyInstructions.join(' ');
+    expect(copy).toMatch(/read-only.*never enable.*trading.*transfers.*withdrawals/i);
+    expect(copy).toMatch(/approximately 7 days.*approximately 90 days/i);
+    expect(copy).toMatch(/CSV beta supports the Trades schema only.*cannot backfill Movements/i);
+    expect(copy).toMatch(/API↔CSV trade ID parity is unverified.*does not auto-deduplicate/i);
+    expect(bitfinex.needsPassphrase).toBe(false);
   });
 });

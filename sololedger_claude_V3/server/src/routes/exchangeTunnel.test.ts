@@ -197,7 +197,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['bybit', 'api.bybit.com', '/v5/market/time'],
     ['gateio', 'api.gateio.ws', '/api/v4/spot/time'],
     ['htx', 'api.huobi.pro', '/v1/common/timestamp'],
-    ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments']
+    ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments'],
+    ['bitfinex', 'api.bitfinex.com', '/v2/platform/status']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -372,6 +373,32 @@ describe('3. header allowlist', () => {
     expect(init.headers).toEqual({ 'content-type': 'application/json' });
     expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
   });
+
+  it('bitfinex: forwards only bfx auth headers and preserves the raw JSON POST body', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('["error",10100,"apikey: digest invalid"]', 500));
+    const body = '{"end":1785888000000,"sort":1,"limit":1000}';
+    await rawRequest({
+      method: 'POST', path: '/bitfinex/v2/auth/r/trades/hist',
+      headers: {
+        ...AUTH,
+        'content-type': 'application/json',
+        'x-exchange-bfx-nonce': '1785888000000',
+        'x-exchange-bfx-apikey': 'BFX_KEY',
+        'x-exchange-bfx-signature': 'signature',
+        'x-exchange-cookie': 'never-forward'
+      }, body
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.bitfinex.com/v2/auth/r/trades/hist');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({
+      'content-type': 'application/json',
+      'bfx-nonce': '1785888000000',
+      'bfx-apikey': 'BFX_KEY',
+      'bfx-signature': 'signature'
+    });
+    expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -470,6 +497,20 @@ describe('4. exchangeId and path validation', () => {
       ['/cryptocom/exchange/v1/private/create-withdrawal', 'POST'],
       ['/cryptocom/exchange/v1/private/user-balance', 'GET'],
       ['/cryptocom/exchange/v1/public/get-instruments', 'POST']
+    ] as const) {
+      const res = await client(path, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('Bitfinex allows only exact read-only methods and paths', async () => {
+    for (const [path, method] of [
+      ['/bitfinex/v2/auth/w/order/submit', 'POST'],
+      ['/bitfinex/v2/auth/w/withdraw', 'POST'],
+      ['/bitfinex/v2/auth/r/wallets', 'GET'],
+      ['/bitfinex/v2/platform/status', 'POST']
     ] as const) {
       const res = await client(path, { method, headers: AUTH });
       expect(res.status).toBe(400);

@@ -1,0 +1,12 @@
+{
+  "_recorded": false,
+  "_note": "All major Movement statuses and both signed-amount directions. Only SUCCESS/COMPLETED rows normalize; pending rows hold directional checkpoints.",
+  "response": [
+    [42, "BTC", "BITCOIN", null, null, 1778976001000, 1778976010000, null, null, "COMPLETED", null, null, 0.02, 0, null, null, "bc1qfixture", null, null, null, "fixture-deposit-tx", null],
+    [43, "ETH", "ETHEREUM", null, null, 1780272002000, 1780272010000, null, null, "PENDING", null, null, 1.5, 0, null, null, "0xfixture", null, null, null, "fixture-pending-deposit", null],
+    [47, "BTC", "BITCOIN", null, null, 1781568003000, 1781568010000, null, null, "SUCCESS", null, null, -0.01, -0.0001, null, null, "bc1qdestination", null, null, null, "fixture-withdrawal-tx", null],
+    [44, "ETH", "ETHEREUM", null, null, 1782864004000, 1782864010000, null, null, "CANCELED", null, null, -0.4, -0.001, null, null, "0xdestination", null, null, null, "fixture-canceled-withdrawal", null],
+    [45, "USD", "WIRE", null, null, 1783728005000, 1783728010000, null, null, "PENDING REVIEW", null, null, -100, -1, null, null, "bank", null, null, null, "fixture-pending-withdrawal", null],
+    [46, "BTC", "BITCOIN", null, null, 1784160006000, 1784160010000, null, null, "FAILURE", null, null, 0.03, 0, null, null, "bc1qfailed", null, null, null, "fixture-failed-deposit", null]
+  ]
+}

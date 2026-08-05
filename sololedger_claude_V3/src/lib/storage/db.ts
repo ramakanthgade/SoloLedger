@@ -107,6 +107,8 @@ export interface ExchangeConnectionRow {
   };
   /** Oldest still-pending Crypto.com transfer per endpoint, replayed until terminal. */
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
+  /** Oldest still-pending Bitfinex Movement per direction. */
+  bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
@@ -643,7 +645,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'bybit_api',
   'gateio_api',
   'htx_api',
-  'cryptocom_api'
+  'cryptocom_api',
+  'bitfinex_api'
 ]);
 
 /**
@@ -705,6 +708,23 @@ export function transactionExchangeKey(
                 ? 'withdrawal'
                 : 'trade';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:cryptocom:${kind}:${t.sourceRef}`;
+  }
+  // Bitfinex native ids are account-local and can overlap across Trades and
+  // Movements. Scope identity by connection and immutable endpoint kind.
+  // Deliberately do not collide with the existing beta Trades CSV parser:
+  // API↔CSV ID parity has not been verified and Movements CSV is unsupported.
+  if (t.source === 'bitfinex_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind
+      : t.raw?.tradeId != null
+        ? 'trade'
+        : t.raw?.transferType === 'deposit'
+          ? 'deposit'
+          : t.raw?.transferType === 'withdrawal'
+            ? 'withdrawal'
+            : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:bitfinex:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;

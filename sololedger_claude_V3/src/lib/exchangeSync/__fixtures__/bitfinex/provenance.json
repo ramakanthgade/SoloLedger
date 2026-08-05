@@ -1,0 +1,4 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored schema-faithful Bitfinex v2 fixtures based on the official Trades, Movements, Wallets and public Conf response specifications plus CCXT 4.5.68 parser comments. They prove replay behavior, not live API-to-CSV ID parity."
+}

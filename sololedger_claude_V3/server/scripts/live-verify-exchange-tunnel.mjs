@@ -11,13 +11,13 @@
  *
  * Tiers (validation tiers 2+3 from the exchange auto-sync plan):
  *   2 — public probes (no exchange auth) through the tunnel: HTTP 200 + shape.
- *   3 — signature-integrity probes with DUMMY keys: computes real HMACs
- *       exactly as the browser (ccxt) would and asserts each exchange's
- *       DISTINCTIVE auth error. Proves the signed request crossed the relay
- *       parsed-intact — a byte-mangling relay surfaces as Binance
- *       -1100/-1022 illegal-chars/signature errors instead of -2015.
- *       (Exchanges reject unknown keys before validating signatures, so this
- *       proves parse-integrity + auth round-trip, not key validity.)
+ *   3 — auth-path probes with DUMMY keys: computes browser-shaped HMACs and
+ *       asserts each exchange's distinctive auth response. What this proves
+ *       is exchange-dependent because some exchanges reject unknown keys
+ *       before validating signatures. In particular, Bitfinex 10100
+ *       "digest invalid" proves bfx auth-header/key reachability only; it does
+ *       NOT prove signature or body-byte integrity. Byte-exact relay
+ *       integration tests cover Bitfinex signed-body forwarding.
  *
  * Every probe also asserts the response carries NO x-sololedger-error header
  * (exchange-piped responses must stay unstamped — header-first v1.1 design).
@@ -147,14 +147,22 @@ const TIER2 = [
     probe: 'GET /exchange/v1/public/get-instruments',
     path: '/exchange/v1/public/get-instruments',
     check: (r, json) => r.status === 200 && json?.code === 0 && Array.isArray(json?.result?.data)
+  },
+  {
+    exchange: 'bitfinex',
+    probe: 'GET /v2/platform/status',
+    path: '/v2/platform/status',
+    check: (r, json) => r.status === 200 && Array.isArray(json) && (json[0] === 0 || json[0] === 1)
   }
 ];
 
-/* ------------------------------ tier 3: dummy-key signature-integrity ----
+/* ------------------------------------ tier 3: dummy-key auth-path probes --
  * Each builder returns {path, method, exchangeHeaders, body, contentType}
- * signed EXACTLY as the browser (ccxt sign()) would, with a dummy key. The
- * checker asserts the exchange's distinctive auth error — proof the signed
- * request survived the relay byte-intact.
+ * shaped like the browser (ccxt sign()) request, with a dummy key. The checker
+ * asserts an exchange-origin auth response. Do not infer more than that
+ * response establishes; Bitfinex's 10100 only establishes auth-header/key
+ * reachability. Its byte-exact body/header integrity is proved in
+ * server/src/routes/exchangeTunnel.test.ts.
  */
 
 const tier3 = [
@@ -341,6 +349,32 @@ const tier3 = [
       return { path: '/exchange/v1/private/user-balance', method: 'POST', body, contentType: 'application/json' };
     },
     check: (r) => r.status === 401 && r.text.includes('"code":40101') && /Authentication failure/i.test(r.text)
+  },
+  {
+    exchange: 'bitfinex',
+    probe: 'POST /v2/auth/r/wallets (bfx auth-header/key reachability)',
+    build() {
+      const apiKey = 'dummy-bitfinex-key';
+      const secret = 'dummy-bitfinex-secret';
+      const nonce = Date.now().toString();
+      const path = '/v2/auth/r/wallets';
+      const body = '{}';
+      const signature = hmacHex('sha384', secret, `/api${path}${nonce}${body}`);
+      return {
+        path,
+        method: 'POST',
+        body,
+        contentType: 'application/json',
+        exchangeHeaders: {
+          'bfx-nonce': nonce,
+          'bfx-apikey': apiKey,
+          'bfx-signature': signature
+        }
+      };
+    },
+    // Useful exchange-origin evidence that the bfx auth headers and dummy key
+    // reached Bitfinex. This response does not validate the signature/body.
+    check: (r) => r.text.includes('10100') && /digest invalid/i.test(r.text)
   }
 ];
 

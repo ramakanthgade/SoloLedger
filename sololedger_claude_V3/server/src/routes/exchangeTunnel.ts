@@ -132,6 +132,25 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/exchange/v1/private/get-deposit-history': ['POST'],
       '/exchange/v1/private/get-withdrawal-history': ['POST']
     }
+  },
+  bitfinex: {
+    host: 'api.bitfinex.com',
+    headers: ['bfx-nonce', 'bfx-apikey', 'bfx-signature'],
+    paths: [
+      '/v2/platform/status',
+      '/v2/conf/pub:info:pair,pub:info:pair:futures,pub:list:pair:securities,pub:list:pair:margin',
+      '/v2/auth/r/wallets',
+      '/v2/auth/r/trades/hist',
+      '/v2/auth/r/movements/hist'
+    ],
+    methods: ['GET', 'POST'],
+    pathMethods: {
+      '/v2/platform/status': ['GET'],
+      '/v2/conf/pub:info:pair,pub:info:pair:futures,pub:list:pair:securities,pub:list:pair:margin': ['GET'],
+      '/v2/auth/r/wallets': ['POST'],
+      '/v2/auth/r/trades/hist': ['POST'],
+      '/v2/auth/r/movements/hist': ['POST']
+    }
   }
 };
 

@@ -1,0 +1,10 @@
+{
+  "_recorded": false,
+  "_note": "Mixed spot, margin-enabled spot and derivative markets for CCXT 4.5.68 fetchMarkets replay.",
+  "response": [
+    [["BTCUSD", [null, null, null, "0.0001", "100"]], ["ETHUSD", [null, null, null, "0.001", "1000"]]],
+    [["BTCF0:USTF0", [null, null, null, "0.001", "1000"]]],
+    [[]],
+    [["BTCUSD"]]
+  ]
+}

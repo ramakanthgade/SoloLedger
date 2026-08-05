@@ -1,0 +1,10 @@
+{
+  "_recorded": false,
+  "_note": "Mixed exchange, margin and funding wallets; fetchBalance({type:'exchange'}) must expose only exchange custody as spot authority.",
+  "response": [
+    ["exchange", "BTC", 0.25, 0, 0.2, null],
+    ["exchange", "USD", 1250, 0, 1200, null],
+    ["margin", "BTC", 9, 0, 8, null],
+    ["funding", "USD", 777, 0, 777, null]
+  ]
+}

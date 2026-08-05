@@ -224,7 +224,8 @@ export const IMPORT_SOURCES: ImportSource[] = [
     label: 'Bitfinex',
     monogram: 'BF',
     reportType: 'trade history',
-    expectedColumns: '#, Date, Pair, Amount, Price, Fee, Fee Currency'
+    expectedColumns: '#, Date, Pair, Amount, Price, Fee, Fee Currency',
+    coverageNote: 'This beta CSV schema supports Trades only, not Movements deposits/withdrawals. API↔CSV trade ID parity is unverified, so combining CSV with auto-sync may create duplicates.'
   }),
   schemaCompatibleCsvSource({
     id: 'gemini',

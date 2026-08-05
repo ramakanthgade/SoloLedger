@@ -62,7 +62,7 @@ Smoke test after deploy: open `https://YOUR-APP.up.railway.app/health` — shoul
 
 ## Exchange auto-sync tunnel
 
-`ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (binance, coinbase, kraken, okx, kucoin — spot only).
+`ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (supported exchange connectors, including Bitfinex — spot/read-only paths only).
 
 For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each request locally — the exchange API secret never leaves the user's device. This route receives the fully-signed request and replays it **byte-verbatim** to the exchange:
 
@@ -85,4 +85,4 @@ SL_EMAIL=you@example.com SL_PASSWORD=secret node scripts/live-verify-exchange-tu
 SL_TOKEN=<jwt> node scripts/live-verify-exchange-tunnel.mjs
 ```
 
-Probes all five exchanges through the tunnel — tier 2: public endpoints (no exchange auth, HTTP 200 + shape); tier 3: dummy-key signed requests asserting each exchange's distinctive auth error (Binance `-2015`, Kraken `EAPI:Invalid key`, Coinbase 401, OKX `50111`, KuCoin `400003`), proving signed requests survive the relay byte-intact. Exits non-zero on any failure.
+Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and asserts exchange-origin auth responses. The evidence is exchange-specific: Bitfinex `10100` / `digest invalid` proves bfx auth-header/key reachability, not signature or request-body integrity. Byte-exact Bitfinex header and signed-body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.

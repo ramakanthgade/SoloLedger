@@ -111,6 +111,13 @@ export interface ExchangeClient {
     limit?: number,
     params?: Record<string, unknown>
   ): Promise<UnifiedTransfer[]>;
+  /** Bitfinex exposes deposits and withdrawals through one Movements endpoint. */
+  fetchDepositsWithdrawals?(
+    code?: string,
+    since?: number,
+    limit?: number,
+    params?: Record<string, unknown>
+  ): Promise<UnifiedTransfer[]>;
   handleRestResponse(...args: unknown[]): unknown;
   fetch(url: string, method?: string, headers?: Record<string, string>, body?: string): Promise<unknown>;
 }
@@ -125,7 +132,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   bybit: 'Bybit',
   gateio: 'Gate.io',
   htx: 'HTX',
-  cryptocom: 'Crypto.com Exchange'
+  cryptocom: 'Crypto.com Exchange',
+  bitfinex: 'Bitfinex'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -159,7 +167,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     timeout: 30_000
   };
   if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom') {
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -206,6 +214,11 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
                 skipFetchCurrencies: true,
                 fetchCurrencies: false
               }
+          : exchangeId === 'bitfinex'
+            ? {
+                defaultType: 'spot',
+                fetchCurrencies: false
+              }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -240,7 +253,18 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
   if (exchangeId === 'cryptocom') {
     config.has = { fetchCurrencies: false };
   }
+  if (exchangeId === 'bitfinex') {
+    config.has = { fetchCurrencies: false };
+  }
   const exchange = new Ctor(config) as ExchangeClient;
+  if (exchangeId === 'bitfinex') {
+    // Bitfinex defaults its public v2 URL to api-pub.bitfinex.com. Keep both
+    // public and private calls on the relay's one exact spot host.
+    const raw = exchange as unknown as { urls: { api: Record<string, string> } };
+    raw.urls.api.v1 = 'https://api.bitfinex.com';
+    raw.urls.api.public = 'https://api.bitfinex.com';
+    raw.urls.api.private = 'https://api.bitfinex.com';
+  }
   if (exchangeId === 'gateio') {
     // CCXT's Gate fetchSpotMarkets always joins public margin/currency_pairs
     // into the spot response. Margin metadata is irrelevant here and the
