@@ -65,6 +65,24 @@ describe('detectDexSwaps — multi-hop / split-route merge (C1)', () => {
 });
 
 describe('detectDexSwaps wallet-scoped signatures', () => {
+  it('groups event-specific refs by their shared transaction hash', () => {
+    const rows = [
+      tx({
+        id: 'event-out', type: 'transfer_out', asset: 'USDC', sourceRef: 'event:log:1',
+        txHash: '0xtransaction', source: 'rpc:alchemy', chain: 'ethereum', walletAddress: '0xabc'
+      }),
+      tx({
+        id: 'event-in', type: 'transfer_in', asset: 'ETH', amount: 1, sourceRef: 'event:log:2',
+        txHash: '0xtransaction', source: 'rpc:alchemy', chain: 'ethereum', walletAddress: '0xabc'
+      })
+    ];
+
+    const result = detectDexSwaps(rows);
+    expect(result.tradesCreated).toBe(1);
+    expect(result.removedIds).toEqual(['event-in']);
+    expect(countPotentialSwapPairs(rows)).toBe(1);
+  });
+
   it('does not cross-pair case-distinct Solana wallets sharing a signature', () => {
     const rows = [
       tx({ id: 'wallet-a-out', type: 'transfer_out', asset: 'USDC', sourceRef: 'shared' }),

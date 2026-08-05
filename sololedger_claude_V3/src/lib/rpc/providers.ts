@@ -27,6 +27,10 @@ import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
+import {
+  collectSequentialCursor,
+  type PaginationEvidence
+} from '@/lib/rpc/pagination';
 
 function hasRpcCredential(key?: string): boolean {
   if (isSaasMode()) return true;
@@ -254,6 +258,12 @@ export interface LookupWarning {
 export interface LookupResult {
   transactions: Transaction[];
   warnings: LookupWarning[];
+  streamOutcomes?: ProviderStreamOutcome[];
+}
+
+export interface ProviderStreamOutcome extends PaginationEvidence {
+  endpoint: string;
+  required: boolean;
 }
 
 // ---- Bitcoin: Blockstream/mempool.space-compatible, no key ----
@@ -329,49 +339,44 @@ export function parseBlockstreamTxs(rows: any[], address: string, asset: string)
   return rows.map((row) => parseBlockstreamTx(row, address, asset));
 }
 
-/** Esplora returns up to 50 confirmed txs per page. */
-const BLOCKSTREAM_PAGE_SIZE = 50;
-/** Hard cap on chain-continuation pages so a busy address can't loop forever. */
-const BLOCKSTREAM_MAX_PAGES = 10;
+/** Esplora chain pages contain at most 25 confirmed transactions. */
+const BLOCKSTREAM_CONFIRMED_PAGE_SIZE = 25;
+/** Large but finite safety budget; exhaustion is reported rather than hidden. */
+const BLOCKSTREAM_MAX_PAGES = 100;
 
-async function fetchBitcoin(address: string, baseUrl: string, asset: string): Promise<LookupResult> {
+export async function fetchBitcoin(address: string, baseUrl: string, asset: string): Promise<LookupResult> {
   // Public explorer (no key, no SaaS proxy) → always a direct browser call.
   recordNetworkActivity(resolveMode(false));
-  const rows: any[] = [];
-  // Chain continuation: /address/:addr/txs returns mempool + the 50 newest
-  // confirmed txs; older history pages via /address/:addr/txs/chain/:lastTxid.
-  let lastConfirmedTxid: string | undefined;
-  let truncated = false;
-  for (let page = 0; page < BLOCKSTREAM_MAX_PAGES; page++) {
+  const collected = await collectSequentialCursor<any>({
+    maxPages: BLOCKSTREAM_MAX_PAGES,
+    itemKey: (row) => typeof row?.txid === 'string' ? row.txid : undefined,
+    fetchPage: async (lastConfirmedTxid) => {
     const url = lastConfirmedTxid
       ? `${baseUrl}/address/${address}/txs/chain/${lastConfirmedTxid}`
       : `${baseUrl}/address/${address}/txs`;
-    // eslint-disable-next-line no-await-in-loop
     const res = await fetch(url);
     if (!res.ok) throw new Error(`Explorer API returned ${res.status}`);
-    // eslint-disable-next-line no-await-in-loop
-    const data = await res.json();
-    if (!Array.isArray(data)) return { transactions: [], warnings: [{ address, message: 'Unexpected response shape.' }] };
-    rows.push(...data);
-    if (data.length < BLOCKSTREAM_PAGE_SIZE) {
-      lastConfirmedTxid = undefined;
-      break;
-    }
-    const lastConfirmed = [...data].reverse().find((r: any) => r.status?.confirmed);
-    lastConfirmedTxid = lastConfirmed?.txid;
-    if (!lastConfirmedTxid) break; // unconfirmed-only page — nothing to continue from
-    if (page === BLOCKSTREAM_MAX_PAGES - 1) truncated = true;
-  }
+    const data: unknown = await res.json();
+    if (!Array.isArray(data)) throw new Error('Explorer API returned malformed transaction history.');
+    const confirmed = data.filter((row: any) => row?.status?.confirmed === true);
+    const lastConfirmed = confirmed[confirmed.length - 1];
+    return {
+      items: data,
+      // The initial endpoint may prepend mempool rows. Continuation depends on
+      // the confirmed count, never the total response length.
+      nextCursor: confirmed.length === BLOCKSTREAM_CONFIRMED_PAGE_SIZE && typeof lastConfirmed?.txid === 'string'
+        ? lastConfirmed.txid : undefined
+    };
+  }});
 
-  const warnings: LookupWarning[] = truncated
-    ? [
-        {
-          address,
-          message: `Imported the ${BLOCKSTREAM_MAX_PAGES * BLOCKSTREAM_PAGE_SIZE} most recent transactions — this address has a longer history that isn't imported yet.`
-        }
-      ]
-    : [];
-  return { transactions: parseBlockstreamTxs(rows, address, asset), warnings };
+  const outcome: ProviderStreamOutcome = {
+    endpoint: 'blockstream:transactions', required: true, ...collected.evidence
+  };
+  return {
+    transactions: parseBlockstreamTxs(collected.items, address, asset),
+    warnings: partialPaginationWarning(address, 'Blockstream transaction', collected.evidence),
+    streamOutcomes: [outcome]
+  };
 }
 
 export function alchemyRpcUrl(network: string): string {
@@ -496,6 +501,27 @@ export function alchemyHeaders(apiKey: string): HeadersInit {
   };
 }
 
+function partialPaginationWarning(address: string, endpoint: string, evidence: PaginationEvidence): LookupWarning[] {
+  if (evidence.status === 'complete') return [];
+  return [{
+    address,
+    message: `${endpoint} history is partial (${evidence.termination}; ${evidence.pages} page${evidence.pages === 1 ? '' : 's'} retained).`
+  }];
+}
+
+function alchemyTransferIdentity(row: any): string {
+  if (row?.uniqueId != null) return String(row.uniqueId).toLowerCase();
+  return [
+    row?.hash, row?.category, row?.rawContract?.address, row?.from, row?.to,
+    row?.value, row?.tokenId, row?.erc1155Metadata?.[0]?.tokenId,
+    row?.erc1155Metadata?.[0]?.value
+  ].map((value) => String(value ?? '').toLowerCase()).join(':');
+}
+
+function alchemyEventSourceRef(row: any): string {
+  return `alchemy:event:${alchemyTransferIdentity(row)}`;
+}
+
 // ---- EVM chains via Alchemy's alchemy_getAssetTransfers (native + ERC20 + NFTs) ----
 export async function fetchAlchemyEvmInner(
   address: string,
@@ -505,7 +531,7 @@ export async function fetchAlchemyEvmInner(
   chainId: ChainId
 ): Promise<LookupResult> {
   const url = alchemyRpcUrl(network);
-  const body = (direction: 'from' | 'to') => ({
+  const body = (direction: 'from' | 'to', pageKey?: string) => ({
     jsonrpc: '2.0',
     id: 1,
     method: 'alchemy_getAssetTransfers',
@@ -515,27 +541,33 @@ export async function fetchAlchemyEvmInner(
         category: ['external', 'erc20', 'erc721', 'erc1155'],
         withMetadata: true,
         excludeZeroValue: true,
-        maxCount: '0x64'
+        maxCount: '0x64',
+        ...(pageKey ? { pageKey } : {})
       }
     ]
   });
 
   const headers = alchemyHeaders(apiKey);
   const loadReceipt = createReceiptLoader((hash) => fetchEvmTransactionReceipt(url, hash, headers));
-  const [outgoingRes, incomingRes] = await Promise.all([
-    alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('from')) }),
-    alchemyFetch(url, { method: 'POST', headers, body: JSON.stringify(body('to')) })
-  ]);
+  const collectDirection = (direction: 'from' | 'to') => collectSequentialCursor<any, string>({
+    maxPages: 100,
+    itemKey: alchemyTransferIdentity,
+    fetchPage: async (pageKey) => {
+      const res = await alchemyFetch(url, {
+        method: 'POST', headers, body: JSON.stringify(body(direction, pageKey))
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(alchemyErrorMessage(res.status, data));
+      if (data.error) throw new Error(alchemyErrorMessage(data.error?.code ?? 0, { error: data.error }));
+      if (!Array.isArray(data.result?.transfers)) throw new Error('Alchemy returned malformed transfer history.');
+      return { items: data.result.transfers, nextCursor: data.result.pageKey };
+    }
+  });
 
-  const [outgoing, incoming] = await Promise.all([outgoingRes.json(), incomingRes.json()]);
-  if (!outgoingRes.ok || !incomingRes.ok) {
-    const status = outgoingRes.ok ? incomingRes.status : outgoingRes.status;
-    throw new Error(alchemyErrorMessage(status, outgoing.error ? outgoing : incoming));
-  }
-  if (outgoing.error || incoming.error) {
-    const err = outgoing.error ?? incoming.error;
-    throw new Error(alchemyErrorMessage(err?.code ?? 0, { error: err }));
-  }
+  const [outgoing, incoming] = await Promise.all([
+    collectDirection('from'),
+    collectDirection('to')
+  ]);
 
   const toTx = async (t: any, direction: 'transfer_out' | 'transfer_in'): Promise<Transaction> => {
     const isNft = t.category === 'erc721' || t.category === 'erc1155';
@@ -577,7 +609,8 @@ export async function fetchAlchemyEvmInner(
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:alchemy',
-      sourceRef: t.hash,
+      sourceRef: t.category === 'external' ? t.hash : alchemyEventSourceRef(t),
+      txHash: t.hash,
       walletAddress: address,
       counterpartyAddress: direction === 'transfer_in' ? t.from : t.to,
       contractAddress: t.rawContract?.address || undefined,
@@ -594,12 +627,29 @@ export async function fetchAlchemyEvmInner(
     };
   };
 
-  const transactions = await Promise.all([
-    ...(outgoing.result?.transfers ?? []).map((t: any) => toTx(t, 'transfer_out')),
-    ...(incoming.result?.transfers ?? []).map((t: any) => toTx(t, 'transfer_in'))
-  ]);
+  const combined = new Map<string, { row: any; direction: 'transfer_out' | 'transfer_in' }>();
+  const isSelfTransfer = (row: any) =>
+    typeof row?.from === 'string' && typeof row?.to === 'string' &&
+    row.from.toLowerCase() === address.toLowerCase() && row.to.toLowerCase() === address.toLowerCase();
+  for (const row of outgoing.items) {
+    if (!isSelfTransfer(row)) combined.set(alchemyTransferIdentity(row), { row, direction: 'transfer_out' });
+  }
+  for (const row of incoming.items) {
+    if (isSelfTransfer(row)) continue;
+    const key = alchemyTransferIdentity(row);
+    if (!combined.has(key)) combined.set(key, { row, direction: 'transfer_in' });
+  }
+  const transactions = await Promise.all(
+    [...combined.values()].map(({ row, direction }) => toTx(row, direction))
+  );
+  const streamOutcomes: ProviderStreamOutcome[] = [
+    { endpoint: 'alchemy_getAssetTransfers:outgoing', required: true, ...outgoing.evidence },
+    { endpoint: 'alchemy_getAssetTransfers:incoming', required: true, ...incoming.evidence }
+  ];
+  const warnings = streamOutcomes.flatMap((outcome) =>
+    partialPaginationWarning(address, outcome.endpoint, outcome));
 
-  return { transactions, warnings: [] };
+  return { transactions, warnings, streamOutcomes };
 }
 
 /** Promise cache guarantees one receipt request per transaction hash. */
@@ -646,6 +696,7 @@ async function fetchAlchemyEvm(
       const result = await fetchBlockscoutEthereum(address);
       return {
         transactions: result.transactions,
+        streamOutcomes: result.streamOutcomes,
         warnings: [
           {
             address,
@@ -668,6 +719,7 @@ async function fetchAlchemyEvm(
         const result = await fetchEtherscanCompatible(address, baseUrl, rpcCredential(etherscanApiKey), asset, chainId);
         return {
           transactions: result.transactions,
+          streamOutcomes: result.streamOutcomes,
           warnings: [
             {
               address,
@@ -727,35 +779,60 @@ async function getSolanaAssetMeta(apiKey: string, mint: string): Promise<{ symbo
   }
 }
 
-async function fetchAlchemySolana(address: string, apiKey: string): Promise<LookupResult> {
+export async function fetchAlchemySolana(address: string, apiKey: string): Promise<LookupResult> {
   const url = alchemyRpcUrl('solana-mainnet');
   const headers = alchemyHeaders(apiKey);
 
-  const sigRes = await alchemyFetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress', params: [address, { limit: 1000 }] })
+  const signaturePages = await collectSequentialCursor<{ signature: string; blockTime: number | null }>({
+    maxPages: 100,
+    itemKey: (row) => row.signature,
+    fetchPage: async (before) => {
+      const sigRes = await alchemyFetch(url, {
+        method: 'POST', headers,
+        body: JSON.stringify({
+          jsonrpc: '2.0', id: 1, method: 'getSignaturesForAddress',
+          params: [address, { limit: 1000, ...(before ? { before } : {}) }]
+        })
+      });
+      const sigData = await sigRes.json();
+      if (!sigRes.ok) throw new Error(alchemyErrorMessage(sigRes.status, sigData));
+      if (sigData.error) throw new Error(alchemyErrorMessage(sigData.error.code ?? 0, sigData));
+      if (!Array.isArray(sigData.result)) throw new Error('Alchemy returned malformed Solana signatures.');
+      const rows = sigData.result as { signature: string; blockTime: number | null }[];
+      if (rows.some((row) => typeof row?.signature !== 'string')) {
+        throw new Error('Alchemy returned a malformed Solana signature row.');
+      }
+      return { items: rows, nextCursor: rows.length === 1000 ? rows[rows.length - 1].signature : undefined };
+    }
   });
-  const sigData = await sigRes.json();
-  if (!sigRes.ok) throw new Error(alchemyErrorMessage(sigRes.status, sigData));
-  if (sigData.error) throw new Error(alchemyErrorMessage(sigData.error.code ?? 0, sigData));
-  const signatures: { signature: string; blockTime: number | null }[] = sigData.result ?? [];
-
-  if (signatures.length === 0) return { transactions: [], warnings: [] };
 
   const transactions: Transaction[] = [];
+  let transactionFailures = 0;
+  let firstTransactionFailure: string | undefined;
 
-  for (const sig of signatures) {
-    // eslint-disable-next-line no-await-in-loop
-    const txRes = await alchemyFetch(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTransaction', params: [sig.signature, { maxSupportedTransactionVersion: 0 }] })
-    });
-    // eslint-disable-next-line no-await-in-loop
-    const txData = await txRes.json();
+  for (const sig of signaturePages.items) {
+    let txData: any;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const txRes = await alchemyFetch(url, {
+        method: 'POST', headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getTransaction', params: [sig.signature, { maxSupportedTransactionVersion: 0 }] })
+      });
+      // eslint-disable-next-line no-await-in-loop
+      txData = await txRes.json();
+      if (!txRes.ok || txData.error) throw new Error(
+        alchemyErrorMessage(txRes.status, txData));
+    } catch (error) {
+      transactionFailures++;
+      firstTransactionFailure ??= error instanceof Error ? error.message : 'getTransaction failed';
+      continue;
+    }
     const tx = txData.result;
-    if (!tx) continue;
+    if (!tx) {
+      transactionFailures++;
+      firstTransactionFailure ??= `getTransaction returned no result for ${sig.signature}.`;
+      continue;
+    }
     const timestamp = (sig.blockTime ?? Date.now() / 1000) * 1000;
 
     // --- Native SOL balance delta ---
@@ -869,7 +946,26 @@ async function fetchAlchemySolana(address: string, apiKey: string): Promise<Look
     }
   }
 
-  return { transactions, warnings: [] };
+  const signatureOutcome: ProviderStreamOutcome = {
+    endpoint: 'alchemy:getSignaturesForAddress', required: true, ...signaturePages.evidence
+  };
+  const detailOutcome: ProviderStreamOutcome = transactionFailures === 0
+    ? {
+        endpoint: 'alchemy:getTransaction', required: true, status: 'complete',
+        paginationRequired: false, paginationExhausted: true, pages: signaturePages.evidence.pages,
+        termination: 'exhausted'
+      }
+    : {
+        endpoint: 'alchemy:getTransaction', required: true, status: 'partial',
+        paginationRequired: false, paginationExhausted: false, pages: signaturePages.evidence.pages,
+        termination: 'partial_error', warning: `${transactionFailures} transaction detail request(s) failed. ${firstTransactionFailure}`
+      };
+  const streamOutcomes = [signatureOutcome, detailOutcome];
+  return {
+    transactions,
+    streamOutcomes,
+    warnings: streamOutcomes.flatMap((outcome) => partialPaginationWarning(address, outcome.endpoint, outcome))
+  };
 }
 
 // ---- Generic Etherscan-compatible fallback (BYO key/endpoint) ----
@@ -909,7 +1005,7 @@ function etherscanFetch(url: string): Promise<Response> {
   return isSaasMode() ? saasProxyFetch(url) : fetch(url);
 }
 
-async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey: string, asset: string, chainId?: ChainId): Promise<LookupResult> {
+export async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey: string, asset: string, chainId?: ChainId): Promise<LookupResult> {
   // Hosted mode needs no user key — the relay injects the server-side
   // Etherscan key (see etherscanRequestUrl).
   if (!apiKey?.trim() && !isSaasMode()) {
@@ -926,12 +1022,9 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
     address,
     startblock: '0',
     endblock: '99999999',
-    page: '1',
     offset: '1000',
     sort: 'desc'
   };
-  const nativeUrl = etherscanRequestUrl(baseUrl, { ...commonParams, action: 'txlist' }, apiKey);
-  const tokenUrl = etherscanRequestUrl(baseUrl, { ...commonParams, action: 'tokentx' }, apiKey);
 
   function toEtherscanTx(row: Record<string, string>, addr: string, nativeAsset: string, isToken: boolean): Transaction {
     const decimals = isToken ? Number(row.tokenDecimal || '18') : 18;
@@ -947,7 +1040,8 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:etherscan_compatible',
-      sourceRef: row.hash,
+      sourceRef: isToken ? row.__soloLedgerEventKey || row.hash : row.hash,
+      txHash: row.hash,
       walletAddress: addr,
       chain: chainId,
       counterpartyAddress: isOutgoing ? row.to : row.from,
@@ -968,41 +1062,210 @@ async function fetchEtherscanCompatible(address: string, baseUrl: string, apiKey
     }
   };
 
-  // BYOK explorers are called directly with the user's key; hosted mode goes
-  // through the relay (etherscanFetch handles both).
-  const nativeRes = await etherscanFetch(nativeUrl);
-  if (!nativeRes.ok) throw explorerError(await parseExplorerError(nativeRes), `Explorer API returned ${nativeRes.status}`);
-  const nativeData = await nativeRes.json();
+  type ExplorerRow = Record<string, string> & { __soloLedgerEventKey?: string };
+  interface RangeCollection { items: ExplorerRow[]; partial?: string }
+  const MAX_EXPLORER_REQUESTS = 200;
+  const RESULT_WINDOW_PAGES = 10;
+  const PAGE_SIZE = Number(commonParams.offset);
 
-  const tokenRes = await etherscanFetch(tokenUrl);
-  const tokenData = tokenRes.ok ? await tokenRes.json() : { status: '0', result: [] };
-  if (!tokenRes.ok) {
-    // Token history is optional — native txs are still useful.
-    const tokenErr = await parseExplorerError(tokenRes);
-    const warnings: LookupWarning[] = [{
-      address,
-      message: isSaasMode()
-        ? 'Token transfer history is temporarily unavailable on the hosted service — native transactions were still imported.'
-        : `Token transfer fetch failed: ${tokenErr}`
-    }];
-    const transactions: Transaction[] = Array.isArray(nativeData.result)
-      ? nativeData.result.map((r: any) => toEtherscanTx(r, address, asset, false))
-      : [];
-    return { transactions, warnings };
+  const collectAction = async (action: 'txlist' | 'tokentx') => {
+    let requests = 0;
+    let validatedPages = 0;
+    const rowIdentity = (row: ExplorerRow): string => {
+      if (action === 'txlist') return `native:${row.hash}`.toLowerCase();
+      if (row.logIndex != null && row.logIndex !== '') {
+        return `token:${row.hash}:log:${row.logIndex}`.toLowerCase();
+      }
+      return [
+        row.hash, row.blockNumber, row.transactionIndex, row.contractAddress,
+        row.from, row.to, row.value, row.tokenID, row.tokenDecimal
+      ].map((value) => String(value ?? '').toLowerCase()).join(':');
+    };
+    const mergeOverlappingRows = (...groups: readonly ExplorerRow[][]): ExplorerRow[] => {
+      const maximumCounts = new Map<string, number>();
+      const representatives = new Map<string, ExplorerRow[]>();
+      for (const group of groups) {
+        const groupCounts = new Map<string, number>();
+        for (const row of group) {
+          const key = rowIdentity(row);
+          const count = (groupCounts.get(key) ?? 0) + 1;
+          groupCounts.set(key, count);
+          const rows = representatives.get(key) ?? [];
+          if (rows.length < count) rows.push(row);
+          representatives.set(key, rows);
+        }
+        for (const [key, count] of groupCounts) {
+          maximumCounts.set(key, Math.max(maximumCounts.get(key) ?? 0, count));
+        }
+      }
+      return [...maximumCounts.entries()].flatMap(([key, count]) =>
+        (representatives.get(key) ?? []).slice(0, count));
+    };
+    const loadRange = async (startBlock: number, endBlock: number): Promise<RangeCollection> => {
+      const windowRows: ExplorerRow[] = [];
+      for (let page = 1; page <= RESULT_WINDOW_PAGES; page++) {
+        if (++requests > MAX_EXPLORER_REQUESTS) {
+          return { items: windowRows, partial: 'Explorer range request safety budget was reached.' };
+        }
+        const url = etherscanRequestUrl(baseUrl, {
+          ...commonParams, action, startblock: String(startBlock), endblock: String(endBlock), page: String(page)
+        }, apiKey);
+        let res: Response;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          res = await etherscanFetch(url);
+        } catch (error) {
+          if (requests === 1) throw error;
+          return { items: windowRows, partial: error instanceof Error ? error.message : String(error) };
+        }
+        if (!res.ok) {
+          // eslint-disable-next-line no-await-in-loop
+          const message = await parseExplorerError(res);
+          if (requests === 1) throw explorerError(message, `Explorer API returned ${res.status}`);
+          return { items: windowRows, partial: message };
+        }
+        // eslint-disable-next-line no-await-in-loop
+        let data: any;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          data = await res.json();
+        } catch (error) {
+          const message = error instanceof Error ? error.message : 'Explorer returned malformed JSON.';
+          if (requests === 1) throw explorerError(message, 'Explorer returned malformed JSON.');
+          return { items: windowRows, partial: message };
+        }
+        if (!Array.isArray(data.result)) {
+          const detail = typeof data.result === 'string' ? data.result : data.message;
+          if (/no transactions found/i.test(String(detail ?? ''))) return { items: windowRows };
+          if (requests === 1) throw explorerError(detail, 'Explorer returned malformed transaction history.');
+          return { items: windowRows, partial: detail || 'Explorer returned malformed transaction history.' };
+        }
+        validatedPages++;
+        windowRows.push(...data.result);
+        if (data.result.length < PAGE_SIZE) return { items: windowRows };
+      }
+
+      if (startBlock === endBlock) {
+        return {
+          items: windowRows,
+          partial: `Block ${startBlock} alone exceeds the explorer 10,000-result window.`
+        };
+      }
+
+      const observedBlocks = windowRows.map((row) => Number(row.blockNumber))
+        .filter((block) => Number.isSafeInteger(block) && block >= startBlock && block <= endBlock);
+      const observedMin = observedBlocks.length ? Math.min(...observedBlocks) : undefined;
+      const observedMax = observedBlocks.length ? Math.max(...observedBlocks) : undefined;
+      if (observedMin != null && observedMin === observedMax) {
+        const upper = observedMax < endBlock ? await loadRange(observedMax + 1, endBlock) : { items: [] };
+        const exactBlock = await loadRange(observedMax, observedMax);
+        const lower = observedMax > startBlock ? await loadRange(startBlock, observedMax - 1) : { items: [] };
+        const partial = upper.partial ?? exactBlock.partial ?? lower.partial;
+        if (partial) {
+          return {
+            items: mergeOverlappingRows(windowRows, upper.items, exactBlock.items, lower.items),
+            partial
+          };
+        }
+        return {
+          items: [...upper.items, ...exactBlock.items, ...lower.items],
+          partial: undefined
+        };
+      }
+
+      // Discard the saturated parent probe and recursively query two inclusive,
+      // non-overlapping children. Every boundary block belongs to exactly one.
+      const midpoint = Math.floor((startBlock + endBlock) / 2);
+      const upper = await loadRange(midpoint + 1, endBlock);
+      const lower = await loadRange(startBlock, midpoint);
+      const partial = upper.partial ?? lower.partial;
+      return {
+        items: partial
+          ? mergeOverlappingRows(windowRows, upper.items, lower.items)
+          : [...upper.items, ...lower.items],
+        partial
+      };
+    };
+
+    const collected = await loadRange(Number(commonParams.startblock), Number(commonParams.endblock));
+    const exact = new Set<string>();
+    const occurrences = new Map<string, number>();
+    const items: ExplorerRow[] = [];
+    for (const row of collected.items) {
+      if (action === 'txlist') {
+        const key = `native:${row.hash}`.toLowerCase();
+        if (exact.has(key)) continue;
+        exact.add(key);
+        row.__soloLedgerEventKey = key;
+        items.push(row);
+      } else if (row.logIndex != null && row.logIndex !== '') {
+        const key = `token:${row.hash}:log:${row.logIndex}`.toLowerCase();
+        if (exact.has(key)) continue;
+        exact.add(key);
+        row.__soloLedgerEventKey = key;
+        items.push(row);
+      } else {
+        const composite = [
+          row.hash, row.blockNumber, row.transactionIndex, row.contractAddress,
+          row.from, row.to, row.value, row.tokenID, row.tokenDecimal
+        ].map((value) => String(value ?? '').toLowerCase()).join(':');
+        const occurrence = occurrences.get(composite) ?? 0;
+        occurrences.set(composite, occurrence + 1);
+        row.__soloLedgerEventKey = `token:${composite}:occurrence:${occurrence}`;
+        items.push(row);
+      }
+    }
+    return {
+      items,
+      evidence: collected.partial ? {
+        status: 'partial' as const, paginationRequired: requests > 1,
+        paginationExhausted: false, pages: validatedPages, termination: 'partial_error' as const,
+        warning: collected.partial
+      } : {
+        status: 'complete' as const, paginationRequired: requests > 1,
+        paginationExhausted: true, pages: validatedPages, termination: 'exhausted' as const
+      }
+    };
+  };
+
+  // Preserve the native stream as required/fatal on page one. Token history
+  // remains best-effort, but now carries an explicit failed/partial outcome.
+  const native = await collectAction('txlist');
+  let token: Awaited<ReturnType<typeof collectAction>> | undefined;
+  let tokenFailure: string | undefined;
+  try {
+    token = await collectAction('tokentx');
+  } catch (error) {
+    tokenFailure = error instanceof Error ? error.message : String(error);
   }
 
-  const warnings: LookupWarning[] = [];
-  if (nativeData.status !== '1' || !Array.isArray(nativeData.result)) {
-    const detail = typeof nativeData.result === 'string' ? nativeData.result : nativeData.message;
-    throw explorerError(detail, 'Etherscan returned no native transactions for this address.');
-  }
-
-  const transactions: Transaction[] = [
-    ...nativeData.result.map((r: any) => toEtherscanTx(r, address, asset, false)),
-    ...(Array.isArray(tokenData.result) ? tokenData.result.map((r: any) => toEtherscanTx(r, address, asset, true)) : [])
+  const streamOutcomes: ProviderStreamOutcome[] = [
+    { endpoint: 'etherscan:txlist', required: true, ...native.evidence },
+    token
+      ? { endpoint: 'etherscan:tokentx', required: true, ...token.evidence }
+      : {
+          endpoint: 'etherscan:tokentx', required: true, status: 'partial',
+          paginationRequired: true, paginationExhausted: false, pages: 0,
+          termination: 'partial_error', warning: tokenFailure
+        }
+  ];
+  const warnings: LookupWarning[] = [
+    ...partialPaginationWarning(address, 'Etherscan native transaction', native.evidence),
+    ...(token
+      ? partialPaginationWarning(address, 'Etherscan token transfer', token.evidence)
+      : [{
+          address,
+          message: isSaasMode()
+            ? 'Token transfer history is temporarily unavailable on the hosted service — native transactions were still imported.'
+            : `Token transfer fetch failed: ${tokenFailure}`
+        }])
+  ];
+  const transactions = [
+    ...native.items.map((row) => toEtherscanTx(row, address, asset, false)),
+    ...(token?.items ?? []).map((row) => toEtherscanTx(row, address, asset, true))
   ];
 
-  return { transactions, warnings };
+  return { transactions, warnings, streamOutcomes };
 }
 
 // ---- Activity probes for chain auto-detect (Moralis-dropped chains) ----
@@ -1110,39 +1373,56 @@ export async function fetchBlockscoutTxParties(
   }
 }
 
-async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
+export async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
   const addr = address.toLowerCase();
-  let txRes: Response;
-  let tokenRes: Response;
-  try {
-    // Blockscout is a public explorer called directly (CORS-open, no key).
-    recordNetworkActivity(resolveMode(false));
-    [txRes, tokenRes] = await Promise.all([
-      fetch(blockscoutUrl(`/addresses/${address}/transactions`)),
-      fetch(blockscoutUrl(`/addresses/${address}/token-transfers`))
-    ]);
-  } catch (err) {
+  type BlockscoutCursor = Record<string, string | number | boolean>;
+  const collectPath = (path: string, itemKey: (row: any) => string | undefined) =>
+    collectSequentialCursor<any, BlockscoutCursor>({
+      maxPages: 100,
+      itemKey,
+      cursorKey: (cursor) => JSON.stringify(Object.entries(cursor).sort(([a], [b]) => a.localeCompare(b))),
+      fetchPage: async (cursor) => {
+        const query = new URLSearchParams();
+        for (const [key, value] of Object.entries(cursor ?? {})) query.set(key, String(value));
+        const url = blockscoutUrl(`${path}${query.size ? `?${query.toString()}` : ''}`);
+        recordNetworkActivity(resolveMode(false));
+        const res = await fetch(url);
+        if (!res.ok) throw new Error(`Blockscout returned ${res.status} for ${path}.`);
+        const data = await res.json();
+        if (!Array.isArray(data?.items)) throw new Error('Blockscout returned malformed history.');
+        return { items: data.items, nextCursor: data.next_page_params ?? undefined };
+      }
+    });
+  const [txSettled, tokenSettled] = await Promise.allSettled([
+    collectPath(`/addresses/${address}/transactions`, (row) => `native:${row?.hash}`.toLowerCase()),
+    collectPath(`/addresses/${address}/token-transfers`, (row) =>
+      row?.log_index == null
+        ? undefined
+        : `token:${row?.transaction_hash}:${row.log_index}:${row?.token?.address_hash ?? ''}`.toLowerCase())
+  ]);
+  if (txSettled.status === 'rejected') {
+    const failure = txSettled.reason;
     throw new Error(
-      isNetworkFetchError(err)
+      isNetworkFetchError(failure)
         ? 'Could not reach Blockscout (eth.blockscout.com). Check your internet connection and try again.'
-        : err instanceof Error
-          ? err.message
-          : 'Blockscout request failed.'
+        : failure instanceof Error ? failure.message : 'Blockscout request failed.'
     );
   }
-
-  if (!txRes.ok && !tokenRes.ok) {
+  if (tokenSettled.status === 'rejected') {
+    const failure = tokenSettled.reason;
     throw new Error(
-      `Blockscout returned ${txRes.status} for transaction history and ${tokenRes.status} for token transfers.`
+      isNetworkFetchError(failure)
+        ? 'Could not reach Blockscout (eth.blockscout.com). Check your internet connection and try again.'
+        : failure instanceof Error ? failure.message : 'Blockscout request failed.'
     );
   }
 
-  const txData = txRes.ok ? await txRes.json() : { items: [] };
-  const tokenData = tokenRes.ok ? await tokenRes.json() : { items: [] };
+  const txRows = txSettled.value.items;
+  const tokenRows = tokenSettled.value.items;
   const transactions: Transaction[] = [];
   const seen = new Set<string>();
 
-  for (const row of txData.items ?? []) {
+  for (const row of txRows) {
     const from = row.from?.hash?.toLowerCase();
     const to = row.to?.hash?.toLowerCase();
     if (!from || !to) continue;
@@ -1162,6 +1442,7 @@ async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
       fiatValue: undefined,
       source: 'rpc:blockscout',
       sourceRef: row.hash,
+      txHash: row.hash,
       walletAddress: address,
       counterpartyAddress: from === addr ? row.to?.hash : row.from?.hash,
       chain: 'ethereum',
@@ -1171,7 +1452,8 @@ async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
     });
   }
 
-  for (const row of tokenData.items ?? []) {
+  const unindexedOccurrences = new Map<string, number>();
+  for (const row of tokenRows) {
     const from = row.from?.hash?.toLowerCase();
     const to = row.to?.hash?.toLowerCase();
     if (!from || !to) continue;
@@ -1179,7 +1461,15 @@ async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
     const decimals = Number(row.token?.decimals ?? 18);
     const raw = BigInt(row.total?.value ?? row.value ?? '0');
     if (raw === 0n) continue;
-    const key = `token:${row.transaction_hash}:${row.log_index}`;
+    const composite = [
+      row.transaction_hash, row.token?.address_hash, from, to,
+      row.total?.value ?? row.value, row.token?.token_id
+    ].map((value) => String(value ?? '').toLowerCase()).join(':');
+    const occurrence = unindexedOccurrences.get(composite) ?? 0;
+    unindexedOccurrences.set(composite, occurrence + 1);
+    const key = row.log_index == null
+      ? `token:${composite}:occurrence:${occurrence}`
+      : `token:${row.transaction_hash}:${row.log_index}`;
     if (seen.has(key)) continue;
     seen.add(key);
     transactions.push({
@@ -1191,7 +1481,10 @@ async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:blockscout',
-      sourceRef: row.transaction_hash,
+      sourceRef: row.log_index == null
+        ? `blockscout:event:${composite}:occurrence:${occurrence}`
+        : `blockscout:event:${row.transaction_hash}:log:${row.log_index}`.toLowerCase(),
+      txHash: row.transaction_hash,
       walletAddress: address,
       counterpartyAddress: from === addr ? row.to?.hash : row.from?.hash,
       contractAddress: row.token?.address_hash,
@@ -1202,11 +1495,23 @@ async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
     });
   }
 
+  const txOutcome: ProviderStreamOutcome = {
+    endpoint: 'blockscout:transactions', required: true, ...txSettled.value.evidence
+  };
+  const tokenOutcome: ProviderStreamOutcome = {
+    endpoint: 'blockscout:token-transfers', required: true, ...tokenSettled.value.evidence
+  };
+  const paginationWarnings = [txOutcome, tokenOutcome].flatMap((outcome) =>
+    partialPaginationWarning(address, outcome.endpoint, outcome));
   return {
     transactions,
-    warnings: transactions.length
+    streamOutcomes: [txOutcome, tokenOutcome],
+    warnings: [
+      ...paginationWarnings,
+      ...(transactions.length
       ? [{ address, message: 'Fetched via Blockscout (free explorer, no API key needed).' }]
-      : [{ address, message: 'No transactions found for this address on Ethereum mainnet.' }]
+      : [{ address, message: 'No transactions found for this address on Ethereum mainnet.' }])
+    ]
   };
 }
 
@@ -1323,7 +1628,8 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
           if (result.transactions.length > 0 || !hasRpcCredential(config.alchemyApiKey)) {
             return withDexSwapDetection({
               transactions: applyUnifiedIncomingClassifications(result.transactions),
-              warnings: result.warnings.map((msg) => ({ address, message: msg }))
+              warnings: result.warnings.map((msg) => ({ address, message: msg })),
+              streamOutcomes: result.streamOutcomes
             });
           }
         } catch { /* fall through to Alchemy */ }
@@ -1355,7 +1661,7 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
         const result = await fetchHeliusSolana(
           address,
           rpcCredential(config.heliusApiKey),
-          config.afterSignature ? 10 : 20,
+          100,
           config.afterSignature,
           config.skipSignatures
         );
@@ -1363,7 +1669,8 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
           return {
             ...withDexSwapDetection({
               transactions: result.transactions,
-              warnings: result.warnings.map((msg) => ({ address, message: msg }))
+              warnings: result.warnings.map((msg) => ({ address, message: msg })),
+              streamOutcomes: result.streamOutcomes
             }),
             newestSignature: result.newestSignature
           };
@@ -1425,12 +1732,22 @@ export async function lookupManyAddresses(
   transactions: Transaction[];
   warnings: LookupWarning[];
   failed: LookupWarning[];
-  perAddress: { address: string; count: number; newestSignature?: string }[];
+  streamOutcomes?: ProviderStreamOutcome[];
+  perAddress: {
+    address: string;
+    count: number;
+    newestSignature?: string;
+    /** Structured history evidence scoped to this exact successful lookup. */
+    streamOutcomes?: ProviderStreamOutcome[];
+  }[];
 }> {
   const transactions: Transaction[] = [];
   const warnings: LookupWarning[] = [];
   const failed: LookupWarning[] = [];
-  const perAddress: { address: string; count: number; newestSignature?: string }[] = [];
+  const streamOutcomes: ProviderStreamOutcome[] = [];
+  const perAddress: {
+    address: string; count: number; newestSignature?: string; streamOutcomes?: ProviderStreamOutcome[];
+  }[] = [];
 
   for (let i = 0; i < addresses.length; i++) {
     const address = addresses[i].trim();
@@ -1440,10 +1757,12 @@ export async function lookupManyAddresses(
       const result = await lookupOneAddress(address, config);
       transactions.push(...result.transactions);
       warnings.push(...result.warnings);
+      streamOutcomes.push(...(result.streamOutcomes ?? []));
       perAddress.push({
         address,
         count: result.transactions.length,
-        newestSignature: result.newestSignature
+        newestSignature: result.newestSignature,
+        streamOutcomes: result.streamOutcomes
       });
     } catch (err) {
       failed.push({ address, message: err instanceof Error ? err.message : 'Lookup failed.' });
@@ -1453,5 +1772,5 @@ export async function lookupManyAddresses(
     if (i < addresses.length - 1) await new Promise((r) => setTimeout(r, 400));
   }
 
-  return { transactions, warnings, failed, perAddress };
+  return { transactions, warnings, failed, streamOutcomes, perAddress };
 }

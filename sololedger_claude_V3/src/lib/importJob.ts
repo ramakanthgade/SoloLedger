@@ -6,8 +6,16 @@
  * the async work continues and the progress state is preserved.
  * When they return to Import, the component re-subscribes and sees live state.
  */
-import { db, getLookupAddresses, upsertLookupAddress, deduplicateTransactions, filterAlreadyImported } from '@/lib/storage/db';
-import { lookupManyAddresses, type LookupConfig, type ChainDef } from '@/lib/rpc/providers';
+import {
+  appendFailedWalletBalanceCoverage,
+  db,
+  getLookupAddresses,
+  upsertLookupAddress,
+  deduplicateTransactions,
+  filterAlreadyImported,
+  reserveWalletBalanceOperation
+} from '@/lib/storage/db';
+import { lookupManyAddresses, type LookupConfig, type ChainDef, type ProviderStreamOutcome } from '@/lib/rpc/providers';
 import { refreshWalletBalancesForAddresses } from '@/lib/rpc/balances';
 import { reprocessSwapDetectionInDb, reprocessRewardIncome } from '@/lib/rpc/reprocessSwaps';
 import { applyDefiLlamaRewardSuggestions } from '@/lib/rpc/rewardSuggestions';
@@ -18,6 +26,7 @@ import type { TaxSettings } from '@/types/transaction';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { canonicalWalletAddress, canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
+import type { EndpointCoverageOutcome } from '@/lib/reconcile/sourceCoverage';
 
 // ---- State shape ----
 
@@ -153,6 +162,17 @@ async function resolveSyncCursor(chainId: string, address: string): Promise<stri
   const row = await db.lookupAddresses.get(`${chainId}:${identity}`) ??
     (await db.lookupAddresses.filter((candidate) => candidate.chain === chainId &&
       canonicalWalletAddress(chainId, candidate.address) === identity).first());
+  if (chainId === 'solana' && row) {
+    const latestCoverage = (await db.sourceCoverage
+      .where('sourceIdentityId').equals(row.id).toArray())
+      .sort((a, b) => b.generation - a.generation)[0];
+    const incompleteInitialHistory = latestCoverage?.endpointOutcomes.some((outcome) =>
+      outcome.required && outcome.endpoint.includes(':history:') && outcome.status !== 'complete');
+    // A capped/failed initial backfill must be retried from the newest page;
+    // advancing to an incremental cursor here would permanently strand the
+    // older pages that were never imported.
+    if (incompleteInitialHistory) return undefined;
+  }
   if (row?.lastSyncedSignature) return row.lastSyncedSignature;
 
   const existingTxs = await db.transactions
@@ -256,6 +276,7 @@ async function runWalletImportCore(
 
   let transactions: Awaited<ReturnType<typeof lookupManyAddresses>>['transactions'] = [];
   let failed: Awaited<ReturnType<typeof lookupManyAddresses>>['failed'] = [];
+  let perAddress: Awaited<ReturnType<typeof lookupManyAddresses>>['perAddress'] = [];
   let apiWarnings: string[] = [...warnings];
 
   // For incremental sync: use stored cursor so Helius returns only NEW txs.
@@ -291,6 +312,7 @@ async function runWalletImportCore(
     );
     transactions = result.transactions;
     failed = result.failed;
+    perAddress = result.perAddress;
     apiWarnings = [
       ...warnings,
       ...(isSync && syncConfig.afterSignature
@@ -313,12 +335,12 @@ async function runWalletImportCore(
       .toArray();
     const tradeBySourceRef = new Map(
       existingTrades.flatMap((t) => {
-        const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+        const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
         return key ? [[key, t] as const] : [];
       })
     );
     txsToStore = transactions.filter((t) => {
-      const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+      const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
       if (!key) return true;
       const trade = tradeBySourceRef.get(key);
       if (!trade) return true;
@@ -348,6 +370,43 @@ async function runWalletImportCore(
     `${chain.id}:${canonicalWalletAddress(chain.id, failure.address)}`));
   const succeeded = fresh.filter((address) =>
     !failedAddrs.has(`${chain.id}:${canonicalWalletAddress(chain.id, address)}`));
+  for (const address of succeeded) {
+    const canonical = canonicalWalletAddress(chain.id, address);
+    const evidence = perAddress.find((row) =>
+      canonicalWalletAddress(chain.id, row.address) === canonical)?.streamOutcomes;
+    if (!evidence?.length) {
+      apiWarnings.push(`${address}: history completeness could not be structurally verified.`);
+    } else if (evidence.some((outcome) => outcome.required && outcome.status !== 'complete')) {
+      const detail = evidence.find((outcome) => outcome.required && outcome.status !== 'complete')?.warning;
+      const message = detail
+        ? `${address}: ${detail}`
+        : `${address}: transaction history is partial; retry the lookup to complete it.`;
+      if (!apiWarnings.includes(message)) apiWarnings.push(message);
+    }
+  }
+
+  // A failed first import owns no source identity and therefore writes no
+  // registry/evidence. A failed sync of an existing source still appends an
+  // immutable history failure generation without touching prior balances.
+  if (isSync) {
+    for (const failure of failed) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const operation = await reserveWalletBalanceOperation(chain.id, failure.address);
+        // eslint-disable-next-line no-await-in-loop
+        await appendFailedWalletBalanceCoverage({
+          operation,
+          endpointOutcomes: [{
+            endpoint: `${chain.id}:history:lookup`, accountClass: 'wallet', required: true,
+            status: 'failed', warning: failure.message
+          }],
+          completedAt: Date.now(), failureKind: 'provider', message: failure.message
+        });
+      } catch {
+        // The source may have been removed after lookup; never recreate it.
+      }
+    }
+  }
 
   await Promise.all(
     succeeded.map((addr) => {
@@ -489,7 +548,11 @@ async function runWalletImportCore(
   if (succeeded.length > 0) {
     try {
       const balanceOutcome = await refreshWalletBalancesForAddresses(
-        succeeded.map((addr) => ({ chain, address: addr })),
+        succeeded.map((addr) => ({
+          chain,
+          address: addr,
+          historyEndpointOutcomes: historyOutcomesForAddress(chain.id, addr, perAddress)
+        })),
         settings
       );
       for (const f of balanceOutcome.failed) {
@@ -509,6 +572,32 @@ async function runWalletImportCore(
     apiWarnings,
     failed
   );
+}
+
+function historyOutcomesForAddress(
+  chainId: string,
+  address: string,
+  perAddress: Awaited<ReturnType<typeof lookupManyAddresses>>['perAddress']
+): EndpointCoverageOutcome[] | undefined {
+  const canonical = canonicalWalletAddress(chainId, address);
+  const match = perAddress.find((row) => canonicalWalletAddress(chainId, row.address) === canonical);
+  if (!match) return undefined;
+  if (!match.streamOutcomes?.length) {
+    return [{
+      endpoint: `${chainId}:history:lookup`, accountClass: 'wallet', required: true,
+      status: 'unknown', warning: 'History completeness was not structurally reported by the provider.'
+    }];
+  }
+  return match.streamOutcomes.map((outcome: ProviderStreamOutcome) => ({
+    endpoint: `${chainId}:history:${outcome.endpoint}`,
+    accountClass: 'wallet',
+    required: outcome.required,
+    status: outcome.status,
+    paginationRequired: outcome.paginationRequired,
+    paginationExhausted: outcome.paginationExhausted,
+    pages: outcome.pages,
+    warning: outcome.warning
+  }));
 }
 
 /** Every caller participates in the shared operation guard. */

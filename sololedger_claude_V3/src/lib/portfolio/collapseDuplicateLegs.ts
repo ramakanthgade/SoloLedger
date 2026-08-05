@@ -13,7 +13,7 @@ export async function collapseDuplicateTradeTransferLegs(): Promise<number> {
   const trades = all.filter((t) => t.type === 'trade' && t.counterAsset && (t.counterAmount ?? 0) > 0);
   const tradeByRef = new Map<string, Transaction>();
   for (const t of trades) {
-    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
     if (key) tradeByRef.set(key, t);
   }
 
@@ -21,7 +21,7 @@ export async function collapseDuplicateTradeTransferLegs(): Promise<number> {
   for (const t of all) {
     if (t.type !== 'transfer_in' && t.type !== 'transfer_out' && t.type !== 'income') continue;
     if (t.asset.toUpperCase() === 'SOL') continue;
-    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
     const trade = key ? tradeByRef.get(key) : undefined;
     if (!trade) continue;
     const legs = new Set(

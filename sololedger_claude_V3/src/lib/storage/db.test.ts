@@ -23,6 +23,7 @@ import {
   saveSourceCoverage,
   selectOpeningBalance,
   transactionExchangeKey,
+  filterAlreadyImported,
   transactionSourceKey,
   transactionImportKey,
   updateWalletLabel,
@@ -131,6 +132,24 @@ describe('transactionImportKey', () => {
 describe('v11 authority persistence', () => {
   beforeEach(async () => {
     await clearAllData();
+  });
+
+  it('retains distinct same-contract events in one transaction and rejects exact event re-imports', async () => {
+    const base = manualTransaction('event-1', 100);
+    Object.assign(base, {
+      source: 'rpc:alchemy', sourceRef: 'alchemy:event:log:1', txHash: '0xtransaction',
+      chain: 'ethereum', walletAddress: '0x1111111111111111111111111111111111111111',
+      contractAddress: '0x2222222222222222222222222222222222222222', asset: 'TOKEN'
+    });
+    const sibling = { ...base, id: 'event-2', sourceRef: 'alchemy:event:log:2' };
+    await db.transactions.bulkPut([base, sibling]);
+
+    expect(await deduplicateTransactions()).toBe(0);
+    expect(await db.transactions.count()).toBe(2);
+    expect(await filterAlreadyImported([
+      { ...base, id: 'event-1-reimport' },
+      { ...base, id: 'event-3', sourceRef: 'alchemy:event:log:3' }
+    ])).toEqual([expect.objectContaining({ id: 'event-3' })]);
   });
 
   it('reserves monotonic source generations and atomically saves immutable coherent rows', async () => {

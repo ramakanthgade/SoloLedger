@@ -10,6 +10,13 @@ export interface RowGroup<T> {
   rows: T[];
 }
 
+/** Real chain hash when available; legacy on-chain rows retain sourceRef fallback. */
+export function reviewTransactionHash(
+  transaction: Readonly<{ txHash?: string; sourceRef?: string }>
+): string | undefined {
+  return transaction.txHash ?? transaction.sourceRef;
+}
+
 /**
  * Group an already date-sorted row list into UTC-day buckets, preserving row
  * order. Adjacent rows sharing a day merge into one group, so the caller's

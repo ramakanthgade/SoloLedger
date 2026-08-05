@@ -67,7 +67,11 @@ vi.mock('@/lib/rpc/dcaDetection', () => ({
 }));
 
 const refreshWalletBalancesForAddresses = vi.fn(
-  async (_entries: { chain: ChainDef; address: string }[], _settings: TaxSettings) => ({
+  async (_entries: Array<{
+    chain: ChainDef;
+    address: string;
+    historyEndpointOutcomes?: unknown[];
+  }>, _settings: TaxSettings) => ({
     updated: 1,
     skipped: [] as { address: string; chain: string; reason: string }[],
     failed: [] as { address: string; message: string }[]
@@ -75,7 +79,7 @@ const refreshWalletBalancesForAddresses = vi.fn(
 );
 vi.mock('@/lib/rpc/balances', () => ({
   refreshWalletBalancesForAddresses: (
-    entries: { chain: ChainDef; address: string }[],
+    entries: Array<{ chain: ChainDef; address: string; historyEndpointOutcomes?: unknown[] }>,
     settings: TaxSettings
   ) => refreshWalletBalancesForAddresses(entries, settings),
   refreshWalletBalances: vi.fn(async () => ({ updated: 0, skipped: [], failed: [] }))
@@ -94,6 +98,15 @@ vi.mock('@/lib/pricing/autoFetch', () => ({
 // Minimal in-memory DB stub so we don't depend on the full Dexie schema.
 const store = new Map<string, Transaction>();
 let lookupRows: Array<{ id: string; chain: string; address: string; lastSyncedSignature?: string }> = [];
+let coverageRows: Array<{ sourceIdentityId: string; generation: number; endpointOutcomes: Array<{
+  endpoint: string; required: boolean; status: string;
+}> }> = [];
+const reserveWalletBalanceOperation = vi.fn(async (chain: string, address: string) => ({
+  sourceIdentityId: `${chain}:${address}`, chain, address,
+  scopeId: `wallet:${chain}:${address}`, generation: 1, expectedRevision: 1,
+  sourceIncarnation: 'incarnation', startedAt: 1
+}));
+const appendFailedWalletBalanceCoverage = vi.fn(async (_args: unknown) => true);
 vi.mock('@/lib/storage/db', () => ({
   db: {
     lookupAddresses: {
@@ -101,6 +114,11 @@ vi.mock('@/lib/storage/db', () => ({
       filter: (predicate: (row: typeof lookupRows[number]) => boolean) => ({
         first: async () => lookupRows.find(predicate)
       })
+    },
+    sourceCoverage: {
+      where: () => ({ equals: (sourceIdentityId: string) => ({
+        toArray: async () => coverageRows.filter((row) => row.sourceIdentityId === sourceIdentityId)
+      }) })
     },
     transactions: {
       toArray: async () => Array.from(store.values()),
@@ -115,6 +133,10 @@ vi.mock('@/lib/storage/db', () => ({
   },
   getLookupAddresses: vi.fn(async () => lookupRows),
   upsertLookupAddress: vi.fn(async () => {}),
+  reserveWalletBalanceOperation: (...args: unknown[]) =>
+    reserveWalletBalanceOperation(...(args as [string, string])),
+  appendFailedWalletBalanceCoverage: (...args: unknown[]) =>
+    appendFailedWalletBalanceCoverage(args[0]),
   deduplicateTransactions: vi.fn(async () => 0),
   filterAlreadyImported: vi.fn(async (txs: Transaction[]) => txs)
 }));
@@ -142,6 +164,7 @@ const SOL_CHAIN: ChainDef = {
 
 beforeEach(() => {
   lookupRows = [];
+  coverageRows = [];
 });
 
 function settings(overrides: Partial<TaxSettings> = {}): TaxSettings {
@@ -387,6 +410,25 @@ describe('runWalletImport trade protection identity', () => {
 
     expect(store.get('wallet-b-transfer')).toEqual(walletBTransfer);
   });
+
+  it('protects an existing trade by txHash when incoming event refs differ', async () => {
+    store.set('existing-trade', {
+      ...importedTx, id: 'existing-trade', type: 'trade', asset: 'USDC',
+      counterAsset: 'ETH', counterAmount: 1, sourceRef: 'event:trade', txHash: '0xshared'
+    });
+    const incoming = {
+      ...importedTx, id: 'incoming-leg', type: 'transfer_in' as const, asset: 'ETH',
+      sourceRef: 'event:log:2', txHash: '0xshared'
+    };
+    vi.mocked(isAbsorbedTradeLeg).mockReturnValue(true);
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [incoming], warnings: [], failed: [], perAddress: [{ address: '0xabc', count: 1 }]
+    });
+
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG);
+
+    expect(store.has('incoming-leg')).toBe(false);
+  });
 });
 
 describe('runWalletImport wallet-registry gating (Item 5g — never persist failed wallets)', () => {
@@ -492,6 +534,29 @@ describe('runWalletImport wallet-registry gating (Item 5g — never persist fail
     expect(passedConfig).toMatchObject({ afterSignature: 'exact-sig', incrementalOnly: true });
     expect([...(passedConfig?.skipSignatures ?? [])]).toEqual(['exact-sig']);
   });
+
+  it('restarts a Solana backfill when prior initial history was partial', async () => {
+    lookupRows = [{
+      id: 'solana:Base58Case', chain: 'solana', address: 'Base58Case',
+      lastSyncedSignature: 'newest-imported'
+    }];
+    coverageRows = [{
+      sourceIdentityId: 'solana:Base58Case', generation: 2,
+      endpointOutcomes: [{
+        endpoint: 'solana:history:helius:transactions', required: true, status: 'partial'
+      }]
+    }];
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [], warnings: [], failed: [], perAddress: [{ address: 'Base58Case', count: 0 }]
+    });
+
+    await runWalletImport(['Base58Case'], SOL_CHAIN, settings(), CONFIG, true);
+
+    const lookupCalls = vi.mocked(lookupManyAddresses).mock.calls;
+    const passedConfig = lookupCalls[lookupCalls.length - 1]?.[1];
+    expect(passedConfig).toMatchObject({ incrementalOnly: true });
+    expect(passedConfig?.afterSignature).toBeUndefined();
+  });
 });
 
 describe('wallet-remove reset guard', () => {
@@ -589,14 +654,50 @@ describe('runWalletImport post-sync balance refresh (round 4)', () => {
     vi.mocked(deduplicateTransactions).mockReset().mockResolvedValue(0);
     refreshWalletBalancesForAddresses.mockClear();
     refreshWalletBalancesForAddresses.mockResolvedValue({ updated: 1, skipped: [], failed: [] });
+    reserveWalletBalanceOperation.mockClear();
+    appendFailedWalletBalanceCoverage.mockClear();
   });
 
   it('refreshes on-chain balances for succeeded addresses after the sync', async () => {
     await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
     expect(refreshWalletBalancesForAddresses).toHaveBeenCalledTimes(1);
     const [entries, passedSettings] = refreshWalletBalancesForAddresses.mock.calls[0];
-    expect(entries).toEqual([{ chain: CHAIN, address: '0xabc' }]);
+    expect(entries).toEqual([expect.objectContaining({ chain: CHAIN, address: '0xabc' })]);
     expect(passedSettings).toEqual(settings());
+  });
+
+  it('passes only each canonical address history evidence into its balance refresh', async () => {
+    lookupRows.push({ id: 'ethereum:0xdef', chain: 'ethereum', address: '0xdef' });
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [importedTx], warnings: [], failed: [], streamOutcomes: [],
+      perAddress: [
+        { address: '0xABC', count: 1, streamOutcomes: [{
+          endpoint: 'moralis:wallet-history', required: true, status: 'partial',
+          paginationRequired: true, paginationExhausted: false, pages: 2,
+          termination: 'partial_error', warning: 'page three failed'
+        }] },
+        { address: '0xdef', count: 0, streamOutcomes: [{
+          endpoint: 'alchemy_getAssetTransfers:incoming', required: true, status: 'complete',
+          paginationRequired: false, paginationExhausted: true, pages: 1,
+          termination: 'exhausted'
+        }] }
+      ]
+    });
+
+    await runWalletImport(['0xabc', '0xdef'], CHAIN, settings(), CONFIG, true);
+
+    const [entries] = refreshWalletBalancesForAddresses.mock.calls[0];
+    expect(entries[0].historyEndpointOutcomes).toEqual([
+      expect.objectContaining({
+        endpoint: 'ethereum:history:moralis:wallet-history', status: 'partial', pages: 2
+      })
+    ]);
+    expect(entries[1].historyEndpointOutcomes).toEqual([
+      expect.objectContaining({
+        endpoint: 'ethereum:history:alchemy_getAssetTransfers:incoming', status: 'complete'
+      })
+    ]);
+    expect(importJob.get().warnings).toContain('0xabc: page three failed');
   });
 
   it('does NOT refresh balances for addresses whose lookup failed', async () => {
@@ -607,6 +708,25 @@ describe('runWalletImport post-sync balance refresh (round 4)', () => {
       perAddress: []
     });
     await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG);
+    expect(refreshWalletBalancesForAddresses).not.toHaveBeenCalled();
+  });
+
+  it('appends durable failed history coverage for a failed existing sync', async () => {
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [], warnings: [],
+      failed: [{ address: '0xabc', message: 'history provider unavailable' }],
+      perAddress: []
+    });
+
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
+
+    expect(reserveWalletBalanceOperation).toHaveBeenCalledWith('ethereum', '0xabc');
+    expect(appendFailedWalletBalanceCoverage).toHaveBeenCalledWith(expect.objectContaining({
+      failureKind: 'provider', message: 'history provider unavailable',
+      endpointOutcomes: [expect.objectContaining({
+        endpoint: 'ethereum:history:lookup', status: 'failed', required: true
+      })]
+    }));
     expect(refreshWalletBalancesForAddresses).not.toHaveBeenCalled();
   });
 

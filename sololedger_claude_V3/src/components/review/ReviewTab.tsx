@@ -51,7 +51,9 @@ import { filterRows, paginate } from '@/lib/review/reviewTableView';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { AssetIcon, SourceIcon } from './brandIcons';
 import { sourceBrandInfo } from './brandIconMap';
-import { groupRowsByDate, formatGroupDateLabel, pageNumberList } from './reviewListUtils';
+import {
+  groupRowsByDate, formatGroupDateLabel, pageNumberList, reviewTransactionHash
+} from './reviewListUtils';
 import { buildTxSummary, reviewTypeLabel, txFlow, truncateAddress, OWN_ACCOUNT_SIDE, type RowLeg } from './rowAnatomy';
 import {
   Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles,
@@ -1424,7 +1426,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     const derivedFlags = derivedFlagsByTxId.get(t.id) ?? [];
     const missingCostBasis = derivedFlags.includes('missing_cost_basis');
     const invalidTransactionData = derivedFlags.includes('invalid_transaction_data');
-    const hash = t.txHash ?? t.sourceRef;
+    const hash = reviewTransactionHash(t);
     // explorerTxUrl is chain-aware and enforces hash shape, so a non-null
     // result is always safe to link.
     const hashUrl = hash ? explorerTxUrl(t.chain, hash) : null;
@@ -1447,7 +1449,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
       disposal: pricedDisposal
     });
     const ownSide = OWN_ACCOUNT_SIDE[t.type];
-    // Exchange rows carry an order/trade id in sourceRef; on-chain rows a tx hash.
+    // Exchange rows carry an order/trade id in sourceRef; modern on-chain rows use txHash.
     const hashFactLabel = t.txHash || t.chain || t.source.startsWith('rpc:') ? 'Tx hash' : 'Order ID';
     const scope = resolveAccountScope(t, postingSnapshot.context);
     const scopeKey = `${scope.accountScopeId}\u001f${scope.accountClass}`;

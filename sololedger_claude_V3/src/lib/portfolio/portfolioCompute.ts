@@ -78,7 +78,7 @@ function collapseForPortfolio(txs: Transaction[]): Transaction[] {
   const tradesByRef = new Map<string, Transaction>();
   for (const t of txs) {
     if (t.type !== 'trade' || !t.sourceRef || !t.walletAddress) continue;
-    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
     if (key) tradesByRef.set(key, t);
   }
 
@@ -98,7 +98,7 @@ function collapseForPortfolio(txs: Transaction[]): Transaction[] {
     const sk = transactionSourceKey(t);
     if (sk && best.get(sk) !== t) return false;
     if (t.sourceRef && t.walletAddress) {
-      const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+      const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
       const trade = key ? tradesByRef.get(key) : undefined;
       if (trade && isAbsorbedTradeLeg(t, trade)) return false;
     }
@@ -122,7 +122,7 @@ function applyTxToHoldings(
     appliedSourceKeys.add(sourceKey);
   }
 
-  const ref = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+  const ref = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
 
   if (
     ref &&
@@ -304,7 +304,7 @@ export function buildPortfolioHoldings(
 
   for (const t of ledgerTxs) {
     if (t.type !== 'trade' || !t.counterAsset || !t.counterAmount || !t.sourceRef || !t.walletAddress) continue;
-    const ref = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    const ref = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
     if (!ref) continue;
     tradeCoveredLegs.add(`${ref}|${t.asset.toUpperCase()}`);
     tradeCoveredLegs.add(`${ref}|${t.counterAsset.toUpperCase()}`);

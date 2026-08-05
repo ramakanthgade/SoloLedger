@@ -12,6 +12,7 @@ import { DBT_TOKEN_MINT } from '@/lib/assets/dabbaRegistry';
 let store: Transaction[] = [];
 
 vi.mock('@/lib/storage/db', () => ({
+  mutateTransactionsAndReconcileCsv: vi.fn(async (callback: () => Promise<void>) => callback()),
   db: {
     transaction: vi.fn(async (_mode: string, _table: unknown, callback: () => Promise<void>) => callback()),
     transactions: {
@@ -327,5 +328,23 @@ describe('reprocessSwapDetectionInDb wallet-scoped mutations', () => {
       ['wallet-a-out', 'transfer_out'],
       ['wallet-b-in', 'transfer_in']
     ]);
+  });
+
+  it('locally merges event-specific rows that share one transaction hash', async () => {
+    store = [
+      tx({
+        id: 'event-out', type: 'transfer_out', asset: 'USDC', sourceRef: 'event:1',
+        txHash: '0xtransaction', source: 'rpc:alchemy', chain: 'ethereum', walletAddress: '0xabc'
+      }),
+      tx({
+        id: 'event-in', type: 'transfer_in', asset: 'ETH', sourceRef: 'event:2',
+        txHash: '0xtransaction', source: 'rpc:alchemy', chain: 'ethereum', walletAddress: '0xabc'
+      })
+    ];
+
+    const result = await reprocessSwapDetectionInDb();
+
+    expect(result.tradesCreated).toBe(1);
+    expect(store).toEqual([expect.objectContaining({ id: 'event-out', type: 'trade' })]);
   });
 });

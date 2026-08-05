@@ -94,6 +94,19 @@ describe('portfolio repair wallet identity', () => {
     expect(await db.transactions.get('wallet-b-bonk')).toBeDefined();
   });
 
+  it('collapses event-specific transfer legs by their shared transaction hash', async () => {
+    await db.transactions.bulkAdd([
+      tx({
+        id: 'trade', type: 'trade', asset: 'USDC', counterAsset: 'BONK', counterAmount: 10,
+        sourceRef: 'event:trade', txHash: '0xshared'
+      }),
+      tx({ id: 'duplicate', asset: 'BONK', sourceRef: 'event:log:2', txHash: '0xshared' })
+    ]);
+
+    expect(await collapseDuplicateTradeTransferLegs()).toBe(1);
+    expect(await db.transactions.get('duplicate')).toBeUndefined();
+  });
+
   it('does not let one wallet trade suppress another wallet SOL row', () => {
     const rows = [
       tx({

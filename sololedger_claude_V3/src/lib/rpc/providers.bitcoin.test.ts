@@ -129,8 +129,8 @@ describe('fetchBitcoin pagination (chain continuation)', () => {
     vi.stubGlobal('fetch', vi.fn(async (url: string) => {
       calls.push(url);
       const rows = calls.length === 1
-        ? Array.from({ length: 50 }, (_, i) => pageRow(i))
-        : Array.from({ length: 30 }, (_, i) => pageRow(50 + i));
+        ? Array.from({ length: 25 }, (_, i) => pageRow(i))
+        : Array.from({ length: 20 }, (_, i) => pageRow(25 + i));
       return { ok: true, json: async () => rows } as Response;
     }));
 
@@ -138,8 +138,8 @@ describe('fetchBitcoin pagination (chain continuation)', () => {
     const result = await lookupManyAddresses([ADDR], { chain });
     expect(calls.length).toBe(2);
     expect(calls[0]).toBe(`https://blockstream.info/api/address/${ADDR}/txs`);
-    expect(calls[1]).toBe(`https://blockstream.info/api/address/${ADDR}/txs/chain/txid-049`);
-    expect(result.transactions.length).toBe(80);
+    expect(calls[1]).toBe(`https://blockstream.info/api/address/${ADDR}/txs/chain/txid-024`);
+    expect(result.transactions.length).toBe(45);
     expect(result.warnings).toEqual([]);
   });
 

@@ -24,6 +24,10 @@ export interface EndpointCoverageOutcome {
   exclusionReasons?: string[];
   failedCount?: number;
   warning?: string;
+  /** Raw contract evidence retained when display quantity resolution fails. */
+  observedContractAddress?: string;
+  observedRawQuantity?: string;
+  quantityResolved?: boolean;
 }
 
 /** Persisted structural evidence from one source operation generation. */
@@ -212,7 +216,7 @@ export function sourceCoverageDomainErrors(row: SourceCoverageRow): string[] {
     if (outcome.parserId != null && (typeof outcome.parserId !== 'string' || !outcome.parserId.trim())) {
       errors.push('invalid_endpoint_parser_id');
     }
-    for (const value of [outcome.paginationRequired, outcome.paginationExhausted]) {
+    for (const value of [outcome.paginationRequired, outcome.paginationExhausted, outcome.quantityResolved]) {
       if (value != null && typeof value !== 'boolean') errors.push('invalid_endpoint_boolean');
     }
     if (outcome.retentionFloor != null && !finite(outcome.retentionFloor)) errors.push('invalid_retention_floor');
@@ -225,6 +229,14 @@ export function sourceCoverageDomainErrors(row: SourceCoverageRow): string[] {
     }
     if (outcome.warning != null && (typeof outcome.warning !== 'string' || !outcome.warning.trim())) {
       errors.push('invalid_endpoint_warning');
+    }
+    if (outcome.observedContractAddress != null &&
+      (typeof outcome.observedContractAddress !== 'string' || !outcome.observedContractAddress.trim())) {
+      errors.push('invalid_endpoint_contract_evidence');
+    }
+    if (outcome.observedRawQuantity != null &&
+      (typeof outcome.observedRawQuantity !== 'string' || !/^0x[0-9a-f]+$/i.test(outcome.observedRawQuantity))) {
+      errors.push('invalid_endpoint_raw_quantity_evidence');
     }
     for (const [start, end] of [[outcome.requestedStart, outcome.requestedEnd], [outcome.observedStart, outcome.observedEnd]]) {
       if ((start == null) !== (end == null) || (start != null && !validBounds(start, end))) errors.push('invalid_endpoint_bounds');
@@ -286,9 +298,9 @@ function endpointReasons(row: SourceCoverageRow): string[] {
       reasons.push('endpoint_outside_declared_scope');
     }
     if (outcome.required && outcome.status !== 'complete') reasons.push('required_endpoint_incomplete');
-    if (outcome.paginationRequired && outcome.paginationExhausted !== true) reasons.push('pagination_not_exhausted');
-    if (outcome.retentionFloor != null && !finite(outcome.retentionFloor)) reasons.push('invalid_retention_floor');
-    if (finite(outcome.retentionFloor) && finite(outcome.requestedStart) && outcome.retentionFloor > outcome.requestedStart) {
+    if (outcome.required && outcome.paginationRequired && outcome.paginationExhausted !== true) reasons.push('pagination_not_exhausted');
+    if (outcome.required && outcome.retentionFloor != null && !finite(outcome.retentionFloor)) reasons.push('invalid_retention_floor');
+    if (outcome.required && finite(outcome.retentionFloor) && finite(outcome.requestedStart) && outcome.retentionFloor > outcome.requestedStart) {
       reasons.push('retention_truncated');
     }
     if (outcome.requestedStart != null || outcome.requestedEnd != null) {
@@ -300,11 +312,11 @@ function endpointReasons(row: SourceCoverageRow): string[] {
     if (!nonNegativeInteger(outcome.skippedCount) || !nonNegativeInteger(outcome.excludedCount) ||
       !nonNegativeInteger(outcome.failedCount)) reasons.push('invalid_endpoint_count');
     const skipped = (outcome.skippedCount ?? 0) + (outcome.excludedCount ?? 0);
-    if (skipped > 0 && (outcome.exclusionReasons?.length ?? 0) === 0) reasons.push('unexplained_endpoint_exclusion');
-    if ((outcome.failedCount ?? 0) > 0) reasons.push('endpoint_rows_failed');
+    if (outcome.required && skipped > 0 && (outcome.exclusionReasons?.length ?? 0) === 0) reasons.push('unexplained_endpoint_exclusion');
+    if (outcome.required && (outcome.failedCount ?? 0) > 0) reasons.push('endpoint_rows_failed');
   }
   for (const endpoint of row.endpoints) {
-    if (!row.endpointOutcomes.some((outcome) => outcome.endpoint === endpoint && outcome.required)) {
+    if (!row.endpointOutcomes.some((outcome) => outcome.endpoint === endpoint)) {
       reasons.push('required_endpoint_evidence_missing');
     }
   }
@@ -387,7 +399,7 @@ export function evaluateSourceCoverage(row: SourceCoverageRow): SourceCoverageEv
       ? [row.declaredExportStart, row.declaredExportEnd] as const : undefined)
     : apiBounds;
   const completeEnoughForOpening = status === 'complete' && sourceBounds != null &&
-    row.endpointOutcomes.every((outcome) => outcome.status === 'complete' &&
+    row.endpointOutcomes.filter((outcome) => outcome.required).every((outcome) => outcome.status === 'complete' &&
       (!outcome.paginationRequired || outcome.paginationExhausted === true) &&
       !(finite(outcome.retentionFloor) && finite(outcome.requestedStart) && outcome.retentionFloor > outcome.requestedStart));
   return {
