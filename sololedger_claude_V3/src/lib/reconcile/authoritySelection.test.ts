@@ -124,6 +124,26 @@ describe('selectAuthoritySnapshot', () => {
     })).toMatchObject({ authorityStatus: 'non_comparable', selectedAssets: [] });
   });
 
+  it('rejects non-empty current-balance evidence without exhaustive quantity proof', () => {
+    expect(selectAuthoritySnapshot({
+      scopeId: 'exchange:c1', accountClass: 'spot',
+      snapshots: [snapshot({ endpointProof: { ...binanceSpotEndpointProof(), exhaustiveBalances: false } })],
+      assets: [asset()], now: NOW
+    })).toMatchObject({ authorityStatus: 'non_comparable', selectedAssets: [] });
+
+    const walletScope = 'wallet:evm:1:0xabc';
+    expect(selectAuthoritySnapshot({
+      scopeId: walletScope, accountClass: 'wallet', snapshots: [snapshot({
+        scopeId: walletScope, authorityKind: 'rpc', authorityClass: 'wallet_balance',
+        accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+        endpointProof: {
+          authorityKind: 'rpc', provider: 'alchemy', operation: 'balance', parametersClass: 'wallet',
+          requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: false
+        }
+      })], assets: [asset({ scopeId: walletScope, accountClass: 'wallet' })], now: NOW
+    })).toMatchObject({ authorityStatus: 'non_comparable', selectedAssets: [] });
+  });
+
   it('rejects a non-empty row whose generation is absent or differs from its snapshot', () => {
     expect(selectAuthoritySnapshot({
       scopeId: 'exchange:c1', accountClass: 'spot', snapshots: [snapshot()],

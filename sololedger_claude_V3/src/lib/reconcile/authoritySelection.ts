@@ -111,10 +111,12 @@ function scopeAndProofCompatible(
   if (!snapshot.endpointProof.requestedAccountClasses.includes(accountClass)) return false;
   if (!snapshot.endpointProof.provenAccountClasses.includes(accountClass)) return false;
   if (snapshot.authorityKind === 'rpc') {
-    return scopeId.startsWith('wallet:') && accountClass === 'wallet' && snapshot.authorityClass === 'wallet_balance';
+    return scopeId.startsWith('wallet:') && accountClass === 'wallet' &&
+      snapshot.authorityClass === 'wallet_balance' && snapshot.endpointProof.exhaustiveBalances === true;
   }
   if (snapshot.authorityKind === 'api') {
-    return scopeId.startsWith('exchange:') && accountClass !== 'wallet' && snapshot.authorityClass === 'exchange_balance';
+    return scopeId.startsWith('exchange:') && accountClass !== 'wallet' &&
+      snapshot.authorityClass === 'exchange_balance' && snapshot.endpointProof.exhaustiveBalances === true;
   }
   return (scopeId.startsWith('exchange:') || scopeId.startsWith('file:')) &&
     snapshot.authorityClass === 'journal_final_balance';

@@ -109,3 +109,49 @@ describe('Helius unified owner-level classification', () => {
     expect(transactionSourceKey(rows[1])).toContain(mint);
   });
 });
+
+describe('Helius exhaustive pagination evidence', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  const page = (prefix: string, count: number): HeliusTransaction[] => Array.from({ length: count }, (_, index) => ({
+    signature: `${prefix}-${index}`, slot: index, timestamp: 1_700_000_000 - index,
+    type: 'UNKNOWN', source: 'UNKNOWN', description: '', fee: 0, feePayer: sender,
+    tokenTransfers: [], nativeTransfers: [], accountData: []
+  }));
+
+  it('follows before-signature pages through exhaustion with structured completeness', async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(page('first', 100)), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(page('last', 1)), { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const pending = fetchHeliusSolana(wallet, 'key', 5);
+    await vi.runAllTimersAsync();
+    const result = await pending;
+
+    expect(String(fetchMock.mock.calls[1][0])).toContain('before-signature=first-99');
+    expect(result.streamOutcomes).toEqual([
+      expect.objectContaining({ status: 'complete', pages: 2, paginationExhausted: true })
+    ]);
+  });
+
+  it('throws on page one but retains prior pages after a later failure', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('', { status: 503 })));
+    await expect(fetchHeliusSolana(wallet, 'key')).rejects.toThrow('Helius: returned 503');
+
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify(page('first', 100)), { status: 200 }))
+      .mockResolvedValueOnce(new Response('', { status: 503 })));
+    const pending = fetchHeliusSolana(wallet, 'key');
+    await vi.runAllTimersAsync();
+    const result = await pending;
+    expect(result.streamOutcomes).toEqual([
+      expect.objectContaining({ status: 'partial', pages: 1, termination: 'partial_error' })
+    ]);
+  });
+});

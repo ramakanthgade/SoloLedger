@@ -68,6 +68,22 @@ describe('buildAuthorityBalanceModel', () => {
     });
   });
 
+  it('does not let complete balance coverage mask linked partial history', () => {
+    const partialHistory = coverage({
+      id: 'history-partial', evidenceId: 'history-partial', status: 'partial',
+      endpoints: ['history-partial'],
+      endpointOutcomes: [{
+        endpoint: 'history-partial', accountClass: 'spot', required: true,
+        status: 'partial', paginationRequired: true, paginationExhausted: false
+      }]
+    });
+    expect(model({ coverage: [coverage(), partialHistory] })[0]).toMatchObject({
+      quantity: 2,
+      coverageStatus: 'partial',
+      fallbackReason: 'incomplete_coverage'
+    });
+  });
+
   it.each([
     [snapshot({ asOf: NOW - 86_400_001 }), 'stale_authority'],
     [undefined, 'missing_authority'],
@@ -276,6 +292,65 @@ describe('buildAuthorityBalanceModel', () => {
       })], exchangeConnections: []
     })[0];
     expect(row).toMatchObject({ scopeId: scope, assetKey: contractKey, quantity: 7 });
+  });
+
+  it('does not infer an exhaustive zero for a linked unresolved-decimal contract', () => {
+    const walletAddress = '0x1111111111111111111111111111111111111111';
+    const contractAddress = '0x2222222222222222222222222222222222222222';
+    const scope = `wallet:evm:1:${walletAddress}`;
+    const tokenKey = `evm:1:${contractAddress}`;
+    const tokenTransaction: Transaction = {
+      id: 'unresolved-token', timestamp: NOW, type: 'transfer_in', asset: 'TOKEN', amount: 3,
+      fiatCurrency: 'USD', source: 'rpc:alchemy', flags: [], isInternalTransfer: false,
+      chain: 'ethereum', walletAddress, contractAddress
+    };
+    const [tokenPosting] = derivePostings([tokenTransaction], { exchangeConnections: [] });
+    const walletSnapshot = snapshot({
+      scopeId: scope, authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet',
+      coveredAccountClasses: ['wallet'], endpointProof: proof({
+        authorityKind: 'rpc', requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'],
+        parametersClass: 'wallet', exhaustiveBalances: true
+      })
+    });
+    const walletCoverage = coverage({
+      scopeId: scope, accountClasses: ['wallet'], kind: 'rpc',
+      endpoints: [
+        'ethereum:wallet:evm:1:native:eth_getBalance',
+        `ethereum:wallet:${tokenKey}:alchemy_getTokenMetadata`
+      ],
+      endpointOutcomes: [
+        {
+          endpoint: 'ethereum:wallet:evm:1:native:eth_getBalance', accountClass: 'wallet',
+          required: true, status: 'complete'
+        },
+        {
+          endpoint: `ethereum:wallet:${tokenKey}:alchemy_getTokenMetadata`, accountClass: 'wallet',
+          required: false, status: 'failed', observedContractAddress: contractAddress,
+          observedRawQuantity: '0x2dc6c0', quantityResolved: false
+        }
+      ]
+    });
+
+    const rows = model({
+      postings: [tokenPosting], snapshots: [walletSnapshot],
+      assets: [authorityAsset({
+        scopeId: scope, accountClass: 'wallet', assetKey: 'evm:1:native', asset: 'ETH', quantity: 2
+      })],
+      coverage: [walletCoverage], exchangeConnections: []
+    });
+
+    expect(rows.find((row) => row.assetKey === tokenKey)).toMatchObject({
+      quantity: 3,
+      postingQuantity: 3,
+      authorityQuantity: undefined,
+      authorityStatus: 'non_comparable',
+      verificationStatus: 'posting_fallback',
+      fallbackReason: 'non_comparable_authority'
+    });
+    expect(rows.find((row) => row.assetKey === 'evm:1:native')).toMatchObject({
+      quantity: 2,
+      verificationStatus: 'verified_authority'
+    });
   });
 
   it('associates exact ordinary Binance CSV authority only for one live connection', () => {

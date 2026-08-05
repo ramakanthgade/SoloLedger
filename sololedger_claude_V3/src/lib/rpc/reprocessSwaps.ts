@@ -117,7 +117,7 @@ export async function reprocessSwapDetectionInDb(
 
   const byRef = new Map<string, Transaction[]>();
   for (const t of rpcTransfers) {
-    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.sourceRef);
+    const key = canonicalWalletSourceRefKey(t.chain, t.walletAddress, t.txHash ?? t.sourceRef);
     if (!key) continue;
     const group = byRef.get(key) ?? [];
     group.push(t);
@@ -138,7 +138,7 @@ export async function reprocessSwapDetectionInDb(
 
   const items = [...byRef.entries()].map(([key, txs]) => {
     const chain = txs[0]!.chain!;
-    const txHash = txs[0]!.sourceRef!;
+    const txHash = txs[0]!.txHash ?? txs[0]!.sourceRef!;
     const walletAddress = txs[0]?.walletAddress;
     return { key, chain, txHash, walletAddress, txs };
   });

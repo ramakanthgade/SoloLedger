@@ -22,6 +22,8 @@ import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import { transactionSourceKey } from '@/lib/storage/db';
 import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
+import { collectSequentialCursor } from '@/lib/rpc/pagination';
+import type { ProviderStreamOutcome } from '@/lib/rpc/providers';
 
 const HELIUS_BASE = 'https://mainnet.helius-rpc.com';
 
@@ -542,6 +544,7 @@ function heliusTxToRows(htx: HeliusTransaction, walletAddress: string): Transact
 export interface HeliusLookupResult {
   transactions: Transaction[];
   warnings: string[];
+  streamOutcomes?: ProviderStreamOutcome[];
   /** Newest on-chain signature returned in this fetch (for incremental sync cursor). */
   newestSignature?: string;
 }
@@ -555,34 +558,36 @@ export interface HeliusLookupResult {
 export async function fetchHeliusSolana(
   address: string,
   apiKey: string,
-  maxPages = 20,
+  maxPages = 100,
   afterSignature?: string,
   /** On sync: skip any signatures already stored for this wallet. */
   skipSignatures?: Set<string>
 ): Promise<HeliusLookupResult> {
-  const transactions: Transaction[] = [];
   const warnings: string[] = [];
 
   const isIncremental = !!afterSignature;
-  let cursorSignature: string | undefined = afterSignature;
-  let page = 0;
   let newestTimestamp = 0;
   let newestSignature: string | undefined;
-
-  while (page < maxPages) {
+  const collected = await collectSequentialCursor<HeliusTransaction>({
+    maxPages,
+    itemKey: (row) => row.signature,
+    fetchPage: async (cursorSignature, page) => {
     let url =
       isSaasMode()
         ? `${getApiBase()}/api/proxy/helius/v0/addresses/${address}/transactions?limit=100&token-accounts=balanceChanged&commitment=confirmed`
         : `${HELIUS_BASE}/v0/addresses/${address}/transactions?api-key=${apiKey}&limit=100&token-accounts=balanceChanged&commitment=confirmed`;
 
+    const effectiveCursor = cursorSignature ?? afterSignature;
     if (isIncremental) {
       // Ascending: fetch txs strictly after the cursor signature
-      url += `&sort-order=asc&after-signature=${cursorSignature}`;
+      url += `&sort-order=asc&after-signature=${encodeURIComponent(effectiveCursor!)}`;
     } else {
       // Full import: newest first, paginate backwards
       url += `&sort-order=desc`;
-      if (cursorSignature) url += `&before-signature=${cursorSignature}`;
+      if (effectiveCursor) url += `&before-signature=${encodeURIComponent(effectiveCursor)}`;
     }
+
+    if (page > 1) await new Promise((r) => setTimeout(r, 300));
 
     recordNetworkActivity(resolveMode(isSaasMode()));
     // eslint-disable-next-line no-await-in-loop
@@ -590,24 +595,22 @@ export async function fetchHeliusSolana(
       ? await saasProxyFetch(url.replace(getApiBase(), ''))
       : await fetch(url);
 
-    if (res.status === 401) {
-      warnings.push('Helius: invalid API key — check Settings.');
-      break;
-    }
-    if (res.status === 429) {
-      warnings.push('Helius: rate limited — try again in a moment.');
-      break;
-    }
-    if (!res.ok) {
-      warnings.push(`Helius: returned ${res.status}`);
-      break;
-    }
+    if (res.status === 401) throw new Error('Helius: invalid API key — check Settings.');
+    if (res.status === 429) throw new Error('Helius: rate limited — try again in a moment.');
+    if (!res.ok) throw new Error(`Helius: returned ${res.status}`);
 
     // eslint-disable-next-line no-await-in-loop
-    const data: HeliusTransaction[] = await res.json();
-    if (!Array.isArray(data) || data.length === 0) break;
+    const data: unknown = await res.json();
+    if (!Array.isArray(data)) throw new Error(`Helius: page ${page} returned malformed history.`);
+    const rows = data as HeliusTransaction[];
+    return {
+      items: rows,
+      nextCursor: rows.length === 100 ? rows[rows.length - 1]?.signature : undefined
+    };
+  }});
 
-    for (const htx of data) {
+  const transactions: Transaction[] = [];
+  for (const htx of collected.items) {
       // Helius after-signature is inclusive — the cursor tx may be returned again
       if (skipSignatures?.has(htx.signature)) continue;
       if (isIncremental && afterSignature && htx.signature === afterSignature) continue;
@@ -618,17 +621,14 @@ export async function fetchHeliusSolana(
         newestTimestamp = htx.timestamp;
         newestSignature = htx.signature;
       }
-    }
-
-    if (data.length < 100) break;
-
-    const lastSig = data[data.length - 1].signature;
-    cursorSignature = lastSig;
-    page++;
-
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((r) => setTimeout(r, 300));
   }
 
-  return { transactions, warnings, newestSignature };
+  if (collected.evidence.status === 'partial') {
+    warnings.push(collected.evidence.warning ??
+      `Helius: history is partial (${collected.evidence.termination}).`);
+  }
+  return {
+    transactions, warnings, newestSignature,
+    streamOutcomes: [{ endpoint: 'helius:transactions', required: true, ...collected.evidence }]
+  };
 }

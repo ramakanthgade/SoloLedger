@@ -153,4 +153,22 @@ describe('buildPortfolioHoldings custody conservation', () => {
 
     expect(holdings.find((holding) => holding.asset === 'BONK')?.amount).toBe(17);
   });
+
+  it('absorbs event-specific transfer legs by their shared transaction hash', () => {
+    const holdings = buildPortfolioHoldings([
+      tx({ id: 'seed', asset: 'USDC', amount: 10 }),
+      tx({
+        id: 'trade', type: 'trade', asset: 'USDC', amount: 5,
+        counterAsset: 'ETH', counterAmount: 1, source: 'rpc:alchemy',
+        sourceRef: 'event:trade', txHash: '0xshared', chain: 'ethereum', walletAddress: '0xabc'
+      }),
+      tx({
+        id: 'duplicate-leg', type: 'transfer_in', asset: 'ETH', amount: 1,
+        source: 'rpc:alchemy', sourceRef: 'event:log:2', txHash: '0xshared',
+        chain: 'ethereum', walletAddress: '0xabc'
+      })
+    ]);
+
+    expect(holdings.find((holding) => holding.asset === 'ETH')?.amount).toBe(1);
+  });
 });

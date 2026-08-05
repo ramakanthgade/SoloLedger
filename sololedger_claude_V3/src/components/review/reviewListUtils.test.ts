@@ -1,7 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { groupRowsByDate, formatGroupDateLabel, pageNumberList } from './reviewListUtils';
+import {
+  groupRowsByDate, formatGroupDateLabel, pageNumberList, reviewTransactionHash
+} from './reviewListUtils';
 
 const day = (iso: string, h = 12) => new Date(`${iso}T${String(h).padStart(2, '0')}:00:00Z`).getTime();
+
+describe('reviewTransactionHash', () => {
+  it('prefers txHash but supports BTC, Solana, and legacy sourceRef rows', () => {
+    expect(reviewTransactionHash({ txHash: 'real-hash', sourceRef: 'synthetic-event' })).toBe('real-hash');
+    expect(reviewTransactionHash({ sourceRef: 'legacy-chain-hash' })).toBe('legacy-chain-hash');
+    expect(reviewTransactionHash({})).toBeUndefined();
+  });
+});
 
 describe('groupRowsByDate', () => {
   it('groups adjacent rows sharing a UTC day, preserving order', () => {

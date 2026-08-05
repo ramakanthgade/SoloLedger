@@ -4,6 +4,7 @@ import {
   preparePostingAggregation,
   type PreparedPostingAggregation
 } from '@/lib/ledger/postingBalances';
+import { assetKey as canonicalAssetKey } from '@/lib/ledger/assetKey';
 import {
   selectAuthoritySnapshot,
   type AuthorityAssetRow,
@@ -189,9 +190,10 @@ function coverageForSelection(
     );
   if (scoped.length === 0) return 'missing';
   const statuses = scoped.map(({ row }) => evaluateSourceCoverage(row).status);
-  if (statuses.includes('complete')) return 'complete';
   if (statuses.includes('failed')) return 'failed';
   if (statuses.includes('partial')) return 'partial';
+  if (statuses.includes('unknown')) return 'unknown';
+  if (statuses.length > 0 && statuses.every((status) => status === 'complete')) return 'complete';
   return 'unknown';
 }
 
@@ -210,6 +212,28 @@ function supportsReconstructedCsvQuantity(
     // the signed journal. Tax-classification failures are safe here because
     // normalized signed rows still participate in the reconstructed balance.
     (row.skippedCount ?? 0) === 0);
+}
+
+function unresolvedAssetKeysForSelection(
+  scopedCoverage: readonly ProjectedCoverage[],
+  snapshot: AuthoritySnapshotRow | undefined
+): ReadonlySet<string> {
+  if (snapshot == null) return new Set();
+  const unresolved = new Set<string>();
+  for (const { row } of scopedCoverage) {
+    if (row.authoritySnapshotId !== snapshot.snapshotId || row.generation !== snapshot.generation) continue;
+    for (const outcome of row.endpointOutcomes) {
+      if (outcome.quantityResolved !== false || !outcome.observedContractAddress?.trim()) continue;
+      const marker = ':wallet:';
+      const markerAt = outcome.endpoint.indexOf(marker);
+      if (markerAt <= 0) continue;
+      const chain = outcome.endpoint.slice(0, markerAt);
+      unresolved.add(canonicalAssetKey({
+        asset: 'TOKEN', chain, contractAddress: outcome.observedContractAddress
+      }));
+    }
+  }
+  return unresolved;
 }
 
 function fallbackReason(
@@ -371,6 +395,7 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
       ? 'unresolved'
       : selectedProjection?.scopeStatus ?? deletedScopeStatus(scope.scopeId, deletedSourceIds);
     const coverageStatus = coverageForSelection(scopedCoverage, selection.selectedSnapshot);
+    const unresolvedAssetKeys = unresolvedAssetKeysForSelection(scopedCoverage, selection.selectedSnapshot);
     const assets = new Map(postingIndex?.assets ?? []);
     selectedRows.forEach((row) => assets.set(row.assetKey, row.asset));
     if (forcedNonComparable) {
@@ -382,7 +407,9 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
     for (const [assetKey, asset] of assets) {
       const postingQuantity = postingIndex?.balances.get(assetKey) ?? 0;
       const authorityRow = selectedByAsset.get(assetKey);
+      const quantityUnresolved = unresolvedAssetKeys.has(assetKey);
       const exhaustiveAbsence = authorityRow == null &&
+        !quantityUnresolved &&
         selection.selectedSnapshot?.endpointProof.exhaustiveBalances === true;
       const authorityQuantity = authorityRow?.quantity ?? (exhaustiveAbsence ? 0 : undefined);
       const perAssetAuthorityStatus = authorityRow == null && !exhaustiveAbsence && authorityStatus === 'current'

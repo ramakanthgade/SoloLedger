@@ -57,10 +57,15 @@ export interface BalanceRefreshOutcome {
   failed: { address: string; message: string }[];
 }
 
-/** Cap on per-contract metadata lookups so a token-heavy wallet can't burst. */
-const MAX_TOKEN_METADATA_LOOKUPS = 40;
-/** Max tx-history assets zero-filled per address (safety bound). */
-const MAX_ZERO_FILL = 100;
+export interface WalletBalanceRefreshEntry {
+  chain: ChainDef;
+  address: string;
+  /** Required history streams from the successful lookup for this address only. */
+  historyEndpointOutcomes?: EndpointCoverageOutcome[];
+}
+
+/** Bounded metadata workers; the queue itself remains exhaustive. */
+const MAX_TOKEN_METADATA_CONCURRENCY = 8;
 const SPL_TOKEN_PROGRAM = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
 const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
 const MAX_ALCHEMY_TOKEN_PAGES = 100;
@@ -72,6 +77,8 @@ interface ProviderBalanceResult {
   status: 'complete' | 'partial' | 'failed';
   provider: string;
   operationName: string;
+  /** Contracts observed raw but intentionally omitted because quantity units were unresolved. */
+  unresolvedContractAddresses?: string[];
 }
 
 function walletEndpoint(chain: string, asset: string, operation: string): string {
@@ -81,9 +88,10 @@ function walletEndpoint(chain: string, asset: string, operation: string): string
 function requestOutcome(
   endpoint: string,
   status: 'complete' | 'failed',
-  warning?: string
+  warning?: string,
+  required = true
 ): EndpointCoverageOutcome {
-  return { endpoint, accountClass: 'wallet', required: true, status, warning };
+  return { endpoint, accountClass: 'wallet', required, status, warning };
 }
 
 function providerResult(
@@ -92,8 +100,9 @@ function providerResult(
   provider: string,
   operationName: string
 ): ProviderBalanceResult {
-  const completeCount = endpointOutcomes.filter((outcome) => outcome.status === 'complete').length;
-  const status = completeCount === endpointOutcomes.length
+  const required = endpointOutcomes.filter((outcome) => outcome.required);
+  const completeCount = required.filter((outcome) => outcome.status === 'complete').length;
+  const status = completeCount === required.length
     ? 'complete' : completeCount === 0 ? 'failed' : 'partial';
   return {
     balances, endpointOutcomes, provider, operationName, status,
@@ -303,16 +312,22 @@ async function fetchBalanceOperation(
         !Array.isArray((tokenResult as { tokenBalances?: unknown }).tokenBalances)) {
         throw new Error('alchemy_getTokenBalances returned a malformed token list.');
       }
-      const pageRows = (tokenResult as { tokenBalances: unknown[] }).tokenBalances.map((value) => {
-      const token = value as { contractAddress?: unknown; tokenBalance?: unknown };
-      if (typeof token.contractAddress !== 'string' || !/^0x[0-9a-f]{40}$/i.test(token.contractAddress) ||
-        typeof token.tokenBalance !== 'string' || !/^0x[0-9a-f]+$/i.test(token.tokenBalance)) {
-        throw new Error('alchemy_getTokenBalances returned a malformed token balance.');
+      const pageRows: Array<{ contractAddress: string; tokenBalance: string }> = [];
+      let malformedRows = 0;
+      for (const value of (tokenResult as { tokenBalances: unknown[] }).tokenBalances) {
+        const token = value as { contractAddress?: unknown; tokenBalance?: unknown };
+        if (typeof token.contractAddress !== 'string' || !/^0x[0-9a-f]{40}$/i.test(token.contractAddress) ||
+          typeof token.tokenBalance !== 'string' || !/^0x[0-9a-f]+$/i.test(token.tokenBalance)) {
+          malformedRows++;
+          continue;
+        }
+        pageRows.push({ contractAddress: token.contractAddress, tokenBalance: token.tokenBalance });
       }
-      return { contractAddress: token.contractAddress, tokenBalance: token.tokenBalance };
-      });
       tokenRows.push(...pageRows);
       pages++;
+      if (malformedRows > 0) {
+        throw new Error(`alchemy_getTokenBalances returned ${malformedRows} malformed token balance row(s).`);
+      }
       const next = (tokenResult as { pageKey?: unknown }).pageKey;
       if (next != null && (typeof next !== 'string' || !next.trim())) {
         throw new Error('alchemy_getTokenBalances returned a malformed pageKey.');
@@ -332,44 +347,92 @@ async function fetchBalanceOperation(
   });
 
   try {
-    const held = [...new Map(tokenRows
-      .filter((token) => BigInt(token.tokenBalance) > 0n)
-      .map((token) => [token.contractAddress.toLowerCase(), token])).values()];
+    const rawByContract = new Map<string, bigint>();
+    const conflictingContracts = new Map<string, Set<bigint>>();
+    for (const token of tokenRows) {
+      const contract = token.contractAddress.toLowerCase();
+      const raw = BigInt(token.tokenBalance);
+      const prior = rawByContract.get(contract);
+      if (prior == null) rawByContract.set(contract, raw);
+      else if (prior !== raw) {
+        const values = conflictingContracts.get(contract) ?? new Set<bigint>([prior]);
+        values.add(raw);
+        conflictingContracts.set(contract, values);
+      }
+    }
+    for (const [contract, values] of conflictingContracts) {
+      rawByContract.delete(contract);
+      outcomes.push({
+        ...requestOutcome(`${tokenEndpoint}:duplicate-conflict:${contract}`, 'failed',
+          `Alchemy returned conflicting duplicate token balances for ${contract}; no authoritative quantity was recorded.`),
+        observedContractAddress: contract,
+        quantityResolved: false,
+        failedCount: values.size
+      });
+    }
+    const held = [...rawByContract].filter(([, raw]) => raw > 0n);
     const historySymbols = await txHistorySymbolMap(chain.id, address);
-    for (const token of held.slice(0, MAX_TOKEN_METADATA_LOOKUPS)) {
-      const contract = token.contractAddress!;
+    const enrich = async ([contract, raw]: [string, bigint]): Promise<{
+      balance?: FetchedBalance;
+      endpointOutcomes: EndpointCoverageOutcome[];
+    }> => {
       const identity = canonicalAssetKey({ asset: 'TOKEN', chain: chain.id, contractAddress: contract });
-      const metadataEndpoint = walletEndpoint(chain.id, identity, 'alchemy_getTokenMetadata');
+      const quantityEndpoint = walletEndpoint(chain.id, identity, 'alchemy_getTokenMetadata:decimals');
       try {
-        // eslint-disable-next-line no-await-in-loop
         const metadata = await alchemyCall(url, headers, 'alchemy_getTokenMetadata', [contract]);
         if (!metadata || typeof metadata !== 'object' ||
           !Number.isSafeInteger((metadata as { decimals?: unknown }).decimals) ||
-          (metadata as { decimals: number }).decimals < 0 || (metadata as { decimals: number }).decimals > 255 ||
-          ((metadata as { symbol?: unknown }).symbol != null && typeof (metadata as { symbol?: unknown }).symbol !== 'string')) {
+          (metadata as { decimals: number }).decimals < 0 || (metadata as { decimals: number }).decimals > 255) {
           throw new Error('Token metadata is malformed or omitted decimals.');
         }
-        const typedMetadata = metadata as { symbol?: string; decimals: number };
-        balances.push({
-          asset: typedMetadata.symbol?.trim() || historySymbols.get(identity) ||
+        const typedMetadata = metadata as { symbol?: unknown; decimals: number };
+        const symbol = typeof typedMetadata.symbol === 'string' ? typedMetadata.symbol.trim() : '';
+        const balance = {
+          asset: symbol || historySymbols.get(identity) ||
             `${contract.slice(0, 6)}…${contract.slice(-4)}`,
           contractAddress: contract,
-          amount: hexToAmount(token.tokenBalance, typedMetadata.decimals)
-        });
-        outcomes.push(requestOutcome(metadataEndpoint, 'complete'));
+          amount: hexToAmount(`0x${raw.toString(16)}`, typedMetadata.decimals)
+        };
+        const endpointOutcomes = [requestOutcome(quantityEndpoint, 'complete')];
+        if (typedMetadata.symbol != null && typeof typedMetadata.symbol !== 'string') {
+          endpointOutcomes.push(requestOutcome(
+            walletEndpoint(chain.id, identity, 'alchemy_getTokenMetadata:symbol'),
+            'failed', 'Token symbol metadata was malformed; a stable contract label was retained.', false
+          ));
+        }
+        return { balance, endpointOutcomes };
       } catch (error) {
-        outcomes.push(requestOutcome(metadataEndpoint, 'failed', error instanceof Error ? error.message : 'token metadata request failed'));
+        return {
+          endpointOutcomes: [{
+            ...requestOutcome(quantityEndpoint, 'failed',
+              error instanceof Error ? error.message : 'token decimal resolution failed', false),
+            observedContractAddress: contract,
+            observedRawQuantity: `0x${raw.toString(16)}`,
+            quantityResolved: false
+          }]
+        };
       }
-    }
-    if (held.length > MAX_TOKEN_METADATA_LOOKUPS) {
-      outcomes.push(requestOutcome(walletEndpoint(chain.id, 'tokens', 'metadata-limit'), 'failed',
-        `Token metadata request limit exceeded (${held.length}).`));
+    };
+    for (let offset = 0; offset < held.length; offset += MAX_TOKEN_METADATA_CONCURRENCY) {
+      // Exhaust the queue in bounded batches. This limits bursts without
+      // truncating authority quantities for token-heavy wallets.
+      // eslint-disable-next-line no-await-in-loop
+      const enriched = await Promise.all(held.slice(offset, offset + MAX_TOKEN_METADATA_CONCURRENCY).map(enrich));
+      for (const result of enriched) {
+        if (result.balance) balances.push(result.balance);
+        outcomes.push(...result.endpointOutcomes);
+      }
     }
   } catch (error) {
     outcomes.push(requestOutcome(walletEndpoint(chain.id, 'tokens', 'token-processing'), 'failed',
       error instanceof Error ? error.message : 'token balance processing failed'));
   }
-  return providerResult(balances, outcomes, provider, 'eth_getBalance+alchemy_getTokenBalances+alchemy_getTokenMetadata');
+  return {
+    ...providerResult(balances, outcomes, provider, 'eth_getBalance+alchemy_getTokenBalances+alchemy_getTokenMetadata'),
+    unresolvedContractAddresses: outcomes.flatMap((outcome) =>
+      outcome.quantityResolved === false && outcome.observedContractAddress
+        ? [outcome.observedContractAddress] : [])
+  };
 }
 
 // ─── Tx-history zero-fill (drains token phantoms on first refresh) ──────────
@@ -384,7 +447,8 @@ async function fetchBalanceOperation(
 async function txHistoryZeroFill(
   chain: string,
   address: string,
-  fetched: FetchedBalance[]
+  fetched: FetchedBalance[],
+  unresolvedContracts: readonly string[] = []
 ): Promise<FetchedBalance[]> {
   const canonicalAddress = canonicalWalletAddress(chain, address);
   const fetchedKeys = new Set(
@@ -396,8 +460,10 @@ async function txHistoryZeroFill(
     .filter((t) => t.chain === chain && t.walletAddress != null &&
       canonicalWalletAddress(chain, t.walletAddress) === canonicalAddress && !t.isSpam)
     .toArray();
+  const unresolved = new Set(unresolvedContracts.map((contract) => contract.toLowerCase()));
   const candidates = new Map<string, { asset: string; contractAddress?: string; nft: boolean }>();
   for (const t of txs) {
+    if (t.contractAddress && unresolved.has(t.contractAddress.toLowerCase())) continue;
     const key = canonicalAssetKey({ asset: t.asset, chain, contractAddress: t.contractAddress });
     if (fetchedKeys.has(key)) continue;
     const nft =
@@ -413,7 +479,6 @@ async function txHistoryZeroFill(
   for (const c of candidates.values()) {
     if (c.nft) continue;
     zeros.push({ asset: c.asset, contractAddress: c.contractAddress, amount: 0 });
-    if (zeros.length >= MAX_ZERO_FILL) break;
   }
   return zeros;
 }
@@ -440,7 +505,7 @@ export async function fetchAddressBalances(
  * survive any failure. Zero-filled with tx-history-confirmed zeros on success.
  */
 export async function refreshWalletBalancesForAddresses(
-  entries: { chain: ChainDef; address: string }[],
+  entries: WalletBalanceRefreshEntry[],
   settings: TaxSettings
 ): Promise<BalanceRefreshOutcome> {
   const outcome: BalanceRefreshOutcome = { updated: 0, skipped: [], failed: [] };
@@ -448,6 +513,25 @@ export async function refreshWalletBalancesForAddresses(
     const { chain, address } = entries[i];
     if (chain.provider !== 'blockstream' && chain.provider !== 'alchemy_evm' && chain.provider !== 'alchemy_solana') {
       outcome.skipped.push({ address, chain: chain.id, reason: 'no balance provider for this chain' });
+      try {
+        // Coverage-only generation: successful history remains durable even
+        // when this chain has no current-balance implementation.
+        // eslint-disable-next-line no-await-in-loop
+        const operation = await reserveWalletBalanceOperation(chain.id, address);
+        // eslint-disable-next-line no-await-in-loop
+        await appendFailedWalletBalanceCoverage({
+          operation,
+          endpointOutcomes: entries[i].historyEndpointOutcomes ?? [{
+            endpoint: `${chain.id}:history:lookup`, accountClass: 'wallet', required: true,
+            status: 'unknown', warning: 'History completeness was not structurally reported.'
+          }],
+          completedAt: Date.now(), failureKind: 'balance_unsupported',
+          message: 'Balance provider is unsupported; history evidence was retained.',
+          coverageOnly: true
+        });
+      } catch {
+        // The source may have been removed while the lookup was running.
+      }
       continue;
     }
     let reservation: WalletBalanceOperationReservation | undefined;
@@ -464,7 +548,7 @@ export async function refreshWalletBalancesForAddresses(
         // eslint-disable-next-line no-await-in-loop
         await appendFailedWalletBalanceCoverage({
           operation: reservation,
-          endpointOutcomes,
+          endpointOutcomes: [...(entries[i].historyEndpointOutcomes ?? []), ...endpointOutcomes],
           completedAt: capturedAt,
           failureKind: 'provider',
           message
@@ -475,7 +559,7 @@ export async function refreshWalletBalancesForAddresses(
         // succeeded in this same generation.
         // eslint-disable-next-line no-await-in-loop
         const zeros = result.status === 'complete'
-          ? await txHistoryZeroFill(chain.id, address, result.balances) : [];
+          ? await txHistoryZeroFill(chain.id, address, result.balances, result.unresolvedContractAddresses) : [];
         // eslint-disable-next-line no-await-in-loop
         const committed = await commitWalletBalanceOperation({
           operation: reservation,
@@ -483,6 +567,8 @@ export async function refreshWalletBalancesForAddresses(
           provider: result.provider,
           operationName: result.operationName,
           endpointOutcomes,
+          historyEndpointOutcomes: entries[i].historyEndpointOutcomes,
+          unresolvedContractAddresses: result.unresolvedContractAddresses,
           status: result.status,
           asOf: capturedAt,
           capturedAt,
@@ -498,7 +584,7 @@ export async function refreshWalletBalancesForAddresses(
           // eslint-disable-next-line no-await-in-loop
           await appendFailedWalletBalanceCoverage({
             operation: reservation,
-            endpointOutcomes,
+            endpointOutcomes: [...(entries[i].historyEndpointOutcomes ?? []), ...endpointOutcomes],
             completedAt: Date.now(),
             failureKind: 'operation',
             message

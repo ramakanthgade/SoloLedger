@@ -164,7 +164,7 @@ export function detectDexSwaps(transactions: Transaction[]): SwapDetectionResult
   let tradesCreated = 0;
 
   for (const tx of transactions) {
-    const key = canonicalWalletSourceRefKey(tx.chain, tx.walletAddress, tx.sourceRef);
+    const key = canonicalWalletSourceRefKey(tx.chain, tx.walletAddress, tx.txHash ?? tx.sourceRef);
     if (!key || !tx.source.startsWith('rpc:')) {
       standalone.push(tx);
       continue;
@@ -264,7 +264,7 @@ export function detectDexSwaps(transactions: Transaction[]): SwapDetectionResult
 export function countPotentialSwapPairs(transactions: Transaction[]): number {
   const byRef = new Map<string, Transaction[]>();
   for (const tx of transactions) {
-    const key = canonicalWalletSourceRefKey(tx.chain, tx.walletAddress, tx.sourceRef);
+    const key = canonicalWalletSourceRefKey(tx.chain, tx.walletAddress, tx.txHash ?? tx.sourceRef);
     if (!key || !tx.source.startsWith('rpc:') || tx.type === 'trade') continue;
     const group = byRef.get(key) ?? [];
     group.push(tx);

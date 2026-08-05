@@ -129,6 +129,51 @@ describe('fetchAddressBalances — EVM (alchemy)', () => {
     expect(rows[1]).toEqual({ asset: 'WBTC', contractAddress: WBTC_CONTRACT, amount: 1 });
   });
 
+  it('deduplicates identical Alchemy token rows instead of summing them', async () => {
+    stubFetch((_url, method) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [
+        { contractAddress: WBTC_CONTRACT, tokenBalance: '0x5f5e100' },
+        { contractAddress: WBTC_CONTRACT.toUpperCase(), tokenBalance: '0x5F5E100' }
+      ] } };
+      if (method === 'alchemy_getTokenMetadata') return { result: { symbol: 'WBTC', decimals: 8 } };
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const rows = await fetchAddressBalances(
+      CHAINS.find((chain) => chain.id === 'ethereum')!, ETH_ADDR, SETTINGS
+    );
+    expect(rows.find((row) => row.contractAddress === WBTC_CONTRACT)?.amount).toBe(1);
+  });
+
+  it('marks conflicting duplicate token rows partial and records no authoritative quantity', async () => {
+    await watch('ethereum', ETH_ADDR);
+    stubFetch((_url, method) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [
+        { contractAddress: WBTC_CONTRACT, tokenBalance: '0x5f5e100' },
+        { contractAddress: WBTC_CONTRACT, tokenBalance: '0xbebc200' }
+      ] } };
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const result = await refreshWalletBalancesForAddresses(
+      [{ chain: CHAINS.find((chain) => chain.id === 'ethereum')!, address: ETH_ADDR }], SETTINGS
+    );
+    expect(result).toMatchObject({ updated: 1, failed: [] });
+    const snapshot = (await db.authoritySnapshots.toArray())[0];
+    expect(snapshot.status).toBe('partial');
+    expect(await getAuthorityAssetsForSnapshot(snapshot.snapshotId)).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetKey: `evm:1:${WBTC_CONTRACT}` })
+    ]));
+    expect((await db.sourceCoverage.toArray())[0].endpointOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        endpoint: expect.stringContaining('alchemy_getTokenBalances'), required: true,
+        status: 'failed', observedContractAddress: WBTC_CONTRACT, quantityResolved: false
+      })
+    ]));
+  });
+
   it('throws without an alchemy key (local mode)', async () => {
     await expect(
       fetchAddressBalances(CHAINS.find((c) => c.id === 'ethereum')!, ETH_ADDR, {
@@ -186,6 +231,135 @@ describe('fetchAddressBalances — EVM (alchemy)', () => {
         paginationRequired: true, paginationExhausted: true, pages: 2, status: 'complete'
       })
     ]));
+  });
+
+  it('exhausts more than 40 positive token quantities through a bounded metadata queue', async () => {
+    const contracts = Array.from({ length: 41 }, (_, index) =>
+      `0x${(index + 1).toString(16).padStart(40, '0')}`);
+    let activeMetadata = 0;
+    let maxActiveMetadata = 0;
+    stubFetch(async (_url, method, params) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') {
+        return { result: { tokenBalances: contracts.map((contractAddress) => ({
+          contractAddress, tokenBalance: '0x64'
+        })) } };
+      }
+      if (method === 'alchemy_getTokenMetadata') {
+        activeMetadata++;
+        maxActiveMetadata = Math.max(maxActiveMetadata, activeMetadata);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        activeMetadata--;
+        return { result: { symbol: `T${contracts.indexOf(String(params?.[0]))}`, decimals: 2 } };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const rows = await fetchAddressBalances(
+      CHAINS.find((chain) => chain.id === 'ethereum')!, ETH_ADDR, SETTINGS
+    );
+    expect(rows).toHaveLength(42);
+    expect(rows.slice(1).every((row) => row.amount === 1)).toBe(true);
+    expect(maxActiveMetadata).toBeLessThanOrEqual(8);
+  });
+
+  it('isolates unresolved decimals while keeping resolved balance authority exhaustive', async () => {
+    const unresolved = '0x00000000000000000000000000000000000000cc';
+    await watch('ethereum', ETH_ADDR);
+    await db.walletBalances.put({
+      id: `ethereum:${ETH_ADDR}:UNKNOWN`, chain: 'ethereum', address: ETH_ADDR,
+      asset: 'UNKNOWN', contractAddress: unresolved, amount: 7, asOf: 1, source: 'rpc'
+    });
+    stubFetch((_url, method, params) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [
+        { contractAddress: WBTC_CONTRACT, tokenBalance: '0x5f5e100' },
+        { contractAddress: unresolved, tokenBalance: '0x2a' }
+      ] } };
+      if (method === 'alchemy_getTokenMetadata') {
+        return params?.[0] === unresolved
+          ? { result: { symbol: 'UNKNOWN', decimals: null } }
+          : { result: { symbol: 'WBTC', decimals: 8 } };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    expect(await refreshWalletBalancesForAddresses(
+      [{ chain: CHAINS.find((chain) => chain.id === 'ethereum')!, address: ETH_ADDR }], SETTINGS
+    )).toMatchObject({ updated: 1, failed: [] });
+    const snapshot = (await db.authoritySnapshots.toArray())[0];
+    expect(snapshot).toMatchObject({
+      status: 'complete', endpointProof: expect.objectContaining({ exhaustiveBalances: true })
+    });
+    const authority = await getAuthorityAssetsForSnapshot(snapshot.snapshotId);
+    expect(authority).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetKey: `evm:1:${WBTC_CONTRACT}`, quantity: 1 })
+    ]));
+    expect(authority).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetKey: `evm:1:${unresolved}` })
+    ]));
+    expect((await getWalletBalances()).find((row) => row.contractAddress === unresolved)?.amount).toBe(7);
+    expect((await db.sourceCoverage.toArray())[0].endpointOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        endpoint: expect.stringContaining(unresolved), status: 'failed', required: false,
+        observedContractAddress: unresolved, observedRawQuantity: '0x2a', quantityResolved: false
+      })
+    ]));
+  });
+
+  it('retains valid page quantities when a sibling token row is malformed', async () => {
+    await watch('ethereum', ETH_ADDR);
+    stubFetch((_url, method) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [
+        { contractAddress: WBTC_CONTRACT, tokenBalance: '0x5f5e100' },
+        { contractAddress: 'not-a-contract', tokenBalance: '0x2a' }
+      ] } };
+      if (method === 'alchemy_getTokenMetadata') return { result: { symbol: 'WBTC', decimals: 8 } };
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    await refreshWalletBalancesForAddresses(
+      [{ chain: CHAINS.find((chain) => chain.id === 'ethereum')!, address: ETH_ADDR }], SETTINGS
+    );
+    const snapshot = (await db.authoritySnapshots.toArray())[0];
+    expect(snapshot.status).toBe('partial');
+    expect(await getAuthorityAssetsForSnapshot(snapshot.snapshotId)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetKey: `evm:1:${WBTC_CONTRACT}`, quantity: 1 })
+    ]));
+    expect((await db.sourceCoverage.toArray())[0].endpointOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        endpoint: expect.stringContaining('alchemy_getTokenBalances'), status: 'failed',
+        warning: expect.stringContaining('1 malformed token balance row')
+      })
+    ]));
+  });
+
+  it('uses a stable contract label when optional symbol metadata is malformed', async () => {
+    await watch('ethereum', ETH_ADDR);
+    stubFetch((_url, method) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [
+        { contractAddress: WBTC_CONTRACT, tokenBalance: '0x5f5e100' }
+      ] } };
+      if (method === 'alchemy_getTokenMetadata') return { result: { symbol: 123, decimals: 8 } };
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    await refreshWalletBalancesForAddresses(
+      [{ chain: CHAINS.find((chain) => chain.id === 'ethereum')!, address: ETH_ADDR }], SETTINGS
+    );
+    expect((await db.authoritySnapshots.toArray())[0]).toMatchObject({
+      status: 'complete', endpointProof: expect.objectContaining({ exhaustiveBalances: true })
+    });
+    expect((await getWalletBalances()).find((row) => row.contractAddress === WBTC_CONTRACT)?.asset)
+      .toBe('0x2260…c599');
+    expect((await db.sourceCoverage.toArray())[0]).toMatchObject({
+      status: 'complete', failedCount: 0,
+      endpointOutcomes: expect.arrayContaining([
+        expect.objectContaining({ endpoint: expect.stringContaining(':symbol'), required: false, status: 'failed' })
+      ])
+    });
   });
 
   it('records partial pagination and preserves prior v10 balances when a later page fails', async () => {
@@ -327,6 +501,28 @@ describe('refreshWalletBalancesForAddresses — storage + zero-fill', () => {
     });
   });
 
+  it('finishes zero-fill beyond the former safety cap before claiming completeness', async () => {
+    await watch('ethereum', ETH_ADDR);
+    await db.transactions.bulkPut(Array.from({ length: 101 }, (_, index) => tx({
+      id: `history-${index}`, asset: `TOKEN${index}`, chain: 'ethereum', walletAddress: ETH_ADDR,
+      source: 'rpc:alchemy', contractAddress: `0x${(index + 1).toString(16).padStart(40, '0')}`
+    })));
+    stubFetch((_url, method) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [] } };
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    await refreshWalletBalancesForAddresses(
+      [{ chain: CHAINS.find((chain) => chain.id === 'ethereum')!, address: ETH_ADDR }], SETTINGS
+    );
+    expect(await getWalletBalances()).toHaveLength(102);
+    expect(await db.authorityAssets.count()).toBe(102);
+    expect((await db.authoritySnapshots.toArray())[0]).toMatchObject({
+      status: 'complete', endpointProof: expect.objectContaining({ exhaustiveBalances: true })
+    });
+  });
+
   it('zeroes previously stored assets that vanish from a later fetch', async () => {
     await watch('bitcoin', BTC_ADDR);
     await db.walletBalances.put({
@@ -347,13 +543,54 @@ describe('refreshWalletBalancesForAddresses — storage + zero-fill', () => {
     expect(rows[0].amount).toBe(0);
   });
 
+  it('keeps exhaustive balance authority while atomically linking partial history coverage', async () => {
+    await watch('bitcoin', BTC_ADDR);
+    stubFetch(() => ({
+      chain_stats: { funded_txo_sum: 100_000_000, spent_txo_sum: 0 },
+      mempool_stats: { funded_txo_sum: 0, spent_txo_sum: 0 }
+    }));
+    const outcome = await refreshWalletBalancesForAddresses([{
+      chain: CHAINS.find((chain) => chain.id === 'bitcoin')!,
+      address: BTC_ADDR,
+      historyEndpointOutcomes: [{
+        endpoint: 'bitcoin:history:blockstream:transactions', accountClass: 'wallet',
+        required: true, status: 'partial', paginationRequired: true,
+        paginationExhausted: false, pages: 3, warning: 'page four failed'
+      }]
+    }], SETTINGS);
+
+    expect(outcome).toMatchObject({ updated: 1, failed: [] });
+    const snapshot = (await db.authoritySnapshots.toArray())[0];
+    expect(snapshot).toMatchObject({
+      status: 'complete', endpointProof: expect.objectContaining({ exhaustiveBalances: true })
+    });
+    expect((await getWalletBalances())[0]).toMatchObject({ asset: 'BTC', amount: 1 });
+    expect(await db.sourceCoverage.toArray()).toEqual([
+      expect.objectContaining({
+        authoritySnapshotId: snapshot.snapshotId,
+        status: 'partial',
+        endpointOutcomes: expect.arrayContaining([
+          expect.objectContaining({ endpoint: 'bitcoin:history:blockstream:transactions', status: 'partial' }),
+          expect.objectContaining({ status: 'complete' })
+        ])
+      })
+    ]);
+  });
+
   it('a failed fetch keeps prior balances and reports the failure', async () => {
     await watch('bitcoin', BTC_ADDR);
     stubFetch(() => ({
       chain_stats: { funded_txo_sum: 125_000_000, spent_txo_sum: 0 },
       mempool_stats: { funded_txo_sum: 0, spent_txo_sum: 0 }
     }));
-    const entry = [{ chain: CHAINS.find((chain) => chain.id === 'bitcoin')!, address: BTC_ADDR }];
+    const entry = [{
+      chain: CHAINS.find((chain) => chain.id === 'bitcoin')!, address: BTC_ADDR,
+      historyEndpointOutcomes: [{
+        endpoint: 'bitcoin:history:blockstream:transactions', accountClass: 'wallet' as const,
+        required: true, status: 'complete' as const, paginationRequired: true,
+        paginationExhausted: true, pages: 4
+      }]
+    }];
     expect((await refreshWalletBalancesForAddresses(entry, SETTINGS)).updated).toBe(1);
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 502 }) as Response));
     const outcome = await refreshWalletBalancesForAddresses(entry, SETTINGS);
@@ -367,7 +604,33 @@ describe('refreshWalletBalancesForAddresses — storage + zero-fill', () => {
     expect(coverage).toHaveLength(2);
     expect(coverage[0]).toMatchObject({ generation: 1, status: 'complete' });
     expect(coverage[1]).toMatchObject({ generation: 2, status: 'failed', failureKind: 'provider' });
+    expect(coverage[1].endpointOutcomes).toEqual(expect.arrayContaining([
+      expect.objectContaining({ endpoint: 'bitcoin:history:blockstream:transactions', status: 'complete' }),
+      expect.objectContaining({ status: 'failed' })
+    ]));
     expect(coverage[1]).not.toHaveProperty('authoritySnapshotId');
+  });
+
+  it('persists coverage-only history when the balance provider is unsupported', async () => {
+    await watch('starknet', '0xabc');
+    const result = await refreshWalletBalancesForAddresses([{
+      chain: CHAINS.find((chain) => chain.id === 'starknet')!, address: '0xabc',
+      historyEndpointOutcomes: [{
+        endpoint: 'starknet:history:custom', accountClass: 'wallet', required: true,
+        status: 'complete', paginationRequired: true, paginationExhausted: true, pages: 3
+      }]
+    }], SETTINGS);
+
+    expect(result).toMatchObject({ updated: 0, skipped: [expect.objectContaining({ chain: 'starknet' })] });
+    expect(await db.walletBalances.count()).toBe(0);
+    expect(await db.authoritySnapshots.count()).toBe(0);
+    expect(await db.sourceCoverage.toArray()).toEqual([
+      expect.objectContaining({
+        status: 'complete',
+        endpointOutcomes: [expect.objectContaining({ endpoint: 'starknet:history:custom' })]
+      })
+    ]);
+    expect((await db.sourceCoverage.toArray())[0]).not.toHaveProperty('authoritySnapshotId');
   });
 
   it('links successive immutable generations and preserves confirmed zeroes', async () => {

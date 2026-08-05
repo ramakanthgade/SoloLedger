@@ -973,6 +973,10 @@ export interface CommitWalletBalanceOperationInput {
   provider: string;
   operationName: string;
   endpointOutcomes: EndpointCoverageOutcome[];
+  /** History evidence from the lookup immediately preceding this balance refresh. */
+  historyEndpointOutcomes?: EndpointCoverageOutcome[];
+  /** Existing assets in these contracts are neither overwritten nor inferred as zero. */
+  unresolvedContractAddresses?: string[];
   status: 'complete' | 'partial';
   asOf: number;
   capturedAt: number;
@@ -1041,7 +1045,7 @@ function validateWalletOperationResult(input: CommitWalletBalanceOperationInput)
     throw new Error('wallet authority balance is invalid');
   }
   const required = input.endpointOutcomes.filter((outcome) => outcome.required);
-  const everyRequestComplete = required.length === input.endpointOutcomes.length &&
+  const everyRequestComplete = required.length > 0 &&
     required.every((outcome) => outcome.accountClass === 'wallet' && outcome.status === 'complete');
   if ((input.status === 'complete') !== everyRequestComplete) {
     throw new Error('wallet complete authority requires every configured request to succeed');
@@ -1082,6 +1086,9 @@ export async function commitWalletBalanceOperation(
       contractAddress: row.contractAddress, amount: row.amount, asOf: input.asOf, source: 'rpc'
     }));
     const freshAssetKeys = new Set(coalesced.keys());
+    const unresolvedContracts = new Set(
+      (input.unresolvedContractAddresses ?? []).map((contract) => contract.toLowerCase())
+    );
     const freshIdByAssetKey = new Map(fresh.map((row) => [canonicalAssetKey({
       asset: row.asset, chain: row.chain, contractAddress: row.contractAddress
     }), row.id]));
@@ -1089,9 +1096,11 @@ export async function commitWalletBalanceOperation(
       const key = canonicalAssetKey({ asset: row.asset, chain: row.chain, contractAddress: row.contractAddress });
       return freshIdByAssetKey.has(key) && freshIdByAssetKey.get(key) !== row.id;
     }).map((row) => row.id);
-    const zeroed = existingBalances.filter((row) => !freshAssetKeys.has(canonicalAssetKey({
-      asset: row.asset, chain: row.chain, contractAddress: row.contractAddress
-    }))).map((row) => ({
+    const zeroed = existingBalances.filter((row) =>
+      !(row.contractAddress && unresolvedContracts.has(row.contractAddress.toLowerCase())) &&
+      !freshAssetKeys.has(canonicalAssetKey({
+        asset: row.asset, chain: row.chain, contractAddress: row.contractAddress
+      }))).map((row) => ({
       ...row, amount: 0, asOf: input.asOf
     }));
     const authorityBalances = [...new Map(
@@ -1145,6 +1154,11 @@ export async function commitWalletBalanceOperation(
     });
     validateAuthorityGeneration(snapshot, assets);
 
+    const combinedOutcomes = [...(input.historyEndpointOutcomes ?? []), ...input.endpointOutcomes];
+    const requiredCombined = combinedOutcomes.filter((outcome) => outcome.required);
+    const coverageStatus: SourceCoverageRow['status'] = input.status === 'complete' &&
+      requiredCombined.length > 0 && requiredCombined.every((outcome) => outcome.status === 'complete')
+      ? 'complete' : 'partial';
     const coverage: SourceCoverageRow = {
       id: `${input.operation.sourceIdentityId}:rpc-coverage:${input.operation.generation}`,
       generation: input.operation.generation,
@@ -1153,14 +1167,14 @@ export async function commitWalletBalanceOperation(
       evidenceId: `rpc:${input.operation.generation}`,
       kind: 'rpc',
       accountClasses: ['wallet'],
-      endpoints: input.endpointOutcomes.map((outcome) => outcome.endpoint),
+      endpoints: combinedOutcomes.map((outcome) => outcome.endpoint),
       authoritySnapshotId: snapshotId,
       authorityAsOf: input.asOf,
       startedAt: input.operation.startedAt,
       completedAt: input.capturedAt,
-      status: input.status,
-      endpointOutcomes: input.endpointOutcomes,
-      failedCount: input.endpointOutcomes.filter((outcome) => outcome.status === 'failed').length,
+      status: coverageStatus,
+      endpointOutcomes: combinedOutcomes,
+      failedCount: combinedOutcomes.filter((outcome) => outcome.required && outcome.status === 'failed').length,
       warnings: input.warnings?.length ? [...input.warnings] : undefined
     };
     assertValidSourceCoverageRow(coverage);
@@ -1189,6 +1203,8 @@ export async function appendFailedWalletBalanceCoverage(args: {
   completedAt: number;
   failureKind: string;
   message: string;
+  /** Persist source-history evidence without inventing balance authority. */
+  coverageOnly?: boolean;
 }): Promise<boolean> {
   return db.transaction('rw', [db.lookupAddresses, db.sourceCoverage], async () => {
     const source = await db.lookupAddresses.get(args.operation.sourceIdentityId);
@@ -1197,6 +1213,10 @@ export async function appendFailedWalletBalanceCoverage(args: {
       endpoint: `${args.operation.chain}:wallet:balance`, accountClass: 'wallet' as const,
       required: true, status: 'failed' as const, warning: args.message
     }];
+    const required = outcomes.filter((outcome) => outcome.required);
+    const evidenceStatus: SourceCoverageRow['status'] = args.coverageOnly
+      ? required.length > 0 && required.every((outcome) => outcome.status === 'complete') ? 'complete' : 'partial'
+      : 'failed';
     const coverage: SourceCoverageRow = {
       id: `${args.operation.sourceIdentityId}:rpc-coverage:${args.operation.generation}`,
       generation: args.operation.generation,
@@ -1208,15 +1228,20 @@ export async function appendFailedWalletBalanceCoverage(args: {
       endpoints: outcomes.map((outcome) => outcome.endpoint),
       startedAt: args.operation.startedAt,
       completedAt: args.completedAt,
-      status: 'failed',
+      status: evidenceStatus,
       endpointOutcomes: outcomes,
-      failedCount: outcomes.filter((outcome) => outcome.status === 'failed').length || 1,
-      failureKind: args.failureKind,
+      failedCount: args.coverageOnly
+        ? outcomes.filter((outcome) => outcome.status === 'failed').length
+        : outcomes.filter((outcome) => outcome.status === 'failed').length || 1,
+      failureKind: args.coverageOnly ? undefined : args.failureKind,
       warnings: [args.message]
     };
     assertValidSourceCoverageRow(coverage);
     if (await db.sourceCoverage.get(coverage.id)) return false;
     await db.sourceCoverage.add(coverage);
+    await db.lookupAddresses.update(args.operation.sourceIdentityId, {
+      revision: args.operation.expectedRevision + 1
+    });
     return true;
   });
 }

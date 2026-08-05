@@ -72,6 +72,20 @@ describe('evaluateSourceCoverage', () => {
     });
   });
 
+  it('keeps optional metadata diagnostics out of structural authority status', () => {
+    const coverage = apiCoverage({
+      endpoints: ['trades', 'transfers', 'token-symbol'],
+      endpointOutcomes: [
+        ...apiCoverage().endpointOutcomes,
+        { endpoint: 'token-symbol', accountClass: 'spot', required: false, status: 'failed', warning: 'malformed symbol' }
+      ]
+    });
+    expect(() => assertValidSourceCoverageRow(coverage)).not.toThrow();
+    expect(evaluateSourceCoverage(coverage)).toMatchObject({
+      status: 'complete', reasons: [], completeEnoughForOpening: true
+    });
+  });
+
   it('never promotes retention truncation, incomplete discovery, skipped work, or failures', () => {
     expect(evaluateSourceCoverage(apiCoverage({
       endpointOutcomes: apiCoverage().endpointOutcomes.map((outcome, index) =>

@@ -25,9 +25,11 @@ import {
   alchemyHasActivity,
   etherscanV2HasActivity,
   type ChainDef,
-  type ChainId
+  type ChainId,
+  type ProviderStreamOutcome
 } from '@/lib/rpc/providers';
 import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
+import { collectSequentialCursor } from '@/lib/rpc/pagination';
 
 const MORALIS_BASE = 'https://deep-index.moralis.io/api/v2.2';
 
@@ -508,6 +510,7 @@ export function moralisTxToRows(
         fiatValue: undefined,
         source: 'rpc:moralis',
         sourceRef: mtx.hash,
+        txHash: mtx.hash,
         walletAddress,
         counterpartyAddress: mtx.to_address, // DEX router
         chain: chainId,
@@ -520,7 +523,8 @@ export function moralisTxToRows(
   }
 
   // ── ERC-20 transfers ───────────────────────────────────────────────────
-  for (const t of mtx.erc20_transfers) {
+  for (let transferIndex = 0; transferIndex < mtx.erc20_transfers.length; transferIndex++) {
+    const t = mtx.erc20_transfers[transferIndex];
     const isSend = t.from_address.toLowerCase() === walletLower;
     const isReceive = t.to_address.toLowerCase() === walletLower;
     if (!isSend && !isReceive) continue;
@@ -543,7 +547,8 @@ export function moralisTxToRows(
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:moralis',
-      sourceRef: mtx.hash,
+      sourceRef: `moralis:event:${mtx.hash}:erc20:${transferIndex}`.toLowerCase(),
+      txHash: mtx.hash,
       walletAddress,
       counterpartyAddress: isSend ? t.to_address : t.from_address,
       chain: chainId,
@@ -555,7 +560,8 @@ export function moralisTxToRows(
   }
 
   // ── Native ETH/BNB/MATIC transfers ───────────────────────────────────
-  for (const t of mtx.native_transfers) {
+  for (let transferIndex = 0; transferIndex < mtx.native_transfers.length; transferIndex++) {
+    const t = mtx.native_transfers[transferIndex];
     const amount = parseFloat(t.value_formatted);
     if (amount < 1e-9) continue; // dust
 
@@ -571,7 +577,8 @@ export function moralisTxToRows(
       fiatCurrency: 'USD',
       fiatValue: undefined,
       source: 'rpc:moralis',
-      sourceRef: mtx.hash,
+      sourceRef: `moralis:event:${mtx.hash}:native:${transferIndex}`.toLowerCase(),
+      txHash: mtx.hash,
       walletAddress,
       counterpartyAddress: isSend ? to : from,
       chain: chainId,
@@ -596,6 +603,7 @@ export function moralisTxToRows(
         fiatValue: undefined,
         source: 'rpc:moralis',
         sourceRef: mtx.hash,
+        txHash: mtx.hash,
         walletAddress,
         counterpartyAddress: isSend ? mtx.to_address : mtx.from_address,
         chain: chainId,
@@ -612,61 +620,83 @@ export function moralisTxToRows(
 export interface MoralisLookupResult {
   transactions: Transaction[];
   warnings: string[];
+  streamOutcomes?: ProviderStreamOutcome[];
 }
 
 /**
  * Fetch and parse full EVM transaction history via Moralis Wallet History API.
- * Returns decoded + spam-flagged rows. Paginates up to `maxPages` (default 5 = 500 txs).
+ * Returns decoded + spam-flagged rows. By default, follows Moralis cursors
+ * until the normalized wallet history is exhausted, subject to a 100-page
+ * safety budget. Reaching a caller-supplied or default budget is reported as
+ * partial history rather than silently presented as complete.
  */
 export async function fetchMoralisEvm(
   address: string,
   chainId: ChainId,
   nativeAsset: string,
   apiKey: string,
-  maxPages = 5
+  maxPages = 100
 ): Promise<MoralisLookupResult> {
   const moralisChain = getMoralisChain(chainId);
   if (!moralisChain) {
     return { transactions: [], warnings: [`Moralis: chain ${chainId} not supported, using fallback.`] };
   }
 
-  const transactions: Transaction[] = [];
   const warnings: string[] = [];
-  let cursor: string | undefined;
-  let page = 0;
+  const collected = await collectSequentialCursor<MoralisTransaction>({
+      maxPages,
+      cursorKey: (cursor) => cursor,
+      itemKey: (transaction) => transaction.hash.toLowerCase(),
+      fetchPage: async (cursor, page) => {
+        if (page > 1) await new Promise((r) => setTimeout(r, 250));
 
-  while (page < maxPages) {
-    let url =
-      isSaasMode()
-        ? `${getApiBase()}/api/proxy/moralis/api/v2.2/wallets/${address}/history?chain=${moralisChain}&order=DESC&limit=100`
-        : `${MORALIS_BASE}/wallets/${address}/history?chain=${moralisChain}&order=DESC&limit=100`;
-    if (cursor) url += `&cursor=${cursor}`;
+        let url =
+          isSaasMode()
+            ? `${getApiBase()}/api/proxy/moralis/api/v2.2/wallets/${address}/history?chain=${moralisChain}&order=DESC&limit=100`
+            : `${MORALIS_BASE}/wallets/${address}/history?chain=${moralisChain}&order=DESC&limit=100`;
+        if (cursor) url += `&cursor=${encodeURIComponent(cursor)}`;
 
-    recordNetworkActivity(resolveMode(isSaasMode()));
-    const res = isSaasMode()
-      ? await saasProxyFetch(url.replace(getApiBase(), ''))
-      : await fetch(url, { headers: { 'X-API-Key': apiKey, accept: 'application/json' } });
+        let res: Response;
+        try {
+          recordNetworkActivity(resolveMode(isSaasMode()));
+          res = isSaasMode()
+            ? await saasProxyFetch(url.replace(getApiBase(), ''))
+            : await fetch(url, { headers: { 'X-API-Key': apiKey, accept: 'application/json' } });
+        } catch {
+          throw new Error(`Moralis: wallet history is partial because page ${page} could not be fetched.`);
+        }
 
-    if (res.status === 401) { warnings.push('Moralis: invalid API key — check Settings.'); break; }
-    if (res.status === 429) { warnings.push('Moralis: rate limited — try again later.'); break; }
-    if (!res.ok) { warnings.push(`Moralis: returned ${res.status}`); break; }
+        if (res.status === 401) throw new Error('Moralis: wallet history is partial; invalid API key — check Settings.');
+        if (res.status === 429) throw new Error('Moralis: wallet history is partial; rate limited — try again later.');
+        if (!res.ok) throw new Error(`Moralis: wallet history is partial; returned ${res.status}.`);
 
-    // eslint-disable-next-line no-await-in-loop
-    const data = await res.json();
-    const result: MoralisTransaction[] = data?.result ?? [];
+        const data: unknown = await res.json().catch(() => null);
+        if (!data || typeof data !== 'object' || !Array.isArray((data as { result?: unknown }).result)) {
+          throw new Error(`Moralis: wallet history is partial because page ${page} returned an invalid response.`);
+        }
+        const pageData = data as { result: MoralisTransaction[]; cursor?: unknown };
+        return {
+          items: pageData.result,
+          nextCursor: typeof pageData.cursor === 'string' && pageData.cursor.length > 0
+            ? pageData.cursor
+            : undefined
+        };
+      }
+    });
 
-    for (const mtx of result) {
-      const rows = moralisTxToRows(mtx, address, nativeAsset, chainId);
-      transactions.push(...rows);
-    }
-
-    cursor = data?.cursor;
-    if (!cursor || result.length < 100) break;
-    page++;
-
-    // eslint-disable-next-line no-await-in-loop
-    await new Promise((r) => setTimeout(r, 250));
+  if (collected.evidence.termination === 'cursor_loop') {
+    warnings.push('Moralis: wallet history is partial because the pagination cursor repeated.');
+  } else if (collected.evidence.termination === 'page_budget') {
+    warnings.push(`Moralis: wallet history is partial because the ${maxPages}-page pagination budget was reached.`);
+  } else if (collected.evidence.termination === 'partial_error' && collected.evidence.warning) {
+    warnings.push(collected.evidence.warning);
   }
 
-  return { transactions, warnings };
+  const transactions = collected.items.flatMap((mtx) =>
+    moralisTxToRows(mtx, address, nativeAsset, chainId)
+  );
+  return {
+    transactions, warnings,
+    streamOutcomes: [{ endpoint: 'moralis:wallet-history', required: true, ...collected.evidence }]
+  };
 }
