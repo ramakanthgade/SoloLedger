@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(8);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(9);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -51,6 +51,7 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('bybit')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('gateio')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('htx')?.needsPassphrase).toBe(false);
+    expect(getAutoSyncExchange('cryptocom')?.label).toBe('Crypto.com Exchange');
     expect(getAutoSyncExchange(null)).toBeUndefined();
     expect(getAutoSyncExchange('nope')).toBeUndefined();
   });
@@ -73,5 +74,13 @@ describe('autoSyncExchanges catalog', () => {
     expect(htx.docsUrl).toBe('https://www.htx.com/apikey');
     expect(htx.keyInstructions.join(' ')).toMatch(/read-only.*never enable.*trading.*withdrawals.*margin.*futures/i);
     expect(htx.keyInstructions.join(' ')).toMatch(/does not require a passphrase/i);
+  });
+
+  it('clearly separates Crypto.com Exchange API from Crypto.com App CSV', () => {
+    const exchange = getAutoSyncExchange('cryptocom')!;
+    expect(exchange.docsUrl).toBe('https://crypto.com/exchange/user/settings/api-management');
+    expect(exchange.keyInstructions.join(' ')).toMatch(/Exchange.*not the Crypto\.com App.*read-only.*never enable.*App CSV.*separate/i);
+    expect(exchange.keyInstructions.join(' ')).toMatch(/whole Exchange account.*not a complete spot-only subledger.*does not replace history-derived holdings/i);
+    expect(exchange.needsPassphrase).toBe(false);
   });
 });

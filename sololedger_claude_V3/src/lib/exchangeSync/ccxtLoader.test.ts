@@ -48,6 +48,7 @@ describe('loadCcxt', () => {
     expect(typeof a.bybit).toBe('function');
     expect(typeof a.gate).toBe('function');
     expect(typeof a.htx).toBe('function');
+    expect(typeof a.cryptocom).toBe('function');
   });
 });
 
@@ -131,6 +132,18 @@ describe('createExchangeClient', () => {
     });
     expect(raw.has.fetchCurrencies).toBe(false);
     expect(raw.enableLastJsonResponse).toBe(true);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    expect(raw.password).toBeUndefined();
+  });
+
+  it('configures Crypto.com Exchange spot defaults without currency discovery or passphrase', async () => {
+    const client = await createExchangeClient(row({ exchange: 'cryptocom' }));
+    const raw = client as unknown as {
+      options: Record<string, unknown>; has: Record<string, unknown>;
+      requiredCredentials: Record<string, boolean>; password?: string;
+    };
+    expect(raw.options).toMatchObject({ defaultType: 'spot', skipFetchCurrencies: true, fetchCurrencies: false });
+    expect(raw.has.fetchCurrencies).toBe(false);
     expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
     expect(raw.password).toBeUndefined();
   });

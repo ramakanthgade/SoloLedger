@@ -148,6 +148,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['HTX', 'Profile', 'API Management', 'Create API Key'],
     docsUrl: 'https://www.htx.com/apikey'
+  },
+  {
+    id: 'cryptocom',
+    label: 'Crypto.com Exchange',
+    monogram: 'CX',
+    needsPassphrase: false,
+    formatHint: 'Exchange API key + secret',
+    keyInstructions: [
+      'Open Crypto.com Exchange on the web (not the Crypto.com App) and go to Settings → API Keys.',
+      'Create an Exchange API key and enable read-only access for balances and transaction history.',
+      'Never enable trading, transfers or withdrawals. Crypto.com Exchange does not require an API passphrase.',
+      'Balances returned by this connection cover the whole Exchange account, not a complete spot-only subledger. SoloLedger uses them to validate the connection but does not replace history-derived holdings with them.',
+      'Copy the API Key and Secret Key and paste them here. App CSV exports are a separate import source and do not backfill Exchange API history.'
+    ],
+    path: ['Crypto.com Exchange', 'Settings', 'API Keys', 'Create read-only key'],
+    docsUrl: 'https://crypto.com/exchange/user/settings/api-management'
   }
 ];
 

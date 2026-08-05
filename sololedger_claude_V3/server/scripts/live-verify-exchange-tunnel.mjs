@@ -141,6 +141,12 @@ const TIER2 = [
     probe: 'GET /v1/common/timestamp',
     path: '/v1/common/timestamp',
     check: (r, json) => r.status === 200 && json?.status === 'ok' && typeof json?.data === 'number'
+  },
+  {
+    exchange: 'cryptocom',
+    probe: 'GET /exchange/v1/public/get-instruments',
+    path: '/exchange/v1/public/get-instruments',
+    check: (r, json) => r.status === 200 && json?.code === 0 && Array.isArray(json?.result?.data)
   }
 ];
 
@@ -320,6 +326,21 @@ const tier3 = [
       return { path: `${requestPath}?${query}&Signature=${encodeURIComponent(signature)}` };
     },
     check: (r) => r.text.includes('"err-code":"api-signature-not-valid"')
+  },
+  {
+    exchange: 'cryptocom',
+    probe: 'POST /exchange/v1/private/user-balance (JSON HMAC-SHA256)',
+    build() {
+      const apiKey = 'dummy-cryptocom-key';
+      const secret = 'dummy-cryptocom-secret';
+      const id = Date.now();
+      const nonce = id;
+      const method = 'private/user-balance';
+      const sig = hmacHex('sha256', secret, method + id + apiKey + '' + nonce);
+      const body = JSON.stringify({ id, method, api_key: apiKey, sig, nonce });
+      return { path: '/exchange/v1/private/user-balance', method: 'POST', body, contentType: 'application/json' };
+    },
+    check: (r) => r.status === 401 && r.text.includes('"code":40101') && /Authentication failure/i.test(r.text)
   }
 ];
 

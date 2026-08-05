@@ -1,0 +1,4 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored, schema-faithful Crypto.com Exchange API v1 examples transcribed from official documentation and CCXT 4.5.68 cryptocom parser comments. Synthetic ids, addresses and amounts; not captured from a live account. This fixture has no Crypto.com App CSV twin because the App and Exchange are separate products."
+}

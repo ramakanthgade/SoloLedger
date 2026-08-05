@@ -39,7 +39,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   kucoin: 'exkc',
   bybit: 'exbb',
   gateio: 'exgt',
-  htx: 'exhx'
+  htx: 'exhx',
+  cryptocom: 'excx'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -101,6 +102,10 @@ function tradeSourceRef(
       // HTX's CSV is order-level. API matchresults are fill-level, so the
       // order id is the stable cross-source identity; fill id is fallback.
       return trade.order ?? trade.id ?? exchangeSourceRef('htx', floorToSeconds(ts), side, base, amount);
+    case 'cryptocom':
+      // Exchange-native trade_id. Deliberately never mapped to the unrelated
+      // Crypto.com App CSV parser/source.
+      return trade.id ?? exchangeSourceRef('cryptocom-exchange', ts, side, base, amount);
   }
 }
 
@@ -185,7 +190,11 @@ export function normalizeTrade(
     notes,
     flags: fiatValue != null || !requiresMarketValue(type) ? [] : ['missing_market_value'],
     isInternalTransfer: false,
-    raw: { tradeId: trade.id, orderId: trade.order }
+    raw: {
+      tradeId: trade.id,
+      orderId: trade.order,
+      ...(exchange === 'cryptocom' ? { exchangeSyncKind: 'trade' as const } : {})
+    }
   };
 }
 
@@ -605,6 +614,9 @@ function transferSourceRef(
     case 'htx':
       // The HTX CSV fixture's ID column carries this native wallet record id.
       return transfer.id ?? exchangeSourceRef('htx', floorToSeconds(ts), type, asset, amount);
+    case 'cryptocom':
+      // Native Exchange wallet record id is primary; txid remains evidence.
+      return transfer.id ?? exchangeSourceRef('cryptocom-exchange', ts, type, asset, amount);
   }
 }
 
@@ -633,7 +645,37 @@ function isSettledTransfer(
   if (exchange === 'gateio' && type === 'transfer_in') {
     return status === 'DEP_CREDITED' || rawStatus === 'DEP_CREDITED';
   }
+  if (exchange === 'cryptocom') {
+    return type === 'transfer_in'
+      ? status === '1' || rawStatus === '1'
+      : status === '5' || rawStatus === '5';
+  }
   return false;
+}
+
+export type CryptocomTransferDisposition = 'settled' | 'pending' | 'terminal';
+
+/**
+ * Crypto.com transfer status semantics are endpoint-specific. Unknown values
+ * stay pending conservatively so cursor advancement can never strand a later
+ * settlement; known failed/canceled values are terminal and need no replay.
+ */
+export function cryptocomTransferDisposition(
+  transfer: UnifiedTransfer
+): CryptocomTransferDisposition {
+  const raw = String(transfer.info?.status ?? '');
+  if (transfer.type === 'deposit') {
+    if (transfer.status === 'ok' || raw === '1') return 'settled';
+    if (transfer.status === 'failed' || raw === '2') return 'terminal';
+    return 'pending';
+  }
+  if (transfer.type === 'withdrawal') {
+    if (transfer.status === 'ok' || raw === '5') return 'settled';
+    if (transfer.status === 'failed' || transfer.status === 'canceled' ||
+      raw === '2' || raw === '4' || raw === '6') return 'terminal';
+    return 'pending';
+  }
+  return 'pending';
 }
 
 /**
@@ -694,6 +736,13 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
+      ...(exchange === 'cryptocom' ? {
+        exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
+        // Immutable provider evidence helps legacy/future migrations recover
+        // endpoint kind without consulting the user-editable transaction type.
+        transferType: transfer.type,
+        clientWid: transfer.info?.client_wid
+      } : {}),
       exchangeAddress: address
     }
   };

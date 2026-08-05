@@ -1,0 +1,10 @@
+{
+  "_recorded": false,
+  "_note": "Exchange-account private/user-balance wallet truth; not an isolated spot subledger.",
+  "response": {
+    "id": 1785542400000,
+    "method": "private/user-balance",
+    "code": 0,
+    "result": { "data": [{ "total_available_balance": "1000", "total_cash_balance": "1000", "instrument_name": "USD", "position_balances": [{ "quantity": "0.25", "reserved_qty": "0.01", "instrument_name": "BTC" }, { "quantity": "500", "reserved_qty": "0", "instrument_name": "USDT" }] }] }
+  }
+}

@@ -105,6 +105,20 @@ describe('installTunnelFetch — request rewriting (contract C1)', () => {
     expect(init?.body).toBe(signedBody);
   });
 
+  it('preserves Crypto.com Exchange signed JSON without inventing auth headers', async () => {
+    const target = stubTarget();
+    installTunnelFetch(target, 'cryptocom');
+    apiFetchMock.mockResolvedValue(fakeResponse(200, '{}'));
+    const body = '{"id":1,"method":"private/user-balance","sig":"Ab+/="}';
+    await target.fetch('https://api.crypto.com/exchange/v1/private/user-balance', 'POST', {
+      'Content-Type': 'application/json'
+    }, body);
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      `${EXCHANGE_TUNNEL_BASE}/cryptocom/exchange/v1/private/user-balance`,
+      expect.objectContaining({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+    );
+  });
+
   it('hands ccxt a shim exposing the ORIGINAL exchange url and the raw body', async () => {
     const target = stubTarget();
     installTunnelFetch(target, 'binance');

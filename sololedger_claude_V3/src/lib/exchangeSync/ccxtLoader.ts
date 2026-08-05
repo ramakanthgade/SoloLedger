@@ -124,7 +124,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   kucoin: 'KuCoin',
   bybit: 'Bybit',
   gateio: 'Gate.io',
-  htx: 'HTX'
+  htx: 'HTX',
+  cryptocom: 'Crypto.com Exchange'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -158,7 +159,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     timeout: 30_000
   };
   if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx') {
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -196,6 +197,15 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
               networkNamesByChainIds: { __sololedger__: '__sololedger__' },
               networkChainIdsByNames: { __sololedger__: {} }
             }
+          : exchangeId === 'cryptocom'
+            ? {
+                defaultType: 'spot',
+                // Crypto.com returns spot and derivatives from one public
+                // instruments endpoint. The engine retains only active spot
+                // markets and independently filters every private trade row.
+                skipFetchCurrencies: true,
+                fetchCurrencies: false
+              }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -226,6 +236,9 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
   if (exchangeId === 'htx') {
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
+  }
+  if (exchangeId === 'cryptocom') {
+    config.has = { fetchCurrencies: false };
   }
   const exchange = new Ctor(config) as ExchangeClient;
   if (exchangeId === 'gateio') {
