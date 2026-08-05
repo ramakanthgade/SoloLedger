@@ -25,6 +25,8 @@ export type ImportPhase = 'idle' | 'importing' | 'classifying' | 'pricing';
 
 export interface ImportJobState {
   active: boolean;
+  /** True for the full outer multi-chain batch, including between-chain gaps. */
+  batchActive?: boolean;
   phase: ImportPhase;
   progress: { done: number; total: number } | null;
   chainLabel: string;
@@ -41,6 +43,7 @@ export interface ImportJobState {
 
 const IDLE: ImportJobState = {
   active: false,
+  batchActive: false,
   phase: 'idle',
   progress: null,
   chainLabel: '',
@@ -54,10 +57,16 @@ const IDLE: ImportJobState = {
 // ---- Store ----
 
 type Listener = (state: ImportJobState) => void;
+export type ImportOperationToken = symbol;
 
 class ImportJobStore {
   private state: ImportJobState = { ...IDLE };
   private listeners = new Set<Listener>();
+  private operations: ImportOperationToken[] = [];
+  private operationWaiters = new Map<ImportOperationToken, {
+    promise: Promise<void>;
+    resolve: () => void;
+  }>();
 
   get(): ImportJobState {
     return this.state;
@@ -69,7 +78,8 @@ class ImportJobStore {
   }
 
   reset() {
-    this.patch({ ...IDLE });
+    const active = this.operations.length > 0;
+    this.patch({ ...IDLE, active, batchActive: active });
   }
 
   subscribe(listener: Listener): () => void {
@@ -81,14 +91,45 @@ class ImportJobStore {
   _setPhase(phase: ImportPhase, progress: ImportJobState['progress'] = null) {
     this.patch({ phase, progress, active: true });
   }
+  _beginBatch(): ImportOperationToken {
+    const token = Symbol('wallet-import-operation');
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => { resolve = done; });
+    this.operationWaiters.set(token, { promise, resolve });
+    this.operations.push(token);
+    if (this.operations.length === 1) resolve();
+    this.patch({ batchActive: true, active: true });
+    return token;
+  }
+  _waitForBatch(token: ImportOperationToken): Promise<void> {
+    return this.operationWaiters.get(token)?.promise ?? Promise.resolve();
+  }
+  _endBatch(token: ImportOperationToken) {
+    const index = this.operations.indexOf(token);
+    if (index === -1) return;
+    const wasOwner = index === 0;
+    this.operations.splice(index, 1);
+    this.operationWaiters.delete(token);
+    if (wasOwner) this.operationWaiters.get(this.operations[0])?.resolve();
+    const batchActive = this.operations.length > 0;
+    this.patch({ batchActive, active: batchActive, phase: 'idle', progress: null });
+  }
   _setProgress(progress: ImportJobState['progress']) {
     this.patch({ progress });
   }
   _finish(result: ImportJobState['result'], warnings: string[], failed: ImportJobState['failed']) {
-    this.patch({ active: false, phase: 'idle', progress: null, result, warnings, failed, error: null });
+    this.patch({
+      active: this.state.batchActive,
+      phase: 'idle',
+      progress: null,
+      result,
+      warnings,
+      failed,
+      error: null
+    });
   }
   _error(msg: string) {
-    this.patch({ active: false, phase: 'idle', progress: null, error: msg });
+    this.patch({ active: this.state.batchActive, phase: 'idle', progress: null, error: msg });
   }
 }
 
@@ -141,7 +182,23 @@ async function resolveSyncCursor(chainId: string, address: string): Promise<stri
   return bestSig;
 }
 
-export async function runWalletImport(
+export interface WalletInitialIdentity {
+  label?: string;
+  walletAppId?: string;
+}
+
+export type WalletInitialIdentityResolver = (
+  address: string
+) => WalletInitialIdentity | undefined;
+
+function identityForAddress(
+  initialIdentity: WalletInitialIdentity | WalletInitialIdentityResolver | undefined,
+  address: string
+): WalletInitialIdentity | undefined {
+  return typeof initialIdentity === 'function' ? initialIdentity(address) : initialIdentity;
+}
+
+async function runWalletImportCore(
   addresses: string[],
   chain: ChainDef,
   settings: TaxSettings,
@@ -151,7 +208,8 @@ export async function runWalletImport(
    * Uses incremental fetch (after-signature) to get only NEW transactions
    * since the last import — avoids duplicating existing rows.
    */
-  isSync = false
+  isSync = false,
+  initialIdentity?: WalletInitialIdentity | WalletInitialIdentityResolver
 ): Promise<void> {
   const existing = await getLookupAddresses();
   const existingIds = new Set(existing.map((row) =>
@@ -163,7 +221,20 @@ export async function runWalletImport(
   if (isSync) {
     // Sync: fetch ONLY new transactions since the last known one.
     // Find the most recent transaction signature for each address.
-    fresh = addresses;
+    // A queued on-open sync may hold a stale snapshot after the user removed
+    // the wallet. Revalidate ownership after acquiring the shared operation
+    // lock and never recreate a source that no longer exists.
+    fresh = addresses.filter((address) =>
+      existingIds.has(`${chain.id}:${canonicalWalletAddress(chain.id, address)}`));
+    const removed = addresses.filter((address) =>
+      !existingIds.has(`${chain.id}:${canonicalWalletAddress(chain.id, address)}`));
+    for (const address of removed) {
+      warnings.push(`${address.slice(0, 8)}…${address.slice(-4)}: wallet was removed — sync skipped.`);
+    }
+    if (fresh.length === 0) {
+      importJob._finish({ imported: 0, pricesUpdated: 0, swapsDetected: 0 }, warnings, []);
+      return;
+    }
   } else {
     const alreadyKnown = addresses.filter((address) =>
       existingIds.has(`${chain.id}:${canonicalWalletAddress(chain.id, address)}`));
@@ -279,7 +350,12 @@ export async function runWalletImport(
     !failedAddrs.has(`${chain.id}:${canonicalWalletAddress(chain.id, address)}`));
 
   await Promise.all(
-    succeeded.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount))
+    succeeded.map((addr) => {
+      const identity = identityForAddress(initialIdentity, addr);
+      return identity
+        ? upsertLookupAddress(chain.id, addr, stagedCount, undefined, identity)
+        : upsertLookupAddress(chain.id, addr, stagedCount);
+    })
   );
 
   // --- Phase 2: Classification + DCA auto-detection ---
@@ -392,7 +468,14 @@ export async function runWalletImport(
   ).length;
 
   // Refresh wallet tx counts + sync cursor after dedup (succeeded wallets only)
-  await Promise.all(succeeded.map((addr) => upsertLookupAddress(chain.id, addr, stagedCount)));
+  await Promise.all(
+    succeeded.map((addr) => {
+      const identity = identityForAddress(initialIdentity, addr);
+      return identity
+        ? upsertLookupAddress(chain.id, addr, stagedCount, undefined, identity)
+        : upsertLookupAddress(chain.id, addr, stagedCount);
+    })
+  );
 
   if (isSync && imported === 0) {
     apiWarnings.unshift('No new transactions found since last sync.');
@@ -426,4 +509,23 @@ export async function runWalletImport(
     apiWarnings,
     failed
   );
+}
+
+/** Every caller participates in the shared operation guard. */
+export async function runWalletImport(
+  addresses: string[],
+  chain: ChainDef,
+  settings: TaxSettings,
+  config: LookupConfig,
+  isSync = false,
+  initialIdentity?: WalletInitialIdentity | WalletInitialIdentityResolver,
+  operationToken?: ImportOperationToken
+): Promise<void> {
+  const ownedToken = operationToken ?? importJob._beginBatch();
+  try {
+    await importJob._waitForBatch(ownedToken);
+    await runWalletImportCore(addresses, chain, settings, config, isSync, initialIdentity);
+  } finally {
+    if (!operationToken) importJob._endBatch(ownedToken);
+  }
 }

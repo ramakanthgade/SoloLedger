@@ -314,6 +314,43 @@ describe('importFullBackup', () => {
     }).authorityStatus).toBe('stale');
   });
 
+  it('round-trips wallet-app identity and accepts legacy lookup rows without it', async () => {
+    await db.lookupAddresses.bulkPut([
+      {
+        id: 'ethereum:0xabc',
+        chain: 'ethereum',
+        address: '0xabc',
+        label: 'Long-term savings',
+        walletAppId: 'metamask',
+        lastSyncedAt: 1,
+        txCount: 0
+      },
+      {
+        id: 'bitcoin:legacy',
+        chain: 'bitcoin',
+        address: 'legacy',
+        label: 'Legacy wallet',
+        lastSyncedAt: 2,
+        txCount: 0
+      }
+    ]);
+
+    const payload = await createFullBackupPayload();
+    expect(payload.lookupAddresses).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'ethereum:0xabc', walletAppId: 'metamask' }),
+      expect.not.objectContaining({ id: 'bitcoin:legacy', walletAppId: expect.anything() })
+    ]));
+
+    await clearDb();
+    await importFullBackup(backupFile(payload));
+
+    expect(await db.lookupAddresses.get('ethereum:0xabc')).toMatchObject({
+      label: 'Long-term savings',
+      walletAppId: 'metamask'
+    });
+    expect((await db.lookupAddresses.get('bitcoin:legacy'))?.walletAppId).toBeUndefined();
+  });
+
   it('round-trips validated exchange replay checkpoints without credentials', async () => {
     await db.exchangeConnections.bulkPut([{
       id: 'cryptocom-source', exchange: 'cryptocom', apiKey: 'key', secret: 'secret', createdAt: 1,

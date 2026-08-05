@@ -14,12 +14,20 @@ import {
 const mocks = vi.hoisted(() => ({
   runWalletImport: vi.fn(),
   importJobGet: vi.fn(),
+  beginBatch: vi.fn(),
+  endBatch: vi.fn(),
+  waitForBatch: vi.fn(async () => {}),
   getLookupAddresses: vi.fn(),
   buildLookupConfig: vi.fn()
 }));
 
 vi.mock('@/lib/importJob', () => ({
-  importJob: { get: mocks.importJobGet },
+  importJob: {
+    get: mocks.importJobGet,
+    _beginBatch: mocks.beginBatch,
+    _endBatch: mocks.endBatch,
+    _waitForBatch: mocks.waitForBatch
+  },
   runWalletImport: mocks.runWalletImport
 }));
 
@@ -116,6 +124,30 @@ describe('chain-picker checkbox helpers', () => {
 // ---- Sequential orchestration ----
 
 describe('runSequentialChainImport', () => {
+  it('holds the outer batch lock until every chain and between-chain gap completes', async () => {
+    const first = deferred<void>();
+    const second = deferred<void>();
+    mocks.runWalletImport
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+
+    const done = runSequentialChainImport([ADDR_A], ['ethereum', 'polygon'], {
+      settings: SETTINGS,
+      lookupExtras: {}
+    });
+    expect(mocks.beginBatch).toHaveBeenCalledTimes(1);
+    expect(mocks.endBatch).not.toHaveBeenCalled();
+
+    first.resolve();
+    await flush();
+    expect(mocks.runWalletImport).toHaveBeenCalledTimes(2);
+    expect(mocks.endBatch).not.toHaveBeenCalled();
+
+    second.resolve();
+    await done;
+    expect(mocks.endBatch).toHaveBeenCalledTimes(1);
+  });
+
   it('runs chains strictly one at a time, in order', async () => {
     const first = deferred<void>();
     const second = deferred<void>();
@@ -160,7 +192,10 @@ describe('runSequentialChainImport', () => {
       [ADDR_A],
       eth,
       SETTINGS,
-      { chain: eth }
+      { chain: eth },
+      false,
+      undefined,
+      undefined
     );
   });
 

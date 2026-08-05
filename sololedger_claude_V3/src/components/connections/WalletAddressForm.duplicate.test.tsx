@@ -1,6 +1,6 @@
 import 'fake-indexeddb/auto';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 
 /**
  * Round-4 item 1 — duplicate-wallet short-circuit.
@@ -33,7 +33,15 @@ let effectiveSettings: Record<string, unknown> = {
   moralisApiKey: 'mk'
 };
 
-let lookupRows: { id: string; chain: string; address: string; txCount: number; lastSyncedAt: number }[] = [];
+let lookupRows: {
+  id: string;
+  chain: string;
+  address: string;
+  txCount: number;
+  lastSyncedAt: number;
+  label?: string;
+  walletAppId?: string;
+}[] = [];
 
 const row = (chain: string, address: string) => ({
   id: `${chain}:${address}`,
@@ -171,18 +179,160 @@ describe('WalletAddressForm — duplicate-wallet short-circuit', () => {
     await waitFor(() => expect(screen.getAllByRole('status')).toHaveLength(1));
   });
 
-  it('EVM wallet imported on SOME chains only: detection still runs and the picker skip-note shows', async () => {
+  it('EVM wallet imported on SOME chains: warns immediately, detects remaining coverage, and gates Import', async () => {
     lookupRows = [row('ethereum', EVM_ADDR)]; // polygon fresh
     await renderWithAddress(EVM_ADDR);
 
+    const warning = await screen.findByTestId('existing-wallet-warning');
+    expect(warning).toHaveTextContent('This wallet is already imported on Ethereum.');
+    expect(screen.getByRole('button', { name: 'Import wallets' })).toBeDisabled();
     await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
     expect(mocks.fetchActiveChains).toHaveBeenCalledWith(EVM_ADDR, 'mk', {
       alchemyApiKey: undefined,
       etherscanApiKey: undefined
     });
     expect(screen.queryByTestId('duplicate-wallet-warning')).not.toBeInTheDocument();
-    // Fresh on polygon → import stays enabled.
     expect(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' })).toBeEnabled();
+  });
+
+  it('preserves the existing grouped wallet identity when adding another EVM chain', async () => {
+    lookupRows = [{
+      ...row('ethereum', EVM_ADDR),
+      label: 'Long-term savings',
+      walletAppId: 'metamask'
+    }];
+    render(<WalletAddressForm defaultLabel="Ledger" walletAppId="ledger" />);
+    fireEvent.change(await screen.findByRole('textbox', { name: /wallet address/i }), {
+      target: { value: EVM_ADDR }
+    });
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' }));
+    await waitFor(() => expect(mocks.runSequential).toHaveBeenCalledTimes(1));
+    const identityForAddress = mocks.runSequential.mock.calls[0]?.[2].initialIdentity;
+    expect(identityForAddress(EVM_ADDR)).toEqual({
+      label: 'Long-term savings', walletAppId: 'metamask'
+    });
+  });
+
+  it('preserves identity independently for each wallet in a multi-address EVM import', async () => {
+    lookupRows = [{
+      ...row('polygon', EVM_KNOWN),
+      label: 'Long-term savings',
+      walletAppId: 'metamask'
+    }];
+    render(<WalletAddressForm defaultLabel="Ledger" walletAppId="ledger" />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /add multiple addresses/i }));
+    fireEvent.change(await screen.findByRole('textbox', { name: /wallet addresses/i }), {
+      target: { value: `${EVM_KNOWN}\n${EVM_ADDR}` }
+    });
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    fireEvent.click(screen.getByRole('button', { name: 'Import 2 wallets on 2 chains' }));
+    await waitFor(() => expect(mocks.runSequential).toHaveBeenCalledTimes(1));
+
+    const identityForAddress = mocks.runSequential.mock.calls[0]?.[2].initialIdentity;
+    expect(identityForAddress(EVM_KNOWN)).toEqual({
+      label: 'Long-term savings', walletAppId: 'metamask'
+    });
+    expect(identityForAddress(EVM_ADDR)).toEqual({
+      label: 'Ledger', walletAppId: 'ledger'
+    });
+  });
+
+  it('keeps an existing authoritative identity as a pair when its label is blank', async () => {
+    lookupRows = [{
+      ...row('polygon', EVM_ADDR),
+      label: '   ',
+      walletAppId: 'metamask'
+    }];
+    render(<WalletAddressForm defaultLabel="Ledger" walletAppId="ledger" />);
+    fireEvent.change(await screen.findByRole('textbox', { name: /wallet address/i }), {
+      target: { value: EVM_ADDR }
+    });
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' }));
+    await waitFor(() => expect(mocks.runSequential).toHaveBeenCalledTimes(1));
+
+    const identityForAddress = mocks.runSequential.mock.calls[0]?.[2].initialIdentity;
+    expect(identityForAddress(EVM_ADDR)).toEqual({
+      label: undefined, walletAppId: 'metamask'
+    });
+  });
+
+  it('clears completed import feedback immediately when the address changes or is removed', async () => {
+    const input = await renderWithAddress(SOL_A);
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'No' }));
+    act(() => {
+      importJob._finish(
+        { imported: 155, swapsDetected: 2, pricesUpdated: 78 },
+        ['Removed 1 duplicate transaction.'],
+        []
+      );
+    });
+    const importedCount = await screen.findByText('155');
+    expect(importedCount.parentElement).toHaveTextContent(
+      '155 transactions imported, 2 swaps detected, 78 prices fetched.'
+    );
+    expect(screen.getByText('Removed 1 duplicate transaction.')).toBeInTheDocument();
+
+    fireEvent.change(input, { target: { value: SOL_B } });
+    expect(screen.queryByText(/155.*transactions imported/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Removed 1 duplicate transaction.')).not.toBeInTheDocument();
+
+    act(() => {
+      importJob._finish(
+        { imported: 1, swapsDetected: 0, pricesUpdated: 0 },
+        [],
+        []
+      );
+    });
+    fireEvent.change(input, { target: { value: '' } });
+    expect(screen.queryByText(/1.*transactions imported/)).not.toBeInTheDocument();
+  });
+
+  it('ignores stale detection when an address is replaced while its lookup is pending', async () => {
+    let resolveFirst!: (value: { active: string[]; incomingOnly: string[] }) => void;
+    let resolveSecond!: (value: { active: string[]; incomingOnly: string[] }) => void;
+    const first = new Promise<{ active: string[]; incomingOnly: string[] }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise<{ active: string[]; incomingOnly: string[] }>((resolve) => {
+      resolveSecond = resolve;
+    });
+    mocks.fetchActiveChains.mockImplementation((address: string) => {
+      if (address === EVM_ADDR) return first;
+      if (address === EVM_KNOWN) return second;
+      throw new Error(`Unexpected address: ${address}`);
+    });
+
+    const input = await renderWithAddress(EVM_ADDR);
+    await waitFor(() => expect(mocks.fetchActiveChains).toHaveBeenCalledWith(
+      EVM_ADDR,
+      'mk',
+      { alchemyApiKey: undefined, etherscanApiKey: undefined }
+    ), DETECT_TIMEOUT);
+
+    fireEvent.change(input, { target: { value: EVM_KNOWN } });
+    expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import 1 wallet' })).toBeDisabled();
+
+    await waitFor(() => expect(mocks.fetchActiveChains).toHaveBeenCalledWith(
+      EVM_KNOWN,
+      'mk',
+      { alchemyApiKey: undefined, etherscanApiKey: undefined }
+    ), DETECT_TIMEOUT);
+
+    resolveFirst({ active: ['ethereum', 'polygon'], incomingOnly: [] });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(screen.queryByTestId('chain-picker')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Import 1 wallet' })).toBeDisabled();
+
+    resolveSecond({ active: ['polygon'], incomingOnly: [] });
+    await screen.findByTestId('chain-picker');
+    expect(screen.getByRole('button', { name: 'Import 1 wallet on 1 chain' })).toBeEnabled();
+    expect(screen.getByRole('checkbox', { name: /Polygon/i })).toBeChecked();
+    expect(screen.queryByRole('checkbox', { name: /Ethereum/i })).not.toBeInTheDocument();
   });
 
   it('mixed EVM paste: detection targets the fresh addresses only', async () => {
@@ -220,7 +370,7 @@ describe('WalletAddressForm — duplicate-wallet short-circuit', () => {
     expect(screen.getByRole('button', { name: 'Import 1 wallet' })).toBeEnabled();
   });
 
-  it('saves a checksummed EVM wallet nickname under each canonical lookup key', async () => {
+  it('sends the wallet nickname to every selected-chain import', async () => {
     const checksummed = '0xAbCdEf0000000000000000000000000000000000';
     mocks.fetchActiveChains.mockResolvedValueOnce({ active: ['ethereum', 'polygon'], incomingOnly: [] });
     render(<WalletAddressForm preselectChain="ethereum" defaultLabel="Main EVM" />);
@@ -228,15 +378,11 @@ describe('WalletAddressForm — duplicate-wallet short-circuit', () => {
       target: { value: checksummed }
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Import 1 wallet on 2 chains' }, DETECT_TIMEOUT));
-    await waitFor(() => expect(mocks.updateWalletLabel).toHaveBeenCalledTimes(2));
-    expect(mocks.updateWalletLabel).toHaveBeenCalledWith(
-      `ethereum:${checksummed.toLowerCase()}`,
-      'Main EVM'
-    );
-    expect(mocks.updateWalletLabel).toHaveBeenCalledWith(
-      `polygon:${checksummed.toLowerCase()}`,
-      'Main EVM'
-    );
+    await waitFor(() => expect(mocks.runSequential).toHaveBeenCalledTimes(1));
+    const identityForAddress = mocks.runSequential.mock.calls[0]?.[2].initialIdentity;
+    expect(identityForAddress(checksummed)).toEqual({
+      label: 'Main EVM', walletAppId: undefined
+    });
   });
 
   it('mixed single-chain paste: skip note, fresh count on the button, no callout', async () => {

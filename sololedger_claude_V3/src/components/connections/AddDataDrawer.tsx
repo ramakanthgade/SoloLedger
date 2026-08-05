@@ -222,7 +222,10 @@ export function AddDataDrawer({
       return (
         <WalletAddressForm
           defaultLabel={which.label}
+          walletAppId={which.id}
           preselectChain={which.preselectChain as ChainId | undefined}
+          onAddAnother={() => setWhich(null)}
+          onContinueInBackground={onClose}
         />
       );
     }
@@ -230,6 +233,8 @@ export function AddDataDrawer({
       return (
         <WalletAddressForm
           preselectChain={which.id === '__any' ? undefined : (which.id as ChainId)}
+          onAddAnother={() => setWhich(null)}
+          onContinueInBackground={onClose}
         />
       );
     }

@@ -663,6 +663,16 @@ describe('ConnectionsHome — wallet actions', () => {
     expect(screen.queryByLabelText('Wallet nickname')).not.toBeInTheDocument();
   });
 
+  it('disables wallet Rename and Remove while a background wallet import is active', () => {
+    mocks.wallets.current = [wallet()];
+    mocks.walletJob.current = { ...IDLE_WALLET_JOB, active: true, phase: 'importing' };
+    render(<ConnectionsHome />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Phantom main actions' }));
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toBeDisabled();
+    expect(screen.getByRole('menuitem', { name: 'Remove' })).toBeDisabled();
+  });
+
   it('kebab Remove confirms then deletes every chain row of the group', async () => {
     mocks.wallets.current = [wallet()];
     render(<ConnectionsHome />);
@@ -724,21 +734,16 @@ describe('ConnectionsHome — wallet removal race guard (ported from WalletLooku
     expect(importJob.get().warnings).toEqual([]);
   });
 
-  it('does NOT clear a job that was active before deletion (idle before AND after rule)', async () => {
-    importJob._setPhase('importing', { done: 1, total: 4 });
-    const resolve = deferredDelete();
-    await confirmRemoval();
+  it('blocks a stale removal dialog if a wallet import starts before confirmation', async () => {
+    mocks.wallets.current = [wallet()];
+    render(<ConnectionsHome />);
+    kebab('Phantom main', /^remove$/i);
 
-    // The import FINISHES during the delete await — the guard captured
-    // hadActiveJob before the await, so it must NOT reset.
-    act(() => {
-      importJob._finish({ imported: 4, pricesUpdated: 0, swapsDetected: 1 }, ['Imported 4.'], []);
-      resolve();
-    });
-    await Promise.resolve();
+    act(() => importJob._setPhase('importing', { done: 1, total: 4 }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove wallet' }));
 
-    expect(importJob.get().result?.imported).toBe(4);
-    expect(importJob.get().warnings).toEqual(['Imported 4.']);
+    expect(mocks.deleteLookupAddressAndTransactions).not.toHaveBeenCalled();
+    expect(await screen.findByText('Wait for wallet import to finish')).toBeInTheDocument();
   });
 });
 

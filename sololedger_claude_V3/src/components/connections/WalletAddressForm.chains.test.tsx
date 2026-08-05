@@ -87,7 +87,6 @@ vi.mock('@/lib/importJob', async () => {
 
 import { WalletAddressForm } from './WalletAddressForm';
 import { importJob } from '@/lib/importJob';
-import { updateWalletLabel } from '@/lib/storage/db';
 
 /** Render the panel, paste the EVM address, and return once settings loaded. */
 async function renderWithEvmAddress() {
@@ -119,6 +118,21 @@ beforeEach(() => {
 });
 
 describe('WalletAddressForm — EVM active-chain detection', () => {
+  it('keeps Import disabled until active-chain detection finishes', async () => {
+    let finishDetection!: (value: { active: string[]; incomingOnly: string[] }) => void;
+    mocks.fetchActiveChains.mockImplementation(() => new Promise((resolve) => {
+      finishDetection = resolve;
+    }));
+    await renderWithEvmAddress();
+
+    await screen.findByText(/Detecting the chains this wallet is active on/, undefined, DETECT_TIMEOUT);
+    expect(screen.getByRole('button', { name: 'Import 1 wallet' })).toBeDisabled();
+
+    await waitFor(() => expect(mocks.fetchActiveChains).toHaveBeenCalledTimes(1));
+    finishDetection({ active: ['ethereum', 'polygon'], incomingOnly: [] });
+    expect(await screen.findByRole('button', { name: 'Import 1 wallet on 2 chains' })).toBeEnabled();
+  });
+
   it('detects active chains and shows the picker with every chain checked, in registry order', async () => {
     await renderWithEvmAddress();
 
@@ -439,8 +453,8 @@ const SOL_A = '4uQeVj5tqViQh7yWWGStvkEG1Zmhx6uasJtWCJziofM';
 const SOL_B = '7UX2vcGey8rZkFHtYjdWxQWcnvzVKFpw3hFTvYzS5pvB';
 
 describe('WalletAddressForm — required wallet name & single-address default', () => {
-  it('prefills the name from the wallet app and applies it to the imported rows', async () => {
-    render(<WalletAddressForm defaultLabel="MetaMask" />);
+  it('prefills the name and sends wallet-app identity with the import', async () => {
+    render(<WalletAddressForm defaultLabel="MetaMask" walletAppId="metamask" />);
     const name = await screen.findByRole('textbox', { name: /wallet name/i });
     expect(name).toHaveValue('MetaMask');
 
@@ -450,9 +464,63 @@ describe('WalletAddressForm — required wallet name & single-address default', 
     fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet' }));
 
     await waitFor(() => expect(mocks.runWalletImport).toHaveBeenCalledTimes(1));
-    await waitFor(() =>
-      expect(vi.mocked(updateWalletLabel)).toHaveBeenCalledWith(`solana:${SOL_A}`, 'MetaMask')
+    const importArgs = mocks.runWalletImport.mock.calls[0] as unknown[];
+    expect((importArgs[5] as (address: string) => unknown)(SOL_A)).toEqual({
+      label: 'MetaMask',
+      walletAppId: 'metamask'
+    });
+  });
+
+  it('offers background navigation as soon as an import starts', async () => {
+    const onAddAnother = vi.fn();
+    const onContinueInBackground = vi.fn();
+    render(
+      <WalletAddressForm
+        defaultLabel="MetaMask"
+        walletAppId="metamask"
+        onAddAnother={onAddAnother}
+        onContinueInBackground={onContinueInBackground}
+      />
     );
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Wallet address' }), {
+      target: { value: SOL_A }
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Add another wallet?' });
+    expect(dialog).toHaveTextContent('Your wallet import is continuing in the background.');
+    fireEvent.click(screen.getByRole('button', { name: 'Yes' }));
+    expect(onAddAnother).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'No' }));
+    expect(onContinueInBackground).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a second form locked while a single-chain import is still starting', async () => {
+    let finishImport!: () => void;
+    mocks.runWalletImport.mockImplementationOnce(
+      () => new Promise<void>((resolve) => { finishImport = resolve; })
+    );
+    const first = render(
+      <WalletAddressForm defaultLabel="MetaMask" onAddAnother={() => undefined} />
+    );
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Wallet address' }), {
+      target: { value: SOL_A }
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Yes' }));
+    expect(importJob.get()).toMatchObject({ active: true, batchActive: true });
+
+    first.unmount();
+    render(<WalletAddressForm defaultLabel="Ledger" />);
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Wallet address' }), {
+      target: { value: SOL_B }
+    });
+    expect(screen.getByRole('button', { name: 'Import 1 wallet' })).toBeDisabled();
+
+    finishImport();
+    await waitFor(() => expect(importJob.get()).toMatchObject({ active: false, batchActive: false }));
   });
 
   it('blocks Connect with an inline error when the name is emptied, and recovers', async () => {

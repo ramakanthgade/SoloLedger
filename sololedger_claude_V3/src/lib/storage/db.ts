@@ -43,6 +43,8 @@ export interface LookupAddressRow {
   chain: string;
   address: string;
   label?: string;       // user-assigned friendly name, e.g. "My Phantom wallet"
+  /** Wallet catalog identity selected in Add data (e.g. "metamask"). */
+  walletAppId?: string;
   lastSyncedAt: number;
   txCount: number;
   /** Newest on-chain signature seen for this wallet (Helius incremental sync cursor). */
@@ -811,34 +813,52 @@ export async function upsertLookupAddress(
   chain: string,
   address: string,
   _importedCount: number,
-  lastSyncedSignature?: string
+  lastSyncedSignature?: string,
+  initialIdentity?: { label?: string; walletAppId?: string }
 ): Promise<void> {
   const canonicalAddress = canonicalWalletAddress(chain, address);
   const canonicalId = `${chain}:${canonicalAddress}`;
-  const exact = await db.lookupAddresses.get(canonicalId);
-  const compatibleLegacy = exact ? [] : await db.lookupAddresses.filter((row) =>
-    row.chain === chain && walletAddressEquals(chain, row.address, canonicalAddress)).toArray();
-  const existing = exact ?? (compatibleLegacy.length === 1 ? compatibleLegacy[0] : undefined);
-  const id = existing?.id ?? canonicalId;
-  const storedAddress = existing?.address ?? canonicalAddress;
+  const preliminary = await db.lookupAddresses.get(canonicalId) ??
+    await db.lookupAddresses.filter((row) =>
+      row.chain === chain && walletAddressEquals(chain, row.address, canonicalAddress)).first();
+  const storedAddress = preliminary?.address ?? canonicalAddress;
   const txCount = await countWalletTransactions(chain, storedAddress);
   const newestInDb = await newestStoredSignature(chain, storedAddress);
-  await db.lookupAddresses.put({
-    ...(existing ?? {}),
-    id,
-    chain,
-    address: storedAddress,
-    lastSyncedAt: Date.now(),
-    txCount,
-    lastSyncedSignature: lastSyncedSignature ?? newestInDb ?? existing?.lastSyncedSignature,
-    authorityGeneration: existing?.authorityGeneration ?? 0,
-    revision: existing?.revision ?? 0,
-    sourceIncarnation: existing?.sourceIncarnation ?? newSourceIncarnation()
+  await db.transaction('rw', db.lookupAddresses, async () => {
+    const exact = await db.lookupAddresses.get(canonicalId);
+    const compatibleLegacy = exact ? [] : await db.lookupAddresses.filter((row) =>
+      row.chain === chain && walletAddressEquals(chain, row.address, canonicalAddress)).toArray();
+    const existing = exact ?? (compatibleLegacy.length === 1 ? compatibleLegacy[0] : undefined);
+    await db.lookupAddresses.put({
+      ...(existing ?? {}),
+      id: existing?.id ?? canonicalId,
+      chain,
+      address: existing?.address ?? canonicalAddress,
+      lastSyncedAt: Date.now(),
+      txCount,
+      lastSyncedSignature: lastSyncedSignature ?? newestInDb ?? existing?.lastSyncedSignature,
+      authorityGeneration: existing?.authorityGeneration ?? 0,
+      revision: existing?.revision ?? 0,
+      sourceIncarnation: existing?.sourceIncarnation ?? newSourceIncarnation(),
+      ...(!existing && initialIdentity?.label?.trim()
+        ? { label: initialIdentity.label.trim() }
+        : {}),
+      ...(!existing && initialIdentity?.walletAppId?.trim()
+        ? { walletAppId: initialIdentity.walletAppId.trim() }
+        : {})
+    });
   });
 }
 
-export async function updateWalletLabel(id: string, label: string): Promise<void> {
-  await db.lookupAddresses.where('id').equals(id).modify({ label: label.trim() || undefined });
+export async function updateWalletLabel(
+  id: string,
+  label: string,
+  walletAppId?: string
+): Promise<void> {
+  await db.lookupAddresses.where('id').equals(id).modify({
+    label: label.trim() || undefined,
+    ...(walletAppId ? { walletAppId } : {})
+  });
 }
 
 export async function getLookupAddresses(): Promise<LookupAddressRow[]> {
