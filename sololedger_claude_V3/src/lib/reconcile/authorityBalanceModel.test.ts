@@ -68,7 +68,7 @@ describe('buildAuthorityBalanceModel', () => {
     });
   });
 
-  it('does not let complete balance coverage mask linked partial history', () => {
+  it('uses exhaustive current balance authority while retaining linked partial-history diagnostics', () => {
     const partialHistory = coverage({
       id: 'history-partial', evidenceId: 'history-partial', status: 'partial',
       endpoints: ['history-partial'],
@@ -78,8 +78,93 @@ describe('buildAuthorityBalanceModel', () => {
       }]
     });
     expect(model({ coverage: [coverage(), partialHistory] })[0]).toMatchObject({
-      quantity: 2,
+      quantity: 7,
       coverageStatus: 'partial',
+      verificationStatus: 'verified_authority',
+      fallbackReason: undefined
+    });
+  });
+
+  it('removes diagnosed stale direct and receipt postings while retaining current wallet custody under partial history', () => {
+    const walletAddress = '0x1111111111111111111111111111111111111111';
+    const scopeId = `wallet:evm:1:${walletAddress}`;
+    const directWbtc = 'evm:1:0x2222222222222222222222222222222222222222';
+    const obsoleteAaveReceipt = 'evm:1:0x3333333333333333333333333333333333333333';
+    const currentSparkReceipt = 'evm:1:0x4444444444444444444444444444444444444444';
+    const liquidUsdc = 'evm:1:0x5555555555555555555555555555555555555555';
+    const walletSnapshot = snapshot({
+      scopeId, authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet',
+      coveredAccountClasses: ['wallet'], endpointProof: proof({
+        authorityKind: 'rpc', provider: 'alchemy', parametersClass: 'wallet',
+        requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true
+      })
+    });
+    const historyPartial = coverage({
+      scopeId, accountClasses: ['wallet'], kind: 'rpc', status: 'partial',
+      endpointOutcomes: [
+        {
+          endpoint: 'ethereum:history:alchemy_getAssetTransfers', accountClass: 'wallet', required: true,
+          status: 'partial', paginationRequired: true, paginationExhausted: false
+        },
+        {
+          endpoint: 'ethereum:balance:alchemy_getTokenBalances', accountClass: 'wallet', required: true,
+          status: 'complete'
+        }
+      ]
+    });
+    const walletPosting = (id: string, assetKey: string, asset: string, signedQuantity: number) => posting({
+      id, accountScopeId: scopeId, accountClass: 'wallet', assetKey, asset, signedQuantity
+    });
+    const walletAsset = (id: string, assetKey: string, asset: string, quantity: number) => authorityAsset({
+      id, scopeId, accountClass: 'wallet', assetKey, asset, quantity
+    });
+
+    const rows = model({
+      postings: [
+        walletPosting('direct-wbtc', directWbtc, 'WBTC', 0.25),
+        walletPosting('obsolete-aave-receipt', obsoleteAaveReceipt, 'aWBTC', 0.25),
+        walletPosting('spark-receipt', currentSparkReceipt, 'spUSDC', 2_500),
+        walletPosting('liquid-usdc', liquidUsdc, 'USDC', 10_000)
+      ],
+      snapshots: [walletSnapshot],
+      assets: [
+        walletAsset('spark-current', currentSparkReceipt, 'spUSDC', 2_750),
+        walletAsset('usdc-current', liquidUsdc, 'USDC', 9_500)
+      ],
+      coverage: [historyPartial], exchangeConnections: []
+    });
+
+    expect(rows).toEqual([
+      expect.objectContaining({ assetKey: directWbtc, quantity: 0, postingQuantity: 0.25, coverageStatus: 'partial', verificationStatus: 'verified_authority' }),
+      expect.objectContaining({ assetKey: obsoleteAaveReceipt, quantity: 0, postingQuantity: 0.25, coverageStatus: 'partial', verificationStatus: 'verified_authority' }),
+      expect.objectContaining({ assetKey: currentSparkReceipt, quantity: 2_750, coverageStatus: 'partial', verificationStatus: 'verified_authority' }),
+      expect.objectContaining({ assetKey: liquidUsdc, quantity: 9_500, coverageStatus: 'partial', verificationStatus: 'verified_authority' })
+    ].sort((a, b) => String(a.assetKey).localeCompare(String(b.assetKey))));
+  });
+
+  it('does not infer a false zero from a recent migrated legacy wallet snapshot that omits an asset', () => {
+    const scopeId = 'wallet:evm:1:0x1111111111111111111111111111111111111111';
+    const legacySnapshot = snapshot({
+      snapshotId: 'legacy:wallet:ethereum:0x1111111111111111111111111111111111111111:1',
+      scopeId, authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet',
+      coveredAccountClasses: ['wallet'], endpointProof: proof({
+        authorityKind: 'rpc', provider: 'ethereum', operation: 'legacy.walletBalances',
+        parametersClass: 'v10-address-balance-set', requestedAccountClasses: ['wallet'],
+        provenAccountClasses: ['wallet'], exhaustiveBalances: true
+      })
+    });
+    const omittedToken = 'evm:1:0x2222222222222222222222222222222222222222';
+    const row = model({
+      postings: [posting({
+        accountScopeId: scopeId, accountClass: 'wallet', assetKey: omittedToken,
+        asset: 'WBTC', signedQuantity: 0.25
+      })],
+      snapshots: [legacySnapshot], assets: [], coverage: [], exchangeConnections: []
+    })[0];
+
+    expect(row).toMatchObject({
+      quantity: 0.25, postingQuantity: 0.25, authorityQuantity: 0,
+      coverageStatus: 'missing', verificationStatus: 'posting_fallback',
       fallbackReason: 'incomplete_coverage'
     });
   });
@@ -112,7 +197,15 @@ describe('buildAuthorityBalanceModel', () => {
       .toMatchObject({ quantity: 7, verificationStatus: 'verified_authority' });
     expect(model({ postings: [posting({ accountScopeId: 'file:f:spot' })], snapshots: [csv], assets: [csvAsset], coverage: [csvCoverage], comparisonAt: NOW + 1 })[0])
       .toMatchObject({ quantity: 2, fallbackReason: 'stale_authority' });
-    expect(model({ coverage: [coverage({ status: 'partial' })] })[0])
+    expect(model({
+      postings: [posting({ accountScopeId: 'file:f:spot' })], snapshots: [csv], assets: [csvAsset],
+      coverage: [{
+        ...csvCoverage, status: 'partial',
+        endpointOutcomes: [{
+          endpoint: 'history', parserId: 'other', accountClass: 'spot', required: true, status: 'partial'
+        }]
+      }]
+    })[0])
       .toMatchObject({ quantity: 2, fallbackReason: 'incomplete_coverage' });
   });
 

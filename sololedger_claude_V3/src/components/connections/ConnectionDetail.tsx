@@ -9,6 +9,7 @@ import { runWalletImport, useImportJob } from '@/lib/importJob';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import type { ExchangeSourceIdentity } from '@/lib/ledger/derivedPostings';
 import { refreshCurrentHoldingPrices, SPOT_TTL_MS } from '@/lib/pricing/currentPrices';
+import { defiUnderlyingPriceHoldings } from '@/lib/portfolio/defiUnderlyingPrices';
 import { CHAINS } from '@/lib/rpc/providers';
 import { useAuth } from '@/lib/saas/authContext';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
@@ -271,7 +272,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   }, [currency, priceRows, priceNow]);
 
   useEffect(() => {
-    if (!snapshot || snapshot.overview.holdings.length === 0) return;
+    if (!snapshot) return;
     const refreshClock = () => setPriceRefreshNow(Date.now());
     const onVisibilityChange = () => {
       if (document.visibilityState === 'visible') refreshClock();
@@ -303,15 +304,19 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
   }, [currency, priceRefreshNow, priceRows, snapshot?.overview.holdings.length]);
 
   useEffect(() => {
-    if (!snapshot || snapshot.overview.holdings.length === 0) return;
+    if (!snapshot || (snapshot.overview.holdings.length === 0 &&
+      (defiPositionEvidenceQuery?.rows.length ?? 0) === 0)) return;
     let cancelled = false;
     getEffectiveSettings().then((effective) => {
       if (!cancelled && effective.priceApiEnabled) {
-        void refreshCurrentHoldingPrices([...snapshot.overview.holdings], currency, effective.coingeckoApiKey);
+        void refreshCurrentHoldingPrices([
+          ...snapshot.overview.holdings,
+          ...defiUnderlyingPriceHoldings(defiPositionEvidenceQuery?.rows ?? [])
+        ], currency, effective.coingeckoApiKey);
       }
     }).catch(() => undefined);
     return () => { cancelled = true; };
-  }, [snapshot, currency, priceRefreshNow]);
+  }, [snapshot, currency, priceRefreshNow, defiPositionEvidenceQuery?.rows]);
 
   const [walletSyncing, setWalletSyncing] = useState(false);
   const syncingThisWallet = walletJob.active || walletSyncing;
@@ -495,7 +500,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
         {TABS.map((tab, index) => <button key={tab.id} ref={(element) => { tabRefs.current[index] = element; }} id={`connection-tab-${tab.id}`} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`connection-panel-${tab.id}`} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => selectWorkspaceTab(tab.id)} onKeyDown={(event) => onTabKeyDown(event, index)} className={`min-h-[44px] rounded-t-lg border-b-2 px-4 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${activeTab === tab.id ? 'border-primary text-primary' : 'border-transparent text-low hover:text-hi'}`}>{tab.label}</button>)}
       </div></div>
       {TABS.map((tab) => <div ref={(element) => { panelRefs.current[tab.id] = element; }} key={tab.id} id={`connection-panel-${tab.id}`} role="tabpanel" aria-labelledby={`connection-tab-${tab.id}`} hidden={activeTab !== tab.id} tabIndex={0}>
-        {activeTab === tab.id && (tab.id === 'overview' ? <><ConnectionOverview card={card} snapshot={snapshot} priceIndex={priceIndex} formatMoney={(value) => formatCurrency(value, currency)} syncing={syncing} syncDisabled={syncDisabled} onSync={() => void handleSync()} onOpenDataHealth={onOpenDataHealth} defiPositionSnapshots={defiPositionEvidenceQuery?.snapshots ?? []} defiPositionRows={defiPositionEvidenceQuery?.rows ?? []} /><div className="mt-5"><ConnectionOpeningBalances snapshot={snapshot} openingBalances={openingBalances} /></div></> : <ConnectionSyncHistory snapshot={snapshot} />)}
+        {activeTab === tab.id && (tab.id === 'overview' ? <><ConnectionOverview card={card} snapshot={snapshot} priceIndex={priceIndex} reportingCurrency={currency} formatMoney={(value) => formatCurrency(value, currency)} syncing={syncing} syncDisabled={syncDisabled} onSync={() => void handleSync()} onOpenDataHealth={onOpenDataHealth} defiPositionSnapshots={defiPositionEvidenceQuery?.snapshots ?? []} defiPositionRows={defiPositionEvidenceQuery?.rows ?? []} /><div className="mt-5"><ConnectionOpeningBalances snapshot={snapshot} openingBalances={openingBalances} /></div></> : <ConnectionSyncHistory snapshot={snapshot} />)}
       </div>)}
     </div>
   );

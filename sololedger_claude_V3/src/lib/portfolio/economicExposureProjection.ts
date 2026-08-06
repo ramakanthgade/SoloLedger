@@ -15,6 +15,9 @@ export function projectScopedEconomicExposure(input: {
   snapshots: readonly DefiPositionSnapshot[];
   rows: readonly DefiPositionRow[];
   prices?: ReadonlyMap<string, number>;
+  reportingCurrency: string;
+  /** Explicit USD -> reporting-currency FX evidence for this valuation instant. */
+  usdToReportingCurrencyRate?: number;
 }): EconomicExposureProjection {
   const custodyByScope = new Map<string, CustodyExposure[]>();
   for (const row of input.custody) {
@@ -51,7 +54,11 @@ export function projectScopedEconomicExposure(input: {
     const header = selectedHeader
       ? { ...selectedHeader, status: hasComplete ? 'complete' as const : selectedHeader.status, ...(stale ? { restoredAt: selectedHeader.restoredAt ?? selectedHeader.capturedAt } : {}) }
       : undefined;
-    const projection = projectEconomicExposure({ custody, snapshot: header, rows: selectedRows, latestPartialRows: partialDebtRows, prices: input.prices });
+    const projection = projectEconomicExposure({
+      custody, snapshot: header, rows: selectedRows, latestPartialRows: partialDebtRows,
+      prices: input.prices, reportingCurrency: input.reportingCurrency,
+      usdToReportingCurrencyRate: input.usdToReportingCurrencyRate
+    });
     projections.push({
       ...projection,
       assets: projection.assets.map((row) => ({ ...row, scopeId: scope })),
@@ -127,6 +134,8 @@ export function projectWalletDefiNetWorth(input: {
   snapshots: readonly DefiPositionSnapshot[];
   rows: readonly DefiPositionRow[];
   prices?: ReadonlyMap<string, number>;
+  reportingCurrency: string;
+  usdToReportingCurrencyRate?: number;
   enabled: boolean;
 }): DefiNetWorthShadowComparison {
   const candidate = projectScopedEconomicExposure(input);
@@ -156,11 +165,21 @@ export function projectLegacyWalletNetWorth(
   };
 }
 
-function valueFor(row: DefiPositionRow, prices: ReadonlyMap<string, number>): number | null {
-  const evidenced = row.valueEvidence?.value;
-  if (evidenced != null && Number.isFinite(evidenced)) return Math.abs(evidenced);
+function valueFor(
+  row: DefiPositionRow,
+  prices: ReadonlyMap<string, number>,
+  reportingCurrency: string,
+  usdToReportingCurrencyRate?: number
+): number | null {
   const price = prices.get(row.underlying.contractAddress.toLowerCase());
-  return price == null ? null : row.quantity * price;
+  if (price != null && Number.isFinite(price) && price > 0) return row.quantity * price;
+  const evidenced = row.valueEvidence?.value;
+  if (evidenced == null || !Number.isFinite(evidenced)) return null;
+  if (row.quantity > 0 && evidenced <= 0) return null;
+  if (reportingCurrency.trim().toUpperCase() === 'USD') return Math.abs(evidenced);
+  return usdToReportingCurrencyRate != null && Number.isFinite(usdToReportingCurrencyRate) && usdToReportingCurrencyRate > 0
+    ? Math.abs(evidenced) * usdToReportingCurrencyRate
+    : null;
 }
 
 /** Pure current-economic projection. It never reads or mutates transactions, postings, lots, gains, or tax facts. */
@@ -169,6 +188,8 @@ export function projectEconomicExposure(input: {
   snapshot?: DefiPositionSnapshot;
   rows: readonly DefiPositionRow[];
   prices?: ReadonlyMap<string, number>;
+  reportingCurrency: string;
+  usdToReportingCurrencyRate?: number;
   latestPartialRows?: readonly DefiPositionRow[];
   unsupported?: boolean;
 }): EconomicExposureProjection {
@@ -180,7 +201,7 @@ export function projectEconomicExposure(input: {
   const liabilities: EconomicExposureRow[] = [];
   if (usableComplete) {
     for (const row of input.rows) {
-      const value = valueFor(row, prices);
+      const value = valueFor(row, prices, input.reportingCurrency, input.usdToReportingCurrencyRate);
       const base = { id: row.id, chainId: 1, contractAddress: row.underlying.contractAddress, symbol: row.underlying.symbol, quantity: row.quantity, value, protocolId: row.protocolId, replacedCustodyId: input.custody.find((item) => item.contractAddress?.toLowerCase() === row.protocolToken.contractAddress.toLowerCase())?.id };
       if (row.role === 'supply') assets.push({ ...base, kind: 'supply', isCollateral: row.isCollateral, contribution: value });
       else liabilities.push({ ...base, kind: 'liability', debtRateMode: row.debtRateMode, contribution: value == null ? null : -value });
@@ -190,7 +211,7 @@ export function projectEconomicExposure(input: {
     for (const row of input.latestPartialRows ?? []) if (row.role === 'debt') {
       const existing = liabilities.find((item) => item.protocolId === row.protocolId && item.contractAddress?.toLowerCase() === row.underlying.contractAddress.toLowerCase() && item.debtRateMode === row.debtRateMode);
       if (existing && existing.quantity >= row.quantity) continue;
-      const value = valueFor(row, prices);
+      const value = valueFor(row, prices, input.reportingCurrency, input.usdToReportingCurrencyRate);
       const conservative = { id: row.id, chainId: 1, contractAddress: row.underlying.contractAddress, symbol: row.underlying.symbol, quantity: row.quantity, value, protocolId: row.protocolId, kind: 'liability' as const, debtRateMode: row.debtRateMode, contribution: value == null ? null : -value };
       if (existing) liabilities.splice(liabilities.indexOf(existing), 1, conservative);
       else liabilities.push(conservative);
@@ -198,7 +219,7 @@ export function projectEconomicExposure(input: {
   } else {
     // Fail closed: partial evidence may add known debt, but never supplies and never removes raw custody.
     for (const row of input.latestPartialRows ?? input.rows) if (row.role === 'debt') {
-      const value = valueFor(row, prices);
+      const value = valueFor(row, prices, input.reportingCurrency, input.usdToReportingCurrencyRate);
       liabilities.push({ id: row.id, chainId: 1, contractAddress: row.underlying.contractAddress, symbol: row.underlying.symbol, quantity: row.quantity, value, protocolId: row.protocolId, kind: 'liability', debtRateMode: row.debtRateMode, contribution: value == null ? null : -value });
     }
   }

@@ -12,6 +12,7 @@ import type { DataHealthSnapshot } from './dataHealthSnapshot';
 import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
 import { buildPriceIndex, valueHoldings } from '@/lib/dashboard/dashboardModel';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import { defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
 export interface LocalDataHealthDiagnostics {
@@ -37,7 +38,8 @@ export function buildCoherentDataHealthShadow(
     safetyDecisions: snapshot.safetyDecisions ?? [],
     now
   });
-  const valued = valueHoldings(projection.holdings, buildPriceIndex(snapshot.priceCache ?? [], currency));
+  const priceIndex = buildPriceIndex(snapshot.priceCache ?? [], currency);
+  const valued = valueHoldings(projection.holdings, priceIndex);
   const valueByKey = new Map(valued.map((row) => [portfolioHoldingKey(row), row]));
   const custody = projection.holdings.flatMap((holding) => {
     const valuedHolding = valueByKey.get(portfolioHoldingKey(holding));
@@ -56,11 +58,15 @@ export function buildCoherentDataHealthShadow(
   });
   const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
     ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
+  for (const [contract, price] of defiUnderlyingPriceMap(
+    snapshot.defiPositionRows ?? [], priceIndex
+  )) prices.set(contract, price);
   return projectWalletDefiNetWorth({
     custody,
     snapshots: snapshot.defiPositionSnapshots ?? [],
     rows: snapshot.defiPositionRows ?? [],
     prices,
+    reportingCurrency: currency,
     enabled
   });
 }

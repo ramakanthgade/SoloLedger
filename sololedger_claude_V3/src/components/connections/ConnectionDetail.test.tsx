@@ -471,6 +471,42 @@ describe('ConnectionDetail — wallet kind', () => {
     lifecycleRevision: revision
   });
 
+  it('requests an exact INR mark for a DeFi underlying absent from wallet custody', async () => {
+    const address = `0x${'1'.repeat(40)}`;
+    const reserve = `0x${'2'.repeat(40)}`;
+    mocks.lookupLoaded.current = true;
+    mocks.lookupRows.current = [{
+      id: `ethereum:${address}`, chain: 'ethereum', address, lastSyncedAt: Date.now()
+    }];
+    mocks.getEffectiveSettings.mockResolvedValue({ reportingCurrency: 'INR', priceApiEnabled: true });
+    mocks.defiPositionRows.current = [{
+      id: 'connection-underlying', snapshotId: 'connection-snapshot',
+      protocolId: 'aave-v3-ethereum', reserveKey: reserve, role: 'debt',
+      underlying: { chainId: 1, contractAddress: reserve, symbol: 'USDC', decimals: 6 },
+      protocolToken: {
+        chainId: 1, contractAddress: `0x${'3'.repeat(40)}`,
+        symbol: 'variableDebtUSDC', decimals: 6
+      },
+      quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable'
+    }];
+    const card = walletCard({
+      id: `wallet:${address}`,
+      walletRows: [{
+        id: `ethereum:${address}`, chain: 'ethereum', address,
+        lastSyncedAt: Date.now(), txCount: 0
+      }]
+    });
+
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+
+    await waitFor(() => expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({
+        asset: 'USDC', chain: 'ethereum', contractAddress: reserve, safetyState: 'trusted'
+      })]),
+      'INR', undefined
+    ));
+  });
+
   it('edits the exact second wallet account instead of the first global live row', async () => {
     mocks.lookupLoaded.current = true;
     mocks.lookupRows.current = [

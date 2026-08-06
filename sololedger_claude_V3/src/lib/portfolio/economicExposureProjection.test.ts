@@ -1,5 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
-import { projectEconomicExposure, projectLegacyWalletNetWorth, projectScopedEconomicExposure, projectWalletDefiNetWorth, storeWalletDefiNetWorthShadow, WALLET_DEFI_SHADOW_STORAGE_KEY } from './economicExposureProjection';
+import {
+  projectEconomicExposure as projectEconomicExposureWithCurrency,
+  projectLegacyWalletNetWorth,
+  projectScopedEconomicExposure as projectScopedEconomicExposureWithCurrency,
+  projectWalletDefiNetWorth as projectWalletDefiNetWorthWithCurrency,
+  storeWalletDefiNetWorthShadow,
+  WALLET_DEFI_SHADOW_STORAGE_KEY
+} from './economicExposureProjection';
 import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
 import diagnosedWallet from '@/lib/defi/__fixtures__/diagnosed-wallet.sanitized.json';
 import { reaggregateUnreplacedCustody } from '@/components/dashboard/dashboardEconomicRows';
@@ -18,6 +25,12 @@ const custody = [
   { id: 'receipt', chainId: 1, contractAddress: A, symbol: 'aUSDC', quantity: 100, value: 100 },
   { id: 'debtToken', chainId: 1, contractAddress: D, symbol: 'variableDebtUSDC', quantity: 90, value: 0 }
 ];
+type EconomicInput = Omit<Parameters<typeof projectEconomicExposureWithCurrency>[0], 'reportingCurrency'>;
+type ScopedInput = Omit<Parameters<typeof projectScopedEconomicExposureWithCurrency>[0], 'reportingCurrency'>;
+type WalletInput = Omit<Parameters<typeof projectWalletDefiNetWorthWithCurrency>[0], 'reportingCurrency'>;
+const projectEconomicExposure = (input: EconomicInput) => projectEconomicExposureWithCurrency({ ...input, reportingCurrency: 'USD' });
+const projectScopedEconomicExposure = (input: ScopedInput) => projectScopedEconomicExposureWithCurrency({ ...input, reportingCurrency: 'USD' });
+const projectWalletDefiNetWorth = (input: WalletInput) => projectWalletDefiNetWorthWithCurrency({ ...input, reportingCurrency: 'USD' });
 
 describe('economic exposure projection', () => {
   it('shadows DeFi arithmetic and falls back to raw custody when killed', () => {
@@ -136,6 +149,53 @@ describe('economic exposure projection', () => {
     expect(output.status).toBe('partial');
     expect(output.netWorth).toBeNull();
   });
+  it('never treats USD position evidence as INR and prefers exact INR underlying prices', () => {
+    const usdEvidenceRows = rows.map((row) => ({
+      ...row,
+      valueEvidence: { currency: 'USD' as const, value: row.role === 'supply' ? 100 : 90, observedAt: 1, provider: 'moralis' }
+    }));
+    const withoutFx = projectEconomicExposureWithCurrency({
+      custody: [], snapshot, rows: usdEvidenceRows, reportingCurrency: 'INR'
+    });
+    expect(withoutFx.assets).toEqual([expect.objectContaining({ contribution: null })]);
+    expect(withoutFx.liabilities).toEqual([expect.objectContaining({ contribution: null })]);
+    expect(withoutFx.netWorth).toBeNull();
+
+    const exactInrPrices = projectEconomicExposureWithCurrency({
+      custody: [], snapshot, rows: usdEvidenceRows, reportingCurrency: 'INR',
+      prices: new Map([[U, 83]])
+    });
+    expect(exactInrPrices.assets).toEqual([expect.objectContaining({ contribution: 8_300 })]);
+    expect(exactInrPrices.liabilities).toEqual([expect.objectContaining({ contribution: -7_470 })]);
+    expect(exactInrPrices.netWorth).toBe(830);
+  });
+  it('converts USD evidence only when explicit reporting-currency FX evidence is supplied', () => {
+    const debtWithUsdEvidence = {
+      ...rows[1], valueEvidence: { currency: 'USD' as const, value: 90, observedAt: 1, provider: 'moralis' }
+    };
+    const output = projectEconomicExposureWithCurrency({
+      custody: [], snapshot, rows: [debtWithUsdEvidence], reportingCurrency: 'INR',
+      usdToReportingCurrencyRate: 83
+    });
+    expect(output.liabilities).toEqual([expect.objectContaining({ contribution: -7_470 })]);
+    expect(output.netWorth).toBe(-7_470);
+  });
+  it.each(['USD', 'INR'])(
+    'treats zero aggregate evidence for positive debt as unpriced in %s',
+    (reportingCurrency) => {
+      const debtWithZeroEvidence = {
+        ...rows[1],
+        valueEvidence: { currency: 'USD' as const, value: 0, observedAt: 1, provider: 'moralis' }
+      };
+      const output = projectEconomicExposureWithCurrency({
+        custody: [], snapshot, rows: [debtWithZeroEvidence], reportingCurrency,
+        ...(reportingCurrency === 'INR' ? { usdToReportingCurrencyRate: 83 } : {})
+      });
+      expect(output.liabilities).toEqual([expect.objectContaining({ contribution: null })]);
+      expect(output.hasUnpricedLiabilities).toBe(true);
+      expect(output.netWorth).toBeNull();
+    }
+  );
   it('replaces receipt and debt-token custody only in the exact complete wallet scope, then reaggregates the other wallet', () => {
     const otherScope = `wallet:evm:1:0x${'2'.repeat(40)}`;
     const currentScope = `wallet:evm:1:0x${'1'.repeat(40)}`;

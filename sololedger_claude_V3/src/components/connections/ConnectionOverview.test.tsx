@@ -62,6 +62,7 @@ describe('ConnectionOverview', () => {
         card={card}
         snapshot={snapshot()}
         priceIndex={buildPriceIndex([], 'INR')}
+        reportingCurrency="INR"
         formatMoney={(value) => `₹${value}`}
         syncing={false}
         syncDisabled={false}
@@ -89,7 +90,7 @@ describe('ConnectionOverview', () => {
       { scopeId: 'wallet:b', accountClass: 'wallet', assetKey: 'asset:BTC', asset: 'BTC', quantity: 1 },
       { scopeId: 'wallet:a', accountClass: 'wallet', assetKey: 'asset:ETH', asset: 'ETH', quantity: 0 }] as typeof walletSnapshot.overview.slices;
     render(<ConnectionOverview card={{ ...card, kind: 'wallet' }} snapshot={walletSnapshot}
-      priceIndex={buildPriceIndex([], 'INR')} formatMoney={(value) => `₹${value}`}
+      priceIndex={buildPriceIndex([], 'INR')} reportingCurrency="INR" formatMoney={(value) => `₹${value}`}
       syncing={false} syncDisabled={false} onSync={vi.fn()} />);
     expect(within(screen.getByTestId('overview-metrics')).getByText('Assets').parentElement).toHaveTextContent('1');
   });
@@ -147,6 +148,7 @@ describe('ConnectionOverview', () => {
 
     render(
       <ConnectionOverview card={sourceCard} snapshot={zeroSnapshot} priceIndex={buildPriceIndex([], 'INR')}
+        reportingCurrency="INR"
         formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()} />
     );
 
@@ -181,6 +183,7 @@ describe('ConnectionOverview', () => {
         card={card}
         snapshot={zeroSnapshot}
         priceIndex={buildPriceIndex([], 'INR')}
+        reportingCurrency="INR"
         formatMoney={(value) => `₹${value}`}
         syncing={false}
         syncDisabled={false}
@@ -234,18 +237,21 @@ describe('ConnectionOverview', () => {
       { id: 'debt-this', snapshotId: 'snapshot-0', protocolId: 'aave-v3-ethereum', reserveKey: usdc, role: 'debt', underlying: token(usdc, 'USDC'), protocolToken: token(debtToken, 'variableDebtUSDC'), quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable' },
       { id: 'supply-other', snapshotId: 'snapshot-1', protocolId: 'aave-v3-ethereum', reserveKey: usdc, role: 'supply', underlying: token(usdc, 'USDC'), protocolToken: token(`0x${'5'.repeat(40)}`, 'aUSDC'), quantity: 1000, rawQuantity: '1000000000', isCollateral: true }
     ];
-    const legacy = render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([], 'USD')}
-      formatMoney={(value) => `$${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
+    const exactUnderlyingPrices = buildPriceIndex([{
+      key: `spot:ctr:ethereum:${usdc}:INR`, price: 83, fetchedAt: Date.now()
+    }], 'INR');
+    const legacy = render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={exactUnderlyingPrices} reportingCurrency="INR"
+      formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
       defiPositionSnapshots={snapshots} defiPositionRows={rows} />);
-    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('$150');
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹150');
     expect(screen.getByText('aUSDC')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Aave v3 positions' })).not.toBeInTheDocument();
     legacy.unmount();
 
-    render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([], 'USD')}
-      formatMoney={(value) => `$${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
+    render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={exactUnderlyingPrices} reportingCurrency="INR"
+      formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
       defiPositionSnapshots={snapshots} defiPositionRows={rows} defiNetWorthEnabled />);
-    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('$60');
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹880');
     expect(screen.queryByText('aUSDC')).not.toBeInTheDocument();
     expect(screen.getByText('Owed 90.0000')).toBeInTheDocument();
     expect(screen.queryByText('1,000.0000')).not.toBeInTheDocument();

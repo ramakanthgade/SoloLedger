@@ -13,7 +13,9 @@ import { buildCards } from '@/components/connections/connectionModel';
 import { buildConnectionWorkspaceFromCard } from '@/components/connections/connectionWorkspaceModel';
 import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { TEST_TAX_SETTINGS } from './taxSettings';
-import { B6_EVM_ADDRESS, B6_WBTC } from './fixtures/b6Integrated';
+import {
+  B6_AAVE_WBTC, B6_AUSDC, B6_DEBT_USDC, B6_EVM_ADDRESS, B6_SPARK_WBTC, B6_USDC, B6_WBTC
+} from './fixtures/b6Integrated';
 import { safetySubjectKind } from '@/lib/safety/canonicalAssets';
 
 describe('B6 database-backed integrated acceptance', () => {
@@ -33,9 +35,19 @@ describe('B6 database-backed integrated acceptance', () => {
     expect(await db.authorityAssets.count()).toBeGreaterThan(40);
     const walletAuthority = await db.authoritySnapshots.where('sourceIdentityId')
       .equals(`ethereum:${B6_EVM_ADDRESS}`).filter((row) => row.status === 'complete').first();
+    if (!walletAuthority) throw new Error('B6 primary exhaustive authority was not committed');
+    if (walletAuthority.asOf == null) throw new Error('B6 primary exhaustive authority has no observation time');
     expect(walletAuthority?.endpointProof).toMatchObject({ provider: 'b6-fixture', exhaustiveBalances: true });
-    expect((await db.authorityAssets.where('snapshotId').equals(walletAuthority!.snapshotId).toArray())
-      .find((row) => row.assetKey === `evm:1:${B6_WBTC}`)?.quantity).toBe(0);
+    expect(Date.now() - walletAuthority.asOf).toBeLessThan(24 * 60 * 60 * 1_000);
+    const walletAuthorityAssets = await db.authorityAssets.where('snapshotId').equals(walletAuthority.snapshotId).toArray();
+    expect(walletAuthorityAssets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ assetKey: `evm:1:${B6_USDC}`, quantity: 93_076 }),
+      expect.objectContaining({ assetKey: `evm:1:${B6_AUSDC}`, quantity: 100_000 }),
+      expect.objectContaining({ assetKey: `evm:1:${B6_DEBT_USDC}`, quantity: 90_005 }),
+      expect.objectContaining({ assetKey: `evm:1:${B6_WBTC}`, quantity: 0 }),
+      expect.objectContaining({ assetKey: `evm:1:${B6_AAVE_WBTC}`, quantity: 0.1 }),
+      expect.objectContaining({ assetKey: `evm:1:${B6_SPARK_WBTC}`, quantity: 0.2 })
+    ]));
     expect((await db.sourceCoverage.where('sourceIdentityId').equals(`ethereum:${B6_EVM_ADDRESS}`).first())?.endpointOutcomes)
       .toEqual(expect.arrayContaining([expect.objectContaining({ endpoint: 'incoming-history', paginationExhausted: true })]));
     expect((await db.defiPositionRows.where('reserveKey').equals(B6_WBTC).toArray()).map((row) => row.protocolId).sort())
@@ -104,7 +116,8 @@ describe('B6 database-backed integrated acceptance', () => {
         safetyDecisions: snapshot.safetyDecisions, now: Date.now()
       }
     });
-    expect(dashboard?.projection.slices.some((row) => row.asset === 'USDC' && row.authorityQuantity === 93_076)).toBe(true);
+    expect(dashboard?.projection.slices.some((row) => row.asset === 'USDC' && row.quantity === 93_076 &&
+      row.authorityQuantity === 93_076 && row.verificationStatus === 'verified_authority')).toBe(true);
 
     const cards = buildCards({ connections: [], csvImports, wallets, manualCount: 0, syncingConnectionId: null, syncActive: false });
     const walletCard = cards.find((card) => card.kind === 'wallet' && card.walletRows?.some((row) => row.address === B6_EVM_ADDRESS));
@@ -115,7 +128,8 @@ describe('B6 database-backed integrated acceptance', () => {
       sourceCoverage: snapshot.sourceCoverage, safetyDecisions: snapshot.safetyDecisions,
       now: Date.now(), liveExchangeConnections: [], liveCsvImports: csvImports, liveWalletRows: wallets
     });
-    expect(connection.overview.slices.some((row) => row.asset === 'USDC' && row.authorityQuantity === 93_076)).toBe(true);
+    expect(connection.overview.slices.some((row) => row.asset === 'USDC' && row.quantity === 93_076 &&
+      row.authorityQuantity === 93_076 && row.verificationStatus === 'verified_authority')).toBe(true);
 
     const classified = transactions.find((row) => row.id === 'b6-classified')!;
     for (const jurisdiction of ['IN', 'US', 'CA', 'AE'] as const) {
