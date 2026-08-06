@@ -1,10 +1,12 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 import {
   applyUnifiedIncomingClassifications,
+  configureDefiProviderTimeoutsForTests,
   createReceiptActionLoader,
   createReceiptLoader,
-  fetchAlchemyEvmInner
+  fetchAlchemyEvmInner,
+  resetDefiProviderCachesForTests
 } from './providers';
 import { ERC_TRANSFER_TOPIC } from './evmDecoder';
 import { GEOD_REWARDS_WALLET_POLYGON, GEOD_TOKEN_POLYGON } from '@/lib/assets/rewardRegistry';
@@ -30,6 +32,7 @@ const reserveList = (symbol: string, reserve: string) => {
 };
 
 describe('provider unified registry fallback', () => {
+  beforeEach(() => resetDefiProviderCachesForTests());
   it('preserves high-confidence static behavior without review flag', () => {
     const [result] = applyUnifiedIncomingClassifications([tx({
       contractAddress: GEOD_TOKEN_POLYGON,
@@ -167,11 +170,164 @@ describe('provider unified registry fallback', () => {
     const evidence = result.transactions[1].raw?.defiActionEvidence as (Record<string, unknown> & { economicLegs?: unknown[] }) | undefined;
     expect(evidence).toMatchObject({ quantity: rawAmount.toString() });
     expect(evidence?.economicLegs).toEqual(expect.arrayContaining([
-      expect.objectContaining({ kind: 'fee', quantity: '21000000000000' })
+      expect.objectContaining({ kind: 'network_fee', quantity: '21000000000000' })
     ]));
     expect(receiptRequests).toEqual(['0xshared']);
     expect(registryCalls[0]).toBe('eth_blockNumber');
     expect(registryCalls).toHaveLength(7);
     expect(registryCalls.slice(1).every((call) => call.endsWith(':0x1234'))).toBe(true);
+  });
+
+  it('reports registry failure and uses bounded failure backoff instead of retrying the crawl', async () => {
+    let registryCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'eth_blockNumber') {
+        registryCalls++;
+        return new Response(JSON.stringify({ error: { message: 'unavailable' } }), { status: 503 });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return new Response(JSON.stringify({ result: null }), { status: 200 });
+      }
+      if (body.method === 'eth_getTransactionByHash') {
+        return new Response(JSON.stringify({ result: { hash: body.params[0], from: wallet, to: aave } }), { status: 200 });
+      }
+      const incoming = Boolean(body.params[0].toAddress);
+      return new Response(JSON.stringify({ result: { transfers: incoming ? [{
+        hash: '0xfailure', category: 'erc20', asset: 'USDC', value: 1,
+        from: aave, to: wallet, rawContract: { address: usdc, value: '0x1' }
+      }] : [] } }), { status: 200 });
+    });
+
+    const [first, concurrent] = await Promise.all([
+      fetchAlchemyEvmInner(wallet, 'eth-registry-failure', 'key', 'ETH', 'ethereum'),
+      fetchAlchemyEvmInner(wallet, 'eth-registry-failure', 'key', 'ETH', 'ethereum')
+    ]);
+    const backedOff = await fetchAlchemyEvmInner(wallet, 'eth-registry-failure', 'key', 'ETH', 'ethereum');
+
+    expect(registryCalls).toBe(1);
+    expect(first.warnings.some((warning) => warning.message.includes('(http)'))).toBe(true);
+    expect(concurrent.warnings.some((warning) => warning.message.includes('(http)'))).toBe(true);
+    expect(backedOff.warnings.some((warning) => warning.message.includes('(backoff)'))).toBe(true);
+  });
+
+  it('caps and caches destination probes without scheduling unrelated receipts or loading the registry', async () => {
+    let receiptCalls = 0;
+    let registryCalls = 0;
+    let destinationCalls = 0;
+    const transfers = Array.from({ length: 3_000 }, (_, index) => ({
+      hash: `0x${((index % 250) + 1).toString(16)}`, uniqueId: `unrelated-${index}`,
+      category: 'erc20', asset: 'TOKEN', value: 1,
+      from: wallet, to: `0x${(index + 100).toString(16).padStart(40, '0')}`,
+      rawContract: { address: `0x${(index + 10_000).toString(16).padStart(40, '0')}`, value: '0x1' }
+    }));
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'eth_getTransactionReceipt') receiptCalls++;
+      if (body.method === 'eth_getTransactionByHash') destinationCalls++;
+      if (body.method === 'eth_blockNumber' || body.method === 'eth_call') registryCalls++;
+      if (body.method === 'alchemy_getAssetTransfers') {
+        const outgoing = Boolean(body.params[0].fromAddress);
+        return new Response(JSON.stringify({ result: { transfers: outgoing ? transfers : [] } }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ result: null }), { status: 200 });
+    });
+
+    const result = await fetchAlchemyEvmInner(wallet, 'eth-unrelated-stress', 'key', 'ETH', 'ethereum');
+
+    expect(result.transactions).toHaveLength(3_000);
+    expect(receiptCalls).toBe(0);
+    expect(registryCalls).toBe(0);
+    expect(destinationCalls).toBe(200);
+    expect(result.transactionDestinationDiagnostics).toMatchObject({
+      candidates: 250, checked: 200, matchedPools: 0, notFound: 200,
+      skippedBudget: 50, partial: true
+    });
+  });
+
+  it('bounds concurrent destination probes and reports each timeout explicitly', async () => {
+    configureDefiProviderTimeoutsForTests({
+      transactionDestinationTimeoutMs: 5,
+      transactionDestinationConcurrency: 2,
+      transactionDestinationProbeBudget: 10
+    });
+    let active = 0;
+    let maxActive = 0;
+    const transfers = Array.from({ length: 5 }, (_, index) => ({
+      hash: `0xtimeout${index}`, uniqueId: `timeout-${index}`,
+      category: 'erc20', asset: 'TOKEN', value: 1, from: wallet,
+      to: `0x${(index + 100).toString(16).padStart(40, '0')}`,
+      rawContract: { address: `0x${(index + 200).toString(16).padStart(40, '0')}`, value: '0x1' }
+    }));
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'eth_getTransactionByHash') {
+        active++;
+        maxActive = Math.max(maxActive, active);
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            active--;
+            reject(new DOMException('aborted', 'AbortError'));
+          }, { once: true });
+        });
+      }
+      const outgoing = Boolean(body.params[0].fromAddress);
+      return new Response(JSON.stringify({ result: { transfers: outgoing ? transfers : [] } }), { status: 200 });
+    });
+
+    const result = await fetchAlchemyEvmInner(wallet, 'eth-destination-timeout', 'key', 'ETH', 'ethereum');
+
+    expect(active).toBe(0);
+    expect(maxActive).toBe(2);
+    expect(result.transactionDestinationDiagnostics).toMatchObject({
+      candidates: 5, checked: 5, matchedPools: 0, timedOut: 5, partial: true
+    });
+    expect(result.warnings.some((warning) =>
+      warning.message.includes('destination discovery was partial (5 timed out'))).toBe(true);
+  });
+
+  it('aborts a timed-out registry crawl before backoff and never overlaps a retry', async () => {
+    configureDefiProviderTimeoutsForTests({ registryTimeoutMs: 5 });
+    let registryCalls = 0;
+    let activeRegistryCalls = 0;
+    let maxActiveRegistryCalls = 0;
+    vi.spyOn(globalThis, 'fetch').mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === 'eth_blockNumber') {
+        registryCalls++;
+        activeRegistryCalls++;
+        maxActiveRegistryCalls = Math.max(maxActiveRegistryCalls, activeRegistryCalls);
+        return await new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            activeRegistryCalls--;
+            reject(new DOMException('aborted', 'AbortError'));
+          }, { once: true });
+        });
+      }
+      if (body.method === 'eth_getTransactionReceipt') {
+        return new Response(JSON.stringify({ result: null }), { status: 200 });
+      }
+      if (body.method === 'eth_getTransactionByHash') {
+        return new Response(JSON.stringify({ result: { hash: body.params[0], from: wallet, to: aave } }), { status: 200 });
+      }
+      const incoming = Boolean(body.params[0].toAddress);
+      return new Response(JSON.stringify({ result: { transfers: incoming ? [{
+        hash: '0xcandidate', category: 'erc20', asset: 'USDC', value: 1,
+        from: aave, to: wallet, rawContract: { address: usdc, value: '0x1' }
+      }] : [] } }), { status: 200 });
+    });
+
+    const [first, concurrent] = await Promise.all([
+      fetchAlchemyEvmInner(wallet, 'eth-registry-timeout', 'key', 'ETH', 'ethereum'),
+      fetchAlchemyEvmInner(wallet, 'eth-registry-timeout', 'key', 'ETH', 'ethereum')
+    ]);
+    expect(activeRegistryCalls).toBe(0);
+    const backedOff = await fetchAlchemyEvmInner(wallet, 'eth-registry-timeout', 'key', 'ETH', 'ethereum');
+
+    expect(registryCalls).toBe(1);
+    expect(maxActiveRegistryCalls).toBe(1);
+    expect(first.warnings.some((warning) => warning.message.includes('(timeout)'))).toBe(true);
+    expect(concurrent.warnings.some((warning) => warning.message.includes('(timeout)'))).toBe(true);
+    expect(backedOff.warnings.some((warning) => warning.message.includes('(backoff)'))).toBe(true);
   });
 });

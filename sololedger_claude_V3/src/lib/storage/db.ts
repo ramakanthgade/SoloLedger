@@ -34,6 +34,7 @@ import {
 } from '@/lib/accounts/accountIdentity';
 import { normalizeImportedTransactionCategory } from '@/lib/taxonomy/categories';
 import { applyClassificationEvidence, retainClassificationEvidence } from '@/lib/taxonomy/classification';
+import { exactStoredDefiAction } from '@/lib/defi/actionEvidence';
 import { assertValidReciprocalTransferPairs } from '@/lib/internalTransfers/model';
 import {
   cleanCounterpartsForDeletedTransactions,
@@ -2730,4 +2731,82 @@ export async function filterAlreadyImported(transactions: Transaction[]): Promis
     const key = transactionImportKey(t);
     return !key || !existingKeys.has(key);
   });
+}
+
+/**
+ * Upgrade exact receipt evidence on replayed wallet rows without replacing
+ * durable row identity or any user-owned classification/transfer/spam state.
+ */
+export async function mergeReenrichedTransactions(
+  transactions: Transaction[]
+): Promise<{ transactions: Transaction[]; upgraded: number }> {
+  if (transactions.length === 0) return { transactions, upgraded: 0 };
+  const existing = await db.transactions.toArray();
+  const byKey = new Map<string, Transaction>();
+  for (const row of existing) {
+    for (const key of [transactionSourceKey(row), transactionImportKey(row)].filter(Boolean) as string[]) {
+      if (!byKey.has(key)) byKey.set(key, row);
+    }
+  }
+  const upgrades: Transaction[] = [];
+  const consumed = new Set<string>();
+  for (const incoming of transactions) {
+    const action = exactStoredDefiAction(incoming.raw?.defiActionEvidence, incoming);
+    if (!action) continue;
+    const current = [transactionSourceKey(incoming), transactionImportKey(incoming)]
+      .filter(Boolean).map((key) => byKey.get(key!)).find(Boolean);
+    if (!current) continue;
+    const mergedEvidence = retainClassificationEvidence(
+      current.classificationEvidence, incoming.classificationEvidence);
+    const automated = applyClassificationEvidence({
+      ...current,
+      type: incoming.type,
+      category: incoming.category,
+      categoryOrigin: incoming.categoryOrigin,
+      categoryConfidence: incoming.categoryConfidence,
+      categoryRuleId: incoming.categoryRuleId,
+      categoryRuleVersion: incoming.categoryRuleVersion,
+      categoryLocked: current.categoryLocked,
+      classificationEvidence: mergedEvidence,
+      amount: incoming.amount,
+      contractAddress: incoming.contractAddress,
+      onchainTransferEvent: incoming.onchainTransferEvent,
+      flags: incoming.flags,
+      raw: { ...current.raw, ...incoming.raw }
+    }, mergedEvidence, incoming.timestamp);
+    upgrades.push({
+      ...automated,
+      ...(current.categoryLocked || current.categoryOrigin === 'user' ? {
+        type: current.type,
+        category: current.category,
+        legacyCategory: current.legacyCategory,
+        categoryOrigin: 'user' as const,
+        categoryConfidence: current.categoryConfidence ?? 1,
+        categoryRuleId: current.categoryRuleId,
+        categoryRuleVersion: current.categoryRuleVersion,
+        categoryUpdatedAt: current.categoryUpdatedAt,
+        categoryLocked: true
+      } : {}),
+      id: current.id,
+      sourceRef: current.sourceRef,
+      importBatchId: current.importBatchId,
+      isInternalTransfer: current.isInternalTransfer,
+      internalTransferPairId: current.internalTransferPairId,
+      linkedTransferId: current.linkedTransferId,
+      internalTransferDecision: current.internalTransferDecision,
+      internalTransferMatchMethod: current.internalTransferMatchMethod,
+      internalTransferMatcherVersion: current.internalTransferMatcherVersion,
+      internalTransferDecisionAt: current.internalTransferDecisionAt,
+      internalTransferSuggestionFlagAdded: current.internalTransferSuggestionFlagAdded,
+      isSpam: current.isSpam,
+      safetyState: current.safetyState,
+      safetySubjectKey: current.safetySubjectKey ?? incoming.safetySubjectKey
+    });
+    consumed.add(incoming.id);
+  }
+  if (upgrades.length > 0) await db.transactions.bulkPut(upgrades);
+  return {
+    transactions: await filterAlreadyImported(transactions.filter((row) => !consumed.has(row.id))),
+    upgraded: upgrades.length
+  };
 }

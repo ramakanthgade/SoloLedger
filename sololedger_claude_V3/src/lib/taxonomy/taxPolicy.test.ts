@@ -24,7 +24,7 @@ describe('canonical tax policy boundary', () => {
 
   it('pins only explicit supported DeFi outcomes', () => {
     expect(resolveTaxPolicy({ kind: 'defi_action', action: action('borrow'), settings }).treatment).toBe('non_taxable');
-    expect(resolveTaxPolicy({ kind: 'defi_action', action: action('repay'), settings }).treatment).toBe('non_taxable');
+    expect(resolveTaxPolicy({ kind: 'defi_action', action: action('repay'), settings }).treatment).toBe('requires_review');
     expect(resolveTaxPolicy({ kind: 'defi_action', action: action('interest'), settings }).treatment).toBe('income');
     expect(resolveTaxPolicy({ kind: 'defi_action', action: action('reward'), settings }).treatment).toBe('income');
     for (const type of ['supply', 'withdraw', 'liquidation'] as const) {
@@ -38,6 +38,75 @@ describe('canonical tax policy boundary', () => {
       action('borrow', { chainId: 137 }),
       action('borrow', { protocolId: 'provider-label-only' })
     ]) expect(resolveTaxPolicy({ kind: 'defi_action', action: unsupported, settings }).treatment).toBe('requires_review');
+  });
+
+  it('consumes exact stored DeFi evidence at report time instead of trusting the loan category', () => {
+    const eventIds = [
+      'event:1:0xabc:0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2:90',
+      'event:1:0xabc:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48:89',
+      'event:1:0xabc:0x72e95b8931767c79ba4eee721354d6e99a61d004:88'
+    ];
+    const exact = {
+      type: 'borrow', chainId: 1, protocolId: 'aave-v3-ethereum',
+      reserveKey: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', quantity: '45000000000',
+      transactionHash: '0xabc', callId: eventIds[0], eventIds, complete: true, confidence: 1,
+      evidenceSource: 'ethereum_log', ruleId: 'defi-receipt:aave-v3-ethereum:borrow', ruleVersion: 'b5.1',
+      postingAnchorEventId: eventIds[1], postingAnchor: true,
+      postingAnchorRawQuantity: '45000000000', postingAnchorDecimals: 6,
+      registryEvidence: [{
+        contractAddress: '0x72e95b8931767c79ba4eee721354d6e99a61d004',
+        protocolId: 'aave-v3-ethereum', reserveKey: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', role: 'debt_token'
+      }],
+      economicLegs: [
+        { eventId: eventIds[1], kind: 'underlying', direction: 'in', contractAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', quantity: '45000000000', from: '0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c', to: '0x2b2b7fec2ba5854aef243c21a583d8e61ee82c32' },
+        { eventId: eventIds[2], kind: 'debt_token', direction: 'mint', contractAddress: '0x72e95b8931767c79ba4eee721354d6e99a61d004', quantity: '45000000001', from: '0x0000000000000000000000000000000000000000', to: '0x2b2b7fec2ba5854aef243c21a583d8e61ee82c32' }
+      ],
+      callEvidence: {
+        provider: 'blockscout', from: '0x2b2b7fec2ba5854aef243c21a583d8e61ee82c32',
+        to: '0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2', status: 'success'
+      }
+    };
+    const transaction: Transaction = {
+      id: 'borrow', timestamp: 1, type: 'transfer_in', category: 'loan', asset: 'USDC', amount: 45_000,
+      source: 'rpc:blockscout', txHash: '0xabc', walletAddress: '0x2b2b7fec2ba5854aef243c21a583d8e61ee82c32',
+      contractAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', chain: 'ethereum',
+      onchainTransferEvent: {
+        chain: 'ethereum', txHash: '0xabc', assetKey: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+        indexKind: 'log', index: '89', sender: '0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c',
+        recipient: '0x2b2b7fec2ba5854aef243c21a583d8e61ee82c32', quantity: '45000000000'
+      },
+      fiatCurrency: 'USD', flags: [], isInternalTransfer: false,
+      raw: { defiActionEvidence: exact }
+    };
+    expect(resolveTaxPolicy({ kind: 'transaction', transaction, settings })).toMatchObject({
+      treatment: 'non_taxable', reasonCode: 'defi_loan_principal', evidenceIds: eventIds
+    });
+    expect(resolveTaxPolicy({ kind: 'transaction', transaction: {
+      ...transaction, raw: { defiActionEvidence: { ...exact, complete: false } }
+    }, settings })).toMatchObject({ treatment: 'requires_review', reasonCode: 'defi_evidence_incomplete' });
+
+    const interestEvent = 'event:1:0xabc:0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c:91';
+    const interest = {
+      ...exact, type: 'interest', quantity: '125000', callId: interestEvent,
+      eventIds: [interestEvent, 'event:1:0xabc:0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c:92'],
+      ruleId: 'defi-receipt:aave-v3-ethereum:lending-interest', interestKind: 'lending',
+      postingAnchorEventId: 'event:1:0xabc:0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c:92',
+      postingAnchorRawQuantity: '125000', postingAnchorDecimals: 6,
+      registryEvidence: [{
+        contractAddress: '0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c', protocolId: 'aave-v3-ethereum',
+        reserveKey: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', role: 'protocol_token'
+      }],
+      economicLegs: [{
+        eventId: 'event:1:0xabc:0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c:92',
+        kind: 'protocol_token', direction: 'mint', contractAddress: '0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c',
+        quantity: '125000', from: '0x0000000000000000000000000000000000000000',
+        to: '0x2b2b7fec2ba5854aef243c21a583d8e61ee82c32'
+      }]
+    };
+    expect(resolveTaxPolicy({ kind: 'transaction', transaction: {
+      ...transaction, id: 'interest', type: 'income', category: 'lending_interest', onchainTransferEvent: undefined,
+      raw: { syntheticDefiComponent: true, defiActionEvidence: interest }
+    }, settings })).toMatchObject({ treatment: 'income', reasonCode: 'defi_income_receipt' });
   });
 
   it('adapts validated derivative defaults without storing a second table', () => {

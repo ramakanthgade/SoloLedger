@@ -13,7 +13,7 @@ import {
   upsertLookupAddress,
   deduplicateTransactions,
   resolvePostDedupTransferSurvivorIds,
-  filterAlreadyImported,
+  mergeReenrichedTransactions,
   reserveWalletBalanceOperation
 } from '@/lib/storage/db';
 import { lookupManyAddresses, type LookupConfig, type ChainDef, type ProviderStreamOutcome } from '@/lib/rpc/providers';
@@ -359,7 +359,11 @@ async function runWalletImportCore(
       }
       return true;
     });
-    txsToStore = await filterAlreadyImported(txsToStore);
+    const reenriched = await mergeReenrichedTransactions(txsToStore);
+    txsToStore = reenriched.transactions;
+    if (reenriched.upgraded > 0) {
+      apiWarnings.push(`Upgraded exact receipt evidence on ${reenriched.upgraded} previously imported transaction${reenriched.upgraded === 1 ? '' : 's'}.`);
+    }
     stagedCount = txsToStore.length;
     stagedIds = txsToStore.map((transaction) => transaction.id);
     if (txsToStore.length > 0) {

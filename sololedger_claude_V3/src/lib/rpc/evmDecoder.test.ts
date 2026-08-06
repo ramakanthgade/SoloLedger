@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decodeEvmReceipt, decodeEvmReceiptForTransfer, decodeNeutralDefiActions, defiEventContractsFromPositions, ERC_TRANSFER_TOPIC, neutralDefiActionForTransfer } from './evmDecoder';
+import disputedBorrow from '@/lib/defi/__fixtures__/aave-v3-usdc-borrow-45000.sanitized.json';
 
 const wallet = '0x1111111111111111111111111111111111111111';
 const rewards = '0xd784927ff2f95ba542bfc824c8a8a98f3495f6b5';
@@ -40,7 +41,7 @@ describe('EVM receipt decoder', () => {
     const reserve = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
     const debtToken = '0x4444444444444444444444444444444444444444';
     const borrow = decodeNeutralDefiActions({
-      transactionHash: '0xgraph', from: wallet, gasUsed: '0x5208', effectiveGasPrice: '0x3b9aca00',
+      transactionHash: '0xgraph', from: wallet, to: pool, status: '0x1', gasUsed: '0x5208', effectiveGasPrice: '0x3b9aca00',
       logs: [
         { address: pool, logIndex: 1, topics: ['0xb3d084820fb1a9decffb176436bd02558d15fac9b0ddfed8c465bc7359d7dce0', topicAddress(reserve), topicAddress(wallet), data(0n)], data: `${topicAddress(wallet)}${words(40n, 2n, 3n).slice(2)}` },
         { address: reserve, logIndex: 2, topics: [ERC_TRANSFER_TOPIC, topicAddress(pool), topicAddress(wallet)], data: data(40n) },
@@ -50,7 +51,7 @@ describe('EVM receipt decoder', () => {
       [debtToken]: { protocolId: 'aave-v3-ethereum', reserveKey: reserve, role: 'debt_token' }
     }, wallet)[0];
     expect(borrow.complete).toBe(true);
-    expect(borrow.economicLegs?.map((leg) => leg.kind)).toEqual(['underlying', 'debt_token', 'fee']);
+    expect(borrow.economicLegs?.map((leg) => leg.kind)).toEqual(['underlying', 'debt_token', 'network_fee']);
     expect(borrow.eventIds).not.toContain('fee:1:0xgraph');
   });
 
@@ -69,7 +70,7 @@ describe('EVM receipt decoder', () => {
     const aToken = '0x2222222222222222222222222222222222222222';
     const reserve = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
     const interestTopic = '0x458f5fa412d0f69b08dd84872b0215675cc67bc1d5b6fd93300a1c3878b86196';
-    const receipt = { transactionHash: '0xinterest', logs: [
+    const receipt = { transactionHash: '0xinterest', from: wallet, to: '0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2', status: '0x1', logs: [
       { address: aToken, logIndex: 3, topics: [interestTopic, topicAddress(wallet), topicAddress(wallet)], data: words(100n, 12n, 1n) },
       // ScaledBalanceToken emits Transfer for total minted value; the neutral
       // interest quantity remains Mint.balanceIncrease (12), not value (100).
@@ -101,7 +102,7 @@ describe('EVM receipt decoder', () => {
     const reward = '0x7fc66500c84a76ad7e9c93437bfc5ac33e2ddae9';
     const aToken = '0x5555555555555555555555555555555555555555';
     const debtToken = '0x6666666666666666666666666666666666666666';
-    const receipt = { transactionHash: '0xlayouts', logs: [
+    const receipt = { transactionHash: '0xlayouts', from: wallet, to: pool, status: '0x1', logs: [
       { address: pool, logIndex: 1, topics: ['0xb3d084820fb1a9decffb176436bd02558d15fac9b0ddfed8c465bc7359d7dce0', topicAddress(reserve), topicAddress(wallet), data(0n)], data: `${topicAddress(wallet)}${words(40n, 2n, 3n).slice(2)}` },
       { address: reserve, logIndex: 2, topics: [ERC_TRANSFER_TOPIC, topicAddress(pool), topicAddress(wallet)], data: data(40n) },
       { address: debtToken, logIndex: '0x2a', topics: [ERC_TRANSFER_TOPIC, topicAddress(zero), topicAddress(wallet)], data: data(37n) },
@@ -217,6 +218,29 @@ describe('EVM receipt decoder', () => {
     expect(neutralDefiActionForTransfer([action], {
       contractAddress: reserve, direction: 'transfer_out', from: wallet, to: pool, rawQuantity: '10'
     })).toBeUndefined();
+  });
+
+  it('proves the disputed 45,000 USDC Aave v3 borrow and rejects spoofed/delegated variants', () => {
+    const receipt = { ...disputedBorrow.receipt, evidenceProvider: 'blockscout' as const };
+    const contracts = disputedBorrow.eventContracts as Parameters<typeof decodeNeutralDefiActions>[2];
+    const actions = decodeNeutralDefiActions(receipt, 1, contracts, disputedBorrow.wallet);
+    const borrow = actions.find((action) => action.type === 'borrow');
+    expect(borrow).toMatchObject({
+      type: 'borrow', quantity: '45000000000', reserveKey: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48',
+      protocolId: 'aave-v3-ethereum', complete: true, confidence: 1,
+      ruleId: 'defi-receipt:aave-v3-ethereum:borrow', ruleVersion: 'b5.1',
+      callEvidence: { provider: 'blockscout', from: disputedBorrow.wallet, status: 'success' }
+    });
+    expect(actions.find((action) => action.type === 'interest')).toMatchObject({
+      quantity: '0', interestKind: 'borrowing', complete: false
+    });
+
+    expect(decodeNeutralDefiActions({ ...receipt, from: other }, 1, contracts, disputedBorrow.wallet)
+      .find((action) => action.type === 'borrow')).toMatchObject({ complete: false });
+    const delegated = structuredClone(receipt);
+    delegated.logs[4].data = `${topicAddress(other)}${delegated.logs[4].data.slice(66)}`;
+    expect(decodeNeutralDefiActions(delegated, 1, contracts, disputedBorrow.wallet)
+      .find((action) => action.type === 'borrow')).toMatchObject({ complete: false });
   });
 
   it('decodes verified ERC-20 Transfer topics with known decimals', () => {

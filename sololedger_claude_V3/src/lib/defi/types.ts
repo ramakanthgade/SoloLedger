@@ -91,11 +91,34 @@ export interface NeutralDefiAction {
   complete: boolean;
   confidence: number;
   evidenceSource: 'ethereum_log' | 'moralis';
+  /** Versioned deterministic decoder rule. Provider prose/categories are never a rule. */
+  ruleId?: string;
+  ruleVersion?: string;
+  /** Exact top-level receipt evidence used to reject delegated/spoofed calls. */
+  callEvidence?: {
+    provider: 'alchemy' | 'blockscout' | 'ethereum_rpc';
+    from: string;
+    to: string;
+    status: 'success';
+  };
+  /** Interest is directional; never infer it from a balance delta or APY. */
+  interestKind?: 'lending' | 'borrowing';
   /** Only one preserved raw leg anchors action-level custody postings. */
   postingAnchorEventId?: string;
+  /** True only on the one provider row representing the underlying custody leg. */
+  postingAnchor?: boolean;
+  /** Exact underlying row binding used by persistence, reports, and postings. */
+  postingAnchorRawQuantity?: string;
+  postingAnchorDecimals?: number;
+  registryEvidence?: Array<{
+    contractAddress: string;
+    protocolId: string;
+    reserveKey: string;
+    role: 'protocol_token' | 'debt_token';
+  }>;
   economicLegs?: Array<{
     eventId: string;
-    kind: 'underlying' | 'protocol_token' | 'debt_token' | 'reward' | 'fee';
+    kind: 'underlying' | 'protocol_token' | 'debt_token' | 'reward' | 'network_fee' | 'protocol_fee';
     direction: 'in' | 'out' | 'mint' | 'burn';
     contractAddress: string;
     /** Exact unsigned base units. */
