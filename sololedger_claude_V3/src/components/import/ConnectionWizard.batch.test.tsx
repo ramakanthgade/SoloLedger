@@ -33,6 +33,10 @@ const mocks = vi.hoisted(() => ({
   persistCsvImportEvidence: vi.fn(async (..._args: unknown[]) => undefined),
   buildCsvImportEvidenceGeneration: vi.fn((input: unknown) => input),
   commitCsvImportGeneration: vi.fn(),
+  accountIdentitiesToArray: vi.fn(),
+  claimAccountOwnershipPrompt: vi.fn(),
+  createCsvAccountIdentity: vi.fn(),
+  updateAccountOwnership: vi.fn(),
   onComplete: vi.fn()
 }));
 
@@ -59,14 +63,20 @@ vi.mock('@/lib/ai/csvMapping', () => ({ suggestCsvMappingWithAi: vi.fn() }));
 vi.mock('@/lib/storage/db', () => ({
   db: {
     csvImports: { get: mocks.csvImportsGet },
-    transactions: { bulkPut: mocks.bulkPut }
+    transactions: { bulkPut: mocks.bulkPut },
+    accountIdentities: {
+      where: () => ({ equals: () => ({ toArray: mocks.accountIdentitiesToArray }) })
+    }
   },
   commitCsvImportGeneration: mocks.commitCsvImportGeneration,
   getSettings: mocks.getSettings,
   hashFileContent: mocks.hashFileContent,
   upsertCsvImport: mocks.upsertCsvImport,
   countCsvImportTransactions: mocks.countCsvImportTransactions,
-  deduplicateTransactions: mocks.deduplicateTransactions
+  deduplicateTransactions: mocks.deduplicateTransactions,
+  claimAccountOwnershipPrompt: mocks.claimAccountOwnershipPrompt,
+  createCsvAccountIdentity: mocks.createCsvAccountIdentity,
+  updateAccountOwnership: mocks.updateAccountOwnership
 }));
 
 vi.mock('@/lib/pricing/fiatConvert', () => ({
@@ -126,6 +136,17 @@ async function dropFiles(files: File[]) {
   fireEvent.drop(dropzone, { dataTransfer: { files } });
 }
 
+async function selectAccountForCurrentFile() {
+  fireEvent.click(await screen.findByRole('button', { name: /Test account/ }));
+}
+
+async function confirmTransactions(count: number) {
+  await selectAccountForCurrentFile();
+  fireEvent.click(await screen.findByRole('button', {
+    name: `Confirm & save ${count} transaction${count === 1 ? '' : 's'}`
+  }));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   txCounts = {};
@@ -144,6 +165,13 @@ beforeEach(() => {
   // implementations, so these must be reset here to stay test-independent.
   mocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: false });
   mocks.fetchMissingPrices.mockResolvedValue({ updated: 0, failed: 0 });
+  const account = {
+    id: 'csv-account:test', canonicalKey: 'csv-account:test', kind: 'csv', parserId: 'test_parser',
+    label: 'Test account', ownershipStatus: 'owned', ownershipOrigin: 'user',
+    ownershipConfirmedAt: 1, createdAt: 1, updatedAt: 1, lifecycleRevision: 1
+  };
+  mocks.accountIdentitiesToArray.mockResolvedValue([account]);
+  mocks.claimAccountOwnershipPrompt.mockResolvedValue({ claimed: false, account });
   mocks.parseImportFile.mockImplementation(async (file: File) => {
     if (file.name === throwingFile) throw new Error('corrupt');
     const count = txCounts[file.name] ?? 1;
@@ -176,6 +204,118 @@ beforeEach(() => {
 });
 
 describe('ConnectionWizard — multi-file batch flow', () => {
+  it('waits for recurring account selection before an evidence-only commit', async () => {
+    txCounts = { 'empty.csv': 0 };
+    await dropFiles([makeFile('empty.csv', 'empty')]);
+    expect(await screen.findByText('Which account is this file for?')).toBeInTheDocument();
+    expect(mocks.commitCsvImportGeneration).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /Test account/ }));
+    await vi.waitFor(() => expect(mocks.commitCsvImportGeneration).toHaveBeenCalledWith(
+      expect.objectContaining({ fileName: 'empty.csv', accountIdentityId: 'csv-account:test', transactions: [] })
+    ));
+  });
+
+  it('carries the selected recurring account into a confirmed commit', async () => {
+    txCounts = { 'confirmed.csv': 1 };
+    await dropFiles([makeFile('confirmed.csv', 'confirmed')]);
+    await confirmTransactions(1);
+    await vi.waitFor(() => expect(mocks.commitCsvImportGeneration).toHaveBeenCalledWith(
+      expect.objectContaining({ fileName: 'confirmed.csv', accountIdentityId: 'csv-account:test' })
+    ));
+  });
+
+  it('ignores a second drop while account selection is pending and preserves batch A remaining files', async () => {
+    txCounts = { 'a.csv': 1, 'b.csv': 2, 'c.csv': 3, 'intruder.csv': 9 };
+    savedCounts = { 'hash:aaa': 1, 'hash:bbb': 2, 'hash:ccc': 3, 'hash:xxx': 9 };
+    const batchA = [
+      makeFile('a.csv', 'aaa'),
+      makeFile('b.csv', 'bbb'),
+      makeFile('c.csv', 'ccc')
+    ];
+    await dropFiles(batchA);
+
+    // File A1 is waiting at the recurring-account gate. A second drop must be
+    // ignored synchronously: it must not reset fileQueue, queueTotal, or the
+    // running saved count for the original batch.
+    expect(await screen.findByText('Which account is this file for?')).toBeInTheDocument();
+    const dropzone = screen.getByText(/Reading and previewing your file/).closest('div')!;
+    fireEvent.drop(dropzone, {
+      dataTransfer: { files: [makeFile('intruder.csv', 'xxx')] }
+    });
+    expect(mocks.parseImportFile).toHaveBeenCalledTimes(1);
+
+    await confirmTransactions(1);
+    await confirmTransactions(2);
+    await confirmTransactions(3);
+
+    await screen.findByText(/Saved 6 transactions to your local ledger/);
+    expect(mocks.parseImportFile.mock.calls.map(([file]) => file.name)).toEqual([
+      'a.csv', 'b.csv', 'c.csv'
+    ]);
+    expect(mocks.commitCsvImportGeneration.mock.calls.map(([input]) => input.fileName)).toEqual([
+      'a.csv', 'b.csv', 'c.csv'
+    ]);
+    expect(mocks.onComplete).toHaveBeenCalledTimes(1);
+    expect(mocks.onComplete).toHaveBeenCalledWith(6);
+  });
+
+  it('invalidates a read on Back so batch A cannot update state after batch B begins', async () => {
+    let resolveA!: (outcome: Awaited<ReturnType<typeof mocks.parseImportFile>>) => void;
+    const pendingA = new Promise<Awaited<ReturnType<typeof mocks.parseImportFile>>>((resolve) => {
+      resolveA = resolve;
+    });
+    const outcome = (fileName: string, count: number) => ({
+      transactions: Array.from({ length: count }, (_, i) => makeTx(`${fileName}#${i}`)),
+      detectedParser: 'test_parser', warnings: [], sheets: [], rows: [], headers: [], missingFields: []
+    });
+    mocks.parseImportFile.mockImplementation((file: File) => (
+      file.name === 'a.csv' ? pendingA : Promise.resolve(outcome(file.name, 2))
+    ));
+    savedCounts = { 'hash:bbb': 2 };
+
+    await dropFiles([makeFile('a.csv', 'aaa')]);
+    await vi.waitFor(() => expect(mocks.parseImportFile).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: /^Back$/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /i've got my file/i }));
+    const dropzone = (await screen.findByText(/Drag & drop your Binance file/)).closest('div')!;
+    fireEvent.drop(dropzone, { dataTransfer: { files: [makeFile('b.csv', 'bbb')] } });
+
+    await selectAccountForCurrentFile();
+    expect(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' })).toBeInTheDocument();
+
+    // A resolves only after B owns the wizard. Its stale continuation must not
+    // reopen account selection, replace B's preview, or commit anything.
+    resolveA(outcome('a.csv', 1));
+    await vi.waitFor(() => expect(mocks.parseImportFile).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: 'Confirm & save 2 transactions' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirm & save 1 transaction' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await screen.findByText(/Saved 2 transactions to your local ledger/);
+    expect(mocks.commitCsvImportGeneration.mock.calls.map(([input]) => input.fileName)).toEqual(['b.csv']);
+  });
+
+  it('releases an evidence-only failure so the same file can be retried', async () => {
+    txCounts = { 'empty.csv': 0 };
+    mocks.commitCsvImportGeneration.mockRejectedValueOnce(new Error('db unavailable'));
+    const file = makeFile('empty.csv', 'empty');
+    await dropFiles([file]);
+    await selectAccountForCurrentFile();
+
+    await screen.findByText(/"empty\.csv" couldn't be recorded — no partial data was kept\. Try again/);
+
+    const dropzone = screen.getByText(/Drag & drop your Binance file/).closest('div')!;
+    fireEvent.drop(dropzone, { dataTransfer: { files: [file] } });
+    await selectAccountForCurrentFile();
+
+    await vi.waitFor(() => expect(mocks.commitCsvImportGeneration).toHaveBeenCalledTimes(2));
+    expect(mocks.parseImportFile).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/couldn't be recorded/)).not.toBeInTheDocument();
+    expect((document.querySelector('input[type="file"]') as HTMLInputElement).disabled).toBe(false);
+  });
+
   it('skips a duplicate in the MIDDLE of a batch and finishes with the aggregated banner', async () => {
     // a.csv: 1 tx · b.csv: already imported · c.csv: 2 txs
     txCounts = { 'a.csv': 1, 'c.csv': 2 };
@@ -184,10 +324,11 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb'), makeFile('c.csv', 'ccc')]);
 
     // File 1 preview → confirm. (The old stale-closure bug spun forever here.)
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+    await confirmTransactions(1);
 
     // File 2 is skipped pre-parse and file 3 is previewed; onComplete must NOT
     // have fired yet — the batch is still open (onboarding would unmount).
+    await selectAccountForCurrentFile();
     const secondConfirm = await screen.findByRole('button', { name: 'Confirm & save 2 transactions' });
     expect(mocks.parseImportFile).toHaveBeenCalledTimes(2); // a + c, never b
     expect(mocks.onComplete).not.toHaveBeenCalled();
@@ -210,8 +351,8 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb'), makeFile('c.csv', 'ccc')]);
 
     // The duplicate first file chains into file 2 instead of aborting.
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await confirmTransactions(1);
+    await confirmTransactions(2);
 
     await screen.findByText(/Saved 3 transactions to your local ledger/);
     expect(mocks.parseImportFile).toHaveBeenCalledTimes(2); // b + c, never a
@@ -227,7 +368,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     duplicateHashes = new Set(['hash:bbb']);
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')]);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+    await confirmTransactions(1);
 
     // The duplicate tail still produces the aggregated batch outcome — no
     // single-file "already imported" error.
@@ -254,7 +395,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     savedCounts = { 'hash:aaa': 2 };
     await dropFiles([makeFile('a.csv', 'aaa')]);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await confirmTransactions(2);
 
     await screen.findByText(/Saved 2 transactions to your local ledger/);
     expect(mocks.onComplete).toHaveBeenCalledTimes(1);
@@ -267,7 +408,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     savedCounts = { 'hash:aaa': 0 };
     await dropFiles([makeFile('a.csv', 'aaa')]);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await confirmTransactions(2);
 
     await screen.findByText(/No new transactions — everything you imported was already in your ledger/);
     expect(screen.queryByText(/Saved \d+ transaction/)).not.toBeInTheDocument();
@@ -289,7 +430,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     });
     savedCounts = { 'hash:aaa': 1 };
     await dropFiles([makeFile('a.csv', 'aaa')]);
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await confirmTransactions(2);
 
     await screen.findByText(/Saved 1 transaction to your local ledger/);
     expect(mocks.persistCsvImportEvidence).toHaveBeenCalledTimes(1);
@@ -311,8 +452,8 @@ describe('ConnectionWizard — multi-file batch flow', () => {
 
     // File 1 confirms → the chain hits b.xlsx, which throws — the batch must
     // continue to file 3 instead of stranding the queue silently.
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await confirmTransactions(1);
+    await confirmTransactions(2);
 
     // Aggregated banner: 1 + 2 transactions, and the note names the failed file.
     await screen.findByText(/Saved 3 transactions to your local ledger/);
@@ -327,7 +468,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     throwingFile = 'b.xlsx';
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.xlsx', 'bbb')]);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+    await confirmTransactions(1);
 
     // File 1's save is reported even though file 2 could not be read.
     await screen.findByText(/Saved 1 transaction to your local ledger/);
@@ -354,10 +495,10 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     savedCounts = { 'hash:aaa': 1, 'hash:bbb': 2 };
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')]);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+    await confirmTransactions(1);
 
     // Pricing threw for file 1 — but the chain still reaches file 2.
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await confirmTransactions(2);
 
     await screen.findByText(/Saved 3 transactions to your local ledger/);
     expect(mocks.onComplete).toHaveBeenCalledTimes(1);
@@ -371,7 +512,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     mocks.bulkPut.mockRejectedValueOnce(new Error('db full'));
     await dropFiles([makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')]);
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 1 transaction' }));
+    await confirmTransactions(1);
 
     // Error banner on the preview; the preview stays open (confirm button
     // still there); nothing chained and onComplete never fired.
@@ -382,7 +523,7 @@ describe('ConnectionWizard — multi-file batch flow', () => {
 
     // Retry: the save now succeeds and the batch chains into file 2.
     fireEvent.click(screen.getByRole('button', { name: 'Confirm & save 1 transaction' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 2 transactions' }));
+    await confirmTransactions(2);
     await screen.findByText(/Saved 3 transactions to your local ledger/);
     expect(mocks.onComplete).toHaveBeenCalledWith(3);
   });
@@ -398,14 +539,18 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     ]);
 
     // Every queued file gets its own preview + confirm, in order.
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 15 transactions' }));
+    await confirmTransactions(15);
     expect(mocks.onComplete).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 79 transactions' }));
+    await confirmTransactions(79);
     expect(mocks.onComplete).not.toHaveBeenCalled();
-    fireEvent.click(await screen.findByRole('button', { name: 'Confirm & save 29 transactions' }));
+    await confirmTransactions(29);
 
     await screen.findByText(/Saved 123 transactions to your local ledger/);
     expect(mocks.parseImportFile).toHaveBeenCalledTimes(3);
+    expect(mocks.accountIdentitiesToArray).toHaveBeenCalledTimes(3);
+    expect(mocks.commitCsvImportGeneration).toHaveBeenCalledTimes(3);
+    expect(mocks.commitCsvImportGeneration.mock.calls.every(([input]) =>
+      input.accountIdentityId === 'csv-account:test')).toBe(true);
     expect(mocks.onComplete).toHaveBeenCalledTimes(1);
     expect(mocks.onComplete).toHaveBeenCalledWith(123);
   });

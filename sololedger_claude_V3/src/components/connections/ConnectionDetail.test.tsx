@@ -55,9 +55,11 @@ const mocks = vi.hoisted(() => ({
   },
   lookupRows: {
     current: [] as {
-      id: string; chain: string; address: string; lastSyncedAt: number
+      id: string; chain: string; address: string; lastSyncedAt: number; accountIdentityId?: string
     }[]
   },
+  accountRows: { current: new Map<string, import('@/lib/accounts/accountIdentity').AccountIdentityRow>() },
+  updateAccountOwnership: vi.fn(),
   lookupLoaded: { current: false },
   exchangeRow: { current: undefined as { id: string; lastSyncAt?: number } | undefined },
   user: { current: null as { plan: string; subscriptionActive: boolean } | null },
@@ -107,7 +109,8 @@ vi.mock('dexie-react-hooks', () => ({
   useLiveQuery: (querier: () => unknown) => {
     if (String(querier).includes('lookupAddresses') &&
       !mocks.lookupLoaded.current && mocks.lookupRows.current.length === 0) return undefined;
-    return querier();
+    const result = querier();
+    return result instanceof Promise ? undefined : result;
   }
 }));
 
@@ -129,7 +132,14 @@ vi.mock('@/lib/storage/db', () => ({
         })
       })
     },
-    lookupAddresses: { toArray: () => mocks.lookupRows.current },
+    lookupAddresses: {
+      toArray: () => mocks.lookupRows.current,
+      where: () => ({ equals: (id: string) => ({
+        toArray: () => mocks.lookupRows.current.filter((row) => row.accountIdentityId === id)
+      }) })
+    },
+    accountIdentities: { get: (id: string) => mocks.accountRows.current.get(id) },
+    csvImports: { where: () => ({ equals: () => ({ toArray: () => [] }) }) },
     authoritySnapshots: { toArray: () => mocks.authoritySnapshots.current },
     authorityAssets: { toArray: () => mocks.authorityAssets.current },
     sourceCoverage: { toArray: () => mocks.sourceCoverage.current },
@@ -147,6 +157,7 @@ vi.mock('@/lib/storage/db', () => ({
   upsertOpeningBalance: vi.fn(),
   deleteOpeningBalance: vi.fn(),
   getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
+  updateAccountOwnership: mocks.updateAccountOwnership,
   transactionSourceKey: (t: { sourceRef?: string; walletAddress?: string }) =>
     t.sourceRef && t.walletAddress ? `${t.walletAddress}|${t.sourceRef}` : null
 }));
@@ -438,6 +449,9 @@ beforeEach(() => {
     { id: 'exc_2', exchange: 'binance', lastSyncAt: undefined }
   ];
   mocks.lookupRows.current = [];
+  mocks.accountRows.current = new Map();
+  mocks.updateAccountOwnership.mockReset();
+  mocks.updateAccountOwnership.mockResolvedValue(undefined);
   mocks.lookupLoaded.current = false;
   mocks.exchangeRow.current = undefined;
   mocks.user.current = null;
@@ -451,6 +465,77 @@ beforeEach(() => {
 });
 
 describe('ConnectionDetail — wallet kind', () => {
+  const account = (id: string, revision = 1): import('@/lib/accounts/accountIdentity').AccountIdentityRow => ({
+    id, canonicalKey: id, kind: 'wallet', label: id, ownershipStatus: 'owned',
+    ownershipOrigin: 'user', ownershipConfirmedAt: 1, createdAt: 1, updatedAt: 1,
+    lifecycleRevision: revision
+  });
+
+  it('edits the exact second wallet account instead of the first global live row', async () => {
+    mocks.lookupLoaded.current = true;
+    mocks.lookupRows.current = [
+      { id: 'ethereum:0xfirst', chain: 'ethereum', address: '0xfirst', lastSyncedAt: 1, accountIdentityId: 'wallet:first' },
+      { id: 'ethereum:0xsecond', chain: 'ethereum', address: '0xsecond', lastSyncedAt: 1, accountIdentityId: 'wallet:second' }
+    ];
+    mocks.accountRows.current.set('wallet:first', account('wallet:first'));
+    mocks.accountRows.current.set('wallet:second', account('wallet:second'));
+    const card = walletCard({
+      id: 'wallet:ethereum:0xsecond', title: 'Second wallet',
+      walletRows: [{ id: 'ethereum:0xsecond', chain: 'ethereum', address: '0xsecond', lastSyncedAt: 1, txCount: 0 }]
+    });
+
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit ownership' }));
+    fireEvent.click(screen.getByRole('button', { name: 'No, this is not mine' }));
+    await waitFor(() => expect(mocks.updateAccountOwnership).toHaveBeenCalledWith(
+      'wallet:second', expect.objectContaining({ status: 'not_owned' }), 1
+    ));
+  });
+
+  it('fails closed when represented wallet member rows have different account identities', () => {
+    mocks.lookupLoaded.current = true;
+    mocks.lookupRows.current = [
+      { id: 'ethereum:0xsame', chain: 'ethereum', address: '0xsame', lastSyncedAt: 1, accountIdentityId: 'wallet:a' },
+      { id: 'bitcoin:bc1same', chain: 'bitcoin', address: 'bc1same', lastSyncedAt: 1, accountIdentityId: 'wallet:b' }
+    ];
+    mocks.accountRows.current.set('wallet:a', account('wallet:a'));
+    mocks.accountRows.current.set('wallet:b', account('wallet:b'));
+    const card = walletCard({ walletRows: mocks.lookupRows.current.map((row) => ({ ...row, txCount: 0 })) });
+    render(<ConnectionDetail card={card} onBack={() => {}} />);
+    expect(screen.queryByTestId('account-ownership')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit ownership' })).not.toBeInTheDocument();
+  });
+
+  it('reloads a stale ownership revision and requires a fresh explicit edit', async () => {
+    mocks.lookupLoaded.current = true;
+    mocks.lookupRows.current = [{
+      id: 'ethereum:0xstale', chain: 'ethereum', address: '0xstale', lastSyncedAt: 1,
+      accountIdentityId: 'wallet:stale'
+    }];
+    mocks.accountRows.current.set('wallet:stale', account('wallet:stale', 1));
+    mocks.updateAccountOwnership.mockImplementationOnce(async () => {
+      mocks.accountRows.current.set('wallet:stale', account('wallet:stale', 2));
+      throw new Error('Account ownership changed while the update was in progress.');
+    });
+    render(<ConnectionDetail card={walletCard({ walletRows: mocks.lookupRows.current.map((row) => ({ ...row, txCount: 0 })) })} onBack={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit ownership' }));
+    fireEvent.click(screen.getByRole('button', { name: 'No, this is not mine' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Ownership changed elsewhere');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(mocks.updateAccountOwnership).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes ownership edit on Escape without writing', () => {
+    mocks.lookupLoaded.current = true;
+    mocks.lookupRows.current = [{ id: 'ethereum:0xesc', chain: 'ethereum', address: '0xesc', lastSyncedAt: 1, accountIdentityId: 'wallet:esc' }];
+    mocks.accountRows.current.set('wallet:esc', account('wallet:esc'));
+    render(<ConnectionDetail card={walletCard({ walletRows: mocks.lookupRows.current.map((row) => ({ ...row, txCount: 0 })) })} onBack={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit ownership' }));
+    fireEvent.keyDown(screen.getByRole('dialog'), { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(mocks.updateAccountOwnership).not.toHaveBeenCalled();
+  });
+
   it('matches Dashboard visibility for positive authority with exact asset-level high-confidence spam', () => {
     const address = '0xabc';
     const contract = '0x1111111111111111111111111111111111111111';

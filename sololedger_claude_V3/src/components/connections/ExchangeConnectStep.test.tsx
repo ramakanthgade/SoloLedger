@@ -21,8 +21,16 @@ const mocks = vi.hoisted(() => ({
   testConnection: vi.fn(),
   addConnection: vi.fn(),
   reauthorizeConnection: vi.fn(),
+  claimAccountOwnershipPrompt: vi.fn(),
+  updateAccountOwnership: vi.fn(),
   mode: { current: 'hosted' as 'local' | 'byok' | 'hosted' },
   job: { current: null as unknown as ExchangeSyncJobState }
+}));
+
+vi.mock('@/lib/storage/db', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/storage/db')>(),
+  claimAccountOwnershipPrompt: mocks.claimAccountOwnershipPrompt,
+  updateAccountOwnership: mocks.updateAccountOwnership
 }));
 
 const IDLE_JOB: ExchangeSyncJobState = {
@@ -106,6 +114,10 @@ beforeEach(() => {
   mocks.testConnection.mockResolvedValue({ ok: true });
   mocks.addConnection.mockResolvedValue(savedView);
   mocks.reauthorizeConnection.mockResolvedValue(savedView);
+  mocks.claimAccountOwnershipPrompt.mockResolvedValue({
+    claimed: false,
+    account: { id: 'exchange:exc_1', canonicalKey: 'exchange:exc_1', kind: 'exchange', ownershipStatus: 'unknown', ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0 }
+  });
 });
 
 describe('ExchangeConnectStep — mode gating (ported from AutoSyncPanel)', () => {
@@ -195,6 +207,32 @@ describe('ExchangeConnectStep — credential fields per exchange', () => {
 });
 
 describe('ExchangeConnectStep — test-gated Connect (ported from AddConnectionForm)', () => {
+  it('saves before ownership, then waits for the foreground answer before first-sync handoff', async () => {
+    mocks.claimAccountOwnershipPrompt.mockResolvedValueOnce({
+      claimed: true,
+      account: {
+        id: 'exchange:exc_1', canonicalKey: 'exchange:exc_1', kind: 'exchange',
+        label: 'Main Binance', ownershipStatus: 'unknown', ownershipOrigin: 'user',
+        ownershipDismissedAt: 10, createdAt: 1, updatedAt: 10, lifecycleRevision: 1
+      }
+    });
+    mocks.updateAccountOwnership.mockResolvedValue(undefined);
+    const { onConnected } = await renderForm();
+    fillCredentials();
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+    await screen.findByText(/Connected — read-only access confirmed/);
+    fireEvent.click(screen.getByRole('button', { name: /connect securely/i }));
+
+    expect(await screen.findByRole('dialog', { name: /Is Main Binance yours/i })).toBeInTheDocument();
+    expect(mocks.addConnection).toHaveBeenCalledTimes(1);
+    expect(onConnected).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, this is mine' }));
+    await waitFor(() => expect(mocks.updateAccountOwnership).toHaveBeenCalledWith(
+      'exchange:exc_1', { status: 'owned', origin: 'user' }, 1
+    ));
+    expect(onConnected).toHaveBeenCalledWith(savedView);
+  });
+
   it('Connect stays disabled until Test succeeds for the exact current values', async () => {
     await renderForm();
     const connect = screen.getByRole('button', { name: /connect securely/i });

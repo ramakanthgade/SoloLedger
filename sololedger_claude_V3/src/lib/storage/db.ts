@@ -2177,6 +2177,73 @@ export async function updateAccountOwnership(
   });
 }
 
+/**
+ * Resolve or create the durable account row before any source/network work begins.
+ * Wallet callers intentionally use the B1 canonical key, so one EVM address shares
+ * this row across every chain while unrelated addresses remain independent.
+ */
+export async function ensureAccountIdentity(
+  input: Pick<AccountIdentityRow, 'kind' | 'canonicalKey'> &
+    Partial<Pick<AccountIdentityRow, 'label' | 'walletAppId' | 'providerId' | 'parserId'>>,
+  now = Date.now()
+): Promise<AccountIdentityRow> {
+  return db.transaction('rw', db.accountIdentities, async () => {
+    const existing = await db.accountIdentities.get(input.canonicalKey);
+    if (existing) {
+      if (existing.kind !== input.kind) throw new Error('Account identity kind does not match.');
+      return existing;
+    }
+    const created = newAccountIdentity(input, now);
+    await db.accountIdentities.add(created);
+    return created;
+  });
+}
+
+export interface OwnershipPromptClaim {
+  account: AccountIdentityRow;
+  /** True only for the single caller that durably consumed the prompt. */
+  claimed: boolean;
+}
+
+/**
+ * Durable exactly-once prompt claim. Claiming records the unknown/dismissed
+ * decision before React renders the dialog; navigation, unmount, reload, or a
+ * concurrent add flow therefore cannot reopen it. A later explicit edit from
+ * Connections remains available through updateAccountOwnership().
+ */
+export async function claimAccountOwnershipPrompt(
+  accountIdentityId: string,
+  now = Date.now()
+): Promise<OwnershipPromptClaim> {
+  return db.transaction('rw', db.accountIdentities, async () => {
+    const current = await db.accountIdentities.get(accountIdentityId);
+    if (!current) throw new Error('Account identity not found.');
+    if (current.ownershipStatus !== 'unknown' || current.ownershipDismissedAt != null) {
+      return { account: current, claimed: false };
+    }
+    const claimed = applyOwnershipUpdate(current, {
+      status: 'unknown', origin: 'user', dismissedAt: now
+    }, now);
+    await db.accountIdentities.put(claimed);
+    return { account: claimed, claimed: true };
+  });
+}
+
+/** Create a durable recurring-file account independent from a file hash. */
+export async function createCsvAccountIdentity(
+  parserId: string | null,
+  label: string,
+  now = Date.now()
+): Promise<AccountIdentityRow> {
+  const token = globalThis.crypto?.randomUUID?.() ??
+    `${now.toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return ensureAccountIdentity({
+    kind: 'csv', canonicalKey: `csv-account:${token}`,
+    parserId: parserId?.trim() || undefined,
+    label: label.trim() || undefined
+  }, now);
+}
+
 export interface ReciprocalTransferPairUpdate {
   pairId: string;
   outgoingTransactionId: string;

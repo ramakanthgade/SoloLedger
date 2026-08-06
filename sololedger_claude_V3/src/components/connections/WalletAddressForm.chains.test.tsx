@@ -15,10 +15,14 @@ const mocks = vi.hoisted(() => ({
   fetchActiveChains: vi.fn(),
   runSequential: vi.fn(),
   runWalletImport: vi.fn(async () => {}),
-  syncRegistry: vi.fn()
+  syncRegistry: vi.fn(),
+  ensureAccountIdentity: vi.fn(),
+  claimAccountOwnershipPrompt: vi.fn(),
+  updateAccountOwnership: vi.fn()
 }));
 
 const EVM_ADDR = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const EVM_ADDR_B = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
 
 let effectiveSettings: Record<string, unknown> = {
   rpcLookupEnabled: true,
@@ -35,7 +39,10 @@ vi.mock('dexie-react-hooks', () => ({
 vi.mock('@/lib/storage/db', () => ({
   getLookupAddresses: vi.fn(async () => lookupRows),
   deleteLookupAddressAndTransactions: vi.fn(async () => {}),
-  updateWalletLabel: vi.fn(async () => {})
+  updateWalletLabel: vi.fn(async () => {}),
+  ensureAccountIdentity: mocks.ensureAccountIdentity,
+  claimAccountOwnershipPrompt: mocks.claimAccountOwnershipPrompt,
+  updateAccountOwnership: mocks.updateAccountOwnership
 }));
 
 vi.mock('@/lib/saas/effectiveSettings', () => ({
@@ -115,9 +122,68 @@ beforeEach(() => {
     incomingOnly: []
   });
   mocks.runSequential.mockResolvedValue([]);
+  mocks.ensureAccountIdentity.mockImplementation(async ({ canonicalKey, kind, label, walletAppId }) => ({
+    id: canonicalKey, canonicalKey, kind, label, walletAppId, ownershipStatus: 'unknown',
+    ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0
+  }));
+  mocks.claimAccountOwnershipPrompt.mockImplementation(async (id) => ({
+    claimed: false,
+    account: { id, canonicalKey: id, kind: 'wallet', ownershipStatus: 'unknown', ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0 }
+  }));
+  mocks.updateAccountOwnership.mockResolvedValue(undefined);
 });
 
 describe('WalletAddressForm — EVM active-chain detection', () => {
+  it('claims one canonical address before multi-chain import and waits for its answer', async () => {
+    mocks.claimAccountOwnershipPrompt.mockImplementationOnce(async (id) => ({
+      claimed: true,
+      account: {
+        id, canonicalKey: id, kind: 'wallet', label: 'Test wallet', ownershipStatus: 'unknown',
+        ownershipOrigin: 'user', ownershipDismissedAt: 5, createdAt: 1, updatedAt: 5,
+        lifecycleRevision: 1
+      }
+    }));
+    await renderWithEvmAddress();
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' }));
+
+    expect(await screen.findByRole('dialog', { name: /Is Test wallet yours/i })).toBeInTheDocument();
+    expect(mocks.ensureAccountIdentity).toHaveBeenCalledTimes(1);
+    expect(mocks.runSequential).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Yes, this is mine' }));
+    await waitFor(() => expect(mocks.updateAccountOwnership).toHaveBeenCalledWith(
+      `wallet:evm:${EVM_ADDR}`, { status: 'owned', origin: 'user' }, 1
+    ));
+    await waitFor(() => expect(mocks.runSequential).toHaveBeenCalledTimes(1));
+  });
+
+  it('does not consume unseen multi-address prompts when unmounted on the first dialog', async () => {
+    mocks.claimAccountOwnershipPrompt.mockImplementation(async (id) => ({
+      claimed: true,
+      account: {
+        id, canonicalKey: id, kind: 'wallet', label: 'Test wallet', ownershipStatus: 'unknown',
+        ownershipOrigin: 'user', ownershipDismissedAt: 5, createdAt: 1, updatedAt: 5,
+        lifecycleRevision: 1
+      }
+    }));
+    const view = render(<WalletAddressForm defaultLabel="Test wallet" />);
+    fireEvent.click(await screen.findByRole('checkbox', { name: /Add multiple addresses under this name/i }));
+    fireEvent.change(screen.getByRole('textbox', { name: /Wallet addresses/i }), {
+      target: { value: `${EVM_ADDR}\n${EVM_ADDR_B}` }
+    });
+    await screen.findByTestId('chain-picker', undefined, DETECT_TIMEOUT);
+    fireEvent.click(screen.getByRole('button', { name: 'Import 2 wallets on 2 chains' }));
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    await waitFor(() => expect(mocks.ensureAccountIdentity).toHaveBeenCalledTimes(2));
+    expect(mocks.claimAccountOwnershipPrompt).toHaveBeenCalledTimes(1);
+    expect(mocks.claimAccountOwnershipPrompt).toHaveBeenCalledWith(`wallet:evm:${EVM_ADDR}`);
+
+    view.unmount();
+    expect(mocks.claimAccountOwnershipPrompt).toHaveBeenCalledTimes(1);
+    expect(mocks.claimAccountOwnershipPrompt).not.toHaveBeenCalledWith(`wallet:evm:${EVM_ADDR_B}`);
+  });
+
   it('keeps Import disabled until active-chain detection finishes', async () => {
     let finishDetection!: (value: { active: string[]; incomingOnly: string[] }) => void;
     mocks.fetchActiveChains.mockImplementation(() => new Promise((resolve) => {
@@ -217,7 +283,7 @@ describe('WalletAddressForm — EVM active-chain detection', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Import 1 wallet on 2 chains' }));
 
-    expect(mocks.runSequential).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(mocks.runSequential).toHaveBeenCalledTimes(1));
     const [addresses, chainIds, config] = mocks.runSequential.mock.calls[0];
     expect(addresses).toEqual([EVM_ADDR]);
     expect(chainIds).toEqual(['ethereum', 'polygon']);

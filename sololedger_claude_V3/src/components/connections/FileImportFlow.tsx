@@ -24,6 +24,7 @@ import { Badge } from '@/components/ui/card';
 import { AlertTriangle, CheckCircle2, FileUp, Loader2, Upload } from 'lucide-react';
 import { ColumnMappingForm } from '@/components/import/ColumnMappingForm';
 import { cn } from '@/lib/utils';
+import { CsvAccountSelection, useCsvAccountSelection } from './CsvAccountSelection';
 
 /** How one dropped file was handled — the multi-file wrapper (handleFiles)
  *  aggregates these into the batch summary. The saved variant also carries
@@ -99,7 +100,7 @@ export function FileImportFlow() {
   const [priceFetchNote, setPriceFetchNote] = useState<string | null>(null);
   const [extractionNote, setExtractionNote] = useState<string | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
-  const [importPhase, setImportPhase] = useState<'reading' | 'saving' | 'pricing' | 'mapping' | null>(null);
+  const [importPhase, setImportPhase] = useState<'reading' | 'account' | 'saving' | 'pricing' | 'mapping' | null>(null);
   /** Summary line shown after a multi-file drop (per-file states are last-wins). */
   const [batchNote, setBatchNote] = useState<string | null>(null);
   /** Actionable fix-the-file + AI-last-resort guidance when a file can't be read. */
@@ -108,13 +109,22 @@ export function FileImportFlow() {
   const [aiAvailable, setAiAvailable] = useState(false);
   /** The hidden CSV/XLSX input — the dropzone's browse control clicks it. */
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const csvAccount = useCsvAccountSelection();
+  const [mappedAccountIdentityId, setMappedAccountIdentityId] = useState<string | null>(null);
+  const batchBusy = useRef(false);
+
+  const requestCsvAccount = async (parserId: string | null, name: string): Promise<string> => {
+    setImportPhase('account');
+    return csvAccount.requestAccount(parserId, name);
+  };
 
   const persistTransactions = async (
     txs: Transaction[],
     parserId: string | null,
     hash: string,
     name: string,
-    metadata?: Pick<FileParseOutcome, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough' | 'evidence' | 'warnings'>
+    metadata?: Pick<FileParseOutcome, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough' | 'evidence' | 'warnings'>,
+    selectedAccountIdentityId?: string
   ): Promise<{ converted: number; failed: number; pricesUpdated: number; pricesFailed: number; warnings: string[]; saved: number }> => {
     setConversionNote(null);
     setPriceFetchNote(null);
@@ -147,6 +157,7 @@ export function FileImportFlow() {
       id: hash,
       fileName: name,
       parserId,
+      accountIdentityId: selectedAccountIdentityId,
       transactions: converted,
       metadata: {
         balanceSnapshot: metadata?.balanceSnapshot,
@@ -216,6 +227,7 @@ export function FileImportFlow() {
       setPriceFetchNote(null);
       setExtractionNote(null);
       setOutcome(null);
+      setMappedAccountIdentityId(null);
       setFallbackMessages([]);
       setFileName(file.name);
 
@@ -230,10 +242,13 @@ export function FileImportFlow() {
       }
 
       const result = await parseImportFile(file);
+      const selectedAccountIdentityId = await requestCsvAccount(result.detectedParser, file.name);
+      if (!result.detectedParser) setMappedAccountIdentityId(selectedAccountIdentityId);
       if (result.transactions.length === 0) {
         try {
           await commitCsvImportGeneration({
-            id: hash, fileName: file.name, parserId: result.detectedParser, transactions: [],
+            id: hash, fileName: file.name, parserId: result.detectedParser,
+            accountIdentityId: selectedAccountIdentityId, transactions: [],
             buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
               buildCsvImportEvidenceGeneration({
                 sourceIdentityId: hash, parserId: result.detectedParser, parsedBeforeDedup: 0,
@@ -278,7 +293,7 @@ export function FileImportFlow() {
           optionsCoverageThrough: result.optionsCoverageThrough,
           evidence: result.evidence,
           warnings: result.warnings
-        });
+        }, selectedAccountIdentityId);
         setImportWarnings([...result.warnings, ...persisted.warnings]);
         setFileName('');
         setFileHash('');
@@ -322,7 +337,8 @@ export function FileImportFlow() {
    */
   const handleFiles = useCallback(
     async (files: File[]) => {
-      if (files.length === 0) return;
+      if (files.length === 0 || batchBusy.current) return;
+      batchBusy.current = true;
       // Paint feedback before file.text(), Papa parsing, and ledger stitching
       // begin their synchronous work. Without this yield a large Binance CSV
       // can leave the unchanged dropzone visible for several seconds.
@@ -434,6 +450,7 @@ export function FileImportFlow() {
           );
         }
       } finally {
+        batchBusy.current = false;
         setSaving(false);
         setImportPhase(null);
       }
@@ -492,7 +509,8 @@ export function FileImportFlow() {
       const aiToPersist = autoMapped.addressColumnAmbiguous
         ? await confirmAddressOrientation(autoMapped.transactions)
         : autoMapped.transactions;
-      const aiPersisted = await persistTransactions(aiToPersist, 'ai_mapping', fileHash, fileName);
+      const selectedAccountIdentityId = mappedAccountIdentityId ?? await requestCsvAccount('ai_mapping', fileName);
+      const aiPersisted = await persistTransactions(aiToPersist, 'ai_mapping', fileHash, fileName, undefined, selectedAccountIdentityId);
       setSavedCount(aiPersisted.saved);
       setImportWarnings([
         `AI mapped the columns (${suggestion.confidence} confidence): ${suggestion.explanation}`,
@@ -510,16 +528,17 @@ export function FileImportFlow() {
       setSaving(false);
       setImportPhase(null);
     }
-  }, [outcome, fileHash, fileName]);
+  }, [outcome, fileHash, fileName, mappedAccountIdentityId]);
 
   const onDrop = useCallback(
     (e: React.DragEvent) => {
       e.preventDefault();
       setDragOver(false);
+      if (batchBusy.current || saving || csvAccount.busy) return;
       const files = Array.from(e.dataTransfer.files ?? []);
       if (files.length > 0) void handleFiles(files);
     },
-    [handleFiles]
+    [handleFiles, saving, csvAccount.busy]
   );
 
   const saveMapped = async (mapped: ReturnType<typeof parseWithMapping>) => {
@@ -530,7 +549,8 @@ export function FileImportFlow() {
       const toPersist = mapped.addressColumnAmbiguous
         ? await confirmAddressOrientation(mapped.transactions)
         : mapped.transactions;
-      const mappedPersisted = await persistTransactions(toPersist, 'manual_mapping', fileHash, fileName);
+      const selectedAccountIdentityId = mappedAccountIdentityId ?? await requestCsvAccount('manual_mapping', fileName);
+      const mappedPersisted = await persistTransactions(toPersist, 'manual_mapping', fileHash, fileName, undefined, selectedAccountIdentityId);
       setSavedCount(mappedPersisted.saved);
       setImportWarnings(mapped.warnings);
       setOutcome(null);
@@ -544,6 +564,7 @@ export function FileImportFlow() {
 
   return (
     <div className="flex flex-col gap-4" data-testid="file-import-flow">
+      <CsvAccountSelection flow={csvAccount} />
       {/* The hidden file input stays mounted for the whole flow so the
           dropzone's browse control can open the real picker in one click. */}
       <input
@@ -552,10 +573,10 @@ export function FileImportFlow() {
         multiple
         accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
         className="hidden"
-        disabled={saving}
+        disabled={saving || csvAccount.busy}
         onChange={(e) => {
           const selected = Array.from(e.target.files ?? []);
-          if (selected.length > 0) void handleFiles(selected);
+          if (selected.length > 0 && !batchBusy.current && !csvAccount.busy) void handleFiles(selected);
           e.target.value = '';
         }}
       />
@@ -564,7 +585,7 @@ export function FileImportFlow() {
       <div
         onDragOver={(e) => {
           e.preventDefault();
-          setDragOver(true);
+          if (!batchBusy.current && !saving && !csvAccount.busy) setDragOver(true);
         }}
         onDragLeave={() => setDragOver(false)}
         onDrop={onDrop}
@@ -579,6 +600,8 @@ export function FileImportFlow() {
             <p className="text-sm text-mid">
               {importPhase === 'reading'
                 ? 'Reading and checking your file…'
+                : importPhase === 'account'
+                  ? 'Choose an account above to continue.'
                 : importPhase === 'pricing'
                 ? 'Transactions saved. Fetching optional market prices in the background — you can close this panel.'
                 : importPhase === 'mapping'

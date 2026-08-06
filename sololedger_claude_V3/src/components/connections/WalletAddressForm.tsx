@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { getLookupAddresses } from '@/lib/storage/db';
+import {
+  claimAccountOwnershipPrompt,
+  ensureAccountIdentity,
+  getLookupAddresses,
+  updateAccountOwnership
+} from '@/lib/storage/db';
 import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveSettings';
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import { isSaasMode } from '@/lib/saas/config';
@@ -28,6 +33,8 @@ import { syncCoinGeckoRewardRegistryInBackground } from '@/lib/assets/coingeckoR
 import { BrandIcon, chainIconId } from './brandIcons';
 import { canonicalWalletAddress } from '@/lib/ledger/chainNamespace';
 import { isBitcoinAddress, isEvmAddress, isSolanaAddress } from '@/lib/rpc/walletAddressValidation';
+import { walletAccountCanonicalKey, type AccountIdentityRow } from '@/lib/accounts/accountIdentity';
+import { SourceOwnershipDialog, type SourceOwnershipDecision } from './SourceOwnershipDialog';
 
 const inputCls =
   'mt-1 block w-full rounded-lg border border-hi/10 bg-elev-1 px-3.5 py-2.5 text-sm text-hi shadow-xs transition-colors placeholder:text-faint hover:border-hi/20 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30';
@@ -135,6 +142,10 @@ export function WalletAddressForm({
   const [showBackgroundPrompt, setShowBackgroundPrompt] = useState(false);
   /** Address snapshot whose terminal global-job messages belong to this form. */
   const [visibleJobAddress, setVisibleJobAddress] = useState<string | null>(null);
+  const [ownershipQueue, setOwnershipQueue] = useState<AccountIdentityRow[]>([]);
+  const [ownershipAccount, setOwnershipAccount] = useState<AccountIdentityRow | null>(null);
+  const [ownershipError, setOwnershipError] = useState<string | null>(null);
+  const pendingImport = useRef<null | (() => void | Promise<void>)>(null);
   /** Previous detected chain set — preserves checkbox choices across re-detects. */
   const detectedRef = useRef<ChainId[]>([]);
 
@@ -416,10 +427,67 @@ export function WalletAddressForm({
     return false;
   };
 
-  const startImport = (addressesOverride?: string[]) => {
-    const addrs = addressesOverride ?? freshAddresses;
+  const beginAfterOwnership = async (
+    addresses: string[],
+    ownershipChain: ChainId,
+    action: () => void | Promise<void>
+  ) => {
+    setOwnershipError(null);
+    try {
+      const queue: AccountIdentityRow[] = [];
+      for (const address of addresses) {
+        const identity = initialIdentityForAddress(address);
+        // eslint-disable-next-line no-await-in-loop
+        const account = await ensureAccountIdentity({
+          kind: 'wallet', canonicalKey: walletAccountCanonicalKey(ownershipChain, address),
+          label: identity.label, walletAppId: identity.walletAppId
+        });
+        queue.push(account);
+      }
+      pendingImport.current = action;
+      await claimNextOwnershipPrompt(queue);
+    } catch (error) {
+      setOwnershipError(error instanceof Error ? error.message : 'Could not prepare the wallet account.');
+    }
+  };
+
+  const claimNextOwnershipPrompt = async (accounts: AccountIdentityRow[]): Promise<void> => {
+    const [next, ...rest] = accounts;
+    if (!next) {
+      setOwnershipQueue([]);
+      setOwnershipAccount(null);
+      const action = pendingImport.current;
+      pendingImport.current = null;
+      await action?.();
+      return;
+    }
+    const claim = await claimAccountOwnershipPrompt(next.id);
+    if (!claim.claimed) {
+      await claimNextOwnershipPrompt(rest);
+      return;
+    }
+    setOwnershipQueue(rest);
+    setOwnershipAccount(claim.account);
+  };
+
+  const finishOwnershipDecision = async (decision: SourceOwnershipDecision) => {
+    const account = ownershipAccount;
+    if (!account) return;
+    if (decision !== 'unknown') {
+      await updateAccountOwnership(account.id, { status: decision, origin: 'user' }, account.lifecycleRevision);
+    }
+    setOwnershipAccount(null);
+    await claimNextOwnershipPrompt(ownershipQueue);
+  };
+
+  const cancelOwnershipPrompt = () => {
+    setOwnershipAccount(null);
+    setOwnershipQueue([]);
+    pendingImport.current = null;
+  };
+
+  const startImportNow = (addrs: string[]) => {
     if (addrs.length === 0 || job.active) return;
-    if (!requireName()) return;
     // Generic registry refresh only: no wallet address is included in these
     // CoinGecko requests. Seven-day cache + single-flight keep this best effort.
     syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
@@ -445,13 +513,19 @@ export function WalletAddressForm({
       .finally(() => importJob._endBatch(operationToken));
   };
 
+  const startImport = (addressesOverride?: string[]) => {
+    const addrs = addressesOverride ?? freshAddresses;
+    if (addrs.length === 0 || job.active) return;
+    if (!requireName()) return;
+    void beginAfterOwnership(addrs, chain.id, () => startImportNow(addrs));
+  };
+
   /**
    * Multi-chain import: run the existing single-chain path once per selected
    * chain, sequentially, then show an aggregated per-chain summary.
    */
-  const startMultiChainImport = async () => {
+  const startMultiChainImportNow = async () => {
     if (evmAddresses.length === 0 || selectedChains.length === 0 || job.active) return;
-    if (!requireName()) return;
     syncCoinGeckoRewardRegistryInBackground(settings.coingeckoApiKey);
     importJob.reset();
     setChainSummary(null);
@@ -479,10 +553,28 @@ export function WalletAddressForm({
     }
   };
 
+  const startMultiChainImport = () => {
+    if (evmAddresses.length === 0 || selectedChains.length === 0 || job.active) return;
+    if (!requireName()) return;
+    // Every selected EVM chain resolves to the same B1 account key.
+    void beginAfterOwnership(evmAddresses, selectedChains[0], startMultiChainImportNow);
+  };
+
   const detectedIcon = chainIconId(chainId);
 
   return (
     <div className="flex flex-col gap-3.5" data-testid="wallet-address-form">
+      {ownershipError && <p role="alert" className="text-sm text-loss">{ownershipError}</p>}
+      <SourceOwnershipDialog
+        open={ownershipAccount !== null}
+        mode="prompt"
+        accountLabel={ownershipAccount?.label ?? (nickname.trim() || 'this wallet')}
+        sourceDescription={ownershipAccount
+          ? `Wallet address ${ownershipAccount.canonicalKey.split(':').slice(-1)[0]}`
+          : 'Wallet account'}
+        onDecision={finishOwnershipDecision}
+        onCancel={cancelOwnershipPrompt}
+      />
       {/* All-duplicate short-circuit: prominent callout pinned to the top of
           the form (the popup toast fires from the effect above). Detection is
           skipped entirely and Import stays disabled while this is up. */}
