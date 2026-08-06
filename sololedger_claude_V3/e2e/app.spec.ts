@@ -6,7 +6,9 @@ import { produceSanitizedAppEvidence } from '../server/scripts/produce-sanitized
 
 test.describe.configure({ mode: 'serial' });
 
-const generatedImages = '/code/.generated_artifacts/images';
+const generatedArtifacts = process.env.SOLOLEDGER_E2E_ARTIFACT_DIR
+  ?? join(process.cwd(), 'test-results', 'generated-artifacts');
+const generatedImages = join(generatedArtifacts, 'images');
 
 async function screenshotDigest(path: string): Promise<string> {
   return createHash('sha256').update(await readFile(path)).digest('hex');
@@ -178,7 +180,7 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
   await expect(page.locator('[data-transaction-id="b6-classified"]')).toContainText(/Staking|reward/i);
   await expect(page.locator('[data-transaction-id="b6-classified"]')).toContainText('Diagnosed wallet');
 
-  const captureDirectory = '/code/.generated_artifacts';
+  const captureDirectory = generatedArtifacts;
   const capturePath = join(captureDirectory, 'defi-rollout-capture.json');
   const evidencePath = join(captureDirectory, 'defi-rollout-evidence.json');
   await writeFile(capturePath, JSON.stringify({
