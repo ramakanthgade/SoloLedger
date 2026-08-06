@@ -122,6 +122,27 @@ export interface Transaction {
   internalTransferMatchMethod?: InternalTransferMatchMethod;
   internalTransferMatcherVersion?: string;
   internalTransferDecisionAt?: number;
+  /** True only when B4 itself added possible_internal_transfer for a persisted suggestion. */
+  internalTransferSuggestionFlagAdded?: boolean;
+  /** Complete, provider/parser-normalized identity for one custody event. Partial identities must never auto-confirm. */
+  onchainTransferEvent?: {
+    chain: string;
+    txHash: string;
+    assetKey: string; // canonical contract/mint, or the literal `native`
+    indexKind: 'log' | 'trace';
+    index: string;
+    sender: string;
+    recipient: string;
+    quantity: string;
+  };
+  /** Stable two-lane operation evidence emitted by an account-system parser. */
+  parserNativeTransfer?: {
+    accountSystem: string;
+    operationId: string;
+    laneId: string;
+    /** Explicit opposite endpoint lane bound by the parser's native operation group. */
+    counterpartLaneId: string;
+  };
   /**
    * Spot vs derivatives (perps/futures). Set by exchange parsers (e.g. Hyperliquid).
    * Undefined → treated as spot unless source/category heuristics say otherwise.

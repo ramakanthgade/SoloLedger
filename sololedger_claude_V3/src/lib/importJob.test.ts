@@ -174,6 +174,9 @@ vi.mock('@/lib/storage/db', () => ({
   appendFailedWalletBalanceCoverage: (...args: unknown[]) =>
     appendFailedWalletBalanceCoverage(args[0]),
   deduplicateTransactions: vi.fn(async () => 0),
+  resolvePostDedupTransferSurvivorIds: vi.fn(async (txs: Transaction[]) => txs
+    .filter((row) => row.type === 'transfer_in' || row.type === 'transfer_out')
+    .map((row) => row.id)),
   filterAlreadyImported: vi.fn(async (txs: Transaction[]) => txs)
 }));
 

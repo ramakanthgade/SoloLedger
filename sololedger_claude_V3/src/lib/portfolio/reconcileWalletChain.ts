@@ -14,6 +14,7 @@ import {
   walletSolDelta
 } from '@/lib/rpc/solanaRpc';
 import { resolveSolanaMintAddress } from '@/lib/assets/solanaMints';
+import { cleanCounterpartsForDeletedTransactions } from '@/lib/internalTransfers/persistence';
 import {
   canonicalWalletIdentity,
   canonicalWalletSourceRefKey
@@ -223,7 +224,10 @@ export async function reconcileSolanaWalletsFromChain(
         await db.transactions.update(id, changes);
       }
       if (inserts.length > 0) await db.transactions.bulkAdd(inserts);
-      if (deletionIds.size > 0) await db.transactions.bulkDelete([...deletionIds]);
+      if (deletionIds.size > 0) {
+        await cleanCounterpartsForDeletedTransactions([...deletionIds]);
+        await db.transactions.bulkDelete([...deletionIds]);
+      }
     });
   }
 

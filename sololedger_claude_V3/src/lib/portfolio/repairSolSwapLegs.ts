@@ -7,6 +7,7 @@ import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import type { Transaction } from '@/types/transaction';
 import { makeId } from '@/lib/parsers/types';
 import { isNativeSolAsset } from '@/lib/portfolio/solBalance';
+import { cleanCounterpartsForDeletedTransactions } from '@/lib/internalTransfers/persistence';
 import {
   getSolanaTransaction,
   swapAssociatedSol,
@@ -316,7 +317,10 @@ export async function repairUsdcOvercount(
       for (const [id, changes] of updates) {
         await db.transactions.update(id, changes);
       }
-      if (deletionIds.size > 0) await db.transactions.bulkDelete([...deletionIds]);
+      if (deletionIds.size > 0) {
+        await cleanCounterpartsForDeletedTransactions([...deletionIds]);
+        await db.transactions.bulkDelete([...deletionIds]);
+      }
     });
   }
 

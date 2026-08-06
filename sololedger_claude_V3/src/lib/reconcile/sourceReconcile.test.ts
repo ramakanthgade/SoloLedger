@@ -82,11 +82,21 @@ describe('ledgerImpliedQty', () => {
     expect(qty.get('USDT') ?? 0).toBeCloseTo(0);
   });
 
-  it('preserves legacy behavior by skipping a one-sided internal transfer', () => {
+  it('retains signed custody for a one-sided legacy internal transfer', () => {
     const qty = ledgerImpliedQty([
       tx({ type: 'transfer_out', asset: 'USDT', amount: 5000, isInternalTransfer: true })
     ]);
-    expect(qty.get('USDT')).toBeUndefined();
+    expect(qty.get('USDT')).toBe(-5000);
+  });
+
+  it('skips reciprocal confirmed pairs only when both legs are in this scope', () => {
+    const outgoing = tx({ id: 'out', type: 'transfer_out', asset: 'USDT', amount: 5_000,
+      isInternalTransfer: true, linkedTransferId: 'in', internalTransferDecision: 'confirmed' });
+    const incoming = tx({ id: 'in', type: 'transfer_in', asset: 'USDT', amount: 5_000,
+      isInternalTransfer: true, linkedTransferId: 'out', internalTransferDecision: 'confirmed' });
+    expect(ledgerImpliedQty([outgoing, incoming]).get('USDT')).toBeUndefined();
+    expect(ledgerImpliedQty([outgoing]).get('USDT')).toBe(-5_000);
+    expect(ledgerImpliedQty([incoming]).get('USDT')).toBe(5_000);
   });
 });
 
@@ -310,12 +320,12 @@ describe('four-axis custody reconciliation', () => {
 });
 
 describe('reconcileSource', () => {
-  it('keeps legacy consumers unchanged by skipping confirmed internal rows', () => {
+  it('keeps a one-sided legacy internal row signed for custody reconciliation', () => {
     const internalOut = tx({
       type: 'transfer_out', asset: 'BTC', amount: 2, isInternalTransfer: true
     });
     expect(reconcileSource(CONN, 'binance', [bal('BTC', 0)], [internalOut]).assets[0])
-      .toMatchObject({ ledgerQty: 0, authorityQty: 0, delta: 0, status: 'reconciled' });
+      .toMatchObject({ ledgerQty: -2, authorityQty: 0, delta: 2, status: 'ledger_under' });
   });
   it('marks exact matches reconciled (UNI/ROSE case)', () => {
     const balances = [bal('UNI', 120.001444), bal('ROSE', 11454.8)];

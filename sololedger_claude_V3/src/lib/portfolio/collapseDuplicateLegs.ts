@@ -6,6 +6,7 @@ import { db, mutateTransactionsAndReconcileCsv } from '@/lib/storage/db';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import type { Transaction } from '@/types/transaction';
 import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
+import { cleanCounterpartsForDeletedTransactions } from '@/lib/internalTransfers/persistence';
 
 export async function collapseDuplicateTradeTransferLegs(): Promise<number> {
   const all = await db.transactions
@@ -32,7 +33,10 @@ export async function collapseDuplicateTradeTransferLegs(): Promise<number> {
   }
 
   if (toDelete.length > 0) {
-    await mutateTransactionsAndReconcileCsv(() => db.transactions.bulkDelete(toDelete));
+    await mutateTransactionsAndReconcileCsv(async () => {
+      await cleanCounterpartsForDeletedTransactions(toDelete);
+      await db.transactions.bulkDelete(toDelete);
+    });
   }
   return toDelete.length;
 }

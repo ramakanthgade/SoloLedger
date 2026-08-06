@@ -21,6 +21,7 @@ import type { Transaction } from '@/types/transaction';
 import {
   db,
   deduplicateTransactions,
+  resolvePostDedupTransferSurvivorIds,
   filterAlreadyImported,
   getSettings,
   exchangeBalanceId,
@@ -37,6 +38,11 @@ import { quoteToFiatCurrency } from '@/lib/parsers/pairUtils';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
+import {
+  cleanCounterpartsForDeletedTransactions,
+  runInternalTransferMatching,
+  sanitizeTransferPairMetadata
+} from '@/lib/internalTransfers/persistence';
 import {
   classifySyncError,
   createExchangeClient,
@@ -2365,12 +2371,15 @@ export async function persistSyncedRows(args: {
         if (csv) {
           await db.transactions.update(csv.id, {
             dedupMatchedApiId: `${args.connectionId}:${isHtx ? 'htx' : 'bybit'}-order:${incoming.sourceRef}`,
-            dedupMatchedApiRow: { ...merged, importBatchId: args.connectionId },
+            dedupMatchedApiRow: sanitizeTransferPairMetadata({ ...merged, importBatchId: args.connectionId }),
             // A newly authenticated source is live evidence, not the deleted
             // source represented by the prior tombstone.
             deletedSourceEvidence: undefined
           });
-          if (direct) await db.transactions.delete(direct.id);
+          if (direct) {
+            await cleanCounterpartsForDeletedTransactions([direct.id]);
+            await db.transactions.delete(direct.id);
+          }
           continue;
         }
         if (direct) {
@@ -2495,6 +2504,7 @@ export async function persistSyncedRows(args: {
       `Removed ${dupsRemoved} duplicate transaction${dupsRemoved === 1 ? '' : 's'} (overlap with existing rows).`
     );
   }
+  await runInternalTransferMatching(await resolvePostDedupTransferSurvivorIds(converted));
 
   // Pricing — gated on the EFFECTIVE flag; failure degrades to a warning.
   let pricesUpdated = 0;

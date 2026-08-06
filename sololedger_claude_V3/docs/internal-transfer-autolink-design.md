@@ -1,6 +1,6 @@
 # Internal-Transfer Auto-Link — Design Doc
 
-**Status:** DRAFT 2026-07-30 — design only, no implementation yet.
+**Status:** IMPLEMENTED B4 2026-08-06. The proof contract below supersedes the older permissive examples in this document.
 **Author:** Hermes
 **Builds on:** reconciliation-engine-design.md §3.5, `feat/auto-internal-transfers` (merged #64),
 `origin/cursor/auto-internal-transfers-f944`, PR #66 (phantom-holdings fix).
@@ -60,6 +60,22 @@ above, not the missing-records class.
 
 ## 3. Matching model
 
+### 3.0 Approved B4 proof boundary
+
+- Pair IDs are deterministic. Reciprocal metadata records decision (`suggested`, `confirmed`, `rejected`),
+  method (`exact_onchain_event`, `parser_native`, `heuristic`, `manual`, `legacy`), matcher version, and decision time.
+- `exact_onchain_event` confirmation requires equality of **all** normalized fields: chain, transaction hash,
+  contract/mint or `native`, log/trace index, sender, recipient, and quantity. Both distinct account endpoints must
+  have durable `owned` status, direction must agree, and the proof must identify one unique pair.
+- `parser_native` confirmation requires the same stable account-system operation ID on both lanes, distinct owned
+  accounts, opposite directions, exact canonical asset, exact quantity, and uniqueness.
+- Hash-only, address-only, hash plus counterparty without event/quantity, amount/time, fee tolerance, and bridge
+  continuity are **suggestions at most**. Ties are left unresolved.
+- Hidden/high-confidence-spam evidence, spoofed or unverified outbound logs, malformed quantities, unknown/unowned
+  accounts, wrapped-asset/contract changes, prior rejection, and existing pair conflicts are excluded.
+- Matching runs after durable save and dedup, seeded by new row IDs and the existing `asset` index; it does not scan
+  the full ledger once per incoming row.
+
 An internal transfer is a **pair**: one `transfer_out` (the send) and one `transfer_in`
 (the receive) that are the same economic event. Auto-link = find the counterpart and set
 `isInternalTransfer` on **both** legs.
@@ -77,8 +93,8 @@ An internal transfer is a **pair**: one `transfer_out` (the send) and one `trans
 
 | Tier | Condition | Action |
 |---|---|---|
-| **AUTO-CONFIRM** | txHash equal, OR counterpartyAddress is a known own-address | Set `isInternalTransfer=true` on both legs, link them, **no Review step**. |
-| **SUGGEST** | Asset+amount+time match but no address/hash proof | Set `possible_internal_transfer` + surface in Review as a one-tap confirm. |
+| **AUTO-CONFIRM** | Complete unique exact event proof, or complete unique parser-native two-lane proof | Set `isInternalTransfer=true` on both legs, link them, **no Review step**. |
+| **SUGGEST** | Any weaker compatible evidence, including hash/address/amount/time/fee/bridge evidence | Persist a reciprocal suggested pair + `possible_internal_transfer`; surface confirm/reject in Review. |
 | **LEAVE** | No counterpart within tolerance | Leave as external Deposit/Withdraw (the `ledger_over` row the recon report shows). |
 
 ### 3.3 Tolerances (initial, tunable)

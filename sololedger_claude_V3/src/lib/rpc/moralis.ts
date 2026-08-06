@@ -612,6 +612,16 @@ export function moralisTxToRows(
       isInternalTransfer: false,
       safetySubjectKey: subjectKey,
       outboundInitiation,
+      onchainTransferEvent: hasStableEventIndex ? {
+        chain: chainId,
+        txHash: mtx.hash,
+        assetKey: t.address,
+        indexKind: 'log',
+        index: String(t.log_index),
+        sender: t.from_address,
+        recipient: t.to_address,
+        quantity: t.value_formatted
+      } : undefined,
       raw: { safetyEvidence }
     });
   }

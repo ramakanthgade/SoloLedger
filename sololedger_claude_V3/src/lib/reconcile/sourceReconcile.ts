@@ -67,10 +67,12 @@ function epsilon(authorityQty: number): number {
 /**
  * Ledger-implied net quantity per asset for a set of transactions (already
  * filtered to one connection). Mirrors buildPortfolioHoldings sign rules,
- * simplified: skips internal transfers (net zero) and spam.
+ * simplified: same-scope reciprocal pairs net to zero while cross-scope and
+ * one-sided legacy movements retain their signed custody effect.
  */
 export function ledgerImpliedQty(txs: Transaction[]): Map<string, number> {
   const map = new Map<string, number>();
+  const ids = new Set(txs.map((row) => row.id));
   const add = (asset: string | undefined, delta: number) => {
     if (!asset) return;
     const a = asset.toUpperCase();
@@ -79,7 +81,7 @@ export function ledgerImpliedQty(txs: Transaction[]): Map<string, number> {
 
   for (const t of txs) {
     if (isTransactionExcluded(t)) continue;
-    if (t.isInternalTransfer) continue;
+    if (t.internalTransferDecision === 'confirmed' && t.linkedTransferId && ids.has(t.linkedTransferId)) continue;
     if (t.type === 'trade' && t.counterAsset && t.counterAmount != null) {
       add(t.asset, -Math.abs(t.amount));
       add(t.counterAsset, Math.abs(t.counterAmount));
