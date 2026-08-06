@@ -19,7 +19,8 @@ import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
-import { projectScopedEconomicExposure } from '@/lib/portfolio/economicExposureProjection';
+import { projectLegacyWalletNetWorth, projectWalletDefiNetWorth, storeWalletDefiNetWorthShadow } from '@/lib/portfolio/economicExposureProjection';
+import { isWalletDefiNetWorthV1Enabled } from '@/lib/features';
 import {
   buildHoldingsProjection,
   countQuantityAuthorityIssues,
@@ -39,7 +40,7 @@ import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
 import { DataHealthWorkspace, type DataHealthViewState } from './DataHealthWorkspace';
 import { reaggregateUnreplacedCustody } from './dashboardEconomicRows';
-import { buildDataHealthModel } from './dataHealthModel';
+import { buildCoherentDataHealthShadow, buildDataHealthModel, buildLocalDataHealthDiagnostics } from './dataHealthModel';
 import { buildCards } from '@/components/connections/connectionModel';
 import { buildConnectionWorkspaceFromCard, buildConnectionWorkspaceSnapshot, prepareConnectionWorkspaceCollectionIndex } from '@/components/connections/connectionWorkspaceModel';
 import type { ExchangeConnectionView } from '@/lib/exchangeSync';
@@ -687,6 +688,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     }
     return buildDataHealthModel(sourceInputs);
   }, [deferredDataHealthSnapshot, nowMs]);
+  const coherentDataHealthShadow = useMemo(() => dataHealthOpen && coherentDataHealthSnapshot
+    ? buildCoherentDataHealthShadow(
+      coherentDataHealthSnapshot, currency, nowMs, isWalletDefiNetWorthV1Enabled())
+    : undefined, [coherentDataHealthSnapshot, currency, dataHealthOpen, nowMs]);
 
   useEffect(() => {
     let cancelled = false;
@@ -727,7 +732,8 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     ),
     [holdings, priceIndex]
   );
-  const economicExposure = useMemo(() => {
+  const walletDefiNetWorthEnabled = isWalletDefiNetWorthV1Enabled();
+  const defiNetWorthInput = useMemo(() => {
     const valueByKey = new Map(valued.map((row) => [portfolioHoldingKey(row), row]));
     const custody = holdings.flatMap((holding) => {
       const valuedHolding = valueByKey.get(portfolioHoldingKey(holding));
@@ -746,11 +752,25 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     });
     const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
       ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
-    return projectScopedEconomicExposure({
+    return {
       custody, snapshots: acceptedSnapshot?.defiPositionSnapshots ?? [],
       rows: acceptedSnapshot?.defiPositionRows ?? [], prices
-    });
+    };
   }, [acceptedSnapshot?.defiPositionRows, acceptedSnapshot?.defiPositionSnapshots, holdings, valued]);
+  // The rollout is default-off, so its candidate is diagnostic rather than
+  // paint-critical. Keep each shadow internally coherent, but move candidate
+  // recomputation past the visible holdings commit. An enabled rollout always
+  // evaluates current evidence synchronously because it controls presentation.
+  const deferredDefiNetWorthInput = usePostPaintDeferredValue(defiNetWorthInput, () => false);
+  const shadowInput = walletDefiNetWorthEnabled ? defiNetWorthInput : deferredDefiNetWorthInput;
+  const defiNetWorthShadow = useMemo(() => projectWalletDefiNetWorth({
+    ...shadowInput, enabled: walletDefiNetWorthEnabled
+  }), [shadowInput, walletDefiNetWorthEnabled]);
+  useEffect(() => storeWalletDefiNetWorthShadow(defiNetWorthShadow), [defiNetWorthShadow]);
+  const economicExposure = useMemo(() => walletDefiNetWorthEnabled
+    ? defiNetWorthShadow.projection
+    : projectLegacyWalletNetWorth(defiNetWorthInput.custody),
+  [defiNetWorthInput.custody, defiNetWorthShadow.projection, walletDefiNetWorthEnabled]);
   const replacedCustodyIds = new Set([...economicExposure.assets, ...economicExposure.liabilities]
     .flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : []));
   const displayedValued = reaggregateUnreplacedCustody(valued, holdings, replacedCustodyIds);
@@ -964,7 +984,13 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   };
 
   if (dataHealthOpen) {
-    return <DataHealthWorkspace model={dataHealthModel} loading={!coherentDataHealthSnapshot} updating={dataHealthUpdating} onClose={() => setDataHealthOpen(false)} initialState={restoredDataHealthState} onNavigate={(intent, state) => onNavigationIntent?.(intent, state)} />;
+    const localDiagnostics = coherentDataHealthSnapshot ? buildLocalDataHealthDiagnostics({
+      transactions: coherentDataHealthSnapshot.transactions,
+      coverage: coherentDataHealthSnapshot.sourceCoverage,
+      defiSnapshots: coherentDataHealthSnapshot.defiPositionSnapshots ?? [],
+      shadow: coherentDataHealthShadow!
+    }) : undefined;
+    return <DataHealthWorkspace model={dataHealthModel} loading={!coherentDataHealthSnapshot} updating={dataHealthUpdating} localDiagnostics={localDiagnostics} onClose={() => setDataHealthOpen(false)} initialState={restoredDataHealthState} onNavigate={(intent, state) => onNavigationIntent?.(intent, state)} />;
   }
 
   // Initial Dexie resolution — mirror Portfolio's skeleton rather than flashing empty.

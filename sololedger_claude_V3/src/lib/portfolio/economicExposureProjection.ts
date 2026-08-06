@@ -90,6 +90,72 @@ export interface EconomicExposureProjection {
   retainedCustody: readonly CustodyExposure[];
 }
 
+export interface DefiNetWorthShadowComparison {
+  legacyNetWorth: number | null;
+  defiNetWorth: number | null;
+  difference: number | null;
+  featureEnabled: boolean;
+  projection: EconomicExposureProjection;
+}
+
+export const WALLET_DEFI_SHADOW_STORAGE_KEY = 'sololedger_wallet_defi_net_worth_shadow_v1';
+
+/** Persist arithmetic diagnostics locally without wallet identifiers or rows. */
+export function storeWalletDefiNetWorthShadow(
+  shadow: DefiNetWorthShadowComparison,
+  storage: Pick<Storage, 'setItem'> = localStorage,
+  observedAt = Date.now()
+): void {
+  try {
+    storage.setItem(WALLET_DEFI_SHADOW_STORAGE_KEY, JSON.stringify({
+      version: 1,
+      observedAt,
+      legacyNetWorth: shadow.legacyNetWorth,
+      defiNetWorth: shadow.defiNetWorth,
+      difference: shadow.difference,
+      status: shadow.projection.status,
+      featureEnabled: shadow.featureEnabled
+    }));
+  } catch {
+    // Storage can be unavailable in private/restricted browser contexts.
+  }
+}
+
+/** Compare both arithmetic paths locally before selecting the feature output. */
+export function projectWalletDefiNetWorth(input: {
+  custody: readonly CustodyExposure[];
+  snapshots: readonly DefiPositionSnapshot[];
+  rows: readonly DefiPositionRow[];
+  prices?: ReadonlyMap<string, number>;
+  enabled: boolean;
+}): DefiNetWorthShadowComparison {
+  const candidate = projectScopedEconomicExposure(input);
+  const fallback = projectLegacyWalletNetWorth(input.custody);
+  const legacyNetWorth = fallback.netWorth;
+  return {
+    legacyNetWorth, defiNetWorth: candidate.netWorth,
+    difference: legacyNetWorth == null || candidate.netWorth == null ? null : candidate.netWorth - legacyNetWorth,
+    featureEnabled: input.enabled, projection: input.enabled ? candidate : fallback
+  };
+}
+
+/** Build the legacy wallet presentation without evaluating the DeFi candidate. */
+export function projectLegacyWalletNetWorth(
+  custody: readonly CustodyExposure[]
+): EconomicExposureProjection {
+  const values = custody.map((row) => row.value);
+  const hasUnpricedLegacyValues = values.some((value) => value == null);
+  // Legacy wallet presentation excludes unpriced assets from its displayed
+  // total while retaining the rows and the accompanying disclosure.
+  const legacyNetWorth = values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  return {
+    assets: custody.map((row) => ({ ...row, kind: 'liquid', contribution: row.value })),
+    liabilities: [], netWorth: legacyNetWorth,
+    hasUnpricedValues: hasUnpricedLegacyValues, hasUnpricedLiabilities: false,
+    status: hasUnpricedLegacyValues ? 'partial' : 'complete', evidence: [], retainedCustody: custody
+  };
+}
+
 function valueFor(row: DefiPositionRow, prices: ReadonlyMap<string, number>): number | null {
   const evidenced = row.valueEvidence?.value;
   if (evidenced != null && Number.isFinite(evidenced)) return Math.abs(evidenced);

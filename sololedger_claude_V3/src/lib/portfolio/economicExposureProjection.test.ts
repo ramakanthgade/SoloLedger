@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { projectEconomicExposure, projectScopedEconomicExposure } from './economicExposureProjection';
+import { describe, expect, it, vi } from 'vitest';
+import { projectEconomicExposure, projectLegacyWalletNetWorth, projectScopedEconomicExposure, projectWalletDefiNetWorth, storeWalletDefiNetWorthShadow, WALLET_DEFI_SHADOW_STORAGE_KEY } from './economicExposureProjection';
 import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
 import diagnosedWallet from '@/lib/defi/__fixtures__/diagnosed-wallet.sanitized.json';
 import { reaggregateUnreplacedCustody } from '@/components/dashboard/dashboardEconomicRows';
@@ -20,6 +20,52 @@ const custody = [
 ];
 
 describe('economic exposure projection', () => {
+  it('shadows DeFi arithmetic and falls back to raw custody when killed', () => {
+    const scopedCustody = custody.map((row) => ({ ...row, scopeId: snapshot.accountIdentityScope }));
+    const enabled = projectWalletDefiNetWorth({ custody: scopedCustody, snapshots: [snapshot], rows, prices: new Map([[U, 1]]), enabled: true });
+    const killed = projectWalletDefiNetWorth({ custody: scopedCustody, snapshots: [snapshot], rows, prices: new Map([[U, 1]]), enabled: false });
+    expect(enabled).toMatchObject({ legacyNetWorth: 93_176, defiNetWorth: 93_086, difference: -90, featureEnabled: true });
+    expect(enabled.projection.netWorth).toBe(93_086);
+    expect(killed.projection).toMatchObject({ netWorth: 93_176, liabilities: [], retainedCustody: scopedCustody });
+    expect(projectLegacyWalletNetWorth(scopedCustody)).toEqual(killed.projection);
+    expect(killed.defiNetWorth).toBe(93_086);
+  });
+  it('stores the disabled shadow locally without wallet or position evidence', () => {
+    const shadow = projectWalletDefiNetWorth({
+      custody: custody.map((row) => ({ ...row, scopeId: snapshot.accountIdentityScope })),
+      snapshots: [snapshot], rows, prices: new Map([[U, 1]]), enabled: false
+    });
+    const setItem = vi.fn();
+    storeWalletDefiNetWorthShadow(shadow, { setItem }, 123);
+    expect(setItem).toHaveBeenCalledWith(WALLET_DEFI_SHADOW_STORAGE_KEY, expect.any(String));
+    const stored = JSON.parse(setItem.mock.calls[0][1]);
+    expect(stored).toMatchObject({ version: 1, observedAt: 123, featureEnabled: false, difference: -90 });
+    expect(JSON.stringify(stored)).not.toContain(snapshot.accountIdentityScope);
+    expect(stored).not.toHaveProperty('rows');
+  });
+  it('keeps an unpriced-liability candidate shadow-only when the rollout is disabled', () => {
+    const pricedSupply = { ...rows[0], valueEvidence: { currency: 'USD' as const, value: 100, observedAt: 1, provider: 'fixture' } };
+    const output = projectWalletDefiNetWorth({
+      custody: custody.map((row) => ({ ...row, scopeId: snapshot.accountIdentityScope })),
+      snapshots: [snapshot], rows: [pricedSupply, rows[1]], enabled: false
+    });
+    expect(output.featureEnabled).toBe(false);
+    expect(output.defiNetWorth).toBeNull();
+    expect(output.projection).toMatchObject({ netWorth: 93_176, liabilities: [], status: 'complete' });
+  });
+  it('preserves the legacy known-value total when an unpriced custody asset is disclosed', () => {
+    const unpriced = { id: 'unpriced', chainId: 0, symbol: 'XYZ', quantity: 5, value: null };
+    const output = projectWalletDefiNetWorth({
+      custody: [...custody, unpriced], snapshots: [], rows: [], enabled: false
+    });
+    expect(output.projection).toMatchObject({
+      netWorth: 93_176,
+      hasUnpricedValues: true,
+      hasUnpricedLiabilities: false,
+      status: 'partial'
+    });
+    expect(output.projection.assets).toContainEqual(expect.objectContaining(unpriced));
+  });
   it('keeps liquid, replaces exact protocol tokens, and subtracts positive debt once', () => {
     const output = projectEconomicExposure({ custody, snapshot, rows, prices: new Map([[U, 1]]) });
     expect(output.assets.map((row) => row.id)).toEqual(['liquid', 'supply']);

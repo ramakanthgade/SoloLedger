@@ -21,7 +21,7 @@ import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/scheduleVDA';
 import { summarizeYear } from '@/lib/tax/jurisdictions';
 import type { Transaction } from '@/types/transaction';
-import type { DerivedPosting, OpeningBalanceRow } from './derivedPostings';
+import { deriveTransactionPostings, type DerivedPosting, type OpeningBalanceRow } from './derivedPostings';
 import { normalizeImportedTransactionCategory } from '@/lib/taxonomy/categories';
 
 const DAY = 86_400_000;
@@ -247,6 +247,57 @@ function canonicalTaxOutput(transactions: Transaction[]) {
 }
 
 describe('custody projection tax boundary', () => {
+  it('keeps borrow and repay liquid/liability postings signed and policy-independent', () => {
+    const base = {
+      timestamp: START, asset: 'USDC', amount: 10, fiatCurrency: 'USD', source: 'rpc:moralis',
+      walletAddress: `0x${'1'.repeat(40)}`, chain: 'ethereum', flags: [], isInternalTransfer: false,
+      raw: { defiActionEvidence: {
+        type: 'borrow', protocolId: 'aave-v3-ethereum', reserveKey: `0x${'2'.repeat(40)}`,
+        chainId: 1, complete: true, confidence: 1, evidenceSource: 'ethereum_log',
+        eventIds: [
+          `event:1:0xabc:0x${'0'.repeat(40)}:1`, `event:1:0xabc:0x${'2'.repeat(40)}:2`
+        ], postingAnchorEventId: `event:1:0xabc:0x${'2'.repeat(40)}:2`, postingAnchor: true
+      } }
+    };
+    const borrow = deriveTransactionPostings({ ...base, id: 'borrow', type: 'transfer_in' }, { exchangeConnections: [] });
+    const repay = deriveTransactionPostings({
+      ...base, id: 'repay', type: 'transfer_out',
+      raw: { defiActionEvidence: { ...base.raw.defiActionEvidence, type: 'repay' } }
+    }, { exchangeConnections: [] });
+    expect(borrow.map((row) => [row.role, row.signedQuantity])).toEqual([['principal', 10], ['liability', -10]]);
+    expect(repay.map((row) => [row.role, row.signedQuantity])).toEqual([['principal', -10], ['liability', 10]]);
+    expect([...borrow, ...repay].reduce((sum, row) => sum + row.signedQuantity, 0)).toBe(0);
+  });
+
+  it('rejects incomplete, provider-only, unsupported, low-confidence, or non-exact liability evidence', () => {
+    const exact = {
+      type: 'borrow', protocolId: 'aave-v3-ethereum', reserveKey: `0x${'2'.repeat(40)}`,
+      chainId: 1, complete: true, confidence: 0.9, evidenceSource: 'ethereum_log',
+      eventIds: [
+        `event:1:0xabc:0x${'0'.repeat(40)}:1`, `event:1:0xabc:0x${'2'.repeat(40)}:2`
+      ], postingAnchorEventId: `event:1:0xabc:0x${'2'.repeat(40)}:2`, postingAnchor: true
+    };
+    const variants = [
+      { ...exact, complete: false },
+      { ...exact, evidenceSource: 'moralis' },
+      { ...exact, chainId: 137 },
+      { ...exact, protocolId: 'unsupported' },
+      { ...exact, confidence: 0.8999 },
+      { ...exact, eventIds: [`event:1:0xabc:0x${'0'.repeat(40)}:1`] },
+      { ...exact, postingAnchorEventId: undefined },
+      { ...exact, eventIds: ['event:1:0xabc:missing-log-index', `event:1:0xabc:0x${'2'.repeat(40)}:2`] }
+    ];
+    for (const [index, evidence] of variants.entries()) {
+      const postings = deriveTransactionPostings({
+        id: `rejected-${index}`, timestamp: START, type: 'transfer_in', asset: 'USDC', amount: 10,
+        fiatCurrency: 'USD', source: 'rpc:alchemy', walletAddress: `0x${'1'.repeat(40)}`,
+        chain: 'ethereum', flags: [], isInternalTransfer: false,
+        raw: { defiActionEvidence: evidence }
+      }, { exchangeConnections: [] });
+      expect(postings.some((row) => row.role === 'liability')).toBe(false);
+    }
+  });
+
   it('matches the canonical tax golden across every reporting boundary', () => {
     const transactions = taxFixture();
     const taxOutput = deepFreeze(canonicalTaxOutput(transactions));

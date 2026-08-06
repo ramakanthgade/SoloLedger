@@ -11,6 +11,7 @@
  */
 
 import type { TxType, FlagReason } from '@/types/transaction';
+import type { NeutralDefiActionType } from '@/lib/defi/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helius type mapping
@@ -81,14 +82,25 @@ export const MORALIS_CATEGORY_MAP: Record<string, TxType | null> = {
   'airdrop': 'income',
   'mint': 'nft_mint',
   'burn': 'fee',
-  'deposit': 'defi_deposit',
-  'withdraw': 'defi_withdraw',
-  'borrow': 'defi_deposit',
-  'repay': 'defi_withdraw',
-  'staking': 'defi_deposit',
-  'unstaking': 'defi_withdraw',
+  // Moralis DeFi labels are neutral action hints. Direction and exact receipt
+  // evidence decide custody structure; labels alone never decide tax.
+  'deposit': null,
+  'withdraw': null,
+  'borrow': null,
+  'repay': null,
+  'staking': null,
+  'unstaking': null,
   'contract interaction': null
 };
+
+const MORALIS_DEFI_ACTION_MAP: Readonly<Record<string, NeutralDefiActionType>> = Object.freeze({
+  deposit: 'supply', supply: 'supply', withdraw: 'withdraw', borrow: 'borrow', repay: 'repay',
+  interest: 'interest', reward: 'reward', rewards: 'reward', liquidation: 'liquidation'
+});
+
+export function neutralDefiActionFromMoralis(category: string): NeutralDefiActionType | undefined {
+  return MORALIS_DEFI_ACTION_MAP[category.trim().toLowerCase()];
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Common helpers

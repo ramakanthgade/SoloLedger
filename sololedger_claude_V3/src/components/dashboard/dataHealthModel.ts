@@ -3,6 +3,102 @@ import type { ReconSeverity, ReconciliationResult } from '@/lib/reconcile/source
 import { compareReconSeverity } from '@/lib/reconcile/sourceReconcile';
 import type { ConnectionWorkspaceSnapshot } from '@/components/connections/connectionWorkspaceModel';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import type { Transaction } from '@/types/transaction';
+import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
+import type { DefiPositionSnapshot } from '@/lib/defi/types';
+import type { DefiNetWorthShadowComparison } from '@/lib/portfolio/economicExposureProjection';
+import { projectWalletDefiNetWorth } from '@/lib/portfolio/economicExposureProjection';
+import type { DataHealthSnapshot } from './dataHealthSnapshot';
+import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
+import { buildPriceIndex, valueHoldings } from '@/lib/dashboard/dashboardModel';
+import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import { isTransactionExcluded } from '@/lib/safety/assetSafety';
+
+export interface LocalDataHealthDiagnostics {
+  partialPagination: number; enrichmentBacklog: number; safetyReview: number; spoofedLogs: number;
+  partialDefi: number; disagreementDefi: number; staleDefi: number; unsupportedDefi: number;
+  netWorthDifference: number | null; featureEnabled: boolean;
+}
+
+/** Build both net-worth paths entirely from one Dexie snapshot revision. */
+export function buildCoherentDataHealthShadow(
+  snapshot: DataHealthSnapshot,
+  currency: string,
+  now: number,
+  enabled: boolean
+): DefiNetWorthShadowComparison {
+  const projection = buildHoldingsProjection({
+    transactions: snapshot.transactions.filter((row) => !isTransactionExcluded(row)),
+    exchangeConnections: snapshot.exchangeConnections,
+    openingBalances: snapshot.openingBalances,
+    snapshots: snapshot.authoritySnapshots,
+    assets: snapshot.authorityAssets,
+    coverage: snapshot.sourceCoverage,
+    safetyDecisions: snapshot.safetyDecisions ?? [],
+    now
+  });
+  const valued = valueHoldings(projection.holdings, buildPriceIndex(snapshot.priceCache ?? [], currency));
+  const valueByKey = new Map(valued.map((row) => [portfolioHoldingKey(row), row]));
+  const custody = projection.holdings.flatMap((holding) => {
+    const valuedHolding = valueByKey.get(portfolioHoldingKey(holding));
+    const unitValue = holding.quantity > 1e-9
+      ? (valuedHolding?.valueNow ?? valuedHolding?.costBasis ?? holding.costBasis) / holding.quantity
+      : 0;
+    const scopes = holding.sourceVerification.length > 0
+      ? holding.sourceVerification.map((source) => ({ scopeId: source.scopeId, quantity: source.quantity }))
+      : [{ scopeId: 'unscoped', quantity: holding.quantity }];
+    return scopes.filter((source) => source.quantity > 1e-9).map((source) => ({
+      id: `${source.scopeId}:${holding.assetKey}`, scopeId: source.scopeId,
+      chainId: holding.chain === 'ethereum' ? 1 : 0,
+      contractAddress: holding.contractAddress, symbol: holding.asset,
+      quantity: source.quantity, value: source.quantity * unitValue
+    }));
+  });
+  const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
+    ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
+  return projectWalletDefiNetWorth({
+    custody,
+    snapshots: snapshot.defiPositionSnapshots ?? [],
+    rows: snapshot.defiPositionRows ?? [],
+    prices,
+    enabled
+  });
+}
+
+/** Pure, on-device diagnostics. No wallet identifiers or telemetry leave the browser. */
+export function buildLocalDataHealthDiagnostics(input: {
+  transactions: readonly Transaction[];
+  coverage: readonly SourceCoverageRow[];
+  defiSnapshots: readonly DefiPositionSnapshot[];
+  shadow: DefiNetWorthShadowComparison;
+}): LocalDataHealthDiagnostics {
+  const groups = new Map<string, DefiPositionSnapshot[]>();
+  for (const row of input.defiSnapshots) {
+    const key = `${row.accountIdentityScope}:${row.protocolId}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const staleDefi = [...groups.values()].filter((rows) => {
+    const ordered = [...rows].sort((left, right) => right.generation - left.generation);
+    return ordered.some((row) => row.restoredAt != null) ||
+      (ordered[0]?.status === 'partial' && ordered.some((row) => row.status === 'complete'));
+  }).length;
+  return {
+    partialPagination: input.coverage.reduce((count, row) => count + row.endpointOutcomes.filter((outcome) =>
+      outcome.paginationRequired === true && outcome.paginationExhausted !== true).length, 0),
+    enrichmentBacklog: input.coverage.reduce((count, row) => count + row.endpointOutcomes.filter((outcome) =>
+      outcome.quantityResolved === false).length, 0),
+    safetyReview: input.transactions.filter((row) => row.safetyState === 'unverified' ||
+      row.safetyState === 'high_confidence_spam' || row.safetyState === 'user_hidden').length,
+    spoofedLogs: input.transactions.filter((row) => row.outboundInitiation === 'spoofed_outbound_log').length,
+    partialDefi: input.defiSnapshots.filter((row) => row.status === 'partial').length,
+    disagreementDefi: input.defiSnapshots.filter((row) => row.warnings?.some((warning) =>
+      /disagree/i.test(warning))).length,
+    staleDefi,
+    unsupportedDefi: input.defiSnapshots.filter((row) => row.status === 'unsupported').length,
+    netWorthDifference: input.shadow.difference,
+    featureEnabled: input.shadow.featureEnabled
+  };
+}
 
 export type DataHealthFilter = 'all' | 'action' | 'stale' | 'no-authority';
 export interface DataHealthSourceInput { id: string; title: string; subtitle?: string; target: TransactionSourceTarget; snapshot: ConnectionWorkspaceSnapshot; }

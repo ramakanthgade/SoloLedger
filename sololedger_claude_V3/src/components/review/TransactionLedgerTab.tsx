@@ -9,7 +9,7 @@ function evidenceLabel(posting: DerivedPosting): string {
     return `${evidence.source} ${evidence.sourceRef ?? evidence.transactionId}`;
   }).join(' · ');
 }
-const postingDescription: Record<DerivedPosting['role'], string> = { principal: 'Primary asset movement', counter: 'Counter-asset consideration', fee: 'Transaction fee withheld', opening_balance: 'Dated opening balance' };
+const postingDescription: Record<DerivedPosting['role'], string> = { principal: 'Primary asset movement', counter: 'Counter-asset consideration', liability: 'Loan liability movement', fee: 'Transaction fee withheld', opening_balance: 'Dated opening balance' };
 
 export function TransactionLedgerTab({ postings, runningBalances }: {
   postings: readonly DerivedPosting[];

@@ -2,12 +2,15 @@ import type { Transaction } from '@/types/transaction';
 import type {
   CsvImportRow,
   ExchangeConnectionRow,
-  LookupAddressRow
+  LookupAddressRow,
+  PriceCacheRow
 } from '@/lib/storage/db';
 import { db } from '@/lib/storage/db';
 import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
+import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
+import type { SafetyDecisionRow } from '@/lib/safety/types';
 
 export interface DataHealthSnapshot {
   readonly transactions: Transaction[];
@@ -18,6 +21,10 @@ export interface DataHealthSnapshot {
   readonly authorityAssets: AuthorityAssetRow[];
   readonly sourceCoverage: SourceCoverageRow[];
   readonly openingBalances: OpeningBalanceRow[];
+  readonly defiPositionSnapshots?: DefiPositionSnapshot[];
+  readonly defiPositionRows?: DefiPositionRow[];
+  readonly safetyDecisions?: SafetyDecisionRow[];
+  readonly priceCache?: PriceCacheRow[];
 }
 
 /**
@@ -30,20 +37,25 @@ export interface DataHealthSnapshot {
 export async function readDataHealthSnapshot(): Promise<DataHealthSnapshot> {
   return db.transaction('r', [
     db.transactions, db.lookupAddresses, db.csvImports, db.exchangeConnections,
-    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances
+    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances,
+    db.defiPositionSnapshots, db.defiPositionRows, db.safetyDecisions, db.priceCache
   ], async () => {
     const [
       transactions, wallets, csvImports, exchangeConnections,
-      authoritySnapshots, authorityAssets, sourceCoverage, openingBalances
+      authoritySnapshots, authorityAssets, sourceCoverage, openingBalances, defiPositionSnapshots,
+      defiPositionRows, safetyDecisions, priceCache
     ] = await Promise.all([
       db.transactions.toArray(), db.lookupAddresses.toArray(), db.csvImports.toArray(),
       db.exchangeConnections.toArray(), db.authoritySnapshots.toArray(),
-      db.authorityAssets.toArray(), db.sourceCoverage.toArray(), db.openingBalances.toArray()
+      db.authorityAssets.toArray(), db.sourceCoverage.toArray(), db.openingBalances.toArray(),
+      db.defiPositionSnapshots.toArray(), db.defiPositionRows.toArray(),
+      db.safetyDecisions.toArray(), db.priceCache.toArray()
     ]);
     wallets.sort((left, right) => right.lastSyncedAt - left.lastSyncedAt);
     return {
       transactions, wallets, csvImports, exchangeConnections,
-      authoritySnapshots, authorityAssets, sourceCoverage, openingBalances
+      authoritySnapshots, authorityAssets, sourceCoverage, openingBalances, defiPositionSnapshots,
+      defiPositionRows, safetyDecisions, priceCache
     };
   });
 }

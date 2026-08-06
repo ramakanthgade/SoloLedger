@@ -211,7 +211,7 @@ function postingMatchesTransactionLeg(
   transaction: Transaction,
   posting: DerivedPosting
 ): posting is DerivedPosting & { role: 'principal' | 'counter' | 'fee' } {
-  if (posting.role === 'opening_balance') return false;
+  if (posting.role === 'opening_balance' || posting.role === 'liability') return false;
   const exchangeSymbolKey = `asset:${posting.asset.toUpperCase()}`;
   return transactionLegAssetKey(transaction, posting.role, {
     exchangeCustody: posting.assetKey === exchangeSymbolKey

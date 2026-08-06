@@ -17,7 +17,9 @@
 
 import { makeId } from '@/lib/parsers/types';
 import type { Transaction, TxType, FlagReason } from '@/types/transaction';
-import { classifyFromMoralis } from '@/lib/rpc/classificationEngine';
+import { classifyFromMoralis, neutralDefiActionFromMoralis } from '@/lib/rpc/classificationEngine';
+import { groupProviderDefiAction } from '@/lib/rpc/evmDecoder';
+import { PROTOCOL_REGISTRY } from '@/lib/defi/protocolRegistry';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
 import {
@@ -493,6 +495,7 @@ export function moralisTxToRows(
   const rows: Transaction[] = [];
 
   const classified = classifyFromMoralis(mtx.category, mtx.summary, mtx.possible_spam);
+  const neutralActionType = neutralDefiActionFromMoralis(mtx.category);
 
   // ── Token swap → single trade row ──────────────────────────────────────
   if (classified?.type === 'trade' || mtx.category === 'token swap') {
@@ -680,6 +683,38 @@ export function moralisTxToRows(
     }
   }
 
+  if (neutralActionType && rows.length > 0) {
+    const chainNumber = chainId === 'ethereum' ? 1 : 0;
+    const calledAddress = mtx.to_address?.toLowerCase();
+    const protocol = Object.values(PROTOCOL_REGISTRY).find((entry) =>
+      entry.chainId === chainNumber && entry.poolAddress.toLowerCase() === calledAddress
+    );
+    const action = groupProviderDefiAction({
+      chainId: chainNumber, transactionHash: mtx.hash, protocolId: protocol?.id,
+      action: neutralActionType,
+      legs: rows.map((row) => ({
+        eventId: row.safetySubjectKey,
+        reserveKey: row.contractAddress?.toLowerCase(),
+        quantity: String(row.amount)
+      }))
+    });
+    if (action) {
+      for (const row of rows) {
+        row.categoryOrigin = 'suggestion';
+        row.categoryConfidence = action.confidence;
+        row.categoryRuleId = `moralis:defi:${neutralActionType}`;
+        row.categoryRuleVersion = '1';
+        if (!row.flags.includes('needs_review')) row.flags.push('needs_review');
+        row.raw = {
+          ...row.raw,
+          defiActionEvidence: {
+            ...action,
+            postingAnchor: false
+          }
+        };
+      }
+    }
+  }
   return rows;
 }
 

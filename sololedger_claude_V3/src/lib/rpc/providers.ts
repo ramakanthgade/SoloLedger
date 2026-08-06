@@ -19,9 +19,13 @@ import { makeId } from '@/lib/parsers/types';
 import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import {
   decodeEvmReceiptForTransfer,
+  decodeNeutralDefiActions,
   fetchEvmTransactionReceipt,
+  neutralDefiActionForTransfer,
+  type DefiEventContract,
   type EvmTxReceipt
 } from '@/lib/rpc/evmDecoder';
+import { fetchDefiEventContractRegistry } from '@/lib/defi/eventContractRegistry';
 import type { FlagReason, Transaction } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
@@ -528,7 +532,8 @@ export async function fetchAlchemyEvmInner(
   network: string,
   apiKey: string,
   asset: string,
-  chainId: ChainId
+  chainId: ChainId,
+  suppliedEventContracts?: Readonly<Record<string, DefiEventContract>>
 ): Promise<LookupResult> {
   const url = alchemyRpcUrl(network);
   const body = (direction: 'from' | 'to', pageKey?: string) => ({
@@ -548,7 +553,10 @@ export async function fetchAlchemyEvmInner(
   });
 
   const headers = alchemyHeaders(apiKey);
+  const validatedEventContracts = suppliedEventContracts ?? await loadRegistryEventContracts(url, headers, network, chainId);
   const loadReceipt = createReceiptLoader((hash) => fetchEvmTransactionReceipt(url, hash, headers));
+  const loadReceiptActions = createReceiptActionLoader(loadReceipt, (receipt) =>
+    decodeNeutralDefiActions(receipt, chainId === 'ethereum' ? 1 : 0, validatedEventContracts, address));
   const collectDirection = (direction: 'from' | 'to') => collectSequentialCursor<any, string>({
     maxPages: 100,
     itemKey: alchemyTransferIdentity,
@@ -585,6 +593,14 @@ export async function fetchAlchemyEvmInner(
     // Last resort when Moralis is unavailable: inspect the verified standard
     // receipt logs before accepting Alchemy's generic transfer classification.
     const receipt = ercContractAddress && t.hash ? await loadReceipt(t.hash) : null;
+    const neutralActions = receipt && t.hash ? await loadReceiptActions(t.hash) : [];
+    const neutralAction = neutralDefiActionForTransfer(neutralActions, {
+      contractAddress: ercContractAddress,
+      direction,
+      from: t.from,
+      to: t.to,
+      rawQuantity: t.rawContract?.value
+    });
     const decoded = receipt
       ? decodeEvmReceiptForTransfer(
           receipt,
@@ -600,10 +616,18 @@ export async function fetchAlchemyEvmInner(
       : null;
     const decodedIsSpecific = decoded && decoded.type !== 'transfer_in' && decoded.type !== 'transfer_out';
     const unifiedIsIncome = unified?.type === 'income';
+    const exactNeutralType = neutralAction?.complete
+      ? neutralAction.type === 'supply' ? 'defi_deposit'
+        : neutralAction.type === 'withdraw' ? 'defi_withdraw'
+          : neutralAction.type === 'interest' || neutralAction.type === 'reward' ? 'income'
+            : direction
+      : undefined;
+    const decodedIsDefiHint = decoded?.type === 'defi_deposit' || decoded?.type === 'defi_withdraw';
     return {
       id: makeId('rpc'),
       timestamp: t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).getTime() : Date.now(),
-      type: unifiedIsIncome ? unified.type : decodedIsSpecific ? decoded.type : unified?.type ?? direction,
+      type: unifiedIsIncome ? unified.type : exactNeutralType ??
+        (decodedIsSpecific && !decodedIsDefiHint ? decoded.type : unified?.type ?? direction),
       asset: t.asset || (isNft ? (t.rawContract?.address ? `NFT ${String(t.rawContract.address).slice(0, 6)}` : 'NFT') : asset),
       amount: isNft ? (t.erc1155Metadata?.[0]?.value ? Number(t.erc1155Metadata[0].value) : 1) : Number(t.value) || 0,
       fiatCurrency: 'USD',
@@ -618,14 +642,26 @@ export async function fetchAlchemyEvmInner(
       category: unified?.kind,
       legacyCategory: unified?.legacyKind,
       categoryOrigin: unified?.source === 'reward_registry_static' ? 'provider' : unified?.kind ? 'suggestion' : undefined,
-      notes: unifiedIsIncome ? unified.label : decodedIsSpecific ? decoded.notes : unified?.label,
+      notes: unifiedIsIncome ? unified.label : exactNeutralType || (decodedIsSpecific && !decodedIsDefiHint)
+        ? decoded?.notes : unified?.label,
       flags: unified?.source === 'reward_registry_static'
         ? []
-        : unified || decodedIsSpecific
+        : unified || decodedIsSpecific || neutralAction
           ? (['needs_review'] as FlagReason[])
         : ['possible_internal_transfer', 'missing_market_value'],
       isInternalTransfer: false,
-      raw: t
+      raw: {
+        ...t,
+        ...(neutralAction ? { defiActionEvidence: {
+          ...neutralAction,
+          postingAnchor: neutralAction.complete &&
+            neutralAction.postingAnchorEventId != null &&
+            neutralAction.economicLegs?.some((leg) =>
+              leg.eventId === neutralAction.postingAnchorEventId &&
+              leg.contractAddress === ercContractAddress?.toLowerCase() &&
+              leg.from === t.from?.toLowerCase() && leg.to === t.to?.toLowerCase())
+        } } : {})
+      }
     };
   };
 
@@ -654,6 +690,35 @@ export async function fetchAlchemyEvmInner(
   return { transactions, warnings, streamOutcomes };
 }
 
+const eventRegistryCache = new Map<string, Promise<Readonly<Record<string, DefiEventContract>>>>();
+
+async function loadRegistryEventContracts(
+  url: string,
+  headers: HeadersInit,
+  network: string,
+  chainId: ChainId
+): Promise<Readonly<Record<string, DefiEventContract>>> {
+  if (chainId !== 'ethereum') return {};
+  let pending = eventRegistryCache.get(network);
+  if (!pending) {
+    let id = 10_000;
+    pending = fetchDefiEventContractRegistry(async (method, params) => {
+      const response = await alchemyFetch(url, {
+        method: 'POST', headers,
+        body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params })
+      });
+      const body = await response.json() as { result?: unknown; error?: { message?: string } };
+      if (!response.ok || body.error || body.result == null) throw new Error(body.error?.message ?? `Event registry HTTP ${response.status}`);
+      return body.result;
+    }).then((result) => result.contracts).catch(() => {
+      eventRegistryCache.delete(network);
+      return {};
+    });
+    eventRegistryCache.set(network, pending);
+  }
+  return pending;
+}
+
 /** Promise cache guarantees one receipt request per transaction hash. */
 export function createReceiptLoader(
   load: (hash: string) => Promise<EvmTxReceipt | null>
@@ -664,6 +729,23 @@ export function createReceiptLoader(
     let pending = cache.get(key);
     if (!pending) {
       pending = load(hash);
+      cache.set(key, pending);
+    }
+    return pending;
+  };
+}
+
+/** Analyze each cached receipt once even when several represented rows share it. */
+export function createReceiptActionLoader(
+  loadReceipt: (hash: string) => Promise<EvmTxReceipt | null>,
+  analyze: (receipt: EvmTxReceipt) => ReturnType<typeof decodeNeutralDefiActions>
+): (hash: string) => Promise<ReturnType<typeof decodeNeutralDefiActions>> {
+  const cache = new Map<string, Promise<ReturnType<typeof decodeNeutralDefiActions>>>();
+  return (hash) => {
+    const key = hash.toLowerCase();
+    let pending = cache.get(key);
+    if (!pending) {
+      pending = loadReceipt(hash).then((receipt) => receipt ? analyze(receipt) : []);
       cache.set(key, pending);
     }
     return pending;

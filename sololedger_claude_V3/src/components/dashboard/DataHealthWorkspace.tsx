@@ -7,6 +7,7 @@ import { createNavigationIntent, type NavigationIntent } from '@/lib/navigationI
 import {
   sourceMatchesDataHealthFilter,
   type DataHealthFilter,
+  type LocalDataHealthDiagnostics,
   type DataHealthModel,
   type DataHealthSource
 } from './dataHealthModel';
@@ -25,6 +26,7 @@ export interface DataHealthWorkspaceProps {
   onNavigate: (intent: NavigationIntent, state: DataHealthViewState) => void;
   initialState?: DataHealthViewState;
   focusOnMount?: boolean;
+  localDiagnostics?: LocalDataHealthDiagnostics;
 }
 
 const FILTERS: Array<{ id: DataHealthFilter; label: string }> = [
@@ -186,7 +188,7 @@ function restoreWorkspaceScroll(mobile: boolean, top: number): void {
   else scroller.scrollTo({ top });
 }
 
-export function DataHealthWorkspace({ model, loading = false, updating = false, onClose, onNavigate, initialState, focusOnMount = true }: DataHealthWorkspaceProps) {
+export function DataHealthWorkspace({ model, loading = false, updating = false, onClose, onNavigate, initialState, focusOnMount = true, localDiagnostics }: DataHealthWorkspaceProps) {
   const mobile = useSyncExternalStore(subscribeMobile, mobileSnapshot, () => false);
   const shellScroll = useSyncExternalStore(subscribeShellScroll, shellScrollSnapshot, () => false);
   const [filter, setFilter] = useState<DataHealthFilter>(() => initialState?.filter ??
@@ -285,6 +287,22 @@ export function DataHealthWorkspace({ model, loading = false, updating = false, 
       </div>
 
       <aside aria-labelledby="data-health-status-help" className="flex items-start gap-2 rounded-xl border-2 border-warn/30 bg-warn/10 px-4 py-3 text-sm leading-relaxed text-mid"><ShieldQuestion className="mt-0.5 h-5 w-5 shrink-0 text-warn" aria-hidden="true" /><div><p id="data-health-status-help" className="font-bold text-hi">What these statuses mean</p><p className="mt-1"><strong>Balance matched</strong> means recorded activity explains a dated source balance. <strong>Needs attention</strong> gives you a specific fix. <strong>Not checked</strong> means SoloLedger still needs a matching account type, date, or balance record. This completeness check does not confirm tax treatment, labels, prices, or cost basis.</p></div></aside>
+
+      {localDiagnostics && <section aria-labelledby="local-wallet-diagnostics" className="rounded-2xl border border-hi/10 bg-elev-2 p-4 shadow-card">
+        <h2 id="local-wallet-diagnostics" className="text-sm font-extrabold text-hi">Local wallet diagnostics</h2>
+        <p className="mt-1 text-xs text-low">Computed only in this browser. No wallet telemetry is sent.</p>
+        <dl className="mt-3 grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+          <div><dt className="text-faint">Partial pagination</dt><dd className="font-bold text-hi">{localDiagnostics.partialPagination}</dd></div>
+          <div><dt className="text-faint">Enrichment backlog</dt><dd className="font-bold text-hi">{localDiagnostics.enrichmentBacklog}</dd></div>
+          <div><dt className="text-faint">Safety review</dt><dd className="font-bold text-hi">{localDiagnostics.safetyReview}</dd></div>
+          <div><dt className="text-faint">Spoofed logs</dt><dd className="font-bold text-hi">{localDiagnostics.spoofedLogs}</dd></div>
+          <div><dt className="text-faint">Partial DeFi</dt><dd className="font-bold text-hi">{localDiagnostics.partialDefi}</dd></div>
+          <div><dt className="text-faint">DeFi disagreements</dt><dd className="font-bold text-hi">{localDiagnostics.disagreementDefi}</dd></div>
+          <div><dt className="text-faint">Stale DeFi</dt><dd className="font-bold text-hi">{localDiagnostics.staleDefi}</dd></div>
+          <div><dt className="text-faint">Unsupported / non-comparable DeFi</dt><dd className="font-bold text-hi">{localDiagnostics.unsupportedDefi}</dd></div>
+          <div className="col-span-2"><dt className="text-faint">Raw → DeFi net worth shadow</dt><dd className="font-bold text-hi">{localDiagnostics.netWorthDifference == null ? 'Unavailable' : localDiagnostics.netWorthDifference.toLocaleString(undefined, { maximumFractionDigits: 2 })} · {localDiagnostics.featureEnabled ? 'enabled' : 'fallback active'}</dd></div>
+        </dl>
+      </section>}
 
       {model.sources.length === 0 ? <div className="rounded-2xl border border-dashed border-hi/15 bg-elev-2 px-6 py-12 text-center" role="status"><DatabaseZap className="mx-auto h-7 w-7 text-low" aria-hidden="true" /><h2 className="mt-3 font-bold text-hi">No source data yet</h2><p className="mt-1 text-sm text-low">Add a source, then update it or import a file to begin Data Health checks.</p></div>
         : visible.length === 0 ? <div className="rounded-2xl border border-hi/10 bg-elev-2 px-6 py-10 text-center" role="status"><CheckCircle2 className="mx-auto h-7 w-7 text-gain" aria-hidden="true" /><h2 className="mt-3 font-bold text-hi">Nothing in this view</h2><p className="mt-1 text-sm text-low">No sources currently match this filter.</p></div>

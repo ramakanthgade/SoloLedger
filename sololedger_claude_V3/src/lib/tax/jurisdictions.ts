@@ -73,6 +73,11 @@ export const JURISDICTIONS: Record<Jurisdiction, JurisdictionRules> = {
   }
 };
 
+/** Validated jurisdiction adapter used by the canonical report-time policy boundary. */
+export function resolveJurisdictionRules(jurisdiction: Jurisdiction): JurisdictionRules {
+  return JURISDICTIONS[jurisdiction];
+}
+
 /** Canada capital-gains inclusion rate (50%). */
 const CA_INCLUSION_RATE = 0.5;
 

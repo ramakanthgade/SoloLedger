@@ -24,7 +24,7 @@ import {
   buildMatchedGainRows,
   buildReceiptIncomeRows
 } from '@/lib/costBasis/matchedGains';
-import { resolveDerivativesTreatment } from '@/lib/tax/derivatives';
+import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { aggregateTds } from '@/lib/tax/tds';
 import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/scheduleVDA';
 import { ScheduleVdaView } from '@/components/reports/ScheduleVdaView';
@@ -58,7 +58,7 @@ export function ReportsTab() {
       const jur = s.jurisdiction;
       setJurisdiction(jur);
       setMethod(s.defaultCostBasisMethod);
-      setDerivativesTreatment(resolveDerivativesTreatment(s));
+      setDerivativesTreatment(resolveTaxPolicy({ kind: 'derivatives', settings: s }).derivativesTreatment!);
       setYear(getCurrentFy(jur));
     });
   }, []);

@@ -15,7 +15,8 @@ export type FeatureId =
   | 'multi_year_carryforward'
   | 'advanced_loss_harvesting'
   | 'custom_jurisdiction_rules'
-  | 'unlimited_transactions';
+  | 'unlimited_transactions'
+  | 'walletDefiNetWorthV1';
 
 /**
  * Features that are inherently unavailable in a jurisdiction regardless of
@@ -31,8 +32,14 @@ const FEATURE_TIERS: Record<FeatureId, 'free' | 'pro'> = {
   multi_year_carryforward: 'free',
   advanced_loss_harvesting: 'free',
   custom_jurisdiction_rules: 'free',
-  unlimited_transactions: 'free'
+  unlimited_transactions: 'free',
+  walletDefiNetWorthV1: 'free'
 };
+
+/** Local rollout switch. Missing/unknown values fail closed to legacy arithmetic. */
+export function isWalletDefiNetWorthV1Enabled(value: unknown = import.meta.env.VITE_WALLET_DEFI_NET_WORTH_V1): boolean {
+  return typeof value === 'string' && value.trim().toLowerCase() === 'true';
+}
 
 export interface LicenseState {
   /**
@@ -130,4 +137,3 @@ export function isFeatureUnlocked(feature: FeatureId, jurisdiction?: Jurisdictio
   if (required === 'free') return true;
   return getLicenseState().tier !== 'free';
 }
-

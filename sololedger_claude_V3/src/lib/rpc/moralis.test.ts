@@ -19,6 +19,29 @@ const txBase: MoralisTransaction = {
 };
 
 describe('Moralis native transfer mapping', () => {
+  it('groups provider DeFi legs as incomplete neutral evidence with B1 provenance', () => {
+    const pool = '0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2';
+    const [row] = moralisTxToRows({
+      ...txBase, category: 'borrow', summary: 'Borrowed USDC', to_address: pool,
+      from_address: wallet, nonce: 4, expected_nonce: 4, initiator_address: wallet,
+      erc20_transfers: [{
+        token_name: 'USD Coin', token_symbol: 'USDC', from_address: pool, to_address: wallet,
+        address: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48', value_formatted: '10',
+        possible_spam: false, log_index: 8
+      }]
+    }, wallet, 'ETH', 'ethereum');
+    expect(row).toMatchObject({
+      type: 'transfer_in', categoryOrigin: 'suggestion',
+      categoryConfidence: 0.6, categoryRuleId: 'moralis:defi:borrow'
+    });
+    expect(row.raw?.defiActionEvidence).toMatchObject({
+      type: 'borrow', protocolId: 'aave-v3-ethereum', complete: false,
+      evidenceSource: 'moralis', postingAnchor: false,
+      eventIds: [expect.stringContaining(':8:in')]
+    });
+    expect(row.flags).toContain('needs_review');
+  });
+
   it('uses each native transfer leg addresses rather than transaction-level parties', () => {
     const legSender = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
     const [row] = moralisTxToRows({

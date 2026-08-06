@@ -77,12 +77,33 @@ export type DefiPositionResult =
 export type NeutralDefiActionType = 'supply' | 'withdraw' | 'borrow' | 'repay' | 'interest' | 'reward' | 'liquidation';
 export interface NeutralDefiAction {
   type: NeutralDefiActionType;
-  protocolId: ProtocolId;
+  chainId: number;
+  protocolId: string;
   reserveKey: string;
-  quantity: number;
+  /** Exact unsigned base units. Never coerce receipt quantities to Number. */
+  quantity: string;
+  /** Liquidation has two independent economic quantities; never net them. */
+  debtQuantity?: string;
+  collateralQuantity?: string;
   transactionHash: string;
+  callId?: string;
   eventIds: string[];
   complete: boolean;
+  confidence: number;
+  evidenceSource: 'ethereum_log' | 'moralis';
+  /** Only one preserved raw leg anchors action-level custody postings. */
+  postingAnchorEventId?: string;
+  economicLegs?: Array<{
+    eventId: string;
+    kind: 'underlying' | 'protocol_token' | 'debt_token' | 'reward' | 'fee';
+    direction: 'in' | 'out' | 'mint' | 'burn';
+    contractAddress: string;
+    /** Exact unsigned base units. */
+    quantity: string;
+    from?: string;
+    to?: string;
+  }>;
+  warnings?: string[];
 }
 
 export function accountIdentityScope(address: string): string {

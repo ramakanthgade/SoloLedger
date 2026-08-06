@@ -2,7 +2,8 @@ import type { Disposal, Lot, TaxSettings, Transaction } from '@/types/transactio
 import type { InventoryDisposal } from '@/lib/costBasis/engine';
 import { buildDerivativeBusinessExpenseRows, buildDerivativeBusinessIncomeRows, buildDerivativeCapitalGainRows, buildMatchedGainRows, type MatchedGainRow } from '@/lib/costBasis/matchedGains';
 import { JURISDICTIONS, summarizeGainTreatment, type GainTreatmentSummary } from '@/lib/tax/jurisdictions';
-import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
+import { isDerivativeTransaction } from '@/lib/tax/derivatives';
+import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { buildTransactionValuationRow, type TransactionValuationRow } from './transactionValuationModel';
 
 export interface TransactionCostLotRow extends Omit<MatchedGainRow, 'proceeds' | 'costBasis' | 'gain'> { sourceLabel: string; acquisitionType: string; proceeds?: number; costBasis?: number; gain?: number; unitCost?: number }
@@ -41,7 +42,7 @@ export interface TransactionCostAnalysisModel {
 /** Read-only projection of the same engine/report rows used elsewhere. */
 export function buildTransactionCostAnalysisModel(input: { transaction: Transaction; settings: TaxSettings; disposal?: Disposal; indexes: TransactionCostAnalysisIndexes; unexplainedAuthorityQuantity?: number }): TransactionCostAnalysisModel {
   const { transaction, settings, disposal, indexes } = input;
-  const derivative = isDerivativeTransaction(transaction); const treatment = resolveDerivativesTreatment(settings); const priced = transaction.fiatValue != null;
+  const derivative = isDerivativeTransaction(transaction); const treatment = resolveTaxPolicy({ kind: 'derivatives', settings }).derivativesTreatment!; const priced = transaction.fiatValue != null;
   const derivativeCapital = derivative && treatment === 'capital_gains' ? indexes.derivativeCapitalByTxId.get(transaction.id) : undefined;
   const inventoryDisposal = indexes.inventoryBySellTxId.get(transaction.id);
   const sourceRows = derivativeCapital ? [derivativeCapital] : [...(indexes.matchedBySellTxId.get(transaction.id) ?? [])];
