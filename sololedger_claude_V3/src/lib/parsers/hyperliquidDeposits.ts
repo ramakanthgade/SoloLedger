@@ -133,7 +133,8 @@ export const hyperliquidDepositsParser: ExchangeParser = {
         notes: notesParts.join(' · '),
         flags,
         isInternalTransfer: false,
-        category: 'perp_collateral',
+        category: 'derivative_collateral',
+        categoryOrigin: 'parser',
         instrumentClass: 'derivative',
         raw: row
       });

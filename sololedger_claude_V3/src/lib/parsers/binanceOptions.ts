@@ -1,5 +1,5 @@
 /** Binance Options signed cash-journal export (Time, Type, Amount, Asset). */
-import type { FlagReason, Transaction, TxType } from '@/types/transaction';
+import type { FlagReason, Transaction, TransactionCategory, TxType } from '@/types/transaction';
 import { exchangeSourceRef, makeId, safeNumber, safeTimestampUtc, type ExchangeParser } from './types';
 import { col, headerMap } from './headerMap';
 
@@ -14,7 +14,7 @@ function hasOptionsRows(rows: Record<string, string>[], typeCol: string): boolea
 
 function txShape(rawType: string, incoming: boolean): {
   type: TxType;
-  category: string;
+  category: TransactionCategory;
   internal: boolean;
   flags: FlagReason[];
   notes: string;
@@ -153,6 +153,7 @@ export const binanceOptionsParser: ExchangeParser = {
         flags: stable ? shape.flags : [...shape.flags, 'missing_market_value'],
         isInternalTransfer: shape.internal,
         category: shape.category,
+        categoryOrigin: 'parser',
         instrumentClass: 'derivative',
         raw: { ...row, _signedAmount: signedAmount, _optionsKind: rawType }
       });

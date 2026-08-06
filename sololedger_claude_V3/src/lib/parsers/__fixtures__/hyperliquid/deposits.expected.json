@@ -13,7 +13,8 @@
       "possible_internal_transfer"
     ],
     "isInternalTransfer": false,
-    "category": "perp_collateral",
+    "category": "derivative_collateral",
+    "categoryOrigin": "parser",
     "instrumentClass": "derivative"
   },
   {
@@ -29,7 +30,8 @@
       "possible_internal_transfer"
     ],
     "isInternalTransfer": false,
-    "category": "perp_collateral",
+    "category": "derivative_collateral",
+    "categoryOrigin": "parser",
     "instrumentClass": "derivative"
   }
 ]

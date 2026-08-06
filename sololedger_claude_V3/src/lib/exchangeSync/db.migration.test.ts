@@ -31,9 +31,8 @@ describe('Dexie v8 — exchangeConnections', () => {
     // v9 added walletBalances; v10 added exchangeBalances; v11 added coherent
     // reconciliation evidence, v12 finalized CSV survivor counts, v13 added
     // immutable safety evidence/decisions, and v14 added immutable Ethereum
-    // protocol position generations. The exchangeConnections schema below
-    // remains unchanged since v8.
-    expect(db.verno).toBe(14);
+    // protocol position generations, and v15 added canonical accounts/FKs.
+    expect(db.verno).toBe(15);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
@@ -47,6 +46,7 @@ describe('Dexie v8 — exchangeConnections', () => {
     for (const table of ['defiPositionSnapshots', 'defiPositionRows']) {
       expect(tableNames).toContain(table);
     }
+    expect(tableNames).toContain('accountIdentities');
     // All v7 tables carried over unchanged.
     for (const t of [
       'transactions',
@@ -63,7 +63,7 @@ describe('Dexie v8 — exchangeConnections', () => {
     // Declared indexes per the v8 schema: 'id, exchange, lastSyncAt'.
     const schema = db.exchangeConnections.schema;
     expect(schema.primKey.name).toBe('id');
-    expect(schema.indexes.map((i) => i.name).sort()).toEqual(['exchange', 'lastSyncAt']);
+    expect(schema.indexes.map((i) => i.name).sort()).toEqual(['accountIdentityId', 'exchange', 'lastSyncAt']);
     expect(db.providerEvidence.schema.primKey.name).toBe('id');
     expect(db.providerEvidence.schema.indexes.map((index) => index.name).sort()).toEqual([
       '[subjectKey+provider]', 'confidence', 'observedAt', 'provider', 'ruleId', 'ruleVersion',

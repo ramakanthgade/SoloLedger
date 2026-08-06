@@ -38,7 +38,10 @@ describe('unified address registry', () => {
       contractAddress: '0x0000000000000000000000000000000000000001',
       counterpartyAddress: '0xfa5fed5cc2b6dd8f370651d17242c52ed711b14f',
       chain: 'polygon'
-    })).toMatchObject({ source: 'blockworks', confidence: 'medium', type: 'transfer_in', kind: 'mining_allocation' });
+    })).toMatchObject({
+      source: 'blockworks', confidence: 'medium', type: 'transfer_in',
+      kind: 'other', legacyKind: 'mining_allocation'
+    });
   });
 
   it('keeps CoinGecko allocation and reward-token evidence as review-only transfers', () => {

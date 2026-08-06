@@ -150,6 +150,23 @@ describe('Moralis native transfer mapping', () => {
       'event:ethereum:0xhash:0x3333333333333333333333333333333333333333:9:in'
     ]);
   });
+
+  it('propagates fallback registry legacy evidence and provenance like direct provider adapters', () => {
+    const allocation = '0xfa5fed5cc2b6dd8f370651d17242c52ed711b14f';
+    const [row] = moralisTxToRows({
+      ...txBase,
+      from_address: allocation,
+      erc20_transfers: [{
+        token_name: 'GEODnet', token_symbol: 'GEOD', from_address: allocation,
+        to_address: wallet, address: '0x2222222222222222222222222222222222222222',
+        value_formatted: '3', possible_spam: false, log_index: 3
+      }]
+    }, wallet, 'MATIC', 'polygon');
+    expect(row).toMatchObject({
+      type: 'transfer_in', category: 'other', legacyCategory: 'mining_allocation',
+      categoryOrigin: 'suggestion'
+    });
+  });
 });
 
 describe('fetchMoralisEvm pagination', () => {

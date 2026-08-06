@@ -348,7 +348,8 @@ describe('Bybit engine fetch plan', () => {
       isSpam: true,
       fiatCurrency: 'INR',
       fiatValue: 12_345,
-      category: 'Reviewed reward',
+      category: 'other',
+      legacyCategory: 'Reviewed reward',
       notes: 'Manual review must survive replay',
       flags: ['missing_market_value'],
       isInternalTransfer: true,
@@ -364,7 +365,7 @@ describe('Bybit engine fetch plan', () => {
     expect(orders[0]).toMatchObject({
       source: 'bybit_api', amount: 0.02, counterAmount: 1000, feeAmount: 0.00002,
       type: 'income', isSpam: true, fiatCurrency: 'INR', fiatValue: 12_345,
-      category: 'Reviewed reward', notes: 'Manual review must survive replay',
+      category: 'other', legacyCategory: 'Reviewed reward', notes: 'Manual review must survive replay',
       flags: ['missing_market_value'], isInternalTransfer: true,
       tdsAmount: 7, tdsAsset: 'INR', tdsInr: 7
     });

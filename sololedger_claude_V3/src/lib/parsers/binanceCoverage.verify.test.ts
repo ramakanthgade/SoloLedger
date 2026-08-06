@@ -68,7 +68,7 @@ describe.skipIf(!HAS_GROUND_TRUTH)('Binance ledger — every operation accounted
 
     // Futures realized PnL: 1:1 per row, split income (profit) vs sell (loss).
     // Engine notes = 'Realized Profit and Loss[: remark]'.
-    const pnl = transactions.filter((t) => t.category === 'perp' && t.notes?.startsWith('Realized Profit and Loss'));
+    const pnl = transactions.filter((t) => t.category === 'realized_pnl' && t.notes?.startsWith('Realized Profit and Loss'));
     expect(pnl.length).toBe(248);
     expect(pnl.filter((t) => t.type === 'income').length).toBeGreaterThan(0);
     expect(pnl.filter((t) => t.type === 'sell').length).toBeGreaterThan(0);

@@ -616,6 +616,8 @@ export async function fetchAlchemyEvmInner(
       contractAddress: t.rawContract?.address || undefined,
       chain: chainId,
       category: unified?.kind,
+      legacyCategory: unified?.legacyKind,
+      categoryOrigin: unified?.source === 'reward_registry_static' ? 'provider' : unified?.kind ? 'suggestion' : undefined,
       notes: unifiedIsIncome ? unified.label : decodedIsSpecific ? decoded.notes : unified?.label,
       flags: unified?.source === 'reward_registry_static'
         ? []
@@ -938,6 +940,7 @@ export async function fetchAlchemySolana(address: string, apiKey: string): Promi
         contractAddress: mint,
         chain: 'solana',
         category: meta.isNft ? 'nft' : reward ? reward.kind : undefined,
+        categoryOrigin: meta.isNft || reward ? 'provider' : undefined,
         notes: reward ? `${reward.label} — auto-classified as income` : undefined,
         flags: reward ? [] : ['possible_internal_transfer', 'missing_market_value'],
         isInternalTransfer: false,

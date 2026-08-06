@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import Dexie from 'dexie';
 import type { Transaction } from '@/types/transaction';
 
+const VALID_BITCOIN_ADDRESS = '1J33sNnKbs52UjTK39kEEYDfbHijgDxyKU';
+const VALID_SOLANA_ADDRESS = '11111111111111111111111111111111';
+
 /**
  * Dexie v6 → v7 migration smoke test.
  *
@@ -181,7 +184,7 @@ describe('Dexie v11 → v12 CSV survivor-count migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(14);
+    expect(upgraded.verno).toBe(15);
     expect(await upgraded.csvImports.bulkGet(['partial', 'zero'])).toEqual([
       expect.objectContaining({ id: 'partial', txCount: 2 }),
       expect.objectContaining({ id: 'zero', txCount: 0 })
@@ -245,13 +248,13 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
       { id: 'mixed:ETH', connectionId: 'mixed', exchange: 'binance', asset: 'ETH', amount: 4, asOf: 101, source: 'exchange_api' }
     ]);
     await legacy.table('lookupAddresses').bulkPut([
-      { id: 'bitcoin:bc1qcoherent', chain: 'bitcoin', address: 'bc1qcoherent', lastSyncedAt: 100, txCount: 0 },
-      { id: 'ethereum:0xMixed', chain: 'ethereum', address: '0xMixed', lastSyncedAt: 101, txCount: 0 }
+      { id: `bitcoin:${VALID_BITCOIN_ADDRESS}`, chain: 'bitcoin', address: VALID_BITCOIN_ADDRESS, lastSyncedAt: 100, txCount: 0 },
+      { id: 'ethereum:0x9999999999999999999999999999999999999999', chain: 'ethereum', address: '0x9999999999999999999999999999999999999999', lastSyncedAt: 101, txCount: 0 }
     ]);
     await legacy.table('walletBalances').bulkPut([
-      { id: 'bitcoin:bc1qcoherent:BTC', chain: 'bitcoin', address: 'bc1qcoherent', asset: 'BTC', amount: 1, asOf: 200, source: 'rpc' },
-      { id: 'ethereum:0xMixed:ETH', chain: 'ethereum', address: '0xMixed', asset: 'ETH', amount: 2, asOf: 200, source: 'rpc' },
-      { id: 'ethereum:0xMixed:USDC', chain: 'ethereum', address: '0xMixed', asset: 'USDC', contractAddress: '0xToken', amount: 3, asOf: 201, source: 'rpc' }
+      { id: `bitcoin:${VALID_BITCOIN_ADDRESS}:BTC`, chain: 'bitcoin', address: VALID_BITCOIN_ADDRESS, asset: 'BTC', amount: 1, asOf: 200, source: 'rpc' },
+      { id: 'ethereum:0x9999999999999999999999999999999999999999:ETH', chain: 'ethereum', address: '0x9999999999999999999999999999999999999999', asset: 'ETH', amount: 2, asOf: 200, source: 'rpc' },
+      { id: 'ethereum:0x9999999999999999999999999999999999999999:USDC', chain: 'ethereum', address: '0x9999999999999999999999999999999999999999', asset: 'USDC', contractAddress: '0xToken', amount: 3, asOf: 201, source: 'rpc' }
     ]);
     legacy.close();
 
@@ -259,12 +262,12 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(14);
+    expect(upgraded.verno).toBe(15);
     expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
     expect(await upgraded.table('exchangeBalances').count()).toBe(4);
     const connection = await upgraded.table('exchangeConnections').get('coherent');
     expect(connection).toMatchObject({ credentialsState: 'ready', authorityGeneration: 1, revision: 0 });
-    expect((await upgraded.table('lookupAddresses').get('bitcoin:bc1qcoherent')).sourceIncarnation)
+    expect((await upgraded.table('lookupAddresses').get(`bitcoin:${VALID_BITCOIN_ADDRESS}`)).sourceIncarnation)
       .toEqual(expect.any(String));
 
     const coherent = await upgraded.table('authoritySnapshots').get('legacy:exchange:coherent:1');
@@ -281,13 +284,13 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
       snapshots: [mixed], assets: [], now: 200
     }).authorityStatus).toBe('non_comparable');
 
-    const coherentWallet = await upgraded.table('authoritySnapshots').get('legacy:wallet:bitcoin:bc1qcoherent:1');
+    const coherentWallet = await upgraded.table('authoritySnapshots').get(`legacy:wallet:bitcoin:${VALID_BITCOIN_ADDRESS}:1`);
     expect(coherentWallet).toMatchObject({
-      scopeId: 'wallet:bitcoin:bitcoin:bc1qcoherent', accountClass: 'wallet', asOf: 200, status: 'complete'
+      scopeId: `wallet:bitcoin:bitcoin:${VALID_BITCOIN_ADDRESS}`, accountClass: 'wallet', asOf: 200, status: 'complete'
     });
     expect(await upgraded.table('authorityAssets').where('snapshotId').equals(coherentWallet.snapshotId).first())
       .toMatchObject({ assetKey: 'bitcoin:native', quantity: 1 });
-    const mixedWallet = await upgraded.table('authoritySnapshots').get('legacy:wallet:ethereum:0xMixed:1');
+    const mixedWallet = await upgraded.table('authoritySnapshots').get('legacy:wallet:ethereum:0x9999999999999999999999999999999999999999:1');
     expect(mixedWallet).toMatchObject({ status: 'complete' });
     expect(mixedWallet.asOf).toBeUndefined();
     expect(await upgraded.table('authorityAssets').where('snapshotId').equals(mixedWallet.snapshotId).count()).toBe(0);
@@ -312,6 +315,113 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     ]));
     expect(current.openingBalances.schema.indexes.find((index) => index.name === 'logicalKey')?.unique).toBe(true);
     current.close();
+    await Dexie.delete(name);
+  });
+});
+
+const V13_STORES = {
+  ...V11_STORES,
+  providerEvidence: 'id, subjectKey, subjectKind, provider, ruleId, ruleVersion, confidence, observedAt, [subjectKey+provider]',
+  safetyDecisions: 'subjectKey, state, updatedAt, [state+updatedAt]'
+};
+
+const V14_STORES = {
+  ...V13_STORES,
+  defiPositionSnapshots: 'snapshotId, generation, accountIdentityScope, protocolId, chainId, status, [accountIdentityScope+protocolId]',
+  defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]'
+};
+
+describe('Dexie v15 B1 migration', () => {
+  it('runs v12→v13→v14→v15 sequentially while preserving evidence and grouping accounts conservatively', async () => {
+    const name = `migration_v15_sequential_${Math.random().toString(36).slice(2)}`;
+    const legacy = new Dexie(name);
+    legacy.version(12).stores(V11_STORES);
+    await legacy.open();
+    const address = '0xA000000000000000000000000000000000000001';
+    await legacy.table('lookupAddresses').bulkPut([
+      { id: `ethereum:${address}`, chain: 'ethereum', address, lastSyncedAt: 1, txCount: 1 },
+      { id: `polygon:${address.toLowerCase()}`, chain: 'polygon', address: address.toLowerCase(), lastSyncedAt: 2, txCount: 1 },
+      { id: `base:${address}`, chain: 'base', address, lastSyncedAt: 3, txCount: 1 },
+      { id: `solana:${VALID_SOLANA_ADDRESS}`, chain: 'solana', address: VALID_SOLANA_ADDRESS, lastSyncedAt: 4, txCount: 0 }
+    ]);
+    await legacy.table('exchangeConnections').bulkPut([
+      { id: 'same-brand-1', exchange: 'binance', createdAt: 1, cursors: {}, status: 'idle' },
+      { id: 'same-brand-2', exchange: 'binance', createdAt: 2, cursors: {}, status: 'idle' }
+    ]);
+    await legacy.table('csvImports').bulkPut([
+      { id: 'hash-one', fileName: 'statement.csv', importedAt: 1, txCount: 0, parserId: 'binance' },
+      { id: 'hash-two', fileName: 'statement.csv', importedAt: 2, txCount: 0, parserId: 'binance' }
+    ]);
+    const raw = { Operation: 'Provider mystery', signed: '-1.25' };
+    await legacy.table('transactions').bulkPut([
+      makeTx('typed-alias', {
+        type: 'income', category: 'staking' as never, amount: 1.25, source: 'legacy-provider',
+        sourceRef: 'raw-ref', txHash: '0xHASH', raw
+      }),
+      makeTx('unknown-category', { type: 'income', category: 'Unmapped legacy label' as never, raw: { exact: true } }),
+      makeTx('legacy-perp-funding', {
+        type: 'fee', category: 'perp_funding' as never, instrumentClass: 'derivative', amount: 2
+      }),
+      makeTx('legacy-internal', { type: 'transfer_out', isInternalTransfer: true, amount: 3 })
+    ]);
+    legacy.close();
+
+    const { createDb } = await import('@/lib/storage/db');
+    const upgraded = createDb(name);
+    await upgraded.open();
+    expect(upgraded.verno).toBe(15);
+    expect(await upgraded.transactions.get('typed-alias')).toMatchObject({
+      category: 'staking_reward', categoryOrigin: 'legacy', amount: 1.25,
+      source: 'legacy-provider', sourceRef: 'raw-ref', txHash: '0xHASH', raw
+    });
+    expect(await upgraded.transactions.get('unknown-category')).toMatchObject({
+      category: 'other', legacyCategory: 'Unmapped legacy label', raw: { exact: true }
+    });
+    expect(await upgraded.transactions.get('legacy-perp-funding')).toMatchObject({
+      category: 'funding_fee', categoryOrigin: 'legacy', type: 'fee', amount: 2,
+      instrumentClass: 'derivative'
+    });
+    expect(await upgraded.transactions.get('legacy-internal')).toMatchObject({ isInternalTransfer: true });
+    expect((await upgraded.transactions.get('legacy-internal'))?.linkedTransferId).toBeUndefined();
+    const evmRows = await upgraded.lookupAddresses.filter((row) => row.chain !== 'solana').toArray();
+    expect(new Set(evmRows.map((row) => row.accountIdentityId))).toEqual(new Set([
+      `wallet:evm:${address.toLowerCase()}`
+    ]));
+    expect((await upgraded.lookupAddresses.get(`solana:${VALID_SOLANA_ADDRESS}`))?.accountIdentityId)
+      .toBe(`wallet:solana:solana:${VALID_SOLANA_ADDRESS}`);
+    expect((await upgraded.exchangeConnections.bulkGet(['same-brand-1', 'same-brand-2']))
+      .map((row) => row?.accountIdentityId)).toEqual(['exchange:same-brand-1', 'exchange:same-brand-2']);
+    expect((await upgraded.csvImports.bulkGet(['hash-one', 'hash-two'])).map((row) => row?.accountIdentityId))
+      .toEqual(['csv-account:hash-one', 'csv-account:hash-two']);
+    expect(upgraded.transactions.schema.indexes.map((index) => index.name)).toEqual(expect.arrayContaining([
+      'category', 'internalTransferPairId'
+    ]));
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+
+  it('supports a direct v14 existing-user upgrade without changing DeFi snapshot ids/scopes', async () => {
+    const name = `migration_v15_direct_${Math.random().toString(36).slice(2)}`;
+    const legacy = new Dexie(name);
+    legacy.version(14).stores(V14_STORES);
+    await legacy.open();
+    const address = '0xb000000000000000000000000000000000000001';
+    await legacy.table('lookupAddresses').put({
+      id: `ethereum:${address}`, chain: 'ethereum', address, lastSyncedAt: 1, txCount: 0
+    });
+    await legacy.table('defiPositionSnapshots').put({
+      snapshotId: 'unchanged-snapshot', generation: 1, accountIdentityScope: `wallet:evm:${address}`,
+      protocolId: 'aave-v3-ethereum', chainId: 1, status: 'partial', capturedAt: 1, evidence: []
+    });
+    legacy.close();
+    const { createDb } = await import('@/lib/storage/db');
+    const upgraded = createDb(name);
+    await upgraded.open();
+    expect(await upgraded.defiPositionSnapshots.get('unchanged-snapshot')).toMatchObject({
+      snapshotId: 'unchanged-snapshot', accountIdentityScope: `wallet:evm:${address}`
+    });
+    expect(await upgraded.accountIdentities.get(`wallet:evm:${address}`)).toMatchObject({ kind: 'wallet' });
+    upgraded.close();
     await Dexie.delete(name);
   });
 });

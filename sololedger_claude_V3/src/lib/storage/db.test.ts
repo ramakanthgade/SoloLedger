@@ -26,7 +26,10 @@ import {
   filterAlreadyImported,
   transactionSourceKey,
   transactionImportKey,
+  updateAccountOwnership,
+  updateReciprocalTransferPair,
   updateWalletLabel,
+  upsertCsvImport,
   upsertLookupAddress,
   upsertOpeningBalance,
   walletBalanceId
@@ -34,6 +37,7 @@ import {
 import type { Transaction } from '@/types/transaction';
 import { binanceSpotEndpointProof } from '@/lib/reconcile/authoritySelection';
 import { buildCsvImportEvidenceGeneration } from '@/lib/parsers/importEvidence';
+import { binanceOptionsParser } from '@/lib/parsers/binanceOptions';
 
 describe('transactionExchangeKey', () => {
   it('builds an exchange key for recognised exchange sources with a sourceRef', () => {
@@ -96,9 +100,9 @@ describe('transactionSourceKey', () => {
       asset: 'TOKEN', contractAddress: 'MintCase'
     })).toBe('Base58Case|sig|solana:MintCase');
     expect(transactionSourceKey({
-      sourceRef: 'sig', walletAddress: '0xAbC', chain: 'ethereum',
+      sourceRef: 'sig', walletAddress: '0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA', chain: 'ethereum',
       asset: 'USDC', contractAddress: '0x00000000000000000000000000000000000000AA'
-    })).toBe('0xabc|sig|evm:1:0x00000000000000000000000000000000000000aa');
+    })).toBe('0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|sig|evm:1:0x00000000000000000000000000000000000000aa');
   });
 });
 
@@ -180,7 +184,7 @@ describe('v11 authority persistence', () => {
   });
 
   it('CAS-guards exact wallet identity and rejects an older in-flight generation', async () => {
-    const address = '0xAbC';
+    const address = '0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA';
     await db.lookupAddresses.put({
       id: `ethereum:${address}`, chain: 'ethereum', address, lastSyncedAt: 1, txCount: 0,
       authorityGeneration: 0, revision: 0
@@ -210,30 +214,32 @@ describe('v11 authority persistence', () => {
   });
 
   it('folds EVM identity but preserves distinct-case Base58 wallet identities', async () => {
-    await upsertLookupAddress('ethereum', '0xAbC', 0);
-    await upsertLookupAddress('ethereum', '0xabc', 0);
-    await upsertLookupAddress('solana', 'Base58Case', 0);
-    await upsertLookupAddress('solana', 'base58Case', 0);
+    const upperSolana = 'Vote111111111111111111111111111111111111111';
+    const lowerSolana = 'vote111111111111111111111111111111111111111';
+    await upsertLookupAddress('ethereum', '0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA', 0);
+    await upsertLookupAddress('ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0);
+    await upsertLookupAddress('solana', upperSolana, 0);
+    await upsertLookupAddress('solana', lowerSolana, 0);
     expect((await db.lookupAddresses.toArray()).map((row) => row.id).sort()).toEqual([
-      'ethereum:0xabc', 'solana:Base58Case', 'solana:base58Case'
+      'ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', `solana:${upperSolana}`, `solana:${lowerSolana}`
     ]);
     const solanaRows = (await db.lookupAddresses.where('chain').equals('solana').toArray());
     expect(new Set(solanaRows.map((row) => row.sourceIncarnation)).size).toBe(2);
 
-    expect(walletBalanceId('solana', 'Base58Case', 'TOKEN', 'MintCase')).not.toBe(
-      walletBalanceId('solana', 'base58Case', 'TOKEN', 'mintCase')
+    expect(walletBalanceId('solana', upperSolana, 'TOKEN', 'MintCase')).not.toBe(
+      walletBalanceId('solana', lowerSolana, 'TOKEN', 'mintCase')
     );
-    expect(walletBalanceId('ethereum', '0xAbC', 'USDC', '0x00000000000000000000000000000000000000AA')).toBe(
-      walletBalanceId('ethereum', '0xabc', 'USDC', '0x00000000000000000000000000000000000000aa')
+    expect(walletBalanceId('ethereum', '0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA', 'USDC', '0x00000000000000000000000000000000000000AA')).toBe(
+      walletBalanceId('ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'USDC', '0x00000000000000000000000000000000000000aa')
     );
   });
 
   it('writes wallet-app identity and preserves it when a connection is renamed', async () => {
-    const id = 'ethereum:0xabc';
+    const id = 'ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
     await db.lookupAddresses.put({
       id,
       chain: 'ethereum',
-      address: '0xabc',
+      address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       lastSyncedAt: 1,
       txCount: 0
     });
@@ -253,20 +259,20 @@ describe('v11 authority persistence', () => {
   });
 
   it('sets initial wallet identity at row creation without overwriting existing metadata', async () => {
-    await upsertLookupAddress('ethereum', '0xAbC', 0, undefined, {
+    await upsertLookupAddress('ethereum', '0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA', 0, undefined, {
       label: 'MetaMask',
       walletAppId: 'metamask'
     });
-    expect(await db.lookupAddresses.get('ethereum:0xabc')).toMatchObject({
+    expect(await db.lookupAddresses.get('ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toMatchObject({
       label: 'MetaMask',
       walletAppId: 'metamask'
     });
 
-    await upsertLookupAddress('ethereum', '0xabc', 0, undefined, {
+    await upsertLookupAddress('ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, undefined, {
       label: 'Stale form name',
       walletAppId: 'ledger'
     });
-    expect(await db.lookupAddresses.get('ethereum:0xabc')).toMatchObject({
+    expect(await db.lookupAddresses.get('ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toMatchObject({
       label: 'MetaMask',
       walletAppId: 'metamask'
     });
@@ -274,15 +280,15 @@ describe('v11 authority persistence', () => {
 
   it('serializes competing initial identities without replacing the committed winner', async () => {
     await Promise.all([
-      upsertLookupAddress('ethereum', '0xAbC', 0, undefined, {
+      upsertLookupAddress('ethereum', '0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA', 0, undefined, {
         label: 'MetaMask wallet', walletAppId: 'metamask'
       }),
-      upsertLookupAddress('ethereum', '0xabc', 0, undefined, {
+      upsertLookupAddress('ethereum', '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0, undefined, {
         label: 'Ledger wallet', walletAppId: 'ledger'
       })
     ]);
 
-    const stored = await db.lookupAddresses.get('ethereum:0xabc');
+    const stored = await db.lookupAddresses.get('ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa');
     expect([
       ['MetaMask wallet', 'metamask'],
       ['Ledger wallet', 'ledger']
@@ -621,6 +627,97 @@ describe('v11 authority persistence', () => {
     expect(await db.authoritySnapshots.count()).toBe(0);
     expect(await db.authorityAssets.count()).toBe(0);
     expect(await db.sourceCoverage.count()).toBe(0);
+  });
+});
+
+describe('v15 account identity contracts', () => {
+  beforeEach(async () => {
+    await clearAllData();
+  });
+
+  it('accepts an explicit durable CSV account independently from file hash/generation', async () => {
+    await db.accountIdentities.put({
+      id: 'csv-account:durable-account', kind: 'csv', canonicalKey: 'csv-account:durable-account',
+      ownershipStatus: 'owned', ownershipOrigin: 'user', ownershipConfirmedAt: 1,
+      createdAt: 1, updatedAt: 1, lifecycleRevision: 0
+    });
+    await upsertCsvImport('file-hash-one', 'monthly-statement.csv', 'binance', 0, undefined, 'csv-account:durable-account');
+    await upsertCsvImport('file-hash-two', 'renamed-statement.csv', 'binance', 0, undefined, 'csv-account:durable-account');
+    expect((await db.csvImports.bulkGet(['file-hash-one', 'file-hash-two'])).map((row) => row?.accountIdentityId))
+      .toEqual(['csv-account:durable-account', 'csv-account:durable-account']);
+    await expect(upsertCsvImport('file-hash-three', 'same-name.csv', 'binance', 0, undefined, 'missing'))
+      .rejects.toThrow(/does not exist/i);
+  });
+
+  it('updates ownership atomically with lifecycle compare-and-set', async () => {
+    await db.accountIdentities.put({
+      id: 'wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', kind: 'wallet', canonicalKey: 'wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      ownershipStatus: 'unknown', ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0
+    });
+    await expect(updateAccountOwnership('wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', {
+      status: 'owned', origin: 'user'
+    }, 0, 10)).resolves.toMatchObject({ ownershipStatus: 'owned', lifecycleRevision: 1 });
+    await expect(updateAccountOwnership('wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', {
+      status: 'not_owned', origin: 'user'
+    }, 0, 20)).rejects.toThrow(/changed/i);
+    expect(await db.accountIdentities.get('wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toMatchObject({
+      ownershipStatus: 'owned', lifecycleRevision: 1
+    });
+  });
+
+  it('persists valid incoming Options commission rebates without downgrading parser semantics', async () => {
+    const [rebate] = binanceOptionsParser.parse([{
+      Time: '2026-01-02 03:04:05', Type: 'commission_fee', Amount: '2.5', Asset: 'USDT'
+    }]).transactions;
+    await commitCsvImportGeneration({
+      id: 'options-rebate-file', fileName: 'options.csv', parserId: 'binance_options',
+      transactions: [{ ...rebate, importBatchId: 'options-rebate-file' }],
+      buildGeneration: ({ generation, savedAfterDedup, completedAt }) =>
+        buildCsvImportEvidenceGeneration({
+          sourceIdentityId: 'options-rebate-file', parserId: 'binance_options',
+          parsedBeforeDedup: 1, savedAfterDedup, generation, completedAt,
+          evidence: {
+            coveredAccountClasses: ['options'],
+            requiredOutcomes: [{
+              id: 'options', accountClass: 'options', required: true, status: 'partial',
+              recognizedCount: 1, parsedCount: 1, excludedCount: 0, skippedCount: 0, failedCount: 0
+            }],
+            recognizedCount: 1, parsedCount: 1, excludedCount: 0, skippedCount: 0, failedCount: 0,
+            exclusionReasons: [], skippedReasons: [], failureReasons: []
+          }
+        })
+    });
+    expect(await db.transactions.get(rebate.id)).toMatchObject({
+      type: 'income', category: 'options_fee', categoryOrigin: 'parser',
+      instrumentClass: 'derivative', amount: 2.5
+    });
+  });
+
+  it('atomically validates reciprocal pair writes and rolls back both legs on invalid updates', async () => {
+    const outgoing = manualTransaction('pair-out', 1);
+    outgoing.type = 'transfer_out';
+    const incoming = manualTransaction('pair-in', 2);
+    await db.transactions.bulkPut([outgoing, incoming]);
+    await expect(updateReciprocalTransferPair({
+      pairId: 'pair-atomic', outgoingTransactionId: outgoing.id, incomingTransactionId: incoming.id,
+      decision: 'confirmed', method: 'exact_onchain_event', matcherVersion: 'b4-v1', decidedAt: 3
+    })).resolves.toEqual([
+      expect.objectContaining({ linkedTransferId: incoming.id, isInternalTransfer: true }),
+      expect.objectContaining({ linkedTransferId: outgoing.id, isInternalTransfer: true })
+    ]);
+
+    const third = manualTransaction('pair-third', 4);
+    await db.transactions.put(third);
+    await expect(updateReciprocalTransferPair({
+      pairId: 'pair-invalid', outgoingTransactionId: outgoing.id, incomingTransactionId: third.id,
+      decision: 'confirmed', method: 'heuristic', matcherVersion: 'b4-v1', decidedAt: 5
+    })).rejects.toThrow();
+    expect(await db.transactions.get(outgoing.id)).toMatchObject({
+      internalTransferPairId: 'pair-atomic', linkedTransferId: incoming.id, isInternalTransfer: true
+    });
+    const unchangedThird = await db.transactions.get(third.id);
+    expect(unchangedThird?.isInternalTransfer).toBe(false);
+    expect(unchangedThird?.internalTransferPairId).toBeUndefined();
   });
 });
 

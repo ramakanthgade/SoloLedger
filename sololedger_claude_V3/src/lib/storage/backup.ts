@@ -20,6 +20,21 @@ import { isExcludedSafetyState, type ProviderEvidenceRow, type SafetyDecisionRow
 import { safetySubjectKind } from '@/lib/safety/canonicalAssets';
 import { qualifiesForAutomaticSpam } from '@/lib/safety/assetSafety';
 import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
+import {
+  assertValidAccountIdentity,
+  conservativeCsvAccountCanonicalKey,
+  exchangeAccountCanonicalKey,
+  newAccountIdentity,
+  safeAccountIdentityProjection,
+  walletAccountCanonicalKey,
+  type AccountIdentityRow
+} from '@/lib/accounts/accountIdentity';
+import {
+  CATEGORY_CATALOG,
+  isCategoryAllowedForType,
+  normalizeImportedTransactionCategory
+} from '@/lib/taxonomy/categories';
+import { assertValidReciprocalTransferPairs } from '@/lib/internalTransfers/model';
 
 type SettingsBackup = Omit<TaxSettings,
   | 'alchemyApiKey' | 'coingeckoApiKey' | 'birdeyeApiKey' | 'novesApiKey'
@@ -72,7 +87,12 @@ export interface BackupFileV5 extends Omit<BackupFileV4, 'formatVersion'> {
   defiPositionRows: DefiPositionRow[];
 }
 
-type BackupFile = BackupFileV1V2 | BackupFileV3 | BackupFileV4 | BackupFileV5;
+export interface BackupFileV6 extends Omit<BackupFileV5, 'formatVersion'> {
+  formatVersion: 6;
+  accountIdentities: AccountIdentityRow[];
+}
+
+type BackupFile = BackupFileV1V2 | BackupFileV3 | BackupFileV4 | BackupFileV5 | BackupFileV6;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value == null || Array.isArray(value)) return false;
@@ -121,7 +141,8 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
       withdrawals: row.bitfinexPendingTransfers.withdrawals
     },
     lastSyncAt: row.lastSyncAt, status: row.status,
-    lastError: typeof row.lastError === 'string' ? row.lastError : undefined
+    lastError: typeof row.lastError === 'string' ? row.lastError : undefined,
+    accountIdentityId: row.accountIdentityId
   };
 }
 
@@ -133,7 +154,8 @@ function redactedLookupSource(row: LookupAddressRow): LookupAddressRow {
     lastSyncedAt: row.lastSyncedAt, txCount: row.txCount,
     lastSyncedSignature: typeof row.lastSyncedSignature === 'string' ? row.lastSyncedSignature : undefined,
     authorityGeneration: row.authorityGeneration, revision: row.revision,
-    sourceIncarnation: row.sourceIncarnation
+    sourceIncarnation: row.sourceIncarnation,
+    accountIdentityId: row.accountIdentityId
   };
 }
 
@@ -147,32 +169,75 @@ function redactedCsvSource(row: CsvImportRow): CsvImportRow {
     optionsBalanceUnavailable: row.optionsBalanceUnavailable,
     optionsBalanceIncluded: row.optionsBalanceIncluded,
     optionsCoverageThrough: row.optionsCoverageThrough,
-    authorityGeneration: row.authorityGeneration, revision: row.revision
+    authorityGeneration: row.authorityGeneration, revision: row.revision,
+    accountIdentityId: row.accountIdentityId
   };
 }
 
-/** Build a serializable v5 payload. Exported for deterministic backup tests. */
-export async function createFullBackupPayload(): Promise<BackupFileV5> {
+function completeExportAccountGraph(input: {
+  lookupAddresses: LookupAddressRow[];
+  exchangeConnections: ExchangeConnectionRow[];
+  csvImports: CsvImportRow[];
+  accountIdentities: AccountIdentityRow[];
+}, now: number) {
+  const accounts = new Map(input.accountIdentities.map((row) => {
+    const safe = safeAccountIdentityProjection(row);
+    return [safe.id, safe] as const;
+  }));
+  const ensure = (row: AccountIdentityRow) => {
+    if (!accounts.has(row.id)) accounts.set(row.id, safeAccountIdentityProjection(row));
+  };
+  const lookupAddresses = input.lookupAddresses.map((row) => {
+    const accountIdentityId = row.accountIdentityId ?? walletAccountCanonicalKey(row.chain, row.address);
+    ensure(newAccountIdentity({
+      kind: 'wallet', canonicalKey: accountIdentityId, label: row.label,
+      walletAppId: row.walletAppId, providerId: row.chain
+    }, now));
+    return { ...row, accountIdentityId };
+  });
+  const exchangeConnections = input.exchangeConnections.map((row) => {
+    const accountIdentityId = row.accountIdentityId ?? exchangeAccountCanonicalKey(row.id);
+    ensure(newAccountIdentity({
+      kind: 'exchange', canonicalKey: accountIdentityId, label: row.label, providerId: row.exchange
+    }, now));
+    return { ...row, accountIdentityId };
+  });
+  const csvImports = input.csvImports.map((row) => {
+    const accountIdentityId = row.accountIdentityId ?? conservativeCsvAccountCanonicalKey(row.id);
+    ensure(newAccountIdentity({
+      kind: 'csv', canonicalKey: accountIdentityId, parserId: row.parserId ?? undefined
+    }, now));
+    return { ...row, accountIdentityId };
+  });
+  return { lookupAddresses, exchangeConnections, csvImports, accountIdentities: [...accounts.values()] };
+}
+
+/** Build a serializable v6 payload. Exported for deterministic backup tests. */
+export async function createFullBackupPayload(): Promise<BackupFileV6> {
   const [
     transactions, lots, disposals, specIdHints, lookupAddresses, priceCache, csvImports,
     exchangeConnections, walletBalances, exchangeBalances, authoritySnapshots, authorityAssets,
     sourceCoverage, openingBalances, providerEvidence, safetyDecisions,
-    defiPositionSnapshots, defiPositionRows, settings
+    defiPositionSnapshots, defiPositionRows, accountIdentities, settings
   ] = await Promise.all([
     db.transactions.toArray(), db.lots.toArray(), db.disposals.toArray(), db.specIdHints.toArray(),
     db.lookupAddresses.toArray(), db.priceCache.toArray(), db.csvImports.toArray(),
     db.exchangeConnections.toArray(), db.walletBalances.toArray(), db.exchangeBalances.toArray(),
     db.authoritySnapshots.toArray(), db.authorityAssets.toArray(), db.sourceCoverage.toArray(),
     db.openingBalances.toArray(), db.providerEvidence.toArray(), db.safetyDecisions.toArray(),
-    db.defiPositionSnapshots.toArray(), db.defiPositionRows.toArray(), getSettings()
+    db.defiPositionSnapshots.toArray(), db.defiPositionRows.toArray(), db.accountIdentities.toArray(), getSettings()
   ]);
+  const completedAccounts = completeExportAccountGraph({
+    lookupAddresses, exchangeConnections, csvImports, accountIdentities
+  }, Date.now());
   return {
-    formatVersion: 5, exportedAt: new Date().toISOString(), transactions, lots, disposals,
-    specIdHints, lookupAddresses: lookupAddresses.map(redactedLookupSource), priceCache,
-    csvImports: csvImports.map(redactedCsvSource),
-    exchangeConnections: exchangeConnections.map(redactedExchangeSource), walletBalances,
+    formatVersion: 6, exportedAt: new Date().toISOString(), transactions, lots, disposals,
+    specIdHints, lookupAddresses: completedAccounts.lookupAddresses.map(redactedLookupSource), priceCache,
+    csvImports: completedAccounts.csvImports.map(redactedCsvSource),
+    exchangeConnections: completedAccounts.exchangeConnections.map(redactedExchangeSource), walletBalances,
     exchangeBalances, authoritySnapshots, authorityAssets, sourceCoverage, openingBalances,
     providerEvidence, safetyDecisions, defiPositionSnapshots, defiPositionRows,
+    accountIdentities: completedAccounts.accountIdentities,
     settings: safeSettings(settings)
   };
 }
@@ -196,17 +261,18 @@ function requireArray(p: Record<string, unknown>, key: string, optional = false)
 function assertValidBackup(parsed: unknown): asserts parsed is BackupFile {
   if (typeof parsed !== 'object' || parsed === null) throw new Error('Invalid backup file: not a JSON object.');
   const p = parsed as Record<string, unknown>;
-  if (p.formatVersion !== 1 && p.formatVersion !== 2 && p.formatVersion !== 3 && p.formatVersion !== 4 && p.formatVersion !== 5) {
+  if (p.formatVersion !== 1 && p.formatVersion !== 2 && p.formatVersion !== 3 && p.formatVersion !== 4 && p.formatVersion !== 5 && p.formatVersion !== 6) {
     throw new Error('Unrecognized backup format version. This file may be from a newer version of SoloLedger.');
   }
   for (const key of ['transactions', 'lots', 'disposals', 'specIdHints']) requireArray(p, key);
-  for (const key of ['lookupAddresses', 'priceCache', 'csvImports']) requireArray(p, key, ![3, 4, 5].includes(p.formatVersion as number));
-  if (p.formatVersion === 3 || p.formatVersion === 4 || p.formatVersion === 5) {
+  for (const key of ['lookupAddresses', 'priceCache', 'csvImports']) requireArray(p, key, ![3, 4, 5, 6].includes(p.formatVersion as number));
+  if ([3, 4, 5, 6].includes(p.formatVersion as number)) {
     for (const key of ['exchangeConnections', 'walletBalances', 'exchangeBalances', 'authoritySnapshots',
       'authorityAssets', 'sourceCoverage', 'openingBalances']) requireArray(p, key);
   }
-  if (p.formatVersion === 4 || p.formatVersion === 5) for (const key of ['providerEvidence', 'safetyDecisions']) requireArray(p, key);
-  if (p.formatVersion === 5) for (const key of ['defiPositionSnapshots', 'defiPositionRows']) requireArray(p, key);
+  if ([4, 5, 6].includes(p.formatVersion as number)) for (const key of ['providerEvidence', 'safetyDecisions']) requireArray(p, key);
+  if (p.formatVersion === 5 || p.formatVersion === 6) for (const key of ['defiPositionSnapshots', 'defiPositionRows']) requireArray(p, key);
+  if (p.formatVersion === 6) requireArray(p, 'accountIdentities');
   if (typeof p.settings !== 'object' || p.settings === null) {
     throw new Error('Invalid backup file: "settings" is missing or malformed.');
   }
@@ -258,7 +324,7 @@ function assertApiTransactionMatchesConnection(
 }
 
 /** Validate identity, logical-key, and evidence references before any table is cleared. */
-function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5): void {
+function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | BackupFileV6): void {
   const transactionIds = unique(payload.transactions, 'id', 'transactions');
   const lotIds = unique(payload.lots, 'id', 'lots');
   unique(payload.disposals, 'id', 'disposals');
@@ -537,7 +603,7 @@ const SAFETY_STATES = new Set<SafetyState>([
   'trusted', 'high_confidence_spam', 'unverified', 'user_hidden', 'user_visible'
 ]);
 
-function validateV4(payload: BackupFileV4 | BackupFileV5): void {
+function validateV4(payload: BackupFileV4 | BackupFileV5 | BackupFileV6): void {
   validateV3(payload);
   const evidenceIds = unique(payload.providerEvidence, 'id', 'providerEvidence');
   unique(payload.safetyDecisions, 'subjectKey', 'safetyDecisions');
@@ -598,7 +664,7 @@ function validateV4(payload: BackupFileV4 | BackupFileV5): void {
   }
 }
 
-function validateV5(payload: BackupFileV5): void {
+function validateV5(payload: BackupFileV5 | BackupFileV6): void {
   validateV4(payload);
   const snapshotIds = unique(payload.defiPositionSnapshots, 'snapshotId', 'defiPositionSnapshots');
   unique(payload.defiPositionRows, 'id', 'defiPositionRows');
@@ -652,6 +718,134 @@ function validateV5(payload: BackupFileV5): void {
   }
 }
 
+const CATEGORY_IDS = new Set(CATEGORY_CATALOG.map((entry) => entry.id));
+
+const CREDENTIAL_FIELD_NAMES = new Set([
+  'apikey', 'secret', 'apisecret', 'passphrase', 'password', 'credentials', 'token',
+  'authtoken', 'bearertoken', 'privatekey', 'mnemonic', 'seedphrase'
+]);
+
+const ACCOUNT_IDENTITY_FIELDS = new Set([
+  'id', 'kind', 'canonicalKey', 'ownershipStatus', 'ownershipConfirmedAt', 'ownershipOrigin',
+  'ownershipDismissedAt', 'label', 'walletAppId', 'providerId', 'parserId', 'createdAt',
+  'updatedAt', 'lifecycleRevision'
+]);
+
+function isCredentialFieldName(key: string): boolean {
+  const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return CREDENTIAL_FIELD_NAMES.has(normalized) ||
+    /(?:token|secret|apikey|apisecret|privatekey|password|passphrase|credentials|mnemonic|seedphrase)$/.test(normalized);
+}
+
+function accountPayloadContainsCredentialMaterial(value: unknown): boolean {
+  if (Array.isArray(value)) return value.some(accountPayloadContainsCredentialMaterial);
+  if (!isPlainObject(value)) return false;
+  return Object.entries(value).some(([key, nested]) =>
+    isCredentialFieldName(key) ||
+    accountPayloadContainsCredentialMaterial(nested)
+  );
+}
+
+/** Validate all v6 graph references before the restore transaction clears any table. */
+function validateV6(payload: BackupFileV6): void {
+  validateV5(payload);
+  const accountIds = unique(payload.accountIdentities, 'id', 'accountIdentities');
+  const accounts = new Map(payload.accountIdentities.map((row) => [row.id, row]));
+  const logicalAccounts = new Set<string>();
+  for (const row of payload.accountIdentities) {
+    if (accountPayloadContainsCredentialMaterial(row)) {
+      throw new Error('Invalid backup file: account identity payload contains credential material.');
+    }
+    if (!isPlainObject(row) || Object.keys(row).some((key) => !ACCOUNT_IDENTITY_FIELDS.has(key))) {
+      throw new Error('Invalid backup file: account identity payload contains unknown fields.');
+    }
+    try {
+      assertValidAccountIdentity(row);
+    } catch {
+      throw new Error('Invalid backup file: account identity or ownership payload is malformed.');
+    }
+    const logical = `${row.kind}\u001f${row.canonicalKey}`;
+    if (logicalAccounts.has(logical)) throw new Error('Invalid backup file: duplicate account identity canonical key.');
+    logicalAccounts.add(logical);
+  }
+  for (const row of payload.lookupAddresses) {
+    const account = row.accountIdentityId ? accounts.get(row.accountIdentityId) : undefined;
+    if (!account || account.kind !== 'wallet' || account.canonicalKey !== walletAccountCanonicalKey(row.chain, row.address)) {
+      throw new Error('Invalid backup file: lookup source has a malformed account FK.');
+    }
+  }
+  for (const row of payload.exchangeConnections) {
+    const account = row.accountIdentityId ? accounts.get(row.accountIdentityId) : undefined;
+    if (!account || account.kind !== 'exchange' || account.canonicalKey !== exchangeAccountCanonicalKey(row.id)) {
+      throw new Error('Invalid backup file: exchange source has a malformed account FK.');
+    }
+  }
+  for (const row of payload.csvImports) {
+    const account = row.accountIdentityId ? accounts.get(row.accountIdentityId) : undefined;
+    if (!account || account.kind !== 'csv') {
+      throw new Error('Invalid backup file: CSV source has a malformed account FK.');
+    }
+  }
+  if (accountIds.size !== payload.accountIdentities.length) {
+    throw new Error('Invalid backup file: duplicate account identities.');
+  }
+  for (const row of payload.transactions) {
+    if (row.category != null && (!CATEGORY_IDS.has(row.category) || !isCategoryAllowedForType(row.category, row.type))) {
+      throw new Error('Invalid backup file: transaction classification is incompatible with its structural type.');
+    }
+    if ((row.categoryOrigin != null && !['parser', 'provider', 'rule', 'suggestion', 'user', 'legacy'].includes(row.categoryOrigin)) ||
+      (row.categoryOrigin != null && row.category == null) ||
+      (row.categoryConfidence != null && (!Number.isFinite(row.categoryConfidence) ||
+      row.categoryConfidence < 0 || row.categoryConfidence > 1)) ||
+      (row.categoryUpdatedAt != null && !Number.isFinite(row.categoryUpdatedAt)) ||
+      (row.categoryLocked === true && row.categoryOrigin !== 'user') ||
+      (row.categoryOrigin === 'rule' && (!row.categoryRuleId?.trim() || !row.categoryRuleVersion?.trim()))) {
+      throw new Error('Invalid backup file: transaction classification provenance is malformed.');
+    }
+  }
+  try {
+    assertValidReciprocalTransferPairs(payload.transactions);
+  } catch {
+    throw new Error('Invalid backup file: reciprocal internal transfer pair graph is malformed.');
+  }
+}
+
+function adaptLegacyAccounts(input: {
+  lookupAddresses: LookupAddressRow[];
+  exchangeConnections: RedactedExchangeIdentity[];
+  csvImports: CsvImportRow[];
+}, now: number): {
+  lookupAddresses: LookupAddressRow[];
+  exchangeConnections: RedactedExchangeIdentity[];
+  csvImports: CsvImportRow[];
+  accountIdentities: AccountIdentityRow[];
+} {
+  const accounts = new Map<string, AccountIdentityRow>();
+  const lookupAddresses = input.lookupAddresses.map((row) => {
+    const accountIdentityId = walletAccountCanonicalKey(row.chain, row.address);
+    if (!accounts.has(accountIdentityId)) accounts.set(accountIdentityId, newAccountIdentity({
+      kind: 'wallet', canonicalKey: accountIdentityId, label: row.label,
+      walletAppId: row.walletAppId, providerId: row.chain
+    }, now));
+    return { ...row, accountIdentityId };
+  });
+  const exchangeConnections = input.exchangeConnections.map((row) => {
+    const accountIdentityId = exchangeAccountCanonicalKey(row.id);
+    accounts.set(accountIdentityId, newAccountIdentity({
+      kind: 'exchange', canonicalKey: accountIdentityId, label: row.label, providerId: row.exchange
+    }, now));
+    return { ...row, accountIdentityId };
+  });
+  const csvImports = input.csvImports.map((row) => {
+    const accountIdentityId = conservativeCsvAccountCanonicalKey(row.id);
+    accounts.set(accountIdentityId, newAccountIdentity({
+      kind: 'csv', canonicalKey: accountIdentityId, parserId: row.parserId ?? undefined
+    }, now));
+    return { ...row, accountIdentityId };
+  });
+  return { lookupAddresses, exchangeConnections, csvImports, accountIdentities: [...accounts.values()] };
+}
+
 export async function importFullBackup(file: File): Promise<{ imported: number }> {
   let parsed: unknown;
   try {
@@ -663,12 +857,24 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
   if (parsed.formatVersion === 3) validateV3(parsed);
   if (parsed.formatVersion === 4) validateV4(parsed);
   if (parsed.formatVersion === 5) validateV5(parsed);
+  if (parsed.formatVersion === 6) validateV6(parsed);
 
-  const v3 = parsed.formatVersion === 3 || parsed.formatVersion === 4 || parsed.formatVersion === 5 ? parsed : undefined;
-  const v4 = parsed.formatVersion === 4 || parsed.formatVersion === 5 ? parsed : undefined;
-  const v5 = parsed.formatVersion === 5 ? parsed : undefined;
+  const v3 = [3, 4, 5, 6].includes(parsed.formatVersion) ? parsed as BackupFileV3 | BackupFileV4 | BackupFileV5 | BackupFileV6 : undefined;
+  const v4 = [4, 5, 6].includes(parsed.formatVersion) ? parsed as BackupFileV4 | BackupFileV5 | BackupFileV6 : undefined;
+  const v5 = parsed.formatVersion === 5 || parsed.formatVersion === 6 ? parsed : undefined;
+  const v6 = parsed.formatVersion === 6 ? parsed : undefined;
   const restoredAt = Date.now();
-  const exchangeConnections = (v3?.exchangeConnections ?? []).map((row) => ({
+  const legacyAccounts = v6 ? undefined : adaptLegacyAccounts({
+    lookupAddresses: parsed.lookupAddresses ?? [],
+    exchangeConnections: v3?.exchangeConnections ?? [],
+    csvImports: parsed.csvImports ?? []
+  }, restoredAt);
+  const restoredLookupAddresses = v6?.lookupAddresses ?? legacyAccounts!.lookupAddresses;
+  const restoredCsvImports = v6?.csvImports ?? legacyAccounts!.csvImports;
+  const restoredExchangeConnections = v6?.exchangeConnections ?? legacyAccounts!.exchangeConnections;
+  const accountIdentities = (v6?.accountIdentities ?? legacyAccounts!.accountIdentities)
+    .map(safeAccountIdentityProjection);
+  const exchangeConnections = restoredExchangeConnections.map((row) => ({
     ...redactedExchangeSource(row), credentialsState: 'reauthorization_required' as const,
     status: 'idle' as const, lastError: undefined
   }));
@@ -679,22 +885,26 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
     ...row, authorityAsOf: row.authorityAsOf
   }));
   const defiPositionSnapshots = (v5?.defiPositionSnapshots ?? []).map((row) => ({ ...row, restoredAt }));
+  const transactions = v6
+    ? parsed.transactions
+    : parsed.transactions.map(normalizeImportedTransactionCategory);
   const tables = [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses,
     db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances,
     db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances,
-    db.providerEvidence, db.safetyDecisions, db.defiPositionSnapshots, db.defiPositionRows, db.settings];
+    db.providerEvidence, db.safetyDecisions, db.defiPositionSnapshots, db.defiPositionRows,
+    db.accountIdentities, db.settings];
 
   await db.transaction('rw', tables, async () => {
     await Promise.all(tables.map((table) => table.clear()));
-    await db.transactions.bulkPut(parsed.transactions);
+    await db.transactions.bulkPut(transactions);
     await db.lots.bulkPut(parsed.lots);
     await db.disposals.bulkPut(parsed.disposals);
     await db.specIdHints.bulkPut(parsed.specIdHints);
-    await db.lookupAddresses.bulkPut((parsed.lookupAddresses ?? []).map((row) => ({
+    await db.lookupAddresses.bulkPut(restoredLookupAddresses.map((row) => ({
       ...redactedLookupSource(row), sourceIncarnation: crypto.randomUUID()
     })));
     await db.priceCache.bulkPut(parsed.priceCache ?? []);
-    await db.csvImports.bulkPut((parsed.csvImports ?? []).map(redactedCsvSource));
+    await db.csvImports.bulkPut(restoredCsvImports.map(redactedCsvSource));
     await db.exchangeConnections.bulkPut(exchangeConnections);
     // v10 anchors assert live custody and must never become current merely by
     // restoring a backup. Transactions and immutable evidence remain; a new
@@ -707,6 +917,7 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
     await db.safetyDecisions.bulkPut(v4?.safetyDecisions ?? []);
     await db.defiPositionSnapshots.bulkPut(defiPositionSnapshots);
     await db.defiPositionRows.bulkPut(v5?.defiPositionRows ?? []);
+    await db.accountIdentities.bulkPut(accountIdentities);
     await db.settings.put({ ...safeSettings(parsed.settings), id: 'singleton' });
     await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
   });

@@ -9,6 +9,9 @@ import { filterRows, type RowFilterOptions } from '@/lib/review/reviewTableView'
 import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 
+const VALID_BITCOIN_ADDRESS = '1J33sNnKbs52UjTK39kEEYDfbHijgDxyKU';
+const VALID_SOLANA_ADDRESS = '11111111111111111111111111111111';
+
 function makeTx(id: string, overrides: Partial<Transaction> = {}): Transaction {
   return {
     id,
@@ -67,6 +70,7 @@ async function clearDb() {
       db.safetyDecisions,
       db.defiPositionSnapshots,
       db.defiPositionRows,
+      db.accountIdentities,
       db.settings
     ],
     async () => {
@@ -89,6 +93,7 @@ async function clearDb() {
         db.safetyDecisions.clear(),
         db.defiPositionSnapshots.clear(),
         db.defiPositionRows.clear(),
+        db.accountIdentities.clear(),
         db.settings.clear()
       ]);
     }
@@ -107,6 +112,171 @@ describe('importFullBackup', () => {
     expect(imported).toBe(2);
     const stored = await db.transactions.toArray();
     expect(stored.map((t) => t.id).sort()).toEqual(['a', 'b']);
+  });
+
+  it('round-trips v6 account, classification, and reciprocal pair metadata', async () => {
+    await db.lookupAddresses.put({
+      id: 'ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', chain: 'ethereum', address: '0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA', lastSyncedAt: 1, txCount: 2,
+      accountIdentityId: 'wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    });
+    await db.accountIdentities.put({
+      id: 'wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', kind: 'wallet', canonicalKey: 'wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      ownershipStatus: 'owned', ownershipOrigin: 'user', ownershipConfirmedAt: 10,
+      createdAt: 1, updatedAt: 10, lifecycleRevision: 1
+    });
+    const pair = {
+      internalTransferPairId: 'pair-1', internalTransferDecision: 'confirmed' as const,
+      internalTransferMatchMethod: 'exact_onchain_event' as const, internalTransferMatcherVersion: 'b4-contract-v1',
+      internalTransferDecisionAt: 20, isInternalTransfer: true
+    };
+    await db.transactions.bulkPut([
+      makeTx('pair-out', {
+        ...pair, type: 'transfer_out', linkedTransferId: 'pair-in', category: 'other',
+        categoryOrigin: 'user', categoryLocked: true, legacyCategory: 'Custom transfer label'
+      }),
+      makeTx('pair-in', {
+        ...pair, type: 'transfer_in', linkedTransferId: 'pair-out', category: 'other',
+        categoryOrigin: 'user', categoryLocked: true, legacyCategory: 'Custom transfer label'
+      })
+    ]);
+    const payload = await createFullBackupPayload();
+    expect(payload).toMatchObject({ formatVersion: 6, accountIdentities: [{ ownershipStatus: 'owned' }] });
+    await clearDb();
+    await importFullBackup(backupFile(payload));
+    expect(await db.accountIdentities.get('wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toMatchObject({
+      ownershipStatus: 'owned', ownershipConfirmedAt: 10
+    });
+    expect(await db.transactions.get('pair-out')).toMatchObject({
+      linkedTransferId: 'pair-in', category: 'other', categoryOrigin: 'user', legacyCategory: 'Custom transfer label'
+    });
+  });
+
+  it('projects account identities to an explicit safe shape and recursively rejects nested credentials', async () => {
+    const accountId = 'exchange:safe-account';
+    await db.accountIdentities.put({
+      id: accountId, kind: 'exchange', canonicalKey: accountId, ownershipStatus: 'unknown',
+      ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0,
+      profile: { harmless: 'not persisted', nested: { api_key: 'must-not-export' } }
+    } as never);
+    const safePayload = await createFullBackupPayload();
+    expect(safePayload.accountIdentities[0]).not.toHaveProperty('profile');
+    await clearDb();
+    await importFullBackup(backupFile(safePayload));
+    expect(await db.accountIdentities.get(accountId)).toEqual({
+      id: accountId, kind: 'exchange', canonicalKey: accountId, ownershipStatus: 'unknown',
+      ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0
+    });
+
+    const malformed = structuredClone(safePayload) as typeof safePayload & {
+      accountIdentities: Array<(typeof safePayload.accountIdentities)[number] & { metadata?: unknown }>;
+    };
+    malformed.accountIdentities[0].metadata = { auth: { bearer_token: 'nested-secret' } };
+    await db.transactions.put(makeTx('credential-sentinel'));
+    await expect(importFullBackup(backupFile(malformed))).rejects.toThrow(/credential material/i);
+    expect(await db.transactions.get('credential-sentinel')).toBeDefined();
+  });
+
+  it.each([
+    ['unknown harmless field', { display: { color: 'orange' } }, /unknown fields/i],
+    ['API token', { metadata: { apiToken: 'secret' } }, /credential material/i],
+    ['session token', { metadata: [{ sessionToken: 'secret' }] }, /credential material/i],
+    ['access token', { metadata: { auth: { access_token: 'secret' } } }, /credential material/i],
+    ['client secret', { metadata: { clientSecret: 'secret' } }, /credential material/i]
+  ])('rejects account identity %s before clearing current data', async (_label, unknownField, error) => {
+    const accountId = 'exchange:strict-shape';
+    await db.accountIdentities.put({
+      id: accountId, kind: 'exchange', canonicalKey: accountId, ownershipStatus: 'unknown',
+      ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0
+    });
+    const malformed = await createFullBackupPayload() as Awaited<ReturnType<typeof createFullBackupPayload>> & {
+      accountIdentities: Array<Record<string, unknown>>;
+    };
+    Object.assign(malformed.accountIdentities[0], unknownField);
+    await db.transactions.put(makeTx(`sentinel-${_label}`));
+    await expect(importFullBackup(backupFile(malformed))).rejects.toThrow(error);
+    expect(await db.transactions.get(`sentinel-${_label}`)).toBeDefined();
+  });
+
+  it.each([
+    ['account FK', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.lookupAddresses[0].accountIdentityId = 'missing-account';
+    }],
+    ['dangling pair', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.transactions[0].linkedTransferId = 'missing-transaction';
+    }],
+    ['classification', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.transactions[0].category = 'salary';
+    }],
+    ['reused pair id', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.transactions.push({ ...payload.transactions[1], id: 'restore-third', linkedTransferId: 'restore-out' });
+    }],
+    ['same-direction pair', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.transactions.forEach((row) => { row.type = 'transfer_out'; });
+    }],
+    ['heuristic confirmation', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.transactions.forEach((row) => { row.internalTransferMatchMethod = 'heuristic'; });
+    }],
+    ['rejected taxable state', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.transactions.forEach((row) => { row.internalTransferDecision = 'rejected'; });
+    }],
+    ['malformed canonical EVM account', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      const malformedId = `wallet:evm:0x${'A'.repeat(40)}`;
+      payload.accountIdentities[0].id = malformedId;
+      payload.accountIdentities[0].canonicalKey = malformedId;
+      payload.lookupAddresses[0].accountIdentityId = malformedId;
+    }],
+    ['malformed Bitcoin account', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.accountIdentities[0].id = 'wallet:bitcoin:bitcoin:x';
+      payload.accountIdentities[0].canonicalKey = 'wallet:bitcoin:bitcoin:x';
+      payload.lookupAddresses[0].chain = 'bitcoin';
+      payload.lookupAddresses[0].address = 'x';
+      payload.lookupAddresses[0].accountIdentityId = 'wallet:bitcoin:bitcoin:x';
+    }],
+    ['malformed Solana account', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.accountIdentities[0].id = 'wallet:solana:solana:abc';
+      payload.accountIdentities[0].canonicalKey = 'wallet:solana:solana:abc';
+      payload.lookupAddresses[0].chain = 'solana';
+      payload.lookupAddresses[0].address = 'abc';
+      payload.lookupAddresses[0].accountIdentityId = 'wallet:solana:solana:abc';
+    }],
+    ['malformed Starknet account', (payload: Awaited<ReturnType<typeof createFullBackupPayload>>) => {
+      payload.accountIdentities[0].id = 'wallet:starknet:starknet:not-an-address';
+      payload.accountIdentities[0].canonicalKey = 'wallet:starknet:starknet:not-an-address';
+      payload.lookupAddresses[0].chain = 'starknet';
+      payload.lookupAddresses[0].address = 'not-an-address';
+      payload.lookupAddresses[0].accountIdentityId = 'wallet:starknet:starknet:not-an-address';
+    }]
+  ])('rejects malformed v6 %s before clearing current data', async (_label, mutate) => {
+    await db.lookupAddresses.put({
+      id: 'ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', chain: 'ethereum', address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', lastSyncedAt: 1, txCount: 0,
+      accountIdentityId: 'wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    });
+    await db.accountIdentities.put({
+      id: 'wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', kind: 'wallet', canonicalKey: 'wallet:evm:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      ownershipStatus: 'unknown', ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0
+    });
+    const pair = {
+      internalTransferPairId: 'pair-1', internalTransferDecision: 'confirmed' as const,
+      internalTransferMatchMethod: 'manual' as const, internalTransferMatcherVersion: 'contract-v1',
+      internalTransferDecisionAt: 2, isInternalTransfer: true
+    };
+    await db.transactions.bulkPut([
+      makeTx('restore-out', { ...pair, type: 'transfer_out', linkedTransferId: 'restore-in', category: 'other' }),
+      makeTx('restore-in', { ...pair, type: 'transfer_in', linkedTransferId: 'restore-out', category: 'other' })
+    ]);
+    const malformed = await createFullBackupPayload();
+    mutate(malformed);
+    await db.transactions.put(makeTx('current-sentinel'));
+    await expect(importFullBackup(backupFile(malformed))).rejects.toThrow();
+    expect(await db.transactions.get('current-sentinel')).toBeDefined();
+  });
+
+  it('keeps v5 payloads importable by conservatively adapting durable accounts and legacy categories', async () => {
+    const current = await createFullBackupPayload();
+    const { accountIdentities: _accounts, ...v5 } = { ...current, formatVersion: 5 as const };
+    v5.transactions = [makeTx('legacy-v5', { type: 'income', category: 'staking' as never })];
+    await importFullBackup(backupFile(v5));
+    expect(await db.transactions.get('legacy-v5')).toMatchObject({ category: 'staking_reward', categoryOrigin: 'legacy' });
   });
 
   it('round-trips v4 provider evidence, all five states, and user-restore audit losslessly', async () => {
@@ -136,7 +306,7 @@ describe('importFullBackup', () => {
     ]);
 
     const payload = await createFullBackupPayload();
-    expect(payload.formatVersion).toBe(5);
+    expect(payload.formatVersion).toBe(6);
     await clearDb();
     await importFullBackup(backupFile(payload));
 
@@ -197,7 +367,7 @@ describe('importFullBackup', () => {
       quantity: 10, rawQuantity: '10000000', isCollateral: true
     });
     const payload = await createFullBackupPayload();
-    expect(payload).toMatchObject({ formatVersion: 5, defiPositionSnapshots: [{ snapshotId: 'defi-1' }], defiPositionRows: [{ id: 'defi-row-1' }] });
+    expect(payload).toMatchObject({ formatVersion: 6, defiPositionSnapshots: [{ snapshotId: 'defi-1' }], defiPositionRows: [{ id: 'defi-row-1' }] });
     await clearDb();
     await importFullBackup(backupFile(payload));
     expect(await db.defiPositionSnapshots.get('defi-1')).toMatchObject({ status: 'complete', restoredAt: expect.any(Number) });
@@ -370,7 +540,7 @@ describe('importFullBackup', () => {
     const payload = {
       ...v2Payload([makeTx('new-tx')]),
       lookupAddresses: [
-        { id: 'new:addr', chain: 'solana', address: 'newAddr', lastSyncedAt: 2, txCount: 1 }
+        { id: 'new:addr', chain: 'solana', address: VALID_SOLANA_ADDRESS, lastSyncedAt: 2, txCount: 1 }
       ],
       priceCache: [{ key: 'new-key', price: 42, fetchedAt: 2 }],
       csvImports: [
@@ -450,16 +620,16 @@ describe('importFullBackup', () => {
       providerMetadata: { apiToken: 'nested-api-token' }
     } as never);
     await db.lookupAddresses.put({
-      id: 'bitcoin:abc', chain: 'bitcoin', address: 'abc', lastSyncedAt: 1, txCount: 0,
+      id: `bitcoin:${VALID_BITCOIN_ADDRESS}`, chain: 'bitcoin', address: VALID_BITCOIN_ADDRESS, lastSyncedAt: 1, txCount: 0,
       providerMetadata: { bearerToken: 'lookup-bearer' }
     } as never);
 
     const payload = await createFullBackupPayload();
     const serialized = JSON.stringify(payload);
-    expect(payload.formatVersion).toBe(5);
+    expect(payload.formatVersion).toBe(6);
     expect(payload.exchangeConnections[0]).toMatchObject({ id: 'source-1', exchange: 'binance', label: 'Safe label' });
     expect(payload.csvImports[0].id).toBe('csv-1');
-    expect(payload.lookupAddresses[0].id).toBe('bitcoin:abc');
+    expect(payload.lookupAddresses[0].id).toBe(`bitcoin:${VALID_BITCOIN_ADDRESS}`);
     for (const forbidden of [
       'apiKey', 'secret', 'passphrase', 'provider-secret', 'custom-secret', 'license-secret',
       'authToken', 'bearerToken', 'sessionToken', 'apiToken', 'nested-auth', 'nested-bearer',
@@ -506,18 +676,18 @@ describe('importFullBackup', () => {
   it('round-trips wallet-app identity and accepts legacy lookup rows without it', async () => {
     await db.lookupAddresses.bulkPut([
       {
-        id: 'ethereum:0xabc',
+        id: 'ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         chain: 'ethereum',
-        address: '0xabc',
+        address: '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
         label: 'Long-term savings',
         walletAppId: 'metamask',
         lastSyncedAt: 1,
         txCount: 0
       },
       {
-        id: 'bitcoin:legacy',
+        id: `bitcoin:${VALID_BITCOIN_ADDRESS}`,
         chain: 'bitcoin',
-        address: 'legacy',
+        address: VALID_BITCOIN_ADDRESS,
         label: 'Legacy wallet',
         lastSyncedAt: 2,
         txCount: 0
@@ -526,18 +696,18 @@ describe('importFullBackup', () => {
 
     const payload = await createFullBackupPayload();
     expect(payload.lookupAddresses).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: 'ethereum:0xabc', walletAppId: 'metamask' }),
-      expect.not.objectContaining({ id: 'bitcoin:legacy', walletAppId: expect.anything() })
+      expect.objectContaining({ id: 'ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', walletAppId: 'metamask' }),
+      expect.not.objectContaining({ id: `bitcoin:${VALID_BITCOIN_ADDRESS}`, walletAppId: expect.anything() })
     ]));
 
     await clearDb();
     await importFullBackup(backupFile(payload));
 
-    expect(await db.lookupAddresses.get('ethereum:0xabc')).toMatchObject({
+    expect(await db.lookupAddresses.get('ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toMatchObject({
       label: 'Long-term savings',
       walletAppId: 'metamask'
     });
-    expect((await db.lookupAddresses.get('bitcoin:legacy'))?.walletAppId).toBeUndefined();
+    expect((await db.lookupAddresses.get(`bitcoin:${VALID_BITCOIN_ADDRESS}`))?.walletAppId).toBeUndefined();
   });
 
   it('round-trips validated exchange replay checkpoints without credentials', async () => {
@@ -656,11 +826,11 @@ describe('importFullBackup', () => {
   it('does not reactivate exported v10 wallet or exchange balance anchors on restore', async () => {
     await db.transactions.put(makeTx('history-kept'));
     await db.lookupAddresses.put({
-      id: 'solana:Base58Case', chain: 'solana', address: 'Base58Case', lastSyncedAt: 1, txCount: 0,
+      id: `solana:${VALID_SOLANA_ADDRESS}`, chain: 'solana', address: VALID_SOLANA_ADDRESS, lastSyncedAt: 1, txCount: 0,
       sourceIncarnation: 'incarnation-before'
     });
     await db.walletBalances.put({
-      id: 'solana:Base58Case:solana:native', chain: 'solana', address: 'Base58Case',
+      id: `solana:${VALID_SOLANA_ADDRESS}:solana:native`, chain: 'solana', address: VALID_SOLANA_ADDRESS,
       asset: 'SOL', amount: 3, asOf: 10, source: 'rpc'
     });
     await db.exchangeConnections.put({
@@ -814,10 +984,10 @@ describe('importFullBackup', () => {
     });
     await db.specIdHints.put({ txId: 'keep', preferredLotIds: ['lot-1'] });
     await db.lookupAddresses.put({
-      id: 'bitcoin:abc', chain: 'bitcoin', address: 'abc', lastSyncedAt: 1, txCount: 0
+      id: `bitcoin:${VALID_BITCOIN_ADDRESS}`, chain: 'bitcoin', address: VALID_BITCOIN_ADDRESS, lastSyncedAt: 1, txCount: 0
     });
     await db.walletBalances.put({
-      id: 'bitcoin:abc:BTC', chain: 'bitcoin', address: 'abc', asset: 'BTC',
+      id: `bitcoin:${VALID_BITCOIN_ADDRESS}:BTC`, chain: 'bitcoin', address: VALID_BITCOIN_ADDRESS, asset: 'BTC',
       amount: 1, asOf: 1, source: 'rpc'
     });
     await db.exchangeConnections.put({

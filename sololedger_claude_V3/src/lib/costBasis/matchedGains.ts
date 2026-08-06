@@ -243,7 +243,7 @@ export function buildIncomeRows(
           source: t.source,
           kind: dabbaProgram
             ? dabbaProgram.kind
-            : t.category === 'staking'
+            : t.category === 'staking_reward'
               ? 'staking_suspected'
               : 'airdrop_suspected',
           kindLabel: dabbaProgram ? dabbaProgram.label : undefined,

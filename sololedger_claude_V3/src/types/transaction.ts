@@ -21,6 +21,29 @@ export type TxType =
   | 'defi_withdraw'
   | 'other';
 
+/** Stable semantic axis. Structural posting behavior remains exclusively in TxType. */
+export type TransactionCategory =
+  | 'reward' | 'mining' | 'airdrop' | 'fork' | 'lending_interest' | 'salary'
+  | 'other_income' | 'cashback' | 'fee_refund'
+  | 'loan' | 'margin_loan' | 'loan_repayment' | 'margin_repayment'
+  | 'dust' | 'realized_pnl' | 'funding_fee' | 'futures_fee' | 'options_premium'
+  | 'gift' | 'donation' | 'lost' | 'payment' | 'cost' | 'tax'
+  | 'loan_fee' | 'margin_fee' | 'other_fee'
+  | 'swap' | 'multi_trade' | 'pool_in' | 'pool_out' | 'liquidity_in' | 'liquidity_out'
+  | 'options_fee' | 'options_collateral' | 'perp_profit' | 'perp_loss'
+  | 'derivative_collateral' | 'defi_reward' | 'mining_reward' | 'staking_reward'
+  | 'genesis_reward' | 'mainnet_reward'
+  | 'p2p' | 'rebalance' | 'nft' | 'other';
+
+export type ClassificationOrigin = 'parser' | 'provider' | 'rule' | 'suggestion' | 'user' | 'legacy';
+export type InternalTransferDecision = 'confirmed' | 'suggested' | 'rejected';
+export type InternalTransferMatchMethod =
+  | 'exact_onchain_event'
+  | 'parser_native'
+  | 'heuristic'
+  | 'manual'
+  | 'legacy';
+
 export type FlagReason =
   | 'possible_internal_transfer'
   | 'missing_market_value'
@@ -83,7 +106,22 @@ export interface Transaction {
   safetyState?: import('@/lib/safety/types').SafetyState;
   /** Why an outbound-looking event was accepted or rejected as custody evidence. */
   outboundInitiation?: import('@/lib/safety/outboundInitiation').OutboundInitiationState;
-  category?: string;            // user-editable free-form tag
+  category?: TransactionCategory;
+  /** Original non-semantic or unknown pre-v15 category evidence. */
+  legacyCategory?: string;
+  categoryOrigin?: ClassificationOrigin;
+  categoryConfidence?: number;
+  categoryRuleId?: string;
+  categoryRuleVersion?: string;
+  categoryUpdatedAt?: number;
+  categoryLocked?: boolean;
+  /** Reciprocal transfer-pair contract. B1 persists/validates it; B4 performs matching. */
+  internalTransferPairId?: string;
+  linkedTransferId?: string;
+  internalTransferDecision?: InternalTransferDecision;
+  internalTransferMatchMethod?: InternalTransferMatchMethod;
+  internalTransferMatcherVersion?: string;
+  internalTransferDecisionAt?: number;
   /**
    * Spot vs derivatives (perps/futures). Set by exchange parsers (e.g. Hyperliquid).
    * Undefined → treated as spot unless source/category heuristics say otherwise.

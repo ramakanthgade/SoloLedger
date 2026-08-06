@@ -98,7 +98,7 @@ describe('deriveTransactionPostings', () => {
   it.each(['hyperliquid_trades', 'wazirx_ledger'])('emits one fee-role debit for %s fee rows', (source) => {
     const postings = deriveTransactionPostings(tx({
       type: 'fee', source, asset: 'USDC', amount: 3, feeAsset: 'USDC', feeAmount: 3,
-      category: source === 'hyperliquid_trades' ? 'perp' : undefined
+      category: source === 'hyperliquid_trades' ? 'perp_profit' : undefined
     }), context);
     expect(postings).toHaveLength(1);
     expect(postings[0]).toMatchObject({ role: 'fee', postingPhase: 30, asset: 'USDC', signedQuantity: -3 });

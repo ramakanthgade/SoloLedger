@@ -22,6 +22,7 @@ import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/s
 import { summarizeYear } from '@/lib/tax/jurisdictions';
 import type { Transaction } from '@/types/transaction';
 import type { DerivedPosting, OpeningBalanceRow } from './derivedPostings';
+import { normalizeImportedTransactionCategory } from '@/lib/taxonomy/categories';
 
 const DAY = 86_400_000;
 const START = Date.UTC(2024, 4, 1);
@@ -68,7 +69,7 @@ function taxFixture(): Transaction[] {
     },
     {
       id: 'perp-profit', timestamp: START + 20 * DAY, type: 'income', asset: 'USDC', amount: 40,
-      fiatCurrency: 'INR', fiatValue: 40, source: 'hyperliquid_trades', category: 'perp',
+      fiatCurrency: 'INR', fiatValue: 40, source: 'hyperliquid_trades', category: 'perp_profit',
       instrumentClass: 'derivative', raw: { coin: 'ETH', ntl: '1000', closedPnl: '40', sz: '1' },
       flags: [], isInternalTransfer: false
     },
@@ -734,5 +735,21 @@ describe('custody projection tax boundary', () => {
     };
 
     expect(compileOnlyTaxBoundary).toBeTypeOf('function');
+  });
+
+  it('migrates legacy perp_funding to the same funding-fee tax result without changing evidence', () => {
+    const legacy: Transaction = {
+      id: 'legacy-funding', timestamp: START, type: 'fee', asset: 'USDC', amount: 3,
+      fiatCurrency: 'INR', fiatValue: 250, source: 'binance', category: 'perp_funding' as never,
+      instrumentClass: 'derivative', raw: { Operation: 'Perpetual funding fee', signed: '-3' },
+      flags: [], isInternalTransfer: false
+    };
+    const migrated = normalizeImportedTransactionCategory(legacy);
+    const canonical = { ...legacy, category: 'funding_fee' as const, categoryOrigin: 'legacy' as const };
+    expect(buildDerivativeBusinessExpenseRows([migrated])).toEqual(buildDerivativeBusinessExpenseRows([canonical]));
+    expect(migrated).toMatchObject({
+      amount: 3, fiatValue: 250, source: 'binance', category: 'funding_fee',
+      raw: legacy.raw, instrumentClass: 'derivative'
+    });
   });
 });
