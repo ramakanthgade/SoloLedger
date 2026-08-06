@@ -72,6 +72,25 @@ describe('exhaustive DeFi event-contract registry', () => {
     expect(actions).toEqual([expect.objectContaining({ type: 'supply', complete: true, reserveKey: reserve })]);
   });
 
+  it('propagates cancellation through the active RPC and issues no later sequential reserve calls', async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const rpc: EventRegistryRpc = async (method, _params, signal) => {
+      calls.push(method);
+      if (method === 'eth_blockNumber') return '0x1';
+      return await new Promise<unknown>((_resolve, reject) => {
+        signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true });
+      });
+    };
+    const pending = fetchDefiEventContractRegistry(rpc, undefined, controller.signal);
+    await Promise.resolve();
+    await Promise.resolve();
+    controller.abort();
+
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toEqual(['eth_blockNumber', 'eth_call']);
+  });
+
   it.each([
     ['empty protocol reserve list', 'empty'],
     ['zero token address', 'zero'],

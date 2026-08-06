@@ -1,4 +1,5 @@
 import type { NeutralDefiAction } from '@/lib/defi/types';
+import { exactStoredDefiAction } from '@/lib/defi/actionEvidence';
 import { resolveProtocol } from '@/lib/defi/protocolRegistry';
 import { isDerivativeTransaction, resolveDerivativesTreatment } from '@/lib/tax/derivatives';
 import { resolveJurisdictionRules } from '@/lib/tax/jurisdictions';
@@ -88,9 +89,18 @@ function resolveDefiPolicy(
   if (action.type === 'supply' || action.type === 'withdraw') {
     return review(input, 'defi_supply_withdraw_unsupported', 'Supply and withdrawal treatment is not validated for this jurisdiction.', action.eventIds);
   }
-  if (action.type === 'borrow' || action.type === 'repay') {
+  if (action.type === 'borrow') {
     return resolution(input, 'non_taxable', 'defi_loan_principal',
-      action.type === 'borrow' ? 'Loan principal received is not income.' : 'Repayment reduces loan principal.',
+      'Loan principal received is not income.',
+      action.confidence, action.eventIds);
+  }
+  if (action.type === 'repay') {
+    return review(input, 'crypto_loan_repayment_unsupported',
+      'Liability principal reduction is non-taxable, but the outgoing crypto disposal requires jurisdiction-specific review.',
+      action.eventIds);
+  }
+  if (action.type === 'interest' && action.interestKind === 'borrowing') {
+    return resolution(input, 'non_taxable', 'transaction_fee', 'Explicit borrowing interest is a loan expense, not income.',
       action.confidence, action.eventIds);
   }
   if (action.type === 'interest' || action.type === 'reward') {
@@ -114,6 +124,13 @@ export function resolveTaxPolicy(input: TaxPolicyInput): TaxPolicyResolution {
       'Validated derivatives setting applied at report time.', 1, [], derivativesTreatment);
   }
   const { transaction } = input;
+  if (transaction.raw && Object.prototype.hasOwnProperty.call(transaction.raw, 'defiActionEvidence')) {
+    const action = exactStoredDefiAction(transaction.raw.defiActionEvidence, transaction);
+    if (!action) {
+      return review(input, 'defi_evidence_incomplete', 'Stored DeFi receipt evidence failed exact validation.', [transaction.id]);
+    }
+    return resolveDefiPolicy({ kind: 'defi_action', action, settings: input.settings });
+  }
   if (transaction.categoryOrigin === 'suggestion' && !transaction.categoryLocked) {
     return review(input, 'suggestion_pending', 'Suggested classification requires user confirmation.', [transaction.id]);
   }

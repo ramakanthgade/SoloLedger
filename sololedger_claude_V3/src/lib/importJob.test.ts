@@ -177,7 +177,8 @@ vi.mock('@/lib/storage/db', () => ({
   resolvePostDedupTransferSurvivorIds: vi.fn(async (txs: Transaction[]) => txs
     .filter((row) => row.type === 'transfer_in' || row.type === 'transfer_out')
     .map((row) => row.id)),
-  filterAlreadyImported: vi.fn(async (txs: Transaction[]) => txs)
+  filterAlreadyImported: vi.fn(async (txs: Transaction[]) => txs),
+  mergeReenrichedTransactions: vi.fn(async (txs: Transaction[]) => ({ transactions: txs, upgraded: 0 }))
 }));
 
 vi.mock('@/lib/saas/config', () => ({ isSaasMode: vi.fn(() => false) }));

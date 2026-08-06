@@ -7,12 +7,20 @@ export interface RegistryEventContract {
   role?: 'protocol_token' | 'debt_token' | 'reward' | 'reward_controller' | 'reward_source';
 }
 
-export type EventRegistryRpc = (method: string, params: unknown[]) => Promise<unknown>;
+export type EventRegistryRpc = (method: string, params: unknown[], signal?: AbortSignal) => Promise<unknown>;
 const ZERO_ADDRESS = `0x${'0'.repeat(40)}`;
 const canonicalAddress = (value: string): boolean => /^0x[0-9a-f]{40}$/.test(value) && value !== ZERO_ADDRESS;
 
-async function ethCall(rpc: EventRegistryRpc, to: string, data: string, block: string): Promise<string> {
-  const result = await rpc('eth_call', [{ to, data }, block]);
+function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) throw new DOMException('Event registry crawl aborted.', 'AbortError');
+}
+
+async function ethCall(
+  rpc: EventRegistryRpc, to: string, data: string, block: string, signal?: AbortSignal
+): Promise<string> {
+  throwIfAborted(signal);
+  const result = await rpc('eth_call', [{ to, data }, block], signal);
+  throwIfAborted(signal);
   if (typeof result !== 'string' || !/^0x[0-9a-f]*$/i.test(result)) throw new Error('Malformed event-registry eth_call result.');
   return result;
 }
@@ -23,9 +31,12 @@ async function ethCall(rpc: EventRegistryRpc, to: string, data: string, block: s
  */
 export async function fetchDefiEventContractRegistry(
   rpc: EventRegistryRpc,
-  requestedBlock?: string
+  requestedBlock?: string,
+  signal?: AbortSignal
 ): Promise<{ block: string; contracts: Readonly<Record<string, RegistryEventContract>> }> {
-  const block = requestedBlock ?? await rpc('eth_blockNumber', []);
+  throwIfAborted(signal);
+  const block = requestedBlock ?? await rpc('eth_blockNumber', [], signal);
+  throwIfAborted(signal);
   if (typeof block !== 'string' || !/^0x[0-9a-f]+$/i.test(block)) throw new Error('Malformed event-registry block number.');
   const contracts: Record<string, RegistryEventContract> = {};
   const register = (address: string, mapping: RegistryEventContract): void => {
@@ -34,19 +45,21 @@ export async function fetchDefiEventContractRegistry(
     contracts[address] = mapping;
   };
   for (const entry of Object.values(PROTOCOL_REGISTRY)) {
+    throwIfAborted(signal);
     const reserves = decodeReserveTokens(await ethCall(
-      rpc, entry.dataProviderAddress, AAVE_DATA_PROVIDER_SELECTORS.getAllReservesTokens, block
+      rpc, entry.dataProviderAddress, AAVE_DATA_PROVIDER_SELECTORS.getAllReservesTokens, block, signal
     ));
     if (reserves.length === 0) throw new Error(`Event registry returned no reserves for ${entry.id}.`);
     const seenReserves = new Set<string>();
     for (const reserve of reserves) {
+      throwIfAborted(signal);
       const reserveKey = reserve.address.toLowerCase();
       if (!canonicalAddress(reserveKey) || seenReserves.has(reserveKey)) throw new Error('Event registry returned an invalid or duplicate reserve.');
       seenReserves.add(reserveKey);
       const tokenData = await ethCall(
         rpc, entry.dataProviderAddress,
         `${AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses}${encodeAddress(reserveKey)}`,
-        block
+        block, signal
       );
       const aToken = addressWord(tokenData, 0);
       const stableDebtToken = addressWord(tokenData, 1);

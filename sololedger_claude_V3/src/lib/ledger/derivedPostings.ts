@@ -1,9 +1,9 @@
 import type { Transaction } from '@/types/transaction';
+import { exactActionDisplayQuantity, exactStoredDefiAction } from '@/lib/defi/actionEvidence';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { binanceApiIdentity } from '@/lib/storage/binanceEconomicDedup';
 import { normalizeAssetSymbol, transactionLegAssetKey } from './assetKey';
 import { canonicalWalletAddress, canonicalWalletChainScope } from './chainNamespace';
-import { resolveProtocol } from '@/lib/defi/protocolRegistry';
 
 export type AccountClass =
   | 'spot' | 'funding' | 'margin' | 'futures' | 'options'
@@ -255,25 +255,23 @@ interface PostingLeg {
 }
 
 interface DefiPostingAction {
-  type: 'borrow' | 'repay';
+  type: 'borrow' | 'repay' | 'borrowing_interest';
   protocolId: string;
   reserveKey: string;
+  quantity: number;
 }
 
 function defiPostingAction(transaction: Transaction): DefiPostingAction | undefined {
-  const evidence = transaction.raw?.defiActionEvidence;
-  if (!evidence || typeof evidence !== 'object') return undefined;
-  const value = evidence as Record<string, unknown>;
-  const exactEventIds = Array.isArray(value.eventIds) && value.eventIds.every((eventId) =>
-    typeof eventId === 'string' && /^event:\d+:0x[0-9a-f]+:0x[0-9a-f]{40}:\d+$/.test(eventId));
-  if (value.postingAnchor !== true || (value.type !== 'borrow' && value.type !== 'repay') ||
-      typeof value.protocolId !== 'string' || typeof value.reserveKey !== 'string' ||
-      value.reserveKey === 'unknown' || value.complete !== true || value.evidenceSource !== 'ethereum_log' ||
-      typeof value.chainId !== 'number' || !resolveProtocol(value.chainId, value.protocolId) ||
-      typeof value.confidence !== 'number' || !Number.isFinite(value.confidence) || value.confidence < 0.9 ||
-      !exactEventIds || !Array.isArray(value.eventIds) || new Set(value.eventIds).size < 2 ||
+  const value = exactStoredDefiAction(transaction.raw?.defiActionEvidence, transaction);
+  const quantity = value ? exactActionDisplayQuantity(value) : undefined;
+  if (!value || quantity == null || quantity <= 0 ||
+      (value.type !== 'borrow' && value.type !== 'repay' &&
+        !(value.type === 'interest' && value.interestKind === 'borrowing')) ||
       typeof value.postingAnchorEventId !== 'string' || !value.eventIds.includes(value.postingAnchorEventId)) return undefined;
-  return { type: value.type, protocolId: value.protocolId, reserveKey: value.reserveKey };
+  return {
+    type: value.type === 'interest' ? 'borrowing_interest' : value.type,
+    protocolId: value.protocolId, reserveKey: value.reserveKey, quantity
+  };
 }
 
 function deletedTransactionEvidence(
@@ -306,13 +304,6 @@ function transactionEvidence(transaction: Transaction): EvidenceRef[] {
   return [direct, {
     kind: 'suppressed_twin', transactionId: twin.id, source: twin.source,
     sourceRef: twin.sourceRef, importBatchId: twin.importBatchId, apiIdentity
-  }];
-}
-
-function directTransactionEvidence(transaction: Transaction): EvidenceRef[] {
-  return [{
-    kind: 'transaction', transactionId: transaction.id, role: 'direct', source: transaction.source,
-    sourceRef: transaction.sourceRef, importBatchId: transaction.importBatchId
   }];
 }
 
@@ -352,6 +343,14 @@ function legsFor(transaction: Transaction, scope: AccountScopeResolution): Posti
       (transaction.type === 'transfer_out' && transaction.outboundInitiation != null &&
         transaction.outboundInitiation !== 'wallet_initiated')) return [];
   const legs: PostingLeg[] = [];
+  const defiAction = defiPostingAction(transaction);
+  if (defiAction?.type === 'borrowing_interest') {
+    return [{
+      role: 'liability', phase: 20, asset: normalizeAssetSymbol(transaction.asset),
+      assetKey: `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
+      quantity: -defiAction.quantity, position: 0
+    }];
+  }
   if (transaction.type === 'fee') {
     const quantity = -Math.abs(transaction.amount);
     if (quantity !== 0 && Number.isFinite(quantity)) {
@@ -362,19 +361,20 @@ function legsFor(transaction: Transaction, scope: AccountScopeResolution): Posti
     }
     return legs;
   }
-  const principal = signedPrincipal(transaction);
+  const principal = defiAction?.type === 'borrow' ? defiAction.quantity
+    : defiAction?.type === 'repay' ? -defiAction.quantity
+      : signedPrincipal(transaction);
   if (principal !== 0 && Number.isFinite(principal)) {
     legs.push({
       role: 'principal', phase: 10, asset: normalizeAssetSymbol(transaction.asset),
       assetKey: postingLegAssetKey(transaction, 'principal', scope), quantity: principal, position: 0
     });
   }
-  const defiAction = defiPostingAction(transaction);
-  if (defiAction && transaction.amount > 0 && Number.isFinite(transaction.amount)) {
+  if (defiAction) {
     legs.push({
       role: 'liability', phase: 20, asset: normalizeAssetSymbol(transaction.asset),
       assetKey: `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
-      quantity: defiAction.type === 'borrow' ? -Math.abs(transaction.amount) : Math.abs(transaction.amount),
+      quantity: defiAction.type === 'borrow' ? -defiAction.quantity : defiAction.quantity,
       position: 1
     });
   }
@@ -425,21 +425,6 @@ export function deriveTransactionPostings(
   return postings;
 }
 
-function appendDerivedPosting(
-  target: DerivedPosting[], transaction: Transaction, scope: AccountScopeResolution, evidence: EvidenceRef[],
-  role: Exclude<PostingRole, 'opening_balance'>, phase: Exclude<PostingPhase, 0>,
-  asset: string, assetKey: string, quantity: number
-): void {
-  target.push({
-    id: `${transaction.id}:${phase}:0:${assetKey}`,
-    taxEventId: transaction.id, transactionId: transaction.id,
-    accountScopeId: scope.accountScopeId, accountClass: scope.accountClass,
-    assetKey, asset, signedQuantity: quantity,
-    role, postingPhase: phase, ordinal: 0, effectiveAt: transaction.timestamp,
-    evidence, taxableEffect: 'source_transaction_only'
-  });
-}
-
 function appendTransactionPostings(
   target: DerivedPosting[],
   transaction: Transaction,
@@ -447,73 +432,23 @@ function appendTransactionPostings(
   connectionById: ReadonlyMap<string, ExchangeSourceIdentity>,
   liveBinanceConnections: readonly ExchangeSourceIdentity[]
 ): void {
-  if (isTransactionExcluded(transaction) ||
-      (transaction.type === 'transfer_out' && transaction.outboundInitiation != null &&
-        transaction.outboundInitiation !== 'wallet_initiated')) return;
-  const simpleManual = transaction.source === 'manual' && transaction.raw == null &&
-    transaction.parserAccountClass == null &&
-    transaction.deletedSourceEvidence == null && transaction.dedupMatchedApiRow == null &&
-    transaction.walletAddress == null && transaction.chain == null && transaction.category == null &&
-    transaction.instrumentClass !== 'derivative';
-  const scope: AccountScopeResolution = simpleManual
-    ? {
-        scopeStatus: 'resolved',
-        accountScopeId: transaction.importBatchId
-          ? `file:${transaction.importBatchId}:manual`
-          : 'manual',
-        accountClass: 'manual'
-      }
-    : resolveAccountScope(transaction, context, connectionById, liveBinanceConnections);
-  const evidence = simpleManual
-    ? directTransactionEvidence(transaction)
-    : transaction.deletedSourceEvidence
-      ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
-      : transactionEvidence(transaction);
-  if (transaction.type === 'fee') {
-    const quantity = -Math.abs(transaction.amount);
-    if (quantity !== 0 && Number.isFinite(quantity)) {
-      appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
-        normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), quantity);
-    }
-    return;
-  }
-  if (transaction.type === 'transfer_in' || transaction.type === 'transfer_out') {
-    const quantity = transaction.type === 'transfer_in'
-      ? Math.abs(transaction.amount)
-      : -Math.abs(transaction.amount);
-    if (quantity !== 0 && Number.isFinite(quantity)) {
-      appendDerivedPosting(target, transaction, scope, evidence, 'principal', 10,
-        normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), quantity);
-    }
-    const defiAction = defiPostingAction(transaction);
-    if (defiAction && transaction.amount > 0 && Number.isFinite(transaction.amount)) {
-      appendDerivedPosting(target, transaction, scope, evidence, 'liability', 20,
-        normalizeAssetSymbol(transaction.asset), `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
-        defiAction.type === 'borrow' ? -Math.abs(transaction.amount) : Math.abs(transaction.amount));
-    }
-    if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
-      appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
-        normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset), postingLegAssetKey(transaction, 'fee', scope),
-        -Math.abs(transaction.feeAmount));
-    }
-    return;
-  }
-  const principal = signedPrincipal(transaction);
-  if (principal !== 0 && Number.isFinite(principal)) {
-    appendDerivedPosting(target, transaction, scope, evidence, 'principal', 10,
-      normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), principal);
-  }
-  if (transaction.counterAsset && transaction.counterAmount != null && Number.isFinite(transaction.counterAmount) &&
-    COUNTER_LEG_TYPES.has(transaction.type)) {
-    const sign = transaction.type === 'buy' || transaction.type === 'nft_buy' ? -1 : 1;
-    appendDerivedPosting(target, transaction, scope, evidence, 'counter', 20,
-      normalizeAssetSymbol(transaction.counterAsset), postingLegAssetKey(transaction, 'counter', scope),
-      sign * Math.abs(transaction.counterAmount));
-  }
-  if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
-    appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,
-      normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset), postingLegAssetKey(transaction, 'fee', scope),
-      -Math.abs(transaction.feeAmount));
+  const scope = resolveAccountScope(transaction, context, connectionById, liveBinanceConnections);
+  const evidence = transaction.deletedSourceEvidence
+    ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
+    : transactionEvidence(transaction);
+  let previousPhase: PostingPhase | undefined;
+  let ordinal = 0;
+  for (const leg of legsFor(transaction, scope)) {
+    ordinal = previousPhase === leg.phase ? ordinal + 1 : 0;
+    previousPhase = leg.phase;
+    target.push({
+      id: `${transaction.id}:${leg.phase}:${ordinal}:${leg.assetKey}`,
+      taxEventId: transaction.id, transactionId: transaction.id,
+      accountScopeId: scope.accountScopeId, accountClass: scope.accountClass,
+      assetKey: leg.assetKey, asset: leg.asset, signedQuantity: leg.quantity,
+      role: leg.role, postingPhase: leg.phase, ordinal, effectiveAt: transaction.timestamp,
+      evidence, taxableEffect: 'source_transaction_only'
+    });
   }
 }
 

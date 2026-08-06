@@ -2,6 +2,11 @@ import type { ClassificationEvidence, Transaction, TransactionCategory, TxType }
 
 export const CLASSIFICATION_RULESET_VERSION = 'b5.1';
 
+export const SUPPORTED_DEFI_RECEIPT_ACTIONS = ['borrow', 'repay', 'lending-interest', 'borrowing-interest'] as const;
+export function defiReceiptRuleId(protocolId: string, action: typeof SUPPORTED_DEFI_RECEIPT_ACTIONS[number]): string {
+  return `defi-receipt:${protocolId}:${action}`;
+}
+
 export const ALLOWLISTED_CLASSIFICATION_RULES: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['binance-options:premium', new Set([CLASSIFICATION_RULESET_VERSION])],
   ['binance-options:commission-fee', new Set([CLASSIFICATION_RULESET_VERSION])],
@@ -16,7 +21,11 @@ export const ALLOWLISTED_CLASSIFICATION_RULES: ReadonlyMap<string, ReadonlySet<s
   ['hyperliquid:perp-profit', new Set([CLASSIFICATION_RULESET_VERSION])],
   ['hyperliquid:perp-loss', new Set([CLASSIFICATION_RULESET_VERSION])],
   ['hyperliquid:collateral', new Set([CLASSIFICATION_RULESET_VERSION])],
-  ['reward-registry:exact', new Set([CLASSIFICATION_RULESET_VERSION])]
+  ['reward-registry:exact', new Set([CLASSIFICATION_RULESET_VERSION])],
+  ...(['aave-v2-ethereum', 'aave-v3-ethereum', 'spark-v1-ethereum'] as const).flatMap((protocolId) =>
+    SUPPORTED_DEFI_RECEIPT_ACTIONS.map((action) => [
+      defiReceiptRuleId(protocolId, action), new Set([CLASSIFICATION_RULESET_VERSION])
+    ] as const))
 ]);
 
 export function isApprovedClassificationRule(ruleId: string, ruleVersion: string): boolean {
