@@ -13,7 +13,7 @@
  *    address is the fallback for unknown wallets only.
  */
 import type { Transaction, TxType } from '@/types/transaction';
-import { formatCompactAmount, formatCurrency } from '@/lib/utils';
+import { formatCompactAmount, formatLedgerCurrency } from '@/lib/utils';
 
 const DEFAULT_TYPE_LABEL: Record<TxType, string> = {
   buy: 'Buy',
@@ -109,17 +109,17 @@ function endpointLeg(addr: string, resolveWallet?: WalletNameResolver): RowLeg {
 export function txFlow(t: Transaction, ctx: FlowCtx): RowFlow {
   const { assetLabel, counterLabel, fromAddr, toAddr, resolveWallet, disposal } = ctx;
   const gain: FlowGain | undefined = disposal
-    ? { kind: disposal.gain >= 0 ? 'gain' : 'loss', formatted: formatCurrency(Math.abs(disposal.gain), t.fiatCurrency) }
+    ? { kind: disposal.gain >= 0 ? 'gain' : 'loss', formatted: formatLedgerCurrency(Math.abs(disposal.gain), t.fiatCurrency) }
     : undefined;
   // Honesty: a disposal whose amount matched no lots has costBasis 0 — that is
   // UNKNOWN, not zero, so the sub-line reads "cost —", never an invented
   // "cost ₹0.00".
   const costSubline = disposal
     ? disposal.costBasis > 0
-      ? `cost ${formatCurrency(disposal.costBasis, t.fiatCurrency)}`
+      ? `cost ${formatLedgerCurrency(disposal.costBasis, t.fiatCurrency)}`
       : 'cost —'
     : undefined;
-  const valueSubline = t.fiatValue != null ? `≈ ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : undefined;
+  const valueSubline = t.fiatValue != null ? `≈ ${formatLedgerCurrency(t.fiatValue, t.fiatCurrency)}` : undefined;
   const assetLeg = (sign?: '+' | '−', subline?: string): RowLeg => ({
     kind: 'asset',
     role: 'principal',
@@ -259,10 +259,10 @@ function placePhrase(
 export function buildTxSummary(t: Transaction, ctx: SummaryCtx): TxSummary {
   const { assetLabel, counterLabel, sourceLabel, resolveWallet, fromAddr, toAddr, disposal } = ctx;
   const amt = `${formatCompactAmount(t.amount)} ${assetLabel}`;
-  const fiat = t.fiatValue != null ? formatCurrency(t.fiatValue, t.fiatCurrency) : null;
+  const fiat = t.fiatValue != null ? formatLedgerCurrency(t.fiatValue, t.fiatCurrency) : null;
   const src = sourcePhrase(sourceLabel);
   const tail: FlowGain | undefined = disposal
-    ? { kind: disposal.gain >= 0 ? 'gain' : 'loss', formatted: formatCurrency(Math.abs(disposal.gain), t.fiatCurrency) }
+    ? { kind: disposal.gain >= 0 ? 'gain' : 'loss', formatted: formatLedgerCurrency(Math.abs(disposal.gain), t.fiatCurrency) }
     : undefined;
   if (t.category === 'options_premium' && (t.type === 'fee' || t.type === 'income')) {
     return t.type === 'income'

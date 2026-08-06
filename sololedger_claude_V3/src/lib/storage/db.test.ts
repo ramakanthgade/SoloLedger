@@ -28,6 +28,7 @@ import {
   transactionImportKey,
   updateAccountOwnership,
   updateReciprocalTransferPair,
+  updateWalletAccountLabel,
   updateWalletLabel,
   upsertCsvImport,
   upsertLookupAddress,
@@ -275,6 +276,40 @@ describe('v11 authority persistence', () => {
     expect(await db.lookupAddresses.get('ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')).toMatchObject({
       label: 'MetaMask',
       walletAppId: 'metamask'
+    });
+  });
+
+  it('CAS-renames a wallet account and every linked chain source atomically', async () => {
+    const address = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    await upsertLookupAddress('ethereum', address, 0, undefined, { label: 'MetaMask', walletAppId: 'metamask' });
+    await upsertLookupAddress('polygon', address, 0, undefined, { label: 'MetaMask', walletAppId: 'metamask' });
+    const accountId = `wallet:evm:${address}`;
+    const before = await db.accountIdentities.get(accountId);
+
+    const renamedAt = before!.updatedAt + 1;
+    const renamed = await updateWalletAccountLabel(accountId, '  Long-term vault  ', before!.lifecycleRevision, renamedAt);
+
+    expect(renamed).toMatchObject({ label: 'Long-term vault', updatedAt: renamedAt, lifecycleRevision: 1 });
+    expect((await db.lookupAddresses.where('accountIdentityId').equals(accountId).toArray())
+      .map((row) => row.label)).toEqual(['Long-term vault', 'Long-term vault']);
+    await expect(updateWalletAccountLabel(accountId, 'Stale write', before!.lifecycleRevision, renamedAt + 1))
+      .rejects.toThrow('Account label changed while the update was in progress.');
+    expect((await db.accountIdentities.get(accountId))?.label).toBe('Long-term vault');
+  });
+
+  it('uses the canonical renamed label when a later import adds another EVM chain', async () => {
+    const address = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    await upsertLookupAddress('ethereum', address, 0, undefined, { label: 'MetaMask', walletAppId: 'metamask' });
+    const accountId = `wallet:evm:${address}`;
+    const account = await db.accountIdentities.get(accountId);
+    await updateWalletAccountLabel(accountId, 'Vault', account!.lifecycleRevision);
+
+    await upsertLookupAddress('polygon', address, 0, undefined, {
+      label: 'Stale add-flow label', walletAppId: 'ledger'
+    });
+
+    expect(await db.lookupAddresses.get(`polygon:${address}`)).toMatchObject({
+      accountIdentityId: accountId, label: 'Vault', walletAppId: 'metamask'
     });
   });
 

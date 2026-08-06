@@ -25,6 +25,7 @@ import { transactionSafetySubject } from '@/lib/safety/assetSafety';
 import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
 import {
   applyOwnershipUpdate,
+  assertValidAccountIdentity,
   conservativeCsvAccountCanonicalKey,
   exchangeAccountCanonicalKey,
   newAccountIdentity,
@@ -1020,11 +1021,13 @@ export async function upsertLookupAddress(
       row.chain === chain && walletAddressEquals(chain, row.address, canonicalAddress)).toArray();
     const existing = exact ?? (compatibleLegacy.length === 1 ? compatibleLegacy[0] : undefined);
     const accountIdentityId = existing?.accountIdentityId ?? walletAccountCanonicalKey(chain, canonicalAddress);
-    if (!await db.accountIdentities.get(accountIdentityId)) {
-      await db.accountIdentities.add(newAccountIdentity({
+    let account = await db.accountIdentities.get(accountIdentityId);
+    if (!account) {
+      account = newAccountIdentity({
         kind: 'wallet', canonicalKey: accountIdentityId,
         label: initialIdentity?.label, walletAppId: initialIdentity?.walletAppId, providerId: chain
-      }));
+      });
+      await db.accountIdentities.add(account);
     }
     await db.lookupAddresses.put({
       ...(existing ?? {}),
@@ -1038,11 +1041,11 @@ export async function upsertLookupAddress(
       revision: existing?.revision ?? 0,
       sourceIncarnation: existing?.sourceIncarnation ?? newSourceIncarnation(),
       accountIdentityId,
-      ...(!existing && initialIdentity?.label?.trim()
-        ? { label: initialIdentity.label.trim() }
+      ...(!existing && account.label?.trim()
+        ? { label: account.label.trim() }
         : {}),
-      ...(!existing && initialIdentity?.walletAppId?.trim()
-        ? { walletAppId: initialIdentity.walletAppId.trim() }
+      ...(!existing && account.walletAppId?.trim()
+        ? { walletAppId: account.walletAppId.trim() }
         : {})
     });
   });
@@ -1056,6 +1059,33 @@ export async function updateWalletLabel(
   await db.lookupAddresses.where('id').equals(id).modify({
     label: label.trim() || undefined,
     ...(walletAppId ? { walletAppId } : {})
+  });
+}
+
+/** Atomically rename a durable wallet account and all linked chain sources. */
+export async function updateWalletAccountLabel(
+  accountIdentityId: string,
+  label: string,
+  expectedLifecycleRevision: number,
+  now = Date.now()
+): Promise<AccountIdentityRow> {
+  return db.transaction('rw', [db.accountIdentities, db.lookupAddresses], async () => {
+    const current = await db.accountIdentities.get(accountIdentityId);
+    if (!current) throw new Error('Account identity not found.');
+    if (current.kind !== 'wallet') throw new Error('Account identity is not a wallet.');
+    if (current.lifecycleRevision !== expectedLifecycleRevision) {
+      throw new Error('Account label changed while the update was in progress.');
+    }
+    const next: AccountIdentityRow = {
+      ...current,
+      label: label.trim() || undefined,
+      updatedAt: now,
+      lifecycleRevision: current.lifecycleRevision + 1
+    };
+    assertValidAccountIdentity(next);
+    await db.accountIdentities.put(next);
+    await db.lookupAddresses.where('accountIdentityId').equals(accountIdentityId).modify({ label: next.label });
+    return next;
   });
 }
 

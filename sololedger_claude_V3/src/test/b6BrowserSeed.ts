@@ -30,7 +30,8 @@ export async function seedB6BrowserFixture(): Promise<void> {
   }));
   const classified = applyClassificationEvidence(b6Transaction('b6-classified', {
     type: 'income', category: 'other', categoryOrigin: 'legacy', source: 'rpc:ethereum',
-    chain: 'ethereum', walletAddress: B6_EVM_ADDRESS, amount: 0, fiatValue: 0
+    sourceRef: 'moralis:event:ethereum:erc20:staking-reward:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:17',
+    chain: 'ethereum', walletAddress: B6_EVM_ADDRESS, amount: 25, fiatValue: 25
   }), b6ClassificationEvidence, B6_NOW + 50);
   const safetyContracts = {
     spam: `0x${'9'.repeat(40)}`, unverified: `0x${'8'.repeat(40)}`,
@@ -70,11 +71,32 @@ export async function seedB6BrowserFixture(): Promise<void> {
     topLevelSender: `0x${'f'.repeat(40)}`, initiatorAddress: `0x${'f'.repeat(40)}`
   }) };
   const transfers = Object.values(b6TransferTransactions).map((row) => ({ ...row, source: 'rpc:ethereum' }));
+  const primaryEthereumRows = [...transfers, spoofed, classified, ...safety.transactions];
+  const existingEthereumCount = new Set(primaryEthereumRows.map((row) => row.id)).size;
+  // Two transfer fixture rows are intentionally excluded from collection activity
+  // attribution; compensate so the indexed wallet evidence totals exactly 909.
+  const ethereumActivity = Array.from({ length: 704 - existingEthereumCount }, (_, index) =>
+    b6Transaction(`b6-wallet-ethereum-${index}`, {
+      source: 'rpc:ethereum', chain: 'ethereum', walletAddress: B6_EVM_ADDRESS,
+      timestamp: B6_NOW - index * 60_000, amount: 0, fiatValue: 0
+    })
+  );
+  const polygonActivity = Array.from({ length: 207 }, (_, index) =>
+    b6Transaction(`b6-wallet-polygon-${index}`, {
+      source: 'rpc:polygon', chain: 'polygon', walletAddress: B6_EVM_ADDRESS,
+      timestamp: B6_NOW - index * 60_000, amount: 0, fiatValue: 0
+    })
+  );
+  const reserveActivity = b6Transaction('b6-reserve-wallet', {
+    source: 'rpc:ethereum', chain: 'ethereum', walletAddress: B6_SECOND_EVM_ADDRESS,
+    timestamp: B6_NOW - 30_000, amount: 0, fiatValue: 0
+  });
   const now = Date.now();
 
   await saveSettings({ ...DEFAULT_SETTINGS, reportingCurrency: 'USD', priceApiEnabled: false });
   await upsertLookupAddress('ethereum', B6_EVM_ADDRESS, 0, undefined, { label: 'Diagnosed wallet', walletAppId: 'metamask' });
   await upsertLookupAddress('polygon', B6_EVM_ADDRESS, 0, undefined, { label: 'Diagnosed wallet', walletAppId: 'metamask' });
+  await upsertLookupAddress('optimism', B6_EVM_ADDRESS, 0, undefined, { label: 'Diagnosed wallet', walletAppId: 'metamask' });
   await upsertLookupAddress('ethereum', B6_SECOND_EVM_ADDRESS, 0, undefined, { label: 'Reserve wallet', walletAppId: 'ledger' });
   await updateAccountOwnership(accountA, { status: 'owned', origin: 'user' }, undefined, B6_NOW);
   await updateAccountOwnership(accountB, { status: 'owned', origin: 'user' }, undefined, B6_NOW);
@@ -109,7 +131,7 @@ export async function seedB6BrowserFixture(): Promise<void> {
   }
 
   await db.transaction('rw', [db.transactions, db.providerEvidence, db.safetyDecisions, db.priceCache], async () => {
-    await db.transactions.bulkPut([...transfers, spoofed, classified, ...safety.transactions]);
+    await db.transactions.bulkPut([...primaryEthereumRows, ...ethereumActivity, ...polygonActivity, reserveActivity]);
     await db.providerEvidence.bulkPut([...safety.providerEvidence, assetEvidence]);
     await db.safetyDecisions.bulkPut(safety.automaticDecisions);
     await db.priceCache.bulkPut([
@@ -127,7 +149,7 @@ export async function seedB6BrowserFixture(): Promise<void> {
     endpoint, accountClass: 'wallet' as const, required: true, status: 'complete' as const,
     pages: 2, paginationRequired: true, paginationExhausted: true
   }));
-  const primaryOperation = await reserveWalletBalanceOperation('ethereum', B6_EVM_ADDRESS, now - 1);
+  const primaryOperation = await reserveWalletBalanceOperation('ethereum', B6_EVM_ADDRESS, now - 2 * 60 * 60_000 - 1_000);
   await commitWalletBalanceOperation({
     operation: primaryOperation, provider: 'b6-fixture', operationName: 'exhaustive-balances',
     rows: [
@@ -140,7 +162,18 @@ export async function seedB6BrowserFixture(): Promise<void> {
       { asset: 'SPAM-ASSET', contractAddress: safetyContracts.spam, amount: 0 },
       ...metadataBalances
     ], endpointOutcomes: completeOutcomes, historyEndpointOutcomes: historyOutcomes,
-    status: 'complete', asOf: now, capturedAt: now
+    status: 'complete', asOf: now - 2 * 60 * 60_000, capturedAt: now - 2 * 60 * 60_000
+  });
+  await db.sourceCoverage.put({
+    id: `optimism:${B6_EVM_ADDRESS}:rpc-coverage:1`, generation: 1,
+    scopeId: `wallet:evm:10:${B6_EVM_ADDRESS.toLowerCase()}`,
+    sourceIdentityId: `optimism:${B6_EVM_ADDRESS}`, evidenceId: 'rpc:optimism:1', kind: 'rpc',
+    accountClasses: ['wallet'], endpoints: ['asset-transfers'],
+    startedAt: now - 2 * 60 * 60_000 - 1_000, completedAt: now - 2 * 60 * 60_000,
+    status: 'partial', endpointOutcomes: [{
+      endpoint: 'asset-transfers', accountClass: 'wallet', required: true, status: 'partial',
+      warning: 'RPC rate limit'
+    }], warnings: ['RPC rate limit']
   });
   const reserveOperation = await reserveWalletBalanceOperation('ethereum', B6_SECOND_EVM_ADDRESS, now - 1);
   await commitWalletBalanceOperation({

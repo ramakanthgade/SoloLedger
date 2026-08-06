@@ -126,7 +126,7 @@ export const CHAINS: ChainDef[] = [
   { id: 'bitcoin', label: 'Bitcoin', asset: 'BTC', provider: 'blockstream', needsKey: false },
   { id: 'ethereum', label: 'Ethereum', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'eth-mainnet', needsKey: true },
   { id: 'polygon', label: 'Polygon', asset: 'MATIC', provider: 'alchemy_evm', alchemyNetwork: 'polygon-mainnet', needsKey: true },
-  { id: 'arbitrum', label: 'Arbitrum', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'arb-mainnet', needsKey: true },
+  { id: 'arbitrum', label: 'Arbitrum One', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'arb-mainnet', needsKey: true },
   { id: 'base', label: 'Base', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'base-mainnet', needsKey: true },
   { id: 'optimism', label: 'Optimism', asset: 'ETH', provider: 'alchemy_evm', alchemyNetwork: 'opt-mainnet', needsKey: true },
   { id: 'bsc', label: 'BNB Smart Chain', asset: 'BNB', provider: 'alchemy_evm', alchemyNetwork: 'bnb-mainnet', needsKey: true },

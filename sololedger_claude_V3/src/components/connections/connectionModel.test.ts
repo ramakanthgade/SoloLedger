@@ -126,6 +126,14 @@ describe('groupWallets', () => {
     expect(evm.rows).toHaveLength(2);
   });
 
+  it('uses the approved stable multi-chain presentation order', () => {
+    const chains = ['zora', 'optimism', 'arbitrum', 'base', 'polygon', 'ethereum'];
+    const [group] = groupWallets(chains.map((chain) => walletRow({
+      id: `${chain}:0xaaa`, chain, address: '0xaaa'
+    })));
+    expect(group.chains).toEqual(['ethereum', 'polygon', 'base', 'arbitrum', 'optimism', 'zora']);
+  });
+
   it('keeps case-distinct Base58 addresses as separate exact wallet groups', () => {
     const groups = groupWallets([
       walletRow({ id: 'solana:Base58Case', chain: 'solana', address: 'Base58Case', label: 'Upper' }),
