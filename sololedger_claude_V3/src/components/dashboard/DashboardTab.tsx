@@ -1217,6 +1217,8 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               <p
                 className="text-4xl font-extrabold tabular-figures tracking-tight text-hi sm:text-[2.625rem] sm:leading-[1.05]"
                 data-testid="net-worth-value"
+                data-defi-feature-enabled={walletDefiNetWorthEnabled ? 'true' : 'false'}
+                data-defi-shadow-status={defiNetWorthShadow.projection.status}
               >
                 {adjustedNetWorth == null ? 'Incomplete' : fm(netWorth)}
               </p>

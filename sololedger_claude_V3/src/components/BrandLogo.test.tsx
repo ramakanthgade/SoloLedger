@@ -58,7 +58,7 @@ describe('BrandLogo', () => {
     expect(screen.queryByText('Private. Precise. Yours.')).not.toBeInTheDocument();
   });
 
-  it('gives each instance a unique gradient id so multiple logos on one page do not collide', () => {
+  it('gives each instance unique SVG ids so multiple logos on one page do not collide', () => {
     const { container } = render(
       <>
         <BrandLogo variant="on-glass" />
@@ -76,6 +76,14 @@ describe('BrandLogo', () => {
     // Each shield stroke references its own gradient.
     ids.forEach((id) => {
       expect(container.querySelector(`path[stroke="url(#${id})"]`)).not.toBeNull();
+    });
+
+    const allIds = Array.from(container.querySelectorAll('[id]')).map((element) => element.id);
+    expect(new Set(allIds).size).toBe(allIds.length);
+    container.querySelectorAll('svg').forEach((svg) => {
+      const titleId = svg.getAttribute('aria-labelledby');
+      expect(titleId).toBeTruthy();
+      expect(svg.querySelector(`title[id="${titleId}"]`)).not.toBeNull();
     });
   });
 });

@@ -12,6 +12,7 @@ export default defineConfig({
     css: false,
     include: [
       'src/lib/ledger/postingBalances.perf.test.ts',
+      'src/lib/internalTransfers/matcher.perf.test.ts',
       'src/components/connections/connectionWorkspaceCollection.perf.test.ts'
     ],
     exclude: [],

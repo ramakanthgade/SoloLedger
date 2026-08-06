@@ -191,6 +191,15 @@
   }
 }
 
+@media (max-width: 639px) {
+  button,
+  [role='button'],
+  label:has(input[type='checkbox']) {
+    min-width: 44px !important;
+    min-height: 44px !important;
+  }
+}
+
 @layer components {
   .tabular-figures {
     font-variant-numeric: tabular-nums;

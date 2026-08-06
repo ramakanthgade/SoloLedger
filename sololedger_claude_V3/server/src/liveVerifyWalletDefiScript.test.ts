@@ -2,6 +2,8 @@ import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
 import { readFile } from 'node:fs/promises';
 import { afterEach, describe, expect, it } from 'vitest';
+import { sanitizedAppEvidence } from '../scripts/produce-sanitized-app-evidence.mjs';
+import { verifyAttestedUiEvidence } from '../scripts/live-verify-wallet-defi.mjs';
 
 const servers: ReturnType<typeof createServer>[] = [];
 afterEach(() => servers.splice(0).forEach((server) => server.close()));
@@ -20,6 +22,32 @@ function runScript(env: NodeJS.ProcessEnv): Promise<{ code: number | null; outpu
 }
 
 describe('live wallet DeFi verifier', () => {
+  const provenance = {
+    targetUrl: 'https://app.example.test/SoloLedger/?query=ignored#fragment', buildSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    runId: 'authenticated-run-1', signingKey: 'test-signing-key-that-is-at-least-32-bytes'
+  };
+  const evidence = () => sanitizedAppEvidence({
+    captureVersion: 'b6-browser-capture-v2', captureMethod: 'playwright-rendered-ui',
+    dashboardNetWorth: 121_071, connectionsNetWorth: 121_071, featureEnabled: true,
+    shadowStatus: 'complete', targetUrl: 'https://app.example.test/SoloLedger/', buildSha: provenance.buildSha,
+    authenticatedRunId: provenance.runId,
+    selectors: ['[data-testid="detail-holdings-total"]', '[data-testid="net-worth-value"]']
+  }, provenance);
+
+  it('recomputes the signed attestation and binds target origin, build SHA, and authenticated run', () => {
+    expect(() => verifyAttestedUiEvidence(evidence(), provenance)).not.toThrow();
+    expect(() => verifyAttestedUiEvidence({ ...evidence(), dashboardNetWorth: 1 }, provenance))
+      .toThrow('attestation verification failed');
+    expect(() => verifyAttestedUiEvidence(evidence(), { ...provenance, targetUrl: 'https://other.example.test' }))
+      .toThrow('target URL, build, or authenticated run');
+    expect(() => verifyAttestedUiEvidence(evidence(), { ...provenance, targetUrl: 'https://app.example.test/Other/' }))
+      .toThrow('target URL, build, or authenticated run');
+    expect(() => verifyAttestedUiEvidence(evidence(), { ...provenance, buildSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }))
+      .toThrow('target URL, build, or authenticated run');
+    expect(() => verifyAttestedUiEvidence(evidence(), { ...provenance, runId: 'other-run' }))
+      .toThrow('target URL, build, or authenticated run');
+  });
+
   it('supports a bounded local app probe and never logs configured secrets', async () => {
     const server = createServer((_request, response) => {
       response.writeHead(200, { 'content-type': 'text/html' });
@@ -65,6 +93,12 @@ describe('live wallet DeFi verifier', () => {
     expect(source).toContain("expectedNumber('EXPECTED_NET_WORTH')");
     expect(source).toContain('Moralis per-reserve debt comparison');
     expect(source).toContain('Dashboard/Connections deterministic totals differed');
+    expect(source).toContain("body?.captureMethod !== 'playwright-rendered-ui'");
+    expect(source).toContain('body?.featureEnabled !== true');
+    expect(source).toContain("createHmac('sha256', signingKey)");
+    expect(source).toContain('timingSafeEqual(actualDigest, expectedDigest)');
+    expect(source).toContain("assertNear('Dashboard rendered net worth', dashboard, expected)");
+    expect(source).toContain("assertNear('Connections rendered net worth', connections, expected)");
     expect(source).not.toMatch(/console\.(?:log|error)\([^\n]*(?:RPC_URL|RELAY_AUTH_TOKEN|VERIFY_WALLET)/);
   });
 

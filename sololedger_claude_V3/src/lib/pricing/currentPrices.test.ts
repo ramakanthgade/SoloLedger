@@ -89,6 +89,23 @@ describe('refreshCurrentHoldingPrices', () => {
     expect(mocks.rows.get('spot:ctr:ethereum:0xfake:INR')?.price).toBe(12.5);
   });
 
+  it('fetches trusted EVM holdings by exact contract address', async () => {
+    mocks.fetchCurrentPrices.mockResolvedValue([]);
+    mocks.fetchCurrentContractPrices.mockResolvedValue([
+      { asset: '0xusdc', platform: 'ethereum', price: 1, currency: 'USD' }
+    ]);
+    await refreshCurrentHoldingPrices([{
+      asset: 'USDC', amount: 93_076, costBasis: 0, chain: 'ethereum',
+      contractAddress: '0xUSDC', safetyState: 'trusted'
+    }], 'USD');
+
+    expect(mocks.fetchCurrentPrices).not.toHaveBeenCalled();
+    expect(mocks.fetchCurrentContractPrices).toHaveBeenCalledWith([
+      { platform: 'ethereum', contractAddress: '0xusdc' }
+    ], 'USD', undefined);
+    expect(mocks.rows.get('spot:ctr:ethereum:0xusdc:USD')?.price).toBe(1);
+  });
+
   it('isolates the same contract address on different platforms', async () => {
     mocks.fetchCurrentPrices.mockResolvedValue([]);
     mocks.fetchCurrentContractPrices.mockResolvedValue([

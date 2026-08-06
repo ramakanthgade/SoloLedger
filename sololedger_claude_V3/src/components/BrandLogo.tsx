@@ -18,10 +18,11 @@ type BrandLogoProps = {
 };
 
 /** Variant B — aurora-gradient shield stroke, white ledger lines, teal tick. */
-function AuroraMarkB({ className, titleId }: { className?: string; titleId: string }) {
+function AuroraMarkB({ className }: { className?: string }) {
   // Unique per instance so multiple logos on one page don't collide on the
-  // gradient id (duplicate SVG def ids make the stroke drop out in Chrome/Safari).
+  // gradient or title ids (duplicate SVG ids break references and accessibility).
   const gradientId = useId();
+  const titleId = useId();
   return (
     <svg
       viewBox="0 0 48 48"
@@ -71,10 +72,11 @@ function AuroraMarkB({ className, titleId }: { className?: string; titleId: stri
 }
 
 /** Variant C — dark mark on an aurora-gradient filled chip. */
-function AuroraMarkC({ className, titleId }: { className?: string; titleId: string }) {
+function AuroraMarkC({ className }: { className?: string }) {
   // Unique per instance so multiple logos on one page don't collide on the
-  // gradient id (duplicate SVG def ids make the fill drop out in Chrome/Safari).
+  // gradient or title ids (duplicate SVG ids break references and accessibility).
   const gradientId = useId();
+  const titleId = useId();
   return (
     <svg
       viewBox="0 0 48 48"
@@ -137,7 +139,6 @@ export function BrandLogo({
   if (mode === 'mark') {
     return (
       <AuroraMarkC
-        titleId="brand-logo-mark"
         className={cn('h-9 w-9 shrink-0', iconClassName)}
       />
     );
@@ -147,7 +148,7 @@ export function BrandLogo({
 
   return (
     <div className={cn('flex items-center gap-3.5', className)}>
-      <Mark titleId="brand-logo-icon" className={cn('h-9 w-9 shrink-0', iconClassName)} />
+      <Mark className={cn('h-9 w-9 shrink-0', iconClassName)} />
       <div className="flex flex-col gap-0.5">
         <span
           className={cn(

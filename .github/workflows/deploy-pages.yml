@@ -31,12 +31,22 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Chromium for release browser gate
+        run: npx playwright install --with-deps chromium
+
+      - name: Integrated localhost regression gate (not rollout evidence)
+        run: npm run test:browser
+
       - name: Build for GitHub Pages (SaaS)
         run: npm run build
         env:
           VITE_BASE_PATH: /SoloLedger/
           VITE_SAAS_MODE: 'true'
           VITE_API_URL: https://sololedger-production.up.railway.app
+          VITE_BUILD_SHA: ${{ github.sha }}
+          # GitHub Pages has no pre-promotion target. Keep this production build
+          # off rather than treating the disposable localhost gate as rollout proof.
+          VITE_WALLET_DEFI_NET_WORTH_V1: 'false'
 
       - name: Deploy to gh-pages branch
         uses: JamesIves/github-pages-deploy-action@v4

@@ -50,6 +50,9 @@ jobs:
       - name: Chromium holdings performance gate
         run: npm run test:holdings-browser-perf
 
+      - name: Integrated browser, persistence, offline, and PWA gate
+        run: npm run test:browser
+
       - name: Build
         run: npm run build
 

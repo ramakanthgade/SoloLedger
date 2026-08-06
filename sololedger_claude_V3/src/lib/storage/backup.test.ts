@@ -115,6 +115,44 @@ describe('importFullBackup', () => {
     expect(stored.map((t) => t.id).sort()).toEqual(['a', 'b']);
   });
 
+  it('restores backup formats v1-v6, survives a database reload, and re-exports at v6', async () => {
+    const emptyV6 = await createFullBackupPayload();
+    const legacyBase = (version: number, id: string) => ({
+      formatVersion: version,
+      exportedAt: new Date(0).toISOString(),
+      transactions: [makeTx(id)], lots: [], disposals: [], specIdHints: [],
+      lookupAddresses: [], priceCache: [], csvImports: [], settings: DEFAULT_SETTINGS
+    });
+    const v3Tables = {
+      exchangeConnections: [], walletBalances: [], exchangeBalances: [], authoritySnapshots: [],
+      authorityAssets: [], sourceCoverage: [], openingBalances: []
+    };
+    const payloads: unknown[] = [
+      {
+        formatVersion: 1, exportedAt: new Date(0).toISOString(), transactions: [makeTx('compat-v1')],
+        lots: [], disposals: [], specIdHints: [], settings: DEFAULT_SETTINGS
+      },
+      legacyBase(2, 'compat-v2'),
+      { ...legacyBase(3, 'compat-v3'), ...v3Tables },
+      { ...legacyBase(4, 'compat-v4'), ...v3Tables, providerEvidence: [], safetyDecisions: [] },
+      {
+        ...legacyBase(5, 'compat-v5'), ...v3Tables, providerEvidence: [], safetyDecisions: [],
+        defiPositionSnapshots: [], defiPositionRows: []
+      },
+      { ...emptyV6, exportedAt: new Date(0).toISOString(), transactions: [makeTx('compat-v6')] }
+    ];
+
+    for (const [index, payload] of payloads.entries()) {
+      await importFullBackup(backupFile(payload));
+      db.close();
+      await db.open();
+      expect(await db.transactions.get(`compat-v${index + 1}`)).toBeDefined();
+      const roundTrip = await createFullBackupPayload();
+      expect(roundTrip).toMatchObject({ formatVersion: 6, transactions: [{ id: `compat-v${index + 1}` }] });
+      expect(JSON.stringify(roundTrip)).not.toMatch(/apiKey|apiSecret|privateKey|seedPhrase/i);
+    }
+  });
+
   it('round-trips v6 account, classification, and reciprocal pair metadata', async () => {
     await db.lookupAddresses.put({
       id: 'ethereum:0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', chain: 'ethereum', address: '0xAaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaA', lastSyncedAt: 1, txCount: 2,
