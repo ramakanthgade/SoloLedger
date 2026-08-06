@@ -1,6 +1,7 @@
 import type { TxType } from '@/types/transaction';
 import type { NeutralDefiAction, NeutralDefiActionType } from '@/lib/defi/types';
 import { PROTOCOL_REGISTRY, resolveProtocol } from '@/lib/defi/protocolRegistry';
+import { CLASSIFICATION_RULESET_VERSION, defiReceiptRuleId } from '@/lib/taxonomy/rules';
 
 export const ERC_TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 export const ERC4626_DEPOSIT_TOPIC = '0xdcbc1c05240f31ff3ad067ef1ee35ce4997762752e3a095284754544f4c709d7';
@@ -13,6 +14,8 @@ export interface EvmTxReceipt {
   from?: string;
   gasUsed?: string;
   effectiveGasPrice?: string;
+  status?: string;
+  evidenceProvider?: 'alchemy' | 'blockscout' | 'ethereum_rpc';
 }
 export interface EvmDecodeResult {
   type: TxType;
@@ -44,7 +47,7 @@ export const KNOWN_PROTOCOL_CONTRACTS: Record<string, KnownContract> = {
   '0x68b3465833fb72a70ecdf485e0e4c7bd8665fc45': { label: 'Uniswap V3 Router', role: 'router' },
   '0xba12222222228d8ba445958a75a0704d566bf2c8': { label: 'Balancer Vault', role: 'router' }
 };
-const TOKEN_META: Record<string, { symbol: string; decimals: number }> = {
+export const TOKEN_META: Record<string, { symbol: string; decimals: number }> = {
   '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48': { symbol: 'USDC', decimals: 6 },
   '0xdac17f958d2ee523a2206206994597c13d831ec7': { symbol: 'USDT', decimals: 6 },
   '0x6b175474e89094c44da98b954eedeac495271d0f': { symbol: 'DAI', decimals: 18 },
@@ -148,8 +151,9 @@ function exactLogId(chainId: number, txHash: string, log: EvmLogEntry): string |
 }
 
 function dataAddress(data: string, index: number): string | null {
-  const value = word(data, index);
-  return value == null ? null : `0x${value.slice(-40).toLowerCase()}`;
+  const clean = data.replace(/^0x/, '');
+  const value = clean.slice(index * 64, (index + 1) * 64);
+  return /^[0-9a-fA-F]{64}$/.test(value) ? `0x${value.slice(-40).toLowerCase()}` : null;
 }
 
 function exactWord(data: string, index: number): string | undefined {
@@ -256,7 +260,8 @@ export function decodeNeutralDefiActions(
         return (legReserve === collateral && leg.quantity === collateralQuantity) ||
           (legReserve === debt && leg.quantity === debtQuantity);
       }
-      const expectedTokenRole = type === 'borrow' || type === 'repay' ? 'debt_token' : 'protocol_token';
+      const expectedTokenRole = type === 'borrow' || type === 'repay' ||
+        (type === 'interest' && mappedEvent?.role === 'debt_token') ? 'debt_token' : 'protocol_token';
       const expectedTokenDirection = type === 'supply' || type === 'borrow' || type === 'interest' ? 'mint' :
         type === 'withdraw' || type === 'repay' ? 'burn' : undefined;
       if (leg.mapped?.role === expectedTokenRole && expectedTokenDirection === leg.direction &&
@@ -293,7 +298,7 @@ export function decodeNeutralDefiActions(
       const feeQuantity = BigInt(gasUsed) * BigInt(gasPrice);
       if (feeQuantity > 0n) economicLegs.push({
         eventId: `fee:${chainId}:${receipt.transactionHash.toLowerCase()}`,
-        kind: 'fee', direction: 'out', contractAddress: 'native', quantity: feeQuantity.toString(),
+        kind: 'network_fee', direction: 'out', contractAddress: 'native', quantity: feeQuantity.toString(),
         from: wallet
       });
     }
@@ -304,25 +309,57 @@ export function decodeNeutralDefiActions(
       type === 'withdraw' ? count('underlying', 'in') === 1 && count('protocol_token', 'burn') === 1 :
         type === 'borrow' ? count('underlying', 'in') === 1 && count('debt_token', 'mint') === 1 :
           type === 'repay' ? count('underlying', 'out') === 1 && count('debt_token', 'burn') === 1 :
-            type === 'interest' ? count('protocol_token', 'mint') === 1 :
+            type === 'interest' ? mappedEvent?.role === 'debt_token'
+              ? count('debt_token', 'mint') === 1 : count('protocol_token', 'mint') === 1 :
               type === 'reward' ? count('reward', 'in') === 1 :
                 economicLegs.filter((leg) => leg.kind === 'underlying').length === 2;
-    const feeComplete = receipt.from?.toLowerCase() !== wallet || count('fee', 'out') === 1;
     const quantitiesComplete = type === 'liquidation'
       ? debtQuantity != null && collateralQuantity != null
       : quantity != null;
+    const directCall = Boolean(wallet && receipt.from?.toLowerCase() === wallet &&
+      receipt.to?.toLowerCase() === registryEntry.poolAddress.toLowerCase());
+    const directParticipant = !wallet || users.every((user) => user === wallet);
+    const positiveInterest = type !== 'interest' || (quantity != null && BigInt(quantity) > 0n);
+    const supportedDirectAction = type !== 'borrow' && type !== 'repay' && type !== 'interest' ||
+      (receipt.status === '0x1' && directCall && directParticipant);
     const complete = Boolean(eventId && abiShapeComplete(log, spec, layout) && reserve && users.every(Boolean) &&
-      representedUser && quantitiesComplete && hasExpectedLeg && feeComplete);
+      representedUser && quantitiesComplete && positiveInterest && supportedDirectAction && hasExpectedLeg);
     const callId = eventId;
+    const interestKind = type === 'interest'
+      ? mappedEvent?.role === 'debt_token' ? 'borrowing' as const
+        : mappedEvent?.role === 'protocol_token' ? 'lending' as const : undefined
+      : undefined;
+    const exactEventIds = [...new Set([...(eventId ? [eventId] : []), ...economicLegs
+      .filter((leg) => leg.kind !== 'network_fee').map((leg) => leg.eventId)])];
     actions.push({
       type, chainId, protocolId, reserveKey,
       quantity: quantity ?? '0',
       ...(type === 'liquidation' ? { debtQuantity, collateralQuantity } : {}),
       transactionHash: receipt.transactionHash.toLowerCase(), callId,
-      eventIds: [...(eventId ? [eventId] : []), ...economicLegs
-        .filter((leg) => leg.kind !== 'fee').map((leg) => leg.eventId)],
+      eventIds: exactEventIds,
       complete, confidence: complete ? 1 : 0.5, evidenceSource: 'ethereum_log',
-      postingAnchorEventId: economicLegs.find((leg) => leg.kind === 'underlying')?.eventId,
+      ruleId: type === 'borrow' || type === 'repay' || type === 'interest'
+        ? defiReceiptRuleId(protocolId, type === 'interest'
+          ? interestKind === 'borrowing' ? 'borrowing-interest' : 'lending-interest'
+          : type)
+        : `${protocolId}:receipt:${type}`,
+      ruleVersion: type === 'borrow' || type === 'repay' || type === 'interest'
+        ? CLASSIFICATION_RULESET_VERSION : '1',
+      ...(receipt.from && receipt.to && receipt.status === '0x1' ? { callEvidence: {
+        provider: receipt.evidenceProvider ?? 'ethereum_rpc',
+        from: receipt.from.toLowerCase(), to: receipt.to.toLowerCase(), status: 'success' as const
+      } } : {}),
+      ...(interestKind ? { interestKind } : {}),
+      registryEvidence: economicLegs.flatMap((leg) => {
+        const mapping = validatedContracts[leg.contractAddress];
+        return mapping?.role === 'protocol_token' || mapping?.role === 'debt_token' ? [{
+          contractAddress: leg.contractAddress, protocolId: mapping.protocolId,
+          reserveKey: mapping.reserveKey, role: mapping.role
+        }] : [];
+      }),
+      postingAnchorEventId: economicLegs.find((leg) => leg.kind === 'underlying')?.eventId ??
+        (type === 'interest' ? economicLegs.find((leg) =>
+          (leg.kind === 'protocol_token' || leg.kind === 'debt_token') && leg.direction === 'mint')?.eventId : undefined),
       economicLegs,
       ...(complete ? {} : { warnings: ['Exact protocol call boundary, ABI fields, represented user, or economic legs were incomplete.'] })
     });
@@ -477,23 +514,37 @@ export function decodeEvmReceiptForTransfer(
 export async function fetchEvmTransactionReceipt(
   rpcUrl: string,
   txHash: string,
-  headers: HeadersInit = { 'Content-Type': 'application/json' }
+  headers: HeadersInit = { 'Content-Type': 'application/json' },
+  evidenceProvider: EvmTxReceipt['evidenceProvider'] = 'ethereum_rpc',
+  signal?: AbortSignal
 ): Promise<EvmTxReceipt | null> {
   try {
-    const response = await fetch(rpcUrl, { method: 'POST', headers, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] }) });
-    if (!response.ok) return null;
-    const json = await response.json();
+    const response = await fetch(rpcUrl, { method: 'POST', headers, signal, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getTransactionReceipt', params: [txHash] }) });
+    if (!response.ok) throw new Error(`receipt_http:${response.status}`);
+    let json: any;
+    try {
+      json = await response.json();
+    } catch {
+      throw new Error('receipt_malformed:json');
+    }
+    if (json?.error) throw new Error(`receipt_http:rpc:${String(json.error?.code ?? 'unknown')}`);
     const result = json?.result;
-    if (!result || !Array.isArray(result.logs)) return null;
+    if (result == null) return null;
+    if (!Array.isArray(result.logs)) throw new Error('receipt_malformed:logs');
     return {
       transactionHash: result.transactionHash,
       from: result.from,
       to: result.to,
       gasUsed: result.gasUsed,
       effectiveGasPrice: result.effectiveGasPrice,
+      status: result.status,
+      evidenceProvider,
       logs: result.logs
     };
-  } catch { return null; }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith('receipt_')) throw error;
+    throw new Error(`receipt_network:${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 export async function decodeEvmTxByHash(
@@ -503,8 +554,12 @@ export async function decodeEvmTxByHash(
   extraContracts?: Record<string, KnownContract>,
   headers: HeadersInit = { 'Content-Type': 'application/json' }
 ): Promise<EvmDecodeResult | null> {
-  const receipt = await fetchEvmTransactionReceipt(rpcUrl, txHash, headers);
-  return receipt ? decodeEvmReceipt(receipt, walletAddress, extraContracts) : null;
+  try {
+    const receipt = await fetchEvmTransactionReceipt(rpcUrl, txHash, headers);
+    return receipt ? decodeEvmReceipt(receipt, walletAddress, extraContracts) : null;
+  } catch {
+    return null;
+  }
 }
 
 export function isKnownProtocolContract(address: string, extraContracts: Record<string, KnownContract> = {}): KnownContract | null {

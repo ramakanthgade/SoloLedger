@@ -20,12 +20,16 @@ import { detectDexSwaps } from '@/lib/rpc/swapDetection';
 import {
   decodeEvmReceiptForTransfer,
   decodeNeutralDefiActions,
+  ERC_TRANSFER_TOPIC,
   fetchEvmTransactionReceipt,
   neutralDefiActionForTransfer,
   type DefiEventContract,
   type EvmTxReceipt
 } from '@/lib/rpc/evmDecoder';
 import { fetchDefiEventContractRegistry } from '@/lib/defi/eventContractRegistry';
+import { PROTOCOL_REGISTRY } from '@/lib/defi/protocolRegistry';
+import { enrichEthereumDefiTransactions, type DefiReceiptAnalysis } from '@/lib/rpc/defiReceiptEnrichment';
+import { applyClassificationEvidence } from '@/lib/taxonomy/classification';
 import type { FlagReason, Transaction } from '@/types/transaction';
 import { isSaasMode, getApiBase } from '@/lib/saas/config';
 import { saasProxyFetch } from '@/lib/saas/api';
@@ -263,6 +267,23 @@ export interface LookupResult {
   transactions: Transaction[];
   warnings: LookupWarning[];
   streamOutcomes?: ProviderStreamOutcome[];
+  transactionDestinationDiagnostics?: TransactionDestinationDiagnostics;
+}
+
+export interface TransactionDestinationDiagnostics {
+  candidates: number;
+  checked: number;
+  matchedPools: number;
+  timedOut: number;
+  notFound: number;
+  httpFailed: number;
+  networkFailed: number;
+  malformed: number;
+  /** Hashes still lacking a durable destination outcome after this sync. */
+  remaining: number;
+  /** @deprecated Alias retained for existing diagnostics consumers. */
+  skippedBudget: number;
+  partial: boolean;
 }
 
 export interface ProviderStreamOutcome extends PaginationEvidence {
@@ -526,6 +547,62 @@ function alchemyEventSourceRef(row: any): string {
   return `alchemy:event:${alchemyTransferIdentity(row)}`;
 }
 
+interface AlchemyRawTransferEvidence {
+  category?: unknown;
+  from?: string;
+  to?: string;
+  rawContract?: { value?: string | number | bigint | boolean };
+}
+
+function alchemyRawTransfer(row: Transaction): AlchemyRawTransferEvidence | undefined {
+  return row.raw as AlchemyRawTransferEvidence | undefined;
+}
+
+function receiptTransferIdentity(log: EvmTxReceipt['logs'][number]) {
+  if (log.topics?.[0]?.toLowerCase() !== ERC_TRANSFER_TOPIC || log.topics.length !== 3 ||
+      typeof log.address !== 'string' || typeof log.data !== 'string' || log.logIndex == null) return undefined;
+  try {
+    return {
+      contract: log.address.toLowerCase(),
+      from: `0x${log.topics[1].slice(-40)}`.toLowerCase(),
+      to: `0x${log.topics[2].slice(-40)}`.toLowerCase(),
+      quantity: BigInt(log.data).toString(),
+      index: String(Number(BigInt(String(log.logIndex))))
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+function bindUniqueReceiptTransfers(rows: readonly Transaction[], receipt: EvmTxReceipt): Transaction[] {
+  const transfers = receipt.logs.map(receiptTransferIdentity).filter((value) => value != null);
+  const bindings: Transaction[] = [];
+  for (const row of rows) {
+    const provider = alchemyRawTransfer(row);
+    if (!row.txHash || row.txHash.toLowerCase() !== receipt.transactionHash.toLowerCase() ||
+        provider?.category !== 'erc20' || !row.contractAddress) continue;
+    let quantity: string;
+    try {
+      quantity = BigInt(provider.rawContract?.value ?? 0).toString();
+    } catch {
+      continue;
+    }
+    const direction = row.type === 'transfer_out' ? 'transfer_out' : 'transfer_in';
+    const from = String(provider.from ?? '').toLowerCase();
+    const to = String(provider.to ?? '').toLowerCase();
+    const matches = transfers.filter((event) => event.contract === row.contractAddress!.toLowerCase() &&
+      event.from === from && event.to === to && event.quantity === quantity);
+    if (matches.length !== 1) continue;
+    const [event] = matches;
+    bindings.push({ ...row, onchainTransferEvent: {
+      chain: 'ethereum', txHash: row.txHash, assetKey: event.contract,
+      indexKind: 'log', index: event.index, sender: event.from, recipient: event.to,
+      quantity: event.quantity
+    }, type: direction === 'transfer_out' ? 'transfer_out' : row.type });
+  }
+  return bindings;
+}
+
 // ---- EVM chains via Alchemy's alchemy_getAssetTransfers (native + ERC20 + NFTs) ----
 export async function fetchAlchemyEvmInner(
   address: string,
@@ -553,10 +630,6 @@ export async function fetchAlchemyEvmInner(
   });
 
   const headers = alchemyHeaders(apiKey);
-  const validatedEventContracts = suppliedEventContracts ?? await loadRegistryEventContracts(url, headers, network, chainId);
-  const loadReceipt = createReceiptLoader((hash) => fetchEvmTransactionReceipt(url, hash, headers));
-  const loadReceiptActions = createReceiptActionLoader(loadReceipt, (receipt) =>
-    decodeNeutralDefiActions(receipt, chainId === 'ethereum' ? 1 : 0, validatedEventContracts, address));
   const collectDirection = (direction: 'from' | 'to') => collectSequentialCursor<any, string>({
     maxPages: 100,
     itemKey: alchemyTransferIdentity,
@@ -577,7 +650,7 @@ export async function fetchAlchemyEvmInner(
     collectDirection('to')
   ]);
 
-  const toTx = async (t: any, direction: 'transfer_out' | 'transfer_in'): Promise<Transaction> => {
+  const toTx = (t: any, direction: 'transfer_out' | 'transfer_in'): Transaction => {
     const isNft = t.category === 'erc721' || t.category === 'erc1155';
     const ercContractAddress = t.category === 'erc20' && typeof t.rawContract?.address === 'string'
       ? t.rawContract.address
@@ -590,44 +663,12 @@ export async function fetchAlchemyEvmInner(
           amount: Number(t.value) || undefined
         })
       : null;
-    // Last resort when Moralis is unavailable: inspect the verified standard
-    // receipt logs before accepting Alchemy's generic transfer classification.
-    const receipt = ercContractAddress && t.hash ? await loadReceipt(t.hash) : null;
-    const neutralActions = receipt && t.hash ? await loadReceiptActions(t.hash) : [];
-    const neutralAction = neutralDefiActionForTransfer(neutralActions, {
-      contractAddress: ercContractAddress,
-      direction,
-      from: t.from,
-      to: t.to,
-      rawQuantity: t.rawContract?.value
-    });
-    const decoded = receipt
-      ? decodeEvmReceiptForTransfer(
-          receipt,
-          address,
-          {
-            contractAddress: ercContractAddress,
-            direction,
-            from: t.from,
-            to: t.to
-          },
-          { ...getAllocationContracts(), ...getBlockworksContracts() }
-        )
-      : null;
-    const decodedIsSpecific = decoded && decoded.type !== 'transfer_in' && decoded.type !== 'transfer_out';
     const unifiedIsIncome = unified?.type === 'income';
-    const exactNeutralType = neutralAction?.complete
-      ? neutralAction.type === 'supply' ? 'defi_deposit'
-        : neutralAction.type === 'withdraw' ? 'defi_withdraw'
-          : neutralAction.type === 'interest' || neutralAction.type === 'reward' ? 'income'
-            : direction
-      : undefined;
-    const decodedIsDefiHint = decoded?.type === 'defi_deposit' || decoded?.type === 'defi_withdraw';
-    return {
+    const observedAt = t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).getTime() : Date.now();
+    const transaction: Transaction = {
       id: makeId('rpc'),
-      timestamp: t.metadata?.blockTimestamp ? new Date(t.metadata.blockTimestamp).getTime() : Date.now(),
-      type: unifiedIsIncome ? unified.type : exactNeutralType ??
-        (decodedIsSpecific && !decodedIsDefiHint ? decoded.type : unified?.type ?? direction),
+      timestamp: observedAt,
+      type: unifiedIsIncome ? unified.type : unified?.type ?? direction,
       asset: t.asset || (isNft ? (t.rawContract?.address ? `NFT ${String(t.rawContract.address).slice(0, 6)}` : 'NFT') : asset),
       amount: isNft ? (t.erc1155Metadata?.[0]?.value ? Number(t.erc1155Metadata[0].value) : 1) : Number(t.value) || 0,
       fiatCurrency: 'USD',
@@ -642,27 +683,16 @@ export async function fetchAlchemyEvmInner(
       category: unified?.kind,
       legacyCategory: unified?.legacyKind,
       categoryOrigin: unified?.source === 'reward_registry_static' ? 'provider' : unified?.kind ? 'suggestion' : undefined,
-      notes: unifiedIsIncome ? unified.label : exactNeutralType || (decodedIsSpecific && !decodedIsDefiHint)
-        ? decoded?.notes : unified?.label,
+      notes: unified?.label,
       flags: unified?.source === 'reward_registry_static'
         ? []
-        : unified || decodedIsSpecific || neutralAction
+        : unified
           ? (['needs_review'] as FlagReason[])
         : ['possible_internal_transfer', 'missing_market_value'],
       isInternalTransfer: false,
-      raw: {
-        ...t,
-        ...(neutralAction ? { defiActionEvidence: {
-          ...neutralAction,
-          postingAnchor: neutralAction.complete &&
-            neutralAction.postingAnchorEventId != null &&
-            neutralAction.economicLegs?.some((leg) =>
-              leg.eventId === neutralAction.postingAnchorEventId &&
-              leg.contractAddress === ercContractAddress?.toLowerCase() &&
-              leg.from === t.from?.toLowerCase() && leg.to === t.to?.toLowerCase())
-        } } : {})
-      }
+      raw: t
     };
+    return applyClassificationEvidence(transaction, transaction.classificationEvidence, observedAt);
   };
 
   const combined = new Map<string, { row: any; direction: 'transfer_out' | 'transfer_in' }>();
@@ -677,58 +707,392 @@ export async function fetchAlchemyEvmInner(
     const key = alchemyTransferIdentity(row);
     if (!combined.has(key)) combined.set(key, { row, direction: 'transfer_in' });
   }
-  const transactions = await Promise.all(
-    [...combined.values()].map(({ row, direction }) => toTx(row, direction))
-  );
+  const transactions = [...combined.values()].map(({ row, direction }) => toTx(row, direction));
+  const warnings: LookupWarning[] = [];
+  let registryFailureKind: RegistryFailureKind | undefined;
+  let transactionDestinationDiagnostics: TransactionDestinationDiagnostics | undefined;
+  if (chainId === 'ethereum') {
+    const pools = new Set(Object.values(PROTOCOL_REGISTRY).map((entry) => entry.poolAddress.toLowerCase()));
+    const exactDestinations = new Map<string, string>();
+    for (const row of transactions) {
+      const provider = alchemyRawTransfer(row);
+      if (row.txHash && provider?.category === 'external' && typeof provider.to === 'string') {
+        exactDestinations.set(row.txHash.toLowerCase(), provider.to.toLowerCase());
+      }
+    }
+    const eligibleHashes = [...new Set(transactions.filter((row) => {
+      const provider = alchemyRawTransfer(row);
+      return row.txHash != null && (provider?.category === 'erc20' || row.raw?.defiActionEvidence != null);
+    }).map((row) => row.txHash!.toLowerCase()))];
+    const discovered = await discoverCanonicalPoolTransactions(
+      eligibleHashes, exactDestinations, pools, url, headers,
+      `${network}:${address.toLowerCase()}`
+    );
+    transactionDestinationDiagnostics = discovered.diagnostics;
+    const candidateHashes = discovered.hashes;
+    if (discovered.diagnostics.partial) warnings.push({
+      address,
+      message: `DeFi transaction destination discovery was partial (${discovered.diagnostics.timedOut} timed out; ${discovered.diagnostics.httpFailed} HTTP failed; ${discovered.diagnostics.networkFailed} network failed; ${discovered.diagnostics.malformed} malformed; ${discovered.diagnostics.remaining} remaining for a later sync). Retained transfers can be retried.`
+    });
+    if (candidateHashes.length > 0) {
+      const registry = suppliedEventContracts
+        ? { contracts: suppliedEventContracts }
+        : await loadRegistryEventContracts(url, headers, network, chainId);
+      registryFailureKind = registry.failure;
+      const loadReceipt = createReceiptLoader((hash, signal) =>
+        fetchEvmTransactionReceipt(url, hash, headers, 'alchemy', signal));
+      const loadActions = createReceiptActionLoader(loadReceipt, (receipt): DefiReceiptAnalysis => {
+        const actions = decodeNeutralDefiActions(receipt, 1, registry.contracts, address);
+        const boundRows = bindUniqueReceiptTransfers(transactions, receipt);
+        const boundById = new Map(boundRows.map((row) => [row.id, row]));
+        const bindings: Transaction[] = [];
+        for (const row of transactions.filter((candidate) => candidate.txHash?.toLowerCase() === receipt.transactionHash.toLowerCase())) {
+          const bound = boundById.get(row.id) ?? row;
+          const provider = alchemyRawTransfer(row);
+          const direction = bound.type === 'transfer_out' ? 'transfer_out' as const : 'transfer_in' as const;
+          const action = neutralDefiActionForTransfer(actions, {
+            contractAddress: bound.contractAddress, direction, from: provider?.from, to: provider?.to,
+            rawQuantity: provider?.rawContract?.value == null ? undefined : String(provider.rawContract.value)
+          });
+          const decoded = decodeEvmReceiptForTransfer(receipt, address, {
+            contractAddress: bound.contractAddress, direction, from: provider?.from, to: provider?.to
+          }, { ...getAllocationContracts(), ...getBlockworksContracts() });
+          let binding = bound;
+          if (action) binding = { ...binding, raw: { ...binding.raw, defiActionEvidence: {
+            ...action,
+            postingAnchor: action.postingAnchorEventId != null &&
+              binding.onchainTransferEvent != null &&
+              `event:1:${binding.txHash!.toLowerCase()}:${binding.contractAddress!.toLowerCase()}:${Number(binding.onchainTransferEvent.index)}` === action.postingAnchorEventId
+          } } };
+          if (action?.complete && (action.type === 'supply' || action.type === 'withdraw')) {
+            binding = { ...binding, type: action.type === 'supply' ? 'defi_deposit' : 'defi_withdraw', flags: [] };
+          } else if (decoded && decoded.type !== 'transfer_in' && decoded.type !== 'transfer_out' &&
+              decoded.type !== 'defi_deposit' && decoded.type !== 'defi_withdraw') {
+            binding = { ...binding, type: decoded.type, notes: decoded.notes, flags: ['needs_review'] };
+          }
+          if (binding !== row) bindings.push(binding);
+        }
+        return { actions, bindings };
+      });
+      const enriched = await enrichEthereumDefiTransactions(transactions, loadActions, { candidateHashes });
+      transactions.splice(0, transactions.length, ...enriched.transactions);
+      if (enriched.diagnostics.partial) warnings.push({
+        address,
+        message: `Exact DeFi receipt enrichment was partial (${enriched.diagnostics.timedOut} timed out; ${enriched.diagnostics.failed} failed; ${enriched.diagnostics.materializationFailed} could not be materialized). Retry sync to upgrade retained rows.`
+      });
+    }
+  }
   const streamOutcomes: ProviderStreamOutcome[] = [
     { endpoint: 'alchemy_getAssetTransfers:outgoing', required: true, ...outgoing.evidence },
     { endpoint: 'alchemy_getAssetTransfers:incoming', required: true, ...incoming.evidence }
   ];
-  const warnings = streamOutcomes.flatMap((outcome) =>
-    partialPaginationWarning(address, outcome.endpoint, outcome));
+  warnings.push(...streamOutcomes.flatMap((outcome) =>
+    partialPaginationWarning(address, outcome.endpoint, outcome)));
+  if (registryFailureKind) warnings.push({
+    address,
+    message: `Exact DeFi event registry was unavailable (${registryFailureKind}); receipt semantics were retained as partial and can be retried.`
+  });
 
-  return { transactions, warnings, streamOutcomes };
+  return { transactions, warnings, streamOutcomes, transactionDestinationDiagnostics };
 }
 
-const eventRegistryCache = new Map<string, Promise<Readonly<Record<string, DefiEventContract>>>>();
+const DEFAULT_TRANSACTION_DESTINATION_TIMEOUT_MS = 8_000;
+const DEFAULT_TRANSACTION_DESTINATION_CONCURRENCY = 4;
+const DEFAULT_TRANSACTION_DESTINATION_PROBE_BUDGET = 200;
+let transactionDestinationTimeoutMs = DEFAULT_TRANSACTION_DESTINATION_TIMEOUT_MS;
+let transactionDestinationConcurrency = DEFAULT_TRANSACTION_DESTINATION_CONCURRENCY;
+let transactionDestinationProbeBudget = DEFAULT_TRANSACTION_DESTINATION_PROBE_BUDGET;
+const TRANSACTION_DESTINATION_STORAGE_PREFIX = 'sololedger:defi-destination:v1:';
+const transactionDestinationOutcomes = new Map<string, Map<string, string | null>>();
+const transactionDestinationInflight = new Map<string, Promise<string | null>>();
+
+function destinationStorage(): Storage | undefined {
+  try {
+    return typeof localStorage === 'undefined' ? undefined : localStorage;
+  } catch {
+    return undefined;
+  }
+}
+
+function destinationOutcomes(scope: string): Map<string, string | null> {
+  const cached = transactionDestinationOutcomes.get(scope);
+  if (cached) return cached;
+  const outcomes = new Map<string, string | null>();
+  try {
+    const raw = destinationStorage()?.getItem(`${TRANSACTION_DESTINATION_STORAGE_PREFIX}${scope}`);
+    const parsed: unknown = raw ? JSON.parse(raw) : undefined;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      for (const [hash, destination] of Object.entries(parsed)) {
+        if (/^0x[0-9a-f]+$/i.test(hash) &&
+            (destination === null || (typeof destination === 'string' && /^0x[0-9a-f]{40}$/i.test(destination)))) {
+          outcomes.set(hash.toLowerCase(), destination?.toLowerCase() ?? null);
+        }
+      }
+    }
+  } catch {
+    // Corrupt or unavailable browser storage is non-authoritative; probe again.
+  }
+  transactionDestinationOutcomes.set(scope, outcomes);
+  return outcomes;
+}
+
+function persistDestinationOutcomes(scope: string, outcomes: ReadonlyMap<string, string | null>): void {
+  try {
+    destinationStorage()?.setItem(
+      `${TRANSACTION_DESTINATION_STORAGE_PREFIX}${scope}`,
+      JSON.stringify(Object.fromEntries(outcomes))
+    );
+  } catch {
+    // Keep the in-memory progress when durable browser storage is unavailable.
+  }
+}
+
+async function discoverCanonicalPoolTransactions(
+  hashes: readonly string[],
+  exactDestinations: ReadonlyMap<string, string>,
+  pools: ReadonlySet<string>,
+  url: string,
+  headers: HeadersInit,
+  scope: string
+): Promise<{ hashes: string[]; diagnostics: TransactionDestinationDiagnostics }> {
+  const matches = new Set<string>();
+  const outcomes = destinationOutcomes(scope);
+  const unresolved: string[] = [];
+  for (const hash of hashes) {
+    const destination = exactDestinations.get(hash);
+    if (destination != null) {
+      outcomes.set(hash, destination);
+      if (pools.has(destination)) matches.add(hash);
+      continue;
+    }
+    if (outcomes.has(hash)) {
+      const cachedDestination = outcomes.get(hash);
+      if (cachedDestination != null && pools.has(cachedDestination)) matches.add(hash);
+    } else unresolved.push(hash);
+  }
+  if (exactDestinations.size > 0) persistDestinationOutcomes(scope, outcomes);
+  const scheduled = unresolved.slice(0, transactionDestinationProbeBudget);
+  let next = 0;
+  let checked = 0;
+  let timedOut = 0;
+  let notFound = 0;
+  let httpFailed = 0;
+  let networkFailed = 0;
+  let malformed = 0;
+  const loadDestination = (hash: string, signal: AbortSignal): Promise<string | null> => {
+    const key = hash.toLowerCase();
+    const inflightKey = `${scope}:${key}`;
+    let pending = transactionDestinationInflight.get(inflightKey);
+    if (!pending) {
+      pending = alchemyFetch(url, {
+        method: 'POST', headers, signal,
+        body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'eth_getTransactionByHash', params: [hash] })
+      }).then(async (response) => {
+        let body: { result?: unknown; error?: unknown };
+        try {
+          body = await response.json() as { result?: unknown; error?: unknown };
+        } catch {
+          throw new Error('destination_malformed');
+        }
+        if (!response.ok || body.error) throw new Error('destination_http');
+        if (body.result == null) return null;
+        if (typeof body.result !== 'object' || typeof (body.result as { to?: unknown }).to !== 'string') {
+          throw new Error('destination_malformed');
+        }
+        return (body.result as { to: string }).to.toLowerCase();
+      }).catch((error) => {
+        if (signal.aborted) throw new Error('destination_timeout');
+        throw error instanceof Error && error.message.startsWith('destination_')
+          ? error
+          : new Error('destination_network');
+      });
+      transactionDestinationInflight.set(inflightKey, pending);
+      void pending.finally(() => transactionDestinationInflight.delete(inflightKey)).catch(() => undefined);
+    }
+    return pending;
+  };
+  const workers = Array.from({ length: Math.min(transactionDestinationConcurrency, scheduled.length) }, async () => {
+    while (next < scheduled.length) {
+      const hash = scheduled[next++];
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), transactionDestinationTimeoutMs);
+      checked++;
+      try {
+        const destination = await loadDestination(hash, controller.signal);
+        outcomes.set(hash, destination);
+        if (destination == null) notFound++;
+        else if (pools.has(destination)) matches.add(hash);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (message === 'destination_timeout') timedOut++;
+        else if (message === 'destination_http') httpFailed++;
+        else if (message === 'destination_malformed') malformed++;
+        else networkFailed++;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (scheduled.length > 0) persistDestinationOutcomes(scope, outcomes);
+  const remaining = hashes.reduce((count, hash) => count + (outcomes.has(hash) || exactDestinations.has(hash) ? 0 : 1), 0);
+  return {
+    hashes: [...matches],
+    diagnostics: {
+      candidates: hashes.length,
+      checked,
+      matchedPools: matches.size,
+      timedOut,
+      notFound,
+      httpFailed,
+      networkFailed,
+      malformed,
+      remaining,
+      skippedBudget: remaining,
+      partial: timedOut + httpFailed + networkFailed + malformed + remaining > 0
+    }
+  };
+}
+
+type RegistryFailureKind = 'timeout' | 'http' | 'network' | 'malformed' | 'backoff';
+interface RegistryLoadResult {
+  contracts: Readonly<Record<string, DefiEventContract>>;
+  failure?: RegistryFailureKind;
+}
+interface RegistryCacheEntry {
+  pending?: Promise<RegistryLoadResult>;
+  result?: RegistryLoadResult;
+  retryAt?: number;
+}
+
+const DEFAULT_REGISTRY_TIMEOUT_MS = 8_000;
+const REGISTRY_FAILURE_BACKOFF_MS = 30_000;
+let registryTimeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS;
+const eventRegistryCache = new Map<string, RegistryCacheEntry>();
+
+/** Test isolation for module-level successful and failure-backoff caches. */
+export function resetDefiProviderCachesForTests(options: { preserveDestinationProgress?: boolean } = {}): void {
+  eventRegistryCache.clear();
+  blockscoutEventRegistry = undefined;
+  registryTimeoutMs = DEFAULT_REGISTRY_TIMEOUT_MS;
+  transactionDestinationTimeoutMs = DEFAULT_TRANSACTION_DESTINATION_TIMEOUT_MS;
+  transactionDestinationConcurrency = DEFAULT_TRANSACTION_DESTINATION_CONCURRENCY;
+  transactionDestinationProbeBudget = DEFAULT_TRANSACTION_DESTINATION_PROBE_BUDGET;
+  transactionDestinationOutcomes.clear();
+  transactionDestinationInflight.clear();
+  if (!options.preserveDestinationProgress) {
+    const storage = destinationStorage();
+    if (storage) {
+      const keys = Array.from({ length: storage.length }, (_, index) => storage.key(index))
+        .filter((key): key is string => key?.startsWith(TRANSACTION_DESTINATION_STORAGE_PREFIX) === true);
+      for (const key of keys) storage.removeItem(key);
+    }
+  }
+}
+
+export function configureDefiProviderTimeoutsForTests(options: {
+  registryTimeoutMs?: number;
+  transactionDestinationTimeoutMs?: number;
+  transactionDestinationConcurrency?: number;
+  transactionDestinationProbeBudget?: number;
+}): void {
+  if (options.registryTimeoutMs != null) registryTimeoutMs = Math.max(1, options.registryTimeoutMs);
+  if (options.transactionDestinationTimeoutMs != null) {
+    transactionDestinationTimeoutMs = Math.max(1, options.transactionDestinationTimeoutMs);
+  }
+  if (options.transactionDestinationConcurrency != null) {
+    transactionDestinationConcurrency = Math.max(1, Math.min(8, options.transactionDestinationConcurrency));
+  }
+  if (options.transactionDestinationProbeBudget != null) {
+    transactionDestinationProbeBudget = Math.max(1, options.transactionDestinationProbeBudget);
+  }
+}
+
+function registryFailure(error: unknown): Exclude<RegistryFailureKind, 'backoff'> {
+  const message = error instanceof Error ? error.message : String(error);
+  if (message === 'registry_timeout') return 'timeout';
+  if (/HTTP|RPC|rpc/i.test(message)) return 'http';
+  if (/malformed|decode|result/i.test(message)) return 'malformed';
+  return 'network';
+}
+
+async function boundedRegistryLoad(
+  load: (signal: AbortSignal) => Promise<Readonly<Record<string, DefiEventContract>>>
+): Promise<RegistryLoadResult> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  const task = load(controller.signal);
+  try {
+    const contracts = await Promise.race([
+      task,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          reject(new Error('registry_timeout'));
+        }, registryTimeoutMs);
+      })
+    ]);
+    return { contracts };
+  } catch (error) {
+    if (timedOut) {
+      // Do not publish backoff or permit a retry until the cancelled crawl has
+      // actually unwound, preventing overlap with old sequential reserve calls.
+      await task.catch(() => undefined);
+      return { contracts: {}, failure: 'timeout' };
+    }
+    return { contracts: {}, failure: registryFailure(error) };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
 
 async function loadRegistryEventContracts(
   url: string,
   headers: HeadersInit,
   network: string,
   chainId: ChainId
-): Promise<Readonly<Record<string, DefiEventContract>>> {
-  if (chainId !== 'ethereum') return {};
-  let pending = eventRegistryCache.get(network);
-  if (!pending) {
-    let id = 10_000;
-    pending = fetchDefiEventContractRegistry(async (method, params) => {
-      const response = await alchemyFetch(url, {
-        method: 'POST', headers,
-        body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params })
-      });
-      const body = await response.json() as { result?: unknown; error?: { message?: string } };
-      if (!response.ok || body.error || body.result == null) throw new Error(body.error?.message ?? `Event registry HTTP ${response.status}`);
-      return body.result;
-    }).then((result) => result.contracts).catch(() => {
-      eventRegistryCache.delete(network);
-      return {};
-    });
-    eventRegistryCache.set(network, pending);
+): Promise<RegistryLoadResult> {
+  if (chainId !== 'ethereum') return { contracts: {} };
+  let entry = eventRegistryCache.get(network);
+  if (entry?.result && !entry.result.failure) return entry.result;
+  if (entry?.result?.failure && (entry.retryAt ?? 0) > Date.now()) {
+    return { contracts: {}, failure: 'backoff' };
   }
-  return pending;
+  if (!entry?.pending) {
+    entry = {};
+    let id = 10_000;
+    entry.pending = boundedRegistryLoad(async (signal) => (await fetchDefiEventContractRegistry(async (method, params, rpcSignal) => {
+        const response = await alchemyFetch(url, {
+          method: 'POST', headers, signal: rpcSignal,
+          body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params })
+        });
+        const body = await response.json() as { result?: unknown; error?: { message?: string } };
+        if (!response.ok) throw new Error(`Event registry HTTP ${response.status}: ${body.error?.message ?? 'request failed'}`);
+        if (body.error || body.result == null) throw new Error(`Event registry RPC: ${body.error?.message ?? 'malformed result'}`);
+        return body.result;
+      }, undefined, signal)).contracts).then((result) => {
+        entry!.result = result;
+        entry!.retryAt = result.failure ? Date.now() + REGISTRY_FAILURE_BACKOFF_MS : undefined;
+        entry!.pending = undefined;
+        return result;
+      });
+    eventRegistryCache.set(network, entry);
+  }
+  return entry.pending ?? entry.result!;
 }
 
 /** Promise cache guarantees one receipt request per transaction hash. */
 export function createReceiptLoader(
-  load: (hash: string) => Promise<EvmTxReceipt | null>
-): (hash: string) => Promise<EvmTxReceipt | null> {
+  load: (hash: string, signal?: AbortSignal) => Promise<EvmTxReceipt | null>
+): (hash: string, signal?: AbortSignal) => Promise<EvmTxReceipt | null> {
   const cache = new Map<string, Promise<EvmTxReceipt | null>>();
-  return (hash) => {
+  return (hash, signal) => {
     const key = hash.toLowerCase();
     let pending = cache.get(key);
     if (!pending) {
-      pending = load(hash);
+      pending = load(hash, signal);
       cache.set(key, pending);
     }
     return pending;
@@ -736,16 +1100,19 @@ export function createReceiptLoader(
 }
 
 /** Analyze each cached receipt once even when several represented rows share it. */
-export function createReceiptActionLoader(
-  loadReceipt: (hash: string) => Promise<EvmTxReceipt | null>,
-  analyze: (receipt: EvmTxReceipt) => ReturnType<typeof decodeNeutralDefiActions>
-): (hash: string) => Promise<ReturnType<typeof decodeNeutralDefiActions>> {
-  const cache = new Map<string, Promise<ReturnType<typeof decodeNeutralDefiActions>>>();
-  return (hash) => {
+export function createReceiptActionLoader<T = ReturnType<typeof decodeNeutralDefiActions>>(
+  loadReceipt: (hash: string, signal?: AbortSignal) => Promise<EvmTxReceipt | null>,
+  analyze: (receipt: EvmTxReceipt) => T
+): (hash: string, signal?: AbortSignal) => Promise<T> {
+  const cache = new Map<string, Promise<T>>();
+  return (hash, signal) => {
     const key = hash.toLowerCase();
     let pending = cache.get(key);
     if (!pending) {
-      pending = loadReceipt(hash).then((receipt) => receipt ? analyze(receipt) : []);
+      pending = loadReceipt(hash, signal).then((receipt) => {
+        if (!receipt) throw new Error('receipt_not_found');
+        return analyze(receipt);
+      });
       cache.set(key, pending);
     }
     return pending;
@@ -1430,6 +1797,7 @@ export async function etherscanV2HasActivity(
 // instead of routing through the Vite dev proxy. That avoids ENOTFOUND proxy errors when a
 // machine's DNS cannot resolve api.etherscan.io or when the Node proxy stack misbehaves.
 const BLOCKSCOUT_ETHEREUM_API = 'https://eth.blockscout.com/api/v2';
+const BLOCKSCOUT_ETHEREUM_RPC = 'https://eth.blockscout.com/api/eth-rpc';
 
 function blockscoutUrl(path: string): string {
   return `${BLOCKSCOUT_ETHEREUM_API}${path}`;
@@ -1458,7 +1826,41 @@ export async function fetchBlockscoutTxParties(
   }
 }
 
-export async function fetchBlockscoutEthereum(address: string): Promise<LookupResult> {
+let blockscoutEventRegistry: RegistryCacheEntry | undefined;
+
+async function loadBlockscoutEventContracts(): Promise<RegistryLoadResult> {
+  if (blockscoutEventRegistry?.result && !blockscoutEventRegistry.result.failure) return blockscoutEventRegistry.result;
+  if (blockscoutEventRegistry?.result?.failure && (blockscoutEventRegistry.retryAt ?? 0) > Date.now()) {
+    return { contracts: {}, failure: 'backoff' };
+  }
+  if (!blockscoutEventRegistry?.pending) {
+    blockscoutEventRegistry = {};
+    let id = 20_000;
+    const entry = blockscoutEventRegistry;
+    entry.pending = boundedRegistryLoad(async (signal) => (await fetchDefiEventContractRegistry(async (method, params, rpcSignal) => {
+        recordNetworkActivity(resolveMode(false));
+        const response = await fetch(BLOCKSCOUT_ETHEREUM_RPC, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: rpcSignal,
+          body: JSON.stringify({ jsonrpc: '2.0', id: ++id, method, params })
+        });
+        const body = await response.json() as { result?: unknown; error?: { message?: string } };
+        if (!response.ok) throw new Error(`Blockscout RPC HTTP ${response.status}: ${body.error?.message ?? 'request failed'}`);
+        if (body.error || body.result == null) throw new Error(`Blockscout RPC: ${body.error?.message ?? 'malformed result'}`);
+        return body.result;
+      }, undefined, signal)).contracts).then((result) => {
+        entry.result = result;
+        entry.retryAt = result.failure ? Date.now() + REGISTRY_FAILURE_BACKOFF_MS : undefined;
+        entry.pending = undefined;
+        return result;
+      });
+  }
+  return blockscoutEventRegistry.pending ?? blockscoutEventRegistry.result!;
+}
+
+export async function fetchBlockscoutEthereum(
+  address: string,
+  suppliedEventContracts?: Readonly<Record<string, DefiEventContract>>
+): Promise<LookupResult> {
   const addr = address.toLowerCase();
   type BlockscoutCursor = Record<string, string | number | boolean>;
   const collectPath = (path: string, itemKey: (row: any) => string | undefined) =>
@@ -1504,6 +1906,18 @@ export async function fetchBlockscoutEthereum(address: string): Promise<LookupRe
 
   const txRows = txSettled.value.items;
   const tokenRows = tokenSettled.value.items;
+  const directProtocolHashes = new Set(txRows.filter((row) => {
+    const to = row.to?.hash?.toLowerCase();
+    return row.status === 'ok' && Object.values(PROTOCOL_REGISTRY).some((protocol) =>
+      protocol.chainId === 1 && protocol.poolAddress.toLowerCase() === to);
+  }).map((row) => String(row.hash).toLowerCase()));
+  const registry = directProtocolHashes.size
+    ? suppliedEventContracts ? { contracts: suppliedEventContracts } : await loadBlockscoutEventContracts()
+    : { contracts: {} };
+  const loadReceipt = createReceiptLoader((hash, signal) => fetchEvmTransactionReceipt(
+    BLOCKSCOUT_ETHEREUM_RPC, hash, { 'Content-Type': 'application/json' }, 'blockscout', signal));
+  const loadActions = createReceiptActionLoader(loadReceipt, (receipt) =>
+    decodeNeutralDefiActions(receipt, 1, registry.contracts, address));
   const transactions: Transaction[] = [];
   const seen = new Set<string>();
 
@@ -1557,10 +1971,12 @@ export async function fetchBlockscoutEthereum(address: string): Promise<LookupRe
       : `token:${row.transaction_hash}:${row.log_index}`;
     if (seen.has(key)) continue;
     seen.add(key);
+    const direction = from === addr ? 'transfer_out' as const : 'transfer_in' as const;
+    const observedAt = row.timestamp ? new Date(row.timestamp).getTime() : Date.now();
     transactions.push({
       id: makeId('rpc'),
-      timestamp: row.timestamp ? new Date(row.timestamp).getTime() : Date.now(),
-      type: from === addr ? 'transfer_out' : 'transfer_in',
+      timestamp: observedAt,
+      type: direction,
       asset: row.token?.symbol || 'TOKEN',
       amount: Number(raw) / 10 ** decimals,
       fiatCurrency: 'USD',
@@ -1574,12 +1990,20 @@ export async function fetchBlockscoutEthereum(address: string): Promise<LookupRe
       counterpartyAddress: from === addr ? row.to?.hash : row.from?.hash,
       contractAddress: row.token?.address_hash,
       chain: 'ethereum',
+      onchainTransferEvent: row.log_index == null ? undefined : {
+        chain: 'ethereum', txHash: row.transaction_hash,
+        assetKey: row.token.address_hash, indexKind: 'log', index: String(row.log_index),
+        sender: from, recipient: to, quantity: raw.toString()
+      },
       flags: ['possible_internal_transfer', 'missing_market_value'],
       isInternalTransfer: false,
       raw: row
     });
   }
 
+  const enriched = await enrichEthereumDefiTransactions(transactions, loadActions, {
+    candidateHashes: [...directProtocolHashes]
+  });
   const txOutcome: ProviderStreamOutcome = {
     endpoint: 'blockscout:transactions', required: true, ...txSettled.value.evidence
   };
@@ -1589,10 +2013,18 @@ export async function fetchBlockscoutEthereum(address: string): Promise<LookupRe
   const paginationWarnings = [txOutcome, tokenOutcome].flatMap((outcome) =>
     partialPaginationWarning(address, outcome.endpoint, outcome));
   return {
-    transactions,
+    transactions: enriched.transactions,
     streamOutcomes: [txOutcome, tokenOutcome],
     warnings: [
       ...paginationWarnings,
+      ...(registry.failure ? [{
+        address,
+        message: `Exact DeFi event registry was unavailable (${registry.failure}); receipt semantics were retained as partial and can be retried.`
+      }] : []),
+      ...(enriched.diagnostics.partial ? [{
+        address,
+        message: `Exact DeFi receipt enrichment was partial (${enriched.diagnostics.timedOut} timed out; ${enriched.diagnostics.failed} failed). Retry sync to upgrade retained rows.`
+      }] : []),
       ...(transactions.length
       ? [{ address, message: 'Fetched via Blockscout (free explorer, no API key needed).' }]
       : [{ address, message: 'No transactions found for this address on Ethereum mainnet.' }])
@@ -1711,9 +2143,34 @@ async function lookupOneAddress(address: string, config: LookupConfig): Promise<
         try {
           const result = await fetchMoralisEvm(address, chain.id, chain.asset, rpcCredential(config.moralisApiKey));
           if (result.transactions.length > 0 || !hasRpcCredential(config.alchemyApiKey)) {
+            let transactions = result.transactions;
+            const enrichmentWarnings: LookupWarning[] = [];
+            if (chain.id === 'ethereum' && transactions.length > 0) {
+              const pools = new Set(Object.values(PROTOCOL_REGISTRY).map((entry) => entry.poolAddress.toLowerCase()));
+              const candidateHashes = [...new Set(transactions.filter((row) => row.txHash && (
+                row.raw?.defiActionEvidence != null || pools.has(row.counterpartyAddress?.toLowerCase() ?? '')
+              )).map((row) => row.txHash!.toLowerCase()))];
+              if (candidateHashes.length > 0) {
+                const registry = await loadBlockscoutEventContracts();
+                const loadReceipt = createReceiptLoader((hash, signal) => fetchEvmTransactionReceipt(
+                  BLOCKSCOUT_ETHEREUM_RPC, hash, { 'Content-Type': 'application/json' }, 'blockscout', signal));
+                const loadActions = createReceiptActionLoader(loadReceipt, (receipt) =>
+                  decodeNeutralDefiActions(receipt, 1, registry.contracts, address));
+                const enriched = await enrichEthereumDefiTransactions(transactions, loadActions, { candidateHashes });
+                transactions = enriched.transactions;
+                if (registry.failure) enrichmentWarnings.push({
+                  address,
+                  message: `Exact DeFi event registry was unavailable (${registry.failure}); receipt semantics were retained as partial and can be retried.`
+                });
+                if (enriched.diagnostics.partial) enrichmentWarnings.push({
+                  address,
+                  message: `Exact DeFi receipt enrichment was partial (${enriched.diagnostics.timedOut} timed out; ${enriched.diagnostics.failed} failed; ${enriched.diagnostics.materializationFailed} could not be materialized). Retry sync to upgrade retained rows.`
+                });
+              }
+            }
             return withDexSwapDetection({
-              transactions: applyUnifiedIncomingClassifications(result.transactions),
-              warnings: result.warnings.map((msg) => ({ address, message: msg })),
+              transactions: applyUnifiedIncomingClassifications(transactions),
+              warnings: [...result.warnings.map((msg) => ({ address, message: msg })), ...enrichmentWarnings],
               streamOutcomes: result.streamOutcomes
             });
           }

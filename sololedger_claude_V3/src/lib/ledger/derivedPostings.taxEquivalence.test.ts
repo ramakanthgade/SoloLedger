@@ -22,7 +22,7 @@ import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import { buildScheduleVdaReport, serializeScheduleVdaCsv } from '@/lib/reports/scheduleVDA';
 import { summarizeYear } from '@/lib/tax/jurisdictions';
 import type { Transaction } from '@/types/transaction';
-import { deriveTransactionPostings, type DerivedPosting, type OpeningBalanceRow } from './derivedPostings';
+import { derivePostings, deriveTransactionPostings, type DerivedPosting, type OpeningBalanceRow } from './derivedPostings';
 import { normalizeImportedTransactionCategory } from '@/lib/taxonomy/categories';
 
 const DAY = 86_400_000;
@@ -257,19 +257,59 @@ describe('custody projection tax boundary', () => {
       raw: { defiActionEvidence: {
         type: 'borrow', protocolId: 'aave-v3-ethereum', reserveKey: `0x${'2'.repeat(40)}`,
         chainId: 1, complete: true, confidence: 1, evidenceSource: 'ethereum_log',
+        transactionHash: '0xabc', quantity: '10000000', callId: 'event:1:0xabc:0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2:1',
+        ruleId: 'defi-receipt:aave-v3-ethereum:borrow', ruleVersion: 'b5.1',
+        callEvidence: { provider: 'blockscout', from: `0x${'1'.repeat(40)}`, to: '0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2', status: 'success' },
         eventIds: [
-          `event:1:0xabc:0x${'0'.repeat(40)}:1`, `event:1:0xabc:0x${'2'.repeat(40)}:2`
-        ], postingAnchorEventId: `event:1:0xabc:0x${'2'.repeat(40)}:2`, postingAnchor: true
+          'event:1:0xabc:0x87870bca3f3fd6335c3f4ce8392d69350b4fa4e2:1', `event:1:0xabc:0x${'2'.repeat(40)}:2`,
+          `event:1:0xabc:0x${'3'.repeat(40)}:3`
+        ],
+        economicLegs: [
+          { eventId: `event:1:0xabc:0x${'2'.repeat(40)}:2`, kind: 'underlying', direction: 'in', contractAddress: `0x${'2'.repeat(40)}`, quantity: '10000000', from: `0x${'4'.repeat(40)}`, to: `0x${'1'.repeat(40)}` },
+          { eventId: `event:1:0xabc:0x${'3'.repeat(40)}:3`, kind: 'debt_token', direction: 'mint', contractAddress: `0x${'3'.repeat(40)}`, quantity: '10000000', from: `0x${'0'.repeat(40)}`, to: `0x${'1'.repeat(40)}` }
+        ],
+        registryEvidence: [{ contractAddress: `0x${'3'.repeat(40)}`, protocolId: 'aave-v3-ethereum', reserveKey: `0x${'2'.repeat(40)}`, role: 'debt_token' }],
+        postingAnchorEventId: `event:1:0xabc:0x${'2'.repeat(40)}:2`, postingAnchor: true,
+        postingAnchorRawQuantity: '10000000', postingAnchorDecimals: 6
       } }
     };
-    const borrow = deriveTransactionPostings({ ...base, id: 'borrow', type: 'transfer_in' }, { exchangeConnections: [] });
-    const repay = deriveTransactionPostings({
-      ...base, id: 'repay', type: 'transfer_out',
-      raw: { defiActionEvidence: { ...base.raw.defiActionEvidence, type: 'repay' } }
-    }, { exchangeConnections: [] });
+    const transfer = { chain: 'ethereum', txHash: '0xabc', assetKey: `0x${'2'.repeat(40)}`, indexKind: 'log' as const, index: '2', sender: `0x${'4'.repeat(40)}`, recipient: `0x${'1'.repeat(40)}`, quantity: '10000000' };
+    const borrowTransaction = { ...base, id: 'borrow', type: 'transfer_in' as const, amount: 999,
+      txHash: '0xabc', contractAddress: `0x${'2'.repeat(40)}`, onchainTransferEvent: transfer };
+    const repayTransaction = {
+      ...base, id: 'repay', type: 'transfer_out', txHash: '0xabc', contractAddress: `0x${'2'.repeat(40)}`,
+      onchainTransferEvent: { ...transfer, sender: `0x${'1'.repeat(40)}`, recipient: `0x${'4'.repeat(40)}` },
+      raw: { defiActionEvidence: {
+        ...base.raw.defiActionEvidence, type: 'repay', ruleId: 'defi-receipt:aave-v3-ethereum:repay',
+        economicLegs: base.raw.defiActionEvidence.economicLegs.map((leg) => ({
+          ...leg, direction: leg.kind === 'underlying' ? 'out' : 'burn',
+          ...(leg.kind === 'underlying' ? { from: `0x${'1'.repeat(40)}`, to: `0x${'4'.repeat(40)}` } : {})
+        }))
+      } }
+    } satisfies Transaction;
+    const context = { exchangeConnections: [] };
+    const borrow = deriveTransactionPostings(borrowTransaction, context);
+    const repay = deriveTransactionPostings(repayTransaction, context);
     expect(borrow.map((row) => [row.role, row.signedQuantity])).toEqual([['principal', 10], ['liability', -10]]);
     expect(repay.map((row) => [row.role, row.signedQuantity])).toEqual([['principal', -10], ['liability', 10]]);
     expect([...borrow, ...repay].reduce((sum, row) => sum + row.signedQuantity, 0)).toBe(0);
+    expect(derivePostings([borrowTransaction], context)).toEqual(borrow);
+    expect(derivePostings([repayTransaction], context)).toEqual(repay);
+
+    const interestTransaction: Transaction = {
+      ...borrowTransaction, id: 'interest', type: 'fee', amount: 777,
+      contractAddress: `0x${'2'.repeat(40)}`, onchainTransferEvent: undefined,
+      raw: { defiActionEvidence: {
+        ...base.raw.defiActionEvidence, type: 'interest', interestKind: 'borrowing', quantity: '120000',
+        ruleId: 'defi-receipt:aave-v3-ethereum:borrowing-interest',
+        postingAnchorEventId: `event:1:0xabc:0x${'3'.repeat(40)}:3`,
+        postingAnchorRawQuantity: '120000', postingAnchorDecimals: 6,
+        economicLegs: [base.raw.defiActionEvidence.economicLegs[1]]
+      }, syntheticDefiComponent: true }
+    };
+    const interest = deriveTransactionPostings(interestTransaction, context);
+    expect(interest.map((row) => [row.role, row.signedQuantity])).toEqual([['liability', -0.12]]);
+    expect(derivePostings([interestTransaction], context)).toEqual(interest);
   });
 
   it('rejects incomplete, provider-only, unsupported, low-confidence, or non-exact liability evidence', () => {
