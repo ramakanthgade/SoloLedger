@@ -94,8 +94,8 @@ describe('ReviewTab — item 10: richer rows + click-anywhere details', () => {
   });
 
   it('resolves wallet names live from the lookup-address table (renames update rows in place)', () => {
-    expect(source).toContain('useLiveQuery(() => getLookupAddresses(), [])');
-    expect(source).toContain('buildWalletLabelMap(lookupRowsLive ?? [])');
+    expect(source).toContain('db.lookupAddresses.toArray()');
+    expect(source).toContain('buildWalletLabelMap(lookupAddresses)');
     expect(source).toContain('walletLabelFor(walletLabels, t, addr)');
   });
 });
@@ -172,9 +172,73 @@ describe('ReviewTab — transaction reconciliation and mobile overlays', () => {
   });
 });
 
+describe('ReviewTab — B2 exact presentation wiring', () => {
+  it('builds presentation indexes from exact B1 rows and filters by stable source key', () => {
+    expect(source).toContain('db.accountIdentities.toArray()');
+    expect(source).toContain('db.csvImports.toArray()');
+    expect(source).toContain('db.exchangeConnections.toArray()');
+    expect(source).toContain('db.lookupAddresses.toArray()');
+    expect(source).toContain('buildTransactionSourcePresentations(');
+    expect(source).toContain('transactionMatchesSourceFilter(t, sourceFilter, sourcePresentations)');
+  });
+
+  it('shows exact labels/subtitles and source resolution in rows and details', () => {
+    expect(source).toContain('sourcePresentation.primaryLabel');
+    expect(source).toContain('sourcePresentation.subtitle');
+    expect(source).toContain('presentation={sourcePresentation}');
+    expect(source).toContain('taxPolicy={taxPolicy!}');
+  });
+
+  it('preserves pair status and navigates to the exact linked counterpart with restored focus', () => {
+    expect(source).toContain('Internal transfer suggested');
+    expect(source).toContain('Internal transfer confirmed');
+    expect(source).toContain('Open linked counterpart');
+    expect(source).toContain('row?.focus()');
+    expect(source).toContain("row?.scrollIntoView?.({ block: 'center' })");
+    expect(source).toContain('buildTransactionById(transactions)');
+    expect(source).toContain('linkedCounterpartFor(t, transactionsById)');
+    expect(source).toContain('transactionPage(counterpartOrder, linkedCounterpart.id, PAGE_SIZE)');
+    expect(source).not.toContain('transactions.find((candidate) => candidate.id === t.linkedTransferId)');
+  });
+
+  it('clears incompatible source/type/date filters before rendering and focusing a cross-page counterpart', () => {
+    const start = source.indexOf('const openLinkedCounterpart = () =>');
+    const end = source.indexOf('\n    };', start);
+    const action = source.slice(start, end);
+    expect(action).toContain("setSourceFilter('all')");
+    expect(action).toContain("setTypeFilter('all')");
+    expect(action).toContain('setFyFilter(null)');
+    expect(source).toContain('setPage(targetPage)');
+    expect(source).toContain('pageRows.some((transaction) => transaction.id === pendingCounterpartFocus)');
+  });
+
+  it('uses accessible 44px expansion and counterpart targets', () => {
+    expect(source).toContain("'grid h-11 w-11 shrink-0 place-items-center");
+    expect(source).toContain('className="inline-flex min-h-[44px] items-center');
+  });
+
+  it('uses a neutral fiat icon instead of a mock currency glyph', () => {
+    expect(source).toContain('<Banknote className="h-3.5 w-3.5" />');
+    expect(source).not.toContain('fiatSymbol(');
+  });
+
+  it('passes transaction logo identity only to explicitly principal asset legs', () => {
+    expect(source).toContain('principalAssetIdentityForLeg(flow.sent, t)');
+    expect(source).toContain('principalAssetIdentityForLeg(flow.received, t)');
+    expect(source).not.toContain('flow.sent.symbol === assetLabel');
+    expect(source).not.toContain('flow.received.symbol === assetLabel');
+  });
+});
+
 describe('brandIcons — icons always resolve', () => {
-  it('falls back to the letter chip when an icon file fails to load', () => {
-    expect(brandSource).toContain('if (loadFailed) return <>{fallback}</>;');
-    expect(brandSource).toContain('onError={onError}');
+  it('uses the shared local registry and a neutral fallback instead of mock letters or currency glyphs', () => {
+    expect(brandSource).toContain("from '@/components/connections/brandIcons'");
+    expect(brandSource).toContain('icon unavailable');
+    expect(brandSource).toContain('onError={() => setLoadFailed(true)}');
+    expect(brandSource).not.toContain('chipInitials');
+    expect(brandSource).not.toContain('SIMPLEICONS_CDN');
+    expect(brandSource).not.toContain('getAssetLogoUrl');
+    expect(brandSource).not.toContain('cdn.jsdelivr.net');
+    expect(brandSource).not.toContain('coingecko');
   });
 });

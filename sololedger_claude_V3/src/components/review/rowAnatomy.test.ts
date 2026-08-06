@@ -69,9 +69,9 @@ describe('txFlow — the row-face sent → received flow', () => {
       counterLabel: 'USDT',
       disposal: { costBasis: 416389.81, gain: -11689.81 }
     }));
-    expect(flow.sent).toMatchObject({ kind: 'asset', symbol: 'LPT', amount: 954.5, sign: '−' });
+    expect(flow.sent).toMatchObject({ kind: 'asset', role: 'principal', symbol: 'LPT', amount: 954.5, sign: '−' });
     expect(flow.sent?.subline).toBe('cost ₹4,16,389.81');
-    expect(flow.received).toMatchObject({ kind: 'asset', symbol: 'USDT', amount: 4850.6, sign: '+' });
+    expect(flow.received).toMatchObject({ kind: 'asset', role: 'counter', symbol: 'USDT', amount: 4850.6, sign: '+' });
     expect(flow.received?.subline).toBe('≈ ₹4,04,700.00');
     expect(flow.received?.gain).toEqual({ kind: 'loss', formatted: '₹11,689.81' });
   });
@@ -171,6 +171,15 @@ describe('txFlow — the row-face sent → received flow', () => {
     const flow = txFlow(t, flowCtx({ assetLabel: 'ABC' }));
     expect(flow.sent).not.toBeNull();
     expect(flow.received).toBeNull();
+  });
+
+  it('marks same-symbol trade legs as principal and counter rather than inferring identity from ticker equality', () => {
+    const flow = txFlow(tx({
+      type: 'trade', asset: 'USDC', amount: 10, counterAsset: 'USDC', counterAmount: 10,
+      chain: 'ethereum', contractAddress: '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48'
+    }), flowCtx({ assetLabel: 'USDC', counterLabel: 'USDC' }));
+    expect(flow.sent).toMatchObject({ kind: 'asset', role: 'principal', symbol: 'USDC' });
+    expect(flow.received).toMatchObject({ kind: 'asset', role: 'counter', symbol: 'USDC' });
   });
 });
 

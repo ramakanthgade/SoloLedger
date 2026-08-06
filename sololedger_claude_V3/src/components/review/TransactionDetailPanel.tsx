@@ -2,6 +2,9 @@ import type { ReactNode } from 'react';
 import type { AccountScopeResolution, DerivedPosting } from '@/lib/ledger/derivedPostings';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { TransactionCostAnalysisModel } from './transactionCostAnalysisModel';
+import type { SourcePresentation } from '@/lib/sources/sourcePresentation';
+import type { TaxPolicyResolution } from '@/lib/taxonomy/taxPolicy';
+import type { Transaction } from '@/types/transaction';
 import { TransactionDetailsTab } from './TransactionDetailsTab';
 import { TransactionLedgerTab } from './TransactionLedgerTab';
 import { TransactionCostAnalysisTab } from './TransactionCostAnalysisTab';
@@ -17,6 +20,9 @@ export function TransactionDetailPanel(props: {
   postings: readonly DerivedPosting[];
   runningBalances: ReadonlyMap<string, number>;
   costAnalysis: TransactionCostAnalysisModel;
+  transaction?: Transaction;
+  presentation?: SourcePresentation;
+  taxPolicy?: TaxPolicyResolution;
   activeTab: DetailTab;
   onActiveTabChange: (tab: DetailTab) => void;
 }) {
@@ -32,7 +38,14 @@ export function TransactionDetailPanel(props: {
         event.preventDefault(); select(TABS[next].id); document.getElementById(`transaction-tab-${TABS[next].id}`)?.focus();
       }} className={tab === item.id ? 'h-11 border-b-2 border-primary px-1 text-xs font-bold text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50' : 'h-11 border-b-2 border-transparent px-1 text-xs font-bold text-low hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50'}>{item.label}</button>)}
     </div>
-    {tab === 'details' && <TransactionDetailsTab scope={props.scope} coverage={props.coverage} authorityGeneration={props.authorityGeneration}>{props.details}</TransactionDetailsTab>}
+    {tab === 'details' && <TransactionDetailsTab
+      scope={props.scope}
+      coverage={props.coverage}
+      authorityGeneration={props.authorityGeneration}
+      transaction={props.transaction}
+      presentation={props.presentation}
+      taxPolicy={props.taxPolicy}
+    >{props.details}</TransactionDetailsTab>}
     {tab === 'ledger' && <TransactionLedgerTab postings={props.postings} runningBalances={props.runningBalances} />}
     {tab === 'cost' && <TransactionCostAnalysisTab model={props.costAnalysis} />}
   </div>;
