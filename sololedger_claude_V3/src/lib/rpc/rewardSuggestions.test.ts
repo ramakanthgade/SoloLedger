@@ -20,6 +20,11 @@ vi.mock('@/lib/storage/db', () => ({
 
 import { applyDefiLlamaRewardSuggestions, countNeedsReview, reclassifyTypePatch } from '@/lib/rpc/rewardSuggestions';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
+import {
+  canResetClassification,
+  rejectClassificationSuggestion,
+  resetClassification
+} from '@/lib/taxonomy/classification';
 
 const REWARD_MINT = 'R'.repeat(44);
 const SENDER = 'S'.repeat(44);
@@ -160,6 +165,38 @@ describe('applyDefiLlamaRewardSuggestions', () => {
     expect(second.suggested).toBe(0);
     expect(second.candidates).toBe(0);
     expect(store[0].type).toBe('transfer_in'); // not flipped back to income
+  });
+
+  it('rejects a real fresh suggestion to its structural baseline and preserves reset semantics', async () => {
+    store = [tx({
+      id: 'fresh', contractAddress: REWARD_MINT, counterpartyAddress: SENDER,
+      category: undefined, categoryOrigin: undefined, categoryLocked: undefined
+    })];
+
+    expect((await applyDefiLlamaRewardSuggestions({ hints: HINTS })).suggested).toBe(1);
+    const suggested = store[0];
+    expect(suggested).toMatchObject({
+      type: 'income', category: 'defi_reward', categoryOrigin: 'suggestion', categoryLocked: false
+    });
+    expect(suggested.classificationEvidence).toContainEqual(expect.objectContaining({
+      type: 'transfer_in', category: undefined, origin: 'legacy', ruleId: 'legacy:stored-baseline'
+    }));
+
+    store[0] = { ...suggested, ...rejectClassificationSuggestion(suggested, 100) };
+    expect(store[0]).toMatchObject({
+      type: 'transfer_in', category: 'other', categoryOrigin: 'user', categoryLocked: true, flags: []
+    });
+    expect(canResetClassification(store[0])).toBe(true);
+
+    expect((await applyDefiLlamaRewardSuggestions({ hints: HINTS })).suggested).toBe(0);
+    expect(store[0].type).toBe('transfer_in');
+
+    const reset = resetClassification(store[0], 200);
+    expect(reset).toMatchObject({
+      type: 'transfer_in', categoryOrigin: 'legacy', categoryLocked: false,
+      categoryRuleId: 'legacy:stored-baseline', categoryUpdatedAt: 200
+    });
+    expect(reset.category).toBeUndefined();
   });
 
   it('reports a useful message', async () => {

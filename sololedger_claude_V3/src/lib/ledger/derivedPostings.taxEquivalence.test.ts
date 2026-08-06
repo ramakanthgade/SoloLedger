@@ -6,6 +6,7 @@ import {
   buildDerivativeCapitalGainRows,
   buildMatchedGainRows
 } from '@/lib/costBasis/matchedGains';
+import { TEST_TAX_SETTINGS } from '@/test/taxSettings';
 import {
   buildHoldingsProjection,
   type HoldingsProjectionInput,
@@ -194,11 +195,12 @@ function custodyProjectionEvidence(): Omit<HoldingsProjectionInput, 'transaction
 }
 
 function canonicalTaxOutput(transactions: Transaction[]) {
-  const engine = calculateCostBasis(transactions, { method: 'FIFO' });
+  const engine = calculateCostBasis(transactions, { method: 'FIFO', settings: TEST_TAX_SETTINGS });
   const matched = buildMatchedGainRows(engine.disposals, engine.lots, transactions);
-  const derivativeIncome = buildDerivativeBusinessIncomeRows(transactions);
-  const derivativeExpenses = buildDerivativeBusinessExpenseRows(transactions);
-  const derivativeCapital = buildDerivativeCapitalGainRows(transactions);
+  const businessSettings = { ...TEST_TAX_SETTINGS, jurisdiction: 'IN' as const, reportingCurrency: 'INR' };
+  const derivativeIncome = buildDerivativeBusinessIncomeRows(transactions, businessSettings);
+  const derivativeExpenses = buildDerivativeBusinessExpenseRows(transactions, businessSettings);
+  const derivativeCapital = buildDerivativeCapitalGainRows(transactions, TEST_TAX_SETTINGS);
   const derivativesIncome = derivativeIncome.reduce((sum, row) => sum + row.fiatValue, 0);
   const derivativesExpenses = derivativeExpenses.reduce((sum, row) => sum + row.fiatValue, 0);
   const scheduleVda = buildScheduleVdaReport(matched, 12, 2024, 'IN', 7);
@@ -218,12 +220,13 @@ function canonicalTaxOutput(transactions: Transaction[]) {
       ]))
     },
     matched: matched.map(({ id: _id, ...row }) => row),
-    jurisdictions: (['IN', 'US', 'CA', 'AE'] as const).map((jurisdiction) =>
-      summarizeYear(engine.disposals, matched, [], 2024, jurisdiction, {
-        derivativesIncome,
-        derivativesExpenses
-      })
-    ),
+    jurisdictions: (['IN', 'US', 'CA', 'AE'] as const).map((jurisdiction) => {
+      const businessMode = jurisdiction === 'IN' || jurisdiction === 'CA';
+      return summarizeYear(engine.disposals, matched, [], 2024, jurisdiction, {
+        derivativesIncome: businessMode ? derivativesIncome : undefined,
+        derivativesExpenses: businessMode ? derivativesExpenses : undefined
+      });
+    }),
     derivatives: {
       income: derivativeIncome,
       expenses: derivativeExpenses,
@@ -500,8 +503,8 @@ describe('custody projection tax boundary', () => {
                 "proceeds": 60,
               },
             },
-            "derivativesExpenses": 10,
-            "derivativesIncome": 40,
+            "derivativesExpenses": undefined,
+            "derivativesIncome": undefined,
             "disallowedLosses": undefined,
             "disposalsCount": 3,
             "estimatedTax": undefined,
@@ -568,8 +571,8 @@ describe('custody projection tax boundary', () => {
                 "proceeds": 60,
               },
             },
-            "derivativesExpenses": 10,
-            "derivativesIncome": 40,
+            "derivativesExpenses": undefined,
+            "derivativesIncome": undefined,
             "disallowedLosses": undefined,
             "disposalsCount": 3,
             "estimatedTax": undefined,
@@ -766,16 +769,16 @@ describe('custody projection tax boundary', () => {
       authority: AuthoritySelection,
       postings: DerivedPosting[]
     ) => {
-      calculateCostBasis(transactions, { method: 'FIFO' });
+      calculateCostBasis(transactions, { method: 'FIFO', settings: TEST_TAX_SETTINGS });
       buildMatchedGainRows([], [], transactions);
-      buildDerivativeBusinessIncomeRows(transactions);
+      buildDerivativeBusinessIncomeRows(transactions, TEST_TAX_SETTINGS);
 
       // @ts-expect-error Unified holdings are custody output, never tax source evidence.
-      calculateCostBasis(holdings, { method: 'FIFO' });
+      calculateCostBasis(holdings, { method: 'FIFO', settings: TEST_TAX_SETTINGS });
       // @ts-expect-error Authority selections are custody evidence, never tax source evidence.
-      calculateCostBasis(authority, { method: 'FIFO' });
+      calculateCostBasis(authority, { method: 'FIFO', settings: TEST_TAX_SETTINGS });
       // @ts-expect-error Derived postings are custody output, never tax source evidence.
-      calculateCostBasis(postings, { method: 'FIFO' });
+      calculateCostBasis(postings, { method: 'FIFO', settings: TEST_TAX_SETTINGS });
 
       // @ts-expect-error Matched gains require the original Transaction[] evidence.
       buildMatchedGainRows([], [], holdings);
@@ -797,7 +800,7 @@ describe('custody projection tax boundary', () => {
     };
     const migrated = normalizeImportedTransactionCategory(legacy);
     const canonical = { ...legacy, category: 'funding_fee' as const, categoryOrigin: 'legacy' as const };
-    expect(buildDerivativeBusinessExpenseRows([migrated])).toEqual(buildDerivativeBusinessExpenseRows([canonical]));
+    expect(buildDerivativeBusinessExpenseRows([migrated], TEST_TAX_SETTINGS)).toEqual(buildDerivativeBusinessExpenseRows([canonical], TEST_TAX_SETTINGS));
     expect(migrated).toMatchObject({
       amount: 3, fiatValue: 250, source: 'binance', category: 'funding_fee',
       raw: legacy.raw, instrumentClass: 'derivative'

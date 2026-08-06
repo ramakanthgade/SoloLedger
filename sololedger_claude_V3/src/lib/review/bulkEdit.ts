@@ -19,9 +19,10 @@
  *    intentionally absent from the editable checkbox lists.
  */
 
-import type { FlagReason, Transaction, TxType } from '@/types/transaction';
+import type { FlagReason, Transaction, TransactionCategory, TxType } from '@/types/transaction';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { reclassifiedOptionsPatch } from '@/lib/review/reclassification';
+import { userClassificationPatch } from '@/lib/taxonomy/classification';
 
 /** Types that create a taxable disposal of the outgoing asset (display-level;
  *  matches ReviewTab's own DISPOSAL_TYPES, incl. trades). */
@@ -56,13 +57,26 @@ const TYPE_CHANGE_STRIPPED_FLAGS: readonly FlagReason[] = [
 /** The patch applied to one row when its type changes — used by both the bulk
  *  "Set type" action and the per-row TypeSelector. */
 export function bulkTypePatch(t: Transaction, newType: TxType): Partial<Transaction> {
+  const nextCategory = t.category ?? 'other';
   return {
-    type: newType,
+    ...reclassifiedOptionsPatch(t, newType),
+    ...(() => {
+      try { return userClassificationPatch(t, newType, nextCategory); }
+      catch { return userClassificationPatch(t, newType, 'other'); }
+    })(),
     flags: (t.flags ?? []).filter(
       (f) => !TYPE_CHANGE_STRIPPED_FLAGS.includes(f)
-    ) as FlagReason[],
-    ...reclassifiedOptionsPatch(t, newType)
+    ) as FlagReason[]
   };
+}
+
+/** Tax-affecting semantic edit; structural type is deliberately unchanged. */
+export function bulkCategoryPatch(
+  transaction: Transaction,
+  category: TransactionCategory,
+  now = Date.now()
+): Partial<Transaction> {
+  return userClassificationPatch(transaction, transaction.type, category, now);
 }
 
 export interface BulkTypeImpact {
@@ -239,11 +253,12 @@ export function bulkFlagsPatch(
   else if (sel.hint === 'unchecked') next.delete('possible_internal_transfer');
   // Confirming internal wins over the hint checkbox: "possible" and
   // "confirmed" internal are mutually exclusive end states.
-  if (sel.internal) next.delete('possible_internal_transfer');
+  const pairManaged = t.internalTransferPairId != null || t.internalTransferDecision != null || t.linkedTransferId != null;
+  if (sel.internal && !pairManaged) next.delete('possible_internal_transfer');
 
   return {
     flags: [...next] as FlagReason[],
-    isInternalTransfer: sel.internal,
+    isInternalTransfer: pairManaged ? t.isInternalTransfer : sel.internal,
     isSpam: sel.spam
   };
 }

@@ -4,7 +4,7 @@ import { db, getSpecIdHints, deleteTransactionsByIds, setTransactionSafetyVisibi
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
-import type { TxType, Transaction, FlagReason, Jurisdiction, TaxSettings } from '@/types/transaction';
+import type { TxType, Transaction, TransactionCategory, FlagReason, Jurisdiction, TaxSettings } from '@/types/transaction';
 import { cn, formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
@@ -38,6 +38,7 @@ import {
   ALL_FLAGS,
   BULK_FLAG_CHECKBOXES,
   bulkFlagsPatch,
+  bulkCategoryPatch,
   bulkTypeImpactLines,
   bulkTypePatch,
   initialBulkFlagsSelection,
@@ -83,6 +84,15 @@ import { buildReviewSourceFilterOptions, transactionMatchesSourceFilter } from '
 import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { buildTransactionById, linkedCounterpartFor, transactionPage } from './counterpartNavigation';
 import { principalAssetIdentityForLeg } from './reviewAssetIcons';
+import { categoryLabel } from '@/lib/taxonomy/categories';
+import {
+  canResetClassification,
+  compatibleCategories,
+  confirmClassification,
+  rejectClassificationSuggestion,
+  resetClassification,
+  userClassificationPatch
+} from '@/lib/taxonomy/classification';
 
 const ALL_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out',
@@ -400,7 +410,13 @@ function TypeSelector({ tx }: { tx: Transaction }) {
     // does NOT clear a `defi_reward` category — that category persists as the
     // "already reviewed this suggestion" marker so a rejected row is never
     // re-flipped to income by applyDefiLlamaRewardSuggestions. See that helper.
-    await db.transactions.update(tx.id, reclassifyTypePatch(tx, next));
+    let patch: Partial<Transaction>;
+    try {
+      patch = userClassificationPatch(tx, next, tx.category ?? 'other');
+    } catch {
+      patch = userClassificationPatch(tx, next, 'other');
+    }
+    await db.transactions.update(tx.id, { ...reclassifyTypePatch(tx, next), ...patch });
     setSaving(false);
     setOpen(false);
   };
@@ -440,6 +456,47 @@ function TypeSelector({ tx }: { tx: Transaction }) {
             <X className="h-3 w-3" /> Cancel
           </button>
         </div>
+      )}
+    </div>
+  );
+}
+
+function CategorySelector({ tx }: { tx: Transaction }) {
+  const categories = compatibleCategories(tx.type);
+  const isSuggestion = tx.categoryOrigin === 'suggestion' && !tx.categoryLocked;
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-1" onClick={(event) => event.stopPropagation()}>
+      <select
+        aria-label="Semantic category"
+        title="Semantic category (separate from structural type)"
+        value={tx.category ?? 'other'}
+        onChange={(event) => void db.transactions.update(
+          tx.id,
+          userClassificationPatch(tx, tx.type, event.target.value as TransactionCategory)
+        )}
+        className="max-w-[10rem] rounded-md border border-hi/10 bg-elev-1 px-1 py-0.5 text-[10px] text-mid"
+      >
+        {categories.map((category) => <option key={category} value={category}>{categoryLabel(category)}</option>)}
+      </select>
+      {isSuggestion && (
+        <>
+          <button type="button" className="text-[10px] font-semibold text-gain hover:underline"
+            onClick={() => void db.transactions.update(tx.id, confirmClassification(tx))}>
+            Confirm classification
+          </button>
+          <button type="button" className="text-[10px] font-semibold text-loss hover:underline"
+            onClick={() => void db.transactions.update(tx.id, rejectClassificationSuggestion(tx))}>
+            Reject suggestion
+          </button>
+        </>
+      )}
+      {canResetClassification(tx) && (
+        <button
+          type="button"
+          className="text-[10px] font-semibold text-primary hover:underline"
+          title="Reset and reapply retained parser/provider evidence"
+          onClick={() => void db.transactions.put(resetClassification(tx))}
+        >Reset</button>
       )}
     </div>
   );
@@ -544,6 +601,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
   // Bulk-edit: "Set type" (dropdown → impact-summary confirm) + "Set flags".
   const [bulkTypeMenuOpen, setBulkTypeMenuOpen] = useState(false);
+  const [bulkCategoryMenuOpen, setBulkCategoryMenuOpen] = useState(false);
+  const [pendingBulkCategory, setPendingBulkCategory] = useState<TransactionCategory | null>(null);
   const [pendingBulkType, setPendingBulkType] = useState<TxType | null>(null);
   const [bulkFlagsMenuOpen, setBulkFlagsMenuOpen] = useState(false);
   const [bulkFlagsSel, setBulkFlagsSel] = useState<BulkFlagsSelection | null>(null);
@@ -718,7 +777,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
   const engineResult = useMemo(() => {
     if (!settings) return null;
-    return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints });
+    return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints, settings });
   }, [transactions, settings, hints]);
 
   /** Matched disposals keyed by their source transaction id (row cost/gain sublines + expanded Analysis). */
@@ -730,8 +789,12 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     disposals: engineResult?.disposals ?? [],
     inventoryDisposals: engineResult?.inventoryDisposals ?? [],
     lots: engineResult?.lots ?? [],
-    transactions
-  }), [engineResult, transactions]);
+    transactions: settings ? transactions : [],
+    settings: settings ?? {
+      jurisdiction, reportingCurrency: 'USD', defaultCostBasisMethod: 'FIFO',
+      priceApiEnabled: false, rpcLookupEnabled: false
+    }
+  }), [engineResult, transactions, settings, jurisdiction]);
 
   const derivedFlagsByTxId = useMemo(() => {
     const flags = new Map<string, Set<FlagReason>>();
@@ -1222,6 +1285,27 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     () => transactions.filter((t) => selected.has(t.id)),
     [transactions, selected]
   );
+  const bulkCompatibleCategories = useMemo(() => {
+    if (selectedTxs.length === 0) return [] as TransactionCategory[];
+    return compatibleCategories(selectedTxs[0].type).filter((category) =>
+      selectedTxs.every((transaction) => compatibleCategories(transaction.type).includes(category))
+    );
+  }, [selectedTxs]);
+  const bulkPairManagedCount = useMemo(() => selectedTxs.filter((transaction) =>
+    transaction.internalTransferPairId != null || transaction.internalTransferDecision != null || transaction.linkedTransferId != null
+  ).length, [selectedTxs]);
+
+  const applyBulkCategory = async () => {
+    if (!pendingBulkCategory) return;
+    const category = pendingBulkCategory;
+    setApplyingBulk(true);
+    try {
+      await Promise.all(selectedTxs.map((transaction) =>
+        db.transactions.update(transaction.id, bulkCategoryPatch(transaction, category))
+      ));
+      setSelected(new Set());
+    } finally { setApplyingBulk(false); setPendingBulkCategory(null); }
+  };
 
   const bulkTypeImpact = useMemo(
     () => (pendingBulkType ? summarizeBulkTypeChange(selectedTxs, pendingBulkType) : null),
@@ -1654,6 +1738,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           <div className="min-w-0">
             <span className={cn(spam && 'line-through')}>
               <TypeSelector tx={t} />
+              <CategorySelector tx={t} />
             </span>
             <p className="mt-0.5 whitespace-nowrap pl-1 text-[11px] text-low">
               {timeUtc}
@@ -2529,6 +2614,25 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             )}
           </div>
 
+          <div className="relative">
+            <Button variant="secondary" size="sm" disabled={applyingBulk || bulkCompatibleCategories.length === 0}
+              aria-expanded={bulkCategoryMenuOpen} aria-haspopup="menu"
+              onClick={() => { setBulkTypeMenuOpen(false); setBulkFlagsMenuOpen(false); setBulkCategoryMenuOpen((open) => !open); }}>
+              <Tags className="h-3.5 w-3.5" /> Set category ({selected.size})
+            </Button>
+            {bulkCategoryMenuOpen && (
+              <div className="absolute bottom-full right-0 mb-2 max-h-80 min-w-[13rem] overflow-y-auto rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+                <p className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">Compatible with every selected type</p>
+                {bulkCompatibleCategories.map((category) => (
+                  <button key={category} type="button" onClick={() => { setBulkCategoryMenuOpen(false); setPendingBulkCategory(category); }}
+                    className="flex min-h-[36px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3">
+                    {categoryLabel(category)}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
           {/* Bulk: Set flags (checkbox list → Apply) */}
           <div className="relative">
             <Button variant="secondary" size="sm" disabled={applyingBulk} aria-expanded={bulkFlagsMenuOpen} aria-haspopup="menu" onClick={openBulkFlags}>
@@ -2588,11 +2692,17 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
                   <input
                     type="checkbox"
                     checked={bulkFlagsSel.internal}
+                    disabled={bulkPairManagedCount > 0}
                     onChange={(e) => patchBulkFlagsSel({ internal: e.target.checked })}
                     className="accent-primary"
                   />
                   Internal transfer (non-taxable)
                 </label>
+                {bulkPairManagedCount > 0 && (
+                  <p className="px-3 pb-2 text-[10px] text-warn">
+                    Internal transfer is disabled because {bulkPairManagedCount} selected row{bulkPairManagedCount === 1 ? '' : 's'} belong to a B4 pair. Confirm, reject, or unlink the reciprocal pair instead.
+                  </p>
+                )}
                 <label className="flex min-h-[40px] w-full cursor-pointer items-center gap-2 px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3">
                   <input
                     type="checkbox"
@@ -2702,6 +2812,16 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
         confirmLabel={applyingBulk ? 'Applying…' : `Apply to ${selectedTxs.length}`}
         onConfirm={() => void applyBulkType()}
         onCancel={() => setPendingBulkType(null)}
+      />
+      <ConfirmDialog
+        open={pendingBulkCategory != null}
+        title={pendingBulkCategory
+          ? `Set ${selectedTxs.length} transaction${selectedTxs.length === 1 ? '' : 's'} to category “${categoryLabel(pendingBulkCategory)}”?`
+          : ''}
+        body="Category is semantic tax meaning and does not change structural transaction type. This can affect reports."
+        confirmLabel={applyingBulk ? 'Applying…' : `Apply to ${selectedTxs.length}`}
+        onConfirm={() => void applyBulkCategory()}
+        onCancel={() => setPendingBulkCategory(null)}
       />
     </div>
   );

@@ -8,6 +8,7 @@ import {
   buildDerivativeBusinessIncomeRows,
   buildDerivativeCapitalGainRows
 } from '@/lib/costBasis/matchedGains';
+import { TEST_TAX_SETTINGS } from '@/test/taxSettings';
 import { isDerivativeProfit } from '@/lib/tax/derivatives';
 
 const USER_EXPORT = `Time,Type,Amount,Asset
@@ -120,10 +121,10 @@ Time,Type,Amount,Asset
     ]);
     expect(buildPortfolioHoldings(result.transactions)).toEqual([]);
     expect(result.transactions.filter(isDerivativeProfit)).toEqual([]);
-    expect(buildDerivativeBusinessIncomeRows(result.transactions)).toEqual([]);
-    expect(buildDerivativeBusinessExpenseRows(result.transactions)).toEqual([]);
-    expect(buildDerivativeCapitalGainRows(result.transactions)).toEqual([]);
-    expect(calculateCostBasis(result.transactions, { method: 'FIFO' }).disposals).toEqual([]);
+    expect(buildDerivativeBusinessIncomeRows(result.transactions, TEST_TAX_SETTINGS)).toEqual([]);
+    expect(buildDerivativeBusinessExpenseRows(result.transactions, TEST_TAX_SETTINGS)).toEqual([]);
+    expect(buildDerivativeCapitalGainRows(result.transactions, TEST_TAX_SETTINGS)).toEqual([]);
+    expect(calculateCostBasis(result.transactions, { method: 'FIFO', settings: TEST_TAX_SETTINGS }).disposals).toEqual([]);
   });
 
   it('preserves signed netting when a period export starts with an outflow', () => {
@@ -146,10 +147,12 @@ Time,Type,Amount,Asset
 
   it('keeps premiums and commissions out of spot matched-gain rows', async () => {
     const result = await parseCsvFile(new File([USER_EXPORT], 'options.csv'));
-    const engine = calculateCostBasis(result.transactions, { method: 'FIFO' });
+    const engine = calculateCostBasis(result.transactions, { method: 'FIFO', settings: TEST_TAX_SETTINGS });
     expect(engine.disposals).toEqual([]);
     expect(engine.lots).toEqual([]);
-    const expenses = buildDerivativeBusinessExpenseRows(result.transactions);
+    const expenses = buildDerivativeBusinessExpenseRows(result.transactions, {
+      ...TEST_TAX_SETTINGS, jurisdiction: 'IN', reportingCurrency: 'INR'
+    });
     expect(expenses).toHaveLength(4);
     expect(expenses.every((row) => row.notes?.includes('commission'))).toBe(true);
   });

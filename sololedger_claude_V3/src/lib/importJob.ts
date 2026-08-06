@@ -31,6 +31,7 @@ import { canonicalWalletAddress, canonicalWalletSourceRefKey } from '@/lib/ledge
 import type { EndpointCoverageOutcome } from '@/lib/reconcile/sourceCoverage';
 import { materializeImportedTransactionSafety } from '@/lib/safety/assetSafety';
 import { runInternalTransferMatching } from '@/lib/internalTransfers/persistence';
+import { applyClassificationEvidence } from '@/lib/taxonomy/classification';
 
 // ---- State shape ----
 
@@ -362,6 +363,7 @@ async function runWalletImportCore(
     stagedCount = txsToStore.length;
     stagedIds = txsToStore.map((transaction) => transaction.id);
     if (txsToStore.length > 0) {
+      txsToStore = txsToStore.map((transaction) => applyClassificationEvidence(transaction));
       const materialized = materializeImportedTransactionSafety(txsToStore);
       txsToStore = materialized.transactions;
       const { providerEvidence, automaticDecisions } = materialized;

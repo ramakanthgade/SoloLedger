@@ -4,7 +4,7 @@ import { db, getSettings, getSpecIdHints } from '@/lib/storage/db';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { JURISDICTIONS, summarizeYear } from '@/lib/tax/jurisdictions';
 import { deidentifyTransactions } from '@/lib/reports/deidentify';
-import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
+import type { Jurisdiction, TaxSettings } from '@/types/transaction';
 import { Card, CardContent, CardHeader, CardTitle, Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { SkeletonCards, SkeletonTable } from '@/components/ui/Skeleton';
@@ -43,7 +43,7 @@ export function ReportsTab() {
   // Report header treatment for the branded PDF: 'aurora' (dark band, default)
   // or 'light' (white header) so black-and-white printouts keep branding.
   const [lightHeader, setLightHeader] = useState(false);
-  const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
+  const [loadedSettings, setLoadedSettings] = useState<TaxSettings | null>(null);
 
   const transactionsRaw = useLiveQuery(() => db.transactions.toArray(), []);
   const transactions = transactionsRaw ?? [];
@@ -56,16 +56,22 @@ export function ReportsTab() {
   useEffect(() => {
     getSettings().then((s) => {
       const jur = s.jurisdiction;
+      setLoadedSettings(s);
       setJurisdiction(jur);
       setMethod(s.defaultCostBasisMethod);
-      setDerivativesTreatment(resolveTaxPolicy({ kind: 'derivatives', settings: s }).derivativesTreatment!);
       setYear(getCurrentFy(jur));
     });
   }, []);
+  const activeSettings = useMemo(() => loadedSettings ? { ...loadedSettings, jurisdiction } : null, [loadedSettings, jurisdiction]);
+  const derivativesTreatment = activeSettings
+    ? resolveTaxPolicy({ kind: 'derivatives', settings: activeSettings }).derivativesTreatment!
+    : 'business_income';
 
   const { disposals, inventoryDisposals, lots, shortfalls } = useMemo(
-    () => calculateCostBasis(transactions, { method, specIdHints: hints }),
-    [transactions, method, hints]
+    () => activeSettings
+      ? calculateCostBasis(transactions, { method, specIdHints: hints, settings: activeSettings })
+      : { disposals: [], inventoryDisposals: [], lots: [], shortfalls: [], flags: [], disposalCandidates: {} },
+    [transactions, method, hints, activeSettings]
   );
 
   const matchedRows = useMemo(
@@ -74,11 +80,11 @@ export function ReportsTab() {
   );
 
   const incomeEvents = useMemo(
-    () => buildIncomeRows(transactions).map((row) => ({
+    () => activeSettings ? buildIncomeRows(transactions, undefined, activeSettings).map((row) => ({
       fiatValue: row.fiatValue,
       timestamp: row.date
-    })),
-    [transactions]
+    })) : [],
+    [transactions, activeSettings]
   );
 
   // India Section 56(2)(x) receipt-side income: income/gift/airdrop/staking
@@ -86,30 +92,34 @@ export function ReportsTab() {
   // truth so `summary.vdaReceiptIncome` is correct.
   const receiptIncomeEvents = useMemo(
     () =>
-      buildReceiptIncomeRows(transactions).map((r) => ({
+      activeSettings ? buildReceiptIncomeRows(transactions, undefined, activeSettings).map((r) => ({
         fiatValue: r.fiatValue,
         timestamp: r.timestamp
-      })),
-    [transactions]
+      })) : [],
+    [transactions, activeSettings]
   );
 
   const yearDerivIncome = useMemo(() => {
-    return buildDerivativeBusinessIncomeRows(transactions)
+    return activeSettings ? buildDerivativeBusinessIncomeRows(transactions, activeSettings)
       .filter((r) => isInFy(r.date, year, jurisdiction))
-      .reduce((s, r) => s + r.fiatValue, 0);
-  }, [transactions, year, jurisdiction]);
+      .reduce((s, r) => s + r.fiatValue, 0) : 0;
+  }, [transactions, year, jurisdiction, activeSettings]);
 
   const yearDerivExpense = useMemo(() => {
-    return buildDerivativeBusinessExpenseRows(transactions)
+    return activeSettings ? buildDerivativeBusinessExpenseRows(transactions, activeSettings)
       .filter((r) => isInFy(r.date, year, jurisdiction))
-      .reduce((s, r) => s + r.fiatValue, 0);
-  }, [transactions, year, jurisdiction]);
+      .reduce((s, r) => s + r.fiatValue, 0) : 0;
+  }, [transactions, year, jurisdiction, activeSettings]);
 
   const yearDerivCg = useMemo(() => {
-    return buildDerivativeCapitalGainRows(transactions)
+    return activeSettings ? buildDerivativeCapitalGainRows(transactions, activeSettings)
       .filter((r) => isInFy(r.sellDate, year, jurisdiction))
-      .reduce((s, r) => s + r.gain, 0);
-  }, [transactions, year, jurisdiction]);
+      .reduce((s, r) => s + r.gain, 0) : 0;
+  }, [transactions, year, jurisdiction, activeSettings]);
+
+  const policyReviewCount = useMemo(() => activeSettings
+    ? transactions.filter((transaction) => resolveTaxPolicy({ kind: 'transaction', transaction, settings: activeSettings }).treatment === 'requires_review').length
+    : 0, [transactions, activeSettings]);
 
   const businessMode = derivativesTreatment === 'business_income';
 
@@ -185,6 +195,7 @@ export function ReportsTab() {
     transactions,
     fy: year,
     jurisdiction,
+    settings: activeSettings,
     auth: authSnapshot
   });
   const guardTaxExport = (exportFn: () => void | Promise<void>) => {
@@ -387,6 +398,12 @@ export function ReportsTab() {
         title="Reports"
         subtitle="Everything your CA needs to file — a Schedule VDA statement, TDS reconciliation, and tax estimate — built on this device and downloaded straight to it."
       />
+      {policyReviewCount > 0 && (
+        <div role="status" className="rounded-xl border border-warn/30 bg-warn/5 px-4 py-3 text-sm text-mid">
+          <strong className="text-warn">{policyReviewCount} policy review required</strong>
+          <span> — unsupported or incomplete outcomes are excluded rather than guessed.</span>
+        </div>
+      )}
 
       <div className="toolbar-card">
         <label className="flex flex-col gap-1">

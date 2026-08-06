@@ -33,6 +33,7 @@ import {
   type AccountOwnershipUpdate
 } from '@/lib/accounts/accountIdentity';
 import { normalizeImportedTransactionCategory } from '@/lib/taxonomy/categories';
+import { applyClassificationEvidence, retainClassificationEvidence } from '@/lib/taxonomy/classification';
 import { assertValidReciprocalTransferPairs } from '@/lib/internalTransfers/model';
 import {
   cleanCounterpartsForDeletedTransactions,
@@ -2091,7 +2092,9 @@ export async function commitCsvImportGeneration(input: CommitCsvImportInput): Pr
       }, completedAt));
     }
 
-    await db.transactions.bulkPut(input.transactions.map(normalizeImportedTransactionCategory));
+    await db.transactions.bulkPut(input.transactions.map(normalizeImportedTransactionCategory).map((transaction) =>
+      applyClassificationEvidence(transaction, undefined, completedAt)
+    ));
     await deduplicateTransactions();
     const savedTransactions = await db.transactions.filter((t) => t.importBatchId === input.id).toArray();
     const savedAfterDedup = savedTransactions.length;
@@ -2424,6 +2427,31 @@ export async function deduplicateTransactions(): Promise<number> {
   const all = await db.transactions.toArray();
   const seen = new Map<string, string>();
   const toDelete = new Set<string>();
+  const classificationUpdates = new Map<string, Partial<Transaction>>();
+
+  const mergeClassification = (survivor: Transaction, duplicate: Transaction): void => {
+    const locked = survivor.categoryLocked || survivor.categoryOrigin === 'user'
+      ? survivor
+      : duplicate.categoryLocked || duplicate.categoryOrigin === 'user' ? duplicate : undefined;
+    const classificationEvidence = retainClassificationEvidence(
+      survivor.classificationEvidence,
+      duplicate.classificationEvidence
+    );
+    const patch: Partial<Transaction> = locked ? {
+      type: locked.type,
+      category: locked.category,
+      legacyCategory: locked.legacyCategory,
+      categoryOrigin: 'user',
+      categoryConfidence: locked.categoryConfidence ?? 1,
+      categoryRuleId: locked.categoryRuleId,
+      categoryRuleVersion: locked.categoryRuleVersion,
+      categoryUpdatedAt: locked.categoryUpdatedAt,
+      categoryLocked: true,
+      classificationEvidence
+    } : { classificationEvidence };
+    Object.assign(survivor, patch);
+    classificationUpdates.set(survivor.id, patch);
+  };
 
   const csvByEconomicKey = new Map<string, Transaction[]>();
   const apiByEconomicKey = new Map<string, Transaction[]>();
@@ -2458,6 +2486,7 @@ export async function deduplicateTransactions(): Promise<number> {
       if (!csv) continue;
       csv.dedupMatchedApiId = identity;
       csv.dedupMatchedApiRow = api;
+      mergeClassification(csv, api);
       reserved.add(identity);
       reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
       toDelete.add(api.id);
@@ -2485,6 +2514,7 @@ export async function deduplicateTransactions(): Promise<number> {
     if (!identity) continue;
     csv.dedupMatchedApiId = identity;
     csv.dedupMatchedApiRow = api;
+    mergeClassification(csv, api);
     reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
     toDelete.add(api.id);
   }
@@ -2544,6 +2574,7 @@ export async function deduplicateTransactions(): Promise<number> {
       const identity = `${connectionId}:htx-order:${sourceRef}`;
       csv.dedupMatchedApiId = identity;
       csv.dedupMatchedApiRow = api;
+      mergeClassification(csv, api);
       reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
       for (const row of rows) toDelete.add(row.id);
       byConnection.delete(connectionId);
@@ -2567,6 +2598,7 @@ export async function deduplicateTransactions(): Promise<number> {
     const identity = `${api.importBatchId}:bybit-order:${api.sourceRef}`;
     csv.dedupMatchedApiId = identity;
     csv.dedupMatchedApiRow = api;
+    mergeClassification(csv, api);
     reservationUpdates.push({ id: csv.id, dedupMatchedApiId: identity, dedupMatchedApiRow: api });
     toDelete.add(api.id);
   }
@@ -2595,10 +2627,14 @@ export async function deduplicateTransactions(): Promise<number> {
     if (seen.has(key)) {
       const firstId = seen.get(key)!;
       const first = all.find((x) => x.id === firstId)!;
-      if (score(t) > score(first)) {
+      const firstLocked = first.categoryLocked || first.categoryOrigin === 'user';
+      const nextLocked = t.categoryLocked || t.categoryOrigin === 'user';
+      if ((!firstLocked && nextLocked) || (firstLocked === nextLocked && score(t) > score(first))) {
+        mergeClassification(t, first);
         toDelete.add(firstId);
         seen.set(key, t.id);
       } else {
+        mergeClassification(first, t);
         toDelete.add(t.id);
       }
     } else {
@@ -2607,7 +2643,7 @@ export async function deduplicateTransactions(): Promise<number> {
   }
 
   const uniqueDeletes = [...toDelete];
-  if (uniqueDeletes.length > 0 || reservationUpdates.length > 0) {
+  if (uniqueDeletes.length > 0 || reservationUpdates.length > 0 || classificationUpdates.size > 0) {
     const allById = new Map(all.map((row) => [row.id, row]));
     for (const update of reservationUpdates) {
       const sanitized = sanitizeEmbeddedTransferPairEvidence({
@@ -2617,8 +2653,13 @@ export async function deduplicateTransactions(): Promise<number> {
       });
       await db.transactions.update(update.id, {
         dedupMatchedApiId: update.dedupMatchedApiId,
-        dedupMatchedApiRow: sanitized.dedupMatchedApiRow
+        dedupMatchedApiRow: sanitized.dedupMatchedApiRow,
+        ...classificationUpdates.get(update.id)
       });
+      classificationUpdates.delete(update.id);
+    }
+    for (const [id, patch] of classificationUpdates) {
+      if (!toDelete.has(id)) await db.transactions.update(id, patch);
     }
     if (uniqueDeletes.length > 0) {
       await cleanCounterpartsForDeletedTransactions(uniqueDeletes);

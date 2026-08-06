@@ -9,7 +9,7 @@ const buy: Transaction = { ...tx, id: 'buy', timestamp: Date.UTC(2024, 0, 1), ty
 const lot: Lot = { id: 'lot', asset: 'BTC', acquiredAt: buy.timestamp, amountRemaining: 0, amountOriginal: 1, costBasisPerUnit: 60, costBasisTotal: 60, sourceTxId: buy.id, acquisitionType: 'buy' };
 const disposal: Disposal = { id: 'd', asset: 'BTC', disposedAt: tx.timestamp, amount: 1, proceeds: 100, costBasis: 60, gain: 40, holdingPeriodDays: 367, lotConsumption: [{ lotId: lot.id, amount: 1, costBasis: 60 }], sourceTxId: tx.id, method: 'FIFO' };
 const settings = (jurisdiction: TaxSettings['jurisdiction'], derivativesTreatment?: TaxSettings['derivativesTreatment']): TaxSettings => ({ jurisdiction, reportingCurrency: { IN: 'INR', US: 'USD', CA: 'CAD', AE: 'AED' }[jurisdiction], defaultCostBasisMethod: 'FIFO', derivativesTreatment, priceApiEnabled: false, rpcLookupEnabled: false });
-const indexes = (transactions: Transaction[] = [buy, tx], disposals: Disposal[] = [disposal], lots: Lot[] = [lot], inventoryDisposals: InventoryDisposal[] = []) => buildTransactionCostAnalysisIndexes({ transactions, disposals, lots, inventoryDisposals });
+const indexes = (transactions: Transaction[] = [buy, tx], disposals: Disposal[] = [disposal], lots: Lot[] = [lot], inventoryDisposals: InventoryDisposal[] = [], taxSettings: TaxSettings = settings('US')) => buildTransactionCostAnalysisIndexes({ transactions, disposals, lots, inventoryDisposals, settings: taxSettings });
 
 describe('transaction cost analysis model', () => {
   it.each(['IN', 'US', 'CA', 'AE'] as const)('uses configured %s metadata and preindexed report-source gains', (jurisdiction) => {
@@ -88,10 +88,24 @@ describe('transaction cost analysis model', () => {
   });
   it.each(['IN', 'US', 'CA', 'AE'] as const)('populates report-equivalent derivative amounts for %s', (jurisdiction) => {
     const derivative: Transaction = { ...tx, id: `perp-${jurisdiction}`, type: 'income', instrumentClass: 'derivative', category: 'perp_profit', fiatValue: 25, raw: { ntl: '100', closedPnl: '25', coin: 'BTC', sz: '1' } };
-    const all = indexes([derivative], [], []); const model = buildTransactionCostAnalysisModel({ transaction: derivative, settings: settings(jurisdiction), indexes: all });
+    const jurisdictionSettings = settings(jurisdiction);
+    const all = indexes([derivative], [], [], [], jurisdictionSettings); const model = buildTransactionCostAnalysisModel({ transaction: derivative, settings: jurisdictionSettings, indexes: all });
     const expected = defaultDerivativesTreatment(jurisdiction) === 'business_income' ? 'Business income' : 'Capital gains'; expect(model.derivativeTreatment).toBe(expected);
     if (expected === 'Business income') expect(model.businessIncome).toBe(25); else expect(model).toMatchObject({ proceeds: 100, costBasis: 75, gain: 25 });
-    const override = expected === 'Business income' ? 'capital_gains' : 'business_income'; expect(buildTransactionCostAnalysisModel({ transaction: derivative, settings: settings(jurisdiction, override), indexes: all }).derivativeTreatment).not.toBe(expected);
+    const override = expected === 'Business income' ? 'capital_gains' : 'business_income';
+    const overrideSettings = settings(jurisdiction, override);
+    const overrideIndexes = indexes([derivative], [], [], [], overrideSettings);
+    expect(buildTransactionCostAnalysisModel({ transaction: derivative, settings: overrideSettings, indexes: overrideIndexes }).derivativeTreatment).not.toBe(expected);
+  });
+  it('excludes unsupported derivative policy outcomes from every review index', () => {
+    const unsupported: Transaction = {
+      ...tx, id: 'unsupported-option', type: 'income', instrumentClass: 'derivative',
+      category: 'options_premium', fiatValue: 25
+    };
+    const all = indexes([unsupported], [], [], [], settings('US'));
+    expect(all.derivativeCapitalByTxId.has(unsupported.id)).toBe(false);
+    expect(all.derivativeIncomeByTxId.has(unsupported.id)).toBe(false);
+    expect(all.derivativeExpenseByTxId.has(unsupported.id)).toBe(false);
   });
   it('uses exact fiat fees and keeps authority differences warning-only', () => {
     const feeTx = { ...tx, feeAsset: 'USD', feeAmount: 3 }; const all = indexes([buy, feeTx]);

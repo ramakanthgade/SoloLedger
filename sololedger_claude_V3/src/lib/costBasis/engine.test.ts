@@ -21,12 +21,29 @@ function tx(overrides: Partial<Transaction> & { type: TxType }): Transaction {
 }
 
 function run(txs: Transaction[], opts: Partial<EngineOptions> = {}) {
-  return calculateCostBasis(txs, { method: 'FIFO', ...opts });
+  return calculateCostBasis(txs, { method: 'FIFO', settings: POLICY_SETTINGS, ...opts });
 }
 
 const DAY = 86_400_000;
+const POLICY_SETTINGS: TaxSettings = {
+  jurisdiction: 'US', reportingCurrency: 'USD', defaultCostBasisMethod: 'FIFO',
+  priceApiEnabled: false, rpcLookupEnabled: false
+};
 
 describe('cost-basis engine', () => {
+  it('uses canonical policy to exclude unsupported/suggested outcomes while retaining conservative spot basis', () => {
+    const result = run([
+      tx({ id: 'buy', type: 'buy', amount: 1, fiatValue: 100, timestamp: DAY }),
+      tx({ id: 'sell', type: 'sell', amount: 1, fiatValue: 200, timestamp: 2 * DAY }),
+      tx({ id: 'suggested', type: 'income', category: 'defi_reward', categoryOrigin: 'suggestion',
+        amount: 10, fiatValue: 10, timestamp: 3 * DAY }),
+      tx({ id: 'options', type: 'income', category: 'options_premium', instrumentClass: 'derivative',
+        amount: 10, fiatValue: 10, timestamp: 4 * DAY })
+    ], { settings: POLICY_SETTINGS });
+    expect(result.disposals).toHaveLength(1);
+    expect(result.disposals[0]).toMatchObject({ proceeds: 200, costBasis: 100, gain: 100 });
+    expect(result.lots.map((lot) => lot.sourceTxId)).toEqual(['buy']);
+  });
   it('consumes a lot partially and leaves the remainder open', () => {
     const { disposals, lots } = run([
       tx({ id: 'b', type: 'buy', amount: 2, fiatValue: 200, timestamp: 1 * DAY }),
@@ -76,7 +93,7 @@ describe('cost-basis engine', () => {
 
     const res = calculateCostBasis(
       [buy, tx({ id: 's', type: 'sell', amount: 1, fiatValue: 150, timestamp: 2 * DAY })],
-      { method: 'SpecID', specIdHints: { s: [lotId, lotId, lotId] } }
+      { method: 'SpecID', specIdHints: { s: [lotId, lotId, lotId] }, settings: POLICY_SETTINGS }
     );
     const disp = res.disposals[0];
     // Only 1 unit consumed from the single lot; cost basis = 1 * 100 = 100
@@ -309,13 +326,23 @@ describe('cost-basis engine', () => {
       expect(disposals[0].gain).toBe(600);
     });
 
-    it('gift_received and airdrop-style income both open at FMV-at-receipt', () => {
+    it('excludes unsupported gift receipts from automatic lot creation', () => {
       const gift = run([
         tx({ id: 'g', type: 'gift_received', amount: 2, fiatValue: 500, timestamp: 1 * DAY }),
         tx({ id: 's', type: 'sell', amount: 2, fiatValue: 1500, timestamp: 2 * DAY })
       ]);
-      expect(gift.disposals[0].costBasis).toBe(500);
-      expect(gift.disposals[0].gain).toBe(1000);
+      expect(gift.lots).toEqual([]);
+      expect(gift.disposals[0]).toMatchObject({ sourceTxId: 's', costBasis: 0, gain: 1500 });
+      expect(gift.shortfalls).toMatchObject([{ transactionId: 's', unmatchedAmount: 2 }]);
+    });
+
+    it('airdrop-style income still opens at FMV-at-receipt', () => {
+      const airdrop = run([
+        tx({ id: 'a', type: 'income', category: 'airdrop', amount: 2, fiatValue: 500, timestamp: 1 * DAY }),
+        tx({ id: 's', type: 'sell', amount: 2, fiatValue: 1500, timestamp: 2 * DAY })
+      ]);
+      expect(airdrop.disposals[0].costBasis).toBe(500);
+      expect(airdrop.disposals[0].gain).toBe(1000);
     });
 
     it('mining reward is the DISTINCT case: cost basis 0, later gain = full sale price', () => {

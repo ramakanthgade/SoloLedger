@@ -16,6 +16,7 @@ const BASE: TaxContextInput = {
   disposalCount: 5,
   totalIncome: 12000,
   shortfallCount: 0,
+  policyReviewCount: 0,
   topHoldings: [
     { asset: 'BTC', qty: 0.62, cost: 1440000 },
     { asset: 'ETH', qty: 11.4, cost: 980000 }
@@ -31,6 +32,12 @@ describe('buildTaxContext — honest, address-free system prompt (A2)', () => {
     expect(out).toContain('ETH');
     // Aggregated summary framing is present.
     expect(out.toLowerCase()).toContain('aggregated summary');
+  });
+
+  it('states that unsupported policy rows are review-required and excluded from automatic totals', () => {
+    const out = buildTaxContext({ ...BASE, policyReviewCount: 2 });
+    expect(out).toContain('Policy review required: 2');
+    expect(out).toContain('excluded from automatic tax totals');
   });
 
   it('makes NO false "100% local" claim', () => {

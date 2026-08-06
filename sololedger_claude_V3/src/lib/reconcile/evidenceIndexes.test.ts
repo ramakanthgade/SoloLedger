@@ -31,7 +31,7 @@ describe('linked CSV reconciliation evidence indexes', () => {
     const result = reconcileDerivedPostings({ scopeId: 'exchange:conn-1', accountClass: 'spot', assetKey: 'asset:BTC', asset: 'BTC', postings, authority, coverage: { status: 'complete', authorityAsOf: 2_000 }, scopeStatus: 'resolved' });
     expect(result).toMatchObject({ balanceStatus: 'ledger_under', delta: 3 });
     const settings: TaxSettings = { jurisdiction: 'US', reportingCurrency: 'USD', defaultCostBasisMethod: 'FIFO', priceApiEnabled: false, rpcLookupEnabled: false };
-    const model = buildTransactionCostAnalysisModel({ transaction, settings, indexes: buildTransactionCostAnalysisIndexes({ transactions: [transaction], lots: [], disposals: [] }), unexplainedAuthorityQuantity: result.delta });
+    const model = buildTransactionCostAnalysisModel({ transaction, settings, indexes: buildTransactionCostAnalysisIndexes({ transactions: [transaction], lots: [], disposals: [], settings }), unexplainedAuthorityQuantity: result.delta });
     expect(model.warnings.join(' ')).toContain('differs from posting history by 3 BTC');
   });
 });

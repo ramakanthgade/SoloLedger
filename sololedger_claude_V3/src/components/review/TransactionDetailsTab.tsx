@@ -47,7 +47,9 @@ export function TransactionDetailsTab({
             <Fact label="Custody projection" value={`${scope.scopeStatus} · ${scope.accountScopeId} · ${scope.accountClass}`} />
             <Fact label="Safety" value={transaction?.safetyState ?? (transaction?.isSpam ? 'user hidden' : 'No derived safety decision')} />
             <Fact label="Pairing" value={transaction?.internalTransferDecision ? `${transaction.internalTransferDecision} · ${transaction.internalTransferMatchMethod ?? 'method not recorded'}` : 'No derived pair decision'} />
-            <Fact label="Tax policy" value={taxPolicy ? `${taxPolicy.treatment.replace(/_/g, ' ')} · ${taxPolicy.reason}` : 'Policy outcome unavailable'} />
+            <Fact label="Tax policy" value={taxPolicy
+              ? `${taxPolicy.treatment.replace(/_/g, ' ')} · ${taxPolicy.explanation} · ${taxPolicy.reasonCode} · ${taxPolicy.policyVersion}`
+              : 'Policy outcome unavailable'} />
           </div>
         </section>
         <div className="rounded-xl border border-hi/10 bg-elev-3/40 px-3 py-3 text-xs leading-relaxed text-low">

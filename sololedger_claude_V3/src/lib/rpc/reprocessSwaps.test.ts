@@ -97,20 +97,20 @@ describe('reprocessRewardIncome', () => {
     expect(store[0].type).toBe('transfer_in');
   });
 
-  it('still flips DBT (no regression) and sets an income category', async () => {
+  it('leaves DBT from an unknown sender unclassified', async () => {
     store = [
       tx({
         id: 'dbt',
         asset: 'DBT',
         contractAddress: DBT_TOKEN_MINT,
-        counterpartyAddress: NON_REWARDS_SENDER, // unknown sender → genesis_reward fallback
+        counterpartyAddress: NON_REWARDS_SENDER,
         walletAddress: USER_WALLET
       })
     ];
     const n = await reprocessRewardIncome();
-    expect(n).toBe(1);
-    expect(store[0].type).toBe('income');
-    expect(store[0].category).toBe('genesis_reward');
+    expect(n).toBe(0);
+    expect(store[0].type).toBe('transfer_in');
+    expect(store[0].category).toBeUndefined();
   });
 
   it('does not touch rows the user already classified / made internal / spammed', async () => {
@@ -136,7 +136,7 @@ describe('reprocessRewardIncome', () => {
     expect(store[0].type).toBe('transfer_in');
   });
 
-  it('flips a stored DBT transfer_in with NO counterparty (ATA path) to income/genesis_reward', async () => {
+  it('leaves a stored DBT transfer_in with no counterparty unclassified', async () => {
     store = [
       tx({
         id: 'dbt-nocp',
@@ -147,9 +147,9 @@ describe('reprocessRewardIncome', () => {
       })
     ];
     const n = await reprocessRewardIncome();
-    expect(n).toBe(1);
-    expect(store[0].type).toBe('income');
-    expect(store[0].category).toBe('genesis_reward');
+    expect(n).toBe(0);
+    expect(store[0].type).toBe('transfer_in');
+    expect(store[0].category).toBeUndefined();
   });
 
   it('leaves a stored GEOD transfer_in with NO counterparty untouched', async () => {
@@ -271,26 +271,30 @@ describe('reprocessRewardIncome', () => {
       store.slice(3).map((row) => [row.id, JSON.stringify(row)])
     );
 
-    expect(await reprocessRewardIncome()).toBe(3);
+    expect(await reprocessRewardIncome()).toBe(2);
 
-    expect(store[0]).toEqual({
+    expect(store[0]).toMatchObject({
       ...originalSolanaDetails,
       type: 'income',
       category: 'mining_reward',
       notes: 'Geodnet GEOD mining reward on Solana — auto-classified as income',
       flags: [],
-      isInternalTransfer: false
+      isInternalTransfer: false,
+      categoryOrigin: 'rule', categoryConfidence: 1, categoryRuleId: 'reward-registry:exact',
+      categoryRuleVersion: 'b5.1', categoryLocked: false
     });
-    expect(store[1]).toEqual({
+    expect(store[1]).toMatchObject({
       ...originalPolygonDetails,
       type: 'income',
       category: 'mining_reward',
       notes: 'Geodnet GEOD mining reward on Polygon — auto-classified as income',
       flags: [],
-      isInternalTransfer: false
+      isInternalTransfer: false,
+      categoryOrigin: 'rule', categoryConfidence: 1, categoryRuleId: 'reward-registry:exact',
+      categoryRuleVersion: 'b5.1', categoryLocked: false
     });
-    expect(store[2].type).toBe('income');
-    expect(store[2].category).toBe('genesis_reward');
+    expect(store[2].type).toBe('transfer_in');
+    expect(store[2].category).toBeUndefined();
 
     for (const row of store.slice(3)) {
       expect(JSON.stringify(row), row.id).toBe(untouchedBefore.get(row.id));

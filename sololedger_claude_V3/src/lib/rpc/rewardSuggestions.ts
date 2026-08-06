@@ -27,6 +27,8 @@ import {
 } from '@/lib/assets/defiLlamaRewards';
 import type { FlagReason, Transaction, TxType } from '@/types/transaction';
 import { reclassifiedOptionsPatch } from '@/lib/review/reclassification';
+import { suggestionEvidence } from '@/lib/taxonomy/rules';
+import { classificationBaselineEvidence, retainClassificationEvidence } from '@/lib/taxonomy/classification';
 
 /**
  * The transaction patch applied when a user reclassifies a row's type in the
@@ -128,7 +130,9 @@ export async function applyDefiLlamaRewardSuggestions(opts?: {
       // carries the defi_reward category (only a prior suggestion sets it), so a
       // row that is back to transfer_in with category 'defi_reward' was rejected
       // by the user — don't flip it to income again.
-      t.category !== 'defi_reward'
+      t.category !== 'defi_reward' &&
+      !t.categoryLocked &&
+      t.categoryOrigin !== 'user'
   );
 
   let suggested = 0;
@@ -154,6 +158,17 @@ export async function applyDefiLlamaRewardSuggestions(opts?: {
     await db.transactions.update(t.id, {
       type: 'income',
       category: 'defi_reward',
+      categoryOrigin: 'suggestion',
+      categoryConfidence: 0.7,
+      categoryRuleId: 'defillama:reward-token',
+      categoryRuleVersion: 'b5.1',
+      categoryUpdatedAt: Date.now(),
+      categoryLocked: false,
+      classificationEvidence: retainClassificationEvidence(classificationBaselineEvidence(t), [suggestionEvidence({
+        type: 'income', category: 'defi_reward', origin: 'suggestion', confidence: 0.7,
+        ruleId: 'defillama:reward-token',
+        explanation: 'DefiLlama reward-token membership is suggestive, not transaction-specific proof.'
+      })]),
       notes: suggestionNotes(t.asset, hint),
       flags: [...flags] as FlagReason[]
     });

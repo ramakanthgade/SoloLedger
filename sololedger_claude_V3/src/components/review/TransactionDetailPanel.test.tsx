@@ -56,7 +56,7 @@ describe('TransactionDetailPanel', () => {
       onActiveTabChange={vi.fn()}
       transaction={transaction}
       presentation={presentation}
-      taxPolicy={{ treatment: 'requires_review', reason: 'No validated automatic policy outcome exists for this transaction.', confidence: 0, jurisdiction: 'US', evidenceIds: ['paired'] }}
+      taxPolicy={{ treatment: 'requires_review', reasonCode: 'unsupported_transaction', explanation: 'No validated automatic policy outcome exists for this transaction.', policyVersion: 'b5.1', reason: 'No validated automatic policy outcome exists for this transaction.', confidence: 0, jurisdiction: 'US', evidenceIds: ['paired'] }}
     />);
 
     expect(screen.getByText('Persisted source and account evidence')).toBeInTheDocument();

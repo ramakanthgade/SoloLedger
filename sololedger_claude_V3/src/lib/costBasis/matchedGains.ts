@@ -1,4 +1,4 @@
-import type { Disposal, Lot, Transaction } from '@/types/transaction';
+import type { Disposal, Lot, TaxSettings, Transaction } from '@/types/transaction';
 import { identifyDabbaProgram, DABBA_KIND_LABEL, type DabbaIncomeKind } from '@/lib/assets/dabbaRegistry';
 import { REWARD_KIND_LABEL } from '@/lib/assets/rewardRegistry';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
@@ -6,6 +6,7 @@ import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 /** Display labels for income kinds (Dabba kinds + generic reward kinds). */
 const INCOME_KIND_LABEL: Record<string, string> = { ...DABBA_KIND_LABEL, ...REWARD_KIND_LABEL };
 import { DUST } from '@/lib/costBasis/decimal';
+import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import {
   derivativeExpenseKind,
   isDerivativeExpense,
@@ -172,7 +173,8 @@ export interface DerivativeBusinessExpenseRow {
 export function buildIncomeRows(
   transactions: Transaction[],
   /** Addresses identified as DCA vaults — exclude their transfer_ins from income heuristic. */
-  dcaVaultAddresses?: Set<string>
+  dcaVaultAddresses: Set<string> | undefined,
+  settings: TaxSettings
 ): IncomeRow[] {
   const rows: IncomeRow[] = [];
 
@@ -180,6 +182,7 @@ export function buildIncomeRows(
     if (t.isInternalTransfer || isTransactionExcluded(t)) continue;
     // Derivatives have their own report sections
     if (isDerivativeTransaction(t)) continue;
+    if (resolveTaxPolicy({ kind: 'transaction', transaction: t, settings }).treatment !== 'income') continue;
 
     // Explicitly classified income (auto-classified or user-set)
     if (t.type === 'income' || t.type === 'gift_received') {
@@ -295,10 +298,11 @@ export interface ReceiptIncomeEvent {
  */
 export function buildReceiptIncomeRows(
   transactions: Transaction[],
-  dcaVaultAddresses?: Set<string>
+  dcaVaultAddresses: Set<string> | undefined,
+  settings: TaxSettings
 ): ReceiptIncomeEvent[] {
   const miningTxIds = new Set(transactions.filter(isMiningIncome).map((t) => t.id));
-  return buildIncomeRows(transactions, dcaVaultAddresses)
+  return buildIncomeRows(transactions, dcaVaultAddresses, settings)
     // Heuristic income rows use `income-candidate:<txId>` ids — strip the prefix
     // so mining exclusion matches the underlying transaction id.
     .filter((r) => !miningTxIds.has(r.txId))
@@ -306,9 +310,9 @@ export function buildReceiptIncomeRows(
 }
 
 /** Perp profits for business-income treatment. */
-export function buildDerivativeBusinessIncomeRows(transactions: Transaction[]): DerivativeBusinessIncomeRow[] {
+export function buildDerivativeBusinessIncomeRows(transactions: Transaction[], settings: TaxSettings): DerivativeBusinessIncomeRow[] {
   return transactions
-    .filter(isDerivativeProfit)
+    .filter((transaction) => isDerivativeProfit(transaction) && resolveTaxPolicy({ kind: 'transaction', transaction, settings }).treatment === 'business_income')
     .map((t) => ({
       id: t.id,
       date: t.timestamp,
@@ -323,9 +327,9 @@ export function buildDerivativeBusinessIncomeRows(transactions: Transaction[]): 
 }
 
 /** Perp trading fees + realized losses for business-income treatment. */
-export function buildDerivativeBusinessExpenseRows(transactions: Transaction[]): DerivativeBusinessExpenseRow[] {
+export function buildDerivativeBusinessExpenseRows(transactions: Transaction[], settings: TaxSettings): DerivativeBusinessExpenseRow[] {
   return transactions
-    .filter(isDerivativeExpense)
+    .filter((transaction) => isDerivativeExpense(transaction) && resolveTaxPolicy({ kind: 'transaction', transaction, settings }).treatment === 'business_income')
     .map((t) => ({
       id: t.id,
       date: t.timestamp,
@@ -356,11 +360,12 @@ export function buildDerivativeBusinessExpenseRows(transactions: Transaction[]):
  * ignored by the cost engine). Fees remain visible under Business expenses /
  * Review.
  */
-export function buildDerivativeCapitalGainRows(transactions: Transaction[]): MatchedGainRow[] {
+export function buildDerivativeCapitalGainRows(transactions: Transaction[], settings: TaxSettings): MatchedGainRow[] {
   const rows: MatchedGainRow[] = [];
 
   for (const t of transactions) {
     if (isTransactionExcluded(t) || t.isInternalTransfer || !isDerivativeTransaction(t)) continue;
+    if (resolveTaxPolicy({ kind: 'transaction', transaction: t, settings }).treatment !== 'capital_gains') continue;
 
     // Only realized close PnL — not per-fill trading fees
     const isProfit = isDerivativeProfit(t);
