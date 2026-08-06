@@ -25,7 +25,8 @@ export function isDerivativeTransaction(t: Pick<Transaction, 'instrumentClass' |
   if (t.instrumentClass === 'spot') return false;
   if (t.source?.startsWith('hyperliquid')) return true;
   const cat = (t.category ?? '').toLowerCase();
-  return cat === 'perp' || cat === 'perp_loss' || cat === 'perp_collateral' || cat === 'perp_funding' ||
+  return cat === 'perp_profit' || cat === 'perp_loss' || cat === 'derivative_collateral' ||
+    cat === 'realized_pnl' || cat === 'funding_fee' || cat === 'futures_fee' ||
     cat === 'options_collateral' || cat === 'options_premium' || cat === 'options_fee';
 }
 
@@ -49,7 +50,8 @@ export function isDerivativeExpense(t: Transaction): boolean {
   if (!isDerivativeTransaction(t) || isTransactionExcluded(t) || t.isInternalTransfer) return false;
   if (t.category === 'perp_loss') return true;
   if (t.category === 'options_fee') return t.type === 'fee';
-  return t.type === 'fee' && (t.category === 'perp' || t.category === 'perp_loss' || !t.category);
+  return t.type === 'fee' && (t.category === 'futures_fee' || t.category === 'funding_fee' ||
+    t.category === 'realized_pnl' || !t.category);
 }
 
 export function derivativeExpenseKind(t: Transaction): 'trading_fee' | 'realized_loss' {

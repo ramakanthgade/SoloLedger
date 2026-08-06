@@ -14,6 +14,7 @@ import type {
   ExchangeId,
   NewConnectionInput
 } from './types';
+import { exchangeAccountCanonicalKey, newAccountIdentity } from '@/lib/accounts/accountIdentity';
 
 type CredentialAwareConnectionRow = ExchangeConnectionRow & {
   apiKey?: string;
@@ -92,8 +93,10 @@ export async function getConnectionRow(id: string): Promise<ExchangeConnectionRo
 
 /** Persist a new connection and return its redacted view. */
 export async function addConnection(input: NewConnectionInput): Promise<ExchangeConnectionView> {
+  const id = makeId('exc');
+  const accountIdentityId = exchangeAccountCanonicalKey(id);
   const row: CredentialAwareConnectionRow = {
-    id: makeId('exc'),
+    id,
     exchange: input.exchange,
     label: input.label?.trim() || undefined,
     apiKey: input.apiKey.trim(),
@@ -104,9 +107,16 @@ export async function addConnection(input: NewConnectionInput): Promise<Exchange
     status: 'idle',
     credentialsState: 'ready',
     authorityGeneration: 0,
-    revision: 0
+    revision: 0,
+    accountIdentityId
   };
-  await db.exchangeConnections.put(row as ExchangeConnectionRow);
+  await db.transaction('rw', [db.exchangeConnections, db.accountIdentities], async () => {
+    await db.accountIdentities.add(newAccountIdentity({
+      kind: 'exchange', canonicalKey: accountIdentityId,
+      label: row.label, providerId: input.exchange
+    }, row.createdAt));
+    await db.exchangeConnections.put(row as ExchangeConnectionRow);
+  });
   return toView(row as ExchangeConnectionRow, 0);
 }
 

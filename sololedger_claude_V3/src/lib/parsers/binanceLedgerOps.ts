@@ -69,8 +69,8 @@ export const binanceLedgerConfig: LedgerStitchConfig = {
     ],
     internalTransferExclude: [],
     signSplit: [
-      { op: 'Realized Profit and Loss', negativeType: 'sell', category: 'perp', derivative: true },
-      { op: 'Funding Fee', negativeType: 'fee', category: 'perp', derivative: true }
+      { op: 'Realized Profit and Loss', negativeType: 'sell', category: 'realized_pnl', derivative: true },
+      { op: 'Funding Fee', negativeType: 'fee', category: 'funding_fee', derivative: true }
     ],
     fiatWithdraw: ['Fiat Withdraw'],
     skip: [

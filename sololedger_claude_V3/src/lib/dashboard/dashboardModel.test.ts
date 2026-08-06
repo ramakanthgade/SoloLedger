@@ -1354,7 +1354,7 @@ describe('reconcileHoldings', () => {
       tx({ id: 'spot', type: 'buy', asset: 'USDT', amount: 100, source: 'binance', raw: { buy: { Account: 'Spot' } } }),
       tx({ id: 'funding', type: 'transfer_in', asset: 'USDT', amount: 4, source: 'binance', raw: { Account: 'Funding' } }),
       tx({ id: 'margin', type: 'buy', asset: 'USDT', amount: 5, source: 'binance', raw: { buy: { Account: 'Cross Margin' }, spend: { Account: 'Cross Margin' } } }),
-      tx({ id: 'futures', type: 'income', asset: 'USDT', amount: 7, fiatValue: 7, source: 'binance', category: 'perp', instrumentClass: 'derivative', raw: { Account: 'USD-M Futures' } }),
+      tx({ id: 'futures', type: 'income', asset: 'USDT', amount: 7, fiatValue: 7, source: 'binance', category: 'perp_profit', instrumentClass: 'derivative', raw: { Account: 'USD-M Futures' } }),
       tx({ id: 'options', type: 'transfer_in', asset: 'USDT', amount: 3, source: 'binance_options' })
     ];
     const result = reconcileHoldings(buildPortfolioHoldings(txs), txs, [], [

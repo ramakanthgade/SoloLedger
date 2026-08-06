@@ -87,7 +87,7 @@ describe('transaction cost analysis model', () => {
     expect(buildTransactionCostAnalysisModel({ transaction: tx, settings: settings('US'), disposal: missing, indexes: indexes([tx], [missing], []) }).warnings.join(' ')).toContain('missing');
   });
   it.each(['IN', 'US', 'CA', 'AE'] as const)('populates report-equivalent derivative amounts for %s', (jurisdiction) => {
-    const derivative: Transaction = { ...tx, id: `perp-${jurisdiction}`, type: 'income', instrumentClass: 'derivative', category: 'perp', fiatValue: 25, raw: { ntl: '100', closedPnl: '25', coin: 'BTC', sz: '1' } };
+    const derivative: Transaction = { ...tx, id: `perp-${jurisdiction}`, type: 'income', instrumentClass: 'derivative', category: 'perp_profit', fiatValue: 25, raw: { ntl: '100', closedPnl: '25', coin: 'BTC', sz: '1' } };
     const all = indexes([derivative], [], []); const model = buildTransactionCostAnalysisModel({ transaction: derivative, settings: settings(jurisdiction), indexes: all });
     const expected = defaultDerivativesTreatment(jurisdiction) === 'business_income' ? 'Business income' : 'Capital gains'; expect(model.derivativeTreatment).toBe(expected);
     if (expected === 'Business income') expect(model.businessIncome).toBe(25); else expect(model).toMatchObject({ proceeds: 100, costBasis: 75, gain: 25 });

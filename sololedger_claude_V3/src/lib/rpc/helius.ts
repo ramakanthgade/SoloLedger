@@ -201,6 +201,8 @@ function pushSplBalanceRow(
     counterpartyAddress: counterparty,
     chain: 'solana',
     category: reward?.kind ?? unified?.kind,
+    legacyCategory: unified?.legacyKind,
+    categoryOrigin: reward ? 'provider' : unified?.kind ? 'suggestion' : undefined,
     notes: reward?.notes ?? unified?.label,
     flags: reward ? [] : unified ? ['needs_review'] : (['possible_internal_transfer', 'missing_market_value'] as FlagReason[]),
     isInternalTransfer: false

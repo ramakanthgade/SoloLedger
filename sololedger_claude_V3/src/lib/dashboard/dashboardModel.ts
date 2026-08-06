@@ -864,7 +864,7 @@ export interface ReconciliationResult {
 function transactionMatchesExchangeCustody(t: Transaction, exchange: string): boolean {
   const normalized = t.source.toLowerCase();
   const id = exchange.toLowerCase();
-  if (normalized === `${id}_options` || t.instrumentClass === 'derivative' || t.category === 'perp') {
+  if (normalized === `${id}_options` || t.instrumentClass === 'derivative') {
     return false;
   }
   if (normalized === `${id}_api` || normalized === `${id}_spot` || normalized === `${id}_transfers`) {

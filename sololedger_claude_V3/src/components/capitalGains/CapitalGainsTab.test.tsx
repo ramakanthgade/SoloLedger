@@ -84,7 +84,7 @@ const SEED = vi.hoisted(() => {
       fiatCurrency: 'INR',
       fiatValue: 120_000,
       instrumentClass: 'derivative',
-      category: 'perp',
+      category: 'perp_profit',
       source: 'manual',
       flags: [],
       isInternalTransfer: false
@@ -98,7 +98,7 @@ const SEED = vi.hoisted(() => {
       fiatCurrency: 'INR',
       fiatValue: 33_000,
       instrumentClass: 'derivative',
-      category: 'perp',
+      category: 'futures_fee',
       source: 'manual',
       flags: [],
       isInternalTransfer: false

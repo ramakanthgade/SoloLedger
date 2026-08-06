@@ -1,4 +1,4 @@
-import type { Transaction, TxType } from '@/types/transaction';
+import type { Transaction, TransactionCategory, TxType } from '@/types/transaction';
 import { exchangeSourceRef, makeId, safeTimestampUtc, stableAmountKey } from './types';
 import { quoteToFiatCurrency } from './pairUtils';
 
@@ -92,7 +92,7 @@ export interface OperationMap {
   /** Internal moves to EXCLUDE from import entirely (principal shuffles like Inter-Wallet Transfer). */
   internalTransferExclude?: string[];
   /** Sign-varying rows: positive → income, negative → `negativeType`. */
-  signSplit?: { op: string; negativeType: TxType; category?: string; derivative?: boolean }[];
+  signSplit?: { op: string; negativeType: TxType; category?: TransactionCategory; derivative?: boolean }[];
   /** Off-ramp of fiat to bank → sell with fiat value. */
   fiatWithdraw: string[];
   /**
@@ -392,7 +392,7 @@ export interface StitchContext {
     p2p: Set<string>;
     spendLike: Set<string>;
     revenueLike: Set<string>;
-    signSplit: Map<string, { negativeType: TxType; category?: string; derivative?: boolean }>;
+    signSplit: Map<string, { negativeType: TxType; category?: TransactionCategory; derivative?: boolean }>;
   };
 }
 
@@ -445,6 +445,7 @@ export function makeTx(
     partial.flags ?? (partial.fiatValue != null && partial.fiatValue > 0 ? [] : ['missing_market_value']);
   return {
     ...partial,
+    ...(partial.category ? { categoryOrigin: partial.categoryOrigin ?? 'parser' as const } : {}),
     id: makeId(ctx.exchange.slice(0, 2)),
     source: ctx.exchange,
     flags,
@@ -899,7 +900,7 @@ function stitchFiatConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
       sourceRef: srcRef(ctx, out.timestamp, 'trade', out.coin, amount),
       notes: `Fiat/stable conversion (${out.operation})`,
       flags: [],
-      category: 'fiat',
+      category: 'swap',
       raw: { out: out.raw, in: inRow?.raw }
     });
   });
@@ -1029,7 +1030,7 @@ function stitchFiatWithdrawals(ctx: StitchContext, rows: LedgerRow[]): Transacti
         fiatCurrency: fiatFromCoin(r.coin),
         sourceRef: srcRef(ctx, r.timestamp, 'sell', r.coin, amount),
         notes: 'Fiat withdrawal to bank',
-        category: 'fiat',
+        category: 'other',
         raw: r.raw
       });
     });

@@ -27,6 +27,7 @@ import { AlertTriangle, Check, Eye, RefreshCw } from 'lucide-react';
 import { syncCoinGeckoRewardRegistryInBackground } from '@/lib/assets/coingeckoRewardRegistry';
 import { BrandIcon, chainIconId } from './brandIcons';
 import { canonicalWalletAddress } from '@/lib/ledger/chainNamespace';
+import { isBitcoinAddress, isEvmAddress, isSolanaAddress } from '@/lib/rpc/walletAddressValidation';
 
 const inputCls =
   'mt-1 block w-full rounded-lg border border-hi/10 bg-elev-1 px-3.5 py-2.5 text-sm text-hi shadow-xs transition-colors placeholder:text-faint hover:border-hi/20 focus:border-primary/60 focus:outline-none focus:ring-2 focus:ring-primary/30';
@@ -35,18 +36,10 @@ const inputCls =
 function detectChainFromAddress(address: string): ChainId | null {
   const a = address.trim();
   if (!a) return null;
-  // Bitcoin: 1..., 3..., bc1...
-  if (/^(1[1-9A-HJ-NP-Za-km-z]{25,34}|3[1-9A-HJ-NP-Za-km-z]{25,34}|bc1[ac-hj-np-z02-9]{6,87})$/i.test(a)) return 'bitcoin';
-  // Ethereum / EVM: 0x + 40 hex chars
-  if (/^0x[a-fA-F0-9]{40}$/.test(a)) return 'ethereum';
-  // Solana: base58, 32–44 chars, no 0x prefix
-  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a) && !a.startsWith('bc1')) return 'solana';
+  if (isBitcoinAddress(a)) return 'bitcoin';
+  if (isEvmAddress(a)) return 'ethereum';
+  if (isSolanaAddress(a) && !a.startsWith('bc1')) return 'solana';
   return null;
-}
-
-/** True for an EVM-format address (0x + 40 hex). */
-function isEvmAddress(address: string): boolean {
-  return /^0x[a-fA-F0-9]{40}$/.test(address.trim());
 }
 
 const EVM_CHAIN_IDS: ChainId[] = CHAINS.filter(

@@ -32,6 +32,7 @@ import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 import { collectSequentialCursor } from '@/lib/rpc/pagination';
 import { eventSubjectKey } from '@/lib/safety/canonicalAssets';
 import { resolveOutboundInitiation } from '@/lib/safety/outboundInitiation';
+import { classifyIncomingTransfer } from '@/lib/assets/unifiedAddressRegistry';
 
 const MORALIS_BASE = 'https://deep-index.moralis.io/api/v2.2';
 
@@ -570,9 +571,17 @@ export function moralisTxToRows(
         observedAt, raw: { transfer_from: t.from_address, top_level_sender: mtx.from_address, nonce: mtx.nonce }
       }] : [])
     ];
+    const unified = isReceive ? classifyIncomingTransfer({
+      contractAddress: t.address,
+      counterpartyAddress: t.from_address,
+      chain: chainId,
+      amount: parseFloat(t.value_formatted)
+    }) : null;
     const txType: TxType =
       classified?.type === 'income' && isReceive
         ? 'income'
+        : isReceive && unified?.type
+          ? unified.type
         : isSend
           ? 'transfer_out'
           : 'transfer_in';
@@ -592,6 +601,9 @@ export function moralisTxToRows(
       walletAddress,
       counterpartyAddress: isSend ? t.to_address : t.from_address,
       chain: chainId,
+      category: unified?.kind,
+      legacyCategory: unified?.legacyKind,
+      categoryOrigin: unified?.source === 'reward_registry_static' ? 'provider' : unified?.kind ? 'suggestion' : undefined,
       notes: mtx.summary,
       flags: ['possible_internal_transfer', 'missing_market_value'] as FlagReason[],
       isInternalTransfer: false,
@@ -610,10 +622,13 @@ export function moralisTxToRows(
     const from = t.from_address || mtx.from_address;
     const to = t.to_address || mtx.to_address;
     const isSend = from?.toLowerCase() === walletLower || t.direction === 'send';
+    const unified = !isSend ? classifyIncomingTransfer({
+      counterpartyAddress: from, chain: chainId, amount
+    }) : null;
     rows.push({
       id: makeId('rpc'),
       timestamp: ts,
-      type: isSend ? 'transfer_out' : 'transfer_in',
+      type: isSend ? 'transfer_out' : unified?.type ?? 'transfer_in',
       asset: t.token_symbol || nativeAsset,
       amount,
       fiatCurrency: 'USD',
@@ -624,6 +639,9 @@ export function moralisTxToRows(
       walletAddress,
       counterpartyAddress: isSend ? to : from,
       chain: chainId,
+      category: unified?.kind,
+      legacyCategory: unified?.legacyKind,
+      categoryOrigin: unified?.source === 'reward_registry_static' ? 'provider' : unified?.kind ? 'suggestion' : undefined,
       notes: mtx.summary,
       flags: ['possible_internal_transfer', 'missing_market_value'] as FlagReason[],
       isInternalTransfer: false
@@ -635,10 +653,13 @@ export function moralisTxToRows(
     const amount = Number(BigInt(mtx.value)) / 1e18;
     if (amount > 1e-9) {
       const isSend = mtx.from_address.toLowerCase() === walletLower;
+      const unified = !isSend ? classifyIncomingTransfer({
+        counterpartyAddress: mtx.from_address, chain: chainId, amount
+      }) : null;
       rows.push({
         id: makeId('rpc'),
         timestamp: ts,
-        type: isSend ? 'transfer_out' : 'transfer_in',
+        type: isSend ? 'transfer_out' : unified?.type ?? 'transfer_in',
         asset: nativeAsset,
         amount,
         fiatCurrency: 'USD',
@@ -649,6 +670,9 @@ export function moralisTxToRows(
         walletAddress,
         counterpartyAddress: isSend ? mtx.to_address : mtx.from_address,
         chain: chainId,
+        category: unified?.kind,
+        legacyCategory: unified?.legacyKind,
+        categoryOrigin: unified?.source === 'reward_registry_static' ? 'provider' : unified?.kind ? 'suggestion' : undefined,
         notes: mtx.summary,
         flags: ['possible_internal_transfer', 'missing_market_value'] as FlagReason[],
         isInternalTransfer: false

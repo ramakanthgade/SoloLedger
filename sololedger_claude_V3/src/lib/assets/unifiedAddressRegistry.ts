@@ -1,4 +1,4 @@
-import type { TxType } from '@/types/transaction';
+import type { TransactionCategory, TxType } from '@/types/transaction';
 import { REWARD_TOKENS, classifyRewardIncome } from './rewardRegistry';
 import { classifyCoinGeckoReward, getCoinGeckoRewardCount, syncCoinGeckoRewardRegistry } from './coingeckoRewardRegistry';
 import { getAllocationContracts, getAllocationCount, lookupAllocationWallet, syncCoinGeckoAllocations } from './coingeckoAllocations';
@@ -7,7 +7,8 @@ import { KNOWN_PROTOCOL_CONTRACTS, isKnownProtocolContract } from '@/lib/rpc/evm
 
 export interface TransferClassification {
   type: TxType;
-  kind?: string;
+  kind?: TransactionCategory;
+  legacyKind?: string;
   label: string;
   source: 'reward_registry_static' | 'reward_registry_coingecko' | 'supply_breakdown' | 'blockworks' | 'known_protocol';
   confidence: 'high' | 'medium';
@@ -23,7 +24,8 @@ export function classifyIncomingTransfer(input: ClassifyInput): TransferClassifi
     const isExplicitDistribution = blockworks.role === 'mining_distribution';
     return {
       type: isExplicitDistribution ? 'income' : 'transfer_in',
-      kind: isExplicitDistribution ? 'mining_reward' : blockworks.role,
+      kind: isExplicitDistribution ? 'mining_reward' : 'other',
+      legacyKind: isExplicitDistribution ? undefined : blockworks.role,
       label: isExplicitDistribution
         ? `${blockworks.label} payout`
         : `Known ${blockworks.label} address — review transfer purpose`,
@@ -43,7 +45,8 @@ export function classifyIncomingTransfer(input: ClassifyInput): TransferClassifi
   const reward = classifyCoinGeckoReward(input.contractAddress, input.chain);
   if (reward) return {
     type: 'transfer_in',
-    kind: reward.kind,
+    kind: 'reward',
+    legacyKind: reward.kind,
     label: `${reward.label} — token metadata alone does not prove income`,
     source: 'reward_registry_coingecko',
     confidence: 'medium'

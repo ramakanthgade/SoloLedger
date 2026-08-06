@@ -142,7 +142,7 @@ describe('buildReceiptIncomeRows — Section 56(2)(x) inclusion/exclusion', () =
   it('EXCLUDES mining income (zero-cost / no receipt-side income)', () => {
     const rows = buildReceiptIncomeRows([
       tx({ id: 'mine', type: 'income', category: 'mining', fiatValue: 9999, timestamp: 7 * DAY }),
-      tx({ id: 'stake', type: 'income', category: 'staking', fiatValue: 300, timestamp: 8 * DAY })
+      tx({ id: 'stake', type: 'income', category: 'staking_reward', fiatValue: 300, timestamp: 8 * DAY })
     ]);
     const ids = rows.map((r) => r.txId);
     expect(ids).not.toContain('mine');

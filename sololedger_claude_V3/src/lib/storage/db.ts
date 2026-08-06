@@ -1,5 +1,7 @@
 import Dexie, { type Table } from 'dexie';
-import type { Transaction, Lot, Disposal, TaxSettings } from '@/types/transaction';
+import type {
+  Transaction, Lot, Disposal, TaxSettings, InternalTransferDecision, InternalTransferMatchMethod
+} from '@/types/transaction';
 import { derivePostings, type AccountClass, type OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import {
@@ -21,6 +23,17 @@ import { binanceApiIdentity, binanceEconomicKey } from './binanceEconomicDedup';
 import type { ProviderEvidenceRow, SafetyDecisionRow } from '@/lib/safety/types';
 import { transactionSafetySubject } from '@/lib/safety/assetSafety';
 import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
+import {
+  applyOwnershipUpdate,
+  conservativeCsvAccountCanonicalKey,
+  exchangeAccountCanonicalKey,
+  newAccountIdentity,
+  walletAccountCanonicalKey,
+  type AccountIdentityRow,
+  type AccountOwnershipUpdate
+} from '@/lib/accounts/accountIdentity';
+import { normalizeImportedTransactionCategory } from '@/lib/taxonomy/categories';
+import { assertValidReciprocalTransferPairs } from '@/lib/internalTransfers/model';
 
 function newSourceIncarnation(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -58,6 +71,8 @@ export interface LookupAddressRow {
   revision?: number;
   /** Durable random identity lifetime token; deletion and re-addition creates a new incarnation. */
   sourceIncarnation?: string;
+  /** FK to the durable account-level identity (shared by one EVM address across chains). */
+  accountIdentityId?: string;
 }
 
 export interface CsvImportRow {
@@ -78,6 +93,8 @@ export interface CsvImportRow {
   authorityGeneration?: number;
   /** Compare-and-save revision for source lifecycle changes. */
   revision?: number;
+  /** Durable account is independent from this file hash/import generation. */
+  accountIdentityId?: string;
 }
 
 /**
@@ -117,6 +134,8 @@ export interface ExchangeConnectionRow {
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
+  /** Exact one-to-one account identity for this connection. */
+  accountIdentityId?: string;
 }
 
 export interface PriceCacheRow {
@@ -190,6 +209,7 @@ class SoloLedgerDB extends Dexie {
   safetyDecisions!: Table<SafetyDecisionRow, string>;
   defiPositionSnapshots!: Table<DefiPositionSnapshot, string>;
   defiPositionRows!: Table<DefiPositionRow, string>;
+  accountIdentities!: Table<AccountIdentityRow, string>;
 
   constructor(name: string) {
     super(name);
@@ -508,6 +528,69 @@ class SoloLedgerDB extends Dexie {
       defiPositionSnapshots: 'snapshotId, generation, accountIdentityScope, protocolId, chainId, status, [accountIdentityScope+protocolId]',
       defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]'
     });
+    // v15: typed classification, durable canonical accounts, and reciprocal pair index.
+    this.version(15).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId, category, internalTransferPairId',
+      lots: 'id, asset, acquiredAt, sourceTxId',
+      disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id',
+      specIdHints: 'txId',
+      lookupAddresses: 'id, chain, address, lastSyncedAt, accountIdentityId',
+      priceCache: 'key, fetchedAt',
+      csvImports: 'id, importedAt, fileName, accountIdentityId',
+      exchangeConnections: 'id, exchange, lastSyncAt, accountIdentityId',
+      walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset',
+      authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+      authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+      sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+      openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]',
+      providerEvidence: 'id, subjectKey, subjectKind, provider, ruleId, ruleVersion, confidence, observedAt, [subjectKey+provider]',
+      safetyDecisions: 'subjectKey, state, updatedAt, [state+updatedAt]',
+      defiPositionSnapshots: 'snapshotId, generation, accountIdentityScope, protocolId, chainId, status, [accountIdentityScope+protocolId]',
+      defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]',
+      accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]'
+    }).upgrade(async (tx) => {
+      const accounts = tx.table<AccountIdentityRow, string>('accountIdentities');
+      const now = Date.now();
+      const lookupRows = await tx.table<LookupAddressRow, string>('lookupAddresses').toArray();
+      for (const source of lookupRows) {
+        const canonicalKey = walletAccountCanonicalKey(source.chain, source.address);
+        const existing = await accounts.get(canonicalKey);
+        if (!existing) {
+          await accounts.add(newAccountIdentity({
+            kind: 'wallet', canonicalKey, label: source.label,
+            walletAppId: source.walletAppId, providerId: source.chain
+          }, now));
+        }
+        await tx.table<LookupAddressRow, string>('lookupAddresses').update(source.id, {
+          accountIdentityId: canonicalKey
+        });
+      }
+      const exchangeRows = await tx.table<ExchangeConnectionRow, string>('exchangeConnections').toArray();
+      for (const source of exchangeRows) {
+        const canonicalKey = exchangeAccountCanonicalKey(source.id);
+        await accounts.put(newAccountIdentity({
+          kind: 'exchange', canonicalKey, label: source.label, providerId: source.exchange
+        }, now));
+        await tx.table<ExchangeConnectionRow, string>('exchangeConnections').update(source.id, {
+          accountIdentityId: canonicalKey
+        });
+      }
+      const csvRows = await tx.table<CsvImportRow, string>('csvImports').toArray();
+      for (const source of csvRows) {
+        // One conservative identity per prior import. Filename is deliberately absent from the key.
+        const canonicalKey = conservativeCsvAccountCanonicalKey(source.id);
+        await accounts.put(newAccountIdentity({ kind: 'csv', canonicalKey, parserId: source.parserId ?? undefined }, now));
+        await tx.table<CsvImportRow, string>('csvImports').update(source.id, { accountIdentityId: canonicalKey });
+      }
+      await tx.table<Transaction, string>('transactions').toCollection().modify((row) => {
+        const normalized = normalizeImportedTransactionCategory(row);
+        row.category = normalized.category;
+        row.legacyCategory = normalized.legacyCategory;
+        row.categoryOrigin = normalized.categoryOrigin;
+      });
+    });
   }
 }
 
@@ -640,7 +723,7 @@ export async function seedSettingsIfAbsent(seed: TaxSettings): Promise<boolean> 
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.providerEvidence, db.safetyDecisions, db.defiPositionSnapshots, db.defiPositionRows, db.settings],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.providerEvidence, db.safetyDecisions, db.defiPositionSnapshots, db.defiPositionRows, db.accountIdentities, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -660,6 +743,7 @@ export async function clearAllData(): Promise<void> {
       await db.safetyDecisions.clear();
       await db.defiPositionSnapshots.clear();
       await db.defiPositionRows.clear();
+      await db.accountIdentities.clear();
       // "Delete all data" promises to remove everything — reset settings to defaults too.
       await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
     }
@@ -922,11 +1006,18 @@ export async function upsertLookupAddress(
   const storedAddress = preliminary?.address ?? canonicalAddress;
   const txCount = await countWalletTransactions(chain, storedAddress);
   const newestInDb = await newestStoredSignature(chain, storedAddress);
-  await db.transaction('rw', db.lookupAddresses, async () => {
+  await db.transaction('rw', [db.lookupAddresses, db.accountIdentities], async () => {
     const exact = await db.lookupAddresses.get(canonicalId);
     const compatibleLegacy = exact ? [] : await db.lookupAddresses.filter((row) =>
       row.chain === chain && walletAddressEquals(chain, row.address, canonicalAddress)).toArray();
     const existing = exact ?? (compatibleLegacy.length === 1 ? compatibleLegacy[0] : undefined);
+    const accountIdentityId = existing?.accountIdentityId ?? walletAccountCanonicalKey(chain, canonicalAddress);
+    if (!await db.accountIdentities.get(accountIdentityId)) {
+      await db.accountIdentities.add(newAccountIdentity({
+        kind: 'wallet', canonicalKey: accountIdentityId,
+        label: initialIdentity?.label, walletAppId: initialIdentity?.walletAppId, providerId: chain
+      }));
+    }
     await db.lookupAddresses.put({
       ...(existing ?? {}),
       id: existing?.id ?? canonicalId,
@@ -938,6 +1029,7 @@ export async function upsertLookupAddress(
       authorityGeneration: existing?.authorityGeneration ?? 0,
       revision: existing?.revision ?? 0,
       sourceIncarnation: existing?.sourceIncarnation ?? newSourceIncarnation(),
+      accountIdentityId,
       ...(!existing && initialIdentity?.label?.trim()
         ? { label: initialIdentity.label.trim() }
         : {}),
@@ -1905,19 +1997,32 @@ export async function upsertCsvImport(
   fileName: string,
   parserId: string | null,
   txCount: number,
-  metadata?: Pick<CsvImportRow, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>
+  metadata?: Pick<CsvImportRow, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>,
+  accountIdentityId?: string
 ): Promise<void> {
   const existing = await db.csvImports.get(id);
-  await db.csvImports.put({
-    ...existing,
-    id,
-    fileName,
-    parserId,
-    importedAt: Date.now(),
-    txCount,
-    authorityGeneration: existing?.authorityGeneration ?? 0,
-    revision: existing?.revision ?? 0,
-    ...metadata
+  const durableAccountId = accountIdentityId ?? existing?.accountIdentityId ?? conservativeCsvAccountCanonicalKey(id);
+  await db.transaction('rw', [db.csvImports, db.accountIdentities], async () => {
+    const account = await db.accountIdentities.get(durableAccountId);
+    if (account && account.kind !== 'csv') throw new Error('CSV import requires a CSV account identity.');
+    if (!account) {
+      if (accountIdentityId) throw new Error('Selected CSV account identity does not exist.');
+      await db.accountIdentities.add(newAccountIdentity({
+        kind: 'csv', canonicalKey: durableAccountId, parserId: parserId ?? undefined
+      }));
+    }
+    await db.csvImports.put({
+      ...existing,
+      id,
+      fileName,
+      parserId,
+      importedAt: Date.now(),
+      txCount,
+      authorityGeneration: existing?.authorityGeneration ?? 0,
+      revision: existing?.revision ?? 0,
+      accountIdentityId: durableAccountId,
+      ...metadata
+    });
   });
 }
 
@@ -1938,6 +2043,8 @@ export interface CommitCsvImportInput {
   id: string;
   fileName: string;
   parserId: string | null;
+  /** Explicit durable account selection, independent from id (the file hash). */
+  accountIdentityId?: string;
   transactions: Transaction[];
   metadata?: Pick<CsvImportRow, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough'>;
   completedAt?: number;
@@ -1956,15 +2063,26 @@ export interface CommitCsvImportInput {
  */
 export async function commitCsvImportGeneration(input: CommitCsvImportInput): Promise<number> {
   const tables = [
-    db.transactions, db.csvImports, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage
+    db.transactions, db.csvImports, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage,
+    db.accountIdentities
   ];
   return db.transaction('rw', tables, async () => {
     const existing = await db.csvImports.get(input.id);
     const generation = Math.max(0, existing?.authorityGeneration ?? 0) + 1;
     const revision = Math.max(0, existing?.revision ?? 0) + 1;
     const completedAt = input.completedAt ?? Date.now();
+    const accountIdentityId = input.accountIdentityId ?? existing?.accountIdentityId ??
+      conservativeCsvAccountCanonicalKey(input.id);
+    const account = await db.accountIdentities.get(accountIdentityId);
+    if (account && account.kind !== 'csv') throw new Error('CSV import requires a CSV account identity.');
+    if (!account) {
+      if (input.accountIdentityId) throw new Error('Selected CSV account identity does not exist.');
+      await db.accountIdentities.add(newAccountIdentity({
+        kind: 'csv', canonicalKey: accountIdentityId, parserId: input.parserId ?? undefined
+      }, completedAt));
+    }
 
-    await db.transactions.bulkPut(input.transactions);
+    await db.transactions.bulkPut(input.transactions.map(normalizeImportedTransactionCategory));
     await deduplicateTransactions();
     const savedTransactions = await db.transactions.filter((t) => t.importBatchId === input.id).toArray();
     const savedAfterDedup = savedTransactions.length;
@@ -2024,6 +2142,7 @@ export async function commitCsvImportGeneration(input: CommitCsvImportInput): Pr
       txCount: savedAfterDedup,
       authorityGeneration: generation,
       revision,
+      accountIdentityId,
       balanceSnapshot: savedAfterDedup === input.transactions.length
         ? input.metadata?.balanceSnapshot : undefined,
       optionsBalanceUnavailable: input.metadata?.optionsBalanceUnavailable,
@@ -2036,6 +2155,80 @@ export async function commitCsvImportGeneration(input: CommitCsvImportInput): Pr
     await db.sourceCoverage.bulkAdd(rows.coverage);
     await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
     return savedAfterDedup;
+  });
+}
+
+/** Atomic compare-and-set ownership update; account-level decisions never fan out through source rows. */
+export async function updateAccountOwnership(
+  accountIdentityId: string,
+  update: AccountOwnershipUpdate,
+  expectedLifecycleRevision?: number,
+  now = Date.now()
+): Promise<AccountIdentityRow> {
+  return db.transaction('rw', db.accountIdentities, async () => {
+    const current = await db.accountIdentities.get(accountIdentityId);
+    if (!current) throw new Error('Account identity not found.');
+    if (expectedLifecycleRevision != null && current.lifecycleRevision !== expectedLifecycleRevision) {
+      throw new Error('Account ownership changed while the update was in progress.');
+    }
+    const next = applyOwnershipUpdate(current, update, now);
+    await db.accountIdentities.put(next);
+    return next;
+  });
+}
+
+export interface ReciprocalTransferPairUpdate {
+  pairId: string;
+  outgoingTransactionId: string;
+  incomingTransactionId: string;
+  decision: InternalTransferDecision;
+  method: InternalTransferMatchMethod;
+  matcherVersion: string;
+  decidedAt?: number;
+}
+
+/**
+ * Atomically writes one complete reciprocal pair contract. Matching remains a B4 concern;
+ * this helper only validates and persists an already-decided pair without partial legs.
+ */
+export async function updateReciprocalTransferPair(input: ReciprocalTransferPairUpdate): Promise<[Transaction, Transaction]> {
+  return db.transaction('rw', db.transactions, async () => {
+    if (!input.pairId.trim() || !input.matcherVersion.trim() ||
+      input.outgoingTransactionId === input.incomingTransactionId) {
+      throw new Error('Reciprocal transfer pair identity is malformed.');
+    }
+    const [outgoing, incoming] = await db.transactions.bulkGet([
+      input.outgoingTransactionId, input.incomingTransactionId
+    ]);
+    if (!outgoing || !incoming) throw new Error('Reciprocal transfer pair transaction is missing.');
+    if (outgoing.type !== 'transfer_out' || incoming.type !== 'transfer_in') {
+      throw new Error('Reciprocal transfer pair requires opposite transfer_out and transfer_in legs.');
+    }
+    for (const row of [outgoing, incoming]) {
+      if (row.internalTransferPairId && row.internalTransferPairId !== input.pairId) {
+        throw new Error('Transaction already belongs to another reciprocal transfer pair.');
+      }
+    }
+    const decidedAt = input.decidedAt ?? Date.now();
+    const isInternalTransfer = input.decision === 'confirmed';
+    const common = {
+      internalTransferPairId: input.pairId,
+      internalTransferDecision: input.decision,
+      internalTransferMatchMethod: input.method,
+      internalTransferMatcherVersion: input.matcherVersion,
+      internalTransferDecisionAt: decidedAt,
+      isInternalTransfer
+    } as const;
+    const nextOutgoing: Transaction = { ...outgoing, ...common, linkedTransferId: incoming.id };
+    const nextIncoming: Transaction = { ...incoming, ...common, linkedTransferId: outgoing.id };
+    const existingPairRows = await db.transactions.where('internalTransferPairId').equals(input.pairId).toArray();
+    assertValidReciprocalTransferPairs([
+      ...existingPairRows.filter((row) => row.id !== outgoing.id && row.id !== incoming.id),
+      nextOutgoing,
+      nextIncoming
+    ]);
+    await db.transactions.bulkPut([nextOutgoing, nextIncoming]);
+    return [nextOutgoing, nextIncoming];
   });
 }
 
