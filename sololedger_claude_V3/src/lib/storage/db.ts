@@ -34,6 +34,13 @@ import {
 } from '@/lib/accounts/accountIdentity';
 import { normalizeImportedTransactionCategory } from '@/lib/taxonomy/categories';
 import { assertValidReciprocalTransferPairs } from '@/lib/internalTransfers/model';
+import {
+  cleanCounterpartsForDeletedTransactions,
+  invalidateAutomaticPairsForAccount,
+  runInternalTransferMatching,
+  sanitizeEmbeddedTransferPairEvidence,
+  sanitizeTransferPairMetadata
+} from '@/lib/internalTransfers/persistence';
 
 function newSourceIncarnation(): string {
   return globalThis.crypto?.randomUUID?.() ??
@@ -1074,6 +1081,7 @@ export async function deleteLookupAddressAndTransactions(id: string): Promise<nu
     const ownedScopes = new Set([scopeId, ...snapshots.map((snapshot) => snapshot.scopeId)]);
     if (toDelete.length > 0) {
       await deleteDependentTaxArtifacts(toDelete.map((t) => t.id));
+      await cleanCounterpartsForDeletedTransactions(toDelete.map((t) => t.id));
       await db.transactions.bulkDelete(toDelete.map((t) => t.id));
       await db.specIdHints.bulkDelete(toDelete.map((t) => t.id));
     }
@@ -1958,6 +1966,7 @@ export async function deleteTransactionsByIds(ids: string[]): Promise<number> {
 
   await db.transaction('rw', [db.transactions, db.lots, db.disposals, db.specIdHints, db.csvImports], async () => {
     await deleteDependentTaxArtifacts(ids);
+    await cleanCounterpartsForDeletedTransactions(ids);
     await db.transactions.bulkDelete(ids);
     for (const id of ids) {
       await db.specIdHints.delete(id);
@@ -2066,7 +2075,7 @@ export async function commitCsvImportGeneration(input: CommitCsvImportInput): Pr
     db.transactions, db.csvImports, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage,
     db.accountIdentities
   ];
-  return db.transaction('rw', tables, async () => {
+  const saved = await db.transaction('rw', tables, async () => {
     const existing = await db.csvImports.get(input.id);
     const generation = Math.max(0, existing?.authorityGeneration ?? 0) + 1;
     const revision = Math.max(0, existing?.revision ?? 0) + 1;
@@ -2156,6 +2165,8 @@ export async function commitCsvImportGeneration(input: CommitCsvImportInput): Pr
     await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
     return savedAfterDedup;
   });
+  await runInternalTransferMatching(await resolvePostDedupTransferSurvivorIds(input.transactions));
+  return saved;
 }
 
 /** Atomic compare-and-set ownership update; account-level decisions never fan out through source rows. */
@@ -2165,7 +2176,8 @@ export async function updateAccountOwnership(
   expectedLifecycleRevision?: number,
   now = Date.now()
 ): Promise<AccountIdentityRow> {
-  return db.transaction('rw', db.accountIdentities, async () => {
+  const updated = await db.transaction('rw', [db.accountIdentities, db.transactions, db.lookupAddresses,
+    db.csvImports, db.exchangeConnections], async () => {
     const current = await db.accountIdentities.get(accountIdentityId);
     if (!current) throw new Error('Account identity not found.');
     if (expectedLifecycleRevision != null && current.lifecycleRevision !== expectedLifecycleRevision) {
@@ -2173,8 +2185,30 @@ export async function updateAccountOwnership(
     }
     const next = applyOwnershipUpdate(current, update, now);
     await db.accountIdentities.put(next);
+    if (current.ownershipStatus === 'owned' && next.ownershipStatus !== 'owned') {
+      await invalidateAutomaticPairsForAccount(accountIdentityId);
+    }
     return next;
   });
+  if (updated.ownershipStatus === 'owned') {
+    const [walletSources, csvSources, exchangeSources] = await Promise.all([
+      db.lookupAddresses.where('accountIdentityId').equals(accountIdentityId).toArray(),
+      db.csvImports.where('accountIdentityId').equals(accountIdentityId).toArray(),
+      db.exchangeConnections.where('accountIdentityId').equals(accountIdentityId).toArray()
+    ]);
+    const batches = new Set([...csvSources, ...exchangeSources].map((row) => row.id));
+    const walletKeys = new Set(walletSources.map((row) =>
+      `${row.chain}:${canonicalWalletAddress(row.chain, row.address)}`));
+    // Ownership edits are rare foreground actions. One ledger pass discovers
+    // their affected source rows, after which the matcher resumes indexed asset queries.
+    const seeds = await db.transactions.filter((row) => row.internalTransferPairId == null && (
+      (row.importBatchId != null && batches.has(row.importBatchId)) ||
+      (row.chain != null && row.walletAddress != null &&
+        walletKeys.has(`${row.chain}:${canonicalWalletAddress(row.chain, row.walletAddress)}`))
+    )).primaryKeys();
+    await runInternalTransferMatching(seeds);
+  }
+  return updated;
 }
 
 /**
@@ -2309,10 +2343,15 @@ export async function deleteCsvImportAndTransactions(importId: string): Promise<
     const recoverableApiRows = toDelete
       .map((t) => t.dedupMatchedApiRow)
       .filter((t): t is Transaction => !!t)
-      .map((t) => ({ ...t, dedupMatchedApiId: undefined, dedupMatchedApiRow: undefined }));
+      .map((t) => sanitizeTransferPairMetadata({
+        ...t,
+        dedupMatchedApiId: undefined,
+        dedupMatchedApiRow: undefined
+      }, { preserveManualState: false }));
     if (recoverableApiRows.length > 0) await db.transactions.bulkPut(recoverableApiRows);
     if (toDelete.length > 0) {
       await deleteDependentTaxArtifacts(transactionIds);
+      await cleanCounterpartsForDeletedTransactions(transactionIds);
       // Reuse the primary keys already loaded above instead of walking the
       // 28k-entry importBatchId secondary index a second time.
       await db.transactions.bulkDelete(transactionIds);
@@ -2332,6 +2371,47 @@ export async function deleteCsvImportAndTransactions(importId: string): Promise<
     await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
     return toDelete.length;
   });
+}
+
+function durableDedupIdentityKeys(row: Transaction): string[] {
+  const apiIdentity = binanceApiIdentity(row);
+  const exchangeKey = transactionExchangeKey(row);
+  const sourceKey = transactionSourceKey(row);
+  const importKey = transactionImportKey(row);
+  return [...new Set([
+    row.source === 'binance_api' && apiIdentity ? `binance-api:${apiIdentity}` : undefined,
+    exchangeKey,
+    sourceKey ? `src:${sourceKey}` : undefined,
+    importKey
+  ].filter((key): key is string => !!key))];
+}
+
+/** Resolve only rows that actually survived the durable dedup transaction. */
+export async function resolvePostDedupTransferSurvivorIds(
+  incoming: readonly Transaction[]
+): Promise<string[]> {
+  const transfers = incoming.filter((row) => row.type === 'transfer_in' || row.type === 'transfer_out');
+  if (transfers.length === 0) return [];
+  const persisted = await db.transactions.bulkGet(transfers.map((row) => row.id));
+  const result = new Set(persisted.filter((row): row is Transaction => !!row).map((row) => row.id));
+  const missing = transfers.filter((_, index) => persisted[index] == null);
+  if (missing.length === 0) return [...result];
+
+  const assets = [...new Set(missing.map((row) => row.asset))];
+  const indexedCandidates = assets.length === 1
+    ? await db.transactions.where('asset').equals(assets[0]).toArray()
+    : await db.transactions.where('asset').anyOf(assets).toArray();
+  const candidates = indexedCandidates.filter((row) => row.type === 'transfer_in' || row.type === 'transfer_out');
+  const missingIds = new Set(missing.map((row) => row.id));
+  const missingKeys = new Set(missing.flatMap(durableDedupIdentityKeys));
+  for (const candidate of candidates) {
+    if (candidate.dedupMatchedApiRow && missingIds.has(candidate.dedupMatchedApiRow.id)) {
+      result.add(candidate.id);
+      continue;
+    }
+    if (durableDedupIdentityKeys(candidate).some((key) => missingKeys.has(key))) result.add(candidate.id);
+  }
+  return [...result];
 }
 
 /**
@@ -2528,13 +2608,22 @@ export async function deduplicateTransactions(): Promise<number> {
 
   const uniqueDeletes = [...toDelete];
   if (uniqueDeletes.length > 0 || reservationUpdates.length > 0) {
+    const allById = new Map(all.map((row) => [row.id, row]));
     for (const update of reservationUpdates) {
-      await db.transactions.update(update.id, {
+      const sanitized = sanitizeEmbeddedTransferPairEvidence({
+        ...allById.get(update.id)!,
         dedupMatchedApiId: update.dedupMatchedApiId,
         dedupMatchedApiRow: update.dedupMatchedApiRow
       });
+      await db.transactions.update(update.id, {
+        dedupMatchedApiId: update.dedupMatchedApiId,
+        dedupMatchedApiRow: sanitized.dedupMatchedApiRow
+      });
     }
-    if (uniqueDeletes.length > 0) await db.transactions.bulkDelete(uniqueDeletes);
+    if (uniqueDeletes.length > 0) {
+      await cleanCounterpartsForDeletedTransactions(uniqueDeletes);
+      await db.transactions.bulkDelete(uniqueDeletes);
+    }
   }
   return uniqueDeletes.length;
   });

@@ -5,6 +5,7 @@ import { batchClassifyNoves } from '@/lib/rpc/noves';
 import { classifyRewardIncome, isKnownRewardToken } from '@/lib/assets/rewardRegistry';
 import type { Transaction, FlagReason } from '@/types/transaction';
 import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
+import { cleanCounterpartsForDeletedTransactions } from '@/lib/internalTransfers/persistence';
 
 /**
  * Classify all unclassified reward-token `transfer_in` rows as income.
@@ -90,7 +91,10 @@ export async function reprocessSwapDetectionInDb(
 
   if (removedIds.length > 0 || tradeUpdates.length > 0) {
     await mutateTransactionsAndReconcileCsv(async () => {
-      if (removedIds.length > 0) await db.transactions.bulkDelete(removedIds);
+      if (removedIds.length > 0) {
+        await cleanCounterpartsForDeletedTransactions(removedIds);
+        await db.transactions.bulkDelete(removedIds);
+      }
       if (tradeUpdates.length > 0) await db.transactions.bulkPut(tradeUpdates);
     });
   }
@@ -227,7 +231,10 @@ export async function reprocessSwapDetectionInDb(
 
   if (toUpsert.length > 0 || toDelete.length > 0) {
     await mutateTransactionsAndReconcileCsv(async () => {
-      if (toDelete.length > 0) await db.transactions.bulkDelete(toDelete);
+      if (toDelete.length > 0) {
+        await cleanCounterpartsForDeletedTransactions(toDelete);
+        await db.transactions.bulkDelete(toDelete);
+      }
       if (toUpsert.length > 0) await db.transactions.bulkPut(toUpsert);
     });
   }

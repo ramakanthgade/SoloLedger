@@ -15,6 +15,7 @@ import type {
   NewConnectionInput
 } from './types';
 import { exchangeAccountCanonicalKey, newAccountIdentity } from '@/lib/accounts/accountIdentity';
+import { cleanCounterpartsForDeletedTransactions } from '@/lib/internalTransfers/persistence';
 
 type CredentialAwareConnectionRow = ExchangeConnectionRow & {
   apiKey?: string;
@@ -201,6 +202,7 @@ export async function deleteConnectionAndTransactions(id: string): Promise<void>
 
       if (toDelete.length > 0) {
         await deleteDependentTaxArtifacts(toDelete.map((t) => t.id));
+        await cleanCounterpartsForDeletedTransactions(toDelete.map((t) => t.id));
         await db.transactions.bulkDelete(toDelete.map((t) => t.id));
         await db.specIdHints.bulkDelete(toDelete.map((t) => t.id));
       }

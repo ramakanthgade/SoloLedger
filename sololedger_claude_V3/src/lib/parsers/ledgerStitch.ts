@@ -911,23 +911,54 @@ function stitchFiatConverts(ctx: StitchContext, rows: LedgerRow[]): Transaction[
  * "Inter-Wallet Transfer"). These operations are ONLY ever emitted for moves
  * between accounts inside the SAME exchange account — there is no possible
  * external counterparty. They are therefore internal transfers with 100%
- * certainty, so we auto-confirm them (isInternalTransfer: true, no
- * possible_internal_transfer flag) instead of asking the user to mark them.
- * This removes a manual Review step and makes them net to zero in portfolio
- * math immediately. External Deposit/Withdraw stay review-needed (handled
- * separately) because the ledger can't tell own-wallet from third-party there.
+ * certainty only after their durable imported account is resolved. Rows with
+ * stable reciprocal lane evidence remain neutral until B4 verifies the owned
+ * account endpoint; legacy rows without that proof retain their old parser tax
+ * state.
  */
 function stitchInternalTransfers(ctx: StitchContext, rows: LedgerRow[]): Transaction[] {
-  return rows
+  const eligible = rows
     .filter((r) => ctx.sets.internal.has(r.operation.toLowerCase()))
     // Binance Transaction History contains transfers INTO Options but omits
     // option premiums/settlements and later outflows. Counting the Options leg
     // therefore leaves historical collateral as a permanent phantom. Treat
     // Options as an unsupported custody boundary: omit its incomplete leg and
     // keep the complete Spot/UM leg as a non-taxable quantity movement.
-    .filter((r) => r.account.toLowerCase() !== 'options')
+    .filter((r) => r.account.toLowerCase() !== 'options');
+  const proofGroups = new Map<string, LedgerRow[]>();
+  for (const row of eligible) {
+    if (!row.orderId) continue;
+    const key = JSON.stringify([
+      row.orderId,
+      row.operation.trim().toLowerCase(),
+      row.coin,
+      Math.abs(row.change)
+    ]);
+    const group = proofGroups.get(key) ?? [];
+    group.push(row);
+    proofGroups.set(key, group);
+  }
+  const counterpartLane = (row: LedgerRow): string | undefined => {
+    if (!row.orderId) return undefined;
+    const key = JSON.stringify([
+      row.orderId,
+      row.operation.trim().toLowerCase(),
+      row.coin,
+      Math.abs(row.change)
+    ]);
+    const group = proofGroups.get(key);
+    if (!group || group.length !== 2) return undefined;
+    const counterpart = group.find((candidate) =>
+      candidate.index !== row.index &&
+      candidate.account.trim() !== row.account.trim() &&
+      Math.sign(candidate.change) === -Math.sign(row.change)
+    );
+    return counterpart?.account.trim();
+  };
+  return eligible
     .map((r) => {
       const crossesOptions = r.operation.toLowerCase().includes('options');
+      const counterpart = counterpartLane(r);
       return makeTx(ctx, {
         timestamp: r.timestamp,
         type: r.change > 0 ? 'transfer_in' : 'transfer_out',
@@ -942,7 +973,15 @@ function stitchInternalTransfers(ctx: StitchContext, rows: LedgerRow[]): Transac
         ),
         notes: crossesOptions ? `${r.operation} (Options history unavailable)` : r.operation,
         flags: [],
-        isInternalTransfer: true,
+        isInternalTransfer: counterpart ? false : true,
+        parserNativeTransfer: r.orderId && counterpart ? {
+          // Parser evidence is account-agnostic. The matching orchestrator
+          // resolves the durable endpoint account from the committed source FK.
+          accountSystem: ctx.exchange,
+          operationId: r.orderId,
+          laneId: r.account,
+          counterpartLaneId: counterpart
+        } : undefined,
         raw: r.raw
       });
     });
@@ -1214,7 +1253,6 @@ export function stitchLedger(
       ...stitchSells(ctx, group),
       ...simple.transactions,
       ...stitchConverts(ctx, group),
-      ...stitchInternalTransfers(ctx, group),
       ...stitchP2pRows(ctx, group),
       ...stitchSignSplits(ctx, group),
       ...stitchDustConverts(ctx, group),
@@ -1223,6 +1261,12 @@ export function stitchLedger(
     );
     for (const idx of simple.consumed) consumed.add(idx);
   }
+
+  // Internal account lanes are deliberately different ledger groups because
+  // grouping includes the account name. Stitch them once across all normalized
+  // rows so an exact parser operation can bind its reciprocal Spot/Funding (or
+  // equivalent) lanes without embedding durable account identity in CSV text.
+  transactions.push(...stitchInternalTransfers(ctx, normalized));
 
   // Second pass: cross-group pairing for old-era simple trades whose Buy
   // and Sell legs landed in different timestamp groups (Binance records

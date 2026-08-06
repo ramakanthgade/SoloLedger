@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { resolveTaxPolicy } from './taxPolicy';
 import type { NeutralDefiAction } from '@/lib/defi/types';
 import type { TaxSettings } from '@/types/transaction';
+import type { Transaction } from '@/types/transaction';
 
 const settings: TaxSettings = {
   jurisdiction: 'US', reportingCurrency: 'USD', defaultCostBasisMethod: 'FIFO',
@@ -42,5 +43,19 @@ describe('canonical tax policy boundary', () => {
   it('adapts validated derivative defaults without storing a second table', () => {
     expect(resolveTaxPolicy({ kind: 'derivatives', settings }).treatment).toBe('capital_gains');
     expect(resolveTaxPolicy({ kind: 'derivatives', settings: { ...settings, jurisdiction: 'IN' } }).treatment).toBe('business_income');
+  });
+
+  it('exempts only confirmed internal-transfer decisions and keeps suggestions/rejections review-required', () => {
+    const transaction: Transaction = {
+      id: 'transfer', timestamp: 1, type: 'transfer_out', asset: 'ETH', amount: 1,
+      source: 'wallet', fiatCurrency: 'USD', flags: [], isInternalTransfer: false
+    };
+    for (const decision of ['suggested', 'rejected'] as const) {
+      expect(resolveTaxPolicy({ kind: 'transaction', transaction: { ...transaction, internalTransferDecision: decision }, settings }).treatment)
+        .toBe('requires_review');
+    }
+    expect(resolveTaxPolicy({ kind: 'transaction', transaction: {
+      ...transaction, internalTransferDecision: 'confirmed', isInternalTransfer: true
+    }, settings }).treatment).toBe('non_taxable');
   });
 });

@@ -9,8 +9,13 @@
 import { describe, expect, it } from 'vitest';
 import { stitchBinanceTransactionHistory } from './binanceStitch';
 
-function row(op: string, coin: string, change: string, time = '2022-11-08 23:41:58', account = 'Spot') {
-  return { 'User ID': '1', Time: time, Account: account, Operation: op, Coin: coin, Change: change, Remark: '' };
+function row(
+  op: string, coin: string, change: string, time = '2022-11-08 23:41:58', account = 'Spot', orderId?: string
+) {
+  return {
+    'User ID': '1', Time: time, Account: account, Operation: op, Coin: coin, Change: change, Remark: '',
+    ...(orderId ? { 'Order ID': orderId } : {})
+  };
 }
 
 describe('Intra-account transfers — auto-confirmed internal', () => {
@@ -39,6 +44,21 @@ describe('Intra-account transfers — auto-confirmed internal', () => {
     expect(transactions).toHaveLength(2);
     expect(transactions.every((t) => t.isInternalTransfer)).toBe(true);
     expect(transactions.every((t) => !t.flags.includes('possible_internal_transfer'))).toBe(true);
+  });
+
+  it('binds stable operation evidence to reciprocal Spot/Funding lanes without setting tax state', () => {
+    const { transactions } = stitchBinanceTransactionHistory([
+      row('Transfer Between Spot and Funding', 'USDT', '-5000', '2022-11-08 23:41:58', 'Spot', 'lane-op-1'),
+      row('Transfer Between Spot and Funding', 'USDT', '5000', '2022-11-08 23:41:58', 'Funding', 'lane-op-1')
+    ]);
+    expect(transactions).toMatchObject([
+      { isInternalTransfer: false, parserNativeTransfer: {
+        accountSystem: 'binance', operationId: 'lane-op-1', laneId: 'Spot', counterpartLaneId: 'Funding'
+      } },
+      { isInternalTransfer: false, parserNativeTransfer: {
+        accountSystem: 'binance', operationId: 'lane-op-1', laneId: 'Funding', counterpartLaneId: 'Spot'
+      } }
+    ]);
   });
 
   it('Binance Pay Transfer rows are external custody changes, not account shuffles', () => {

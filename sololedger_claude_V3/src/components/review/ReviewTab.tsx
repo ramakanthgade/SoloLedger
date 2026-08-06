@@ -68,6 +68,7 @@ import { buildTransactionPostingIndex, preparePostingAggregation } from '@/lib/l
 import { reconcileDerivedPostings } from '@/lib/reconcile/sourceReconcile';
 import { buildReconciliationEvidenceIndexes, projectReconciliationCoverage } from '@/lib/reconcile/evidenceIndexes';
 import { setBulkActionsActive } from '@/lib/ui/floatingOverlayActivity';
+import { decideSuggestedTransferPair, unlinkTransferPair } from '@/lib/internalTransfers/persistence';
 import { buildTransactionCostAnalysisIndexes, buildTransactionCostAnalysisModel } from './transactionCostAnalysisModel';
 import { parseManualMarketValue } from './manualMarketValue';
 import { buildReviewReconciliationEvidence } from './reviewReconciliationEvidence';
@@ -166,6 +167,7 @@ function ChipSelect({
 export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; derivedFlags?: readonly FlagReason[] }) {
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [pairActionError, setPairActionError] = useState<string | null>(null);
   const [localFlagState, setLocalFlagState] = useState<{
     source: Transaction['flags'];
     value: FlagReason[];
@@ -232,6 +234,31 @@ export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; deriv
     }
   };
 
+  const expectedPairState = tx.internalTransferPairId && tx.linkedTransferId && tx.internalTransferDecision &&
+    tx.internalTransferDecisionAt != null && tx.internalTransferMatcherVersion
+    ? {
+        transactionId: tx.id,
+        pairId: tx.internalTransferPairId,
+        linkedTransactionId: tx.linkedTransferId,
+        decision: tx.internalTransferDecision,
+        decisionAt: tx.internalTransferDecisionAt,
+        matcherVersion: tx.internalTransferMatcherVersion
+      }
+    : undefined;
+
+  const runPairAction = async (action: () => Promise<void>) => {
+    setSaving(true);
+    setPairActionError(null);
+    try {
+      await action();
+      setOpen(false);
+    } catch (error) {
+      setPairActionError(error instanceof Error ? error.message : 'The internal transfer action could not be saved.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="relative" ref={rootRef} onClick={(e) => e.stopPropagation()}>
       <button
@@ -283,9 +310,29 @@ export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; deriv
             );
           })}
           <div className="my-1 border-t border-hi/10" />
+          {pairActionError && <p role="alert" className="px-3 py-2 text-xs text-loss">{pairActionError}</p>}
+          {tx.internalTransferDecision === 'suggested' && expectedPairState && (
+            <>
+              <button type="button" onClick={() => void runPairAction(() => decideSuggestedTransferPair(expectedPairState, 'confirmed'))}
+                className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3">
+                Confirm suggested pair
+              </button>
+              <button type="button" onClick={() => void runPairAction(() => decideSuggestedTransferPair(expectedPairState, 'rejected'))}
+                className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3">
+                Reject suggested pair
+              </button>
+            </>
+          )}
+          {tx.internalTransferPairId && tx.internalTransferDecision !== 'suggested' && expectedPairState && (
+            <button type="button" onClick={() => void runPairAction(() => unlinkTransferPair(expectedPairState))}
+              className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3">
+              Unlink counterpart
+            </button>
+          )}
           <button
             type="button"
             aria-pressed={tx.isInternalTransfer}
+            disabled={tx.internalTransferPairId != null}
             onClick={() =>
               void patch({
                 isInternalTransfer: !tx.isInternalTransfer,
@@ -294,7 +341,7 @@ export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; deriv
                   : ([] as FlagReason[])
               })
             }
-            className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3"
+            className="flex min-h-[40px] w-full px-3 py-1.5 text-left text-xs text-mid hover:bg-elev-3 disabled:cursor-not-allowed disabled:opacity-50"
           >
             {tx.isInternalTransfer ? '↩ Unmark internal transfer' : '✓ Mark as internal transfer'}
           </button>

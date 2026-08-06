@@ -12,6 +12,7 @@ import {
   getLookupAddresses,
   upsertLookupAddress,
   deduplicateTransactions,
+  resolvePostDedupTransferSurvivorIds,
   filterAlreadyImported,
   reserveWalletBalanceOperation
 } from '@/lib/storage/db';
@@ -29,6 +30,7 @@ import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { canonicalWalletAddress, canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 import type { EndpointCoverageOutcome } from '@/lib/reconcile/sourceCoverage';
 import { materializeImportedTransactionSafety } from '@/lib/safety/assetSafety';
+import { runInternalTransferMatching } from '@/lib/internalTransfers/persistence';
 
 // ---- State shape ----
 
@@ -544,6 +546,7 @@ importJob._setPhase('classifying');
         : upsertLookupAddress(chain.id, addr, stagedCount);
     })
   );
+  await runInternalTransferMatching(await resolvePostDedupTransferSurvivorIds(txsToStore));
 
   if (isSync && imported === 0) {
     apiWarnings.unshift('No new transactions found since last sync.');
