@@ -111,7 +111,13 @@ describe('B6 integrated acceptance fixture', () => {
       { id: 'receipt', scopeId: `wallet:evm:1:${B6_EVM_ADDRESS}`, chainId: 1, contractAddress: B6_AUSDC, symbol: 'aUSDC', quantity: 100_000, value: 100_000 },
       { id: 'debt-token', scopeId: `wallet:evm:1:${B6_EVM_ADDRESS}`, chainId: 1, contractAddress: B6_DEBT_USDC, symbol: 'variableDebtUSDC', quantity: 90_005, value: 0 }
     ];
-    const input = { custody, snapshots: [b6DefiSnapshot], rows: b6DefiRows, prices: new Map([[B6_USDC, 1]]), reportingCurrency: 'USD', enabled: true };
+    const requiredSnapshots = [b6DefiSnapshot, ...(['aave-v2-ethereum', 'spark-v1-ethereum'] as const).map((protocolId, index) => ({
+      ...b6DefiSnapshot, snapshotId: `b6-empty-${index}`, protocolId
+    }))];
+    const custodyScope = `wallet:evm:1:${B6_EVM_ADDRESS}`;
+    const input = { custody, snapshots: requiredSnapshots, rows: b6DefiRows, prices: new Map([[B6_USDC, 1]]), reportingCurrency: 'USD', enabled: true, now: B6_NOW,
+      custodyAuthoritySnapshots: [{ snapshotId: 'b6-custody', generation: 1, scopeId: custodyScope, authorityKind: 'rpc' as const, authorityClass: 'wallet_balance' as const, accountClass: 'wallet' as const, coveredAccountClasses: ['wallet' as const], asOf: B6_NOW, capturedAt: B6_NOW, sourceIdentityId: 'wallet', status: 'complete' as const, endpointProof: { authorityKind: 'rpc' as const, provider: 'fixture', operation: 'fixture', parametersClass: 'fixture', requestedAccountClasses: ['wallet' as const], provenAccountClasses: ['wallet' as const], exhaustiveBalances: true } }],
+      refreshManifests: [{ accountIdentityScope: `wallet:evm:${B6_EVM_ADDRESS}`, custodyScopeId: custodyScope, custodySnapshotId: 'b6-custody', custodyGeneration: 1, custodyAsOf: B6_NOW, blockNumber: b6DefiSnapshot.blockNumber!, capturedAt: B6_NOW, protocolSnapshotIds: { 'aave-v2-ethereum': 'b6-empty-0', 'aave-v3-ethereum': b6DefiSnapshot.snapshotId, 'spark-v1-ethereum': 'b6-empty-1' } }] };
     const dashboard = projectWalletDefiNetWorth(input);
     const connections = projectWalletDefiNetWorth(input);
     expect(dashboard.projection.assets.filter((row) => row.kind === 'supply')).toHaveLength(1);

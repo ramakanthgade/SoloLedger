@@ -560,6 +560,7 @@ importJob._setPhase('classifying');
   // A balance-fetch failure must NEVER fail the sync — warn and keep the
   // previously stored balances.
   if (succeeded.length > 0) {
+    let completedCustody = new Map<string, string>();
     try {
       const balanceOutcome = await refreshWalletBalancesForAddresses(
         succeeded.map((addr) => ({
@@ -574,6 +575,9 @@ importJob._setPhase('classifying');
           `${f.address.slice(0, 8)}…${f.address.slice(-4)}: balance refresh failed (${f.message}) — prior balances kept.`
         );
       }
+      completedCustody = new Map(balanceOutcome.completed.map((row) => [
+        canonicalWalletAddress(row.chain, row.address), row.custodySnapshotId
+      ]));
     } catch (err) {
       apiWarnings.push(
         `Balance refresh failed (${err instanceof Error ? err.message : 'network error'}) — prior balances kept.`
@@ -582,7 +586,9 @@ importJob._setPhase('classifying');
     if (chain.id === 'ethereum') {
       for (const address of succeeded) {
         try {
-          const outcome = await refreshEthereumPositionAuthority(address, settings);
+          const outcome = await refreshEthereumPositionAuthority(address, settings, {
+            custodySnapshotId: completedCustody.get(canonicalWalletAddress('ethereum', address))
+          });
           apiWarnings.push(...outcome.warnings);
         } catch (err) {
           apiWarnings.push(`${address.slice(0, 8)}…${address.slice(-4)}: protocol position refresh failed (${err instanceof Error ? err.message : 'network error'}) — prior complete positions kept.`);

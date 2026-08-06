@@ -22,16 +22,29 @@ export function reconcilePositionEvidence(moralis: DefiPositionResult | undefine
     const debtRows = [...(moralis?.status === 'unsupported' ? [] : moralis?.rows ?? []), ...rpc.rows].filter((row) => row.role === 'debt');
     return { status: 'partial', chainId: 1, protocolId, blockNumber: rpc.blockNumber, rows: debtRows, evidence: [...(moralis?.status === 'unsupported' ? [] : moralis?.evidence ?? []), ...rpc.evidence], warnings: [...(moralis?.warnings ?? []), ...rpc.warnings, 'Incomplete position evidence cannot replace complete authority; partial debt is retained conservatively.'] };
   }
-  if (!moralis || moralis.status === 'unsupported' || moralis.evidence.every((item) => item.status === 'unavailable') || moralis.rows.length === 0) return rpc;
+  if (!moralis || moralis.status === 'unsupported' || moralis.evidence.every((item) => item.status === 'unavailable')) return rpc;
+  const moralisIsComplete = moralis.status === 'complete' && moralis.evidence.length > 0 &&
+    moralis.evidence.every((item) => item.status === 'complete');
+  if (!moralisIsComplete) {
+    const conservativeDebt = [...rpc.rows, ...moralis.rows].filter((row) => row.role === 'debt');
+    return {
+      status: 'partial', chainId: 1, protocolId, blockNumber: rpc.blockNumber,
+      rows: conservativeDebt, evidence: [...moralis.evidence, ...rpc.evidence],
+      warnings: [...moralis.warnings, ...rpc.warnings, 'Incomplete Moralis evidence cannot corroborate exhaustive RPC position authority.']
+    };
+  }
   const rpcRows = new Map(rpc.rows.map((row) => [rowKey(row), row]));
   const moralisRows = new Map(moralis.rows.map((row) => [rowKey(row), row]));
   const disagreements = moralis.rows.filter((row) => {
     const direct = rpcRows.get(rowKey(row));
     return !direct || direct.underlying.contractAddress !== row.underlying.contractAddress || !close(direct.quantity, row.quantity);
   });
-  if (moralis.status === 'complete') disagreements.push(...rpc.rows.filter((row) => !moralisRows.has(rowKey(row))));
+  disagreements.push(...rpc.rows.filter((row) => !moralisRows.has(rowKey(row))));
   if (disagreements.length > 0) {
-    const conservativeDebt = rpc.rows.filter((row) => row.role === 'debt');
+    // Preserve both provider claims. Projection combines these with prior
+    // complete debt and selects the maximum exact protocol/reserve/rate-mode
+    // magnitude, so disagreement can never make a liability disappear.
+    const conservativeDebt = [...rpc.rows, ...moralis.rows].filter((row) => row.role === 'debt');
     return { status: 'partial', chainId: 1, protocolId, blockNumber: rpc.blockNumber, rows: conservativeDebt, evidence: [...moralis.evidence, ...rpc.evidence], warnings: [...moralis.warnings, ...rpc.warnings, 'Moralis and same-block RPC position evidence disagreed; the prior complete authority remains selected.'] };
   }
   const rows = rpc.rows.map((direct) => {
@@ -57,7 +70,7 @@ export async function commitPositionGeneration(tables: PositionTables, address: 
   const logicalRows = new Set<string>();
   for (const row of result.rows) {
     const key = rowKey(row);
-    if (logicalRows.has(key) || row.quantity <= 0 || !Number.isFinite(row.quantity)) throw new Error('Duplicate or invalid protocol position row.');
+    if ((logicalRows.has(key) && result.status === 'complete') || row.quantity <= 0 || !Number.isFinite(row.quantity)) throw new Error('Duplicate or invalid protocol position row.');
     logicalRows.add(key);
   }
   const scope = accountIdentityScope(address);
@@ -71,7 +84,7 @@ export async function commitPositionGeneration(tables: PositionTables, address: 
     evidence: result.evidence, warnings: result.warnings,
     supersedesSnapshotId: result.status === 'complete' ? priorComplete?.snapshotId : undefined
   };
-  const rows = result.rows.map((row) => ({ ...row, id: `${snapshotId}:${rowKey(row)}`, snapshotId }));
+  const rows = result.rows.map((row, index) => ({ ...row, id: `${snapshotId}:${rowKey(row)}:${index}`, snapshotId }));
   await tables.defiPositionSnapshots.db.transaction('rw', [tables.defiPositionSnapshots, tables.defiPositionRows], async () => {
     await tables.defiPositionSnapshots.add(snapshot);
     if (rows.length) await tables.defiPositionRows.bulkAdd(rows);

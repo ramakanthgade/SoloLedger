@@ -184,7 +184,8 @@ describe('Dexie v11 → v12 CSV survivor-count migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(15);
+    expect(upgraded.verno).toBe(16);
+    expect(await upgraded.table('walletDefiRefreshManifests').count()).toBe(0);
     expect(await upgraded.csvImports.bulkGet(['partial', 'zero'])).toEqual([
       expect.objectContaining({ id: 'partial', txCount: 2 }),
       expect.objectContaining({ id: 'zero', txCount: 0 })
@@ -262,7 +263,8 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(15);
+    expect(upgraded.verno).toBe(16);
+    expect(await upgraded.table('walletDefiRefreshManifests').count()).toBe(0);
     expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
     expect(await upgraded.table('exchangeBalances').count()).toBe(4);
     const connection = await upgraded.table('exchangeConnections').get('coherent');
@@ -331,7 +333,7 @@ const V14_STORES = {
   defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]'
 };
 
-describe('Dexie v15 B1 migration', () => {
+describe('Dexie v15 B1 and v16 wallet DeFi manifest migrations', () => {
   it('runs v12→v13→v14→v15 sequentially while preserving evidence and grouping accounts conservatively', async () => {
     const name = `migration_v15_sequential_${Math.random().toString(36).slice(2)}`;
     const legacy = new Dexie(name);
@@ -373,7 +375,8 @@ describe('Dexie v15 B1 migration', () => {
     const { createDb } = await import('@/lib/storage/db');
     const upgraded = createDb(name);
     await upgraded.open();
-    expect(upgraded.verno).toBe(15);
+    expect(upgraded.verno).toBe(16);
+    expect(await upgraded.walletDefiRefreshManifests.count()).toBe(0);
     expect(await upgraded.transactions.get('typed-alias')).toMatchObject({
       category: 'staking_reward', categoryOrigin: 'legacy', amount: 1.25,
       source: 'legacy-provider', sourceRef: 'raw-ref', txHash: '0xHASH', raw
@@ -432,6 +435,7 @@ describe('Dexie v15 B1 migration', () => {
       snapshotId: 'unchanged-snapshot', accountIdentityScope: `wallet:evm:${address}`
     });
     expect(await upgraded.accountIdentities.get(`wallet:evm:${address}`)).toMatchObject({ kind: 'wallet' });
+    expect(await upgraded.walletDefiRefreshManifests.count()).toBe(0);
     upgraded.close();
     await Dexie.delete(name);
   });

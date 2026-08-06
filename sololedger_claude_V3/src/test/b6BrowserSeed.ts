@@ -12,15 +12,18 @@ import { walletAccountCanonicalKey } from '@/lib/accounts/accountIdentity';
 import { addConnection } from '@/lib/exchangeSync/connections';
 import { buildCsvImportEvidenceGeneration } from '@/lib/parsers/importEvidence';
 import { commitPositionGeneration, reconcilePositionEvidence } from '@/lib/defi/positionReconcile';
+import { normalizeMoralisPositions } from '@/lib/defi/moralisPositions';
+import { commitWalletDefiRefreshManifest } from '@/lib/defi/positionAuthority';
+import type { DefiPositionSnapshot } from '@/lib/defi/types';
+import diagnosedWallet from '@/lib/defi/__fixtures__/diagnosed-wallet.sanitized.json';
 import {
-  B6_AAVE_WBTC, B6_AUSDC, B6_DEBT_USDC, B6_EVM_ADDRESS, B6_NOW, B6_SECOND_EVM_ADDRESS,
-  B6_SPARK_WBTC, B6_USDC, B6_WBTC, b6ClassificationEvidence, b6DefiRows,
-  b6Transaction, b6TransferTransactions, b6WbtcDefiRows
+  B6_EVM_ADDRESS, B6_NOW, B6_SECOND_EVM_ADDRESS, B6_USDC,
+  b6ClassificationEvidence, b6Transaction, b6TransferTransactions
 } from './fixtures/b6Integrated';
 
-export const B6_BROWSER_EXPECTED_NET_WORTH = 121_071;
+export const B6_BROWSER_EXPECTED_NET_WORTH = 17_238_558.1435;
 
-/** Seed real v15 stores; browser tests then consume only normal application entrypoints. */
+/** Seed real v16 stores; browser tests then consume only normal application entrypoints. */
 export async function seedB6BrowserFixture(): Promise<void> {
   await clearAllData();
   const accountA = walletAccountCanonicalKey('ethereum', B6_EVM_ADDRESS);
@@ -72,7 +75,7 @@ export async function seedB6BrowserFixture(): Promise<void> {
   const transfers = Object.values(b6TransferTransactions).map((row) => ({ ...row, source: 'rpc:ethereum' }));
   const now = Date.now();
 
-  await saveSettings({ ...DEFAULT_SETTINGS, reportingCurrency: 'USD', priceApiEnabled: false });
+  await saveSettings({ ...DEFAULT_SETTINGS, reportingCurrency: 'INR', priceApiEnabled: false });
   await upsertLookupAddress('ethereum', B6_EVM_ADDRESS, 0, undefined, { label: 'Diagnosed wallet', walletAppId: 'metamask' });
   await upsertLookupAddress('polygon', B6_EVM_ADDRESS, 0, undefined, { label: 'Diagnosed wallet', walletAppId: 'metamask' });
   await upsertLookupAddress('ethereum', B6_SECOND_EVM_ADDRESS, 0, undefined, { label: 'Reserve wallet', walletAppId: 'ledger' });
@@ -113,8 +116,10 @@ export async function seedB6BrowserFixture(): Promise<void> {
     await db.providerEvidence.bulkPut([...safety.providerEvidence, assetEvidence]);
     await db.safetyDecisions.bulkPut(safety.automaticDecisions);
     await db.priceCache.bulkPut([
-      { key: `spot:ctr:ethereum:${B6_USDC}:USD`, price: 1, fetchedAt: now },
-      { key: `spot:ctr:ethereum:${B6_WBTC}:USD`, price: 60_000, fetchedAt: now }
+      ...Object.entries(diagnosedWallet.prices).map(([asset, price]) => {
+        const contract = diagnosedWallet.protocolClaims.find((claim) => claim.asset === asset)!.underlyingContract;
+        return { key: `spot:ctr:ethereum:${contract}:INR`, price, fetchedAt: now };
+      })
     ]);
   });
   await setTransactionSafetyVisibility(safety.transactions.find((row) => row.id === 'b6-safety-hidden')!, false, B6_NOW + 10);
@@ -128,20 +133,17 @@ export async function seedB6BrowserFixture(): Promise<void> {
     pages: 2, paginationRequired: true, paginationExhausted: true
   }));
   const primaryOperation = await reserveWalletBalanceOperation('ethereum', B6_EVM_ADDRESS, now - 1);
-  await commitWalletBalanceOperation({
+  const primaryCommitted = await commitWalletBalanceOperation({
     operation: primaryOperation, provider: 'b6-fixture', operationName: 'exhaustive-balances',
     rows: [
-      { asset: 'USDC', contractAddress: B6_USDC, amount: 93_076 },
-      { asset: 'aUSDC', contractAddress: B6_AUSDC, amount: 100_000 },
-      { asset: 'variableDebtUSDC', contractAddress: B6_DEBT_USDC, amount: 90_005 },
-      { asset: 'WBTC', contractAddress: B6_WBTC, amount: 0 },
-      { asset: 'aEthWBTC', contractAddress: B6_AAVE_WBTC, amount: 0.1 },
-      { asset: 'spWBTC', contractAddress: B6_SPARK_WBTC, amount: 0.2 },
+      ...diagnosedWallet.custody.map((row) => ({ asset: row.asset, contractAddress: row.contractAddress, amount: row.quantity })),
       { asset: 'SPAM-ASSET', contractAddress: safetyContracts.spam, amount: 0 },
       ...metadataBalances
     ], endpointOutcomes: completeOutcomes, historyEndpointOutcomes: historyOutcomes,
     status: 'complete', asOf: now, capturedAt: now
   });
+  if (!primaryCommitted) throw new Error('B6 primary custody authority was not committed');
+  const primaryCustodySnapshotId = `${primaryOperation.sourceIdentityId}:rpc:${primaryOperation.generation}`;
   const reserveOperation = await reserveWalletBalanceOperation('ethereum', B6_SECOND_EVM_ADDRESS, now - 1);
   await commitWalletBalanceOperation({
     operation: reserveOperation, provider: 'b6-fixture', operationName: 'exhaustive-balances',
@@ -149,22 +151,41 @@ export async function seedB6BrowserFixture(): Promise<void> {
     historyEndpointOutcomes: historyOutcomes, status: 'complete', asOf: now, capturedAt: now
   });
 
-  for (const [protocolId, sourceRows] of [
-    ['aave-v3-ethereum', [...b6DefiRows, b6WbtcDefiRows[0]]],
-    ['spark-v1-ethereum', [b6WbtcDefiRows[1]]]
-  ] as const) {
+  const committedSnapshots: DefiPositionSnapshot[] = [];
+  for (const protocolId of ['aave-v2-ethereum', 'aave-v3-ethereum', 'spark-v1-ethereum'] as const) {
+    const claims = diagnosedWallet.protocolClaims.filter((claim) => claim.protocolId === protocolId);
+    const moralis = normalizeMoralisPositions({
+      complete: true,
+      result: claims.map((claim) => ({
+        position_type: claim.role === 'supply' ? 'lending' : 'borrowing',
+        tokens: [{
+          token_type: claim.role === 'supply' ? 'supply' : `${claim.debtRateMode}-debt`,
+          contract_address: claim.underlyingContract,
+          protocol_token_address: claim.protocolTokenContract,
+          symbol: claim.asset,
+          protocol_token_symbol: diagnosedWallet.custody.find((row) => row.contractAddress === claim.protocolTokenContract)?.asset,
+          decimals: claim.decimals,
+          balance: claim.rawQuantity,
+          balance_formatted: String(claim.quantity),
+          is_collateral: claim.isCollateral,
+          rate_mode: claim.debtRateMode
+        }]
+      }))
+    }, protocolId, now);
+    if (moralis.status !== 'complete') throw new Error(`B6 ${protocolId} Moralis fixture was not complete`);
     const rpcResult = {
-      status: 'complete' as const, chainId: 1 as const, protocolId, blockNumber: 23_100_000, rows: Array.from(sourceRows),
-      evidence: [{ provider: 'ethereum-rpc' as const, status: 'complete' as const, blockNumber: 23_100_000, detail: 'sanitized integrated fixture' }],
+      status: 'complete' as const, chainId: 1 as const, protocolId, blockNumber: diagnosedWallet.blockNumber,
+      rows: moralis.rows.map((row) => ({ ...row, id: `rpc:${row.id}`, valueEvidence: undefined })),
+      evidence: [{ provider: 'ethereum-rpc' as const, status: 'complete' as const, blockNumber: diagnosedWallet.blockNumber, detail: 'sanitized diagnosed-wallet fixture' }],
       warnings: []
     };
-    const reconciled = reconcilePositionEvidence(undefined, rpcResult);
+    const reconciled = reconcilePositionEvidence(moralis, rpcResult);
     if (reconciled.status === 'unsupported') throw new Error('B6 Ethereum protocol unexpectedly unsupported');
-    await commitPositionGeneration(db, B6_EVM_ADDRESS, reconciled, B6_NOW);
+    committedSnapshots.push(await commitPositionGeneration(db, B6_EVM_ADDRESS, reconciled, now));
   }
-  await commitPositionGeneration(db, B6_SECOND_EVM_ADDRESS, {
-    status: 'complete', chainId: 1, protocolId: 'aave-v3-ethereum', blockNumber: 23_100_000, rows: [], warnings: [],
-    evidence: [{ provider: 'ethereum-rpc', status: 'complete', blockNumber: 23_100_000, detail: 'sanitized empty reserve fixture' }]
-  }, B6_NOW);
+  const manifestCommitted = await commitWalletDefiRefreshManifest(
+    B6_EVM_ADDRESS, primaryCustodySnapshotId, committedSnapshots, diagnosedWallet.blockNumber
+  );
+  if (!manifestCommitted) throw new Error('B6 coherent custody and position manifest was not committed');
   await runInternalTransferMatching({ transactionIds: ['exact-out', 'exact-in', 'suggested-out', 'suggested-in', 'spoofed-out'] });
 }

@@ -1,10 +1,16 @@
 import { expect, test } from '@playwright/test';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { produceSanitizedAppEvidence } from '../server/scripts/produce-sanitized-app-evidence.mjs';
 
 test.describe.configure({ mode: 'serial' });
+
+const generatedImages = '/code/.generated_artifacts/images';
+
+async function screenshotDigest(path: string): Promise<string> {
+  return createHash('sha256').update(await readFile(path)).digest('hex');
+}
 
 async function seedWorkspace(page: import('@playwright/test').Page) {
   await page.goto('/');
@@ -68,7 +74,7 @@ async function persistedTransactionSafety(page: import('@playwright/test').Page,
 
 async function assertCoreRenderedState(page: import('@playwright/test').Page) {
   await page.getByRole('tab', { name: 'Dashboard', exact: true }).first().click();
-  await expect(page.getByTestId('net-worth-value')).toContainText('121,071');
+  await expect(page.getByTestId('net-worth-value')).toContainText('1,72,38,558.14');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Aave');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Spark');
   await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
@@ -108,15 +114,30 @@ test('manifest, service worker, duplicate ids, and explicit persisted theme cont
   await expect(page.getByRole('button', { name: 'Switch to light theme' })).toBeVisible();
 });
 
-test('seeded v15 state drives rendered Dashboard, Connections, Transactions, attestation, and durable offline reload', async ({ page, context }) => {
+test('seeded v16 state drives rendered Dashboard, Connections, Transactions, attestation, and durable offline reload', async ({ page, context }) => {
   await seedWorkspace(page);
   const dashboardTotal = page.getByTestId('net-worth-value');
-  await expect(dashboardTotal).toContainText('121,071');
+  await expect(dashboardTotal).toContainText('₹1,72,38,558.14');
   await expect(dashboardTotal).toHaveAttribute('data-defi-feature-enabled', 'true');
   await expect(dashboardTotal).toHaveAttribute('data-defi-shadow-status', 'complete');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Aave');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Spark');
   await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('1.4975');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('Liability · stable');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('Liability · variable');
+  await expect(page.getByTestId('dashboard-holdings')).not.toContainText('spWBTC');
+  await expect(page.getByTestId('dashboard-holdings')).not.toContainText('aEthWBTC');
+  const allocation = page.getByTestId('allocation-section');
+  await expect(allocation).toContainText('WBTC');
+  await expect(allocation).toContainText('USDC');
+  await expect(allocation).toContainText('WETH');
+  await expect(allocation).not.toContainText(/spWBTC|aEth|DebtUSDC/i);
+  await mkdir(generatedImages, { recursive: true });
+  const dashboardScreenshot = join(generatedImages, 'defi-dashboard-light.png');
+  const allocationScreenshot = join(generatedImages, 'defi-allocation-light.png');
+  await page.screenshot({ path: dashboardScreenshot, fullPage: true });
+  await allocation.screenshot({ path: allocationScreenshot });
   const dashboardCapture = {
     dashboardNetWorth: money(await dashboardTotal.textContent() ?? ''),
     featureEnabled: await dashboardTotal.getAttribute('data-defi-feature-enabled') === 'true',
@@ -129,10 +150,20 @@ test('seeded v15 state drives rendered Dashboard, Connections, Transactions, att
   await walletCard.press('Enter');
   await expect(page.getByTestId('account-ownership')).toContainText(/Mine|Owned by me/);
   const connectionsTotal = page.getByTestId('detail-holdings-total');
-  await expect(connectionsTotal).toContainText('121,071');
+  await expect(connectionsTotal).toContainText('₹1,72,38,558.14');
   await expect(connectionsTotal).toHaveAttribute('data-defi-feature-enabled', 'true');
   await expect(page.getByTestId('detail-holdings')).toContainText('Aave');
   await expect(page.getByTestId('detail-holdings')).toContainText('Spark');
+  await expect(page.getByTestId('detail-holdings')).toContainText('Liability · stable');
+  await expect(page.getByTestId('detail-holdings')).toContainText('Liability · variable');
+  await expect(page.getByTestId('detail-holdings')).not.toContainText(/spWBTC|aEthWBTC/);
+  const connectionsScreenshot = join(generatedImages, 'defi-connections-light.png');
+  await page.screenshot({ path: connectionsScreenshot, fullPage: true });
+  const screenshots = [
+    { name: 'dashboard', sha256: await screenshotDigest(dashboardScreenshot) },
+    { name: 'connections', sha256: await screenshotDigest(connectionsScreenshot) },
+    { name: 'allocation', sha256: await screenshotDigest(allocationScreenshot) }
+  ];
   const renderedCapture = {
     ...dashboardCapture,
     connectionsNetWorth: money(await connectionsTotal.textContent() ?? ''),
@@ -147,15 +178,16 @@ test('seeded v15 state drives rendered Dashboard, Connections, Transactions, att
   await expect(page.locator('[data-transaction-id="b6-classified"]')).toContainText(/Staking|reward/i);
   await expect(page.locator('[data-transaction-id="b6-classified"]')).toContainText('Diagnosed wallet');
 
-  const captureDirectory = await mkdtemp(join(tmpdir(), 'b6-browser-capture-'));
-  const capturePath = join(captureDirectory, 'capture.json');
-  const evidencePath = join(captureDirectory, 'evidence.json');
+  const captureDirectory = '/code/.generated_artifacts';
+  const capturePath = join(captureDirectory, 'defi-rollout-capture.json');
+  const evidencePath = join(captureDirectory, 'defi-rollout-evidence.json');
   await writeFile(capturePath, JSON.stringify({
     captureVersion: 'b6-browser-capture-v2', captureMethod: 'playwright-rendered-ui',
     ...renderedCapture,
     targetUrl: await page.evaluate(() => location.href),
     buildSha: await page.locator('#root').getAttribute('data-build-sha'),
     authenticatedRunId: 'playwright-b6-run',
+    screenshots,
     selectors: ['[data-testid="net-worth-value"]', '[data-testid="detail-holdings-total"]']
   }));
   await produceSanitizedAppEvidence(capturePath, evidencePath, {
@@ -163,10 +195,11 @@ test('seeded v15 state drives rendered Dashboard, Connections, Transactions, att
     runId: 'playwright-b6-run', signingKey: 'b6-test-signing-key-that-is-at-least-32-bytes'
   });
   expect(JSON.parse(await readFile(evidencePath, 'utf8'))).toMatchObject({
-    evidenceVersion: 'b6-browser-evidence-v2', dashboardNetWorth: 121_071,
-    connectionsNetWorth: 121_071, featureEnabled: true,
+    evidenceVersion: 'b6-browser-evidence-v2', dashboardNetWorth: 17_238_558.14,
+    connectionsNetWorth: 17_238_558.14, featureEnabled: true,
     targetUrl: 'http://127.0.0.1:4173/', buildSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
     authenticatedRun: { method: 'ci-hmac', runId: 'playwright-b6-run' },
+    screenshots: expect.arrayContaining(screenshots),
     attestation: { algorithm: 'hmac-sha256', digest: expect.stringMatching(/^[0-9a-f]{64}$/) }
   });
 
@@ -239,6 +272,23 @@ test('seeded v15 state drives rendered Dashboard, Connections, Transactions, att
   } finally {
     await context.setOffline(false);
   }
+});
+
+test('known positive debt without a verified INR price fails closed', async ({ page }) => {
+  await seedWorkspace(page);
+  await page.evaluate(async () => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('sololedger_local');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction('priceCache', 'readwrite');
+      transaction.objectStore('priceCache').delete('spot:ctr:ethereum:0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48:INR');
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => resolve();
+    };
+  }));
+  await page.reload();
+  await expect(page.getByTestId('net-worth-value')).toHaveAttribute('data-defi-shadow-status', 'partial');
+  await expect(page.getByTestId('defi-net-worth-incomplete')).toContainText(/known liability.*no verified price/i);
 });
 
 test('exchange auto-sync remains online-only and is never silently cached', async ({ page }) => {

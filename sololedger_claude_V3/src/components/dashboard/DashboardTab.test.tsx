@@ -497,8 +497,18 @@ describe('DashboardTab — hero honesty', () => {
     expect(within(hero).getByText('Total net worth')).toBeInTheDocument();
     // 0.5 BTC × 100,000 + 2 ETH × 6,000 + DOGE at cost 0 = ₹62,000.
     expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹62,000.00');
+    const historicalPerformance = screen.getByRole('region', { name: 'Historical holdings performance' });
+    expect(historicalPerformance).toBe(screen.getByTestId('historical-holdings-performance'));
+    expect(historicalPerformance).toHaveTextContent('+₹37,000.00');
+    expect(screen.getByTestId('net-worth-value').parentElement).not.toHaveTextContent('Historical holdings performance');
     // Unrealized = 62,000 − 35,000 = +₹27,000 (stat + change caption).
     expect(within(hero).getAllByText('+₹27,000.00').length).toBeGreaterThanOrEqual(1);
+    expect(within(hero).getByText('Historical display cost basis').parentElement).toHaveTextContent('₹35,000.00');
+    expect(within(hero).getByText('Current assets incl. DeFi supplies').parentElement).toHaveTextContent('₹62,000.00');
+    expect(within(hero).getByText('Current liabilities').parentElement).toHaveTextContent('₹0.00');
+    expect(within(hero).getByText('Current DeFi adjustment').parentElement).toHaveTextContent('+₹0.00');
+    expect(within(hero).getByText('Current DeFi adjustment').parentElement)
+      .toHaveTextContent('Excluded from historical chart and period performance');
     // DOGE has no stored price → honesty note counts it at cost.
     expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(/1 asset.*at cost/i);
   });
@@ -540,7 +550,7 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       'INR', undefined
     );
   });
-  it('keeps a known unpriced DeFi liability shadow-only while the rollout is off', async () => {
+  it('fails closed instead of showing a gross total for a known unpriced DeFi liability', async () => {
     const scope = `wallet:evm:0x${'1'.repeat(40)}`;
     const reserve = `0x${'2'.repeat(40)}`;
     const token = (contractAddress: string, symbol: string) => ({ chainId: 1 as const, contractAddress, symbol, decimals: 6 });
@@ -560,11 +570,11 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable'
     });
     await renderTab();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹35,000.00');
-    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', '35000');
-    expect(screen.queryByTestId('defi-net-worth-incomplete')).not.toBeInTheDocument();
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
+    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', 'incomplete');
+    expect(screen.getByTestId('defi-net-worth-incomplete')).toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem('sololedger_wallet_defi_net_worth_shadow_v1') ?? '{}')).toMatchObject({
-      featureEnabled: false, defiNetWorth: null, status: 'complete'
+      featureEnabled: true, defiNetWorth: null, status: 'partial'
     });
   });
   it('shows an honest "Not synced yet" chip and routes Add source to Connections', async () => {

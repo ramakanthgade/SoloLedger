@@ -64,6 +64,18 @@ export interface DefiPositionSnapshot {
   restoredAt?: number;
 }
 
+export interface WalletDefiRefreshManifest {
+  /** Canonical `wallet:evm:0x…` scope. */
+  accountIdentityScope: string;
+  custodyScopeId: string;
+  custodySnapshotId: string;
+  custodyGeneration: number;
+  custodyAsOf: number;
+  blockNumber: number;
+  capturedAt: number;
+  protocolSnapshotIds: Record<ProtocolId, string>;
+}
+
 export type DefiPositionRequest = {
   chainId: number;
   protocolId: string;
