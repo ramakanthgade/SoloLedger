@@ -56,6 +56,7 @@ export interface BalanceRefreshOutcome {
   skipped: { address: string; chain: string; reason: string }[];
   /** Per-address fetch failures (prior balances kept). */
   failed: { address: string; message: string }[];
+  completed: { address: string; chain: string; custodySnapshotId: string }[];
 }
 
 export interface WalletBalanceRefreshEntry {
@@ -509,7 +510,7 @@ export async function refreshWalletBalancesForAddresses(
   entries: WalletBalanceRefreshEntry[],
   settings: TaxSettings
 ): Promise<BalanceRefreshOutcome> {
-  const outcome: BalanceRefreshOutcome = { updated: 0, skipped: [], failed: [] };
+  const outcome: BalanceRefreshOutcome = { updated: 0, skipped: [], failed: [], completed: [] };
   for (let i = 0; i < entries.length; i++) {
     const { chain, address } = entries[i];
     if (chain.provider !== 'blockstream' && chain.provider !== 'alchemy_evm' && chain.provider !== 'alchemy_solana') {
@@ -577,6 +578,10 @@ export async function refreshWalletBalancesForAddresses(
         });
         if (!committed) throw new Error('Wallet changed after this refresh started — refresh again.');
         outcome.updated++;
+        if (result.status === 'complete') outcome.completed.push({
+          address, chain: chain.id,
+          custodySnapshotId: `${reservation.sourceIdentityId}:rpc:${reservation.generation}`
+        });
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Balance fetch failed.';

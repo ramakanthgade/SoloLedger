@@ -31,6 +31,11 @@ describe('live wallet DeFi verifier', () => {
     dashboardNetWorth: 121_071, connectionsNetWorth: 121_071, featureEnabled: true,
     shadowStatus: 'complete', targetUrl: 'https://app.example.test/SoloLedger/', buildSha: provenance.buildSha,
     authenticatedRunId: provenance.runId,
+    screenshots: [
+      { name: 'dashboard', sha256: '1'.repeat(64) },
+      { name: 'connections', sha256: '2'.repeat(64) },
+      { name: 'allocation', sha256: '3'.repeat(64) }
+    ],
     selectors: ['[data-testid="detail-holdings-total"]', '[data-testid="net-worth-value"]']
   }, provenance);
 

@@ -25,12 +25,12 @@ describe('isFeatureUnlocked — jurisdiction gating', () => {
 });
 
 describe('walletDefiNetWorthV1 rollout switch', () => {
-  it('defaults off and enables only for an explicit true value', () => {
-    expect(isWalletDefiNetWorthV1Enabled(undefined)).toBe(false);
+  it('defaults on for shadow/staged builds and retains an explicit production kill switch', () => {
+    expect(isWalletDefiNetWorthV1Enabled(undefined)).toBe(true);
     expect(isWalletDefiNetWorthV1Enabled('true')).toBe(true);
     expect(isWalletDefiNetWorthV1Enabled(' TRUE ')).toBe(true);
     expect(isWalletDefiNetWorthV1Enabled('false')).toBe(false);
-    expect(isWalletDefiNetWorthV1Enabled('1')).toBe(false);
+    expect(isWalletDefiNetWorthV1Enabled('1')).toBe(true);
     expect(isFeatureUnlocked('walletDefiNetWorthV1')).toBe(true);
   });
 });

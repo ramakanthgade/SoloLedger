@@ -44,6 +44,33 @@ function snapshot(rows: ReconciliationResult[]): ConnectionWorkspaceSnapshot {
 }
 
 describe('buildDataHealthModel', () => {
+  it('uses the manifest-selected empty wallet scope and agrees on complete zero net worth', () => {
+    const address = `0x${'7'.repeat(40)}`;
+    const scope = `wallet:evm:${address}`;
+    const custodyScope = `wallet:evm:1:${address}`;
+    const protocols = ['aave-v2-ethereum', 'aave-v3-ethereum', 'spark-v1-ethereum'] as const;
+    const defiPositionSnapshots = protocols.map((protocolId) => ({
+      snapshotId: `${protocolId}:empty`, generation: 1, accountIdentityScope: scope,
+      protocolId, chainId: 1, status: 'complete' as const, capturedAt: 1, blockNumber: 1,
+      evidence: [{ provider: 'ethereum-rpc' as const, status: 'complete' as const, blockNumber: 1, detail: 'empty' }]
+    }));
+    const shadow = buildCoherentDataHealthShadow({
+      transactions: [], wallets: [], csvImports: [], exchangeConnections: [], authorityAssets: [],
+      sourceCoverage: [], openingBalances: [], defiPositionRows: [], defiPositionSnapshots,
+      authoritySnapshots: [{
+        snapshotId: 'empty-custody', generation: 1, scopeId: custodyScope,
+        authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+        asOf: 1, capturedAt: 1, sourceIdentityId: `ethereum:${address}`, status: 'complete',
+        endpointProof: { authorityKind: 'rpc', provider: 'fixture', operation: 'fixture', parametersClass: 'fixture', requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true }
+      }],
+      walletDefiRefreshManifests: [{
+        accountIdentityScope: scope, custodyScopeId: custodyScope, custodySnapshotId: 'empty-custody',
+        custodyGeneration: 1, custodyAsOf: 1, blockNumber: 1, capturedAt: 1,
+        protocolSnapshotIds: Object.fromEntries(defiPositionSnapshots.map((row) => [row.protocolId, row.snapshotId])) as Record<typeof protocols[number], string>
+      }]
+    }, 'USD', 1, true);
+    expect(shadow.projection).toMatchObject({ status: 'complete', netWorth: 0, assets: [], liabilities: [] });
+  });
   it('uses an exact cached INR mark for a DeFi underlying absent from custody', () => {
     const address = `0x${'1'.repeat(40)}`;
     const reserve = `0x${'2'.repeat(40)}`;

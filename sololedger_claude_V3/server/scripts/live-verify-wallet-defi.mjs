@@ -211,6 +211,8 @@ export function verifyAttestedUiEvidence(body, provenance) {
   if (body?.evidenceVersion !== 'b6-browser-evidence-v2' ||
     body?.captureVersion !== 'b6-browser-capture-v2' ||
     body?.captureMethod !== 'playwright-rendered-ui' || body?.featureEnabled !== true ||
+    !Array.isArray(body?.screenshots) || body.screenshots.length !== 3 ||
+    body.screenshots.some((item) => !['allocation', 'connections', 'dashboard'].includes(item?.name) || !/^[0-9a-f]{64}$/.test(item?.sha256 ?? '')) ||
     body?.attestation?.algorithm !== 'hmac-sha256' || !/^[0-9a-f]{64}$/.test(body?.attestation?.digest ?? '')) {
     throw new Error('attested browser UI evidence is required for rollout');
   }
@@ -230,6 +232,7 @@ export function verifyAttestedUiEvidence(body, provenance) {
     connectionsNetWorth: Number(body.connectionsNetWorth), featureEnabled: body.featureEnabled,
     shadowStatus: body.shadowStatus, targetUrl: body.targetUrl, buildSha: body.buildSha,
     authenticatedRun: body.authenticatedRun,
+    screenshots: [...body.screenshots].map((item) => ({ name: item.name, sha256: item.sha256 })).sort((left, right) => left.name.localeCompare(right.name)),
     selectors: Array.isArray(body.selectors) ? [...body.selectors].sort() : []
   };
   const actualDigest = Buffer.from(body.attestation.digest, 'hex');

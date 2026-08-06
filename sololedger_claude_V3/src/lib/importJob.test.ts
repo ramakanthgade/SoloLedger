@@ -75,7 +75,8 @@ const refreshWalletBalancesForAddresses = vi.fn(
   }>, _settings: TaxSettings) => ({
     updated: 1,
     skipped: [] as { address: string; chain: string; reason: string }[],
-    failed: [] as { address: string; message: string }[]
+    failed: [] as { address: string; message: string }[],
+    completed: [] as { address: string; chain: string; custodySnapshotId: string }[]
   })
 );
 vi.mock('@/lib/rpc/balances', () => ({
@@ -83,7 +84,7 @@ vi.mock('@/lib/rpc/balances', () => ({
     entries: Array<{ chain: ChainDef; address: string; historyEndpointOutcomes?: unknown[] }>,
     settings: TaxSettings
   ) => refreshWalletBalancesForAddresses(entries, settings),
-  refreshWalletBalances: vi.fn(async () => ({ updated: 0, skipped: [], failed: [] }))
+  refreshWalletBalances: vi.fn(async () => ({ updated: 0, skipped: [], failed: [], completed: [] }))
 }));
 
 const fetchMissingPricesForAllTransactions = vi.fn(async (..._args: unknown[]) => ({
@@ -695,7 +696,7 @@ describe('runWalletImport post-sync balance refresh (round 4)', () => {
     });
     vi.mocked(deduplicateTransactions).mockReset().mockResolvedValue(0);
     refreshWalletBalancesForAddresses.mockClear();
-    refreshWalletBalancesForAddresses.mockResolvedValue({ updated: 1, skipped: [], failed: [] });
+    refreshWalletBalancesForAddresses.mockResolvedValue({ updated: 1, skipped: [], failed: [], completed: [] });
     reserveWalletBalanceOperation.mockClear();
     appendFailedWalletBalanceCoverage.mockClear();
   });
@@ -776,7 +777,8 @@ describe('runWalletImport post-sync balance refresh (round 4)', () => {
     refreshWalletBalancesForAddresses.mockResolvedValueOnce({
       updated: 0,
       skipped: [],
-      failed: [{ address: '0xabc', message: 'Explorer API returned 502' }]
+      failed: [{ address: '0xabc', message: 'Explorer API returned 502' }],
+      completed: []
     });
     await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
     const state = importJob.get();

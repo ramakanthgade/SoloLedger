@@ -198,6 +198,46 @@ describe('ConnectionOverview', () => {
     expect(screen.getByText('BTC')).toBeInTheDocument();
   });
 
+  it('shows complete zero for an exited wallet selected by an empty refresh manifest', () => {
+    const address = `0x${'7'.repeat(40)}`;
+    const scope = `wallet:evm:${address}`;
+    const custodyScope = `wallet:evm:1:${address}`;
+    const protocols = ['aave-v2-ethereum', 'aave-v3-ethereum', 'spark-v1-ethereum'] as const;
+    const walletCard: ConnectionCardData = {
+      ...card, id: `wallet:${address}`, kind: 'wallet', lane: 'wallets',
+      walletRows: [{ id: `ethereum:${address}`, chain: 'ethereum', address, lastSyncedAt: 1, txCount: 0 }]
+    };
+    const emptySnapshot = snapshot();
+    emptySnapshot.id = walletCard.id;
+    emptySnapshot.kind = 'wallet';
+    const positionSnapshots = protocols.map((protocolId) => ({
+      snapshotId: `${protocolId}:empty`, generation: 1, accountIdentityScope: scope,
+      protocolId, chainId: 1, status: 'complete' as const, capturedAt: 1, blockNumber: 1,
+      evidence: [{ provider: 'ethereum-rpc' as const, status: 'complete' as const, blockNumber: 1, detail: 'empty' }]
+    }));
+
+    render(<ConnectionOverview
+      card={walletCard} snapshot={emptySnapshot} priceIndex={buildPriceIndex([], 'INR')}
+      reportingCurrency="INR" formatMoney={(value) => `₹${value}`} syncing={false}
+      syncDisabled={false} onSync={vi.fn()} defiNetWorthEnabled now={1}
+      defiPositionSnapshots={positionSnapshots} defiPositionRows={[]}
+      custodyAuthoritySnapshots={[{
+        snapshotId: 'empty-custody', generation: 1, scopeId: custodyScope,
+        authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+        asOf: 1, capturedAt: 1, sourceIdentityId: `ethereum:${address}`, status: 'complete',
+        endpointProof: { authorityKind: 'rpc', provider: 'fixture', operation: 'fixture', parametersClass: 'fixture', requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true }
+      }]}
+      walletDefiRefreshManifests={[{
+        accountIdentityScope: scope, custodyScopeId: custodyScope, custodySnapshotId: 'empty-custody',
+        custodyGeneration: 1, custodyAsOf: 1, blockNumber: 1, capturedAt: 1,
+        protocolSnapshotIds: Object.fromEntries(positionSnapshots.map((row) => [row.protocolId, row.snapshotId])) as Record<typeof protocols[number], string>
+      }]}
+    />);
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹0');
+    expect(screen.getByTestId('detail-holdings-total')).toHaveAttribute('data-defi-shadow-status', 'complete');
+    expect(screen.queryByTestId('detail-defi-net-worth-fallback')).not.toBeInTheDocument();
+  });
+
   it('filters DeFi evidence to the exact wallet and replaces mapped custody once in rows and total', () => {
     const address = `0x${'1'.repeat(40)}`;
     const otherAddress = `0x${'9'.repeat(40)}`;
@@ -242,7 +282,7 @@ describe('ConnectionOverview', () => {
     }], 'INR');
     const legacy = render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={exactUnderlyingPrices} reportingCurrency="INR"
       formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
-      defiPositionSnapshots={snapshots} defiPositionRows={rows} />);
+      defiPositionSnapshots={snapshots} defiPositionRows={rows} defiNetWorthEnabled={false} />);
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹150');
     expect(screen.getByText('aUSDC')).toBeInTheDocument();
     expect(screen.queryByRole('region', { name: 'Aave v3 positions' })).not.toBeInTheDocument();
@@ -250,7 +290,18 @@ describe('ConnectionOverview', () => {
 
     render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={exactUnderlyingPrices} reportingCurrency="INR"
       formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
-      defiPositionSnapshots={snapshots} defiPositionRows={rows} defiNetWorthEnabled />);
+      defiPositionSnapshots={[...snapshots, ...['aave-v2-ethereum', 'spark-v1-ethereum'].map((protocolId, index) => ({
+        ...snapshots[0], snapshotId: `required-${index}`, protocolId: protocolId as DefiPositionSnapshot['protocolId']
+      }))]} defiPositionRows={rows} defiNetWorthEnabled now={1}
+      custodyAuthoritySnapshots={[{
+        snapshotId: 'custody', generation: 1, scopeId: authorityScope, authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+        asOf: 1, capturedAt: 1, sourceIdentityId: 'wallet', status: 'complete', endpointProof: { authorityKind: 'rpc', provider: 'fixture', operation: 'fixture', parametersClass: 'fixture', requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true }
+      }]}
+      walletDefiRefreshManifests={[{
+        accountIdentityScope: scope, custodyScopeId: authorityScope, custodySnapshotId: 'custody', custodyGeneration: 1,
+        custodyAsOf: 1, capturedAt: 1, blockNumber: 1,
+        protocolSnapshotIds: { 'aave-v2-ethereum': 'required-0', 'aave-v3-ethereum': 'snapshot-0', 'spark-v1-ethereum': 'required-1' }
+      }]} />);
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹880');
     expect(screen.queryByText('aUSDC')).not.toBeInTheDocument();
     expect(screen.getByText('Owed 90.0000')).toBeInTheDocument();

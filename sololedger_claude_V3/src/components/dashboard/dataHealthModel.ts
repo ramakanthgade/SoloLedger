@@ -7,11 +7,10 @@ import type { Transaction } from '@/types/transaction';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { DefiPositionSnapshot } from '@/lib/defi/types';
 import type { DefiNetWorthShadowComparison } from '@/lib/portfolio/economicExposureProjection';
-import { projectWalletDefiNetWorth } from '@/lib/portfolio/economicExposureProjection';
+import { projectManifestSelectedWalletDefi, walletDefiCustodyFromHoldings } from '@/lib/portfolio/walletDefiProjection';
 import type { DataHealthSnapshot } from './dataHealthSnapshot';
 import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
 import { buildPriceIndex, valueHoldings } from '@/lib/dashboard/dashboardModel';
-import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
 import { defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 
@@ -40,34 +39,22 @@ export function buildCoherentDataHealthShadow(
   });
   const priceIndex = buildPriceIndex(snapshot.priceCache ?? [], currency);
   const valued = valueHoldings(projection.holdings, priceIndex);
-  const valueByKey = new Map(valued.map((row) => [portfolioHoldingKey(row), row]));
-  const custody = projection.holdings.flatMap((holding) => {
-    const valuedHolding = valueByKey.get(portfolioHoldingKey(holding));
-    const unitValue = holding.quantity > 1e-9
-      ? (valuedHolding?.valueNow ?? valuedHolding?.costBasis ?? holding.costBasis) / holding.quantity
-      : 0;
-    const scopes = holding.sourceVerification.length > 0
-      ? holding.sourceVerification.map((source) => ({ scopeId: source.scopeId, quantity: source.quantity }))
-      : [{ scopeId: 'unscoped', quantity: holding.quantity }];
-    return scopes.filter((source) => source.quantity > 1e-9).map((source) => ({
-      id: `${source.scopeId}:${holding.assetKey}`, scopeId: source.scopeId,
-      chainId: holding.chain === 'ethereum' ? 1 : 0,
-      contractAddress: holding.contractAddress, symbol: holding.asset,
-      quantity: source.quantity, value: source.quantity * unitValue
-    }));
-  });
+  const custody = walletDefiCustodyFromHoldings(projection.holdings, valued);
   const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
     ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
   for (const [contract, price] of defiUnderlyingPriceMap(
     snapshot.defiPositionRows ?? [], priceIndex
   )) prices.set(contract, price);
-  return projectWalletDefiNetWorth({
+  return projectManifestSelectedWalletDefi({
     custody,
     snapshots: snapshot.defiPositionSnapshots ?? [],
     rows: snapshot.defiPositionRows ?? [],
+    custodyAuthoritySnapshots: snapshot.authoritySnapshots,
+    refreshManifests: snapshot.walletDefiRefreshManifests ?? [],
     prices,
     reportingCurrency: currency,
-    enabled
+    enabled,
+    now
   });
 }
 

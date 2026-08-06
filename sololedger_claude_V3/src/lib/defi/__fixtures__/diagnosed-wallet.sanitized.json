@@ -2,16 +2,23 @@
   "capturedAt": 1785945600000,
   "blockNumber": 23100000,
   "accountIdentityScope": "wallet:evm:0x1111111111111111111111111111111111111111",
-  "expectations": {
-    "plainWbtcQuantity": 0,
-    "canonicalLiquidUsdc": 93076,
-    "totalDebtUsdc": 90005,
-    "lookalikesExcluded": true
-  },
+  "reportingCurrency": "INR",
+  "prices": { "USDC": 83.25, "WBTC": 5800000, "WETH": 305000 },
+  "custody": [
+    { "id": "liquid-usdc", "asset": "USDC", "contractAddress": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "quantity": 93076.497 },
+    { "id": "obsolete-direct-wbtc", "asset": "WBTC", "contractAddress": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", "quantity": 0 },
+    { "id": "obsolete-aethwbtc", "asset": "aEthWBTC", "contractAddress": "0x1111111111111111111111111111111111111101", "quantity": 0 },
+    { "id": "spark-spwbtc", "asset": "spWBTC", "contractAddress": "0x1111111111111111111111111111111111111102", "quantity": 1.4975 },
+    { "id": "aave-ausdc", "asset": "aEthUSDC", "contractAddress": "0x1111111111111111111111111111111111111103", "quantity": 15004.031 },
+    { "id": "aave-aweth", "asset": "aEthWETH", "contractAddress": "0x1111111111111111111111111111111111111104", "quantity": 2.5 },
+    { "id": "aave-stable-debt-usdc", "asset": "stableDebtUSDC", "contractAddress": "0x1111111111111111111111111111111111111105", "quantity": 4000 },
+    { "id": "aave-variable-debt-usdc", "asset": "variableDebtUSDC", "contractAddress": "0x1111111111111111111111111111111111111106", "quantity": 10500.25 }
+  ],
   "protocolClaims": [
-    { "protocolId": "aave-v3-ethereum", "asset": "WBTC", "role": "supply", "quantity": 0.4, "isCollateral": true },
-    { "protocolId": "spark-v1-ethereum", "asset": "WBTC", "role": "supply", "quantity": 0.6, "isCollateral": false },
-    { "protocolId": "aave-v3-ethereum", "asset": "USDC", "role": "supply", "quantity": 100000, "isCollateral": true },
-    { "protocolId": "aave-v3-ethereum", "asset": "USDC", "role": "debt", "debtRateMode": "variable", "quantity": 90005 }
+    { "protocolId": "spark-v1-ethereum", "asset": "WBTC", "decimals": 8, "rawQuantity": "149750000", "underlyingContract": "0x2260fac5e5542a773aa44fbcfedf7c193bc2c599", "protocolTokenContract": "0x1111111111111111111111111111111111111102", "role": "supply", "quantity": 1.4975, "isCollateral": true },
+    { "protocolId": "aave-v3-ethereum", "asset": "USDC", "decimals": 6, "rawQuantity": "15004031000", "underlyingContract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "protocolTokenContract": "0x1111111111111111111111111111111111111103", "role": "supply", "quantity": 15004.031, "isCollateral": true },
+    { "protocolId": "aave-v3-ethereum", "asset": "WETH", "decimals": 18, "rawQuantity": "2500000000000000000", "underlyingContract": "0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2", "protocolTokenContract": "0x1111111111111111111111111111111111111104", "role": "supply", "quantity": 2.5, "isCollateral": true },
+    { "protocolId": "aave-v3-ethereum", "asset": "USDC", "decimals": 6, "rawQuantity": "4000000000", "underlyingContract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "protocolTokenContract": "0x1111111111111111111111111111111111111105", "role": "debt", "debtRateMode": "stable", "quantity": 4000 },
+    { "protocolId": "aave-v3-ethereum", "asset": "USDC", "decimals": 6, "rawQuantity": "10500250000", "underlyingContract": "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48", "protocolTokenContract": "0x1111111111111111111111111111111111111106", "role": "debt", "debtRateMode": "variable", "quantity": 10500.25 }
   ]
 }

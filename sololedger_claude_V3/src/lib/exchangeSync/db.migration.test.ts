@@ -31,8 +31,9 @@ describe('Dexie v8 — exchangeConnections', () => {
     // v9 added walletBalances; v10 added exchangeBalances; v11 added coherent
     // reconciliation evidence, v12 finalized CSV survivor counts, v13 added
     // immutable safety evidence/decisions, and v14 added immutable Ethereum
-    // protocol position generations, and v15 added canonical accounts/FKs.
-    expect(db.verno).toBe(15);
+    // protocol position generations, v15 added canonical accounts/FKs, and
+    // v16 added atomic wallet/DeFi refresh manifests.
+    expect(db.verno).toBe(16);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
