@@ -90,6 +90,7 @@ function GuardHarness({
     transactions: [],
     fy: 2025,
     jurisdiction: 'IN',
+    settings: DEFAULT_SETTINGS,
     auth
   });
   return (

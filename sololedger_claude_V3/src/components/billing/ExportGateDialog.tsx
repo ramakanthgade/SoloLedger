@@ -13,7 +13,7 @@
  * SaaS-plan allowance when a signed on-device license is absent.
  */
 import { useState } from 'react';
-import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
+import type { Disposal, Jurisdiction, TaxSettings, Transaction } from '@/types/transaction';
 import { countBillableUnits } from '@/lib/billing/usage';
 import { evaluateExportGate, type ExportGateResult } from '@/lib/billing/gate';
 import { currentAllowance, resolveLicenseState, type AuthSnapshot } from '@/lib/features';
@@ -29,6 +29,7 @@ export interface ExportGuardParams {
   transactions: Transaction[];
   fy: number;
   jurisdiction: Jurisdiction;
+  settings: TaxSettings | null;
   /**
    * Optional SaaS auth snapshot. Supplies the plan allowance when there is no
    * verified on-device license. Omit in local mode (free `local` tier).
@@ -57,12 +58,14 @@ export function useExportGuard(params: ExportGuardParams): ExportGuard {
   const [result, setResult] = useState<ExportGateResult | null>(null);
 
   const runGuarded = async (exportFn: () => void | Promise<void>) => {
+    if (!params.settings) return;
     const state = await resolveLicenseState(params.auth ?? null);
     const units = countBillableUnits(
       params.disposals,
       params.transactions,
       params.fy,
-      params.jurisdiction
+      params.jurisdiction,
+      params.settings
     );
     const gate = evaluateExportGate(units, currentAllowance(state), gateTier(state.tier));
     if (gate.allowed) {

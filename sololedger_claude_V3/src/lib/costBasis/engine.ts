@@ -1,4 +1,4 @@
-import type { Transaction, Lot, Disposal, TxType, FlagReason } from '@/types/transaction';
+import type { Transaction, Lot, Disposal, TxType, FlagReason, TaxSettings } from '@/types/transaction';
 import type { CostBasisStrategy } from './strategy';
 import { fifoStrategy } from './fifo';
 import { lifoStrategy } from './lifo';
@@ -8,6 +8,7 @@ import { makeId } from '@/lib/parsers/types';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 import { D, add, sub, mul, div, toNumber, isPositive, isDust } from './decimal';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
+import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 
 export type CostBasisMethod = 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
 
@@ -123,6 +124,8 @@ export interface EngineOptions {
    * jurisdiction; the engine just applies it. Defaults to `exclude` (India).
    */
   feePolicy?: FeePolicy;
+  /** Active report-time settings. Canonical policy gates every taxable row. */
+  settings: TaxSettings;
 }
 
 export interface DisposalCandidateLot {
@@ -222,8 +225,13 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
 
   const byAsset = new Map<string, Transaction[]>();
   for (const tx of transactions) {
+    const policy = resolveTaxPolicy({ kind: 'transaction', transaction: tx, settings: options.settings });
     if (tx.isInternalTransfer || isTransactionExcluded(tx) || tx.type === 'transfer_in' || tx.type === 'transfer_out' || tx.type === 'fee') {
       continue; // non-taxable or excluded
+    }
+    if (policy.treatment === 'requires_review' || policy.treatment === 'business_income' ||
+      (policy.treatment === 'non_taxable' && policy.reasonCode !== 'asset_acquisition')) {
+      continue;
     }
     if (!byAsset.has(tx.asset)) byAsset.set(tx.asset, []);
     byAsset.get(tx.asset)!.push(tx);

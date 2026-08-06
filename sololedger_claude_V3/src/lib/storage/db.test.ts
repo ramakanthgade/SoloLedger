@@ -404,6 +404,46 @@ describe('v11 authority persistence', () => {
     ]);
   });
 
+  it('preserves a locked user classification and retains fresh parser evidence across a real CSV reimport', async () => {
+    const commit = (id: string, transaction: Transaction) => commitCsvImportGeneration({
+      id, fileName: `${id}.csv`, parserId: 'binance', transactions: [transaction], completedAt: 200,
+      buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
+        buildCsvImportEvidenceGeneration({
+          sourceIdentityId: id, parserId: 'binance', parsedBeforeDedup: 1,
+          savedAfterDedup, savedTransactions, generation, completedAt,
+          evidence: {
+            declaredHistory: { completeHistory: true }, coveredAccountClasses: ['spot'],
+            requiredOutcomes: [{ id: 'history', accountClass: 'spot', required: true, status: 'complete',
+              recognizedCount: 1, parsedCount: 1, excludedCount: 0, skippedCount: 0, failedCount: 0 }],
+            recognizedCount: 1, parsedCount: 1, excludedCount: 0, skippedCount: 0, failedCount: 0,
+            exclusionReasons: [], skippedReasons: [], failureReasons: []
+          }
+        })
+    });
+    const locked = {
+      ...manualTransaction('locked-row', 100), source: 'binance', sourceRef: 'classification-reimport',
+      importBatchId: 'locked-import', type: 'income' as const, category: 'salary' as const,
+      categoryOrigin: 'user' as const, categoryLocked: true, categoryConfidence: 1,
+      categoryRuleId: 'user:manual', categoryRuleVersion: '1', categoryUpdatedAt: 150
+    };
+    await commit('locked-import', locked);
+    await commit('fresh-import', {
+      ...locked, id: 'fresh-row', importBatchId: 'fresh-import', type: 'fee', category: 'funding_fee',
+      categoryOrigin: 'parser', categoryLocked: false, categoryConfidence: undefined,
+      categoryRuleId: undefined, categoryRuleVersion: undefined, categoryUpdatedAt: undefined,
+      raw: { Operation: 'Funding Fee' }
+    });
+
+    const rows = await db.transactions.toArray();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      id: 'locked-row', type: 'income', category: 'salary', categoryOrigin: 'user', categoryLocked: true
+    });
+    expect(rows[0].classificationEvidence).toContainEqual(expect.objectContaining({
+      ruleId: 'binance-ledger:funding-fee', ruleVersion: 'b5.1', category: 'funding_fee'
+    }));
+  });
+
   it('reconciles CSV counts when Review deletes transaction rows by id', async () => {
     const rows = [manualTransaction('review-delete-1', 100), manualTransaction('review-delete-2', 101)]
       .map((row) => ({ ...row, source: 'binance', importBatchId: 'review-csv' }));

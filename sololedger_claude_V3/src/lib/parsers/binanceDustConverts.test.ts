@@ -3,6 +3,7 @@ import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { buildPortfolioHoldings } from '@/lib/portfolio/portfolioCompute';
 import type { Transaction } from '@/types/transaction';
 import { stitchBinanceTransactionHistory } from './binanceStitch';
+import { TEST_TAX_SETTINGS } from '@/test/taxSettings';
 
 function row(coin: string, change: string, remark = '', time = '2024-01-01 00:00:00') {
   return {
@@ -70,7 +71,7 @@ describe('Binance dust conversion conservation', () => {
       fiatValue: transaction.asset === 'SOL' ? 100 : 40,
       fiatCurrency: 'USD'
     }));
-    const bnbLots = calculateCostBasis(pricedLegs, { method: 'FIFO' }).lots
+    const bnbLots = calculateCostBasis(pricedLegs, { method: 'FIFO', settings: TEST_TAX_SETTINGS }).lots
       .filter((lot) => lot.asset === 'BNB');
     expect(bnbLots).toHaveLength(2);
     expect(bnbLots.reduce((sum, lot) => sum + lot.amountOriginal, 0)).toBeCloseTo(0.01496171, 12);
@@ -193,7 +194,7 @@ describe('Binance dust conversion conservation', () => {
       fiatCurrency: 'USD',
       fiatValue: [20, 10, 10][index]
     }));
-    const bnbLots = calculateCostBasis(priced, { method: 'FIFO' }).lots
+    const bnbLots = calculateCostBasis(priced, { method: 'FIFO', settings: TEST_TAX_SETTINGS }).lots
       .filter((lot) => lot.asset === 'BNB');
 
     expect(transactions).toHaveLength(3);

@@ -8,7 +8,7 @@ import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { CHAINS, type ChainId } from '@/lib/rpc/providers';
 import { Badge } from '@/components/ui/card';
 import { cn, formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel, downloadBlob } from '@/lib/utils';
-import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
+import type { Jurisdiction, TaxSettings } from '@/types/transaction';
 import { JURISDICTIONS, summarizeYear } from '@/lib/tax/jurisdictions';
 import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
@@ -138,24 +138,33 @@ export function CapitalGainsTab() {
   const [fy, setFy] = useState(getCurrentFy('IN'));
   const [currency, setCurrency] = useState('INR');
   const [jurisdiction, setJurisdiction] = useState<Jurisdiction>('IN');
-  const [derivativesTreatment, setDerivativesTreatment] = useState<DerivativesTreatment>('business_income');
+  const [loadedSettings, setLoadedSettings] = useState<TaxSettings | null>(null);
   const [fyInitialized, setFyInitialized] = useState(false);
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
 
   useEffect(() => {
     getSettings().then((s) => {
       setMethod(s.defaultCostBasisMethod);
+      setLoadedSettings(s);
       setCurrency(s.reportingCurrency);
       const jur = s.jurisdiction ?? 'IN';
       setJurisdiction(jur);
-      setDerivativesTreatment(resolveTaxPolicy({ kind: 'derivatives', settings: s }).derivativesTreatment!);
       setFy(getCurrentFy(jur));
     });
   }, []);
+  const activeSettings = useMemo(() => loadedSettings ? { ...loadedSettings, jurisdiction } : null, [loadedSettings, jurisdiction]);
+  const derivativesTreatment = activeSettings
+    ? resolveTaxPolicy({ kind: 'derivatives', settings: activeSettings }).derivativesTreatment!
+    : 'business_income';
+  const policyReviewCount = useMemo(() => activeSettings
+    ? transactions.filter((transaction) => resolveTaxPolicy({ kind: 'transaction', transaction, settings: activeSettings }).treatment === 'requires_review').length
+    : 0, [transactions, activeSettings]);
 
   const { disposals, inventoryDisposals, lots, shortfalls } = useMemo(
-    () => calculateCostBasis(transactions, { method, specIdHints: hints }),
-    [transactions, method, hints]
+    () => activeSettings
+      ? calculateCostBasis(transactions, { method, specIdHints: hints, settings: activeSettings })
+      : { disposals: [], inventoryDisposals: [], lots: [], shortfalls: [], flags: [], disposalCandidates: {} },
+    [transactions, method, hints, activeSettings]
   );
 
   const matchedRows = useMemo(
@@ -169,8 +178,8 @@ export function CapitalGainsTab() {
   }, [transactions]);
 
   const incomeRows = useMemo(
-    () => buildIncomeRows(transactions, dcaVaultAddresses),
-    [transactions, dcaVaultAddresses]
+    () => activeSettings ? buildIncomeRows(transactions, dcaVaultAddresses, activeSettings) : [],
+    [transactions, dcaVaultAddresses, activeSettings]
   );
   const unpricedReceipts = useMemo(
     () => unpricedTaxableReceiptsInPeriod(transactions, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER),
@@ -178,16 +187,16 @@ export function CapitalGainsTab() {
   );
 
   const derivIncomeRows = useMemo(
-    () => buildDerivativeBusinessIncomeRows(transactions),
-    [transactions]
+    () => activeSettings ? buildDerivativeBusinessIncomeRows(transactions, activeSettings) : [],
+    [transactions, activeSettings]
   );
   const derivExpenseRows = useMemo(
-    () => buildDerivativeBusinessExpenseRows(transactions),
-    [transactions]
+    () => activeSettings ? buildDerivativeBusinessExpenseRows(transactions, activeSettings) : [],
+    [transactions, activeSettings]
   );
   const derivCgRows = useMemo(
-    () => buildDerivativeCapitalGainRows(transactions),
-    [transactions]
+    () => activeSettings ? buildDerivativeCapitalGainRows(transactions, activeSettings) : [],
+    [transactions, activeSettings]
   );
 
   const availableFys = useMemo(
@@ -310,6 +319,7 @@ export function CapitalGainsTab() {
     transactions,
     fy,
     jurisdiction,
+    settings: activeSettings,
     auth: authSnapshot
   });
 
@@ -460,6 +470,12 @@ export function CapitalGainsTab() {
         title="Capital Gains"
         subtitle="Every sale this Financial Year (Apr–Mar), matched to what you paid — the gain India taxes at a flat 30% + 4% cess, disposal by disposal."
       />
+      {policyReviewCount > 0 && (
+        <div role="status" className="rounded-xl border border-warn/30 bg-warn/5 px-4 py-3 text-sm text-mid">
+          <strong className="text-warn">{policyReviewCount} policy review required</strong>
+          <span> — unsupported outcomes are excluded from gains instead of being guessed.</span>
+        </div>
+      )}
 
       {/* Toolbar: FY + cost-basis method (mockup page-head chips). Exports live
        * in the disposals panel head (CSV) and the filing card at the bottom. */}

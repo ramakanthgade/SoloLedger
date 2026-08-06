@@ -1,4 +1,4 @@
-import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
+import type { Disposal, Jurisdiction, TaxSettings, Transaction } from '@/types/transaction';
 import { isInFy } from '@/lib/utils';
 import { buildIncomeRows, buildDerivativeBusinessIncomeRows } from '@/lib/costBasis/matchedGains';
 
@@ -23,14 +23,15 @@ export function countBillableUnits(
   disposals: Disposal[],
   incomeRows: Transaction[],
   fy: number,
-  jurisdiction: Jurisdiction
+  jurisdiction: Jurisdiction,
+  settings: TaxSettings
 ): number {
   const disposalUnits = disposals.filter((d) => isInFy(d.disposedAt, fy, jurisdiction)).length;
 
-  const income = buildIncomeRows(incomeRows);
+  const income = buildIncomeRows(incomeRows, undefined, settings);
   const incomeUnits = income.filter((r) => isInFy(r.date, fy, jurisdiction)).length;
 
-  const derivativeIncome = buildDerivativeBusinessIncomeRows(incomeRows);
+  const derivativeIncome = buildDerivativeBusinessIncomeRows(incomeRows, settings);
   const derivativeUnits = derivativeIncome.filter((r) => isInFy(r.date, fy, jurisdiction)).length;
 
   return disposalUnits + incomeUnits + derivativeUnits;

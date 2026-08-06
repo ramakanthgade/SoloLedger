@@ -2,11 +2,13 @@ import { useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { db } from '@/lib/storage/db';
 import { makeId } from '@/lib/parsers/types';
-import type { Transaction, TxType } from '@/types/transaction';
+import type { Transaction, TransactionCategory, TxType } from '@/types/transaction';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 import { BrandIcon, symbolIconId } from '@/components/connections/brandIcons';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
+import { categoryLabel } from '@/lib/taxonomy/categories';
+import { compatibleCategories } from '@/lib/taxonomy/classification';
 
 const TX_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out', 'income',
@@ -42,6 +44,7 @@ const labelCls = 'block text-xs font-semibold text-mid';
  */
 export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
   const [type, setType] = useState<TxType>('buy');
+  const [category, setCategory] = useState<TransactionCategory>('other');
   const [moreOpen, setMoreOpen] = useState(false);
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [asset, setAsset] = useState('');
@@ -57,12 +60,25 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
   const isChipType = CHIP_TYPES.some((c) => c.value === type);
   const assetIcon = symbolIconId(asset.trim().toUpperCase());
   const valid = asset.trim() && Number(amount) > 0 && date;
+  const categoryOptions = compatibleCategories(type);
+
+  const selectType = (next: TxType) => {
+    setType(next);
+    if (!compatibleCategories(next).includes(category)) setCategory('other');
+  };
 
   const save = async () => {
     const tx: Transaction = {
       id: makeId('manual'),
       timestamp: new Date(date).getTime(),
       type,
+      category,
+      categoryOrigin: 'user',
+      categoryConfidence: 1,
+      categoryRuleId: 'user:manual-entry',
+      categoryRuleVersion: '1',
+      categoryUpdatedAt: Date.now(),
+      categoryLocked: true,
       asset: asset.trim().toUpperCase(),
       amount: Number(amount),
       fiatCurrency,
@@ -105,7 +121,7 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
               type="button"
               role="radio"
               aria-checked={type === chip.value}
-              onClick={() => setType(chip.value)}
+              onClick={() => selectType(chip.value)}
               className={cn(
                 'inline-flex h-9 items-center rounded-full border px-3.5 text-[13px] font-semibold transition-colors',
                 'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
@@ -139,7 +155,7 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
             aria-label="All transaction types"
             className={inputCls}
             value={type}
-            onChange={(e) => setType(e.target.value as TxType)}
+            onChange={(e) => selectType(e.target.value as TxType)}
           >
             {TX_TYPES.map((t) => (
               <option key={t} value={t}>
@@ -149,6 +165,23 @@ export function ManualEntryForm({ onSaved }: { onSaved: () => void }) {
           </select>
         )}
       </div>
+
+      <label className={labelCls}>
+        Category
+        <select
+          aria-label="Transaction category"
+          className={inputCls}
+          value={category}
+          onChange={(event) => setCategory(event.target.value as TransactionCategory)}
+        >
+          {categoryOptions.map((value) => (
+            <option key={value} value={value}>{categoryLabel(value)}</option>
+          ))}
+        </select>
+        <span className="mt-1 block text-[11px] font-normal text-low">
+          Category describes tax meaning; type controls the structural ledger movement.
+        </span>
+      </label>
 
       <div className="grid gap-3 sm:grid-cols-2">
         <label className={labelCls}>

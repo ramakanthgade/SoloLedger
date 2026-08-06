@@ -6,6 +6,8 @@ import { classifyRewardIncome, isKnownRewardToken } from '@/lib/assets/rewardReg
 import type { Transaction, FlagReason } from '@/types/transaction';
 import { canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 import { cleanCounterpartsForDeletedTransactions } from '@/lib/internalTransfers/persistence';
+import { applyClassificationEvidence } from '@/lib/taxonomy/classification';
+import { CLASSIFICATION_RULESET_VERSION } from '@/lib/taxonomy/rules';
 
 /**
  * Classify all unclassified reward-token `transfer_in` rows as income.
@@ -33,6 +35,7 @@ export async function reprocessRewardIncome(): Promise<number> {
       t.type === 'transfer_in' &&
       isKnownRewardToken(t.contractAddress) &&
       !t.isInternalTransfer &&
+      !t.categoryLocked &&
       !isTransactionExcluded(t)
   );
 
@@ -48,9 +51,14 @@ export async function reprocessRewardIncome(): Promise<number> {
     if (!classification) continue;
 
     // eslint-disable-next-line no-await-in-loop
+    const classified = applyClassificationEvidence(t, [{
+      type: 'income', category: classification.kind, origin: 'rule', confidence: 1,
+      ruleId: 'reward-registry:exact', ruleVersion: CLASSIFICATION_RULESET_VERSION,
+      observedAt: Date.now(), allowlisted: true,
+      explanation: 'Exact token mint and distributor registry match.'
+    }]);
     await db.transactions.update(t.id, {
-      type: 'income',
-      category: classification.kind,
+      ...classified,
       notes: classification.notes,
       flags: [] as FlagReason[],
       isInternalTransfer: false

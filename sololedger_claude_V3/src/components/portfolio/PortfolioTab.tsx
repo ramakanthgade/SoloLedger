@@ -11,7 +11,7 @@ import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { fetchLiveWalletBalances } from '@/lib/rpc/walletBalances';
 import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
-import type { Jurisdiction } from '@/types/transaction';
+import type { Jurisdiction, TaxSettings } from '@/types/transaction';
 import { normalizeSolLedgerRows } from '@/lib/portfolio/solBalance';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
 import {
@@ -171,6 +171,7 @@ export function PortfolioTab() {
   const [repairingBalances, setRepairingBalances] = useState(false);
   const [repairMsg, setRepairMsg] = useState<string | null>(null);
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
+  const [taxSettings, setTaxSettings] = useState<TaxSettings | null>(null);
   const repairInFlight = useRef(false);
   const periodPillRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
@@ -184,6 +185,7 @@ export function PortfolioTab() {
 
   useEffect(() => {
     getSettings().then((s) => {
+      setTaxSettings(s);
       setReportingCurrency(s.reportingCurrency);
       setJurisdiction(s.jurisdiction ?? 'IN');
     });
@@ -413,11 +415,12 @@ export function PortfolioTab() {
   // (India no-offset rule) via estimateIndiaVDA, which floors negatives at zero.
   const currentFy = getCurrentFy(jurisdiction);
   const realizedFyGain = useMemo(() => {
-    const { disposals } = calculateCostBasis(transactions, { method: 'FIFO' });
+    if (!taxSettings) return 0;
+    const { disposals } = calculateCostBasis(transactions, { method: 'FIFO', settings: { ...taxSettings, jurisdiction } });
     return disposals
       .filter((d) => isInFy(d.disposedAt, currentFy, jurisdiction))
       .reduce((s, d) => s + d.gain, 0);
-  }, [transactions, currentFy, jurisdiction]);
+  }, [transactions, currentFy, jurisdiction, taxSettings]);
 
   // Estimated current-FY VDA tax: flat 30% + 4% cess on positive realized gains
   // (India Sec 115BBH estimate, no loss set-off).

@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { buildMatchedGainRows, buildReceiptIncomeRows, buildIncomeRows } from './matchedGains';
 import type { Disposal, Lot, Transaction } from '@/types/transaction';
+import { TEST_TAX_SETTINGS } from '@/test/taxSettings';
 
 const DAY = 86_400_000;
 
@@ -112,17 +113,17 @@ describe('buildMatchedGainRows — unmatched proceeds are never dropped', () => 
 });
 
 describe('buildReceiptIncomeRows — Section 56(2)(x) inclusion/exclusion', () => {
-  it('includes explicit income and gift_received receipts', () => {
+  it('includes explicit income and excludes review-required gift receipts', () => {
     const rows = buildReceiptIncomeRows([
       tx({ id: 'inc', type: 'income', fiatValue: 1000, timestamp: 5 * DAY }),
       tx({ id: 'gift', type: 'gift_received', fiatValue: 500, timestamp: 6 * DAY })
-    ]);
+    ], undefined, TEST_TAX_SETTINGS);
     const ids = rows.map((r) => r.txId).sort();
-    expect(ids).toEqual(['gift', 'inc']);
-    expect(rows.reduce((s, r) => s + r.fiatValue, 0)).toBe(1500);
+    expect(ids).toEqual(['inc']);
+    expect(rows.reduce((s, r) => s + r.fiatValue, 0)).toBe(1000);
   });
 
-  it('includes a heuristic airdrop/staking receipt', () => {
+  it('excludes heuristic inbound receipts without policy-supported income classification', () => {
     const rows = buildReceiptIncomeRows([
       tx({
         id: 'drop',
@@ -133,17 +134,16 @@ describe('buildReceiptIncomeRows — Section 56(2)(x) inclusion/exclusion', () =
         counterpartyAddress: '0x' + 'a'.repeat(40),
         walletAddress: '0x' + 'b'.repeat(40)
       })
-    ]);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].kind).toBe('airdrop_suspected');
-    expect(rows[0].fiatValue).toBe(200);
+    ], undefined, TEST_TAX_SETTINGS);
+    expect(rows).toHaveLength(0);
+    expect(rows).toEqual([]);
   });
 
   it('EXCLUDES mining income (zero-cost / no receipt-side income)', () => {
     const rows = buildReceiptIncomeRows([
       tx({ id: 'mine', type: 'income', category: 'mining', fiatValue: 9999, timestamp: 7 * DAY }),
       tx({ id: 'stake', type: 'income', category: 'staking_reward', fiatValue: 300, timestamp: 8 * DAY })
-    ]);
+    ], undefined, TEST_TAX_SETTINGS);
     const ids = rows.map((r) => r.txId);
     expect(ids).not.toContain('mine');
     expect(ids).toContain('stake');
@@ -153,7 +153,7 @@ describe('buildReceiptIncomeRows — Section 56(2)(x) inclusion/exclusion', () =
   it('INCLUDES a GEOD-style mining_reward (category mining_reward, NOT mining) as receipt income', () => {
     const rows = buildReceiptIncomeRows([
       tx({ id: 'geod', type: 'income', category: 'mining_reward', fiatValue: 250, timestamp: 9 * DAY })
-    ]);
+    ], undefined, TEST_TAX_SETTINGS);
     const ids = rows.map((r) => r.txId);
     expect(ids).toContain('geod');
     const geod = rows.find((r) => r.txId === 'geod')!;
@@ -164,14 +164,14 @@ describe('buildReceiptIncomeRows — Section 56(2)(x) inclusion/exclusion', () =
 
 describe('buildIncomeRows — reward kind + label', () => {
   it('does not report a missing receipt FMV as confirmed zero income', () => {
-    expect(buildIncomeRows([tx({ id: 'unpriced-income', type: 'income', fiatValue: undefined })])).toEqual([]);
-    expect(buildIncomeRows([tx({ id: 'zero-income', type: 'income', fiatValue: 0 })])[0].fiatValue).toBe(0);
+    expect(buildIncomeRows([tx({ id: 'unpriced-income', type: 'income', fiatValue: undefined })], undefined, TEST_TAX_SETTINGS)).toEqual([]);
+    expect(buildIncomeRows([tx({ id: 'zero-income', type: 'income', fiatValue: 0 })], undefined, TEST_TAX_SETTINGS)[0].fiatValue).toBe(0);
   });
 
   it('GEOD mining_reward row yields kind mining_reward and label "Mining reward"', () => {
     const rows = buildIncomeRows([
       tx({ id: 'geod', type: 'income', category: 'mining_reward', asset: 'GEOD', fiatValue: 250, timestamp: 9 * DAY })
-    ]);
+    ], undefined, TEST_TAX_SETTINGS);
     const geod = rows.find((r) => r.txId === 'geod')!;
     expect(geod.kind).toBe('mining_reward');
     expect(geod.kindLabel).toBe('Mining reward');
@@ -180,7 +180,7 @@ describe('buildIncomeRows — reward kind + label', () => {
   it('a control mining row (category mining) keeps no mining_reward label', () => {
     const rows = buildIncomeRows([
       tx({ id: 'mine', type: 'income', category: 'mining', fiatValue: 250, timestamp: 9 * DAY })
-    ]);
+    ], undefined, TEST_TAX_SETTINGS);
     const mine = rows.find((r) => r.txId === 'mine')!;
     expect(mine.kind).not.toBe('mining_reward');
   });

@@ -75,4 +75,24 @@ describe('ReportsTab unpriced disposal guard', () => {
       SEED.txs.splice(0, SEED.txs.length, ...backup);
     }
   });
+
+  it('counts unsupported policy outcomes explicitly instead of guessing report totals', async () => {
+    const backup = [...SEED.txs];
+    SEED.txs.splice(0, SEED.txs.length, {
+      id: 'option-premium', timestamp: Date.UTC(2026, 4, 10), type: 'income', category: 'options_premium',
+      instrumentClass: 'derivative', asset: 'USDC', amount: 25, fiatCurrency: 'INR', fiatValue: 2_000,
+      source: 'binance_options', flags: ['needs_review'], isInternalTransfer: false
+    } as never);
+    try {
+      await act(async () => {
+        render(<ReportsTab />);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('status')).toHaveTextContent('1 policy review required');
+      expect(screen.getByRole('status')).toHaveTextContent('excluded rather than guessed');
+      expect(screen.getByText('Spot income').parentElement).toHaveTextContent('₹0.00');
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
+  });
 });

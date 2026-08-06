@@ -17,16 +17,16 @@ export interface TransactionCostAnalysisIndexes {
   readonly lotById: ReadonlyMap<string, Lot>;
 }
 
-export function buildTransactionCostAnalysisIndexes(input: { disposals: readonly Disposal[]; inventoryDisposals?: readonly InventoryDisposal[]; lots: readonly Lot[]; transactions: readonly Transaction[] }): TransactionCostAnalysisIndexes {
+export function buildTransactionCostAnalysisIndexes(input: { disposals: readonly Disposal[]; inventoryDisposals?: readonly InventoryDisposal[]; lots: readonly Lot[]; transactions: readonly Transaction[]; settings: TaxSettings }): TransactionCostAnalysisIndexes {
   const transactions = [...input.transactions]; const lots = [...input.lots];
   const matchedBySellTxId = new Map<string, MatchedGainRow[]>();
   for (const row of buildMatchedGainRows([...input.disposals], lots, transactions)) { const rows = matchedBySellTxId.get(row.sellTxId); if (rows) rows.push(row); else matchedBySellTxId.set(row.sellTxId, [row]); }
   return {
     matchedBySellTxId,
     inventoryBySellTxId: new Map((input.inventoryDisposals ?? []).map((row) => [row.sourceTxId, row])),
-    derivativeCapitalByTxId: new Map(buildDerivativeCapitalGainRows(transactions).map((row) => [row.sellTxId, row])),
-    derivativeIncomeByTxId: new Map(buildDerivativeBusinessIncomeRows(transactions).map((row) => [row.txId, row.fiatValue])),
-    derivativeExpenseByTxId: new Map(buildDerivativeBusinessExpenseRows(transactions).map((row) => [row.txId, row.fiatValue])),
+    derivativeCapitalByTxId: new Map(buildDerivativeCapitalGainRows(transactions, input.settings).map((row) => [row.sellTxId, row])),
+    derivativeIncomeByTxId: new Map(buildDerivativeBusinessIncomeRows(transactions, input.settings).map((row) => [row.txId, row.fiatValue])),
+    derivativeExpenseByTxId: new Map(buildDerivativeBusinessExpenseRows(transactions, input.settings).map((row) => [row.txId, row.fiatValue])),
     transactionById: new Map(transactions.map((row) => [row.id, row])), lotById: new Map(lots.map((row) => [row.id, row]))
   };
 }

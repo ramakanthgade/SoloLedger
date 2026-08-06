@@ -22,6 +22,7 @@ import {
   sourceBreakdown,
   valueHoldings
 } from './dashboardModel';
+import { TEST_TAX_SETTINGS } from '@/test/taxSettings';
 import { derivePostings } from '@/lib/ledger/derivedPostings';
 import { preparePostingAggregation } from '@/lib/ledger/postingBalances';
 import { buildPortfolioDcaContext } from '@/lib/portfolio/portfolioHoldings';
@@ -620,7 +621,7 @@ describe('moneyStrip', () => {
         tx({ id: 'cb-b', timestamp: day(2026, 4, 2), type: 'buy', amount: 1, fiatValue: 100 }),
         tx({ id: 'cb-s', timestamp: day(2026, 6, 5), type: 'sell', amount: 1, fiatValue: 160 })
       ],
-      { method: 'FIFO' }
+      { method: 'FIFO', settings: TEST_TAX_SETTINGS }
     );
     const strip = moneyStrip(txs, disposals, start, end);
     expect(strip.moneyIn).toBe(1000);

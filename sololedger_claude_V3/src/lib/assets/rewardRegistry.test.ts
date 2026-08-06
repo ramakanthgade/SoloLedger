@@ -98,19 +98,13 @@ describe('classifyRewardIncome — DBT (no regression)', () => {
     expect(r!.label).toBe(prog.label);
   });
 
-  it('falls back to genesis_reward for DBT from an unknown sender', () => {
+  it('does not classify DBT from an unknown sender as exact reward income', () => {
     const unknown = 'Gh2nJr3gxiYBxFaSGBsi6VVhdefkMYX6jGR3PCD7h8t4';
-    const r = classifyRewardIncome(DBT_TOKEN_MINT, unknown);
-    expect(r).not.toBeNull();
-    expect(r!.kind).toBe('genesis_reward');
+    expect(classifyRewardIncome(DBT_TOKEN_MINT, unknown)).toBeNull();
   });
 
-  it('falls back to genesis_reward for DBT with an UNDEFINED counterparty (ATA balance-change path)', () => {
-    // Regression guard: DBT rewards that land as an ATA balance change have no
-    // sender, but must still classify as income (not revert to transfer_in).
-    const r = classifyRewardIncome(DBT_TOKEN_MINT, undefined);
-    expect(r).not.toBeNull();
-    expect(r!.kind).toBe('genesis_reward');
+  it('does not classify DBT with an undefined counterparty as exact reward income', () => {
+    expect(classifyRewardIncome(DBT_TOKEN_MINT, undefined)).toBeNull();
   });
 });
 

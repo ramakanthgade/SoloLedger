@@ -8,6 +8,7 @@ import { buildCsvImportEvidenceGeneration } from '@/lib/parsers/importEvidence';
 import { filterRows, type RowFilterOptions } from '@/lib/review/reviewTableView';
 import { buildHoldingsProjection } from '@/lib/portfolio/holdingsProjection';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
+import { TEST_TAX_SETTINGS } from '@/test/taxSettings';
 
 const VALID_BITCOIN_ADDRESS = '1J33sNnKbs52UjTK39kEEYDfbHijgDxyKU';
 const VALID_SOLANA_ADDRESS = '11111111111111111111111111111111';
@@ -333,7 +334,7 @@ describe('importFullBackup', () => {
       transactions: [restoredHidden], exchangeConnections: [], openingBalances: [],
       snapshots: [], assets: [], coverage: [], now: Date.now()
     }).holdings).toEqual([]);
-    expect(calculateCostBasis([restoredHidden], { method: 'FIFO' }).lots).toEqual([]);
+    expect(calculateCostBasis([restoredHidden], { method: 'FIFO', settings: TEST_TAX_SETTINGS }).lots).toEqual([]);
 
     await setTransactionSafetyVisibility(restoredHidden, true, 6);
     const restoredVisible = (await db.transactions.get('safety-tx'))!;
@@ -348,7 +349,7 @@ describe('importFullBackup', () => {
       transactions: [restoredVisible], exchangeConnections: [], openingBalances: [],
       snapshots: [], assets: [], coverage: [], now: Date.now()
     }).holdings).toEqual([expect.objectContaining({ asset: 'BTC', quantity: 1 })]);
-    expect(calculateCostBasis([restoredVisible], { method: 'FIFO' }).lots).toHaveLength(1);
+    expect(calculateCostBasis([restoredVisible], { method: 'FIFO', settings: TEST_TAX_SETTINGS }).lots).toHaveLength(1);
   });
 
   it('round-trips v5 coherent DeFi generations and marks restored authority stale', async () => {

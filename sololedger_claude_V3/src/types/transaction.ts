@@ -36,6 +36,20 @@ export type TransactionCategory =
   | 'p2p' | 'rebalance' | 'nft' | 'other';
 
 export type ClassificationOrigin = 'parser' | 'provider' | 'rule' | 'suggestion' | 'user' | 'legacy';
+
+/** Retained, immutable inputs to the classification resolver. User edits never erase these. */
+export interface ClassificationEvidence {
+  type?: TxType;
+  category?: TransactionCategory;
+  origin: Exclude<ClassificationOrigin, 'user'>;
+  confidence: number;
+  ruleId: string;
+  ruleVersion: string;
+  observedAt: number;
+  /** Only reviewed deterministic rules may cross the automatic threshold. */
+  allowlisted?: boolean;
+  explanation: string;
+}
 export type InternalTransferDecision = 'confirmed' | 'suggested' | 'rejected';
 export type InternalTransferMatchMethod =
   | 'exact_onchain_event'
@@ -115,6 +129,8 @@ export interface Transaction {
   categoryRuleVersion?: string;
   categoryUpdatedAt?: number;
   categoryLocked?: boolean;
+  /** Parser/provider/rule evidence retained so Reset can deterministically reapply it. */
+  classificationEvidence?: ClassificationEvidence[];
   /** Reciprocal transfer-pair contract. B1 persists/validates it; B4 performs matching. */
   internalTransferPairId?: string;
   linkedTransferId?: string;

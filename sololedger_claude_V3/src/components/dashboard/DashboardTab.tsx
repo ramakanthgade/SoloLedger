@@ -787,8 +787,8 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   );
 
   const disposals = useMemo(
-    () => calculateCostBasis(deferredTransactions, { method: 'FIFO' }).disposals,
-    [deferredTransactions]
+    () => settings ? calculateCostBasis(deferredTransactions, { method: 'FIFO', settings }).disposals : [],
+    [deferredTransactions, settings]
   );
 
   const firstTxMs = useMemo(() => {

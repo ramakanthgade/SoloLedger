@@ -17,6 +17,7 @@ import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { buildMatchedGainRows, buildIncomeRows } from '@/lib/costBasis/matchedGains';
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
+import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { formatCurrency, getCurrentFy, getFyLabel, isInFy } from '@/lib/utils';
 
 /** A single open-position holding, aggregated by asset. */
@@ -47,6 +48,7 @@ export interface TaxContextInput {
   disposalCount: number;
   totalIncome: number;
   shortfallCount: number;
+  policyReviewCount: number;
   topHoldings: HoldingSummary[];
 }
 
@@ -83,6 +85,7 @@ export function buildTaxContext(input: TaxContextInput): string {
     `## ${input.fyLabel} Tax Year`,
     `- Realized gain/loss: ${fmt(input.realizedGain)} across ${input.disposalCount} disposal(s)`,
     `- Income (staking, airdrops, rewards): ${fmt(input.totalIncome)}`,
+    `- Policy review required: ${input.policyReviewCount} unsupported or incomplete transaction(s) excluded from automatic tax totals`,
     input.shortfallCount > 0
       ? `- Warning: ${input.shortfallCount} disposal(s) could not be fully matched to prior acquisitions.`
       : `- All disposals matched to acquisitions.`,
@@ -124,11 +127,12 @@ export async function buildTaxContextFromDb(year?: number): Promise<string> {
 
   const { disposals, lots, shortfalls } = calculateCostBasis(allTxs, {
     method: settings.defaultCostBasisMethod,
-    specIdHints: hints
+    specIdHints: hints,
+    settings
   });
 
   const matchedRows = buildMatchedGainRows(disposals, lots, allTxs);
-  const incomeRows = buildIncomeRows(allTxs);
+  const incomeRows = buildIncomeRows(allTxs, undefined, settings);
   const jurisdiction = JURISDICTIONS[settings.jurisdiction];
 
   const yearMatches = matchedRows.filter((r) => isInFy(r.sellDate, fy, settings.jurisdiction));
@@ -136,6 +140,9 @@ export async function buildTaxContextFromDb(year?: number): Promise<string> {
 
   const totalGain = yearMatches.reduce((s, r) => s + r.gain, 0);
   const totalIncome = yearIncome.reduce((s, r) => s + r.fiatValue, 0);
+  const policyReviewCount = allTxs.filter((transaction) =>
+    resolveTaxPolicy({ kind: 'transaction', transaction, settings }).treatment === 'requires_review'
+  ).length;
 
   // Holdings summary (Portfolio)
   const holdings = new Map<string, { qty: number; cost: number }>();
@@ -185,6 +192,7 @@ export async function buildTaxContextFromDb(year?: number): Promise<string> {
     disposalCount: yearMatches.length,
     totalIncome,
     shortfallCount: shortfalls.length,
+    policyReviewCount,
     topHoldings
   });
 }

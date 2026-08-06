@@ -61,7 +61,7 @@ describe('Review reconciliation evidence wiring', () => {
     const model = buildTransactionCostAnalysisModel({
       transaction,
       settings,
-      indexes: buildTransactionCostAnalysisIndexes({ transactions: [transaction], lots: [], disposals: [] }),
+      indexes: buildTransactionCostAnalysisIndexes({ transactions: [transaction], lots: [], disposals: [], settings }),
       unexplainedAuthorityQuantity: result.delta
     });
     expect(model.warnings.join(' ')).toContain('differs from posting history by 3 BTC');
@@ -125,13 +125,14 @@ describe('Review reconciliation evidence wiring', () => {
       scopeStatus: 'resolved'
     });
     expect(result).toMatchObject({ balanceStatus: 'ledger_under', delta: 3 });
+    const settings: TaxSettings = {
+      jurisdiction: 'US', reportingCurrency: 'USD', defaultCostBasisMethod: 'FIFO',
+      priceApiEnabled: false, rpcLookupEnabled: false
+    };
     const warningModel = buildTransactionCostAnalysisModel({
       transaction,
-      settings: {
-        jurisdiction: 'US', reportingCurrency: 'USD', defaultCostBasisMethod: 'FIFO',
-        priceApiEnabled: false, rpcLookupEnabled: false
-      },
-      indexes: buildTransactionCostAnalysisIndexes({ transactions: [transaction], lots: [], disposals: [] }),
+      settings,
+      indexes: buildTransactionCostAnalysisIndexes({ transactions: [transaction], lots: [], disposals: [], settings }),
       unexplainedAuthorityQuantity: result.delta
     });
     expect(warningModel.warnings.join(' ')).toContain('differs from posting history by 3 BTC');

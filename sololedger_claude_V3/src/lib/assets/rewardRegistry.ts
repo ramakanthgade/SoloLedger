@@ -143,15 +143,12 @@ export function classifyRewardIncome(
   const entry = getEntry(mint);
   if (!entry) return null;
 
-  // Rich per-counterparty classifier (e.g. Dabba). A missing/unknown counterparty
-  // falls back to the default kind (mirrors the existing DBT `?? genesis_reward`
-  // behaviour, including the ATA-balance-change path where no sender is known).
+  // Rich per-counterparty classifier (e.g. Dabba). Exact classification requires
+  // a recognized source; token identity alone is never exact reward evidence.
   if (entry.classifyByCounterparty) {
-    const specific = counterpartyAddress
+    return counterpartyAddress
       ? entry.classifyByCounterparty(mint, counterpartyAddress)
       : null;
-    if (specific) return specific;
-    return { kind: entry.defaultKind, label: entry.label, notes: entry.notes };
   }
 
   // Distributor allowlist: only the known rewards wallet counts as income. A

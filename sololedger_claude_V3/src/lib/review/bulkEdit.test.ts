@@ -5,6 +5,7 @@ import {
   BULK_FLAG_CHECKBOXES,
   DISPOSAL_TYPES,
   bulkFlagsPatch,
+  bulkCategoryPatch,
   bulkTypeImpactLines,
   bulkTypePatch,
   initialBulkFlagsSelection,
@@ -41,7 +42,9 @@ describe('bulkTypePatch', () => {
 
   it('leaves rows with no flags untouched apart from the type', () => {
     const t = tx({ flags: [] });
-    expect(bulkTypePatch(t, 'sell')).toEqual({ type: 'sell', flags: [] });
+    expect(bulkTypePatch(t, 'sell')).toMatchObject({
+      type: 'sell', category: 'other', flags: [], categoryOrigin: 'user', categoryLocked: true
+    });
   });
 
   it('clears incompatible Options deferral metadata during bulk reclassification', () => {
@@ -50,9 +53,23 @@ describe('bulkTypePatch', () => {
     });
     const reclassified = { ...premium, ...bulkTypePatch(premium, 'transfer_in') };
     expect(reclassified.type).toBe('transfer_in');
-    expect(reclassified.category).toBeUndefined();
+    expect(reclassified.category).toBe('other');
     expect(reclassified.instrumentClass).toBeUndefined();
     expect(isDerivativeTransaction(reclassified)).toBe(false);
+  });
+});
+
+describe('bulkCategoryPatch', () => {
+  it('changes only semantic category and persists a user lock', () => {
+    const transaction = tx({ type: 'income', category: 'reward' });
+    expect(bulkCategoryPatch(transaction, 'staking_reward', 123)).toMatchObject({
+      type: 'income', category: 'staking_reward', categoryOrigin: 'user',
+      categoryConfidence: 1, categoryLocked: true, categoryUpdatedAt: 123
+    });
+  });
+
+  it('rejects categories incompatible with the structural type', () => {
+    expect(() => bulkCategoryPatch(tx({ type: 'sell' }), 'staking_reward')).toThrow(/not compatible/);
   });
 });
 
@@ -180,7 +197,7 @@ describe('bulkTypeImpactLines — pluralization', () => {
   });
 });
 
-describe('bulkFlagsPatch', () => {
+  describe('bulkFlagsPatch', () => {
   it('adds checked flags and removes unchecked ones (absolute apply)', () => {
     const t = tx({ flags: ['needs_review', 'duplicate_suspected'] });
     const patch = bulkFlagsPatch(t, {
@@ -500,5 +517,15 @@ describe('initialBulkFlagsSelection', () => {
     expect(init.internal).toBe(false);
     expect(init.flags.get('needs_review')).toBe(false);
     expect(init.hint).toBe('unchecked');
+  });
+
+  it.each(['suggested', 'confirmed', 'rejected'] as const)('never toggles one leg of a %s reciprocal pair', (decision) => {
+    const paired = tx({
+      isInternalTransfer: decision === 'confirmed', internalTransferDecision: decision,
+      internalTransferPairId: 'pair', linkedTransferId: 'other'
+    });
+    const selection = initialBulkFlagsSelection([paired]);
+    expect(bulkFlagsPatch(paired, { ...selection, internal: decision !== 'confirmed' }).isInternalTransfer)
+      .toBe(decision === 'confirmed');
   });
 });
