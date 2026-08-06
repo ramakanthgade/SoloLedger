@@ -102,16 +102,15 @@ describe('ReviewTab — item 10: richer rows + click-anywhere details', () => {
 
 describe('ReviewTab — round 4: compact aligned rows (no middle desert)', () => {
   it('lays the row on aligned tracks with a flexible flow column', () => {
-    // select · type (8.5rem) · flexible flow · source+chevron — with the
-    // source context in a fixed 13.5rem right-aligned block on every row.
-    expect(source).toContain('lg:grid-cols-[auto_8.5rem_minmax(0,1fr)_auto]');
+    // select · type · economic center · bounded source/account · disclosure.
+    expect(source).toContain('lg:grid-cols-[auto_9rem_minmax(22rem,1fr)_minmax(12rem,15rem)_auto]');
     expect(source).not.toContain('lg:justify-start');
-    expect(source).toContain('lg:w-[13.5rem]');
+    expect(source).toContain('lg:w-full lg:shrink');
   });
 
-  it('the flow content stays capped inside its flexible alignment track', () => {
+  it('the flow fills and centers within its flexible economic track', () => {
     expect(source).not.toContain('lg:flex-1');
-    expect(source).toContain('lg:max-w-[34rem]');
+    expect(source).toContain('lg:w-full lg:flex-nowrap lg:justify-center');
   });
 
   it('uses matched-row missing status rather than treating every zero basis as missing', () => {
@@ -213,7 +212,7 @@ describe('ReviewTab — B2 exact presentation wiring', () => {
   });
 
   it('uses accessible 44px expansion and counterpart targets', () => {
-    expect(source).toContain("'grid h-11 w-11 shrink-0 place-items-center");
+    expect(source).toContain("'order-3 grid h-11 w-11 shrink-0 place-items-center");
     expect(source).toContain('className="inline-flex min-h-[44px] items-center');
   });
 

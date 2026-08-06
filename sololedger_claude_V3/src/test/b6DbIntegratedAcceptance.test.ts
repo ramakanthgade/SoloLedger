@@ -139,7 +139,7 @@ describe('B6 database-backed integrated acceptance', () => {
     const accountId = `wallet:evm:${B6_EVM_ADDRESS}`;
     expect((await claimAccountOwnershipPrompt(accountId, Date.now())).claimed).toBe(false);
     expect((await db.lookupAddresses.where('accountIdentityId').equals(accountId).toArray()).map((row) => row.chain).sort())
-      .toEqual(['ethereum', 'polygon']);
+      .toEqual(['ethereum', 'optimism', 'polygon']);
     expect((await db.csvImports.toArray()).map((row) => row.accountIdentityId)).toEqual([
       'csv-account:b6-recurring', 'csv-account:b6-recurring'
     ]);

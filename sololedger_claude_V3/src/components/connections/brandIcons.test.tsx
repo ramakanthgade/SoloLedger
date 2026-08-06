@@ -35,7 +35,7 @@ const provenanceRows = readFileSync(resolve(publicDir, 'assets/brand-icons/SOURC
 function expectDocumented(file: string, id: string) {
   const row = provenanceRows.find((line) => line.startsWith(`| \`${file}\``));
   expect(row, `${id} provenance`).toBeDefined();
-  expect(row, `${id} retrieval date`).toContain('2026-08-04');
+  expect(row, `${id} retrieval date`).toMatch(/2026-08-0[46]/);
 }
 
 /**
@@ -95,18 +95,14 @@ describe('brandIcons registry', () => {
 });
 
 describe('chainIconId', () => {
-  it('maps every actionable chain to a distinct bundled chain logo', () => {
-    const actionable = CHAINS.filter(
-      (chain) =>
-        !DROPDOWN_HIDDEN_CHAINS.has(chain.id) &&
-        ['blockstream', 'alchemy_solana', 'alchemy_evm'].includes(chain.provider)
-    );
-    const iconIds = actionable.map((chain) => chainIconId(chain.id));
+  it('maps every selectable or persistable chain to a distinct bundled network icon', () => {
+    const supported = CHAINS;
+    const iconIds = supported.map((chain) => chainIconId(chain.id));
 
-    expect(actionable).toHaveLength(47);
+    expect(supported).toHaveLength(52);
     expect(iconIds.every(Boolean)).toBe(true);
-    expect(new Set(iconIds).size).toBe(actionable.length);
-    for (const [index, chain] of actionable.entries()) {
+    expect(new Set(iconIds).size).toBe(supported.length);
+    for (const [index, chain] of supported.entries()) {
       const iconId = iconIds[index]!;
       const def = BRAND_ICONS[iconId];
       expect(def, chain.id).toBeDefined();
@@ -116,10 +112,13 @@ describe('chainIconId', () => {
     }
   });
 
-  it('does not invent mappings for hidden or generic chains', () => {
-    expect(chainIconId('fantom')).toBeUndefined();
-    expect(chainIconId('starknet')).toBeUndefined();
-    expect(chainIconId('custom_evm')).toBeUndefined();
+  it('uses real distinct marks for saved legacy and Etherscan-compatible chains', () => {
+    expect(chainIconId('fantom')).toBe('chain-fantom');
+    expect(chainIconId('starknet')).toBe('chain-starknet');
+    expect(chainIconId('aurora')).toBe('chain-aurora');
+    expect(chainIconId('moonriver')).toBe('chain-moonriver');
+    expect(chainIconId('custom_evm')).toBe('chain-custom-evm');
+    expect(DROPDOWN_HIDDEN_CHAINS.has('fantom')).toBe(true);
   });
 });
 

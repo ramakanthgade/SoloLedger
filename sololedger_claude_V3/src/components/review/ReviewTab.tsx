@@ -5,7 +5,7 @@ import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import type { TxType, Transaction, TransactionCategory, FlagReason, Jurisdiction, TaxSettings } from '@/types/transaction';
-import { cn, formatAmountForExport, formatCompactAmount, formatCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
+import { cn, formatAmountForExport, formatCompactAmount, formatCurrency, formatLedgerAmount, formatLedgerCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { CHAINS } from '@/lib/rpc/providers';
 import { buildWalletLabelMap, walletLabelFor } from './walletLabels';
@@ -76,11 +76,16 @@ import { buildReviewReconciliationEvidence } from './reviewReconciliationEvidenc
 import { TransactionDetailPanel, type DetailTab } from './TransactionDetailPanel';
 import { LotPicker } from './LotPicker';
 import { type TransactionNavigationIntent, type TransactionScopeFilter } from '@/lib/navigationIntent';
-import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { hasDurableNavigationScope, resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
 import { buildSourcePresentationIndexes, buildTransactionSourcePresentations } from '@/lib/sources/sourcePresentation';
 import { buildReviewSourceFilterOptions, transactionMatchesSourceFilter } from './reviewSourceFilters';
+import {
+  buildReviewWalletFilterOptions,
+  persistReviewWalletFilter,
+  readPersistedReviewWalletFilter,
+  transactionMatchesWalletFilter
+} from './reviewWalletFilters';
 import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { buildTransactionById, linkedCounterpartFor, transactionPage } from './counterpartNavigation';
 import { principalAssetIdentityForLeg } from './reviewAssetIcons';
@@ -474,7 +479,7 @@ function CategorySelector({ tx }: { tx: Transaction }) {
           tx.id,
           userClassificationPatch(tx, tx.type, event.target.value as TransactionCategory)
         )}
-        className="max-w-[10rem] rounded-md border border-hi/10 bg-elev-1 px-1 py-0.5 text-[10px] text-mid"
+        className="min-h-11 max-w-[10rem] rounded-md border border-hi/10 bg-elev-1 px-2 py-0.5 text-[10px] text-mid lg:min-h-8"
       >
         {categories.map((category) => <option key={category} value={category}>{categoryLabel(category)}</option>)}
       </select>
@@ -556,9 +561,9 @@ function CopyButton({ text, label }: { text: string; label: string }) {
 /** Label/value row inside the expanded Details panel (mockup `eyebrow` + value). */
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="flex items-center gap-3">
-      <span className="w-20 shrink-0 text-[10px] font-bold uppercase tracking-wide text-low">{label}</span>
-      <span className="flex min-w-0 items-center gap-1 text-xs font-semibold text-mid">{children}</span>
+    <div className="grid min-w-0 grid-cols-[minmax(0,1fr)] items-start gap-1 sm:grid-cols-[5rem_minmax(0,1fr)] sm:gap-3">
+      <span className="text-[10px] font-bold uppercase tracking-wide text-low">{label}</span>
+      <span className="flex min-w-0 max-w-full flex-wrap items-center gap-1 break-all text-xs font-semibold text-mid">{children}</span>
     </div>
   );
 }
@@ -573,7 +578,13 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   const [assetFilter, setAssetFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<TxType | 'all'>('all');
   const [flagFilter, setFlagFilter] = useState<FlagReason | 'all' | 'spam' | 'internal'>('all');
-  const [walletFilter, setWalletFilter] = useState<string>('all');
+  const [walletFilter, setWalletFilterState] = useState<string>(() =>
+    readPersistedReviewWalletFilter(window.localStorage)
+  );
+  const setWalletFilter = useCallback((accountIdentityId: string) => {
+    persistReviewWalletFilter(accountIdentityId, window.localStorage);
+    setWalletFilterState(accountIdentityId);
+  }, []);
   const [sourceFilter, setSourceFilter] = useState<string>('all');
   const [fyFilter, setFyFilter] = useState<number | null>(null);
   const [showNeedsPrice, setShowNeedsPrice] = useState(false);
@@ -709,15 +720,10 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     () => getAvailableFys(transactions.map((t) => t.timestamp), jurisdiction),
     [transactions, jurisdiction]
   );
-  const availableWallets = useMemo(() => {
-    const ws = new Map<string, { key: string; address: string }>();
-    for (const t of transactions) {
-      if (!t.walletAddress) continue;
-      const key = canonicalWalletIdentity(t.chain ?? '', t.walletAddress);
-      if (!ws.has(key)) ws.set(key, { key, address: t.walletAddress });
-    }
-    return Array.from(ws.values());
-  }, [transactions]);
+  const availableWallets = useMemo(
+    () => buildReviewWalletFilterOptions(transactions, sourcePresentations),
+    [transactions, sourcePresentations]
+  );
 
   /** Exact source incarnations/generations; labels never collapse same-brand accounts. */
   const availableSources = useMemo(
@@ -1036,7 +1042,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
       assetFilter,
       typeFilter,
       flagFilter,
-      walletFilter,
+      walletFilter: 'all',
       fyBounds,
       instrumentFilter,
       query,
@@ -1047,7 +1053,10 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
     // Source filter — applied after the shared row filter so the lib contract
     // (and its tests) stay untouched.
-    const bySource = sourceFilter === 'all' ? base : base.filter((t) =>
+    const byWallet = walletFilter === 'all' ? base : base.filter((t) =>
+      transactionMatchesWalletFilter(t, walletFilter, sourcePresentations)
+    );
+    const bySource = sourceFilter === 'all' ? byWallet : byWallet.filter((t) =>
       transactionMatchesSourceFilter(t, sourceFilter, sourcePresentations)
     );
     const byDurableScope = navigationScopeFilter == null ? bySource : bySource.filter((transaction) =>
@@ -1531,7 +1540,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               <Banknote className="h-3.5 w-3.5" />
             </span>
             <span className={cn('whitespace-nowrap text-[0.875rem] font-bold tabular-figures text-hi', spam && 'line-through')}>
-              {leg.amount != null && leg.currency ? formatCurrency(leg.amount, leg.currency) : '—'}
+              {leg.amount != null && leg.currency ? formatLedgerCurrency(leg.amount, leg.currency) : '—'}
             </span>
           </span>
           {subRow}
@@ -1556,7 +1565,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             )}
           >
             {leg.sign}
-            {leg.amount != null ? formatCompactAmount(leg.amount) : '—'}
+            {leg.amount != null ? formatLedgerAmount(leg.amount) : '—'}
           </span>
           <span className="truncate text-xs font-semibold text-mid">{leg.symbol}</span>
         </span>
@@ -1710,11 +1719,10 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
           className={cn(
             'flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 transition-colors hover:bg-elev-3/40 sm:px-5',
-            // Desktop: one continuous compact line on aligned column tracks —
-            // select · type (8.5rem) · flexible flow (content capped below) ·
-            // source + chevron (13.5rem, right-aligned). The minmax track lets
-            // source, flags and chevrons line up without changing mobile flow.
-            'lg:grid lg:grid-cols-[auto_8.5rem_minmax(0,1fr)_auto] lg:gap-x-6 xl:gap-x-8',
+            // Desktop: select · type · economic center · bounded source/account
+            // · disclosure. Source identity can no longer consume the flow
+            // track, while mobile keeps the established wrapped reading order.
+            'lg:grid lg:grid-cols-[auto_9rem_minmax(22rem,1fr)_minmax(12rem,15rem)_auto] lg:gap-x-5 xl:gap-x-7',
             isSelected && 'bg-primary/[0.05] hover:bg-primary/[0.08]',
             spam && 'opacity-60'
           )}
@@ -1749,7 +1757,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           {/* The flow — sent leg → received leg. Content-sized, never
               stretched: legs cap at 15rem each (full-width row on mobile). */}
           <div
-            className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 lg:order-none lg:w-auto lg:max-w-[34rem]"
+            className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 lg:order-none lg:w-full lg:flex-nowrap lg:justify-center"
             data-testid="tx-flow"
           >
             {flow.sent && renderLeg(flow.sent, spam, principalAssetIdentityForLeg(flow.sent, t))}
@@ -1759,12 +1767,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             {flow.received && renderLeg(flow.received, spam, principalAssetIdentityForLeg(flow.received, t))}
           </div>
 
-          {/* Source context + expander — one unit on mobile (wraps together,
-              never an orphaned chevron); on desktop the source is a fixed
-              13.5rem right-aligned block (logo + name, fee chip, flag badges —
-              badges wrap under, still right-aligned) with the chevron after. */}
-          <div className="order-3 ml-auto flex shrink-0 items-center gap-2.5 lg:order-none lg:ml-0 lg:justify-end">
-            <div className="flex flex-wrap items-center justify-end gap-x-2.5 gap-y-1 lg:w-[13.5rem]">
+          {/* Source/account occupies its own bounded right track. */}
+          <div className="order-3 ml-auto flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-x-2.5 gap-y-1 lg:order-none lg:ml-0 lg:w-full lg:shrink" data-testid="tx-source-account">
               <SourceIcon iconId={sourcePresentation.iconId} label={sourcePresentation.primaryLabel} size={30} />
               <div className="min-w-0 lg:text-right">
                 <p className="max-w-[7rem] truncate text-xs font-bold text-hi sm:max-w-[9rem]" title={src.label}>
@@ -1795,8 +1799,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               <div className="hidden lg:block">
                 <FlagSelector tx={t} derivedFlags={derivedFlags} />
               </div>
-            </div>
-            <button
+          </div>
+          <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
@@ -1804,14 +1808,14 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               }}
               aria-expanded={expanded}
               aria-label={expanded ? 'Collapse transaction details' : 'Expand transaction details'}
+              data-testid="tx-disclosure"
               className={cn(
-                'grid h-11 w-11 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                'order-3 grid h-11 w-11 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 lg:order-none',
                 expanded ? 'bg-elev-3 text-primary' : 'text-low hover:bg-elev-3 hover:text-hi'
               )}
             >
               {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
-            </button>
-          </div>
+          </button>
 
           {/* Flags (narrow screens — under the flow, full width) */}
           <div className="order-5 w-full pl-10 lg:hidden">
@@ -1887,7 +1891,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             activeTab={detailTabByTxId[t.id] ?? 'details'}
             onActiveTabChange={(activeTab) => setDetailTabByTxId((current) => ({ ...current, [t.id]: activeTab }))}
             details={<>
-            <p className="text-[0.875rem] leading-relaxed text-mid" data-testid="tx-summary">
+            <p className="min-w-0 break-words text-[0.875rem] leading-relaxed text-mid" data-testid="tx-summary">
               {summary.lead}
               {summary.tail ? (
                 <>
@@ -1903,14 +1907,14 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             </p>
 
             {/* Facts grid */}
-            <div className="mt-4 grid gap-x-8 gap-y-2.5 sm:grid-cols-2">
+            <div className="mt-4 grid min-w-0 grid-cols-[minmax(0,1fr)] gap-x-8 gap-y-2.5 sm:grid-cols-2">
               <DetailRow label="Date">
                 {dateUtc} · {timeUtc} UTC
               </DetailRow>
               <DetailRow label={hashFactLabel}>
                 {hash ? (
                   <>
-                    <span className="rounded-md border border-hi/10 bg-elev-3/60 px-2 py-0.5 font-mono text-[11px]" title={hash}>
+                    <span className="min-w-0 break-all rounded-md border border-hi/10 bg-elev-3/60 px-2 py-0.5 font-mono text-[11px]" title={hash}>
                       {truncateAddress(hash)}
                     </span>
                     <CopyButton text={hash} label={`Copy ${hashFactLabel === 'Tx hash' ? 'transaction hash' : 'order id'}`} />
@@ -2372,8 +2376,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           <ChipSelect value={walletFilter} onChange={setWalletFilter} ariaLabel="Wallet filter" active={walletFilter !== 'all'} className="max-w-[180px]">
             <option value="all">All wallets</option>
             {availableWallets.map((wallet) => (
-              <option key={wallet.key} value={wallet.key}>
-                {walletLabels.get(wallet.key) ?? `${wallet.address.slice(0, 8)}…`}
+              <option key={wallet.accountIdentityId} value={wallet.accountIdentityId}>
+                {wallet.label}
               </option>
             ))}
           </ChipSelect>

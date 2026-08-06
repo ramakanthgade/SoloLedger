@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   formatCurrency,
   formatCompactCurrency,
+  formatLedgerAmount,
+  formatLedgerCurrency,
   getFyBoundaries,
   getFyForTimestamp,
   getFyLabel,
@@ -20,8 +22,20 @@ describe('formatCurrency', () => {
     expect(formatCurrency(1234567.5, 'USD')).toBe('$1,234,567.50');
   });
 
+  it('omits unnecessary INR paise while preserving real decimals', () => {
+    expect(formatLedgerCurrency(2070820, 'INR')).toBe('₹20,70,820');
+    expect(formatLedgerCurrency(5453.08, 'INR')).toBe('₹5,453.08');
+  });
+
   it('falls back gracefully for an invalid currency code', () => {
     expect(formatCurrency(12.5, 'not-a-currency')).toBe('12.50 not-a-currency');
+  });
+});
+
+describe('formatLedgerAmount', () => {
+  it('groups quantities and preserves meaningful token precision', () => {
+    expect(formatLedgerAmount(1076.48)).toBe('1,076.48');
+    expect(formatLedgerAmount(0.00042026)).toBe('0.00042026');
   });
 });
 

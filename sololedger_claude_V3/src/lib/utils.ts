@@ -24,6 +24,26 @@ export function formatCurrency(amount: number, currency: string): string {
   }
 }
 
+/** Product UI currency: whole INR values omit paise; meaningful decimals remain. */
+export function formatLedgerCurrency(amount: number, currency: string): string {
+  if (currency.toUpperCase() !== 'INR') return formatCurrency(amount, currency);
+  return new Intl.NumberFormat('en-IN', {
+    style: 'currency',
+    currency: 'INR',
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2
+  }).format(amount);
+}
+
+/** Ledger-face quantity: grouped, without invented zeroes, preserving up to 8 decimals. */
+export function formatLedgerAmount(amount: number): string {
+  return new Intl.NumberFormat('en-US', {
+    useGrouping: true,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 8
+  }).format(amount);
+}
+
 /** Locale-aware number grouping without a currency symbol (for exports). */
 export function formatNumberLocale(amount: number, currency: string): string {
   const locale = currency.toUpperCase() === 'INR' ? 'en-IN' : 'en-US';

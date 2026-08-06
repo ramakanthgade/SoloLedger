@@ -79,15 +79,19 @@ export const CHAIN_ICON_IDS: Readonly<Record<string, string>> = {
   bsc: 'bnb',
   optimism: 'chain-optimism',
   avalanche: 'chain-avalanche',
+  fantom: 'chain-fantom',
   celo: 'chain-celo',
   zksync: 'chain-zksync',
   linea: 'chain-linea',
   scroll: 'chain-scroll',
   blast: 'chain-blast',
   mantle: 'chain-mantle',
+  starknet: 'chain-starknet',
+  aurora: 'chain-aurora',
   cronos: 'chain-cronos',
   gnosis: 'chain-gnosis',
   moonbeam: 'chain-moonbeam',
+  moonriver: 'chain-moonriver',
   metis: 'chain-metis',
   opbnb: 'chain-opbnb',
   solana: 'solana',
@@ -117,7 +121,8 @@ export const CHAIN_ICON_IDS: Readonly<Record<string, string>> = {
   plasma: 'chain-plasma',
   stable: 'chain-stable',
   megaeth: 'chain-megaeth',
-  katana: 'chain-katana'
+  katana: 'chain-katana',
+  custom_evm: 'chain-custom-evm'
 };
 
 for (const [chainId, iconId] of Object.entries(CHAIN_ICON_IDS)) {

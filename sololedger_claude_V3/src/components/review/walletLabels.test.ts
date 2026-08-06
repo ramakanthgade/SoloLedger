@@ -19,4 +19,13 @@ describe('Review wallet labels', () => {
     expect(walletLabelFor(labels, { chain: 'ethereum' }, '0xabc')).toBe('Main EVM');
     expect(walletLabelFor(labels, { chain: 'base' }, '0xabc')).toBeUndefined();
   });
+
+  it('uses the canonical cleared-name fallback for endpoint resolution', () => {
+    const labels = buildWalletLabelMap([{
+      id: 'ethereum:0x1234567890abcdef', chain: 'ethereum', address: '0x1234567890abcdef',
+      walletAppId: 'metamask', lastSyncedAt: 0, txCount: 0
+    }]);
+    expect(walletLabelFor(labels, { chain: 'ethereum' }, '0x1234567890abcdef'))
+      .toBe('MetaMask · 0x1234…cdef');
+  });
 });

@@ -1,11 +1,12 @@
 import type { LookupAddressRow } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import { resolveWalletDisplayLabel } from '@/lib/accounts/walletDisplay';
 
 export function buildWalletLabelMap(rows: LookupAddressRow[]): Map<string, string> {
   const labels = new Map<string, string>();
   for (const row of rows) {
-    if (row.label) labels.set(canonicalWalletIdentity(row.chain, row.address), row.label);
+    labels.set(canonicalWalletIdentity(row.chain, row.address), resolveWalletDisplayLabel(row));
   }
   return labels;
 }

@@ -19,6 +19,7 @@ import type { CsvImportRow, LookupAddressRow } from '@/lib/storage/db';
 import { getAutoSyncExchange } from '@/components/import/autoSyncExchanges';
 import { getImportSource } from '@/components/import/importSources';
 import { CHAINS } from '@/lib/rpc/providers';
+import { resolveWalletDisplayLabel, shortWalletAddress } from '@/lib/accounts/walletDisplay';
 import { brandLabel, chainIconId, parserIconId, WALLET_APP_NAMES } from './brandIcons';
 import { WALLET_CATALOG } from './walletCatalog';
 import {
@@ -82,8 +83,7 @@ export interface WalletGroup {
 
 /** "0x7a3F…4Ef2" style truncation used across wallet cards and pickers. */
 export function shortAddress(address: string): string {
-  const a = address.trim();
-  return a.length > 14 ? `${a.slice(0, 6)}…${a.slice(-4)}` : a;
+  return shortWalletAddress(address);
 }
 
 /** Truncate a long file name keep-start/keep-end style. */
@@ -111,8 +111,15 @@ export function groupWallets(rows: LookupAddressRow[]): WalletGroup[] {
   const byAddress = new Map<string, LookupAddressRow[]>();
   // Sync timestamps reorder storage reads. Resolve conflicting metadata in a
   // stable chain/id order so refreshing one chain cannot flip card identity.
+  const approvedChainOrder = ['ethereum', 'polygon', 'base', 'arbitrum', 'optimism', 'zora'];
+  const chainRank = (chain: string) => {
+    const approved = approvedChainOrder.indexOf(chain);
+    if (approved >= 0) return approved;
+    const registry = CHAINS.findIndex((candidate) => candidate.id === chain);
+    return approvedChainOrder.length + (registry >= 0 ? registry : CHAINS.length);
+  };
   const stableRows = [...rows].sort((a, b) =>
-    a.chain.localeCompare(b.chain) || a.id.localeCompare(b.id));
+    chainRank(a.chain) - chainRank(b.chain) || a.chain.localeCompare(b.chain) || a.id.localeCompare(b.id));
   for (const row of stableRows) {
     const key = walletConnectionGroupKey(row.chain, row.address);
     const group = byAddress.get(key) ?? [];
@@ -304,14 +311,15 @@ export function buildCards(input: BuildCardsInput): ConnectionCardData[] {
     const lane = walletLane(group);
     const primaryChain = group.chains[0];
     const walletAppId = group.walletAppId ?? walletAppIdFromLabel(group.label);
+    const walletDisplayLabel = resolveWalletDisplayLabel({ label: group.label, walletAppId, address: group.address });
     const chainSubtitle = group.chains.length > 1 ? 'Multi-chain' : chainLabel(primaryChain);
     cards.push({
       id: `wallet:${group.key}`,
       kind: 'wallet',
       lane,
       iconId: lane === 'wallets' && walletAppId ? walletAppId : (chainIconId(primaryChain) ?? null),
-      iconFallback: group.label ?? chainLabel(primaryChain),
-      title: group.label ?? shortAddress(group.address),
+      iconFallback: walletDisplayLabel,
+      title: walletDisplayLabel,
       subtitle: group.label
         ? `${shortAddress(group.address)} · ${chainSubtitle}`
         : chainSubtitle,

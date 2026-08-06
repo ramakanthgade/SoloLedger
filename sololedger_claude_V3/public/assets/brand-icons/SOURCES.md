@@ -129,15 +129,19 @@ formal redistribution license.
 | `bnb.png` | Trust Wallet assets official repository, BNB chain logo: `https://raw.githubusercontent.com/trustwallet/assets/master/blockchains/binance/info/logo.png` | Trust Wallet repository asset; BNB trademark; nominative identification only | 2026-08-04 |
 | `chain-optimism.png` | Chainlist OP Mainnet asset: `https://icons.llamao.fi/icons/chains/rsz_optimism.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-avalanche.png` | Chainlist Avalanche C-Chain asset: `https://icons.llamao.fi/icons/chains/rsz_avalanche.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-fantom.png` | Chainlist Fantom Opera asset: `https://icons.llamao.fi/icons/chains/rsz_fantom.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-06 |
 | `chain-celo.png` | Chainlist Celo mainnet asset: `https://icons.llamao.fi/icons/chains/rsz_celo.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-zksync.png` | Chainlist zkSync Era asset: `https://icons.llamao.fi/icons/chains/rsz_zksync%20era.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-linea.png` | Chainlist Linea asset: `https://icons.llamao.fi/icons/chains/rsz_linea.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-scroll.png` | Chainlist Scroll asset: `https://icons.llamao.fi/icons/chains/rsz_scroll.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-blast.png` | Chainlist Blast asset: `https://icons.llamao.fi/icons/chains/rsz_blast.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-mantle.png` | Chainlist Mantle asset: `https://icons.llamao.fi/icons/chains/rsz_mantle.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-starknet.png` | Official Starknet website repository square logo: `https://github.com/starknet-io/starknet-website/blob/3a11f66a7032dc2975a1a063012ca0b05b29d93e/public/assets/logo-square.png` | Official brand asset; nominative identification only | 2026-08-06 |
+| `chain-aurora.png` | Chainlist Aurora asset: `https://icons.llamao.fi/icons/chains/rsz_aurora.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-06 |
 | `chain-cronos.png` | Chainlist Cronos asset: `https://icons.llamao.fi/icons/chains/rsz_cronos.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-gnosis.png` | Chainlist Gnosis/xDai asset: `https://icons.llamao.fi/icons/chains/rsz_xdai.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-moonbeam.png` | Chainlist Moonbeam asset: `https://icons.llamao.fi/icons/chains/rsz_moonbeam.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-moonriver.png` | Chainlist Moonriver asset: `https://icons.llamao.fi/icons/chains/rsz_moonriver.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-06 |
 | `chain-metis.png` | Chainlist Metis asset: `https://icons.llamao.fi/icons/chains/rsz_metis.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-opbnb.png` | Chainlist opBNB asset: `https://icons.llamao.fi/icons/chains/rsz_op_bnb.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-abstract.png` | Chainlist Abstract asset: `https://icons.llamao.fi/icons/chains/rsz_abstract.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
@@ -167,6 +171,7 @@ formal redistribution license.
 | `chain-stable.png` | Chainlist Stable asset: `https://icons.llamao.fi/icons/chains/rsz_stable.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-megaeth.png` | Chainlist MegaETH asset: `https://icons.llamao.fi/icons/chains/rsz_megaeth.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
 | `chain-katana.png` | Chainlist Katana asset: `https://icons.llamao.fi/icons/chains/rsz_katana.jpg` | Chainlist-distributed network mark; nominative identification only | 2026-08-04 |
+| `chain-custom-evm.png` | SoloLedger neutral three-node network glyph; intentionally generic and not derived from Ethereum or any chain brand | Original project UI asset; no third-party trademark | 2026-08-06 |
 
 ## Other token and reporting marks
 

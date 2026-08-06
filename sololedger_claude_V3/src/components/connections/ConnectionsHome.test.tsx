@@ -26,7 +26,11 @@ const mocks = vi.hoisted(() => ({
   getCsvImports: vi.fn(async () => []),
   getLookupAddresses: vi.fn(async () => []),
   deleteCsvImportAndTransactions: vi.fn(async () => {}),
-  updateWalletLabel: vi.fn(async () => {}),
+  updateWalletAccountLabel: vi.fn(async () => {}),
+  getAccountIdentity: vi.fn(async (id: string) => ({
+    id, canonicalKey: id, kind: 'wallet', label: 'Phantom main', ownershipStatus: 'unknown',
+    ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 3
+  })),
   deleteLookupAddressAndTransactions: vi.fn(async () => {}),
   runWalletImport: vi.fn(async (_addresses: string[], _chain: { id: string }, _settings?: unknown, _config?: unknown, _isSync?: boolean) => {}),
   getEffectiveSettings: vi.fn(async () => ({ rpcLookupEnabled: true, priceApiEnabled: false })),
@@ -88,11 +92,12 @@ vi.mock('@/lib/exchangeSync', async (importOriginal) => {
 });
 
 vi.mock('@/lib/storage/db', () => ({
+  db: { accountIdentities: { get: mocks.getAccountIdentity } },
   getCsvImports: mocks.getCsvImports,
   getLookupAddresses: mocks.getLookupAddresses,
   deleteCsvImportAndTransactions: mocks.deleteCsvImportAndTransactions,
   deleteLookupAddressAndTransactions: mocks.deleteLookupAddressAndTransactions,
-  updateWalletLabel: mocks.updateWalletLabel
+  updateWalletAccountLabel: mocks.updateWalletAccountLabel
 }));
 
 vi.mock('@/lib/importJob', async (importOriginal) => {
@@ -222,6 +227,7 @@ function wallet(over: Record<string, unknown> = {}) {
     label: 'Phantom main',
     lastSyncedAt: Date.now() - 3_600_000,
     txCount: 34,
+    accountIdentityId: 'wallet:solana:solana:addr1',
     ...over
   };
 }
@@ -632,7 +638,7 @@ describe('ConnectionsHome — wallet actions', () => {
     expect(isSync2).toBe(true);
   });
 
-  it('kebab Rename edits the label inline and saves it to every row of the group', async () => {
+  it('kebab Rename CAS-renames the canonical account shared by every row of the group', async () => {
     mocks.wallets.current = [
       wallet({ id: 'ethereum:0xAAA', chain: 'ethereum', address: '0xAAA' }),
       wallet({ id: 'polygon:0xaaa', chain: 'polygon', address: '0xaaa' })
@@ -640,26 +646,25 @@ describe('ConnectionsHome — wallet actions', () => {
     render(<ConnectionsHome />);
     kebab('Phantom main', /rename/i);
 
-    const input = screen.getByLabelText('Wallet nickname');
+    const input = await screen.findByLabelText('Wallet nickname');
     expect(input).toHaveValue('Phantom main');
     fireEvent.change(input, { target: { value: '  Vault  ' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save nickname' }));
 
-    await waitFor(() => expect(mocks.updateWalletLabel).toHaveBeenCalledTimes(2));
-    expect(mocks.updateWalletLabel).toHaveBeenCalledWith('ethereum:0xAAA', 'Vault');
-    expect(mocks.updateWalletLabel).toHaveBeenCalledWith('polygon:0xaaa', 'Vault');
+    await waitFor(() => expect(mocks.updateWalletAccountLabel).toHaveBeenCalledTimes(1));
+    expect(mocks.updateWalletAccountLabel).toHaveBeenCalledWith('wallet:solana:solana:addr1', 'Vault', 3);
     expect(await screen.findByText('Wallet renamed')).toBeInTheDocument();
   });
 
-  it('rename cancel leaves the label untouched', () => {
+  it('rename cancel leaves the label untouched', async () => {
     mocks.wallets.current = [wallet()];
     render(<ConnectionsHome />);
     kebab('Phantom main', /rename/i);
 
-    fireEvent.change(screen.getByLabelText('Wallet nickname'), { target: { value: 'Nope' } });
+    fireEvent.change(await screen.findByLabelText('Wallet nickname'), { target: { value: 'Nope' } });
     fireEvent.click(screen.getByRole('button', { name: 'Cancel rename' }));
 
-    expect(mocks.updateWalletLabel).not.toHaveBeenCalled();
+    expect(mocks.updateWalletAccountLabel).not.toHaveBeenCalled();
     expect(screen.queryByLabelText('Wallet nickname')).not.toBeInTheDocument();
   });
 
@@ -934,15 +939,16 @@ describe('ConnectionsHome — per-connection detail (round 4)', () => {
     expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
   });
 
-  it('the wallet rename flow still works without opening the detail view', () => {
+  it('the wallet rename flow still works without opening the detail view', async () => {
     mocks.wallets.current = [wallet()];
     render(<ConnectionsHome />);
     kebab('Phantom main', 'Rename');
     expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
-    const input = screen.getByLabelText('Wallet nickname');
+    const input = await screen.findByLabelText('Wallet nickname');
     fireEvent.change(input, { target: { value: 'Vault' } });
     fireEvent.click(screen.getByLabelText('Save nickname'));
-    expect(mocks.updateWalletLabel).toHaveBeenCalledWith('solana:addr1', 'Vault');
+    await waitFor(() => expect(mocks.updateWalletAccountLabel)
+      .toHaveBeenCalledWith('wallet:solana:solana:addr1', 'Vault', 3));
     expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
   });
 
