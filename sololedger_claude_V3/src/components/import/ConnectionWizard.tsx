@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useReducer, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import {
   Upload,
   Check,
@@ -45,6 +45,7 @@ import {
   WIZARD_STEP_ORDER,
   type WizardStep
 } from './wizardReducer';
+import { CsvAccountSelection, useCsvAccountSelection } from '@/components/connections/CsvAccountSelection';
 
 interface ConnectionWizardProps {
   /** Called after transactions are confirmed and persisted. */
@@ -79,6 +80,7 @@ interface PreviewData {
   tdsTotalInr: number;
   /** True when AI mapping was applied but not every required field resolved. */
   aiIncomplete: boolean;
+  accountIdentityId: string;
 }
 
 const STEP_LABELS: Record<WizardStep, string> = {
@@ -186,6 +188,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
     hash: string;
     fileName: string;
     fileSize: number;
+    accountIdentityId: string;
   } | null>(null);
   /** True while an explicit AI-mapping request is in flight. */
   const [aiMapping, setAiMapping] = useState(false);
@@ -205,6 +208,55 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
    *  state: it accumulates inside async file chaining where render closures
    *  go stale, and it is never rendered directly. */
   const batchSavedRef = useRef(0);
+  /** Synchronous lifecycle guard for the whole guided batch. React state alone
+   * cannot stop a second drop in the same tick, and the batch remains active
+   * while account selection or a preview is waiting for user input. */
+  const activeBatchRef = useRef(false);
+  /** Monotonic cancellation token. Every asynchronous continuation captures
+   * the generation that started it and must prove it still owns the wizard
+   * before touching state or handing off to another queued file. */
+  const batchGenerationRef = useRef(0);
+  const [batchActive, setBatchActive] = useState(false);
+  const csvAccount = useCsvAccountSelection();
+
+  const ownsBatch = useCallback((generation: number) => (
+    activeBatchRef.current && batchGenerationRef.current === generation
+  ), []);
+
+  const finishBatch = useCallback((generation: number) => {
+    if (!ownsBatch(generation)) return false;
+    activeBatchRef.current = false;
+    setReading(false);
+    setSaving(false);
+    setSavePhase(null);
+    setAiMapping(false);
+    setBatchActive(false);
+    return true;
+  }, [ownsBatch]);
+
+  const cancelBatch = useCallback(() => {
+    // Invalidate first. Rejecting an account request synchronously resumes its
+    // awaiting read, which must already see a stale generation.
+    batchGenerationRef.current += 1;
+    activeBatchRef.current = false;
+    csvAccount.cancelRequest();
+    setPreview(null);
+    setFileQueue([]);
+    setQueueTotal(0);
+    batchSavedRef.current = 0;
+    setQueueNote(null);
+    setReading(false);
+    setSaving(false);
+    setSavePhase(null);
+    setAiMapping(false);
+    setBatchActive(false);
+  }, [csvAccount.cancelRequest]);
+
+  useEffect(() => () => {
+    batchGenerationRef.current += 1;
+    activeBatchRef.current = false;
+    csvAccount.cancelRequest();
+  }, [csvAccount.cancelRequest]);
 
   const source = useMemo(() => getImportSource(state.source), [state.source]);
   const india = IMPORT_SOURCES.filter((s) => s.region === 'india');
@@ -223,8 +275,11 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
       file: { name: string; size: number },
       warnings: string[],
       aiIncomplete: boolean,
+      accountIdentityId: string,
+      generation: number,
       metadata?: Pick<PreviewData, 'balanceSnapshot' | 'optionsBalanceUnavailable' | 'optionsBalanceIncluded' | 'optionsCoverageThrough' | 'evidence'>
     ) => {
+      if (!ownsBatch(generation)) return;
       const distinctAssets = new Set(transactions.map((t) => t.asset)).size;
       const missingPriceCount = transactions.filter(
         (t) => t.fiatValue == null && !t.isInternalTransfer && requiresMarketValue(t)
@@ -241,14 +296,15 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         missingPriceCount,
         distinctAssets,
         tdsTotalInr,
-        aiIncomplete
+        aiIncomplete,
+        accountIdentityId
       });
       setFallbackMessages([]);
       setPendingUnrecognized(null);
       dispatch({ type: 'fileReady' });
       dispatch({ type: 'preview' });
     },
-    []
+    [ownsBatch]
   );
 
   /**
@@ -258,7 +314,8 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
    * go stale and re-dequeue the file already being processed.
    */
   const readFile = useCallback(
-    async (file: File, queue: File[]) => {
+    async (file: File, queue: File[], generation: number) => {
+      if (!ownsBatch(generation)) return;
       setError(null);
       setFallbackMessages([]);
       setPendingUnrecognized(null);
@@ -269,9 +326,12 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
       let chained = false;
       try {
         const hashInput = isSpreadsheetFile(file) ? await file.arrayBuffer() : await file.text();
+        if (!ownsBatch(generation)) return;
         const hash = await hashFileContent(hashInput);
+        if (!ownsBatch(generation)) return;
 
         const existing = await db.csvImports.get(hash);
+        if (!ownsBatch(generation)) return;
         if (existing && existing.txCount > 0) {
           if (queue.length > 0) {
             // Batch mode: skip an already-imported file instead of stranding
@@ -280,7 +340,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
             setFileQueue(rest);
             setQueueNote((prev) => `${prev ? `${prev} ` : ''}Skipped already-imported file: ${file.name}.`);
             chained = true;
-            void readFile(next, rest);
+            void readFile(next, rest, generation);
             return;
           }
           if (batchSavedRef.current > 0) {
@@ -291,23 +351,30 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
             setQueueTotal(0);
             setQueueNote((prev) => `${prev ? `${prev} ` : ''}Skipped already-imported file: ${file.name}.`);
             setSavedCount(total);
+            finishBatch(generation);
             onComplete?.(total);
             return;
           }
           setError(`"${file.name}" was already imported. Remove it from the Import tab to re-import.`);
+          finishBatch(generation);
           return;
         }
 
         const result: FileParseOutcome = await parseImportFile(file);
+        if (!ownsBatch(generation)) return;
         // Whether AI mapping is actually available (own key, or hosted with the
         // server's aiAdvisorEnabled). Drives the "Try AI mapping" affordance.
         const aiOn = await isAiMappingAvailable();
+        if (!ownsBatch(generation)) return;
         setAiAvailable(aiOn);
+        const accountIdentityId = await csvAccount.requestAccount(result.detectedParser, file.name);
+        if (!ownsBatch(generation)) return;
 
         if (result.transactions.length === 0) {
           try {
             await commitCsvImportGeneration({
-              id: hash, fileName: file.name, parserId: result.detectedParser, transactions: [],
+              id: hash, fileName: file.name, parserId: result.detectedParser,
+              accountIdentityId, transactions: [],
               buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
                 buildCsvImportEvidenceGeneration({
                   sourceIdentityId: hash, parserId: result.detectedParser, parsedBeforeDedup: 0,
@@ -315,8 +382,13 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
                   generation, completedAt
                 })
             });
+            if (!ownsBatch(generation)) return;
           } catch {
+            if (!ownsBatch(generation)) return;
             setError(`"${file.name}" couldn't be recorded — no partial data was kept. Try again.`);
+            setFileQueue([]);
+            setQueueTotal(0);
+            finishBatch(generation);
             return;
           }
           // Do NOT auto-run AI mapping — that would relay headers + sample rows
@@ -332,8 +404,16 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
               rows: result.rows,
               hash,
               fileName: file.name,
-              fileSize: file.size
+              fileSize: file.size,
+              accountIdentityId
             });
+          } else if (queue.length > 0) {
+            const [next, ...rest] = queue;
+            setFileQueue(rest);
+            chained = true;
+            void readFile(next, rest, generation);
+          } else {
+            finishBatch(generation);
           }
           return;
         }
@@ -345,6 +425,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           result.sheets,
           result.transactions
         );
+        if (!ownsBatch(generation)) return;
 
         showPreview(
           orientedTransactions,
@@ -353,6 +434,8 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           file,
           [...result.warnings],
           false,
+          accountIdentityId,
+          generation,
           {
             balanceSnapshot: result.balanceSnapshot,
             optionsBalanceUnavailable: result.optionsBalanceUnavailable,
@@ -362,6 +445,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           }
         );
       } catch {
+        if (!ownsBatch(generation)) return;
         // A file that throws mid-read (corrupt workbook, parser failure, hash
         // error) must NOT strand the rest of a batch with an unhandled
         // rejection (`void readFile(...)` swallows nothing). Note the failed
@@ -373,7 +457,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           setFileQueue(rest);
           appendQueueNote(skippedNote);
           chained = true;
-          void readFile(next, rest);
+          void readFile(next, rest, generation);
         } else if (batchSavedRef.current > 0) {
           // The LAST file of a batch failed: still end with the aggregated
           // batch outcome (banner + failure note) so the files that saved
@@ -383,6 +467,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           setQueueTotal(0);
           appendQueueNote(skippedNote);
           setSavedCount(total);
+          finishBatch(generation);
           onComplete?.(total);
         } else {
           // Single-file failure: surface a blocking error instead of letting
@@ -390,12 +475,13 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           setError(
             `"${file.name}" couldn't be read — the file may be corrupt or in an unexpected format.`
           );
+          finishBatch(generation);
         }
       } finally {
-        if (!chained) setReading(false);
+        if (!chained && ownsBatch(generation)) setReading(false);
       }
     },
-    [showPreview, onComplete, appendQueueNote]
+    [showPreview, onComplete, appendQueueNote, csvAccount.requestAccount, finishBatch, ownsBatch]
   );
 
   /**
@@ -406,17 +492,22 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
    */
   const runAiMapping = useCallback(async () => {
     if (!pendingUnrecognized) return;
+    const generation = batchGenerationRef.current;
+    if (!ownsBatch(generation)) return;
+    const pending = pendingUnrecognized;
     setAiMapping(true);
     try {
       const settings = await getSettings();
+      if (!ownsBatch(generation)) return;
       const suggestion = await suggestCsvMappingWithAi(
         // Hosted mode: openrouter.ts injects the real key server-side and
         // ignores this arg; pass '' as a placeholder.
         settings.aiApiKey ?? '',
-        pendingUnrecognized.headers,
-        pendingUnrecognized.rows,
+        pending.headers,
+        pending.rows,
         settings.aiModel
       );
+      if (!ownsBatch(generation)) return;
       const warnings: string[] = [];
       let aiIncomplete = false;
       if (!suggestion.valid) {
@@ -426,7 +517,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         );
       }
       const mapped = parseWithMapping(
-        pendingUnrecognized.rows,
+        pending.rows,
         {
           timestamp: suggestion.mapping.timestamp ?? '',
           type: suggestion.mapping.type ?? '',
@@ -460,22 +551,26 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
       const aiOriented = mapped.addressColumnAmbiguous
         ? await confirmAddressOrientation(mapped.transactions)
         : mapped.transactions;
+      if (!ownsBatch(generation)) return;
       showPreview(
         aiOriented,
         'ai_mapping',
-        pendingUnrecognized.hash,
-        { name: pendingUnrecognized.fileName, size: pendingUnrecognized.fileSize },
+        pending.hash,
+        { name: pending.fileName, size: pending.fileSize },
         warnings,
-        aiIncomplete
+        aiIncomplete,
+        pending.accountIdentityId,
+        generation
       );
     } catch {
+      if (!ownsBatch(generation)) return;
       setFallbackMessages([
         'AI mapping failed. Map the columns manually on the Import tab, or try a different export.'
       ]);
     } finally {
-      setAiMapping(false);
+      if (ownsBatch(generation)) setAiMapping(false);
     }
-  }, [pendingUnrecognized, showPreview]);
+  }, [pendingUnrecognized, showPreview, ownsBatch]);
 
   /**
    * Accept one or many files. Multi-file batches are processed SEQUENTIALLY —
@@ -486,13 +581,17 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
   const handleFiles = useCallback(
     (fileList: FileList | null) => {
       const files = Array.from(fileList ?? []);
-      if (files.length === 0) return;
+      if (files.length === 0 || activeBatchRef.current) return;
+      const generation = batchGenerationRef.current + 1;
+      batchGenerationRef.current = generation;
+      activeBatchRef.current = true;
+      setBatchActive(true);
       const [first, ...rest] = files;
       setFileQueue(rest);
       setQueueTotal(files.length);
       setQueueNote(null);
       batchSavedRef.current = 0;
-      void readFile(first, rest);
+      void readFile(first, rest, generation);
     },
     [readFile]
   );
@@ -500,6 +599,9 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
   // Persist ONLY on explicit confirm — mirrors ImportTab's persist pipeline.
   const confirmSave = useCallback(async () => {
     if (!preview) return;
+    const generation = batchGenerationRef.current;
+    if (!ownsBatch(generation)) return;
+    const savingPreview = preview;
     dispatch({ type: 'confirm' });
     setSaving(true);
     setSavePhase('saving');
@@ -508,11 +610,13 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
       // Raw local settings carry BYOK API keys; effective settings decide
       // whether Live price lookup is on (server-driven ON in hosted, OFF locally).
       const settings = await getSettings();
+      if (!ownsBatch(generation)) return;
       const priceApiEnabled = (await getEffectiveSettings()).priceApiEnabled;
-      const stamped = preview.transactions.map((t) => ({
+      if (!ownsBatch(generation)) return;
+      const stamped = savingPreview.transactions.map((t) => ({
         ...t,
-        importBatchId: preview.hash,
-        source: t.source || preview.parserId || 'import',
+        importBatchId: savingPreview.hash,
+        source: t.source || savingPreview.parserId || 'import',
         fiatValue: normalizeFiatMagnitude(t.fiatValue),
         feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
       }));
@@ -528,33 +632,37 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
           settings,
           priceApiEnabled
         );
+        if (!ownsBatch(generation)) return;
         savedNow = await commitCsvImportGeneration({
-          id: preview.hash,
-          fileName: preview.fileName,
-          parserId: preview.parserId,
+          id: savingPreview.hash,
+          fileName: savingPreview.fileName,
+          parserId: savingPreview.parserId,
+          accountIdentityId: savingPreview.accountIdentityId,
           transactions: converted,
           metadata: {
-            balanceSnapshot: preview.balanceSnapshot,
-            optionsBalanceUnavailable: preview.optionsBalanceUnavailable,
-            optionsBalanceIncluded: preview.optionsBalanceIncluded,
-            optionsCoverageThrough: preview.optionsCoverageThrough
+            balanceSnapshot: savingPreview.balanceSnapshot,
+            optionsBalanceUnavailable: savingPreview.optionsBalanceUnavailable,
+            optionsBalanceIncluded: savingPreview.optionsBalanceIncluded,
+            optionsCoverageThrough: savingPreview.optionsCoverageThrough
           },
           buildGeneration: ({ generation, savedAfterDedup, savedTransactions, completedAt }) =>
             buildCsvImportEvidenceGeneration({
-              sourceIdentityId: preview.hash,
-              parserId: preview.parserId,
+              sourceIdentityId: savingPreview.hash,
+              parserId: savingPreview.parserId,
               parsedBeforeDedup: converted.length,
               savedAfterDedup,
               savedTransactions,
-              evidence: preview.evidence,
-              warnings: preview.warnings,
-              optionsBalanceIncluded: preview.optionsBalanceIncluded,
+              evidence: savingPreview.evidence,
+              warnings: savingPreview.warnings,
+              optionsBalanceIncluded: savingPreview.optionsBalanceIncluded,
               generation,
               completedAt
             })
         });
+        if (!ownsBatch(generation)) return;
       } catch {
-        setError(`"${preview.fileName}" couldn't be saved — Confirm again to retry.`);
+        if (!ownsBatch(generation)) return;
+        setError(`"${savingPreview.fileName}" couldn't be saved — Confirm again to retry.`);
         return;
       }
 
@@ -562,7 +670,9 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         setSavePhase('pricing');
         try {
           await fetchMissingPricesForAllTransactions(settings);
+          if (!ownsBatch(generation)) return;
         } catch {
+          if (!ownsBatch(generation)) return;
           // Pricing is network/hosted dependent — a failure must NOT strand a
           // multi-file batch (the file itself is already safely saved, and a
           // throw here previously killed the chain AFTER file 1). Degrade to
@@ -583,22 +693,28 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         batchSavedRef.current += savedNow;
         setPreview(null);
         dispatch({ type: 'clearFile' });
-        void readFile(next, rest);
+        void readFile(next, rest, generation);
       } else {
         const total = batchSavedRef.current + savedNow;
         batchSavedRef.current = 0;
         setSavedCount(total);
         setQueueTotal(0);
+        finishBatch(generation);
         onComplete?.(total);
       }
     } finally {
-      setSaving(false);
-      setSavePhase(null);
+      if (ownsBatch(generation)) {
+        setSaving(false);
+        setSavePhase(null);
+      }
     }
-  }, [preview, onComplete, fileQueue, readFile, appendQueueNote]);
+  }, [preview, onComplete, fileQueue, readFile, appendQueueNote, finishBatch, ownsBatch]);
+
+  const fileInputBusy = batchActive || reading || csvAccount.busy || preview !== null || saving || aiMapping || fileQueue.length > 0;
 
   return (
     <div className="space-y-6">
+      <CsvAccountSelection flow={csvAccount} />
       <div>
         <h2 className="page-title">Let's bring your trades in — one step at a time</h2>
         <p className="mt-1 max-w-2xl text-sm text-mid">
@@ -747,12 +863,14 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
+                  if (fileInputBusy) return;
                   setDragOver(true);
                 }}
                 onDragLeave={() => setDragOver(false)}
                 onDrop={(e) => {
                   e.preventDefault();
                   setDragOver(false);
+                  if (fileInputBusy || activeBatchRef.current) return;
                   handleFiles(e.dataTransfer.files);
                 }}
                 className={cn(
@@ -781,10 +899,11 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
                       <input
                         type="file"
                         multiple
+                        disabled={fileInputBusy}
                         accept=".csv,.txt,.xlsx,.xls,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
                         className="hidden"
                         onChange={(e) => {
-                          handleFiles(e.target.files);
+                          if (!fileInputBusy && !activeBatchRef.current) handleFiles(e.target.files);
                           e.target.value = '';
                         }}
                       />
@@ -841,7 +960,10 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
                 </div>
               </div>
 
-              <Button variant="ghost" onClick={() => dispatch({ type: 'back' })}>
+              <Button variant="ghost" onClick={() => {
+                cancelBatch();
+                dispatch({ type: 'back' });
+              }}>
                 <ArrowLeft className="h-4 w-4" /> Back
               </Button>
             </div>
@@ -869,11 +991,7 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
               onConfirm={() => void confirmSave()}
               onBack={() => {
                 // Backing out of a preview cancels any queued batch files.
-                setPreview(null);
-                setFileQueue([]);
-                setQueueTotal(0);
-                batchSavedRef.current = 0;
-                setQueueNote(null);
+                cancelBatch();
                 dispatch({ type: 'clearFile' });
               }}
             />
@@ -889,7 +1007,10 @@ export function ConnectionWizard({ onComplete, onExit, onSkip }: ConnectionWizar
         <div className="text-center">
           <button
             type="button"
-            onClick={onSkip}
+            onClick={() => {
+              cancelBatch();
+              onSkip();
+            }}
             className="text-center text-xs font-medium text-low transition-colors hover:text-mid focus:outline-none focus-visible:underline"
           >
             Skip setup — go straight to Import

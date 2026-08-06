@@ -25,6 +25,9 @@ import {
   type ExchangeId
 } from '@/lib/exchangeSync';
 import { getAutoSyncExchange } from '@/components/import/autoSyncExchanges';
+import { claimAccountOwnershipPrompt, updateAccountOwnership } from '@/lib/storage/db';
+import { exchangeAccountCanonicalKey, type AccountIdentityRow } from '@/lib/accounts/accountIdentity';
+import { SourceOwnershipDialog, type SourceOwnershipDecision } from './SourceOwnershipDialog';
 
 interface ExchangeConnectStepProps {
   exchangeId: ExchangeId;
@@ -75,6 +78,8 @@ export function ExchangeConnectStep({
   /** Fingerprint of the field values that last PASSED "Test connection". */
   const [testedFingerprint, setTestedFingerprint] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [ownershipAccount, setOwnershipAccount] = useState<AccountIdentityRow | null>(null);
+  const [savedConnection, setSavedConnection] = useState<ExchangeConnectionView | null>(null);
 
   useEffect(() => {
     if (!hosted) return;
@@ -139,11 +144,45 @@ export function ExchangeConnectStep({
             passphrase: input.passphrase
           })
         : await addConnection(input);
-      onConnected(view);
+      if (reauthorizing) {
+        onConnected(view);
+        return;
+      }
+      const claim = await claimAccountOwnershipPrompt(exchangeAccountCanonicalKey(view.id));
+      if (!claim.claimed) {
+        onConnected(view);
+        return;
+      }
+      setSavedConnection(view);
+      setOwnershipAccount(claim.account);
+      setSaving(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not save the connection — try again.');
       setSaving(false);
     }
+  };
+
+  const finishOwnershipDecision = async (decision: SourceOwnershipDecision) => {
+    if (!ownershipAccount || !savedConnection) return;
+    if (decision !== 'unknown') {
+      await updateAccountOwnership(
+        ownershipAccount.id,
+        { status: decision, origin: 'user' },
+        ownershipAccount.lifecycleRevision
+      );
+    }
+    const view = savedConnection;
+    setOwnershipAccount(null);
+    setSavedConnection(null);
+    onConnected(view);
+  };
+
+  const cancelOwnershipPrompt = () => {
+    if (!savedConnection) return;
+    const view = savedConnection;
+    setOwnershipAccount(null);
+    setSavedConnection(null);
+    onConnected(view);
   };
 
   // ── local / BYOK: hosted-only explainer (pinned copy, unchanged) ──
@@ -199,6 +238,14 @@ export function ExchangeConnectStep({
   // ── hosted + enabled: the connect form ──
   return (
     <div className="flex flex-col gap-4" data-testid="exchange-connect">
+      <SourceOwnershipDialog
+        open={ownershipAccount !== null}
+        mode="prompt"
+        accountLabel={ownershipAccount?.label ?? exchange.label}
+        sourceDescription={`${exchange.label} · API connection`}
+        onDecision={finishOwnershipDecision}
+        onCancel={cancelOwnershipPrompt}
+      />
       {/* Static instructions lead the form; they are guidance, not a completion gate. */}
       <div data-testid="key-instructions">
         <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.09em] text-low">

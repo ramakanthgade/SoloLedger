@@ -38,7 +38,8 @@ const mocks = vi.hoisted(() => ({
   confirmSheetOrientations: vi.fn(async (_sheets: unknown, txs: Transaction[]) => txs),
   persistCsvImportEvidence: vi.fn(async (..._args: unknown[]) => undefined),
   buildCsvImportEvidenceGeneration: vi.fn((input: unknown) => input),
-  commitCsvImportGeneration: vi.fn()
+  commitCsvImportGeneration: vi.fn(),
+  accountIdentitiesToArray: vi.fn()
 }));
 
 vi.mock('@/lib/parsers', () => ({
@@ -64,7 +65,10 @@ vi.mock('@/lib/ai/csvMapping', () => ({ suggestCsvMappingWithAi: vi.fn() }));
 vi.mock('@/lib/storage/db', () => ({
   db: {
     csvImports: { get: mocks.csvImportsGet },
-    transactions: { bulkPut: mocks.bulkPut }
+    transactions: { bulkPut: mocks.bulkPut },
+    accountIdentities: {
+      where: () => ({ equals: () => ({ toArray: mocks.accountIdentitiesToArray }) })
+    }
   },
   commitCsvImportGeneration: mocks.commitCsvImportGeneration,
   getCsvImports: mocks.getCsvImports,
@@ -73,7 +77,10 @@ vi.mock('@/lib/storage/db', () => ({
   upsertCsvImport: mocks.upsertCsvImport,
   deleteCsvImportAndTransactions: vi.fn(async () => undefined),
   countCsvImportTransactions: mocks.countCsvImportTransactions,
-  deduplicateTransactions: mocks.deduplicateTransactions
+  deduplicateTransactions: mocks.deduplicateTransactions,
+  claimAccountOwnershipPrompt: vi.fn(async () => ({ claimed: false })),
+  createCsvAccountIdentity: vi.fn(),
+  updateAccountOwnership: vi.fn()
 }));
 
 vi.mock('@/lib/pricing/fiatConvert', () => ({
@@ -99,6 +106,16 @@ vi.mock('@/components/import/ColumnMappingForm', () => ({
 }));
 
 import { FileImportFlow } from './FileImportFlow';
+
+function renderFlow() {
+  const view = render(<FileImportFlow />);
+  const observer = new MutationObserver(() => {
+    const account = screen.queryAllByRole('button', { name: /Test account/ })[0];
+    if (account) fireEvent.click(account);
+  });
+  observer.observe(view.container, { childList: true, subtree: true });
+  return view;
+}
 
 function makeTx(id: string): Transaction {
   return {
@@ -158,6 +175,14 @@ let savedCounts: Record<string, number> = {};
 beforeEach(() => {
   vi.clearAllMocks();
   savedCounts = {};
+  mocks.accountIdentitiesToArray.mockResolvedValue([
+    ['test', 'test_parser'], ['options', 'binance_options'], ['unknown', undefined],
+    ['manual', 'manual_mapping'], ['ai', 'ai_mapping']
+  ].map(([suffix, parserId]) => ({
+    id: `csv-account:${suffix}`, canonicalKey: `csv-account:${suffix}`, kind: 'csv',
+    parserId, label: 'Test account', ownershipStatus: 'owned', ownershipOrigin: 'user',
+    ownershipConfirmedAt: 1, createdAt: 1, updatedAt: 1, lifecycleRevision: 1
+  })));
   mocks.hashFileContent.mockImplementation(async (input: unknown) => `hash:${String(input)}`);
   mocks.countCsvImportTransactions.mockImplementation(
     async (hash: string) => savedCounts[hash] ?? 1
@@ -190,10 +215,50 @@ beforeEach(() => {
 });
 
 describe('FileImportFlow — multi-file batch handling', () => {
+  it('rejects a second drop while account selection is pending without replacing the first resolver', async () => {
+    mocks.parseImportFile.mockImplementation(async (file: File) => recognized(1, file.name));
+    render(<FileImportFlow />);
+    const dropzone = getDropzone();
+    fireEvent.drop(dropzone, { dataTransfer: { files: [makeFile('first.csv', 'first')] } });
+
+    expect(await screen.findByText('Which account is this file for?')).toBeInTheDocument();
+    fireEvent.drop(dropzone, { dataTransfer: { files: [makeFile('second.csv', 'second')] } });
+    expect(mocks.parseImportFile).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getAllByRole('button', { name: /Test account/ })[0]);
+    await waitFor(() => expect(mocks.commitCsvImportGeneration).toHaveBeenCalledTimes(1));
+    expect(mocks.commitCsvImportGeneration).toHaveBeenCalledWith(expect.objectContaining({
+      fileName: 'first.csv', accountIdentityId: 'csv-account:test'
+    }));
+    expect(mocks.commitCsvImportGeneration).not.toHaveBeenCalledWith(expect.objectContaining({ fileName: 'second.csv' }));
+  });
+
+  it('requires an explicit recurring account choice and carries it separately from the file hash', async () => {
+    mocks.accountIdentitiesToArray.mockResolvedValue([
+      { id: 'csv-account:main', canonicalKey: 'csv-account:main', kind: 'csv', parserId: 'test_parser', label: 'Main account', ownershipStatus: 'owned', ownershipOrigin: 'user', ownershipConfirmedAt: 1, createdAt: 1, updatedAt: 1, lifecycleRevision: 1 },
+      { id: 'csv-account:family', canonicalKey: 'csv-account:family', kind: 'csv', parserId: 'test_parser', label: 'Family account', ownershipStatus: 'not_owned', ownershipOrigin: 'user', ownershipConfirmedAt: 1, createdAt: 1, updatedAt: 1, lifecycleRevision: 1 }
+    ]);
+    mocks.parseImportFile.mockResolvedValue(recognized(1, 'recurring.csv'));
+    const { container } = render(<FileImportFlow />);
+    fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, {
+      target: { files: [makeFile('recurring.csv', 'same parser, new generation')] }
+    });
+
+    expect(await screen.findByText('Which account is this file for?')).toBeInTheDocument();
+    expect(mocks.commitCsvImportGeneration).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: /Family account/ }));
+    await waitFor(() => expect(mocks.commitCsvImportGeneration).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'hash:same parser, new generation',
+        accountIdentityId: 'csv-account:family'
+      })
+    ));
+  });
+
   it('shows reading feedback before a deferred large-file parser begins producing results', async () => {
     let resolveParse!: (value: ReturnType<typeof recognized>) => void;
     mocks.parseImportFile.mockImplementation(() => new Promise((resolve) => { resolveParse = resolve; }));
-    const { container } = render(<FileImportFlow />);
+    const { container } = renderFlow();
 
     fireEvent.change(container.querySelector('input[type="file"]') as HTMLInputElement, {
       target: { files: [makeFile('large-binance.csv', 'many rows')] }
@@ -210,7 +275,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
       recognized(file.name === 'one.csv' ? 1 : 2, file.name)
     );
     savedCounts = { 'hash:aaa': 1, 'hash:bbb': 2 };
-    const { container } = render(<FileImportFlow />);
+    const { container } = renderFlow();
 
     const input = container.querySelector('input[type="file"]') as HTMLInputElement;
     expect(input.multiple).toBe(true);
@@ -231,7 +296,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
       return recognized(2, file.name);
     });
     savedCounts = { 'hash:aaa': 2 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('corrupt.csv', 'xxx'), makeFile('good.csv', 'aaa')] }
@@ -246,7 +311,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
 
   it('F6: a single corrupt file reports the failure instead of an unhandled rejection', async () => {
     mocks.parseImportFile.mockRejectedValue(new Error('not a workbook'));
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('corrupt.csv', 'xxx')] } });
 
@@ -258,7 +323,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
     mocks.parseImportFile.mockImplementation(async (file: File) =>
       file.name === 'mystery.csv' ? unrecognized() : recognized(1, file.name)
     );
-    render(<FileImportFlow />);
+    renderFlow();
 
     // Manual file LAST → the mapping form survives; the note points below.
     fireEvent.drop(getDropzone(), {
@@ -272,7 +337,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
     mocks.parseImportFile.mockImplementation(async (file: File) =>
       file.name === 'mystery.csv' ? unrecognized() : recognized(1, file.name)
     );
-    render(<FileImportFlow />);
+    renderFlow();
 
     // Manual file FIRST → the later file's handleFile reset the outcome, so
     // "shown below" would point at nothing.
@@ -288,7 +353,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
     // in the ledger. The banner must tell the truth: nothing new was saved.
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
     savedCounts = { 'hash:aaa': 0 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('reexport.csv', 'aaa')] } });
 
@@ -299,7 +364,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
   it('dedup: a fully-deduped file in a batch is bucketed as no-new-rows, not imported', async () => {
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
     savedCounts = { 'hash:aaa': 2, 'hash:bbb': 0 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('new.csv', 'aaa'), makeFile('reexport.csv', 'bbb')] }
@@ -316,7 +381,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
       recognized(file.name === 'trades.xlsx' ? 3 : 2, file.name)
     );
     savedCounts = { 'hash:aaa': 2, 'hash:bbb': 3 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('deposits.csv', 'aaa'), makeFile('trades.xlsx', 'bbb')] }
@@ -337,7 +402,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
       .mockResolvedValueOnce({ updated: 73, failed: 0 });
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
     savedCounts = { 'hash:aaa': 2, 'hash:bbb': 2 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')] }
@@ -358,7 +423,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
     }));
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(1, file.name));
     savedCounts = { 'hash:aaa': 1, 'hash:bbb': 1 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), {
       dataTransfer: { files: [makeFile('a.csv', 'aaa'), makeFile('b.csv', 'bbb')] }
@@ -373,7 +438,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
     mocks.fetchMissingPrices.mockResolvedValue({ updated: 29, failed: 0 });
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(2, file.name));
     savedCounts = { 'hash:aaa': 2 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('a.csv', 'aaa')] } });
 
@@ -397,7 +462,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
     );
     mocks.parseImportFile.mockResolvedValue(recognized(1, 'options.csv'));
     savedCounts = { 'hash:aaa': 1 };
-    const view = render(<FileImportFlow />);
+    const view = renderFlow();
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('options.csv', 'aaa')] } });
     await screen.findByText(/Transactions saved.*you can close this panel/i);
@@ -414,7 +479,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
     mocks.fetchMissingPrices.mockRejectedValue(new Error('pricing unavailable'));
     mocks.parseImportFile.mockResolvedValue(recognized(1, 'options.csv'));
     savedCounts = { 'hash:aaa': 1 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('options.csv', 'aaa')] } });
 
@@ -432,7 +497,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
       optionsBalanceIncluded: true
     });
     savedCounts = { 'hash:aaa': 1 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('options.csv', 'aaa')] } });
     await waitFor(() => expect(mocks.upsertCsvImport).toHaveBeenCalled());
@@ -456,7 +521,7 @@ describe('FileImportFlow — multi-file batch handling', () => {
       ...recognized(2, 'history.csv'), balanceSnapshot: { BTC: 1 }, evidence
     });
     savedCounts = { 'hash:aaa': 1 };
-    render(<FileImportFlow />);
+    renderFlow();
 
     fireEvent.drop(getDropzone(), { dataTransfer: { files: [makeFile('history.csv', 'aaa')] } });
     await waitFor(() => expect(mocks.persistCsvImportEvidence).toHaveBeenCalledTimes(1));

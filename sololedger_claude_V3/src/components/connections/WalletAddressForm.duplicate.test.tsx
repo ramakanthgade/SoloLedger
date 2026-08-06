@@ -58,7 +58,16 @@ vi.mock('dexie-react-hooks', () => ({
 vi.mock('@/lib/storage/db', () => ({
   getLookupAddresses: vi.fn(async () => lookupRows),
   deleteLookupAddressAndTransactions: vi.fn(async () => {}),
-  updateWalletLabel: mocks.updateWalletLabel
+  updateWalletLabel: mocks.updateWalletLabel,
+  ensureAccountIdentity: vi.fn(async ({ canonicalKey, kind, label, walletAppId }) => ({
+    id: canonicalKey, canonicalKey, kind, label, walletAppId, ownershipStatus: 'unknown',
+    ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0
+  })),
+  claimAccountOwnershipPrompt: vi.fn(async (id) => ({
+    claimed: false,
+    account: { id, canonicalKey: id, kind: 'wallet', ownershipStatus: 'unknown', ownershipOrigin: 'migration', createdAt: 1, updatedAt: 1, lifecycleRevision: 0 }
+  })),
+  updateAccountOwnership: vi.fn()
 }));
 
 vi.mock('@/lib/saas/effectiveSettings', () => ({

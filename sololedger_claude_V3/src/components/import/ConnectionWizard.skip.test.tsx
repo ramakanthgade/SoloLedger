@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   parseImportFile: vi.fn(),
   hashFileContent: vi.fn(async (input: unknown) => `hash:${String(input)}`),
   csvImportsGet: vi.fn(async () => undefined),
+  accountIdentitiesToArray: vi.fn(),
+  claimAccountOwnershipPrompt: vi.fn(),
   isAiMappingAvailable: vi.fn(async () => false),
   confirmSheetOrientations: vi.fn(async (_sheets: unknown, txs: Transaction[]) => txs)
 }));
@@ -41,13 +43,19 @@ vi.mock('@/lib/ai/csvMapping', () => ({ suggestCsvMappingWithAi: vi.fn() }));
 vi.mock('@/lib/storage/db', () => ({
   db: {
     csvImports: { get: mocks.csvImportsGet },
-    transactions: { bulkPut: vi.fn(async () => undefined) }
+    transactions: { bulkPut: vi.fn(async () => undefined) },
+    accountIdentities: {
+      where: () => ({ equals: () => ({ toArray: mocks.accountIdentitiesToArray }) })
+    }
   },
   getSettings: vi.fn(async () => ({ reportingCurrency: 'USD' })),
   hashFileContent: mocks.hashFileContent,
   upsertCsvImport: vi.fn(async () => undefined),
   countCsvImportTransactions: vi.fn(async () => 1),
-  deduplicateTransactions: vi.fn(async () => 0)
+  deduplicateTransactions: vi.fn(async () => 0),
+  claimAccountOwnershipPrompt: mocks.claimAccountOwnershipPrompt,
+  createCsvAccountIdentity: vi.fn(),
+  updateAccountOwnership: vi.fn()
 }));
 
 vi.mock('@/lib/pricing/fiatConvert', () => ({
@@ -93,6 +101,13 @@ function makeFile(name: string, content: string): File {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  const account = {
+    id: 'csv-account:test', canonicalKey: 'csv-account:test', kind: 'csv', parserId: 'test_parser',
+    label: 'Test account', ownershipStatus: 'owned', ownershipOrigin: 'user',
+    ownershipConfirmedAt: 1, createdAt: 1, updatedAt: 1, lifecycleRevision: 1
+  };
+  mocks.accountIdentitiesToArray.mockResolvedValue([account]);
+  mocks.claimAccountOwnershipPrompt.mockResolvedValue({ claimed: false, account });
   mocks.parseImportFile.mockImplementation(async (file: File) => ({
     transactions: [makeTx(`${file.name}#0`)],
     detectedParser: 'test_parser',
@@ -110,6 +125,7 @@ async function driveToPreview() {
   fireEvent.click(await screen.findByRole('button', { name: /i've got my file/i }));
   const dropzone = (await screen.findByText(/Drag & drop your Binance file/)).closest('div')!;
   fireEvent.drop(dropzone, { dataTransfer: { files: [makeFile('a.csv', 'aaa')] } });
+  fireEvent.click(await screen.findByRole('button', { name: /Test account/ }));
   await screen.findByRole('button', { name: 'Confirm & save 1 transaction' });
 }
 
@@ -134,6 +150,7 @@ describe('ConnectionWizard — skip link (Item 1)', () => {
     // Step 4 — preview: still there, and clickable mid-preview.
     const dropzone = screen.getByText(/Drag & drop your Binance file/).closest('div')!;
     fireEvent.drop(dropzone, { dataTransfer: { files: [makeFile('a.csv', 'aaa')] } });
+    fireEvent.click(await screen.findByRole('button', { name: /Test account/ }));
     await screen.findByRole('button', { name: 'Confirm & save 1 transaction' });
     fireEvent.click(screen.getByRole('button', { name: SKIP_LINK }));
     expect(onSkip).toHaveBeenCalledTimes(1);

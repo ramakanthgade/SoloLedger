@@ -14,7 +14,7 @@ import { useAuth } from '@/lib/saas/authContext';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import { getMode } from '@/lib/saas/mode';
-import { db, getSettings, type PriceCacheRow } from '@/lib/storage/db';
+import { db, getSettings, updateAccountOwnership, type PriceCacheRow } from '@/lib/storage/db';
 import type { TaxSettings, Transaction } from '@/types/transaction';
 import { formatCurrency } from '@/lib/utils';
 import { BrandIcon } from './brandIcons';
@@ -28,6 +28,9 @@ import { ConnectionOverview } from './ConnectionOverview';
 import { ConnectionSyncHistory } from './ConnectionSyncHistory';
 import { ConnectionOpeningBalances } from './ConnectionOpeningBalances';
 import type { SourceNavigationIntent } from '@/lib/navigationIntent';
+import type { AccountIdentityRow } from '@/lib/accounts/accountIdentity';
+import { SourceOwnershipDialog, type SourceOwnershipDecision } from './SourceOwnershipDialog';
+import type { LookupAddressRow } from '@/lib/storage/db';
 
 const NO_TXS: Transaction[] = [];
 const NO_PRICE_ROWS: PriceCacheRow[] = [];
@@ -37,6 +40,20 @@ const TABS = [
   { id: 'sync-history', label: 'History' }
 ] as const;
 type WorkspaceTab = typeof TABS[number]['id'];
+
+export function resolveRepresentedWalletAccountId(
+  cardRows: LookupAddressRow[],
+  liveRows: LookupAddressRow[]
+): string | undefined {
+  if (cardRows.length === 0) return undefined;
+  const represented = cardRows.map((cardRow) => liveRows.find((row) => row.id === cardRow.id) ??
+    liveRows.find((row) => canonicalWalletIdentity(row.chain, row.address) ===
+      canonicalWalletIdentity(cardRow.chain, cardRow.address)));
+  if (represented.some((row) => row?.accountIdentityId == null)) return undefined;
+  if (new Set(represented.map((row) => row!.id)).size !== cardRows.length) return undefined;
+  const accountIds = new Set(represented.map((row) => row!.accountIdentityId!));
+  return accountIds.size === 1 ? represented[0]!.accountIdentityId : undefined;
+}
 
 function autoSyncStatusLine(user: { plan: string; subscriptionActive: boolean } | null): string {
   const paid = getMode() === 'hosted' && user?.subscriptionActive === true && user.plan !== 'local';
@@ -82,6 +99,60 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
     () => card.kind === 'exchange-api' && card.exchange ? db.exchangeConnections.get(card.exchange.id) : undefined,
     [card.kind, card.kind === 'exchange-api' ? card.exchange?.id : null]
   );
+  const walletAccountIdentityId = useMemo(() => card.kind === 'wallet' && liveWalletRows != null
+    ? resolveRepresentedWalletAccountId(card.walletRows ?? [], liveWalletRows)
+    : undefined, [card, liveWalletRows]);
+  const accountIdentityId = card.kind === 'exchange-api'
+    ? liveExchange?.accountIdentityId
+    : card.kind === 'file'
+      ? card.csvImport?.accountIdentityId
+      : card.kind === 'wallet'
+        ? walletAccountIdentityId
+        : undefined;
+  const account = useLiveQuery(
+    () => accountIdentityId ? db.accountIdentities.get(accountIdentityId) : undefined,
+    [accountIdentityId]
+  );
+  const accountMembers = useLiveQuery(async () => {
+    if (!accountIdentityId) return [] as string[];
+    if (card.kind === 'wallet') {
+      const rows = await db.lookupAddresses.where('accountIdentityId').equals(accountIdentityId).toArray();
+      return rows.map((row) => `${CHAINS.find((chain) => chain.id === row.chain)?.label ?? row.chain} · generation ${row.authorityGeneration ?? 0}`);
+    }
+    if (card.kind === 'file') {
+      const rows = await db.csvImports.where('accountIdentityId').equals(accountIdentityId).toArray();
+      return rows.sort((a, b) => a.importedAt - b.importedAt)
+        .map((row) => `${row.fileName} · generation ${row.authorityGeneration ?? 0}`);
+    }
+    return [`${card.title} · generation ${liveExchange?.authorityGeneration ?? 0}`];
+  }, [accountIdentityId, card.kind, card.title, liveExchange?.authorityGeneration]) ?? [];
+  const [editingOwnership, setEditingOwnership] = useState<AccountIdentityRow | null>(null);
+  const [ownershipConflict, setOwnershipConflict] = useState<string | null>(null);
+  const ownershipLabel = account?.ownershipStatus === 'owned'
+    ? 'Mine'
+    : account?.ownershipStatus === 'not_owned'
+      ? 'Not mine'
+      : 'Not decided';
+  const saveOwnershipEdit = async (decision: SourceOwnershipDecision) => {
+    if (!editingOwnership) return;
+    try {
+      await updateAccountOwnership(
+        editingOwnership.id,
+        { status: decision, origin: 'user' },
+        editingOwnership.lifecycleRevision
+      );
+      setEditingOwnership(null);
+      setOwnershipConflict(null);
+    } catch (reason) {
+      const latest = await db.accountIdentities.get(editingOwnership.id);
+      if (latest && latest.lifecycleRevision !== editingOwnership.lifecycleRevision) {
+        setEditingOwnership(null);
+        setOwnershipConflict('Ownership changed elsewhere. Review the latest status, then reopen Edit ownership to make a fresh choice.');
+        return;
+      }
+      throw reason;
+    }
+  };
   const transactions = transactionsQuery ?? NO_TXS;
   const authoritySnapshots = authoritySnapshotsQuery ?? NO_ROWS;
   const authorityAssets = authorityAssetsQuery ?? NO_ROWS;
@@ -381,6 +452,14 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
 
   return (
     <div className="space-y-5" data-testid="connection-detail">
+      <SourceOwnershipDialog
+        open={editingOwnership !== null}
+        mode="edit"
+        accountLabel={editingOwnership?.label ?? card.title}
+        sourceDescription={card.subtitle}
+        onDecision={saveOwnershipEdit}
+        onCancel={() => setEditingOwnership(null)}
+      />
       <Button variant="secondary" onClick={onBack} className="min-h-[44px]" data-testid="detail-back"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Connections</Button>
       <header className="flex flex-wrap items-start justify-between gap-4 rounded-2xl border border-hi/10 bg-elev-2 p-5">
         <div className="flex min-w-0 items-start gap-4"><BrandIcon id={card.iconId} fallback={card.iconFallback} size={48} /><div className="min-w-0"><h1 className="truncate text-xl font-bold tracking-tight text-hi">{card.title}</h1><p className="mt-0.5 truncate font-mono text-xs text-low">{card.subtitle}</p><div className="mt-2.5 space-y-1 text-xs text-low">
@@ -394,6 +473,23 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
           {canSync && <Button onClick={() => void handleSync()} disabled={syncDisabled} className="min-h-[44px]" data-testid="detail-sync-now">{syncing ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="h-4 w-4" aria-hidden="true" />} Sync now</Button>}
         </div>
       </header>
+      {ownershipConflict && <p role="alert" className="rounded-lg border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">{ownershipConflict}</p>}
+      {account && (
+        <section className="rounded-2xl border border-hi/10 bg-elev-2 p-4" data-testid="account-ownership">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-wide text-low">Account ownership</p>
+              <p className="mt-1 text-sm font-bold text-hi">{ownershipLabel}</p>
+            </div>
+            <Button variant="secondary" className="min-h-11" onClick={() => setEditingOwnership(account)}>
+              Edit ownership
+            </Button>
+          </div>
+          <ul className="mt-3 space-y-1 text-xs text-low" aria-label="Account members">
+            {accountMembers.map((member) => <li key={member}>{member}</li>)}
+          </ul>
+        </section>
+      )}
       <div className="flex flex-wrap gap-1.5" data-testid="detail-count-chips">{chips.map((chip) => <Badge key={chip} tone="neutral">{chip}</Badge>)}</div>
       <div className="max-w-full overflow-x-auto border-b border-hi/10" role="tablist" aria-label="Connection workspace"><div className="flex min-w-max gap-1">
         {TABS.map((tab, index) => <button key={tab.id} ref={(element) => { tabRefs.current[index] = element; }} id={`connection-tab-${tab.id}`} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`connection-panel-${tab.id}`} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => selectWorkspaceTab(tab.id)} onKeyDown={(event) => onTabKeyDown(event, index)} className={`min-h-[44px] rounded-t-lg border-b-2 px-4 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${activeTab === tab.id ? 'border-primary text-primary' : 'border-transparent text-low hover:text-hi'}`}>{tab.label}</button>)}
