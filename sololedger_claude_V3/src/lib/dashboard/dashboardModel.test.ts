@@ -100,6 +100,19 @@ describe('buildPriceIndex', () => {
     expect(currentPriceFor({ asset: 'ONE', chain: 'ethereum', contractAddress: '0xsame', safetyState: 'unverified' }, index)?.price).toBe(10);
     expect(currentPriceFor({ asset: 'TWO', chain: 'polygon', contractAddress: '0xsame', safetyState: 'unverified' }, index)?.price).toBe(20);
   });
+
+  it('uses exact-contract marks for canonical trusted holdings without enabling symbol fallback', () => {
+    const index = buildPriceIndex([
+      priceRow('spot:ctr:ethereum:0xtrusted:USD', 1),
+      priceRow('spot:sym:USDC:USD', 999)
+    ], 'USD');
+    expect(currentPriceFor({
+      asset: 'USDC', chain: 'ethereum', contractAddress: '0xtrusted', safetyState: 'trusted'
+    }, index)?.price).toBe(1);
+    expect(currentPriceFor({
+      asset: 'USDC', chain: 'ethereum', contractAddress: '0xunknown'
+    }, index)).toBeNull();
+  });
 });
 
 describe('priceAt', () => {

@@ -11,6 +11,16 @@ import './index.css';
 // it pre-paint; this wires the system-theme listener for live switching).
 initColorScheme();
 
+// Release verification reads this from the rendered target. CI injects the
+// deployed commit SHA; local/default builds remain explicitly non-release.
+document.getElementById('root')!.dataset.buildSha = import.meta.env.VITE_BUILD_SHA || 'development';
+
+if (import.meta.env.VITE_B6_BROWSER_TEST === 'true') {
+  void import('@/test/b6BrowserSeed').then(({ seedB6BrowserFixture }) => {
+    window.__SOLOLEDGER_B6_SEED__ = seedB6BrowserFixture;
+  });
+}
+
 /**
  * Part B (mode-transition bootstrap): the AuthProvider derives all of its
  * mode-dependent state (saas flag, loading, dbReady) at mount and its

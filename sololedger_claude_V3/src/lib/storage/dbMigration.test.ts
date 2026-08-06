@@ -362,7 +362,11 @@ describe('Dexie v15 B1 migration', () => {
       makeTx('legacy-perp-funding', {
         type: 'fee', category: 'perp_funding' as never, instrumentClass: 'derivative', amount: 2
       }),
-      makeTx('legacy-internal', { type: 'transfer_out', isInternalTransfer: true, amount: 3 })
+      makeTx('legacy-internal', { type: 'transfer_out', isInternalTransfer: true, amount: 3 }),
+      makeTx('legacy-hidden', {
+        type: 'transfer_in', isSpam: true, chain: 'ethereum', txHash: '0xlegacy-hidden',
+        contractAddress: '0xLegacyToken'
+      })
     ]);
     legacy.close();
 
@@ -383,6 +387,13 @@ describe('Dexie v15 B1 migration', () => {
     });
     expect(await upgraded.transactions.get('legacy-internal')).toMatchObject({ isInternalTransfer: true });
     expect((await upgraded.transactions.get('legacy-internal'))?.linkedTransferId).toBeUndefined();
+    expect(await upgraded.transactions.get('legacy-hidden')).toMatchObject({
+      safetyState: 'user_hidden', safetySubjectKey: 'event:ethereum:0xlegacy-hidden:0xlegacytoken:0:in'
+    });
+    expect(await upgraded.safetyDecisions.get('event:ethereum:0xlegacy-hidden:0xlegacytoken:0:in'))
+      .toMatchObject({ state: 'user_hidden', origin: 'migration' });
+    expect(await upgraded.providerEvidence.count()).toBe(0);
+    expect(await upgraded.defiPositionSnapshots.count()).toBe(0);
     const evmRows = await upgraded.lookupAddresses.filter((row) => row.chain !== 'solana').toArray();
     expect(new Set(evmRows.map((row) => row.accountIdentityId))).toEqual(new Set([
       `wallet:evm:${address.toLowerCase()}`

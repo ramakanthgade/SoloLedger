@@ -11,6 +11,8 @@
  * APP_EVIDENCE_URL=...
  * Set VERIFY_MODE=smoke explicitly to allow Moralis/app-equality skips.
  */
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { canonicalTargetUrl } from './produce-sanitized-app-evidence.mjs';
 const MODE = process.env.MODE === 'production' ? 'production' : 'local';
 const VERIFY_MODE = process.env.VERIFY_MODE === 'smoke' ? 'smoke' : 'rollout';
 const TARGET_URL = process.env.TARGET_URL ?? 'http://127.0.0.1:5173';
@@ -205,6 +207,37 @@ async function verifyMoralis(wallet, directValues) {
   for (const [reserve, direct] of directValues) assertNear('Moralis per-reserve debt comparison', moralisDebt.get(reserve) ?? 0, direct.debt);
   return 'PASS Moralis per-reserve debt comparison';
 }
+export function verifyAttestedUiEvidence(body, provenance) {
+  if (body?.evidenceVersion !== 'b6-browser-evidence-v2' ||
+    body?.captureVersion !== 'b6-browser-capture-v2' ||
+    body?.captureMethod !== 'playwright-rendered-ui' || body?.featureEnabled !== true ||
+    body?.attestation?.algorithm !== 'hmac-sha256' || !/^[0-9a-f]{64}$/.test(body?.attestation?.digest ?? '')) {
+    throw new Error('attested browser UI evidence is required for rollout');
+  }
+  const signingKey = provenance.signingKey ?? '';
+  const expectedBuildSha = (provenance.buildSha ?? '').toLowerCase();
+  const expectedRunId = provenance.runId ?? '';
+  if (signingKey.length < 32 || !/^[0-9a-f]{7,64}$/.test(expectedBuildSha) || !expectedRunId) {
+    throw new BlockedError('signed browser provenance inputs are required in full rollout mode');
+  }
+  if (body.targetUrl !== canonicalTargetUrl(provenance.targetUrl) || body.buildSha !== expectedBuildSha ||
+    body?.authenticatedRun?.method !== 'ci-hmac' || body?.authenticatedRun?.runId !== expectedRunId) {
+    throw new Error('browser evidence target URL, build, or authenticated run provenance differed');
+  }
+  const attested = {
+    evidenceVersion: body.evidenceVersion, captureVersion: body.captureVersion,
+    captureMethod: body.captureMethod, dashboardNetWorth: Number(body.dashboardNetWorth),
+    connectionsNetWorth: Number(body.connectionsNetWorth), featureEnabled: body.featureEnabled,
+    shadowStatus: body.shadowStatus, targetUrl: body.targetUrl, buildSha: body.buildSha,
+    authenticatedRun: body.authenticatedRun,
+    selectors: Array.isArray(body.selectors) ? [...body.selectors].sort() : []
+  };
+  const actualDigest = Buffer.from(body.attestation.digest, 'hex');
+  const expectedDigest = createHmac('sha256', signingKey).update(JSON.stringify(attested)).digest();
+  if (actualDigest.length !== expectedDigest.length || !timingSafeEqual(actualDigest, expectedDigest)) {
+    throw new Error('browser evidence attestation verification failed');
+  }
+}
 async function verifyUiEquality() {
   if (!process.env.APP_EVIDENCE_URL) {
     if (VERIFY_MODE === 'rollout') throw new BlockedError('APP_EVIDENCE_URL is required in full rollout mode');
@@ -215,8 +248,16 @@ async function verifyUiEquality() {
   const dashboard = Number(body?.dashboardNetWorth);
   const connections = Number(body?.connectionsNetWorth);
   if (!Number.isFinite(dashboard) || dashboard !== connections) throw new Error('Dashboard/Connections deterministic totals differed');
-  if (body?.featureEnabled === false && body?.legacyPresentationEqual !== true) throw new Error('default-off legacy presentations differed');
-  return 'PASS Dashboard/Connections deterministic equality';
+  if (VERIFY_MODE === 'rollout') {
+    verifyAttestedUiEvidence(body, {
+      targetUrl: TARGET_URL, buildSha: process.env.EXPECTED_BUILD_SHA,
+      runId: process.env.AUTHENTICATED_BROWSER_RUN_ID, signingKey: process.env.APP_EVIDENCE_SIGNING_KEY
+    });
+    const expected = expectedNumber('EXPECTED_NET_WORTH');
+    assertNear('Dashboard rendered net worth', dashboard, expected);
+    assertNear('Connections rendered net worth', connections, expected);
+  }
+  return 'PASS attested Dashboard/Connections rendered equality';
 }
 
 export async function main() {

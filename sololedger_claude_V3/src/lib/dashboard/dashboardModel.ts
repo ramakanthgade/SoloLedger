@@ -146,7 +146,10 @@ export function currentPriceFor(
   index: PriceIndex
 ): PricePoint | null {
   if (holding.contractAddress && !isNativeSolHolding(holding)) {
-    if (holding.safetyState !== 'unverified' || !holding.chain) return null;
+    if (
+      !holding.chain ||
+      !['trusted', 'unverified', 'user_visible'].includes(holding.safetyState ?? '')
+    ) return null;
     const platform = COINGECKO_PLATFORM[holding.chain as ChainId];
     return platform
       ? index.currentByContract.get(`${platform}:${holding.contractAddress.toLowerCase()}`) ?? null

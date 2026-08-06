@@ -24,7 +24,10 @@ export async function refreshCurrentHoldingPrices(
     resolvePriceAsset(h.asset, h.contractAddress, h.chain, h.safetyState).toUpperCase()
   ))];
   const contractRequests = [...new Map(holdings.flatMap((holding) => {
-    if (holding.safetyState !== 'unverified' || !holding.contractAddress || !holding.chain) return [];
+    if (
+      !holding.contractAddress || !holding.chain ||
+      !['trusted', 'unverified', 'user_visible'].includes(holding.safetyState ?? '')
+    ) return [];
     const platform = COINGECKO_PLATFORM[holding.chain as ChainId];
     if (!platform) return [];
     const contractAddress = holding.contractAddress.trim().toLowerCase();

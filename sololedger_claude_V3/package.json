@@ -13,6 +13,7 @@
     "test": "vitest run",
     "test:ledger-perf": "vitest run --config vite.perf.config.ts",
     "test:holdings-browser-perf": "npm run build:holdings-perf && playwright test --config playwright.holdings-perf.config.ts",
+    "test:browser": "playwright test --config playwright.config.ts",
     "test:watch": "vitest",
     "lint": "eslint .",
     "deploy:pages": "npm run build:pages && npx --yes gh-pages -d dist -t"
