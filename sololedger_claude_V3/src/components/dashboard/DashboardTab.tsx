@@ -27,6 +27,7 @@ import {
   type HoldingsProjectionInput
 } from '@/lib/portfolio/holdingsProjection';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
+import { defiUnderlyingPriceHoldings, defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
@@ -697,7 +698,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     let cancelled = false;
     getEffectiveSettings().then((effective) => {
       if (cancelled || !effective.priceApiEnabled) return;
-      void refreshCurrentHoldingPrices(holdings, currency, effective.coingeckoApiKey);
+      void refreshCurrentHoldingPrices([
+        ...holdings,
+        ...defiUnderlyingPriceHoldings(acceptedSnapshot?.defiPositionRows ?? [])
+      ], currency, effective.coingeckoApiKey);
       if (!autoPriceAttemptedRef.current) {
         autoPriceAttemptedRef.current = true;
         void fetchMissingPricesForAllTransactions(effective);
@@ -708,7 +712,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     return () => {
       cancelled = true;
     };
-  }, [holdings, currency, spotRefreshTick]);
+  }, [acceptedSnapshot?.defiPositionRows, holdings, currency, spotRefreshTick]);
   const includedThrough = Math.max(
     ...csvImports.filter((row) => row.optionsBalanceIncluded)
       .map((row) => row.optionsCoverageThrough ?? Number.NEGATIVE_INFINITY)
@@ -752,11 +756,14 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     });
     const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
       ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
+    for (const [contract, price] of defiUnderlyingPriceMap(
+      acceptedSnapshot?.defiPositionRows ?? [], priceIndex
+    )) prices.set(contract, price);
     return {
       custody, snapshots: acceptedSnapshot?.defiPositionSnapshots ?? [],
-      rows: acceptedSnapshot?.defiPositionRows ?? [], prices
+      rows: acceptedSnapshot?.defiPositionRows ?? [], prices, reportingCurrency: currency
     };
-  }, [acceptedSnapshot?.defiPositionRows, acceptedSnapshot?.defiPositionSnapshots, holdings, valued]);
+  }, [acceptedSnapshot?.defiPositionRows, acceptedSnapshot?.defiPositionSnapshots, currency, holdings, priceIndex, valued]);
   // The rollout is default-off, so its candidate is diagnostic rather than
   // paint-critical. Keep each shadow internally coherent, but move candidate
   // recomputation past the visible holdings commit. An enabled rollout always

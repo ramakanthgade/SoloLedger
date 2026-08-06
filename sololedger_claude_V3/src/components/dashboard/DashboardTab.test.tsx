@@ -70,6 +70,8 @@ const SEED = vi.hoisted(() => {
 
 const COST_BASIS_INPUTS = vi.hoisted(() => [] as string[][]);
 const QUERY_READINESS = vi.hoisted(() => ({ coherentDataHealth: true }));
+const PRICE_REFRESH = vi.hoisted(() => vi.fn(async () => {}));
+const EFFECTIVE_SETTINGS = vi.hoisted(() => ({ priceApiEnabled: false }));
 
 vi.mock('@/lib/costBasis/engine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/costBasis/engine')>();
@@ -158,8 +160,17 @@ vi.mock('./useCoherentDataHealthSnapshot', () => {
 
 vi.mock('@/lib/saas/effectiveSettings', () => ({
   getEffectiveSettings: () => Promise.resolve({
-    reportingCurrency: 'INR', jurisdiction: 'IN', priceApiEnabled: false
+    reportingCurrency: 'INR', jurisdiction: 'IN', priceApiEnabled: EFFECTIVE_SETTINGS.priceApiEnabled
   })
+}));
+
+vi.mock('@/lib/pricing/currentPrices', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/pricing/currentPrices')>();
+  return { ...actual, refreshCurrentHoldingPrices: PRICE_REFRESH };
+});
+
+vi.mock('@/lib/pricing/autoFetch', () => ({
+  fetchMissingPricesForAllTransactions: vi.fn(async () => ({ updated: 0, failed: 0 }))
 }));
 
 import {
@@ -242,6 +253,8 @@ beforeEach(() => {
   SEED.openingBalances.length = 0;
   COST_BASIS_INPUTS.length = 0;
   QUERY_READINESS.coherentDataHealth = true;
+  EFFECTIVE_SETTINGS.priceApiEnabled = false;
+  PRICE_REFRESH.mockClear();
   // Reset the tx list to the base seed (some tests append wallet rows).
   SEED.txs.length = 4;
 });
@@ -504,6 +517,29 @@ describe('DashboardTab — hero honesty', () => {
 });
 
 describe('DashboardTab — header, money strip and tax rail', () => {
+  it('requests an exact INR mark for a DeFi underlying absent from custody', async () => {
+    EFFECTIVE_SETTINGS.priceApiEnabled = true;
+    const reserve = `0x${'9'.repeat(40)}`;
+    const token = (contractAddress: string, symbol: string) => ({
+      chainId: 1 as const, contractAddress, symbol, decimals: 6
+    });
+    SEED.defiPositionRows.push({
+      id: 'dashboard-underlying', snapshotId: 'dashboard-underlying-snapshot',
+      protocolId: 'aave-v3-ethereum', reserveKey: reserve, role: 'debt',
+      underlying: token(reserve, 'USDC'),
+      protocolToken: token(`0x${'8'.repeat(40)}`, 'variableDebtUSDC'),
+      quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable'
+    });
+
+    await renderTab();
+
+    expect(PRICE_REFRESH).toHaveBeenCalledWith(
+      expect.arrayContaining([expect.objectContaining({
+        asset: 'USDC', chain: 'ethereum', contractAddress: reserve, safetyState: 'trusted'
+      })]),
+      'INR', undefined
+    );
+  });
   it('keeps a known unpriced DeFi liability shadow-only while the rollout is off', async () => {
     const scope = `wallet:evm:0x${'1'.repeat(40)}`;
     const reserve = `0x${'2'.repeat(40)}`;

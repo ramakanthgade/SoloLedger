@@ -15,6 +15,7 @@ import type { ConnectionWorkspaceSnapshot } from './connectionWorkspaceModel';
 import { HoldingsList } from '@/components/holdings/HoldingsList';
 import { canonicalDefiAccountScope, type DefiPositionRow, type DefiPositionSnapshot } from '@/lib/defi/types';
 import { projectWalletDefiNetWorth } from '@/lib/portfolio/economicExposureProjection';
+import { defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
 import { isWalletDefiNetWorthV1Enabled } from '@/lib/features';
 
 function chainLabel(chainId: string): string {
@@ -107,6 +108,7 @@ export interface ConnectionOverviewProps {
   snapshot: ConnectionWorkspaceSnapshot;
   priceIndex: PriceIndex;
   formatMoney: (value: number) => string;
+  reportingCurrency: string;
   syncing: boolean;
   syncDisabled: boolean;
   onSync: () => void;
@@ -117,7 +119,7 @@ export interface ConnectionOverviewProps {
 }
 
 /** Presentation-only Overview tab. All custody and transaction work is read from one parent snapshot. */
-export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, syncing, syncDisabled, onSync, onOpenDataHealth, defiPositionSnapshots = [], defiPositionRows = [], defiNetWorthEnabled = isWalletDefiNetWorthV1Enabled() }: ConnectionOverviewProps) {
+export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, reportingCurrency, syncing, syncDisabled, onSync, onOpenDataHealth, defiPositionSnapshots = [], defiPositionRows = [], defiNetWorthEnabled = isWalletDefiNetWorthV1Enabled() }: ConnectionOverviewProps) {
   const [showZeroBalances, setShowZeroBalances] = useState(false);
   const holdingsByAssetKey = new Map(snapshot.overview.holdings.map((holding) => [holding.assetKey, holding]));
   const rowsByScope = new Map((card.walletRows ?? []).map((row) => [
@@ -172,8 +174,8 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
     })),
     snapshots: walletDefiSnapshots,
     rows: walletDefiRows,
-    prices: new Map(allWalletAssets.flatMap((asset) => asset.contractAddress && asset.value != null && asset.amount > 1e-9
-      ? [[asset.contractAddress.toLowerCase(), asset.value / asset.amount] as const] : [])),
+    prices: defiUnderlyingPriceMap(walletDefiRows, priceIndex),
+    reportingCurrency,
     enabled: defiNetWorthEnabled
   }).projection;
   const liquidCustodyIds = new Set(walletEconomicExposure.assets.filter((row) => row.kind === 'liquid').map((row) => row.id));

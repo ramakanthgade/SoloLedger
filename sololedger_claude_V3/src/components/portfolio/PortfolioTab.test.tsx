@@ -402,7 +402,7 @@ describe('PortfolioTab (Ember & Slate)', () => {
     }
   });
 
-  it('labels posting fallback caused by incomplete authority coverage', async () => {
+  it('uses operation-backed current authority while retaining partial-history diagnostics', async () => {
     const originalTxCount = SEED.txs.length;
     SEED.txs.push({
       id: 'api-incomplete-tx', timestamp: Date.now() - 1_000, type: 'transfer_in',
@@ -415,9 +415,19 @@ describe('PortfolioTab (Ember & Slate)', () => {
     (SEED.sourceCoverage[0].endpointOutcomes as Record<string, unknown>[])[0].status = 'partial';
     try {
       await renderTab();
-      expect(screen.getAllByText('2.00000000').length).toBeGreaterThanOrEqual(1);
-      expect(screen.queryByText('7.00000000')).not.toBeInTheDocument();
+      const partialCoinRow = screen.getAllByText('PARTIALCOIN')
+        .map((label) => label.closest('tr'))
+        .find((row): row is HTMLTableRowElement => row != null);
+      expect(partialCoinRow).toBeDefined();
+      expect(within(partialCoinRow!).getByText('7.00000000')).toBeInTheDocument();
+      expect(within(partialCoinRow!).queryByText('2.00000000')).not.toBeInTheDocument();
       expect(screen.queryByTestId('holding-quantity-source')).not.toBeInTheDocument();
+      expect(screen.getByTestId('portfolio-partial-history-status')).toHaveTextContent(
+        '1 source has partial transaction history. Current quantities use balance authority; cost basis and tax history may be incomplete.'
+      );
+      expect(screen.getByText(/Indicators describe quantity source only/)).toHaveTextContent(
+        'not reconciliation or tax correctness'
+      );
     } finally {
       SEED.txs.splice(originalTxCount);
       clearProjectionEvidence();

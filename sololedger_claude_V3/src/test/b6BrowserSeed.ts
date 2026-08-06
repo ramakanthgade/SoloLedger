@@ -127,7 +127,7 @@ export async function seedB6BrowserFixture(): Promise<void> {
     endpoint, accountClass: 'wallet' as const, required: true, status: 'complete' as const,
     pages: 2, paginationRequired: true, paginationExhausted: true
   }));
-  const primaryOperation = await reserveWalletBalanceOperation('ethereum', B6_EVM_ADDRESS, B6_NOW - 1);
+  const primaryOperation = await reserveWalletBalanceOperation('ethereum', B6_EVM_ADDRESS, now - 1);
   await commitWalletBalanceOperation({
     operation: primaryOperation, provider: 'b6-fixture', operationName: 'exhaustive-balances',
     rows: [
@@ -140,13 +140,13 @@ export async function seedB6BrowserFixture(): Promise<void> {
       { asset: 'SPAM-ASSET', contractAddress: safetyContracts.spam, amount: 0 },
       ...metadataBalances
     ], endpointOutcomes: completeOutcomes, historyEndpointOutcomes: historyOutcomes,
-    status: 'complete', asOf: B6_NOW, capturedAt: B6_NOW
+    status: 'complete', asOf: now, capturedAt: now
   });
-  const reserveOperation = await reserveWalletBalanceOperation('ethereum', B6_SECOND_EVM_ADDRESS, B6_NOW - 1);
+  const reserveOperation = await reserveWalletBalanceOperation('ethereum', B6_SECOND_EVM_ADDRESS, now - 1);
   await commitWalletBalanceOperation({
     operation: reserveOperation, provider: 'b6-fixture', operationName: 'exhaustive-balances',
     rows: [{ asset: 'USDC', contractAddress: B6_USDC, amount: 0 }], endpointOutcomes: completeOutcomes,
-    historyEndpointOutcomes: historyOutcomes, status: 'complete', asOf: B6_NOW, capturedAt: B6_NOW
+    historyEndpointOutcomes: historyOutcomes, status: 'complete', asOf: now, capturedAt: now
   });
 
   for (const [protocolId, sourceRows] of [

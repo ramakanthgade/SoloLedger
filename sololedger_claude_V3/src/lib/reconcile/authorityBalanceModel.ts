@@ -252,8 +252,10 @@ function fallbackReason(
 
 /**
  * Builds a pure custody view. Authority replaces a posting-derived quantity only
- * when the exact scope/class generation is current, coherent, and accompanied
- * by complete structural coverage. Every other slice remains posting-derived.
+ * when the exact scope/class generation is current and coherent. Complete,
+ * exhaustive API/RPC balance evidence is independent of linked transaction
+ * history coverage; that coverage remains diagnostic and continues to govern
+ * transaction-derived CSV authority. Every unsafe slice remains posting-derived.
  */
 export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): AuthorityBalanceSlice[] {
   const metrics = input.metrics;
@@ -415,9 +417,24 @@ export function buildAuthorityBalanceModel(input: AuthorityBalanceModelInput): A
       const perAssetAuthorityStatus = authorityRow == null && !exhaustiveAbsence && authorityStatus === 'current'
         ? 'non_comparable'
         : authorityStatus;
+      const independentlyAuthoritativeCurrentBalance =
+        associatedScopeStatus === 'resolved' &&
+        perAssetAuthorityStatus === 'current' &&
+        selection.selectedSnapshot?.authorityKind !== 'csv' &&
+        !selection.selectedSnapshot?.endpointProof.operation.startsWith('legacy.') &&
+        scopedCoverage.some(({ row }) =>
+          row.authoritySnapshotId === selection.selectedSnapshot?.snapshotId &&
+          row.generation === selection.selectedSnapshot?.generation
+        ) &&
+        selection.selectedSnapshot?.endpointProof.exhaustiveBalances === true &&
+        authorityQuantity != null;
       const reason = duplicateAssetKeys.has(assetKey)
         ? 'non_comparable_authority'
-        : fallbackReason(associatedScopeStatus, perAssetAuthorityStatus, coverageStatus);
+        : fallbackReason(
+            associatedScopeStatus,
+            perAssetAuthorityStatus,
+            independentlyAuthoritativeCurrentBalance ? 'complete' : coverageStatus
+          );
       const usesReconstructedCsvBalance = reason != null && associatedScopeStatus === 'resolved' &&
         input.comparisonAt == null &&
         selection.selectedSnapshot?.authorityKind === 'csv' && selection.selectedSnapshot.asOf == null &&

@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { ConnectionWorkspaceSnapshot } from '@/components/connections/connectionWorkspaceModel';
 import type { ReconciliationResult } from '@/lib/reconcile/sourceReconcile';
 import { deriveReconPresentation } from '@/lib/reconcile/sourceReconcile';
-import { buildDataHealthModel, sourceMatchesDataHealthFilter } from './dataHealthModel';
+import {
+  buildCoherentDataHealthShadow,
+  buildDataHealthModel,
+  sourceMatchesDataHealthFilter
+} from './dataHealthModel';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 
 function result(partial: Partial<ReconciliationResult>): ReconciliationResult {
@@ -40,6 +44,39 @@ function snapshot(rows: ReconciliationResult[]): ConnectionWorkspaceSnapshot {
 }
 
 describe('buildDataHealthModel', () => {
+  it('uses an exact cached INR mark for a DeFi underlying absent from custody', () => {
+    const address = `0x${'1'.repeat(40)}`;
+    const reserve = `0x${'2'.repeat(40)}`;
+    const positionSnapshot = {
+      snapshotId: 'data-health-position', generation: 1,
+      accountIdentityScope: `wallet:evm:${address}`,
+      protocolId: 'aave-v3-ethereum' as const, chainId: 1, status: 'complete' as const,
+      capturedAt: 1, evidence: []
+    };
+    const shadow = buildCoherentDataHealthShadow({
+      transactions: [], wallets: [], csvImports: [], exchangeConnections: [],
+      authoritySnapshots: [], authorityAssets: [], sourceCoverage: [], openingBalances: [],
+      defiPositionSnapshots: [positionSnapshot],
+      defiPositionRows: [{
+        id: 'data-health-debt', snapshotId: positionSnapshot.snapshotId,
+        protocolId: positionSnapshot.protocolId, reserveKey: reserve, role: 'debt',
+        underlying: { chainId: 1, contractAddress: reserve, symbol: 'USDC', decimals: 6 },
+        protocolToken: {
+          chainId: 1, contractAddress: `0x${'3'.repeat(40)}`,
+          symbol: 'variableDebtUSDC', decimals: 6
+        },
+        quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable'
+      }],
+      priceCache: [{
+        key: `spot:ctr:ethereum:${reserve}:INR`, price: 83, fetchedAt: Date.now()
+      }]
+    }, 'INR', Date.now(), true);
+
+    expect(shadow.projection.liabilities).toEqual([
+      expect.objectContaining({ contribution: -7_470 })
+    ]);
+    expect(shadow.projection.netWorth).toBe(-7_470);
+  });
   it('counts all independent axes in a cross-product without collapsing them', () => {
     const model = buildDataHealthModel([{
       id: 'x', title: 'X', target: { kind: 'exchange', connectionId: 'x' },

@@ -111,7 +111,7 @@ describe('B6 integrated acceptance fixture', () => {
       { id: 'receipt', scopeId: `wallet:evm:1:${B6_EVM_ADDRESS}`, chainId: 1, contractAddress: B6_AUSDC, symbol: 'aUSDC', quantity: 100_000, value: 100_000 },
       { id: 'debt-token', scopeId: `wallet:evm:1:${B6_EVM_ADDRESS}`, chainId: 1, contractAddress: B6_DEBT_USDC, symbol: 'variableDebtUSDC', quantity: 90_005, value: 0 }
     ];
-    const input = { custody, snapshots: [b6DefiSnapshot], rows: b6DefiRows, prices: new Map([[B6_USDC, 1]]), enabled: true };
+    const input = { custody, snapshots: [b6DefiSnapshot], rows: b6DefiRows, prices: new Map([[B6_USDC, 1]]), reportingCurrency: 'USD', enabled: true };
     const dashboard = projectWalletDefiNetWorth(input);
     const connections = projectWalletDefiNetWorth(input);
     expect(dashboard.projection.assets.filter((row) => row.kind === 'supply')).toHaveLength(1);
@@ -119,7 +119,7 @@ describe('B6 integrated acceptance fixture', () => {
     expect(dashboard.projection.netWorth).toBe(103_071);
     expect(connections.projection).toEqual(dashboard.projection);
 
-    const unsupported = projectEconomicExposure({ custody, rows: [], unsupported: true });
+    const unsupported = projectEconomicExposure({ custody, rows: [], reportingCurrency: 'USD', unsupported: true });
     expect(unsupported).toMatchObject({ status: 'unsupported', liabilities: [], retainedCustody: custody });
   });
 });

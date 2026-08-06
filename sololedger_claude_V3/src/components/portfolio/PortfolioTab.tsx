@@ -397,6 +397,9 @@ export function PortfolioTab() {
     projectionNow
   ]);
   const holdings = projection.holdings;
+  const partialHistoryScopeCount = new Set(projection.slices
+    .filter((slice) => slice.coverageStatus === 'partial')
+    .map((slice) => `${slice.scopeId}\u001f${slice.accountClass}`)).size;
 
   const integrityIssues = useMemo(
     () => checkLedgerIntegrity(holdings, sourceSummary),
@@ -803,6 +806,11 @@ export function PortfolioTab() {
               <p className="mt-1 text-[0.6875rem] text-faint">
                 Indicators describe quantity source only — not reconciliation or tax correctness.
               </p>
+              {partialHistoryScopeCount > 0 && (
+                <p className="mt-1 text-[0.6875rem] text-warn" data-testid="portfolio-partial-history-status">
+                  {partialHistoryScopeCount} source{partialHistoryScopeCount === 1 ? '' : 's'} ha{partialHistoryScopeCount === 1 ? 's' : 've'} partial transaction history. Current quantities use balance authority; cost basis and tax history may be incomplete.
+                </p>
+              )}
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <span className="hidden text-xs text-low lg:inline">

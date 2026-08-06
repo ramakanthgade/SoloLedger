@@ -15,7 +15,7 @@ const rows: DefiPositionRow[] = [
 
 describe('shared protocol holdings list', () => {
   it('shows protocol/version, collateral, positive owed magnitude, liability sign, and signed net', () => {
-    const projection = projectEconomicExposure({ snapshot, rows, custody: [], prices: new Map([[reserve, 1]]) });
+    const projection = projectEconomicExposure({ snapshot, rows, custody: [], prices: new Map([[reserve, 1]]), reportingCurrency: 'USD' });
     render(<HoldingsList projection={projection} formatMoney={(value) => `$${value}`} />);
     expect(screen.getByRole('region', { name: 'Aave v3 positions' })).toBeInTheDocument();
     expect(screen.getByText('Supplied · Collateral')).toBeInTheDocument();
@@ -25,7 +25,7 @@ describe('shared protocol holdings list', () => {
     expect(screen.getByText('Net $10')).toBeInTheDocument();
   });
   it('warns and displays debt only for a partial snapshot', () => {
-    const projection = projectEconomicExposure({ snapshot: { ...snapshot, status: 'partial' }, rows: [], latestPartialRows: rows, custody: [], prices: new Map([[reserve, 1]]) });
+    const projection = projectEconomicExposure({ snapshot: { ...snapshot, status: 'partial' }, rows: [], latestPartialRows: rows, custody: [], prices: new Map([[reserve, 1]]), reportingCurrency: 'USD' });
     render(<HoldingsList projection={projection} formatMoney={String} />);
     expect(screen.getByRole('status')).toHaveTextContent('Known liabilities are retained');
     expect(screen.queryByText('Supplied · Collateral')).not.toBeInTheDocument();
