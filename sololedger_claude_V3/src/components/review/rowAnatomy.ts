@@ -57,6 +57,8 @@ export interface FlowGain {
 
 export interface RowLeg {
   kind: 'asset' | 'fiat' | 'endpoint';
+  /** Principal is `Transaction.asset`; counter is consideration/endpoint context. */
+  role: 'principal' | 'counter';
   /** asset legs: resolved display symbol (also drives the coin logo). */
   symbol?: string;
   /** asset/fiat legs: quantity (asset units / fiat amount). Undefined = unknown. */
@@ -95,7 +97,7 @@ export interface FlowCtx {
 
 function endpointLeg(addr: string, resolveWallet?: WalletNameResolver): RowLeg {
   const name = resolveWallet?.(addr);
-  return { kind: 'endpoint', label: name ?? truncateAddress(addr), title: addr, isName: name != null };
+  return { kind: 'endpoint', role: 'counter', label: name ?? truncateAddress(addr), title: addr, isName: name != null };
 }
 
 /**
@@ -120,6 +122,7 @@ export function txFlow(t: Transaction, ctx: FlowCtx): RowFlow {
   const valueSubline = t.fiatValue != null ? `≈ ${formatCurrency(t.fiatValue, t.fiatCurrency)}` : undefined;
   const assetLeg = (sign?: '+' | '−', subline?: string): RowLeg => ({
     kind: 'asset',
+    role: 'principal',
     symbol: assetLabel,
     amount: t.amount,
     sign,
@@ -127,6 +130,7 @@ export function txFlow(t: Transaction, ctx: FlowCtx): RowFlow {
   });
   const fiatLeg = (legGain?: FlowGain): RowLeg => ({
     kind: 'fiat',
+    role: 'counter',
     amount: t.fiatValue,
     currency: t.fiatCurrency,
     gain: legGain
@@ -140,7 +144,7 @@ export function txFlow(t: Transaction, ctx: FlowCtx): RowFlow {
         sent: assetLeg('−', costSubline),
         // A trade without a recorded counter-asset stays a single honest leg.
         received: t.counterAsset
-          ? { kind: 'asset', symbol: counterLabel ?? t.counterAsset, amount: t.counterAmount, sign: '+', subline: valueSubline, gain }
+          ? { kind: 'asset', role: 'counter', symbol: counterLabel ?? t.counterAsset, amount: t.counterAmount, sign: '+', subline: valueSubline, gain }
           : null
       };
     case 'sell':
@@ -152,14 +156,14 @@ export function txFlow(t: Transaction, ctx: FlowCtx): RowFlow {
       return {
         sent: assetLeg('−', costSubline),
         received: t.counterAsset
-          ? { kind: 'asset', symbol: counterLabel ?? t.counterAsset, amount: t.counterAmount, sign: '+', subline: valueSubline, gain }
+          ? { kind: 'asset', role: 'counter', symbol: counterLabel ?? t.counterAsset, amount: t.counterAmount, sign: '+', subline: valueSubline, gain }
           : fiatLeg(gain)
       };
     case 'buy':
     case 'nft_buy':
       return {
         sent: t.counterAsset
-          ? { kind: 'asset', symbol: counterLabel ?? t.counterAsset, amount: t.counterAmount, sign: '−', subline: valueSubline }
+          ? { kind: 'asset', role: 'counter', symbol: counterLabel ?? t.counterAsset, amount: t.counterAmount, sign: '−', subline: valueSubline }
           : fiatLeg(),
         received: assetLeg('+')
       };

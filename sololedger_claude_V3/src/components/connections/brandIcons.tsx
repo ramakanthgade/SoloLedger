@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { cn } from '@/lib/utils';
 import { WALLET_CATALOG } from './walletCatalog';
 import { BRAND_ICON_BASE } from '@/lib/brandAssets';
@@ -206,6 +206,8 @@ export interface BrandIconProps {
   size?: number;
   /** Monogram source for the fallback chip when the id is unmapped. */
   fallback?: string;
+  /** Optional caller-owned neutral fallback (Review forbids mock brand monograms). */
+  fallbackNode?: ReactNode;
   className?: string;
 }
 
@@ -215,7 +217,7 @@ export interface BrandIconProps {
  * as the onError rescue if an asset 404s. Decorative (`aria-hidden`) — the
  * source name always renders as adjacent text.
  */
-export function BrandIcon({ id, size = 40, fallback, className }: BrandIconProps) {
+export function BrandIcon({ id, size = 40, fallback, fallbackNode, className }: BrandIconProps) {
   const def = id ? BRAND_ICONS[id] : undefined;
   const [loadFailed, setLoadFailed] = useState(false);
   const radius = Math.max(8, Math.round(size * 0.28));
@@ -250,6 +252,7 @@ export function BrandIcon({ id, size = 40, fallback, className }: BrandIconProps
     );
   }
 
+  if (fallbackNode) return <>{fallbackNode}</>;
   const monogram = (fallback ?? id ?? '?').trim().slice(0, 2).toUpperCase() || '?';
   return (
     <span

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSpecIdHints, getLookupAddresses, deleteTransactionsByIds, setTransactionSafetyVisibility } from '@/lib/storage/db';
+import { db, getSpecIdHints, deleteTransactionsByIds, setTransactionSafetyVisibility } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -50,14 +50,13 @@ import { displayFlags } from '@/lib/review/displayFlags';
 import { filterRows, paginate } from '@/lib/review/reviewTableView';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { AssetIcon, SourceIcon } from './brandIcons';
-import { sourceBrandInfo } from './brandIconMap';
 import {
   groupRowsByDate, formatGroupDateLabel, pageNumberList, reviewTransactionHash
 } from './reviewListUtils';
 import { buildTxSummary, reviewTypeLabel, txFlow, truncateAddress, OWN_ACCOUNT_SIDE, type RowLeg } from './rowAnatomy';
 import {
   Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles,
-  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, ArrowLeft, Search, Link2, Wallet
+  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, ArrowLeft, Search, Link2, Wallet, Banknote
 } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useTabNav } from '@/lib/tabNav';
@@ -78,6 +77,11 @@ import { type TransactionNavigationIntent, type TransactionScopeFilter } from '@
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { hasDurableNavigationScope, resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
+import { buildSourcePresentationIndexes, buildTransactionSourcePresentations } from '@/lib/sources/sourcePresentation';
+import { buildReviewSourceFilterOptions, transactionMatchesSourceFilter } from './reviewSourceFilters';
+import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
+import { buildTransactionById, linkedCounterpartFor, transactionPage } from './counterpartNavigation';
+import { principalAssetIdentityForLeg } from './reviewAssetIcons';
 
 const ALL_TYPES: TxType[] = [
   'buy', 'sell', 'trade', 'transfer_in', 'transfer_out',
@@ -487,6 +491,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   const [navigationScopeFilter, setNavigationScopeFilter] = useState<TransactionScopeFilter | null>(null);
   const appliedNavigationIntent = useRef<string | null>(null);
   const [pendingNavigationFocus, setPendingNavigationFocus] = useState<TransactionNavigationIntent | null>(null);
+  const [pendingCounterpartFocus, setPendingCounterpartFocus] = useState<string | null>(null);
   const [openLotPicker, setOpenLotPicker] = useState<string | null>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [pdfConfirmOpen, setPdfConfirmOpen] = useState(false);
@@ -537,16 +542,19 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   // Stable empty array while the query resolves, so dependent memos don't
   // recompute on every render (react-hooks/exhaustive-deps).
   const transactions = useMemo(() => transactionsLive ?? [], [transactionsLive]);
+  const transactionsById = useMemo(() => buildTransactionById(transactions), [transactions]);
   const ledgerEvidenceLive = useLiveQuery(async () => {
-    const [exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets] = await Promise.all([
-      db.exchangeConnections.toArray(), db.openingBalances.toArray(), db.sourceCoverage.toArray(), db.authoritySnapshots.toArray(), db.authorityAssets.toArray()
+    const [exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets, accountIdentities, csvImports, lookupAddresses] = await Promise.all([
+      db.exchangeConnections.toArray(), db.openingBalances.toArray(), db.sourceCoverage.toArray(), db.authoritySnapshots.toArray(), db.authorityAssets.toArray(),
+      db.accountIdentities.toArray(), db.csvImports.toArray(), db.lookupAddresses.toArray()
     ]);
-    return { exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets };
+    return { exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets, accountIdentities, csvImports, lookupAddresses };
   }, []);
   const ledgerEvidence = useMemo(() => ledgerEvidenceLive ?? {
-    exchangeConnections: [], openingBalances: [], coverage: [], authoritySnapshots: [], authorityAssets: []
+    exchangeConnections: [], openingBalances: [], coverage: [], authoritySnapshots: [], authorityAssets: [],
+    accountIdentities: [], csvImports: [], lookupAddresses: []
   }, [ledgerEvidenceLive]);
-  const { exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets } = ledgerEvidence;
+  const { exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets, accountIdentities, csvImports, lookupAddresses } = ledgerEvidence;
   const [authoritySelectionNow] = useState(Date.now);
   const postingSnapshot = useMemo(() => {
     const context = {
@@ -571,11 +579,18 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
   // Wallet labels from Connections — a LIVE query so renaming a wallet in
   // Connections updates every row's name resolution in place.
-  const lookupRowsLive = useLiveQuery(() => getLookupAddresses(), []);
   const walletLabels = useMemo(
-    () => buildWalletLabelMap(lookupRowsLive ?? []),
-    [lookupRowsLive]
+    () => buildWalletLabelMap(lookupAddresses),
+    [lookupAddresses]
   );
+  const sourcePresentationIndexes = useMemo(() => buildSourcePresentationIndexes({
+    accounts: accountIdentities, wallets: lookupAddresses, exchanges: exchangeConnections, csvImports
+  }), [accountIdentities, lookupAddresses, exchangeConnections, csvImports]);
+  const sourcePresentations = useMemo(() => buildTransactionSourcePresentations(
+    transactions,
+    sourcePresentationIndexes,
+    (chain) => CHAINS.find((candidate) => candidate.id === chain)?.label ?? chain
+  ), [transactions, sourcePresentationIndexes]);
 
   // Load jurisdiction on mount
   useEffect(() => {
@@ -598,16 +613,11 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     return Array.from(ws.values());
   }, [transactions]);
 
-  /** Distinct import sources present in the ledger, for the "All sources" chip. */
-  const availableSources = useMemo(() => {
-    const seen = new Map<string, string>();
-    for (const t of transactions) {
-      if (seen.has(t.source)) continue;
-      const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? null : null;
-      seen.set(t.source, sourceBrandInfo(t.source, chainLabel).label);
-    }
-    return Array.from(seen, ([id, label]) => ({ id, label })).sort((a, b) => a.label.localeCompare(b.label));
-  }, [transactions]);
+  /** Exact source incarnations/generations; labels never collapse same-brand accounts. */
+  const availableSources = useMemo(
+    () => buildReviewSourceFilterOptions(transactions, sourcePresentations),
+    [transactions, sourcePresentations]
+  );
 
 
   // Transactions with truncated/contract-address assets that could be resolved to a
@@ -927,7 +937,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
     // Source filter — applied after the shared row filter so the lib contract
     // (and its tests) stay untouched.
-    const bySource = sourceFilter === 'all' ? base : base.filter((t) => t.source === sourceFilter);
+    const bySource = sourceFilter === 'all' ? base : base.filter((t) =>
+      transactionMatchesSourceFilter(t, sourceFilter, sourcePresentations)
+    );
     const byDurableScope = navigationScopeFilter == null ? bySource : bySource.filter((transaction) =>
       transactionMatchesNavigationScope(
         transaction,
@@ -954,7 +966,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
         default: return b.timestamp - a.timestamp;
       }
     });
-  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy, navigationTargetId, navigationScopeFilter, postingSnapshot, derivedFlagsByTxId]);
+  }, [transactions, assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, sourcePresentations, fyFilter, jurisdiction, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy, navigationTargetId, navigationScopeFilter, postingSnapshot, derivedFlagsByTxId]);
 
   const { pageRows, totalPages, safePage } = useMemo(
     () => paginate(filtered, page, PAGE_SIZE),
@@ -965,6 +977,18 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   useEffect(() => {
     setPage(1);
   }, [assetFilter, typeFilter, flagFilter, walletFilter, sourceFilter, fyFilter, instrumentFilter, query, showNeedsPrice, showNeedsReview, showSpam, sortBy]);
+
+  useEffect(() => {
+    if (!pendingCounterpartFocus || !pageRows.some((transaction) => transaction.id === pendingCounterpartFocus)) return;
+    const frame = window.requestAnimationFrame(() => {
+      const escapedId = CSS.escape(pendingCounterpartFocus);
+      const row = document.querySelector<HTMLElement>(`[data-transaction-id="${escapedId}"]`);
+      row?.focus();
+      row?.scrollIntoView?.({ block: 'center' });
+      setPendingCounterpartFocus(null);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pageRows, pendingCounterpartFocus, expandedId]);
 
   /** Date-grouped view only makes sense while the list is date-sorted. */
   const dateSorted = sortBy === 'date_desc' || sortBy === 'date_asc';
@@ -1320,28 +1344,12 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
   // ---------- Row rendering (date-grouped ledger, mockup frame 06) ----------
 
-  /** Currency symbol (₹, $, €…) for the fiat leg; falls back to the
-   * currency code's first letter for unrecognized codes. */
-  const fiatSymbol = (currency: string): string => {
-    try {
-      const parts = new Intl.NumberFormat(currency.toUpperCase() === 'INR' ? 'en-IN' : 'en-US', {
-        style: 'currency',
-        currency,
-        minimumFractionDigits: 0,
-        maximumFractionDigits: 0
-      }).formatToParts(0);
-      return parts.find((p) => p.type === 'currency')?.value ?? currency.slice(0, 1);
-    } catch {
-      return currency.slice(0, 1);
-    }
-  };
-
   /** One leg of the row-face flow (sent or received): asset / fiat / endpoint.
    *  Every leg is the same two-line skeleton — a fixed-height main line over a
    *  fixed-height sub-line (rendered even when empty) — so amounts and
    *  sub-lines baseline-align across legs and across rows. Amounts never
    *  truncate — they wrap under the row on narrow screens. */
-  const renderLeg = (leg: RowLeg, spam: boolean) => {
+  const renderLeg = (leg: RowLeg, spam: boolean, assetIdentity?: Pick<Transaction, 'chain' | 'contractAddress' | 'safetyState'>) => {
     // The sub-line: cost basis under the sent side of a disposal; fiat value
     // and the gain/loss together under the received side.
     const subRow = (
@@ -1389,7 +1397,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full bg-elev-3 text-[10px] font-extrabold text-low"
               aria-hidden="true"
             >
-              {fiatSymbol(leg.currency ?? '')}
+              <Banknote className="h-3.5 w-3.5" />
             </span>
             <span className={cn('whitespace-nowrap text-[0.875rem] font-bold tabular-figures text-hi', spam && 'line-through')}>
               {leg.amount != null && leg.currency ? formatCurrency(leg.amount, leg.currency) : '—'}
@@ -1402,7 +1410,13 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     return (
       <span className="flex min-w-0 max-w-[15rem] flex-col">
         <span className="flex h-6 items-center gap-1.5">
-          <AssetIcon symbol={leg.symbol} size={22} />
+          <AssetIcon
+            symbol={leg.symbol}
+            chain={assetIdentity?.chain}
+            contractAddress={assetIdentity?.contractAddress}
+            safetyState={assetIdentity?.safetyState}
+            size={22}
+          />
           <span
             className={cn(
               'whitespace-nowrap text-[0.875rem] font-bold tabular-figures',
@@ -1425,7 +1439,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : null;
     const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
     const counterLabel = t.counterAsset ? resolveAssetLabel(t.counterAsset, undefined, t.chain) : null;
-    const src = sourceBrandInfo(t.source, chainLabel, t.chain ?? null);
+    const sourcePresentation = sourcePresentations.get(t.id)!;
+    const src = { label: sourcePresentation.primaryLabel, id: sourcePresentation.iconId ?? undefined };
     const disposal = disposalByTxId.get(t.id);
     const isEditing = editingFiat === t.id;
     const expanded = expandedId === t.id;
@@ -1491,6 +1506,39 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
       },
       disposal, indexes: costAnalysisIndexes, unexplainedAuthorityQuantity
     }) : null;
+    const taxPolicy = expanded ? resolveTaxPolicy({
+      kind: 'transaction', transaction: t,
+      settings: settings ?? {
+        jurisdiction, reportingCurrency: t.fiatCurrency,
+        defaultCostBasisMethod: 'FIFO', priceApiEnabled: false, rpcLookupEnabled: false
+      }
+    }) : null;
+    const linkedCounterpart = linkedCounterpartFor(t, transactionsById);
+    const openLinkedCounterpart = () => {
+      if (!linkedCounterpart) return;
+      const counterpartIsSpam = isTransactionExcluded(linkedCounterpart);
+      const counterpartOrder = transactions
+        .filter((transaction) => isTransactionExcluded(transaction) === counterpartIsSpam)
+        .sort((left, right) => right.timestamp - left.timestamp);
+      const targetPage = transactionPage(counterpartOrder, linkedCounterpart.id, PAGE_SIZE) ?? 1;
+      setQuery('');
+      setAssetFilter('all');
+      setTypeFilter('all');
+      setFlagFilter('all');
+      setWalletFilter('all');
+      setSourceFilter('all');
+      setNavigationScopeFilter(null);
+      setNavigationTargetId(null);
+      setFyFilter(null);
+      setShowNeedsPrice(false);
+      setShowNeedsReview(false);
+      setShowSpam(counterpartIsSpam);
+      setInstrumentFilter('all');
+      setSortBy('date_desc');
+      setExpandedId(linkedCounterpart.id);
+      setPendingCounterpartFocus(linkedCounterpart.id);
+      window.requestAnimationFrame(() => setPage(targetPage));
+    };
 
     /** From/To fact value: the wallet NAME beats the raw address wherever
      * Connections knows it; the source brand stands in for the user's own
@@ -1518,7 +1566,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
       if (isOwnSide) {
         return (
           <>
-            <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={18} />
+            <SourceIcon iconId={sourcePresentation.iconId} label={sourcePresentation.primaryLabel} size={18} />
             {src.label}
           </>
         );
@@ -1572,11 +1620,11 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 lg:order-none lg:w-auto lg:max-w-[34rem]"
             data-testid="tx-flow"
           >
-            {flow.sent && renderLeg(flow.sent, spam)}
+            {flow.sent && renderLeg(flow.sent, spam, principalAssetIdentityForLeg(flow.sent, t))}
             {flow.sent && flow.received && (
               <ArrowRight className="h-4 w-4 shrink-0 text-faint" aria-hidden="true" />
             )}
-            {flow.received && renderLeg(flow.received, spam)}
+            {flow.received && renderLeg(flow.received, spam, principalAssetIdentityForLeg(flow.received, t))}
           </div>
 
           {/* Source context + expander — one unit on mobile (wraps together,
@@ -1585,11 +1633,27 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               badges wrap under, still right-aligned) with the chevron after. */}
           <div className="order-3 ml-auto flex shrink-0 items-center gap-2.5 lg:order-none lg:ml-0 lg:justify-end">
             <div className="flex flex-wrap items-center justify-end gap-x-2.5 gap-y-1 lg:w-[13.5rem]">
-              <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={30} />
+              <SourceIcon iconId={sourcePresentation.iconId} label={sourcePresentation.primaryLabel} size={30} />
               <div className="min-w-0 lg:text-right">
                 <p className="max-w-[7rem] truncate text-xs font-bold text-hi sm:max-w-[9rem]" title={src.label}>
                   {src.label}
                 </p>
+                <p className="max-w-[9rem] truncate text-[10px] text-low" title={sourcePresentation.subtitle}>
+                  {sourcePresentation.subtitle}
+                </p>
+                {(sourcePresentation.status !== 'resolved' || t.category || t.internalTransferDecision) && (
+                  <p className="max-w-[11rem] truncate text-[10px] font-semibold text-low" title={[
+                    sourcePresentation.status !== 'resolved' ? `${sourcePresentation.status} source` : null,
+                    t.category ? `Classification: ${t.category.replace(/_/g, ' ')}` : null,
+                    t.internalTransferDecision ? `Internal transfer ${t.internalTransferDecision}` : null
+                  ].filter(Boolean).join(' · ')}>
+                    {[
+                      sourcePresentation.status !== 'resolved' ? sourcePresentation.status : null,
+                      t.category?.replace(/_/g, ' '),
+                      t.internalTransferDecision ? `internal ${t.internalTransferDecision}` : null
+                    ].filter(Boolean).join(' · ')}
+                  </p>
+                )}
                 {t.feeAmount != null && t.feeAsset && (
                   <span className="mt-0.5 hidden max-w-full items-center rounded-full border border-hi/10 bg-elev-3/50 px-2 py-px text-[10px] font-bold tabular-figures text-low sm:inline-flex">
                     fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}
@@ -1609,7 +1673,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               aria-expanded={expanded}
               aria-label={expanded ? 'Collapse transaction details' : 'Expand transaction details'}
               className={cn(
-                'grid h-9 w-9 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                'grid h-11 w-11 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
                 expanded ? 'bg-elev-3 text-primary' : 'text-low hover:bg-elev-3 hover:text-hi'
               )}
             >
@@ -1685,6 +1749,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             postings={eventPostings}
             runningBalances={postingSnapshot.index.runningBalanceByPostingId}
             costAnalysis={costAnalysis!}
+            transaction={t}
+            presentation={sourcePresentation}
+            taxPolicy={taxPolicy!}
             activeTab={detailTabByTxId[t.id] ?? 'details'}
             onActiveTabChange={(activeTab) => setDetailTabByTxId((current) => ({ ...current, [t.id]: activeTab }))}
             details={<>
@@ -1731,9 +1798,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
                 )}
               </DetailRow>
               <DetailRow label="Source">
-                <SourceIcon source={t.source} chainLabel={chainLabel} chainId={t.chain ?? null} size={18} />
-                {src.label}
-                {chainLabel && chainLabel !== src.label ? ` · ${chainLabel}` : ''}
+                <SourceIcon iconId={sourcePresentation.iconId} label={sourcePresentation.primaryLabel} size={18} />
+                {sourcePresentation.primaryLabel} · {sourcePresentation.subtitle}
               </DetailRow>
               <DetailRow label="From">{endpointFact(fromAddr, ownSide === 'from' || ownSide === 'both')}</DetailRow>
               <DetailRow label="To">{endpointFact(toAddr, ownSide === 'to' || ownSide === 'both')}</DetailRow>
@@ -1803,6 +1869,19 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             <div className="mt-3 flex flex-wrap items-center gap-2">
               {pricedDisposal && <Badge tone="primary">Cost basis · {pricedDisposal.method}</Badge>}
               {t.isInternalTransfer && <Badge tone="neutral">Internal · not taxable</Badge>}
+              {t.internalTransferDecision === 'suggested' && <Badge tone="neutral">Internal transfer suggested</Badge>}
+              {t.internalTransferDecision === 'confirmed' && <Badge tone="neutral">Internal transfer confirmed</Badge>}
+              {t.category && <Badge tone="neutral">Classification · {t.category.replace(/_/g, ' ')}</Badge>}
+              {t.categoryOrigin === 'suggestion' && <Badge tone="neutral">Classification suggested</Badge>}
+              {linkedCounterpart && (
+                <button
+                  type="button"
+                  onClick={openLinkedCounterpart}
+                  className="inline-flex min-h-[44px] items-center rounded-lg px-2 text-xs font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                >
+                  Open linked counterpart
+                </button>
+              )}
               {canEditSpecificId && (
                 <button
                   type="button"
@@ -2105,13 +2184,17 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             sourceFilter === 'all' ? (
               <Link2 className="h-3.5 w-3.5" />
             ) : (
-              <SourceIcon source={sourceFilter} size={18} />
+              <SourceIcon
+                iconId={availableSources.find((source) => source.key === sourceFilter)?.iconId}
+                label={availableSources.find((source) => source.key === sourceFilter)?.label ?? 'Source'}
+                size={18}
+              />
             )
           }
         >
           <option value="all">All sources</option>
           {availableSources.map((s) => (
-            <option key={s.id} value={s.id}>{s.label}</option>
+            <option key={s.key} value={s.key}>{s.label}</option>
           ))}
         </ChipSelect>
 
