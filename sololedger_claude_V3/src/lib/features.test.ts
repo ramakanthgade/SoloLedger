@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isFeatureUnlocked } from './features';
+import { isFeatureUnlocked, isWalletDefiNetWorthV1Enabled } from './features';
 
 describe('isFeatureUnlocked — jurisdiction gating', () => {
   it('gates loss-harvesting and multi-year carryforward OFF for IN', () => {
@@ -21,5 +21,16 @@ describe('isFeatureUnlocked — jurisdiction gating', () => {
 
   it('defaults to unlocked when no jurisdiction is passed', () => {
     expect(isFeatureUnlocked('advanced_loss_harvesting')).toBe(true);
+  });
+});
+
+describe('walletDefiNetWorthV1 rollout switch', () => {
+  it('defaults off and enables only for an explicit true value', () => {
+    expect(isWalletDefiNetWorthV1Enabled(undefined)).toBe(false);
+    expect(isWalletDefiNetWorthV1Enabled('true')).toBe(true);
+    expect(isWalletDefiNetWorthV1Enabled(' TRUE ')).toBe(true);
+    expect(isWalletDefiNetWorthV1Enabled('false')).toBe(false);
+    expect(isWalletDefiNetWorthV1Enabled('1')).toBe(false);
+    expect(isFeatureUnlocked('walletDefiNetWorthV1')).toBe(true);
   });
 });

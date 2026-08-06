@@ -2,6 +2,7 @@ import { act, fireEvent, render, screen, waitFor, within } from '@testing-librar
 import { describe, expect, it, vi } from 'vitest';
 import type { DataHealthModel } from './dataHealthModel';
 import { DataHealthWorkspace } from './DataHealthWorkspace';
+import { buildLocalDataHealthDiagnostics } from './dataHealthModel';
 
 const clean: DataHealthModel = {
   summary: { sourceCount: 1, scopeCount: 1, assetCount: 1, actionSourceCount: 0, divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0, partialCoverage: 0, failedCoverage: 0, unknownCoverage: 0, openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0, negativePostingFallback: 0, reconciled: 1 },
@@ -77,6 +78,35 @@ const withDistinctClasses: DataHealthModel = {
 };
 
 describe('DataHealthWorkspace', () => {
+  it('shows local-only pagination, enrichment, safety, spoof, DeFi, and shadow diagnostics', () => {
+    const diagnostics = buildLocalDataHealthDiagnostics({
+      transactions: [
+        { safetyState: 'unverified' },
+        { outboundInitiation: 'spoofed_outbound_log' }
+      ] as unknown as import('@/types/transaction').Transaction[],
+      coverage: [{ endpointOutcomes: [
+        { paginationRequired: true, paginationExhausted: false },
+        { quantityResolved: false }
+      ] }] as unknown as import('@/lib/reconcile/sourceCoverage').SourceCoverageRow[],
+      defiSnapshots: [
+        { status: 'complete', generation: 1, accountIdentityScope: 'wallet:one', protocolId: 'aave-v3-ethereum' },
+        { status: 'partial', generation: 2, accountIdentityScope: 'wallet:one', protocolId: 'aave-v3-ethereum', warnings: ['Moralis and RPC disagreed'] },
+        { status: 'unsupported', generation: 1, accountIdentityScope: 'wallet:two', protocolId: 'aave-v3-ethereum' }
+      ] as unknown as import('@/lib/defi/types').DefiPositionSnapshot[],
+      shadow: {
+        legacyNetWorth: 100, defiNetWorth: 80, difference: -20, featureEnabled: false,
+        projection: {} as import('@/lib/portfolio/economicExposureProjection').EconomicExposureProjection
+      }
+    });
+    render(<DataHealthWorkspace model={clean} localDiagnostics={diagnostics} onClose={vi.fn()} onNavigate={vi.fn()} focusOnMount={false} />);
+    expect(screen.getByText('No wallet telemetry is sent.', { exact: false })).toBeVisible();
+    expect(screen.getByText('-20 · fallback active')).toBeVisible();
+    expect(diagnostics).toMatchObject({ partialDefi: 1, disagreementDefi: 1, staleDefi: 1, unsupportedDefi: 1 });
+    for (const label of ['Partial pagination', 'Enrichment backlog', 'Safety review', 'Spoofed logs', 'Partial DeFi', 'DeFi disagreements', 'Stale DeFi', 'Unsupported / non-comparable DeFi']) {
+      expect(screen.getByText(label)).toBeVisible();
+    }
+  });
+
   it('shows negative fallback asset context and opens its exact transaction filters', () => {
     const onNavigate = vi.fn();
     render(<DataHealthWorkspace model={negativeFallback} onClose={vi.fn()} onNavigate={onNavigate} focusOnMount={false} />);

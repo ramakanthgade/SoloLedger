@@ -10,7 +10,7 @@ import { Badge } from '@/components/ui/card';
 import { cn, formatAmountForExport, formatCurrency, formatCompactCurrency, formatCompactAmount, formatDateTime, getFyBoundaries, getFyForTimestamp, getFyLabel, getCurrentFy, getAvailableFys, monetaryColumnLabel, downloadBlob } from '@/lib/utils';
 import type { DerivativesTreatment, Jurisdiction } from '@/types/transaction';
 import { JURISDICTIONS, summarizeYear } from '@/lib/tax/jurisdictions';
-import { resolveDerivativesTreatment } from '@/lib/tax/derivatives';
+import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { PageHeader } from '@/components/PageHeader';
 import { Button } from '@/components/ui/button';
@@ -148,7 +148,7 @@ export function CapitalGainsTab() {
       setCurrency(s.reportingCurrency);
       const jur = s.jurisdiction ?? 'IN';
       setJurisdiction(jur);
-      setDerivativesTreatment(resolveDerivativesTreatment(s));
+      setDerivativesTreatment(resolveTaxPolicy({ kind: 'derivatives', settings: s }).derivativesTreatment!);
       setFy(getCurrentFy(jur));
     });
   }, []);

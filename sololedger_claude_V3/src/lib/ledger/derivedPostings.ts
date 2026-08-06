@@ -3,11 +3,12 @@ import { isTransactionExcluded } from '@/lib/safety/assetSafety';
 import { binanceApiIdentity } from '@/lib/storage/binanceEconomicDedup';
 import { normalizeAssetSymbol, transactionLegAssetKey } from './assetKey';
 import { canonicalWalletAddress, canonicalWalletChainScope } from './chainNamespace';
+import { resolveProtocol } from '@/lib/defi/protocolRegistry';
 
 export type AccountClass =
   | 'spot' | 'funding' | 'margin' | 'futures' | 'options'
   | 'wallet' | 'manual' | 'unknown';
-export type PostingRole = 'principal' | 'counter' | 'fee' | 'opening_balance';
+export type PostingRole = 'principal' | 'counter' | 'liability' | 'fee' | 'opening_balance';
 export type PostingPhase = 0 | 10 | 20 | 30;
 
 export interface TransactionEvidenceRef {
@@ -253,6 +254,28 @@ interface PostingLeg {
   position: number;
 }
 
+interface DefiPostingAction {
+  type: 'borrow' | 'repay';
+  protocolId: string;
+  reserveKey: string;
+}
+
+function defiPostingAction(transaction: Transaction): DefiPostingAction | undefined {
+  const evidence = transaction.raw?.defiActionEvidence;
+  if (!evidence || typeof evidence !== 'object') return undefined;
+  const value = evidence as Record<string, unknown>;
+  const exactEventIds = Array.isArray(value.eventIds) && value.eventIds.every((eventId) =>
+    typeof eventId === 'string' && /^event:\d+:0x[0-9a-f]+:0x[0-9a-f]{40}:\d+$/.test(eventId));
+  if (value.postingAnchor !== true || (value.type !== 'borrow' && value.type !== 'repay') ||
+      typeof value.protocolId !== 'string' || typeof value.reserveKey !== 'string' ||
+      value.reserveKey === 'unknown' || value.complete !== true || value.evidenceSource !== 'ethereum_log' ||
+      typeof value.chainId !== 'number' || !resolveProtocol(value.chainId, value.protocolId) ||
+      typeof value.confidence !== 'number' || !Number.isFinite(value.confidence) || value.confidence < 0.9 ||
+      !exactEventIds || !Array.isArray(value.eventIds) || new Set(value.eventIds).size < 2 ||
+      typeof value.postingAnchorEventId !== 'string' || !value.eventIds.includes(value.postingAnchorEventId)) return undefined;
+  return { type: value.type, protocolId: value.protocolId, reserveKey: value.reserveKey };
+}
+
 function deletedTransactionEvidence(
   transaction: Transaction,
   deletedSource: NonNullable<Transaction['deletedSourceEvidence']>
@@ -344,6 +367,15 @@ function legsFor(transaction: Transaction, scope: AccountScopeResolution): Posti
     legs.push({
       role: 'principal', phase: 10, asset: normalizeAssetSymbol(transaction.asset),
       assetKey: postingLegAssetKey(transaction, 'principal', scope), quantity: principal, position: 0
+    });
+  }
+  const defiAction = defiPostingAction(transaction);
+  if (defiAction && transaction.amount > 0 && Number.isFinite(transaction.amount)) {
+    legs.push({
+      role: 'liability', phase: 20, asset: normalizeAssetSymbol(transaction.asset),
+      assetKey: `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
+      quantity: defiAction.type === 'borrow' ? -Math.abs(transaction.amount) : Math.abs(transaction.amount),
+      position: 1
     });
   }
   if (
@@ -452,6 +484,12 @@ function appendTransactionPostings(
     if (quantity !== 0 && Number.isFinite(quantity)) {
       appendDerivedPosting(target, transaction, scope, evidence, 'principal', 10,
         normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), quantity);
+    }
+    const defiAction = defiPostingAction(transaction);
+    if (defiAction && transaction.amount > 0 && Number.isFinite(transaction.amount)) {
+      appendDerivedPosting(target, transaction, scope, evidence, 'liability', 20,
+        normalizeAssetSymbol(transaction.asset), `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
+        defiAction.type === 'borrow' ? -Math.abs(transaction.amount) : Math.abs(transaction.amount));
     }
     if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
       appendDerivedPosting(target, transaction, scope, evidence, 'fee', 30,

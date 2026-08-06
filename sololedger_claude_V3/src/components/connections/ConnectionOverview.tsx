@@ -14,7 +14,8 @@ import { relativeTime, shortAddress } from './connectionModel';
 import type { ConnectionWorkspaceSnapshot } from './connectionWorkspaceModel';
 import { HoldingsList } from '@/components/holdings/HoldingsList';
 import { canonicalDefiAccountScope, type DefiPositionRow, type DefiPositionSnapshot } from '@/lib/defi/types';
-import { projectScopedEconomicExposure } from '@/lib/portfolio/economicExposureProjection';
+import { projectWalletDefiNetWorth } from '@/lib/portfolio/economicExposureProjection';
+import { isWalletDefiNetWorthV1Enabled } from '@/lib/features';
 
 function chainLabel(chainId: string): string {
   return CHAINS.find((chain) => chain.id === chainId)?.label ?? chainId;
@@ -112,10 +113,11 @@ export interface ConnectionOverviewProps {
   onOpenDataHealth?: () => void;
   defiPositionSnapshots?: readonly DefiPositionSnapshot[];
   defiPositionRows?: readonly DefiPositionRow[];
+  defiNetWorthEnabled?: boolean;
 }
 
 /** Presentation-only Overview tab. All custody and transaction work is read from one parent snapshot. */
-export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, syncing, syncDisabled, onSync, onOpenDataHealth, defiPositionSnapshots = [], defiPositionRows = [] }: ConnectionOverviewProps) {
+export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, syncing, syncDisabled, onSync, onOpenDataHealth, defiPositionSnapshots = [], defiPositionRows = [], defiNetWorthEnabled = isWalletDefiNetWorthV1Enabled() }: ConnectionOverviewProps) {
   const [showZeroBalances, setShowZeroBalances] = useState(false);
   const holdingsByAssetKey = new Map(snapshot.overview.holdings.map((holding) => [holding.assetKey, holding]));
   const rowsByScope = new Map((card.walletRows ?? []).map((row) => [
@@ -158,7 +160,7 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
   const walletDefiSnapshots = defiPositionSnapshots.filter((row) => allowedDefiScopes.has(canonicalDefiAccountScope(row.accountIdentityScope)));
   const walletDefiSnapshotIds = new Set(walletDefiSnapshots.map((row) => row.snapshotId));
   const walletDefiRows = defiPositionRows.filter((row) => walletDefiSnapshotIds.has(row.snapshotId));
-  const walletEconomicExposure = projectScopedEconomicExposure({
+  const walletEconomicExposure = projectWalletDefiNetWorth({
     custody: allWalletAssets.map((asset) => ({
       id: asset.key,
       scopeId: asset.scopeId,
@@ -171,8 +173,9 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, sy
     snapshots: walletDefiSnapshots,
     rows: walletDefiRows,
     prices: new Map(allWalletAssets.flatMap((asset) => asset.contractAddress && asset.value != null && asset.amount > 1e-9
-      ? [[asset.contractAddress.toLowerCase(), asset.value / asset.amount] as const] : []))
-  });
+      ? [[asset.contractAddress.toLowerCase(), asset.value / asset.amount] as const] : [])),
+    enabled: defiNetWorthEnabled
+  }).projection;
   const liquidCustodyIds = new Set(walletEconomicExposure.assets.filter((row) => row.kind === 'liquid').map((row) => row.id));
   const positiveWalletAssets = allWalletAssets.filter((asset) => asset.amount > 1e-9 && liquidCustodyIds.has(asset.key));
   const zeroWalletAssets = allWalletAssets.filter((asset) => Math.abs(asset.amount) <= 1e-9);

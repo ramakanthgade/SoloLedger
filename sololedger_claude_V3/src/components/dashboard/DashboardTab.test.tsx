@@ -504,7 +504,7 @@ describe('DashboardTab — hero honesty', () => {
 });
 
 describe('DashboardTab — header, money strip and tax rail', () => {
-  it('does not fall back to raw custody total when a known DeFi liability is unpriced', async () => {
+  it('keeps a known unpriced DeFi liability shadow-only while the rollout is off', async () => {
     const scope = `wallet:evm:0x${'1'.repeat(40)}`;
     const reserve = `0x${'2'.repeat(40)}`;
     const token = (contractAddress: string, symbol: string) => ({ chainId: 1 as const, contractAddress, symbol, decimals: 6 });
@@ -524,9 +524,12 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable'
     });
     await renderTab();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
-    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', 'incomplete');
-    expect(screen.getByTestId('defi-net-worth-incomplete')).toHaveTextContent('Raw custody is not shown as debt-free');
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹35,000.00');
+    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', '35000');
+    expect(screen.queryByTestId('defi-net-worth-incomplete')).not.toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem('sololedger_wallet_defi_net_worth_shadow_v1') ?? '{}')).toMatchObject({
+      featureEnabled: false, defiNetWorth: null, status: 'complete'
+    });
   });
   it('shows an honest "Not synced yet" chip and routes Add source to Connections', async () => {
     const goToImport = vi.fn();
