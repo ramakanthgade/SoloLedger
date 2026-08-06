@@ -53,7 +53,7 @@ export function runPostingPerformanceScenario(fixtures: readonly Transaction[]) 
   const postings = derivePostings(fixtures, {
     exchangeConnections: [{ id: 'conn-perf', exchange: 'binance' }]
   });
-  const prepared = preparePostingAggregation(postings);
+  const prepared = preparePostingAggregation(postings, true);
   const metrics = { postingVisits: 0 };
   const balances = postingBalances(postings, { metrics }, prepared);
   const running = buildRunningBalanceIndex(postings, metrics, prepared);
