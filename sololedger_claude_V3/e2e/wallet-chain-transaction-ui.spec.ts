@@ -1,7 +1,11 @@
 import { expect, test, type Page } from '@playwright/test';
 import { mkdir } from 'node:fs/promises';
+import { join } from 'node:path';
 
-const ARTIFACTS = '/code/.generated_artifacts/images';
+const ARTIFACTS = join(
+  process.env.SOLOLEDGER_E2E_ARTIFACT_DIR ?? join(process.cwd(), 'test-results', 'generated-artifacts'),
+  'images'
+);
 const WIDTHS = [1440, 1024, 390] as const;
 const COLOR_SCHEMES = ['light', 'dark'] as const;
 
