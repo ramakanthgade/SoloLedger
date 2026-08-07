@@ -44,9 +44,9 @@ jobs:
           VITE_SAAS_MODE: 'true'
           VITE_API_URL: https://sololedger-production.up.railway.app
           VITE_BUILD_SHA: ${{ github.sha }}
-          # GitHub Pages has no pre-promotion target. Keep this production build
-          # off rather than treating the disposable localhost gate as rollout proof.
-          VITE_WALLET_DEFI_NET_WORTH_V1: 'false'
+          # Production promotion follows exact-head CI and keeps the runtime
+          # manifest, freshness, and positive-liability evidence gates fail-closed.
+          VITE_WALLET_DEFI_NET_WORTH_V1: 'true'
 
       - name: Deploy to gh-pages branch
         uses: JamesIves/github-pages-deploy-action@v4
