@@ -50,6 +50,7 @@ describe('loadCcxt', () => {
     expect(typeof a.htx).toBe('function');
     expect(typeof a.cryptocom).toBe('function');
     expect(typeof a.bitfinex).toBe('function');
+    expect(typeof a.gemini).toBe('function');
   });
 });
 
@@ -168,6 +169,24 @@ describe('createExchangeClient', () => {
       public: 'https://api.bitfinex.com',
       private: 'https://api.bitfinex.com'
     });
+    expect(typeof raw.fetchDepositsWithdrawals).toBe('function');
+  });
+
+  it('configures Gemini for API-only spot markets without currency discovery or passphrase', async () => {
+    const client = await createExchangeClient(row({ exchange: 'gemini', apiKey: 'account-key' }));
+    const raw = client as unknown as {
+      options: Record<string, unknown>; has: Record<string, unknown>;
+      requiredCredentials: Record<string, boolean>; password?: string;
+      enableLastJsonResponse: boolean;
+      fetchDepositsWithdrawals?: unknown;
+    };
+    expect(raw.options).toMatchObject({
+      defaultType: 'spot', fetchCurrencies: false, fetchMarketsMethod: 'fetch_markets_from_api'
+    });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    expect(raw.password).toBeUndefined();
+    expect(raw.enableLastJsonResponse).toBe(true);
     expect(typeof raw.fetchDepositsWithdrawals).toBe('function');
   });
 

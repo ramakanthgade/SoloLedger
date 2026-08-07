@@ -137,6 +137,10 @@ const GATEIO_TRADE_LIMIT = 1000;
 const GATEIO_DEPOSIT_LIMIT = 500;
 /** Official wallet docs cap withdrawal-history responses at 100 rows. */
 const GATEIO_WITHDRAWAL_LIMIT = 100;
+const GEMINI_TRADE_LIMIT = 500;
+const GEMINI_TRANSFER_LIMIT = 50;
+const GEMINI_MAX_REQUESTS_PER_PHASE = 8_000;
+const GEMINI_TRANSFER_REQUEST_SPACING_MS = 5_000;
 /** Bybit advertises two years of execution history for the V5 endpoint. */
 const BYBIT_TRADE_RETENTION_MS = 2 * 365 * 86_400_000;
 /**
@@ -167,7 +171,8 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   gateio: Date.UTC(2013, 3, 1),
   htx: Date.UTC(2013, 8, 1), // Huobi/HTX launched in September 2013
   cryptocom: Date.UTC(2019, 10, 14), // Crypto.com Exchange public beta
-  bitfinex: Date.UTC(2012, 8, 1) // Bitfinex launched in 2012
+  bitfinex: Date.UTC(2012, 8, 1), // Bitfinex launched in 2012
+  gemini: Date.UTC(2015, 9, 8) // Gemini exchange launch, 2015-10-08
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -185,6 +190,9 @@ export interface SyncEngineDeps {
   cryptocomMaxRequests?: number;
   /** Test seam; production uses BITFINEX_MAX_REQUESTS_PER_PHASE per history phase. */
   bitfinexMaxRequests?: number;
+  /** Test seams; each cap is phase-wide and counts retry attempts. */
+  geminiMaxTradeRequests?: number;
+  geminiMaxTransferRequests?: number;
 }
 
 export interface SyncHooks {
@@ -1073,6 +1081,121 @@ interface FetchPlanOutcome<T extends PageRow> {
   unclassifiedCount?: number;
 }
 
+export interface GeminiRequestBudget {
+  used: number;
+  max: number;
+}
+
+export interface GeminiTradeProgress {
+  requestedStart: number;
+  requestedEnd: number;
+  symbolStarts: Record<string, number>;
+  completedSymbols: string[];
+  nextSymbolIndex?: number;
+}
+
+interface GeminiNativePage<T> {
+  rows: T[];
+  raw: Array<Record<string, unknown>>;
+}
+
+function geminiRawRows(client: ExchangeClient): Array<Record<string, unknown>> {
+  return Array.isArray(client.last_json_response)
+    ? client.last_json_response.filter((row): row is Record<string, unknown> => row != null && typeof row === 'object')
+    : [];
+}
+
+async function geminiCapturedPage<T>(client: ExchangeClient, request: () => Promise<T[]>): Promise<GeminiNativePage<T>> {
+  client.last_json_response = undefined;
+  const rows = await request();
+  return { rows, raw: geminiRawRows(client) };
+}
+
+function geminiRawTimestamp(row: Record<string, unknown>, timestampUnit: 'seconds' | 'milliseconds'): number | undefined {
+  const ms = Number(row.timestampms);
+  if (Number.isFinite(ms)) return timestampUnit === 'seconds' ? Math.floor(ms / 1_000) * 1_000 : ms;
+  const timestamp = Number(row.timestamp);
+  if (!Number.isFinite(timestamp)) return undefined;
+  return timestampUnit === 'seconds' ? timestamp * 1_000 : timestamp;
+}
+
+function geminiNativeId(row: PageRow, raw: Record<string, unknown> | undefined): string | undefined {
+  // CCXT's unified id is Gemini tid/eid/withdrawalId. Prefer it because CCXT
+  // may remove a boundary raw row, making parsed/raw array indexes diverge.
+  const value = row.id ?? raw?.tid ?? raw?.eid ?? raw?.withdrawalId;
+  return value == null || String(value).length === 0 ? undefined : String(value);
+}
+
+/** One Gemini timestamp page. Raw response length controls fullness because CCXT filters by `since`. */
+export async function paginateGeminiTimestamp<T extends PageRow>(args: {
+  fetchPage: (since: number) => Promise<GeminiNativePage<T>>;
+  since: number;
+  now: number;
+  limit: number;
+  timestampUnit: 'seconds' | 'milliseconds';
+  budget: GeminiRequestBudget;
+  sleep?: (ms: number) => Promise<void>;
+  spacingMs?: number;
+  maxSuccessfulPages?: number;
+}): Promise<PaginateResult<T>> {
+  const rows: T[] = [];
+  const seen = new Set<string>();
+  const initial = args.budget.used;
+  let start = args.since;
+  let physicalRequests = 0;
+  let successfulPages = 0;
+  const sleep = args.sleep ?? (async () => {});
+  for (;;) {
+    let retry = 0;
+    let page: GeminiNativePage<T> | undefined;
+    while (!page) {
+      if (args.budget.used >= args.budget.max) {
+        return { rows, maxTs: start, partial: true, pages: args.budget.used - initial, termination: 'page_budget' };
+      }
+      if (physicalRequests > 0 && (args.spacingMs ?? 0) > 0) await sleep(args.spacingMs!);
+      physicalRequests += 1;
+      args.budget.used += 1;
+      try {
+        page = await args.fetchPage(start);
+      } catch (error) {
+        const kind = classifySyncError(error);
+        if (retry >= MAX_RETRIES || !RETRYABLE_KINDS.has(kind)) throw error;
+        retry += 1;
+      }
+    }
+    page.rows.forEach((row, index) => {
+      const id = geminiNativeId(row, page!.raw[index]);
+      if (id && seen.has(id)) return;
+      if (id) seen.add(id);
+      rows.push(row);
+    });
+    successfulPages += 1;
+    if (page.raw.length < args.limit) {
+      return { rows, maxTs: args.now, partial: false, pages: args.budget.used - initial, termination: 'exhausted' };
+    }
+    const timestamps = page.raw.map((raw) => geminiRawTimestamp(raw, args.timestampUnit))
+      .filter((value): value is number => value != null && Number.isFinite(value));
+    if (timestamps.length === 0) {
+      return { rows, maxTs: start, partial: true, pages: args.budget.used - initial, termination: 'nonadvancing' };
+    }
+    // Gemini offers no secondary cursor within one timestamp unit. Advancing
+    // past a page saturated entirely at one second/millisecond could skip an
+    // unbounded number of same-boundary rows, so fail closed and replay.
+    if (new Set(timestamps).size === 1) {
+      return { rows, maxTs: start, partial: true, pages: args.budget.used - initial, termination: 'nonadvancing' };
+    }
+    const max = Math.max(...timestamps);
+    const next = args.timestampUnit === 'seconds' ? max + 1_000 : max + 1;
+    if (next <= start) {
+      return { rows, maxTs: start, partial: true, pages: args.budget.used - initial, termination: 'nonadvancing' };
+    }
+    start = next;
+    if (successfulPages >= (args.maxSuccessfulPages ?? Number.POSITIVE_INFINITY)) {
+      return { rows, maxTs: start, partial: true, pages: args.budget.used - initial, termination: 'page_budget' };
+    }
+  }
+}
+
 export interface HtxTradeProgress {
   windowStart: number;
   windowEnd: number;
@@ -1180,6 +1303,97 @@ export function bitfinexMovementDisposition(transfer: UnifiedTransfer): Bitfinex
   return 'pending';
 }
 
+export type GeminiTransferDisposition = 'settled' | 'pending' | 'terminal';
+export function geminiTransferDisposition(transfer: UnifiedTransfer): GeminiTransferDisposition {
+  if (transfer.status === 'ok') return 'settled';
+  const status = String(transfer.info?.status ?? transfer.status ?? '').toLowerCase();
+  if (['failed', 'rejected', 'canceled', 'cancelled'].includes(status)) return 'terminal';
+  return 'pending';
+}
+
+export type GeminiTradeDisposition = 'include' | 'fully_broken';
+export function geminiTradeDisposition(trade: UnifiedTrade): GeminiTradeDisposition {
+  return String(trade.info?.break ?? '').toLowerCase() === 'full' ? 'fully_broken' : 'include';
+}
+
+export function geminiTransferDirection(transfer: UnifiedTransfer): 'deposits' | 'withdrawals' | 'unknown' {
+  const type = String(transfer.info?.type ?? transfer.type ?? '').toLowerCase();
+  if (type === 'deposit' || type === 'reward' || type === 'admincredit') return 'deposits';
+  if (type === 'withdrawal' || type === 'withdraw' || type === 'admindebit') return 'withdrawals';
+  return 'unknown';
+}
+
+/** Fair, resumable traversal of Gemini's symbol-required timestamp history. */
+export async function fetchGeminiTradesFair(args: {
+  client: ExchangeClient;
+  symbols: string[];
+  since: number;
+  now: number;
+  priorProgress?: GeminiTradeProgress;
+  budget: GeminiRequestBudget;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<{ outcome: FetchPlanOutcome<UnifiedTrade>; progress?: GeminiTradeProgress }> {
+  const prior = args.priorProgress;
+  const usable = prior != null && prior.requestedStart === args.since && prior.requestedEnd <= args.now;
+  const end = usable ? prior.requestedEnd : args.now;
+  const starts: Record<string, number> = usable ? { ...prior.symbolStarts } : {};
+  const completed = new Set(usable ? prior.completedSymbols.filter((s) => args.symbols.includes(s)) : []);
+  let nextSymbolIndex = usable && Number.isInteger(prior.nextSymbolIndex)
+    ? Math.max(0, Math.min(prior.nextSymbolIndex!, Math.max(args.symbols.length - 1, 0)))
+    : 0;
+  const rows: UnifiedTrade[] = [];
+  const seenTids = new Set<string>();
+
+  // One page per symbol per round prevents a busy market from starving quieter symbols.
+  while (completed.size < args.symbols.length) {
+    let advanced = false;
+    const round = args.symbols.map((_, offset) => (nextSymbolIndex + offset) % args.symbols.length);
+    for (const symbolIndex of round) {
+      const symbol = args.symbols[symbolIndex]!;
+      if (completed.has(symbol)) continue;
+      const start = starts[symbol] ?? args.since;
+      const result = await paginateGeminiTimestamp<UnifiedTrade>({
+        fetchPage: (pageSince) => geminiCapturedPage(args.client, () =>
+          args.client.fetchMyTrades(symbol, pageSince, GEMINI_TRADE_LIMIT)),
+        since: start,
+        now: end,
+        limit: GEMINI_TRADE_LIMIT,
+        timestampUnit: 'seconds',
+        // Restrict this call to one successful page; retries still consume the shared budget.
+        budget: { used: 0, max: args.budget.max - args.budget.used },
+        maxSuccessfulPages: 1,
+        sleep: args.sleep
+      });
+      args.budget.used += result.pages;
+      nextSymbolIndex = (symbolIndex + 1) % args.symbols.length;
+      for (const row of result.rows) {
+        const tid = row.id == null ? undefined : String(row.id);
+        if (tid && seenTids.has(tid)) continue;
+        if (tid) seenTids.add(tid);
+        rows.push(row);
+      }
+      if (!result.partial) completed.add(symbol);
+      else if (result.termination === 'page_budget' && result.maxTs != null && result.maxTs > start) {
+        starts[symbol] = result.maxTs;
+      } else if (result.termination !== 'page_budget') {
+        return {
+          outcome: { rows, maxTs: args.since, partial: true, termination: result.termination },
+          progress: { requestedStart: args.since, requestedEnd: end, symbolStarts: starts, completedSymbols: [...completed], nextSymbolIndex }
+        };
+      }
+      advanced = true;
+      if (args.budget.used >= args.budget.max) {
+        return {
+          outcome: { rows, maxTs: args.since, partial: true, termination: 'page_budget' },
+          progress: { requestedStart: args.since, requestedEnd: end, symbolStarts: starts, completedSymbols: [...completed], nextSymbolIndex }
+        };
+      }
+    }
+    if (!advanced) break;
+  }
+  return { outcome: { rows, maxTs: end, partial: false, termination: 'exhausted' } };
+}
+
 /** Coinbase v2 send/receive rows are the only in-scope transfer shapes. */
 function isCoinbaseChainTransfer(row: UnifiedTransfer): boolean {
   const t = row.info?.type;
@@ -1196,7 +1410,8 @@ async function fetchTransferKind(
   warnings: string[],
   sleep?: (ms: number) => Promise<void>,
   cryptocomMaxRequests?: number,
-  bitfinexMaxRequests?: number
+  bitfinexMaxRequests?: number,
+  geminiMaxRequests?: number
 ): Promise<FetchPlanOutcome<UnifiedTransfer>> {
   const fetchDeposits = kind === 'deposits';
   if (exchange === 'kraken') {
@@ -1348,6 +1563,22 @@ async function fetchTransferKind(
       since,
       now,
       maxRequests: bitfinexMaxRequests,
+      sleep
+    });
+  }
+  if (exchange === 'gemini') {
+    if (!client.fetchDepositsWithdrawals) {
+      throw new Error('Gemini combined transfer history is unavailable in this CCXT build.');
+    }
+    return paginateGeminiTimestamp({
+      fetchPage: (pageSince) => geminiCapturedPage(client, () =>
+        client.fetchDepositsWithdrawals!(undefined, pageSince, GEMINI_TRANSFER_LIMIT)),
+      since,
+      now,
+      limit: GEMINI_TRANSFER_LIMIT,
+      timestampUnit: 'milliseconds',
+      budget: { used: 0, max: geminiMaxRequests ?? GEMINI_MAX_REQUESTS_PER_PHASE },
+      spacingMs: GEMINI_TRANSFER_REQUEST_SPACING_MS,
       sleep
     });
   }
@@ -1525,6 +1756,8 @@ async function fetchTradesForSymbol(
         maxRequests: opts?.bitfinexMaxRequests,
         sleep: opts?.sleep
       });
+    case 'gemini':
+      throw new Error('Gemini trades use the shared fair paginator.');
   }
 }
 
@@ -1560,6 +1793,7 @@ export interface SyncFetchOutcome {
   knownAssets: string[] | undefined;
   knownSymbols: string[] | undefined;
   htxTradeProgress?: HtxTradeProgress;
+  geminiTradeProgress?: GeminiTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
   skippedUnsettled: number;
@@ -1615,7 +1849,7 @@ export async function syncConnection(
     const loadedMarkets = (await client.loadMarkets()) as Record<string, UnifiedMarket>;
     // Crypto.com and Bitfinex public catalogs are mixed. Keep a
     // strict active-spot market map for every downstream resolution step.
-    const markets = exchange === 'cryptocom' || exchange === 'bitfinex'
+    const markets = exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini'
       ? Object.fromEntries(Object.entries(loadedMarkets).filter(([, market]) =>
           market.spot === true && market.active !== false))
       : loadedMarkets;
@@ -1658,12 +1892,18 @@ export async function syncConnection(
       row.bitfinexPendingTransfers?.deposits ?? Number.POSITIVE_INFINITY,
       row.bitfinexPendingTransfers?.withdrawals ?? Number.POSITIVE_INFINITY
     );
+    const geminiSharedTransferStart = Math.min(
+      transferRequestedStarts.deposits,
+      transferRequestedStarts.withdrawals
+    );
 
     for (const kind of ['deposits', 'withdrawals'] as const) {
       let since = exchange === 'coinbase'
         ? coinbaseSharedTransferStart
         : exchange === 'bitfinex'
           ? bitfinexSharedTransferStart
+        : exchange === 'gemini'
+          ? geminiSharedTransferStart
         : transferRequestedStarts[kind];
       if (exchange === 'cryptocom' && row.cryptocomPendingTransfers?.[kind] != null) {
         since = Math.min(since, row.cryptocomPendingTransfers[kind]!);
@@ -1677,14 +1917,14 @@ export async function syncConnection(
       if (exchange === 'bitfinex') since = bitfinexRetainedMovement.since;
       const cbAssets = [...new Set([...balanceAssets, ...(row.knownAssets ?? [])])];
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
-      if ((exchange === 'coinbase' || exchange === 'bitfinex') && kind === 'withdrawals') {
+      if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini') && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
-      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex') {
+      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini') {
         // Gate/HTX/Crypto.com/Bitfinex retry each physical request inside their paginator so
         // a retry cannot restart pagination or reset the attempt cap.
         outcome = await fetchTransferKind(
           client, exchange, kind, since, nowMs, cbAssets, warnings, sleep,
-          deps.cryptocomMaxRequests, deps.bitfinexMaxRequests
+          deps.cryptocomMaxRequests, deps.bitfinexMaxRequests, deps.geminiMaxTransferRequests
         );
         if (cryptocomRetentionTruncated) {
           outcome.partial = true;
@@ -1700,6 +1940,25 @@ export async function syncConnection(
           });
           transferOutcomes.set('deposits', shared(outcome.rows.filter((item) => item.type === 'deposit')));
           transferOutcomes.set('withdrawals', shared(outcome.rows.filter((item) => item.type === 'withdrawal')));
+          outcome = transferOutcomes.get(kind)!;
+        } else if (exchange === 'gemini') {
+          const pending = outcome.rows
+            .filter((item) => geminiTransferDisposition(item) === 'pending')
+            .map((item) => item.timestamp)
+            .filter((timestamp): timestamp is number => timestamp != null && Number.isFinite(timestamp));
+          const safeMaxTs = pending.length > 0 ? Math.min(outcome.maxTs ?? nowMs, ...pending) : outcome.maxTs;
+          const unknown = outcome.rows.filter((item) => geminiTransferDirection(item) === 'unknown').length;
+          sharedTransferUnclassified = unknown;
+          const shared = (rows: UnifiedTransfer[]): FetchPlanOutcome<UnifiedTransfer> => ({
+            rows,
+            maxTs: safeMaxTs,
+            partial: outcome.partial || unknown > 0,
+            termination: outcome.termination,
+            unclassifiedCount: unknown
+          });
+          transferOutcomes.set('deposits', shared(outcome.rows.filter((item) => geminiTransferDirection(item) === 'deposits')));
+          transferOutcomes.set('withdrawals', shared(outcome.rows.filter((item) => geminiTransferDirection(item) === 'withdrawals')));
+          if (unknown > 0) warnings.push(`Gemini returned ${unknown} unsupported transfer type(s); coverage remains partial and the raw activity requires review.`);
           outcome = transferOutcomes.get(kind)!;
         } else {
           transferOutcomes.set(kind, outcome);
@@ -1786,7 +2045,9 @@ export async function syncConnection(
     const cursorTradeSince = Math.max(sinceFromCursor(oldCursors.trades, TRADE_OVERLAP_MS), launchFloor);
     const requestedTradeSince = exchange === 'htx' && usableHtxTradeProgress(row.htxTradeProgress, nowMs)
       ? Math.max(row.htxTradeProgress.windowStart, launchFloor)
-      : cursorTradeSince;
+      : exchange === 'gemini' && row.geminiTradeProgress?.requestedStart != null
+        ? Math.max(row.geminiTradeProgress.requestedStart, launchFloor)
+        : cursorTradeSince;
     let tradeSince = requestedTradeSince;
     const bybitRetentionFloor = nowMs - BYBIT_TRADE_RETENTION_MS;
     const bybitRetentionTruncated = exchange === 'bybit' && requestedTradeSince < bybitRetentionFloor;
@@ -1805,6 +2066,7 @@ export async function syncConnection(
     const tradeOutcomes: FetchPlanOutcome<UnifiedTrade>[] = [];
     let newKnownSymbols: string[] | undefined;
     let htxTradeProgress: HtxTradeProgress | undefined = row.htxTradeProgress;
+    let geminiTradeProgress: GeminiTradeProgress | undefined = row.geminiTradeProgress;
     let skippedSymbols = 0;
 
     if (exchange === 'binance') {
@@ -1871,53 +2133,71 @@ export async function syncConnection(
         ...new Set([...(row.knownSymbols ?? []).filter((s) => symbols.includes(s)), ...symbolHits])
       ].sort();
       discoveredCount = done;
-    } else if (exchange === 'htx') {
-      // HTX's spot matchresults endpoint requires `symbol`. Iterate the full
-      // loaded active-spot universe (plus still-known symbols) and share one
-      // physical request budget across every symbol; the 8,000 cap is for the
-      // whole trade phase, never multiplied by market count.
+    } else if (exchange === 'htx' || exchange === 'gemini') {
+      // Both APIs require a symbol. Iterate the complete loaded active-spot
+      // universe; HTX additionally shares one physical request budget.
       const symbols = [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])]
         .filter((symbol) => markets[symbol]?.spot === true && markets[symbol]?.active !== false)
         .sort();
-      const budget: HtxRequestBudget = {
-        used: 0,
-        max: deps.htxMaxTradeRequests ?? HTX_MAX_REQUESTS_PER_PHASE
-      };
-      discoveryUniverseCount = symbols.length;
-      newKnownSymbols = symbols;
-      const fair = await fetchHtxTradesFair({
-        symbols,
-        since: tradeSince,
-        now: nowMs,
-        priorProgress: usableHtxTradeProgress(row.htxTradeProgress, nowMs, tradeSince)
-          ? row.htxTradeProgress
-          : undefined,
-        requestBudget: budget,
-        fetchPage: (symbol, since, until, from) => htxCapturedPage(client, () =>
-          client.fetchMyTrades(symbol, since, HTX_TRADE_LIMIT, {
-            until,
-            type: 'spot',
-            direct: 'next',
-            ...(from ? { from } : {})
-          })),
-        sleep
-      });
-      const outcome = fair.outcome;
-      htxTradeProgress = fair.progress;
-      if (htxRetentionTruncated) {
-        // Retention is an independent coverage dimension. Never overwrite a
-        // structural page_budget/nonadvancing termination.
-        outcome.partial = true;
-        outcome.retentionFloor = htxRetentionFloor;
-      }
-      tradeOutcomes.push(outcome);
-      tradeRows.push(...outcome.rows);
-      fetchedCount += outcome.rows.length;
-      discoveredCount = symbols.length;
-      if (htxRetentionTruncated) {
-        warnings.push(
-          'HTX keeps about 120 days of match-result history — older HTX spot orders need a one-time CSV import.'
-        );
+      if (exchange === 'gemini') {
+        discoveryUniverseCount = symbols.length;
+        discoveredCount = symbols.length;
+        newKnownSymbols = symbols;
+        const fair = await fetchGeminiTradesFair({
+          client,
+          symbols,
+          since: tradeSince,
+          now: nowMs,
+          priorProgress: row.geminiTradeProgress,
+          budget: { used: 0, max: deps.geminiMaxTradeRequests ?? GEMINI_MAX_REQUESTS_PER_PHASE },
+          sleep
+        });
+        geminiTradeProgress = fair.progress;
+        tradeOutcomes.push(fair.outcome);
+        tradeRows.push(...fair.outcome.rows);
+        fetchedCount += fair.outcome.rows.length;
+        hooks.onProgress?.({ done: fair.progress?.completedSymbols.length ?? symbols.length, total: symbols.length });
+      } else {
+        const budget: HtxRequestBudget = {
+          used: 0,
+          max: deps.htxMaxTradeRequests ?? HTX_MAX_REQUESTS_PER_PHASE
+        };
+        discoveryUniverseCount = symbols.length;
+        newKnownSymbols = symbols;
+        const fair = await fetchHtxTradesFair({
+          symbols,
+          since: tradeSince,
+          now: nowMs,
+          priorProgress: usableHtxTradeProgress(row.htxTradeProgress, nowMs, tradeSince)
+            ? row.htxTradeProgress
+            : undefined,
+          requestBudget: budget,
+          fetchPage: (symbol, since, until, from) => htxCapturedPage(client, () =>
+            client.fetchMyTrades(symbol, since, HTX_TRADE_LIMIT, {
+              until,
+              type: 'spot',
+              direct: 'next',
+              ...(from ? { from } : {})
+            })),
+          sleep
+        });
+        const outcome = fair.outcome;
+        htxTradeProgress = fair.progress;
+        if (htxRetentionTruncated) {
+          // Retention is an independent coverage dimension. Never overwrite a
+          // structural page_budget/nonadvancing termination.
+          outcome.partial = true;
+          outcome.retentionFloor = htxRetentionFloor;
+        }
+        tradeOutcomes.push(outcome);
+        tradeRows.push(...outcome.rows);
+        fetchedCount += outcome.rows.length;
+        discoveredCount = symbols.length;
+        if (htxRetentionTruncated) {
+          warnings.push(
+            'HTX keeps about 120 days of match-result history — older HTX spot orders need a one-time CSV import.'
+          );
+        }
       }
     } else if (exchange === 'kraken') {
       const outcome = await withRetries(() => fetchKrakenTrades(client, tradeSince, nowMs), sleep);
@@ -1977,7 +2257,7 @@ export async function syncConnection(
       }
     }
 
-    const tradeCursorCandidate = exchange === 'htx'
+    const tradeCursorCandidate = exchange === 'htx' || exchange === 'gemini'
       // Every symbol must have been verified through the same frontier. A
       // max would skip an interrupted symbol; min keeps its window replayable.
       ? (tradeOutcomes.length > 0
@@ -1996,6 +2276,7 @@ export async function syncConnection(
     let tradeNormalizationDrops = 0;
     let cryptocomDerivativeExcluded = 0;
     let bitfinexNonSpotExcluded = 0;
+    let geminiBrokenTradesExcluded = 0;
     if (exchange === 'kraken') {
       const { transactions: krakenTxs, skipped: krakenSkipped } = normalizeKrakenTradesByOrder(
         tradeRows,
@@ -2029,6 +2310,10 @@ export async function syncConnection(
     } else {
       let cryptocomUnresolvedTrades = 0;
       for (const trade of tradeRows) {
+        if (exchange === 'gemini' && geminiTradeDisposition(trade) === 'fully_broken') {
+          geminiBrokenTradesExcluded += 1;
+          continue;
+        }
         const market = resolveMarket(markets, trade.symbol);
         if (exchange === 'bitfinex') {
           const rawInfo = trade.info as unknown;
@@ -2062,6 +2347,9 @@ export async function syncConnection(
       if (bitfinexNonSpotExcluded > 0) {
         warnings.push(`Excluded ${bitfinexNonSpotExcluded} Bitfinex margin, derivative or inactive-market trade(s); auto-sync imports active spot EXCHANGE orders only.`);
       }
+      if (geminiBrokenTradesExcluded > 0) {
+        warnings.push(`Excluded ${geminiBrokenTradesExcluded} fully broken Gemini trade(s); manual breaks remain included as Gemini requires.`);
+      }
     }
     const skippedTransfersByKind: Record<'deposits' | 'withdrawals', number> = {
       deposits: 0,
@@ -2075,7 +2363,9 @@ export async function syncConnection(
       for (const transfer of transferOutcomes.get(kind)?.rows ?? []) {
         const terminal = exchange === 'cryptocom'
           ? cryptocomTransferDisposition(transfer) === 'terminal'
-          : exchange === 'bitfinex' && bitfinexMovementDisposition(transfer) === 'terminal';
+          : exchange === 'bitfinex'
+            ? bitfinexMovementDisposition(transfer) === 'terminal'
+            : exchange === 'gemini' && geminiTransferDisposition(transfer) === 'terminal';
         if (terminal) {
           terminalTransfersByKind[kind] += 1;
           continue;
@@ -2101,9 +2391,9 @@ export async function syncConnection(
 
     const completedAt = now();
     const requestedStarts = [
-      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : transferRequestedStarts.deposits,
-      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : transferRequestedStarts.withdrawals,
-      tradeSince
+      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : transferRequestedStarts.deposits,
+      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : transferRequestedStarts.withdrawals,
+      exchange === 'gemini' ? requestedTradeSince : tradeSince
     ];
     const tradeStructuralFailure = tradeOutcomes.find((outcome) =>
       outcome.termination && outcome.termination !== 'exhausted');
@@ -2120,6 +2410,8 @@ export async function syncConnection(
             : {}),
           skippedCount: skippedTransfersByKind.deposits + (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0),
           excludedCount: terminalTransfersByKind.deposits,
+          warning: (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0) > 0
+            ? 'unknown_transfer_direction' : undefined,
           exclusionReasons: [
             ...(skippedTransfersByKind.deposits > 0 ? ['unsettled_transfer'] : []),
             ...(terminalTransfersByKind.deposits > 0 ? ['terminal_status_out_of_scope'] : []),
@@ -2134,6 +2426,8 @@ export async function syncConnection(
             : {}),
           skippedCount: skippedTransfersByKind.withdrawals + (transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0),
           excludedCount: terminalTransfersByKind.withdrawals,
+          warning: (transferOutcomes.get('withdrawals')?.unclassifiedCount ?? 0) > 0
+            ? 'unknown_transfer_direction' : undefined,
           exclusionReasons: [
             ...(skippedTransfersByKind.withdrawals > 0 ? ['unsettled_transfer'] : []),
             ...(terminalTransfersByKind.withdrawals > 0 ? ['terminal_status_out_of_scope'] : []),
@@ -2146,16 +2440,17 @@ export async function syncConnection(
         partial: tradeOutcomes.some((outcome) => outcome.partial) || skippedSymbols > 0 || tradeNormalizationDrops > 0,
         termination: tradeStructuralFailure?.termination,
         retentionFloor: tradeRetention?.retentionFloor
-      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 || cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? {
+      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 || cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 || geminiBrokenTradesExcluded > 0 ? {
         ...(skippedSymbols > 0 || tradeNormalizationDrops > 0
           ? { status: 'partial' as const, paginationExhausted: false }
           : {}),
         skippedCount: skippedSymbols + tradeNormalizationDrops,
-        excludedCount: cryptocomDerivativeExcluded + bitfinexNonSpotExcluded,
+        excludedCount: cryptocomDerivativeExcluded + bitfinexNonSpotExcluded + geminiBrokenTradesExcluded,
         failedCount: tradeNormalizationDrops,
         exclusionReasons: [
           ...(skippedSymbols > 0 ? ['binance_symbol_unavailable'] : []),
           ...(cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? ['derivative_out_of_scope'] : []),
+          ...(geminiBrokenTradesExcluded > 0 ? ['fully_broken_trade'] : []),
           ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
         ],
         warning: tradeNormalizationDrops > 0
@@ -2168,7 +2463,7 @@ export async function syncConnection(
       .reduce((count, outcome) => count + outcome.rows.length, 0) + sharedTransferUnclassified;
     const transferNormalizationDrops = skippedUnsettled + sharedTransferUnclassified;
     const recognizedCount = tradeRows.length + rawTransferCount;
-    const explainedExclusions = cryptocomDerivativeExcluded + bitfinexNonSpotExcluded + terminalTransferExclusions;
+    const explainedExclusions = cryptocomDerivativeExcluded + bitfinexNonSpotExcluded + geminiBrokenTradesExcluded + terminalTransferExclusions;
     const parsedCount = recognizedCount - tradeNormalizationDrops - transferNormalizationDrops - explainedExclusions;
     const coverage = operationCoverage({
       connectionId,
@@ -2187,9 +2482,10 @@ export async function syncConnection(
       recognizedCount,
       parsedCount,
       failedCount: tradeNormalizationDrops,
-      exclusionReasons: cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 || terminalTransferExclusions > 0 ||
+      exclusionReasons: cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 || geminiBrokenTradesExcluded > 0 || terminalTransferExclusions > 0 ||
         tradeNormalizationDrops > 0 ? [
         ...(cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? ['derivative_out_of_scope'] : []),
+        ...(geminiBrokenTradesExcluded > 0 ? ['fully_broken_trade'] : []),
         ...(terminalTransferExclusions > 0 ? ['terminal_status_out_of_scope'] : []),
         ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
       ] : undefined
@@ -2208,6 +2504,7 @@ export async function syncConnection(
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
       htxTradeProgress,
+      geminiTradeProgress,
       cryptocomPendingTransfers: exchange === 'cryptocom' ? cryptocomPendingTransfers : undefined,
       bitfinexPendingTransfers: exchange === 'bitfinex' ? bitfinexPendingTransfers : undefined,
       skippedUnsettled,
@@ -2236,6 +2533,7 @@ export async function syncConnection(
       knownAssets: newKnownAssets,
       knownSymbols: newKnownSymbols,
       htxTradeProgress,
+      geminiTradeProgress,
       cryptocomPendingTransfers: exchange === 'cryptocom' ? cryptocomPendingTransfers : undefined,
       bitfinexPendingTransfers: exchange === 'bitfinex' ? bitfinexPendingTransfers : undefined,
       balance,
@@ -2297,6 +2595,7 @@ export async function persistSyncedRows(args: {
   knownAssets?: string[];
   knownSymbols?: string[];
   htxTradeProgress?: HtxTradeProgress;
+  geminiTradeProgress?: GeminiTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
@@ -2472,6 +2771,7 @@ export async function persistSyncedRows(args: {
         knownAssets: args.knownAssets,
         knownSymbols: args.knownSymbols,
         htxTradeProgress: args.htxTradeProgress,
+        geminiTradeProgress: args.geminiTradeProgress,
         cryptocomPendingTransfers: args.cryptocomPendingTransfers,
         bitfinexPendingTransfers: args.bitfinexPendingTransfers,
         lastSyncAt: asOf,

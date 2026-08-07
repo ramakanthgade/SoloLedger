@@ -7,7 +7,7 @@
 import type { Transaction } from '@/types/transaction';
 
 /** Exchanges supported by auto-sync. (ONE name — no aliases.) */
-export type ExchangeId = 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio' | 'htx' | 'cryptocom' | 'bitfinex';
+export type ExchangeId = 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio' | 'htx' | 'cryptocom' | 'bitfinex' | 'gemini';
 
 export const SYNC_EXCHANGES: readonly ExchangeId[] = [
   'binance',
@@ -19,7 +19,8 @@ export const SYNC_EXCHANGES: readonly ExchangeId[] = [
   'gateio',
   'htx',
   'cryptocom',
-  'bitfinex'
+  'bitfinex',
+  'gemini'
 ] as const;
 
 /** Per-kind sync cursors (epoch ms) persisted on the connection row. */

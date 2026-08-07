@@ -761,6 +761,12 @@ describe('importFullBackup', () => {
     }, {
       id: 'bitfinex-source', exchange: 'bitfinex', apiKey: 'key', secret: 'secret', createdAt: 1,
       cursors: {}, status: 'ok', bitfinexPendingTransfers: { deposits: 500, withdrawals: 600 }
+    }, {
+      id: 'gemini-source', exchange: 'gemini', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', geminiTradeProgress: {
+        requestedStart: 700, requestedEnd: 900,
+        symbolStarts: { 'BTC/USD': 800 }, completedSymbols: ['ETH/USD'], nextSymbolIndex: 1
+      }
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -777,6 +783,45 @@ describe('importFullBackup', () => {
       credentialsState: 'reauthorization_required',
       bitfinexPendingTransfers: { deposits: 500, withdrawals: 600 }
     });
+    expect(await db.exchangeConnections.get('gemini-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      geminiTradeProgress: {
+        requestedStart: 700, requestedEnd: 900,
+        symbolStarts: { 'BTC/USD': 800 }, completedSymbols: ['ETH/USD'], nextSymbolIndex: 1
+      }
+    });
+  });
+
+  it.each([
+    { requestedStart: -1, requestedEnd: 2, symbolStarts: {}, completedSymbols: [] },
+    { requestedStart: 2, requestedEnd: 1, symbolStarts: {}, completedSymbols: [] },
+    { requestedStart: 1, requestedEnd: 2, symbolStarts: { 'BTC/USD': 3 }, completedSymbols: [] },
+    { requestedStart: 1, requestedEnd: 2, symbolStarts: {}, completedSymbols: [''] },
+    { requestedStart: 1, requestedEnd: 2, symbolStarts: {}, completedSymbols: [], nextSymbolIndex: -1 }
+  ])('rejects malformed Gemini trade progress %#', async (geminiTradeProgress) => {
+    await db.exchangeConnections.put({
+      id: 'gemini-source', exchange: 'gemini', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    payload.exchangeConnections[0].geminiTradeProgress = geminiTradeProgress as NonNullable<
+      typeof payload.exchangeConnections[number]['geminiTradeProgress']
+    >;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Gemini trade progress is malformed'
+    );
+  });
+
+  it('rejects a non-object Gemini symbol frontier', async () => {
+    await db.exchangeConnections.put({
+      id: 'gemini-source', exchange: 'gemini', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { geminiTradeProgress: unknown }).geminiTradeProgress = {
+      requestedStart: 1, requestedEnd: 2, symbolStarts: [], completedSymbols: []
+    };
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Gemini trade progress is malformed'
+    );
   });
 
   it.each([NaN, -1, 1.5])('rejects malformed Crypto.com pending checkpoint %s', async (timestamp) => {

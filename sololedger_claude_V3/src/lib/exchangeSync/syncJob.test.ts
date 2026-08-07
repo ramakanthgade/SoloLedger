@@ -121,4 +121,18 @@ describe('exchange sync credential-state guards', () => {
     expect(mocks.syncConnection).toHaveBeenCalledOnce();
     expect(exchangeSyncJob.get().error).toBeNull();
   });
+
+  it('carries Gemini fair-progress metadata from stage through confirmed commit', async () => {
+    const geminiTradeProgress = {
+      requestedStart: 100, requestedEnd: 200,
+      symbolStarts: { 'BTC/USD': 150 }, completedSymbols: ['ETH/USD'], nextSymbolIndex: 1
+    };
+    mocks.syncConnection.mockResolvedValue({
+      ...stageOutcome(), outcome: { ...stageOutcome().outcome, geminiTradeProgress }
+    });
+    await runInitialSync('source-1');
+    expect(mocks.persistSyncedRows).not.toHaveBeenCalled();
+    await commitInitialSync('source-1');
+    expect(mocks.persistSyncedRows).toHaveBeenCalledWith(expect.objectContaining({ geminiTradeProgress }));
+  });
 });

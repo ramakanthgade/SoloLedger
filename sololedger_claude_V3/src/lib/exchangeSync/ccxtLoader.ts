@@ -133,7 +133,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   gateio: 'Gate.io',
   htx: 'HTX',
   cryptocom: 'Crypto.com Exchange',
-  bitfinex: 'Bitfinex'
+  bitfinex: 'Bitfinex',
+  gemini: 'Gemini'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -167,7 +168,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     timeout: 30_000
   };
   if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex') {
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -219,6 +220,14 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
                 defaultType: 'spot',
                 fetchCurrencies: false
               }
+          : exchangeId === 'gemini'
+            ? {
+                defaultType: 'spot',
+                fetchCurrencies: false,
+                // Gemini's API symbols catalog is the complete spot market
+                // universe needed by the symbol-required mytrades endpoint.
+                fetchMarketsMethod: 'fetch_markets_from_api'
+              }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -246,7 +255,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // loadMarkets performs only the spot currency-pairs request.
     config.has = { fetchCurrencies: false };
   }
-  if (exchangeId === 'htx') {
+  if (exchangeId === 'htx' || exchangeId === 'gemini') {
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
   }

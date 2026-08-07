@@ -26,6 +26,9 @@ import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 
 /** Quotes treated as fiat-equivalent for fiatValue purposes (§B-5a). */
 const STABLE_QUOTES = new Set(['USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI']);
+const GEMINI_FIAT_QUOTES = new Map([
+  ['USD', 'USD'], ['GUSD', 'USD'], ['EUR', 'EUR'], ['GBP', 'GBP'], ['SGD', 'SGD']
+]);
 
 /** Kraken fiat quotes (kraken.ts FIAT_ASSETS — intentionally NO stablecoins). */
 const KRAKEN_FIAT_ASSETS = new Set(['USD', 'EUR', 'CAD', 'GBP', 'JPY', 'AUD']);
@@ -41,7 +44,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   gateio: 'exgt',
   htx: 'exhx',
   cryptocom: 'excx',
-  bitfinex: 'exbf'
+  bitfinex: 'exbf',
+  gemini: 'exgm'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -111,6 +115,11 @@ function tradeSourceRef(
       // Native trade id is stable for API replay. CSV parity is explicitly
       // unverified and the storage key is connection/kind scoped.
       return trade.id ?? exchangeSourceRef('bitfinex-api', ts, side, base, amount);
+    case 'gemini':
+      // Gemini's CSV has no native fill id and its second-resolution formula
+      // can collide for two equal fills in one second. Native `tid` is the
+      // only safe API replay identity; CSV/API divergence is documented.
+      return trade.id ? `trade:${trade.id}` : undefined;
   }
 }
 
@@ -134,12 +143,15 @@ export function normalizeTrade(
   const quote = market.quote.toUpperCase();
   const cost = trade.cost ?? (trade.price != null ? trade.price * amount : undefined);
 
-  const quoteFiat = quoteToFiatCurrency(quote);
+  const quoteFiat = exchange === 'gemini'
+    ? GEMINI_FIAT_QUOTES.get(quote) ?? quoteToFiatCurrency(quote)
+    : quoteToFiatCurrency(quote);
   const fiatCurrency = quoteFiat ?? 'USD';
   const fiatValue = (quoteFiat != null || STABLE_QUOTES.has(quote)) && cost != null ? cost : undefined;
 
   const feeCost = trade.fee?.cost != null ? Math.abs(trade.fee.cost) : undefined;
-  const feeAsset = trade.fee?.currency?.toUpperCase() || undefined;
+  const rawFeeCurrency = trade.info?.fee_currency ?? trade.info?.feeCurrency;
+  const feeAsset = (typeof rawFeeCurrency === 'string' ? rawFeeCurrency : trade.fee?.currency)?.toUpperCase() || undefined;
 
   let type: TxType;
   let asset: string;
@@ -198,7 +210,7 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini'
         ? { exchangeSyncKind: 'trade' as const }
         : {})
     }
@@ -626,6 +638,10 @@ function transferSourceRef(
       return transfer.id ?? exchangeSourceRef('cryptocom-exchange', ts, type, asset, amount);
     case 'bitfinex':
       return transfer.id ?? exchangeSourceRef('bitfinex-api', ts, type, asset, amount);
+    case 'gemini':
+      // As with fills, prefer immutable Gemini evidence over an unsafe
+      // second-resolution economic formula.
+      return transfer.id ? `${type === 'transfer_in' ? 'deposit' : 'withdrawal'}:${transfer.id}` : undefined;
   }
 }
 
@@ -695,6 +711,7 @@ export function cryptocomTransferDisposition(
  */
 export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfer): Transaction | null {
   const infoType = transfer.info?.type;
+  const geminiType = exchange === 'gemini' && typeof infoType === 'string' ? infoType.toLowerCase() : undefined;
   let type: TxType | null =
     transfer.type === 'deposit' ? 'transfer_in' : transfer.type === 'withdrawal' ? 'transfer_out' : null;
   // Verify-at-build finding: ccxt 4.5.68 coinbase parses v2 'send' rows as
@@ -704,22 +721,49 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     if (infoType === 'send') type = 'transfer_out';
     else if (infoType === 'receive') type = 'transfer_in';
   }
-  if (!type || !isSettledTransfer(exchange, type, transfer.status, transfer.info?.status)) return null;
+  const isGeminiAdjustment = geminiType === 'reward' || geminiType === 'admincredit' || geminiType === 'admindebit';
+  if ((!type && !isGeminiAdjustment) || !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status)) return null;
   const ts = transfer.timestamp;
   const asset = transfer.currency?.toUpperCase();
   const amount = transfer.amount != null ? Math.abs(transfer.amount) : 0;
-  if (!type || ts == null || !Number.isFinite(ts) || !asset || !(amount > 0)) return null;
+  if (ts == null || !Number.isFinite(ts) || !asset || !(amount > 0)) return null;
 
-  const network = transfer.network || undefined;
+  const rawNetwork = transfer.info?.network;
+  const network = transfer.network || (typeof rawNetwork === 'string' ? rawNetwork : undefined);
   const chain = normalizeChain(network);
-  const txid = transfer.txid;
+  const rawTxHash = transfer.info?.txHash;
+  const txid = transfer.txid || (typeof rawTxHash === 'string' ? rawTxHash : undefined);
   // Same guard as the CSV parser: only keep a hash that is real and matches
   // the row chain's shape, so explorer links never break.
   const txHash = txid && isRealTxHash(txid) && isValidTxHashForChain(chain, txid) ? txid : undefined;
   const address = transfer.addressTo ?? transfer.address;
 
   const feeCost = transfer.fee?.cost != null ? Math.abs(transfer.fee.cost) : undefined;
-  const feeAsset = (transfer.fee?.currency ?? asset).toUpperCase();
+  const rawFeeCurrency = transfer.info?.feeCurrency ?? transfer.info?.fee_currency;
+  const feeAsset = (typeof rawFeeCurrency === 'string' ? rawFeeCurrency : transfer.fee?.currency ?? asset).toUpperCase();
+
+  if (isGeminiAdjustment) {
+    const nativeType = infoType as string;
+    const isReward = geminiType === 'reward';
+    const adjustmentType: TxType = geminiType === 'admincredit'
+      ? 'transfer_in'
+      : geminiType === 'admindebit' ? 'transfer_out' : 'income';
+    return {
+      id: makeId(ID_PREFIX.gemini), timestamp: ts,
+      type: adjustmentType, asset, amount,
+      fiatCurrency: 'USD', fiatValue: undefined,
+      source: 'gemini_api',
+      sourceRef: transfer.id ? `adjustment:${transfer.id}` : undefined,
+      notes: `Gemini ${nativeType}`,
+      flags: isReward ? ['missing_market_value'] : ['needs_review'],
+      isInternalTransfer: false,
+      category: isReward ? 'reward' : 'other',
+      categoryOrigin: 'provider',
+      categoryConfidence: isReward ? 1 : 0,
+      raw: { transferId: transfer.id, transferType: nativeType, txid, exchangeSyncKind: 'transfer' }
+    };
+  }
+  if (!type) return null;
 
   return {
     id: makeId(ID_PREFIX[exchange]),
@@ -746,7 +790,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

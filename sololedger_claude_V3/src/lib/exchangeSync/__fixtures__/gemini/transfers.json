@@ -1,0 +1,10 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from Gemini transfers documentation with settled, pending and failed status evidence.",
+  "response": [
+    {"type":"Deposit","status":"Complete","timestampms":1785887998000,"eid":"D-7001","currency":"BTC","amount":"0.05000000","txHash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","destination":"bc1qfixture"},
+    {"type":"Withdrawal","status":"Advanced","timestampms":1785887999000,"withdrawalId":"W-7002","currency":"ETH","amount":"0.10000000","feeAmount":"0.00100000","txHash":"0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","destination":"0x1111111111111111111111111111111111111111"},
+    {"type":"Deposit","status":"Pending","timestampms":1785887900000,"eid":"D-7003","currency":"USD","amount":"100.00"},
+    {"type":"Withdrawal","status":"Rejected","timestampms":1785887901000,"withdrawalId":"W-7004","currency":"BTC","amount":"0.01000000"}
+  ]
+}

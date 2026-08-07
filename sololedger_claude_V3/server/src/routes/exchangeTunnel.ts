@@ -151,6 +151,17 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/v2/auth/r/trades/hist': ['POST'],
       '/v2/auth/r/movements/hist': ['POST']
     }
+  },
+  gemini: {
+    host: 'api.gemini.com',
+    headers: ['x-gemini-apikey', 'x-gemini-payload', 'x-gemini-signature'],
+    paths: ['/v1/symbols', '/v1/balances', '/v1/mytrades', '/v1/transfers'],
+    pathMethods: {
+      '/v1/symbols': ['GET'],
+      '/v1/balances': ['POST'],
+      '/v1/mytrades': ['POST'],
+      '/v1/transfers': ['POST']
+    }
   }
 };
 

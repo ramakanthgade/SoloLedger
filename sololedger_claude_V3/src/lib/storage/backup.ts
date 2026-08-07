@@ -132,6 +132,13 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
       windowEnd: row.htxTradeProgress.windowEnd,
       completedSymbols: [...row.htxTradeProgress.completedSymbols]
     },
+    geminiTradeProgress: row.geminiTradeProgress == null ? undefined : {
+      requestedStart: row.geminiTradeProgress.requestedStart,
+      requestedEnd: row.geminiTradeProgress.requestedEnd,
+      symbolStarts: { ...row.geminiTradeProgress.symbolStarts },
+      completedSymbols: [...row.geminiTradeProgress.completedSymbols],
+      nextSymbolIndex: row.geminiTradeProgress.nextSymbolIndex
+    },
     cryptocomPendingTransfers: row.cryptocomPendingTransfers == null ? undefined : {
       deposits: row.cryptocomPendingTransfers.deposits,
       withdrawals: row.cryptocomPendingTransfers.withdrawals
@@ -393,6 +400,23 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
       !Array.isArray(progress.completedSymbols) ||
       progress.completedSymbols.some((symbol) => typeof symbol !== 'string' || !symbol.trim()))) {
       throw new Error('Invalid backup file: HTX trade progress is malformed.');
+    }
+    const geminiProgress = row.geminiTradeProgress;
+    if (geminiProgress != null && (!isPlainObject(geminiProgress) ||
+      Object.keys(geminiProgress).some((key) => ![
+        'requestedStart', 'requestedEnd', 'symbolStarts', 'completedSymbols', 'nextSymbolIndex'
+      ].includes(key)) ||
+      !Number.isSafeInteger(geminiProgress.requestedStart) || geminiProgress.requestedStart < 0 ||
+      !Number.isSafeInteger(geminiProgress.requestedEnd) || geminiProgress.requestedEnd < geminiProgress.requestedStart ||
+      !isPlainObject(geminiProgress.symbolStarts) ||
+      Object.entries(geminiProgress.symbolStarts).some(([symbol, start]) =>
+        !symbol.trim() || !Number.isSafeInteger(start) || (start as number) < geminiProgress.requestedStart ||
+        (start as number) > geminiProgress.requestedEnd) ||
+      !Array.isArray(geminiProgress.completedSymbols) ||
+      geminiProgress.completedSymbols.some((symbol) => typeof symbol !== 'string' || !symbol.trim()) ||
+      (geminiProgress.nextSymbolIndex != null &&
+        (!Number.isSafeInteger(geminiProgress.nextSymbolIndex) || geminiProgress.nextSymbolIndex < 0)))) {
+      throw new Error('Invalid backup file: Gemini trade progress is malformed.');
     }
   }
   for (const row of payload.priceCache) {

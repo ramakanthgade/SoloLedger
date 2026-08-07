@@ -48,6 +48,7 @@ interface StagedMeta {
   knownAssets?: string[];
   knownSymbols?: string[];
   htxTradeProgress?: import('./engine').HtxTradeProgress;
+  geminiTradeProgress?: import('./engine').GeminiTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** Private current-balance authority fetched with the staged rows. */
@@ -284,6 +285,7 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         knownAssets: outcome.knownAssets,
         knownSymbols: outcome.knownSymbols,
         htxTradeProgress: outcome.htxTradeProgress,
+        geminiTradeProgress: outcome.geminiTradeProgress,
         cryptocomPendingTransfers: outcome.cryptocomPendingTransfers,
         bitfinexPendingTransfers: outcome.bitfinexPendingTransfers,
         // Keep only normalized totals in memory. ccxt's raw `info` can carry
@@ -333,6 +335,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       knownAssets: staged.meta?.knownAssets,
       knownSymbols: staged.meta?.knownSymbols,
       htxTradeProgress: staged.meta?.htxTradeProgress,
+      geminiTradeProgress: staged.meta?.geminiTradeProgress,
       cryptocomPendingTransfers: staged.meta?.cryptocomPendingTransfers,
       bitfinexPendingTransfers: staged.meta?.bitfinexPendingTransfers,
       balance: staged.meta?.balance,

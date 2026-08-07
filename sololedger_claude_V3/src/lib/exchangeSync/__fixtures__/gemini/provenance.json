@@ -1,0 +1,6 @@
+{
+  "_recorded": false,
+  "exchange": "gemini",
+  "ccxtVersion": "4.5.68",
+  "note": "Hand-authored schema-faithful Gemini v1 fixtures. The CSV twin demonstrates economic parity, not native-ID parity; API refs deliberately diverge to preserve same-second duplicate fills."
+}

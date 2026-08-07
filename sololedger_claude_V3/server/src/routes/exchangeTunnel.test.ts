@@ -399,6 +399,32 @@ describe('3. header allowlist', () => {
     });
     expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
   });
+
+  it('gemini: forwards only Gemini auth headers and preserves the signed POST body', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"result":"error","reason":"InvalidSignature","message":"Invalid API key"}', 400));
+    const body = '{}';
+    await rawRequest({
+      method: 'POST', path: '/gemini/v1/balances', body,
+      headers: {
+        ...AUTH,
+        'content-type': 'text/plain',
+        'x-exchange-x-gemini-apikey': 'account-key',
+        'x-exchange-x-gemini-payload': 'payload',
+        'x-exchange-x-gemini-signature': 'signature',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.gemini.com/v1/balances');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({
+      'content-type': 'text/plain',
+      'x-gemini-apikey': 'account-key',
+      'x-gemini-payload': 'payload',
+      'x-gemini-signature': 'signature'
+    });
+    expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -406,7 +432,7 @@ describe('3. header allowlist', () => {
  * ------------------------------------------------------------------ */
 describe('4. exchangeId and path validation', () => {
   it('unknown exchangeId → 404 unknown_exchange', async () => {
-    const res = await client('/gemini/api/v3/time', { headers: AUTH });
+    const res = await client('/unknown/api/v3/time', { headers: AUTH });
     expect(res.status).toBe(404);
     expect(res.headers.get('x-sololedger-error')).toBe('unknown_exchange');
     expect(await res.json()).toEqual({ error: expect.any(String) });
@@ -511,6 +537,20 @@ describe('4. exchangeId and path validation', () => {
       ['/bitfinex/v2/auth/w/withdraw', 'POST'],
       ['/bitfinex/v2/auth/r/wallets', 'GET'],
       ['/bitfinex/v2/platform/status', 'POST']
+    ] as const) {
+      const res = await client(path, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('Gemini allows only exact read-only methods and paths', async () => {
+    for (const [path, method] of [
+      ['/gemini/v1/order/new', 'POST'],
+      ['/gemini/v1/withdraw/btc', 'POST'],
+      ['/gemini/v1/balances', 'GET'],
+      ['/gemini/v1/symbols', 'POST']
     ] as const) {
       const res = await client(path, { method, headers: AUTH });
       expect(res.status).toBe(400);

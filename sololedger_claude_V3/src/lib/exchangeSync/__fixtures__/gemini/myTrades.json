@@ -1,0 +1,16 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from Gemini past-trades examples. Two BTC/USD fills deliberately share second, side and amount but have distinct tids.",
+  "response": {
+    "btcusd": [
+      {"price":"65000.00","amount":"0.01000000","timestamp":1785888001,"timestampms":1785888001100,"type":"Buy","aggressor":true,"fee_currency":"USD","fee_amount":"1.30","tid":910001,"order_id":"810001","exchange":"gemini","is_auction_fill":false,"is_clearing_fill":false,"symbol":"BTCUSD","client_order_id":"fixture-1"},
+      {"price":"65010.00","amount":"0.01000000","timestamp":1785888001,"timestampms":1785888001900,"type":"Buy","aggressor":false,"fee_currency":"USD","fee_amount":"1.30","tid":910002,"order_id":"810002","exchange":"gemini","is_auction_fill":false,"is_clearing_fill":false,"symbol":"BTCUSD","client_order_id":"fixture-2"}
+    ],
+    "ethusd": [
+      {"price":"3500.00","amount":"0.20000000","timestamp":1785888002,"timestampms":1785888002000,"type":"Sell","aggressor":true,"fee_currency":"USD","fee_amount":"1.40","tid":910003,"order_id":"810003","exchange":"gemini","is_auction_fill":false,"is_clearing_fill":false,"symbol":"ETHUSD","client_order_id":"fixture-3"}
+    ],
+    "ethbtc": [
+      {"price":"0.05200000","amount":"0.10000000","timestamp":1785888003,"timestampms":1785888003000,"type":"Buy","aggressor":true,"fee_currency":"BTC","fee_amount":"0.00001000","tid":910004,"order_id":"810004","exchange":"gemini","is_auction_fill":false,"is_clearing_fill":false,"symbol":"ETHBTC","client_order_id":"fixture-4"}
+    ]
+  }
+}
