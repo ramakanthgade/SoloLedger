@@ -36,9 +36,12 @@ const FEATURE_TIERS: Record<FeatureId, 'free' | 'pro'> = {
   walletDefiNetWorthV1: 'free'
 };
 
-/** Local rollout switch. Missing/unknown values fail closed to legacy arithmetic. */
+/**
+ * Defaults on for intentional shadow/staged builds. Supported production Pages
+ * build paths must explicitly pass `false` until rollout promotion.
+ */
 export function isWalletDefiNetWorthV1Enabled(value: unknown = import.meta.env.VITE_WALLET_DEFI_NET_WORTH_V1): boolean {
-  return typeof value === 'string' && value.trim().toLowerCase() === 'true';
+  return !(typeof value === 'string' && value.trim().toLowerCase() === 'false');
 }
 
 export interface LicenseState {

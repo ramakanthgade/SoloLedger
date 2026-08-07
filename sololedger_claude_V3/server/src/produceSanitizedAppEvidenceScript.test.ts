@@ -10,6 +10,11 @@ const capture = (extra: Record<string, unknown> = {}) => ({
   shadowStatus: 'complete',
   targetUrl: 'https://app.example.test/SoloLedger/?ignored=yes#ignored', buildSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
   authenticatedRunId: 'run-123',
+  screenshots: [
+    { name: 'dashboard', sha256: '1'.repeat(64) },
+    { name: 'connections', sha256: '2'.repeat(64) },
+    { name: 'allocation', sha256: '3'.repeat(64) }
+  ],
   selectors: ['[data-testid="net-worth-value"]', '[data-testid="detail-holdings-total"]'],
   ...extra
 });
@@ -52,6 +57,11 @@ describe('attested browser app-evidence producer', () => {
       connectionsNetWorth: 103_071, featureEnabled: true, shadowStatus: 'complete',
       targetUrl: 'https://app.example.test/SoloLedger', buildSha: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
       authenticatedRun: { method: 'ci-hmac', runId: 'run-123' },
+      screenshots: expect.arrayContaining([
+        { name: 'dashboard', sha256: '1'.repeat(64) },
+        { name: 'connections', sha256: '2'.repeat(64) },
+        { name: 'allocation', sha256: '3'.repeat(64) }
+      ]),
       attestation: { algorithm: 'hmac-sha256', digest: expect.stringMatching(/^[0-9a-f]{64}$/) }
     });
     expect(JSON.stringify(evidence)).not.toMatch(/wallet|apiKey|secret-marker/i);
@@ -76,6 +86,7 @@ describe('attested browser app-evidence producer', () => {
     ['malformed JSON', '{"apiKey":"secret-marker",'],
     ['unattested caller booleans', JSON.stringify({ dashboardNetWorth: 1, connectionsNetWorth: 1, featureEnabled: true })],
     ['disabled feature', JSON.stringify(capture({ featureEnabled: false }))],
+    ['missing screenshot hashes', JSON.stringify(capture({ screenshots: [] }))],
     ['wrong deployed origin', JSON.stringify(capture({ targetUrl: 'https://other.example.test/SoloLedger/' }))],
     ['same-origin wrong base path', JSON.stringify(capture({ targetUrl: 'https://app.example.test/Other/' }))],
     ['wrong build SHA', JSON.stringify(capture({ buildSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' }))],

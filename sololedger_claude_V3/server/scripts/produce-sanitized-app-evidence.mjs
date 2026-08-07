@@ -20,9 +20,15 @@ export function canonicalTargetUrl(value) {
 export function sanitizedAppEvidence(value, provenance = {}) {
   const dashboardNetWorth = Number(value?.dashboardNetWorth);
   const connectionsNetWorth = Number(value?.connectionsNetWorth);
+  const screenshots = Array.isArray(value?.screenshots) ? value.screenshots.map((item) => ({
+    name: String(item?.name ?? ''), sha256: String(item?.sha256 ?? '').toLowerCase()
+  })).sort((left, right) => left.name.localeCompare(right.name)) : [];
+  const requiredScreenshots = ['allocation', 'connections', 'dashboard'];
   if (!Number.isFinite(dashboardNetWorth) || !Number.isFinite(connectionsNetWorth) ||
     value?.captureVersion !== APP_CAPTURE_VERSION || value?.captureMethod !== 'playwright-rendered-ui' ||
     value?.featureEnabled !== true || typeof value?.shadowStatus !== 'string' || !value.shadowStatus ||
+    screenshots.length !== requiredScreenshots.length ||
+    screenshots.some((item, index) => item.name !== requiredScreenshots[index] || !/^[0-9a-f]{64}$/.test(item.sha256)) ||
     !Array.isArray(value?.selectors) || !value.selectors.includes('[data-testid="net-worth-value"]') ||
     !value.selectors.includes('[data-testid="detail-holdings-total"]')) {
     throw new Error('invalid browser capture');
@@ -47,6 +53,7 @@ export function sanitizedAppEvidence(value, provenance = {}) {
     targetUrl: browserTargetUrl,
     buildSha: buildSha.toLowerCase(),
     authenticatedRun: { method: 'ci-hmac', runId },
+    screenshots,
     selectors: [...value.selectors].sort()
   };
   return {

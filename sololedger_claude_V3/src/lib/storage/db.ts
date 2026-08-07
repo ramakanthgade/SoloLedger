@@ -22,7 +22,7 @@ import {
 import { binanceApiIdentity, binanceEconomicKey } from './binanceEconomicDedup';
 import type { ProviderEvidenceRow, SafetyDecisionRow } from '@/lib/safety/types';
 import { transactionSafetySubject } from '@/lib/safety/assetSafety';
-import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
+import type { DefiPositionRow, DefiPositionSnapshot, WalletDefiRefreshManifest } from '@/lib/defi/types';
 import {
   applyOwnershipUpdate,
   conservativeCsvAccountCanonicalKey,
@@ -218,6 +218,7 @@ class SoloLedgerDB extends Dexie {
   safetyDecisions!: Table<SafetyDecisionRow, string>;
   defiPositionSnapshots!: Table<DefiPositionSnapshot, string>;
   defiPositionRows!: Table<DefiPositionRow, string>;
+  walletDefiRefreshManifests!: Table<WalletDefiRefreshManifest, string>;
   accountIdentities!: Table<AccountIdentityRow, string>;
 
   constructor(name: string) {
@@ -600,6 +601,27 @@ class SoloLedgerDB extends Dexie {
         row.categoryOrigin = normalized.categoryOrigin;
       });
     });
+    // v16: atomic current-custody + required protocol-family refresh manifests.
+    // Existing databases intentionally receive no synthesized rows: migration
+    // fails closed until a real refresh commits all authorities together.
+    this.version(16).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId, category, internalTransferPairId',
+      lots: 'id, asset, acquiredAt, sourceTxId', disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id', specIdHints: 'txId', lookupAddresses: 'id, chain, address, lastSyncedAt, accountIdentityId',
+      priceCache: 'key, fetchedAt', csvImports: 'id, importedAt, fileName, accountIdentityId',
+      exchangeConnections: 'id, exchange, lastSyncAt, accountIdentityId', walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset',
+      authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+      authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+      sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+      openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]',
+      providerEvidence: 'id, subjectKey, subjectKind, provider, ruleId, ruleVersion, confidence, observedAt, [subjectKey+provider]',
+      safetyDecisions: 'subjectKey, state, updatedAt, [state+updatedAt]',
+      defiPositionSnapshots: 'snapshotId, generation, accountIdentityScope, protocolId, chainId, status, [accountIdentityScope+protocolId]',
+      defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]',
+      accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]',
+      walletDefiRefreshManifests: 'accountIdentityScope, custodyScopeId, custodySnapshotId, capturedAt'
+    });
   }
 }
 
@@ -732,7 +754,7 @@ export async function seedSettingsIfAbsent(seed: TaxSettings): Promise<boolean> 
 export async function clearAllData(): Promise<void> {
   await db.transaction(
     'rw',
-    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.providerEvidence, db.safetyDecisions, db.defiPositionSnapshots, db.defiPositionRows, db.accountIdentities, db.settings],
+    [db.transactions, db.lots, db.disposals, db.specIdHints, db.lookupAddresses, db.priceCache, db.csvImports, db.exchangeConnections, db.walletBalances, db.exchangeBalances, db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.providerEvidence, db.safetyDecisions, db.defiPositionSnapshots, db.defiPositionRows, db.walletDefiRefreshManifests, db.accountIdentities, db.settings],
     async () => {
       await db.transactions.clear();
       await db.lots.clear();
@@ -752,6 +774,7 @@ export async function clearAllData(): Promise<void> {
       await db.safetyDecisions.clear();
       await db.defiPositionSnapshots.clear();
       await db.defiPositionRows.clear();
+      await db.walletDefiRefreshManifests.clear();
       await db.accountIdentities.clear();
       // "Delete all data" promises to remove everything — reset settings to defaults too.
       await db.settings.put({ id: 'singleton', ...DEFAULT_SETTINGS });
@@ -1071,7 +1094,8 @@ export async function deleteLookupAddress(id: string): Promise<void> {
 
 export async function deleteLookupAddressAndTransactions(id: string): Promise<number> {
   return db.transaction('rw', [db.transactions, db.lots, db.disposals, db.lookupAddresses, db.specIdHints, db.walletBalances, db.csvImports,
-    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.defiPositionSnapshots, db.defiPositionRows], async () => {
+    db.authoritySnapshots, db.authorityAssets, db.sourceCoverage, db.openingBalances, db.defiPositionSnapshots, db.defiPositionRows,
+    db.walletDefiRefreshManifests, db.accountIdentities], async () => {
     const row = await db.lookupAddresses.get(id);
     if (!row) return 0;
     const canonicalAddress = canonicalWalletAddress(row.chain, row.address);
@@ -1102,12 +1126,16 @@ export async function deleteLookupAddressAndTransactions(id: string): Promise<nu
         await db.defiPositionRows.where('snapshotId').anyOf(positionSnapshotIds).delete();
         await db.defiPositionSnapshots.bulkDelete(positionSnapshotIds);
       }
+      await db.walletDefiRefreshManifests.delete(defiScope);
     }
     const balanceIds = (await db.walletBalances
       .filter((b) => b.chain === row.chain && walletAddressEquals(row.chain, b.address, row.address))
       .toArray()).map((b) => b.id);
     if (balanceIds.length > 0) await db.walletBalances.bulkDelete(balanceIds);
     await db.lookupAddresses.delete(id);
+    if (row.accountIdentityId && await db.lookupAddresses.where('accountIdentityId').equals(row.accountIdentityId).count() === 0) {
+      await db.accountIdentities.delete(row.accountIdentityId);
+    }
     await reconcileCsvImportTransactionCounts(db.transactions, db.csvImports);
     return toDelete.length;
   });

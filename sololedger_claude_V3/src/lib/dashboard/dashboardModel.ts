@@ -1370,7 +1370,7 @@ export interface AllocationSlice {
  * the remainder folded into "Other".
  */
 export function allocationSlices(
-  valued: ValuedHolding[],
+  valued: readonly Pick<ValuedHolding, 'asset' | 'valueNow' | 'costBasis'>[],
   useMarket: boolean,
   maxSlices = 5
 ): AllocationSlice[] {

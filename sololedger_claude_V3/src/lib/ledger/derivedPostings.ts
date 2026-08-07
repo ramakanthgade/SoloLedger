@@ -245,15 +245,6 @@ export function resolveAccountScope(
   };
 }
 
-interface PostingLeg {
-  role: Exclude<PostingRole, 'opening_balance'>;
-  phase: Exclude<PostingPhase, 0>;
-  asset: string;
-  assetKey: string;
-  quantity: number;
-  position: number;
-}
-
 interface DefiPostingAction {
   type: 'borrow' | 'repay' | 'borrowing_interest';
   protocolId: string;
@@ -338,64 +329,93 @@ function postingLegAssetKey(
   });
 }
 
-function legsFor(transaction: Transaction, scope: AccountScopeResolution): PostingLeg[] {
+function appendPosting(
+  target: DerivedPosting[],
+  transaction: Transaction,
+  scope: AccountScopeResolution,
+  evidence: EvidenceRef[],
+  role: Exclude<PostingRole, 'opening_balance'>,
+  phase: Exclude<PostingPhase, 0>,
+  ordinal: number,
+  asset: string,
+  assetKey: string,
+  signedQuantity: number
+): void {
+  target.push({
+    id: `${transaction.id}:${phase}:${ordinal}:${assetKey}`,
+    taxEventId: transaction.id, transactionId: transaction.id,
+    accountScopeId: scope.accountScopeId, accountClass: scope.accountClass,
+    assetKey, asset, signedQuantity, role, postingPhase: phase, ordinal,
+    effectiveAt: transaction.timestamp, evidence, taxableEffect: 'source_transaction_only'
+  });
+}
+
+/** Build final postings directly; transient leg arrays were costly on large ledgers. */
+function appendResolvedTransactionPostings(
+  target: DerivedPosting[],
+  transaction: Transaction,
+  scope: AccountScopeResolution,
+  evidence: EvidenceRef[]
+): void {
   if (isTransactionExcluded(transaction) ||
       (transaction.type === 'transfer_out' && transaction.outboundInitiation != null &&
-        transaction.outboundInitiation !== 'wallet_initiated')) return [];
-  const legs: PostingLeg[] = [];
+        transaction.outboundInitiation !== 'wallet_initiated')) return;
   const defiAction = defiPostingAction(transaction);
   if (defiAction?.type === 'borrowing_interest') {
-    return [{
-      role: 'liability', phase: 20, asset: normalizeAssetSymbol(transaction.asset),
-      assetKey: `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
-      quantity: -defiAction.quantity, position: 0
-    }];
+    appendPosting(
+      target, transaction, scope, evidence, 'liability', 20, 0,
+      normalizeAssetSymbol(transaction.asset),
+      `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
+      -defiAction.quantity
+    );
+    return;
   }
   if (transaction.type === 'fee') {
     const quantity = -Math.abs(transaction.amount);
     if (quantity !== 0 && Number.isFinite(quantity)) {
-      legs.push({
-        role: 'fee', phase: 30, asset: normalizeAssetSymbol(transaction.asset),
-        assetKey: postingLegAssetKey(transaction, 'principal', scope), quantity, position: 0
-      });
+      appendPosting(
+        target, transaction, scope, evidence, 'fee', 30, 0,
+        normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), quantity
+      );
     }
-    return legs;
+    return;
   }
   const principal = defiAction?.type === 'borrow' ? defiAction.quantity
     : defiAction?.type === 'repay' ? -defiAction.quantity
       : signedPrincipal(transaction);
   if (principal !== 0 && Number.isFinite(principal)) {
-    legs.push({
-      role: 'principal', phase: 10, asset: normalizeAssetSymbol(transaction.asset),
-      assetKey: postingLegAssetKey(transaction, 'principal', scope), quantity: principal, position: 0
-    });
+    appendPosting(
+      target, transaction, scope, evidence, 'principal', 10, 0,
+      normalizeAssetSymbol(transaction.asset), postingLegAssetKey(transaction, 'principal', scope), principal
+    );
   }
+  let phase20Ordinal = 0;
   if (defiAction) {
-    legs.push({
-      role: 'liability', phase: 20, asset: normalizeAssetSymbol(transaction.asset),
-      assetKey: `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
-      quantity: defiAction.type === 'borrow' ? -defiAction.quantity : defiAction.quantity,
-      position: 1
-    });
+    appendPosting(
+      target, transaction, scope, evidence, 'liability', 20, phase20Ordinal++,
+      normalizeAssetSymbol(transaction.asset),
+      `liability:${defiAction.protocolId}:${defiAction.reserveKey}`,
+      defiAction.type === 'borrow' ? -defiAction.quantity : defiAction.quantity
+    );
   }
   if (
     transaction.counterAsset && transaction.counterAmount != null && Number.isFinite(transaction.counterAmount) &&
     COUNTER_LEG_TYPES.has(transaction.type)
   ) {
     const sign = transaction.type === 'buy' || transaction.type === 'nft_buy' ? -1 : 1;
-    legs.push({
-      role: 'counter', phase: 20, asset: normalizeAssetSymbol(transaction.counterAsset),
-      assetKey: postingLegAssetKey(transaction, 'counter', scope),
-      quantity: sign * Math.abs(transaction.counterAmount), position: 1
-    });
+    appendPosting(
+      target, transaction, scope, evidence, 'counter', 20, phase20Ordinal,
+      normalizeAssetSymbol(transaction.counterAsset), postingLegAssetKey(transaction, 'counter', scope),
+      sign * Math.abs(transaction.counterAmount)
+    );
   }
   if (transaction.feeAmount != null && transaction.feeAmount > 0 && Number.isFinite(transaction.feeAmount)) {
-    legs.push({
-      role: 'fee', phase: 30, asset: normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset),
-      assetKey: postingLegAssetKey(transaction, 'fee', scope), quantity: -Math.abs(transaction.feeAmount), position: 2
-    });
+    appendPosting(
+      target, transaction, scope, evidence, 'fee', 30, 0,
+      normalizeAssetSymbol(transaction.feeAsset ?? transaction.asset),
+      postingLegAssetKey(transaction, 'fee', scope), -Math.abs(transaction.feeAmount)
+    );
   }
-  return legs;
 }
 
 export function deriveTransactionPostings(
@@ -406,22 +426,8 @@ export function deriveTransactionPostings(
   const evidence = transaction.deletedSourceEvidence
     ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
     : transactionEvidence(transaction);
-  const legs = legsFor(transaction, scope);
   const postings: DerivedPosting[] = [];
-  let previousPhase: PostingPhase | undefined;
-  let ordinal = 0;
-  for (const leg of legs) {
-    ordinal = previousPhase === leg.phase ? ordinal + 1 : 0;
-    previousPhase = leg.phase;
-    const id = `${transaction.id}:${leg.phase}:${ordinal}:${leg.assetKey}`;
-    postings.push({
-      id, taxEventId: transaction.id, transactionId: transaction.id,
-      accountScopeId: scope.accountScopeId, accountClass: scope.accountClass,
-      assetKey: leg.assetKey, asset: leg.asset, signedQuantity: leg.quantity,
-      role: leg.role, postingPhase: leg.phase, ordinal, effectiveAt: transaction.timestamp,
-      evidence, taxableEffect: 'source_transaction_only'
-    });
-  }
+  appendResolvedTransactionPostings(postings, transaction, scope, evidence);
   return postings;
 }
 
@@ -436,20 +442,7 @@ function appendTransactionPostings(
   const evidence = transaction.deletedSourceEvidence
     ? deletedTransactionEvidence(transaction, transaction.deletedSourceEvidence)
     : transactionEvidence(transaction);
-  let previousPhase: PostingPhase | undefined;
-  let ordinal = 0;
-  for (const leg of legsFor(transaction, scope)) {
-    ordinal = previousPhase === leg.phase ? ordinal + 1 : 0;
-    previousPhase = leg.phase;
-    target.push({
-      id: `${transaction.id}:${leg.phase}:${ordinal}:${leg.assetKey}`,
-      taxEventId: transaction.id, transactionId: transaction.id,
-      accountScopeId: scope.accountScopeId, accountClass: scope.accountClass,
-      assetKey: leg.assetKey, asset: leg.asset, signedQuantity: leg.quantity,
-      role: leg.role, postingPhase: leg.phase, ordinal, effectiveAt: transaction.timestamp,
-      evidence, taxableEffect: 'source_transaction_only'
-    });
-  }
+  appendResolvedTransactionPostings(target, transaction, scope, evidence);
 }
 
 function compareText(a: string, b: string): number {

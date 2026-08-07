@@ -14,9 +14,11 @@ import { relativeTime, shortAddress } from './connectionModel';
 import type { ConnectionWorkspaceSnapshot } from './connectionWorkspaceModel';
 import { HoldingsList } from '@/components/holdings/HoldingsList';
 import { canonicalDefiAccountScope, type DefiPositionRow, type DefiPositionSnapshot } from '@/lib/defi/types';
-import { projectWalletDefiNetWorth } from '@/lib/portfolio/economicExposureProjection';
+import { projectManifestSelectedWalletDefi } from '@/lib/portfolio/walletDefiProjection';
 import { defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
 import { isWalletDefiNetWorthV1Enabled } from '@/lib/features';
+import type { AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
+import type { WalletDefiRefreshManifest } from '@/lib/defi/types';
 
 function chainLabel(chainId: string): string {
   return CHAINS.find((chain) => chain.id === chainId)?.label ?? chainId;
@@ -39,6 +41,9 @@ interface WalletAssetView {
   verificationStatus: 'verified_authority' | 'reconstructed_authority' | 'posting_fallback';
   fallbackReason?: AuthorityBalanceFallbackReason;
   authorityAsOf?: number;
+  authorityStatus?: string;
+  coverageStatus?: string;
+  scopeStatus?: string;
 }
 
 interface AddressGroupView {
@@ -115,11 +120,14 @@ export interface ConnectionOverviewProps {
   onOpenDataHealth?: () => void;
   defiPositionSnapshots?: readonly DefiPositionSnapshot[];
   defiPositionRows?: readonly DefiPositionRow[];
+  custodyAuthoritySnapshots?: readonly AuthoritySnapshotRow[];
+  walletDefiRefreshManifests?: readonly WalletDefiRefreshManifest[];
   defiNetWorthEnabled?: boolean;
+  now?: number;
 }
 
 /** Presentation-only Overview tab. All custody and transaction work is read from one parent snapshot. */
-export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, reportingCurrency, syncing, syncDisabled, onSync, onOpenDataHealth, defiPositionSnapshots = [], defiPositionRows = [], defiNetWorthEnabled = isWalletDefiNetWorthV1Enabled() }: ConnectionOverviewProps) {
+export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, reportingCurrency, syncing, syncDisabled, onSync, onOpenDataHealth, defiPositionSnapshots = [], defiPositionRows = [], custodyAuthoritySnapshots = [], walletDefiRefreshManifests = [], defiNetWorthEnabled = isWalletDefiNetWorthV1Enabled(), now = snapshot.generatedAt }: ConnectionOverviewProps) {
   const [showZeroBalances, setShowZeroBalances] = useState(false);
   const holdingsByAssetKey = new Map(snapshot.overview.holdings.map((holding) => [holding.assetKey, holding]));
   const rowsByScope = new Map((card.walletRows ?? []).map((row) => [
@@ -153,16 +161,16 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, re
           atCost: current == null && costBasis > 0,
           verificationStatus: slice.verificationStatus,
           fallbackReason: slice.fallbackReason,
-          authorityAsOf: slice.authorityAsOf
+          authorityAsOf: slice.authorityAsOf,
+          authorityStatus: slice.authorityStatus,
+          coverageStatus: slice.coverageStatus,
+          scopeStatus: slice.scopeStatus
         }];
       })
     : [];
-  const defiScopes = card.kind === 'wallet' ? (card.walletRows ?? []).filter((row) => row.chain === 'ethereum').map((row) => `wallet:evm:${row.address.toLowerCase()}`) : [];
-  const allowedDefiScopes = new Set(defiScopes.map(canonicalDefiAccountScope));
-  const walletDefiSnapshots = defiPositionSnapshots.filter((row) => allowedDefiScopes.has(canonicalDefiAccountScope(row.accountIdentityScope)));
-  const walletDefiSnapshotIds = new Set(walletDefiSnapshots.map((row) => row.snapshotId));
-  const walletDefiRows = defiPositionRows.filter((row) => walletDefiSnapshotIds.has(row.snapshotId));
-  const walletEconomicExposure = projectWalletDefiNetWorth({
+  const walletScopeFilter = new Set((card.walletRows ?? []).map((row) =>
+    `wallet:${canonicalWalletIdentity(row.chain, row.address)}`));
+  const walletEconomicExposure = projectManifestSelectedWalletDefi({
     custody: allWalletAssets.map((asset) => ({
       id: asset.key,
       scopeId: asset.scopeId,
@@ -172,11 +180,15 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, re
       quantity: asset.amount,
       value: asset.value
     })),
-    snapshots: walletDefiSnapshots,
-    rows: walletDefiRows,
-    prices: defiUnderlyingPriceMap(walletDefiRows, priceIndex),
+    snapshots: defiPositionSnapshots,
+    rows: defiPositionRows,
+    prices: defiUnderlyingPriceMap(defiPositionRows, priceIndex),
     reportingCurrency,
-    enabled: defiNetWorthEnabled
+    enabled: defiNetWorthEnabled,
+    custodyAuthoritySnapshots,
+    refreshManifests: walletDefiRefreshManifests,
+    scopeFilter: walletScopeFilter,
+    now
   }).projection;
   const liquidCustodyIds = new Set(walletEconomicExposure.assets.filter((row) => row.kind === 'liquid').map((row) => row.id));
   const positiveWalletAssets = allWalletAssets.filter((asset) => asset.amount > 1e-9 && liquidCustodyIds.has(asset.key));
@@ -261,6 +273,8 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, re
     return counts;
   }, new Map<string, number>());
   const walletDisplayedTotal = walletEconomicExposure.netWorth;
+  const walletHasCurrentScope = (card.walletRows?.length ?? 0) > 0 &&
+    (allWalletAssets.length > 0 || walletEconomicExposure.status === 'complete');
   const walletAssetCount = addressGroups.reduce((sum, group) => sum + group.assets.length, 0);
   const walletUnpriced = addressGroups.reduce((sum, group) => sum + group.unpriced, 0);
   const walletAtCost = addressGroups.some((group) => group.assets.some((asset) => asset.atCost));
@@ -303,12 +317,13 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, re
       </section>
       <section aria-label="Holdings" className="rounded-2xl border border-hi/10 bg-elev-2" data-testid="detail-holdings">
         <div className="flex flex-wrap items-end justify-between gap-2 border-b border-hi/10 px-5 py-4">
-          <div><p className="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-faint">Holdings</p><p className="mt-1 text-lg font-bold tabular-figures text-hi" data-testid="detail-holdings-total" data-defi-feature-enabled={defiNetWorthEnabled ? 'true' : 'false'} data-defi-shadow-status={walletEconomicExposure.status}>{card.kind === 'wallet' ? allWalletAssets.length > 0 && walletDisplayedTotal != null ? formatMoney(walletDisplayedTotal) : '—' : sourceAssets.length > 0 || zeroAssets.length > 0 ? formatMoney(sourceTotal) : '—'}</p>
+          <div><p className="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-faint">Holdings</p><p className="mt-1 text-lg font-bold tabular-figures text-hi" data-testid="detail-holdings-total" data-defi-feature-enabled={defiNetWorthEnabled ? 'true' : 'false'} data-defi-shadow-status={walletEconomicExposure.status}>{card.kind === 'wallet' ? walletHasCurrentScope && walletDisplayedTotal != null ? formatMoney(walletDisplayedTotal) : '—' : sourceAssets.length > 0 || zeroAssets.length > 0 ? formatMoney(sourceTotal) : '—'}</p>
             {card.kind === 'wallet' && walletAllCurrentAuthority && latestCurrentBalanceAsOf != null && <p className="mt-0.5 text-[0.6875rem] text-faint" data-testid="detail-wallet-authority-status">{plural(walletAssetCount, 'asset')} · on-chain balances as of {relativeTime(latestCurrentBalanceAsOf)}</p>}
           </div>
           <div className="text-right text-[0.6875rem] leading-relaxed text-faint">{card.kind === 'wallet' && walletAtCost && <p>Some assets valued at cost — no live price cached yet.</p>}{card.kind === 'wallet' && walletUnpriced > 0 && <p>{walletUnpriced} asset{walletUnpriced === 1 ? '' : 's'} without a price — not in the total.</p>}{card.kind !== 'wallet' && sourceAtCost && <p>Valued at cost where no live price is cached.</p>}{card.kind === 'file' && card.csvImport?.optionsBalanceUnavailable && <p className="text-warn" data-testid="detail-options-balance-unavailable">Options balance unavailable — add a current-balance authority to include it.</p>}</div>
         </div>
         {card.kind === 'wallet' && walletEconomicExposure.hasUnpricedLiabilities && <p className="border-b border-warn/20 bg-warn/10 px-5 py-2.5 text-xs text-warn" role="status" data-testid="detail-defi-net-worth-incomplete">Adjusted total unavailable because a known liability has no verified price; raw custody is not presented as debt-free.</p>}
+        {card.kind === 'wallet' && !walletEconomicExposure.hasUnpricedLiabilities && walletEconomicExposure.status !== 'complete' && defiNetWorthEnabled && <p className="border-b border-warn/20 bg-warn/10 px-5 py-2.5 text-xs text-warn" role="status" data-testid="detail-defi-net-worth-fallback">Current DeFi look-through is incomplete. Custody is retained and known liabilities remain deducted.</p>}
         {quantityAuthorityIssueCount > 0 && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-warn/20 bg-warn/10 px-5 py-2.5 text-xs text-mid" data-testid="quantity-authority-summary">
           <span>{plural(quantityAuthorityIssueCount, 'quantity authority issue')} retained for review.</span>
           {onOpenDataHealth && <button type="button" onClick={onOpenDataHealth} className="min-h-[44px] font-bold text-primary hover:underline">Review in Data Health →</button>}

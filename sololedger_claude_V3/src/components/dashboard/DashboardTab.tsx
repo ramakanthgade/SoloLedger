@@ -19,7 +19,8 @@ import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
-import { projectLegacyWalletNetWorth, projectWalletDefiNetWorth, storeWalletDefiNetWorthShadow } from '@/lib/portfolio/economicExposureProjection';
+import { projectLegacyWalletNetWorth, storeWalletDefiNetWorthShadow } from '@/lib/portfolio/economicExposureProjection';
+import { projectManifestSelectedWalletDefi, walletDefiCustodyFromHoldings } from '@/lib/portfolio/walletDefiProjection';
 import { isWalletDefiNetWorthV1Enabled } from '@/lib/features';
 import {
   buildHoldingsProjection,
@@ -41,6 +42,7 @@ import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
 import { DataHealthWorkspace, type DataHealthViewState } from './DataHealthWorkspace';
 import { reaggregateUnreplacedCustody } from './dashboardEconomicRows';
+import { buildDashboardValueMetrics, historicalPeriodChange } from './dashboardValueMetrics';
 import { buildCoherentDataHealthShadow, buildDataHealthModel, buildLocalDataHealthDiagnostics } from './dataHealthModel';
 import { buildCards } from '@/components/connections/connectionModel';
 import { buildConnectionWorkspaceFromCard, buildConnectionWorkspaceSnapshot, prepareConnectionWorkspaceCollectionIndex } from '@/components/connections/connectionWorkspaceModel';
@@ -738,22 +740,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   );
   const walletDefiNetWorthEnabled = isWalletDefiNetWorthV1Enabled();
   const defiNetWorthInput = useMemo(() => {
-    const valueByKey = new Map(valued.map((row) => [portfolioHoldingKey(row), row]));
-    const custody = holdings.flatMap((holding) => {
-      const valuedHolding = valueByKey.get(portfolioHoldingKey(holding));
-      const unitValue = holding.quantity > 1e-9
-        ? (valuedHolding?.valueNow ?? valuedHolding?.costBasis ?? holding.costBasis) / holding.quantity
-        : 0;
-      const scopes = holding.sourceVerification.length > 0
-        ? holding.sourceVerification.map((source) => ({ scopeId: source.scopeId, quantity: source.quantity }))
-        : [{ scopeId: 'unscoped', quantity: holding.quantity }];
-      return scopes.filter((source) => source.quantity > 1e-9).map((source) => ({
-        id: `${source.scopeId}:${holding.assetKey}`, scopeId: source.scopeId,
-        chainId: holding.chain === 'ethereum' ? 1 : 0,
-        contractAddress: holding.contractAddress, symbol: holding.asset,
-        quantity: source.quantity, value: source.quantity * unitValue
-      }));
-    });
+    const custody = walletDefiCustodyFromHoldings(holdings, valued);
     const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
       ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
     for (const [contract, price] of defiUnderlyingPriceMap(
@@ -761,18 +748,20 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     )) prices.set(contract, price);
     return {
       custody, snapshots: acceptedSnapshot?.defiPositionSnapshots ?? [],
-      rows: acceptedSnapshot?.defiPositionRows ?? [], prices, reportingCurrency: currency
+      rows: acceptedSnapshot?.defiPositionRows ?? [], prices, reportingCurrency: currency,
+      custodyAuthoritySnapshots: acceptedSnapshot?.authoritySnapshots ?? [],
+      refreshManifests: acceptedSnapshot?.walletDefiRefreshManifests ?? []
     };
-  }, [acceptedSnapshot?.defiPositionRows, acceptedSnapshot?.defiPositionSnapshots, currency, holdings, priceIndex, valued]);
+  }, [acceptedSnapshot?.authoritySnapshots, acceptedSnapshot?.defiPositionRows, acceptedSnapshot?.defiPositionSnapshots, acceptedSnapshot?.walletDefiRefreshManifests, currency, holdings, priceIndex, valued]);
   // The rollout is default-off, so its candidate is diagnostic rather than
   // paint-critical. Keep each shadow internally coherent, but move candidate
   // recomputation past the visible holdings commit. An enabled rollout always
   // evaluates current evidence synchronously because it controls presentation.
   const deferredDefiNetWorthInput = usePostPaintDeferredValue(defiNetWorthInput, () => false);
   const shadowInput = walletDefiNetWorthEnabled ? defiNetWorthInput : deferredDefiNetWorthInput;
-  const defiNetWorthShadow = useMemo(() => projectWalletDefiNetWorth({
-    ...shadowInput, enabled: walletDefiNetWorthEnabled
-  }), [shadowInput, walletDefiNetWorthEnabled]);
+  const defiNetWorthShadow = useMemo(() => projectManifestSelectedWalletDefi({
+    ...shadowInput, enabled: walletDefiNetWorthEnabled, now: nowMs
+  }), [nowMs, shadowInput, walletDefiNetWorthEnabled]);
   useEffect(() => storeWalletDefiNetWorthShadow(defiNetWorthShadow), [defiNetWorthShadow]);
   const economicExposure = useMemo(() => walletDefiNetWorthEnabled
     ? defiNetWorthShadow.projection
@@ -782,12 +771,17 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     .flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : []));
   const displayedValued = reaggregateUnreplacedCustody(valued, holdings, replacedCustodyIds);
 
-  const totalCost = valued.reduce((s, h) => s + h.costBasis, 0);
+  const valueMetrics = buildDashboardValueMetrics(valued, economicExposure);
+  const totalCost = valueMetrics.historicalCostBasis;
   const unpriced = valued.filter((h) => h.valueNow == null);
   const marketMode = valued.some((h) => h.valueNow != null);
   const adjustedNetWorth = economicExposure.netWorth;
   const netWorth = adjustedNetWorth ?? 0;
-  const unrealizedTotal = marketMode && adjustedNetWorth != null ? netWorth - totalCost : null;
+  const historicalCurrentValue = valueMetrics.historicalCurrentValue;
+  const unrealizedTotal = valueMetrics.historicalUnrealized;
+  const currentDefiAssets = valueMetrics.currentEconomicAssets;
+  const currentDefiLiabilities = valueMetrics.currentDefiLiabilities;
+  const currentDefiAdjustment = valueMetrics.currentDefiAdjustment;
   const pricesAsOf = valued.reduce<number | null>(
     (acc, h) => (h.priceAsOf != null && (acc == null || h.priceAsOf > acc) ? h.priceAsOf : acc),
     null
@@ -837,8 +831,11 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const btcQuantity = holdings
     .filter((holding) => holding.asset.toUpperCase() === 'BTC')
     .reduce((sum, holding) => sum + holding.amount, 0);
-  const changeAbs = netWorth - startValue;
-  const changePct = startValue > 0 ? (changeAbs / startValue) * 100 : null;
+  // Period performance remains the historical market/cost series. Current
+  // DeFi liabilities are a separate present-time adjustment, not chart P&L.
+  const periodPerformance = historicalPeriodChange(historicalCurrentValue, startValue);
+  const changeAbs = periodPerformance.change;
+  const changePct = periodPerformance.percentage;
 
   const currentFy = getCurrentFy(jurisdiction);
   const realizedFyGain = useMemo(
@@ -906,7 +903,12 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   );
   const sourcesConnected = wallets.length + exchangeConns.length + csvImports.length;
 
-  const alloc = useMemo(() => allocationSlices(valued, marketMode), [valued, marketMode]);
+  const economicValued = useMemo(() => [...economicExposure.assets, ...economicExposure.liabilities].map((row) => ({
+    asset: row.symbol,
+    valueNow: row.contribution,
+    costBasis: 0
+  })), [economicExposure]);
+  const alloc = useMemo(() => allocationSlices(economicValued, true), [economicValued]);
   const allocTotal = alloc.reduce((s, a) => s + a.value, 0);
   const chartContent = useMemo(() => (
     <>
@@ -1220,28 +1222,22 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
                 )}
               </button>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-              <p
-                className="text-4xl font-extrabold tabular-figures tracking-tight text-hi sm:text-[2.625rem] sm:leading-[1.05]"
-                data-testid="net-worth-value"
-                data-defi-feature-enabled={walletDefiNetWorthEnabled ? 'true' : 'false'}
-                data-defi-shadow-status={defiNetWorthShadow.projection.status}
-              >
-                {adjustedNetWorth == null ? 'Incomplete' : fm(netWorth)}
-              </p>
-              {changePct != null && (
-                <Badge tone={changeAbs >= 0 ? 'gain' : 'loss'} className="tabular-figures">
-                  {hideBalances ? '••••' : fmtPct(changePct)}
-                </Badge>
-              )}
-            </div>
-            <p className="mt-2 text-xs font-semibold tabular-figures text-mid">
-              {hideBalances ? '••••' : fmtSigned(changeAbs)}{' '}
-              <span className="font-medium text-low">{range.sinceCaption}</span>
+            <p
+              className="text-4xl font-extrabold tabular-figures tracking-tight text-hi sm:text-[2.625rem] sm:leading-[1.05]"
+              data-testid="net-worth-value"
+              data-defi-feature-enabled={walletDefiNetWorthEnabled ? 'true' : 'false'}
+              data-defi-shadow-status={defiNetWorthShadow.projection.status}
+            >
+              {adjustedNetWorth == null ? 'Incomplete' : fm(netWorth)}
             </p>
             {economicExposure.hasUnpricedLiabilities && (
               <p className="mt-1.5 text-xs text-warn" data-testid="defi-net-worth-incomplete" role="status">
                 Adjusted net worth is incomplete because a known liability has no verified price. Raw custody is not shown as debt-free.
+              </p>
+            )}
+            {!economicExposure.hasUnpricedLiabilities && economicExposure.status !== 'complete' && walletDefiNetWorthEnabled && (
+              <p className="mt-1.5 text-xs text-warn" data-testid="defi-net-worth-fallback" role="status">
+                Current DeFi look-through is incomplete. Custody is retained and known liabilities remain deducted until current same-block position evidence is complete.
               </p>
             )}
             {!economicExposure.hasUnpricedLiabilities && !marketMode && (
@@ -1263,7 +1259,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
           </div>
 
           <dl className="flex flex-wrap items-start gap-x-10 gap-y-5">
-            <HeroStat label="Cost basis" value={fm(totalCost)} />
+            <HeroStat label="Historical display cost basis" value={fm(totalCost)} />
+            <HeroStat label="Current assets incl. DeFi supplies" value={fm(currentDefiAssets)} />
+            <HeroStat label="Current liabilities" value={currentDefiLiabilities > 0 ? `−${fm(currentDefiLiabilities)}` : fm(0)} tone={currentDefiLiabilities > 0 ? 'loss' : 'mid'} />
+            <HeroStat label="Current DeFi adjustment" value={currentDefiAdjustment == null ? '—' : fmtSigned(currentDefiAdjustment)} tone={currentDefiAdjustment == null ? 'mid' : currentDefiAdjustment >= 0 ? 'gain' : 'loss'} note="Excluded from historical chart and period performance" />
             <HeroStat
               label="Unrealized gain"
               value={
@@ -1315,7 +1314,28 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
           </dl>
         </div>
 
-        <div className="mt-4 px-3 sm:px-5">
+        <section
+          aria-labelledby="historical-holdings-performance-title"
+          className="mt-4 border-t border-hi/10 px-6 pt-4 sm:px-8"
+          data-testid="historical-holdings-performance"
+        >
+          <div className="flex flex-wrap items-center gap-2">
+            <h2 id="historical-holdings-performance-title" className={eyebrowClass}>
+              Historical holdings performance
+            </h2>
+            {changePct != null && (
+              <Badge tone={changeAbs >= 0 ? 'gain' : 'loss'} className="tabular-figures">
+                {hideBalances ? '••••' : fmtPct(changePct)}
+              </Badge>
+            )}
+          </div>
+          <p className="mt-1 text-xs font-semibold tabular-figures text-mid">
+            {hideBalances ? '••••' : fmtSigned(changeAbs)}{' '}
+            <span className="font-medium text-low">{range.sinceCaption}</span>
+          </p>
+        </section>
+
+        <div className="px-3 sm:px-5">
           {chartContent}
         </div>
 

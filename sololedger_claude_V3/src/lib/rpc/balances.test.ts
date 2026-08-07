@@ -464,6 +464,11 @@ describe('refreshWalletBalancesForAddresses — storage + zero-fill', () => {
     );
     expect(outcome.failed).toEqual([]);
     expect(outcome.updated).toBe(1);
+    expect(outcome.completed).toEqual([{
+      address: ETH_ADDR,
+      chain: 'ethereum',
+      custodySnapshotId: `ethereum:${ETH_ADDR}:rpc:1`
+    }]);
 
     const rows = await getWalletBalances();
     const byAsset = new Map(rows.map((r) => [r.asset, r]));

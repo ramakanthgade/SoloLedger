@@ -1003,6 +1003,42 @@ describe('v11 file and wallet source deletion', () => {
     });
   });
 
+  it('removes the exact DeFi manifest and final wallet lifecycle identity without leaving address PII', async () => {
+    const address = `0x${'a'.repeat(40)}`;
+    const sourceId = `ethereum:${address}`;
+    const accountIdentityScope = `wallet:evm:${address}`;
+    await upsertLookupAddress('ethereum', address, 0, undefined, { label: 'Private wallet' });
+    const lookup = await db.lookupAddresses.get(sourceId);
+    expect(lookup?.accountIdentityId).toBe(accountIdentityScope);
+    await db.walletDefiRefreshManifests.put({
+      accountIdentityScope,
+      custodyScopeId: `wallet:evm:1:${address}`,
+      custodySnapshotId: `${sourceId}:rpc:1`,
+      custodyGeneration: 1,
+      custodyAsOf: 1,
+      blockNumber: 1,
+      capturedAt: 1,
+      protocolSnapshotIds: {
+        'aave-v2-ethereum': `${accountIdentityScope}:aave-v2-ethereum:1`,
+        'aave-v3-ethereum': `${accountIdentityScope}:aave-v3-ethereum:1`,
+        'spark-v1-ethereum': `${accountIdentityScope}:spark-v1-ethereum:1`
+      }
+    });
+
+    expect(await deleteLookupAddressAndTransactions(sourceId)).toBe(0);
+    expect(await db.walletDefiRefreshManifests.get(accountIdentityScope)).toBeUndefined();
+    expect(await db.lookupAddresses.get(sourceId)).toBeUndefined();
+    expect(await db.accountIdentities.get(accountIdentityScope)).toBeUndefined();
+    const remainingLifecycleState = JSON.stringify({
+      lookups: await db.lookupAddresses.toArray(),
+      identities: await db.accountIdentities.toArray(),
+      manifests: await db.walletDefiRefreshManifests.toArray(),
+      positions: await db.defiPositionSnapshots.toArray()
+    });
+    expect(remainingLifecycleState).not.toContain(address);
+    expect(remainingLifecycleState).not.toContain('Private wallet');
+  });
+
   it('atomically removes a large CSV import without oversized IndexedDB key queries', async () => {
     const sourceId = 'large-csv';
     // fake-indexeddb is orders of magnitude slower than Chromium IndexedDB;
