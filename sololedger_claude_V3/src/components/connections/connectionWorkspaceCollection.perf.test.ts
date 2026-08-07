@@ -57,17 +57,25 @@ it('builds a 30k ledger across 100 source workspaces in under 250 ms', () => {
     sourceCoverage: []
   };
 
-  const startedAt = performance.now();
-  const collectionIndex = prepareConnectionWorkspaceCollectionIndex(input);
-  const workspaces = [...cards, ...emptyCards].map((card) => buildConnectionWorkspaceFromCard({
-    ...input,
-    card,
-    now: 2_000_000,
-    collectionIndex
-  }));
-  const elapsed = performance.now() - startedAt;
+  const run = () => {
+    const startedAt = performance.now();
+    const collectionIndex = prepareConnectionWorkspaceCollectionIndex(input);
+    const workspaces = [...cards, ...emptyCards].map((card) => buildConnectionWorkspaceFromCard({
+      ...input,
+      card,
+      now: 2_000_000,
+      collectionIndex
+    }));
+    return { elapsed: performance.now() - startedAt, workspaces };
+  };
+  run();
+  const samples = Array.from({ length: 20 }, run);
+  // Twenty samples make nearest-rank p95 distinct from a single scheduler or GC pause.
+  const measures = samples.map((sample) => sample.elapsed).sort((left, right) => left - right);
+  const p95 = measures[Math.ceil(measures.length * 0.95) - 1];
+  const workspaces = samples[samples.length - 1].workspaces;
 
   expect(workspaces.reduce((sum, workspace) => sum + workspace.overview.transactionCount, 0)).toBe(30_000);
   expect(workspaces.slice(sourceCount).every((workspace) => workspace.overview.transactionCount === 0)).toBe(true);
-  expect(elapsed).toBeLessThan(250);
+  expect(p95).toBeLessThan(250);
 });

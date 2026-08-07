@@ -72,7 +72,7 @@ describe('txFlow — the row-face sent → received flow', () => {
     expect(flow.sent).toMatchObject({ kind: 'asset', role: 'principal', symbol: 'LPT', amount: 954.5, sign: '−' });
     expect(flow.sent?.subline).toBe('cost ₹4,16,389.81');
     expect(flow.received).toMatchObject({ kind: 'asset', role: 'counter', symbol: 'USDT', amount: 4850.6, sign: '+' });
-    expect(flow.received?.subline).toBe('≈ ₹4,04,700.00');
+    expect(flow.received?.subline).toBe('≈ ₹4,04,700');
     expect(flow.received?.gain).toEqual({ kind: 'loss', formatted: '₹11,689.81' });
   });
 
@@ -90,13 +90,13 @@ describe('txFlow — the row-face sent → received flow', () => {
     expect(flow.sent).toMatchObject({ kind: 'asset', symbol: 'LPT', amount: 954.5, sign: '−' });
     // NOT a fiat leg — the original pair is preserved.
     expect(flow.received).toMatchObject({ kind: 'asset', symbol: 'USDT', amount: 4850.6, sign: '+' });
-    expect(flow.received?.subline).toBe('≈ ₹4,04,700.00');
+    expect(flow.received?.subline).toBe('≈ ₹4,04,700');
   });
 
   it('crypto-to-crypto buy: shows the counter-asset paid leg (Bought LPT with USDT)', () => {
     const t = tx({ type: 'buy', asset: 'LPT', amount: 954.5, counterAsset: 'USDT', counterAmount: 4850.6, fiatCurrency: 'INR', fiatValue: 404700 });
     const flow = txFlow(t, flowCtx({ assetLabel: 'LPT', counterLabel: 'USDT' }));
-    expect(flow.sent).toMatchObject({ kind: 'asset', symbol: 'USDT', amount: 4850.6, sign: '−', subline: '≈ ₹4,04,700.00' });
+    expect(flow.sent).toMatchObject({ kind: 'asset', symbol: 'USDT', amount: 4850.6, sign: '−', subline: '≈ ₹4,04,700' });
     expect(flow.received).toMatchObject({ kind: 'asset', symbol: 'LPT', amount: 954.5, sign: '+' });
   });
 
@@ -190,7 +190,7 @@ describe('buildTxSummary — plain-English one-liners per type', () => {
       assetLabel: 'LPT',
       disposal: { costBasis: 416389.81, gain: -11689.81 }
     }));
-    expect(s.lead).toBe('You sold 954.5000 LPT for ₹4,04,700.00 on Binance');
+    expect(s.lead).toBe('You sold 954.5000 LPT for ₹4,04,700 on Binance');
     expect(s.tail).toEqual({ kind: 'loss', formatted: '₹11,689.81' });
   });
 
@@ -210,13 +210,13 @@ describe('buildTxSummary — plain-English one-liners per type', () => {
   it('crypto-to-crypto sell keeps the original pair: "You sold LPT for USDT (≈ ₹…)"', () => {
     const t = tx({ type: 'sell', asset: 'LPT', amount: 954.5, counterAsset: 'USDT', counterAmount: 4850.6, fiatCurrency: 'INR', fiatValue: 404700 });
     const s = buildTxSummary(t, summaryCtx({ assetLabel: 'LPT', counterLabel: 'USDT' }));
-    expect(s.lead).toBe('You sold 954.5000 LPT for 4850.60 USDT (≈ ₹4,04,700.00) on Binance');
+    expect(s.lead).toBe('You sold 954.5000 LPT for 4850.60 USDT (≈ ₹4,04,700) on Binance');
   });
 
   it('crypto-to-crypto buy keeps the original pair: "You bought LPT for USDT (≈ ₹…)"', () => {
     const t = tx({ type: 'buy', asset: 'LPT', amount: 954.5, counterAsset: 'USDT', counterAmount: 4850.6, fiatCurrency: 'INR', fiatValue: 404700 });
     const s = buildTxSummary(t, summaryCtx({ assetLabel: 'LPT', counterLabel: 'USDT' }));
-    expect(s.lead).toBe('You bought 954.5000 LPT for 4850.60 USDT (≈ ₹4,04,700.00) on Binance');
+    expect(s.lead).toBe('You bought 954.5000 LPT for 4850.60 USDT (≈ ₹4,04,700) on Binance');
   });
 
   it('trade: "You swapped X for Y on Binance"', () => {

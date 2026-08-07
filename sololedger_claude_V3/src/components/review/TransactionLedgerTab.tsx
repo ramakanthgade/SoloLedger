@@ -11,21 +11,64 @@ function evidenceLabel(posting: DerivedPosting): string {
 }
 const postingDescription: Record<DerivedPosting['role'], string> = { principal: 'Primary asset movement', counter: 'Counter-asset consideration', liability: 'Loan liability movement', fee: 'Transaction fee withheld', opening_balance: 'Dated opening balance' };
 
+function postingSource(posting: DerivedPosting): string {
+  const evidence = posting.evidence[0];
+  return evidence && 'source' in evidence ? evidence.source : 'Opening evidence';
+}
+
+function signedChange(posting: DerivedPosting): string {
+  return `${posting.signedQuantity >= 0 ? '+' : '−'}${formatCompactAmount(Math.abs(posting.signedQuantity))} ${posting.asset}`;
+}
+
 export function TransactionLedgerTab({ postings, runningBalances }: {
   postings: readonly DerivedPosting[];
   runningBalances: ReadonlyMap<string, number>;
 }) {
   return (
-    <div role="tabpanel" id="transaction-panel-ledger" aria-labelledby="transaction-tab-ledger">
+    <div role="tabpanel" id="transaction-panel-ledger" aria-labelledby="transaction-tab-ledger" className="min-w-0 max-w-full">
       <header className="mb-4"><p className="text-[10px] font-extrabold uppercase tracking-[0.08em] text-low">Signed postings</p><h3 className="mt-1 text-base font-extrabold text-hi">Balance movements</h3><p className="mt-1 text-xs text-low">Custody movements created by this transaction, with source provenance and globally indexed balances.</p></header>
-      <div className="overflow-x-auto rounded-xl border border-hi/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50" role="region" aria-label="Transaction custody postings table" tabIndex={0}>
+      <div className="min-w-0 max-w-full sm:hidden" role="region" aria-label="Transaction custody postings">
+        <ul className="grid min-w-0 gap-3" data-testid="ledger-mobile-postings">
+          {postings.map((posting) => {
+            return <li key={posting.id} className="min-w-0 rounded-xl border border-hi/10 bg-elev-1 p-3" data-testid="ledger-mobile-posting">
+              <article className="min-w-0" aria-label={postingDescription[posting.role]}>
+                <dl className="grid min-w-0 gap-3 text-xs">
+                  <div className="min-w-0">
+                    <dt className="text-[10px] font-extrabold uppercase tracking-wide text-low" data-testid="ledger-mobile-label">Posting</dt>
+                    <dd className="mt-1 min-w-0 font-semibold text-hi">{postingDescription[posting.role]}<span className="block break-words font-normal text-low">{new Date(posting.effectiveAt).toLocaleString()}</span></dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-[10px] font-extrabold uppercase tracking-wide text-low" data-testid="ledger-mobile-label">Ledger</dt>
+                    <dd className="mt-1 min-w-0 font-semibold text-hi">{posting.asset}<span className="block break-words font-normal capitalize text-low">{posting.accountClass} · {postingSource(posting)}</span></dd>
+                  </div>
+                  <div className="min-w-0">
+                    <dt className="text-[10px] font-extrabold uppercase tracking-wide text-low" data-testid="ledger-mobile-label">Evidence</dt>
+                    <dd className="mt-1 min-w-0 [overflow-wrap:anywhere] text-low">{evidenceLabel(posting) || 'No evidence reference'}</dd>
+                  </div>
+                  <div className="grid min-w-0 grid-cols-2 gap-3 border-t border-hi/10 pt-3">
+                    <div className="min-w-0">
+                      <dt className="text-[10px] font-extrabold uppercase tracking-wide text-low" data-testid="ledger-mobile-label">Signed change</dt>
+                      <dd className={posting.signedQuantity >= 0 ? 'mt-1 min-w-0 break-words font-bold text-gain' : 'mt-1 min-w-0 break-words font-bold text-loss'}>{signedChange(posting)}</dd>
+                    </div>
+                    <div className="min-w-0 text-right">
+                      <dt className="text-[10px] font-extrabold uppercase tracking-wide text-low" data-testid="ledger-mobile-label">Running balance</dt>
+                      <dd className="mt-1 min-w-0 break-words font-semibold tabular-figures text-hi">{formatCompactAmount(runningBalances.get(posting.id) ?? 0)} {posting.asset}</dd>
+                    </div>
+                  </div>
+                </dl>
+              </article>
+            </li>;
+          })}
+        </ul>
+      </div>
+      <div className="hidden max-w-full overflow-x-auto rounded-xl border border-hi/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 sm:block" role="region" aria-label="Transaction custody postings table" tabIndex={0}>
         <table className="w-full min-w-[700px] text-xs">
           <thead className="bg-elev-3/60 text-left text-[10px] uppercase tracking-wide text-low"><tr><th className="px-3 py-2">Posting</th><th className="px-3 py-2">Ledger</th><th className="px-3 py-2">Evidence</th><th className="px-3 py-2 text-right">Signed change</th><th className="px-3 py-2 text-right">Running balance</th></tr></thead>
           <tbody>{postings.map((posting) => <tr key={posting.id} className="border-t border-hi/10">
             <td className="px-3 py-2 font-semibold text-hi">{postingDescription[posting.role]}<span className="block font-normal text-low">{new Date(posting.effectiveAt).toLocaleString()}</span></td>
-            <td className="px-3 py-2">{posting.asset}<span className="block capitalize text-low">{posting.accountClass} · {posting.evidence[0] && 'source' in posting.evidence[0] ? posting.evidence[0].source : 'Opening evidence'}</span></td>
+            <td className="px-3 py-2">{posting.asset}<span className="block capitalize text-low">{posting.accountClass} · {postingSource(posting)}</span></td>
             <td className="max-w-[18rem] px-3 py-2 text-low">{evidenceLabel(posting) || 'No evidence reference'}</td>
-            <td className={posting.signedQuantity >= 0 ? 'px-3 py-2 text-right font-bold text-gain' : 'px-3 py-2 text-right font-bold text-loss'}>{posting.signedQuantity >= 0 ? '+' : '−'}{formatCompactAmount(Math.abs(posting.signedQuantity))} {posting.asset}</td>
+            <td className={posting.signedQuantity >= 0 ? 'px-3 py-2 text-right font-bold text-gain' : 'px-3 py-2 text-right font-bold text-loss'}>{signedChange(posting)}</td>
             <td className="px-3 py-2 text-right font-semibold tabular-figures text-hi">{formatCompactAmount(runningBalances.get(posting.id) ?? 0)} {posting.asset}</td>
           </tr>)}</tbody>
         </table>

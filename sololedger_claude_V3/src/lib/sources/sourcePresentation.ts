@@ -2,6 +2,7 @@ import type { AccountIdentityRow } from '@/lib/accounts/accountIdentity';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import type { CsvImportRow, ExchangeConnectionRow, LookupAddressRow } from '@/lib/storage/db';
 import type { DeletedSourceEvidence, Transaction } from '@/types/transaction';
+import { resolveWalletDisplayLabel } from '@/lib/accounts/walletDisplay';
 
 export type SourceResolutionStatus = 'resolved' | 'deleted' | 'unresolved';
 
@@ -45,6 +46,10 @@ const EXACT_PROVIDER_LABELS: Readonly<Record<string, string>> = {
 function humanizeExactId(value: string): string {
   const normalized = value.trim().toLowerCase();
   return EXACT_PROVIDER_LABELS[normalized] ?? value.trim().replace(/[_-]+/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function firstNonBlank(...values: Array<string | null | undefined>): string | undefined {
+  return values.find((value) => value?.trim())?.trim();
 }
 
 export function shortSourceIdentity(value: string): string {
@@ -179,7 +184,9 @@ export function sourcePresentationForTransaction(
     if (!source) return unresolved(transaction);
     const account = accountFor(indexes, source.accountIdentityId);
     const appId = account?.walletAppId ?? source.walletAppId ?? null;
-    const primaryLabel = account?.label ?? source.label ?? (appId ? humanizeExactId(appId) : 'Wallet account');
+    const primaryLabel = resolveWalletDisplayLabel({
+      label: firstNonBlank(account?.label, source.label), walletAppId: appId, address: source.address
+    });
     const chain = chainLabel ?? humanizeExactId(source.chain);
     const address = shortSourceIdentity(source.address);
     const sourceKey = `wallet-source:${source.id}:${source.sourceIncarnation ?? 'legacy'}`;

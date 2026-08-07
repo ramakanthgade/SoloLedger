@@ -276,7 +276,7 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
 
       {/* Below lg, main owns scrolling and the tab bar occupies a separate row,
           so actionable controls can never pass beneath navigation. */}
-      <main id="main-content" className="w-full min-h-0 flex-1 overflow-y-auto px-6 pb-8 pt-10 lg:mx-auto lg:max-w-7xl lg:overflow-visible lg:pb-10 lg:px-8">
+      <main id="main-content" className="w-full min-h-0 min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-6 pb-8 pt-10 lg:mx-auto lg:max-w-7xl lg:overflow-visible lg:pb-10 lg:px-8">
         <div
           role="tabpanel"
           id={`tabpanel-${active}`}

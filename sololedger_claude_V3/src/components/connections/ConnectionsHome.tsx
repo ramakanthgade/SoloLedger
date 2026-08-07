@@ -30,7 +30,7 @@ import {
   deleteLookupAddressAndTransactions,
   getCsvImports,
   getLookupAddresses,
-  updateWalletLabel,
+  updateWalletAccountLabel,
   type CsvImportRow,
   type LookupAddressRow
 } from '@/lib/storage/db';
@@ -41,6 +41,11 @@ import { importJob, runWalletImport, useImportJob } from '@/lib/importJob';
 import { FirstSyncPreview } from '@/components/import/FirstSyncPreview';
 import { AddDataCard, ConnectionCard } from './ConnectionCard';
 import { ConnectionDetail } from './ConnectionDetail';
+import { WalletConnectionCard } from './WalletConnectionCard';
+import {
+  buildWalletChainSummaries,
+  prepareWalletChainCollectionEvidence
+} from './walletChainModel';
 import type { CardMenuItem } from './CardMenu';
 import {
   buildCards,
@@ -123,6 +128,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
   const pillRefs = useRef<Array<HTMLButtonElement | null>>([]);
   /** Open per-connection detail view (round 4) — null shows the cards grid. */
   const [detailId, setDetailId] = useState<string | null>(null);
+  const [expandedWalletIds, setExpandedWalletIds] = useState<Set<string>>(() => new Set());
   const cardElements = useRef(new Map<string, HTMLElement>());
   const detailOpenerId = useRef<string | null>(null);
   const [drawer, setDrawer] = useState<DrawerState>({
@@ -139,11 +145,37 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
   const missingDetailTargetIntent = useRef<string | null>(null);
   const [externalDetailIntentId, setExternalDetailIntentId] = useState<string | null>(null);
 
+  const liveWalletEvidence = useLiveQuery(async () => {
+    const [transactions, exchangeConnections, openingBalances, snapshots, assets, sourceCoverage,
+      safetyDecisions, priceRows, settings] = await Promise.all([
+      db.transactions.toArray(), db.exchangeConnections.toArray(), db.openingBalances.toArray(),
+      db.authoritySnapshots.toArray(), db.authorityAssets.toArray(), db.sourceCoverage.toArray(),
+      db.safetyDecisions.toArray(), db.priceCache.toArray(), db.settings.get('singleton')
+    ]);
+    return prepareWalletChainCollectionEvidence({
+      transactions,
+      exchangeConnections: exchangeConnections.map(({ id, exchange }) => ({ id, exchange })),
+      openingBalances,
+      snapshots,
+      assets,
+      sourceCoverage,
+      safetyDecisions,
+      priceRows,
+      liveWalletRows: walletRows,
+      settings
+    });
+  }, [walletRows]);
+
   const [removeExchange, setRemoveExchange] = useState<ExchangeConnectionView | null>(null);
   const [removeFile, setRemoveFile] = useState<CsvImportRow | null>(null);
   const [removingFile, setRemovingFile] = useState<CsvImportRow | null>(null);
   const [removeWallet, setRemoveWallet] = useState<ConnectionCardData | null>(null);
-  const [renaming, setRenaming] = useState<{ cardId: string; rows: LookupAddressRow[] } | null>(null);
+  const [renaming, setRenaming] = useState<{
+    cardId: string;
+    rows: LookupAddressRow[];
+    accountIdentityId: string;
+    lifecycleRevision: number;
+  } | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
 
   useEffect(() => {
@@ -167,6 +199,19 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
     [connections, csvImports, walletRows, manualCount, exchangeJob.connectionId, exchangeJob.active]
   );
   const counts = useMemo(() => pillCounts(cards), [cards]);
+  const walletEvidenceByCardId = useMemo(() => {
+    const byCard = new Map<string, { currency: string; summaries: ReturnType<typeof buildWalletChainSummaries> }>();
+    if (!liveWalletEvidence) return byCard;
+    for (const card of cards) {
+      if (card.kind === 'wallet') {
+        byCard.set(card.id, {
+          currency: liveWalletEvidence.currency,
+          summaries: buildWalletChainSummaries(card, liveWalletEvidence, liveWalletEvidence.preparedAt)
+        });
+      }
+    }
+    return byCard;
+  }, [cards, liveWalletEvidence]);
   const detail = detailId == null ? null : cards.find((card) => card.id === detailId) ?? null;
   const detailSourceLoaded = detailId == null ||
     (detailId.startsWith('wallet:') ? liveWalletRows !== undefined :
@@ -305,9 +350,22 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
       return;
     }
     const label = renameDraft.trim();
-    await Promise.all(renaming.rows.map((r) => updateWalletLabel(r.id, label)));
-    setRenaming(null);
-    pushToast({ tone: 'gain', title: label ? 'Wallet renamed' : 'Wallet label cleared' });
+    try {
+      await updateWalletAccountLabel(renaming.accountIdentityId, label, renaming.lifecycleRevision);
+      setRenaming(null);
+      pushToast({ tone: 'gain', title: label ? 'Wallet renamed' : 'Wallet label cleared' });
+    } catch (reason) {
+      const latest = await db.accountIdentities.get(renaming.accountIdentityId);
+      if (latest && latest.lifecycleRevision !== renaming.lifecycleRevision) {
+        setRenaming(null);
+        pushToast({
+          tone: 'warn', title: 'Wallet changed elsewhere',
+          description: 'Review the latest nickname, then reopen Rename.'
+        });
+        return;
+      }
+      throw reason;
+    }
   };
 
   const menuItemsFor = (card: ConnectionCardData): CardMenuItem[] | undefined => {
@@ -382,8 +440,23 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
           icon: <Pencil className="h-4 w-4" aria-hidden="true" />,
           disabled: walletJob.active,
           onSelect: () => {
-            setRenaming({ cardId: card.id, rows });
-            setRenameDraft(rows.map((r) => r.label).find((l) => l?.trim())?.trim() ?? '');
+            const accountIds = new Set(rows.map((row) => row.accountIdentityId).filter(Boolean));
+            const accountIdentityId = accountIds.size === 1 ? [...accountIds][0] : undefined;
+            if (!accountIdentityId) {
+              pushToast({ tone: 'warn', title: 'Wallet account is not ready to rename' });
+              return;
+            }
+            void db.accountIdentities.get(accountIdentityId).then((account) => {
+              if (!account || account.kind !== 'wallet') {
+                pushToast({ tone: 'warn', title: 'Wallet account is not ready to rename' });
+                return;
+              }
+              setRenaming({
+                cardId: card.id, rows, accountIdentityId,
+                lifecycleRevision: account.lifecycleRevision
+              });
+              setRenameDraft(rows.map((row) => row.label).find((value) => value?.trim())?.trim() ?? '');
+            });
           }
         },
         {
@@ -646,7 +719,48 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3" data-testid="connections-grid">
-          {visibleCards.map((card) => (
+          {visibleCards.map((card) => card.kind === 'wallet' ? (
+            <div key={card.id} className="sm:col-span-2 xl:col-span-3">
+              <WalletConnectionCard
+                card={card}
+                expanded={expandedWalletIds.has(card.id)}
+                evidence={walletEvidenceByCardId.get(card.id)}
+                onExpandedChange={(expanded) => setExpandedWalletIds((current) => {
+                  const next = new Set(current);
+                  if (expanded) next.add(card.id);
+                  else next.delete(card.id);
+                  return next;
+                })}
+                menuItems={menuItemsFor(card)}
+                onOpenDetail={() => {
+                  detailOpenerId.current = card.id;
+                  setDetailId(card.id);
+                }}
+                detailButtonRef={(element) => {
+                  if (element) cardElements.current.set(card.id, element);
+                  else cardElements.current.delete(card.id);
+                }}
+                renaming={renaming?.cardId === card.id ? (
+                  <div className="flex items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
+                    <input
+                      autoFocus
+                      value={renameDraft}
+                      onChange={(e) => setRenameDraft(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') void saveRename();
+                        if (e.key === 'Escape') setRenaming(null);
+                      }}
+                      placeholder="Wallet nickname"
+                      aria-label="Wallet nickname"
+                      className="h-11 min-w-0 flex-1 rounded-lg border border-hi/10 bg-elev-1 px-2.5 text-sm text-hi focus:border-primary focus:outline-none"
+                    />
+                    <button type="button" aria-label="Save nickname" onClick={() => void saveRename()} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-gain hover:bg-gain/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"><Check className="h-4 w-4" aria-hidden="true" /></button>
+                    <button type="button" aria-label="Cancel rename" onClick={() => setRenaming(null)} className="grid h-11 w-11 shrink-0 place-items-center rounded-lg text-low hover:bg-elev-3 hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"><X className="h-4 w-4" aria-hidden="true" /></button>
+                  </div>
+                ) : undefined}
+              />
+            </div>
+          ) : (
             <ConnectionCard
               key={card.id}
               card={card}

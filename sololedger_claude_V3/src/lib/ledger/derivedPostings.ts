@@ -160,9 +160,46 @@ export function resolveAccountScope(
   connectionById?: ReadonlyMap<string, ExchangeSourceIdentity>,
   liveBinanceConnections?: readonly ExchangeSourceIdentity[]
 ): AccountScopeResolution {
+  const deletedSource = transaction.deletedSourceEvidence;
+
+  // Provenance-free wallet and simple manual rows have fixed classes. Avoid
+  // parsing account hints for these dominant ledger paths; provenance still
+  // takes precedence exactly as it does below.
+  if (!deletedSource && transaction.dedupMatchedApiRow == null) {
+    if (
+      transaction.source === 'manual' && transaction.parserAccountClass == null &&
+      transaction.raw == null && transaction.category == null &&
+      transaction.instrumentClass !== 'derivative' &&
+      (!transaction.walletAddress || !transaction.chain)
+    ) {
+      return transaction.importBatchId
+        ? {
+            scopeStatus: 'resolved',
+            accountScopeId: `file:${transaction.importBatchId}:manual`,
+            accountClass: 'manual'
+          }
+        : { scopeStatus: 'resolved', accountScopeId: 'manual', accountClass: 'manual' };
+    }
+
+    if (
+      transaction.walletAddress && transaction.chain &&
+      (!transaction.importBatchId || !transaction.source.endsWith('_api'))
+    ) {
+      const wallet = walletScope(transaction)!;
+      if (wallet.includes(':custom:unresolved:')) {
+        return {
+          scopeStatus: 'unresolved', accountScopeId: wallet, accountClass: 'wallet',
+          reason: 'missing_custom_network_identity'
+        };
+      }
+      return { scopeStatus: 'resolved', accountScopeId: wallet, accountClass: 'wallet' };
+    }
+  }
+
+  const directId = transaction.source.endsWith('_api') ? transaction.importBatchId : undefined;
+  const twinId = transaction.dedupMatchedApiRow?.importBatchId;
   const accountClass = parsedAccountClass(transaction);
   const explicitParserClass = transaction.parserAccountClass != null;
-  const deletedSource = transaction.deletedSourceEvidence;
   if (deletedSource) {
     return {
       scopeStatus: 'source_deleted', accountScopeId: `exchange:${deletedSource.sourceIdentityId}`,
@@ -170,7 +207,6 @@ export function resolveAccountScope(
       sourceIdentityId: deletedSource.sourceIdentityId
     };
   }
-  const directId = transaction.source.endsWith('_api') ? transaction.importBatchId : undefined;
   if (directId) {
     const connection = connectionById
       ? connectionById.get(directId)
@@ -188,7 +224,6 @@ export function resolveAccountScope(
     };
   }
 
-  const twinId = transaction.dedupMatchedApiRow?.importBatchId;
   if (twinId) {
     const connection = connectionById
       ? connectionById.get(twinId)
