@@ -395,6 +395,38 @@ describe('derivePostings manual scope shortcut', () => {
       expect.objectContaining({ kind: 'transaction', role: 'direct' })
     ]);
   });
+
+  it('does not take the manual shortcut when complete wallet ownership is present', () => {
+    const [posting] = derivePostings([tx({
+      id: 'manual-wallet', source: 'manual', importBatchId: 'manual-batch',
+      type: 'transfer_in', chain: 'ethereum', walletAddress: '0xABC'
+    })], context);
+    expect(posting).toMatchObject({
+      accountClass: 'wallet', accountScopeId: 'wallet:evm:1:0xabc'
+    });
+  });
+});
+
+describe('derivePostings wallet scope shortcut', () => {
+  it('keeps wallet scope authoritative over account classification hints', () => {
+    const transactions = [
+      tx({
+        id: 'wallet-parser', source: 'rpc:moralis', chain: 'ethereum', walletAddress: '0xABC',
+        parserAccountClass: 'margin', raw: { Account: 'Funding' }
+      }),
+      tx({
+        id: 'wallet-derivative', source: 'rpc:moralis', chain: 'ethereum', walletAddress: '0xABC',
+        instrumentClass: 'derivative', category: 'perp_profit'
+      })
+    ];
+
+    expect(derivePostings(transactions, context).map(({ accountScopeId, accountClass }) => ({
+      accountScopeId, accountClass
+    }))).toEqual([
+      { accountScopeId: 'wallet:evm:1:0xabc', accountClass: 'wallet' },
+      { accountScopeId: 'wallet:evm:1:0xabc', accountClass: 'wallet' }
+    ]);
+  });
 });
 
 describe('opening balances and internal custody', () => {
