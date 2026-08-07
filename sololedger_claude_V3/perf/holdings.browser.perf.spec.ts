@@ -9,6 +9,7 @@ interface PerfResult {
 }
 
 const MEASURED_SAMPLE_COUNT = 5;
+const CHART_PREFIX_SAMPLE_COUNT = 20;
 const INITIAL_BUDGET_MS = 1_500;
 const LIVE_UPDATE_BUDGET_MS = 300;
 const CHART_PREFIX_BUDGET_MS = 50;
@@ -47,6 +48,11 @@ function sorted(values: readonly number[]): number[] {
   return [...values].sort((left, right) => left - right);
 }
 
+function nearestRankPercentile(sortedValues: readonly number[], percentile: number): number {
+  if (sortedValues.length === 0) throw new Error('Cannot calculate a percentile without samples');
+  return sortedValues[Math.ceil(sortedValues.length * percentile) - 1];
+}
+
 async function numericAttribute(page: Page, testId: string, attribute: string): Promise<number> {
   const value = await page.getByTestId(testId).getAttribute(attribute);
   if (value == null || !Number.isFinite(Number(value))) {
@@ -72,7 +78,7 @@ test('real Dashboard holdings stays within the Chromium performance budgets', as
   const liveUpdateSamples: number[] = [];
   const chartPrefixSamples: number[] = [];
 
-  for (let iteration = 0; iteration <= MEASURED_SAMPLE_COUNT; iteration += 1) {
+  for (let iteration = 0; iteration <= CHART_PREFIX_SAMPLE_COUNT; iteration += 1) {
     await page.goto(`/holdings-perf.html?mode=seed&iteration=${iteration}`);
     const seedReady = page.getByTestId('holdings-perf-seed-ready');
     await expect(seedReady).toHaveAttribute('data-transaction-count', '30000', { timeout: 30_000 });
@@ -134,14 +140,16 @@ test('real Dashboard holdings stays within the Chromium performance budgets', as
     });
 
     if (iteration === 0) continue;
-    initialSamples.push(initial.elapsedMs);
-    liveUpdateSamples.push(liveUpdate.elapsedMs);
+    if (iteration <= MEASURED_SAMPLE_COUNT) {
+      initialSamples.push(initial.elapsedMs);
+      liveUpdateSamples.push(liveUpdate.elapsedMs);
+    }
     chartPrefixSamples.push(chartPrefix);
   }
 
   expect(initialSamples).toHaveLength(MEASURED_SAMPLE_COUNT);
   expect(liveUpdateSamples).toHaveLength(MEASURED_SAMPLE_COUNT);
-  expect(chartPrefixSamples).toHaveLength(MEASURED_SAMPLE_COUNT);
+  expect(chartPrefixSamples).toHaveLength(CHART_PREFIX_SAMPLE_COUNT);
 
   const initialReport = sorted(initialSamples);
   const liveUpdateReport = sorted(liveUpdateSamples);
@@ -154,7 +162,14 @@ test('real Dashboard holdings stays within the Chromium performance budgets', as
     .toBeLessThan(INITIAL_BUDGET_MS);
   expect(liveUpdateReport.at(-1)!, `live-update samples (ms): ${liveUpdateReport.join(', ')}`)
     .toBeLessThan(LIVE_UPDATE_BUDGET_MS);
-  expect(chartPrefixReport.at(-1)!, `chart-prefix samples (ms): ${chartPrefixReport.join(', ')}`)
+  // A five-sample nearest-rank p95 is still the maximum, so one unrelated
+  // scheduler/GC pause makes that contract p100. Twenty measured samples
+  // preserve the 50 ms p95 budget while allowing only the slowest sample to
+  // remain diagnostic noise.
+  expect(
+    nearestRankPercentile(chartPrefixReport, 0.95),
+    `chart-prefix samples (ms): ${chartPrefixReport.join(', ')}`
+  )
     .toBeLessThan(CHART_PREFIX_BUDGET_MS);
 
   await context.close();
