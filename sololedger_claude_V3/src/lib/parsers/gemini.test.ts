@@ -23,4 +23,12 @@ describe('geminiParser', () => {
     // Fails under local-time parsing — must be the exact UTC epoch.
     expect(result.transactions[0].timestamp).toBe(Date.UTC(2025, 6, 1, 12, 30, 0));
   });
+  it('matches API fiat economics for Gemini-specific GUSD and SGD quotes', () => {
+    const parsed = geminiParser.parse([
+      { ...row('Buy'), Symbol: 'BTCGUSD' },
+      { ...row('Sell'), Symbol: 'ETHSGD' }
+    ]).transactions;
+    expect(parsed[0]).toMatchObject({ asset: 'BTC', counterAsset: 'GUSD', fiatCurrency: 'USD', fiatValue: 15000 });
+    expect(parsed[1]).toMatchObject({ asset: 'ETH', counterAsset: 'SGD', fiatCurrency: 'SGD', fiatValue: 15000 });
+  });
 });

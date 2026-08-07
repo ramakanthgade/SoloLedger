@@ -180,6 +180,21 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['Bitfinex', 'Account', 'API Keys', 'Create New Key'],
     docsUrl: 'https://setting.bitfinex.com/api'
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini',
+    monogram: 'GM',
+    needsPassphrase: false,
+    formatHint: 'Account API key + secret',
+    keyInstructions: [
+      'Log in to Gemini on the web and open Account → Settings → API.',
+      'Create an account-level API key, not a master key, and select the Auditor role.',
+      'Auditor is read-only. Never enable trading, Fund Manager access or withdrawals.',
+      'Copy the API Key and API Secret and paste them here. Gemini does not require a passphrase.'
+    ],
+    path: ['Gemini', 'Account', 'Settings', 'API', 'Create API Key'],
+    docsUrl: 'https://exchange.gemini.com/settings/api'
   }
 ];
 

@@ -137,6 +137,14 @@ export interface ExchangeConnectionRow {
     windowEnd: number;
     completedSymbols: string[];
   };
+  /** Durable per-symbol Gemini timestamp frontiers for a frozen fair scan. */
+  geminiTradeProgress?: {
+    requestedStart: number;
+    requestedEnd: number;
+    symbolStarts: Record<string, number>;
+    completedSymbols: string[];
+    nextSymbolIndex?: number;
+  };
   /** Oldest still-pending Crypto.com transfer per endpoint, replayed until terminal. */
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** Oldest still-pending Bitfinex Movement per direction. */
@@ -863,7 +871,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'gateio_api',
   'htx_api',
   'cryptocom_api',
-  'bitfinex_api'
+  'bitfinex_api',
+  'gemini_api'
 ]);
 
 /**
@@ -942,6 +951,12 @@ export function transactionExchangeKey(
             ? 'withdrawal'
             : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:bitfinex:${kind}:${t.sourceRef}`;
+  }
+  // Gemini CSV exports have no native IDs and use second-resolution economic
+  // refs. Equal same-second fills can legitimately occur, so API rows retain
+  // account-scoped native tid/eid identity instead of unsafe CSV collision.
+  if (t.source === 'gemini_api') {
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:gemini:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;

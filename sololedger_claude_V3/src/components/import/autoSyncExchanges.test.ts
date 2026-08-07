@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(10);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(11);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -53,6 +53,7 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('htx')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('cryptocom')?.label).toBe('Crypto.com Exchange');
     expect(getAutoSyncExchange('bitfinex')?.needsPassphrase).toBe(false);
+    expect(getAutoSyncExchange('gemini')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange(null)).toBeUndefined();
     expect(getAutoSyncExchange('nope')).toBeUndefined();
   });
@@ -93,5 +94,12 @@ describe('autoSyncExchanges catalog', () => {
     expect(copy).toMatch(/CSV beta supports the Trades schema only.*cannot backfill Movements/i);
     expect(copy).toMatch(/API↔CSV trade ID parity is unverified.*does not auto-deduplicate/i);
     expect(bitfinex.needsPassphrase).toBe(false);
+  });
+
+  it('documents Gemini account-level Auditor credentials without a passphrase', () => {
+    const gemini = getAutoSyncExchange('gemini')!;
+    expect(gemini.keyInstructions.join(' ')).toMatch(/account-level.*not a master key.*Auditor.*read-only.*never enable.*trading.*withdrawals/i);
+    expect(gemini.keyInstructions.join(' ')).toMatch(/does not require a passphrase/i);
+    expect(gemini.needsPassphrase).toBe(false);
   });
 });

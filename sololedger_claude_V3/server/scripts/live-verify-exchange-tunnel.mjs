@@ -153,6 +153,12 @@ const TIER2 = [
     probe: 'GET /v2/platform/status',
     path: '/v2/platform/status',
     check: (r, json) => r.status === 200 && Array.isArray(json) && (json[0] === 0 || json[0] === 1)
+  },
+  {
+    exchange: 'gemini',
+    probe: 'GET /v1/symbols',
+    path: '/v1/symbols',
+    check: (r, json) => r.status === 200 && Array.isArray(json) && json.every((symbol) => typeof symbol === 'string')
   }
 ];
 
@@ -375,6 +381,31 @@ const tier3 = [
     // Useful exchange-origin evidence that the bfx auth headers and dummy key
     // reached Bitfinex. This response does not validate the signature/body.
     check: (r) => r.text.includes('10100') && /digest invalid/i.test(r.text)
+  },
+  {
+    exchange: 'gemini',
+    probe: 'POST /v1/balances (dummy Auditor/account-key HMAC-SHA384 payload)',
+    build() {
+      const apiKey = `account-${'D'.repeat(32)}`;
+      const secret = 'dummy-gemini-secret';
+      const path = '/v1/balances';
+      const payload = Buffer.from(JSON.stringify({ request: path, nonce: Date.now().toString() }), 'utf8').toString('base64');
+      const signature = hmacHex('sha384', secret, payload);
+      return {
+        path,
+        method: 'POST',
+        body: '{}',
+        contentType: 'text/plain',
+        exchangeHeaders: {
+          'x-gemini-apikey': apiKey,
+          'x-gemini-payload': payload,
+          'x-gemini-signature': signature
+        }
+      };
+    },
+    // Distinctive exchange-origin evidence only. A dummy key cannot validate
+    // real credentials, role permissions, signature correctness or history access.
+    check: (r) => r.status === 400 && /"result"\s*:\s*"error"/i.test(r.text) && /InvalidSignature/i.test(r.text)
   }
 ];
 

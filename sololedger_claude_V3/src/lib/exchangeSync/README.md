@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -41,7 +41,7 @@ so auto-sync requires Hosted (SaaS) mode with the server flag
 UI → syncJob (single-slot job store)
    → engine.syncConnection(connectionId, {mode})
       ├─ validating: createClient → loadMarkets + fetchBalance
-      ├─ fetching:   deposits → withdrawals → (binance: symbol discovery) → trades
+     ├─ fetching:   deposits → withdrawals → (binance/gemini: symbol discovery) → trades
       │              every HTTP call: ccxt sign() → tunnel → apiFetch → relay → exchange
       ├─ normalize:  ccxt rows → Transaction rows (refs per §B-5b)
       ├─ mode 'stage':  row back to 'idle', NOTHING persisted (preview only)
@@ -127,6 +127,16 @@ a sync discards any staged preview (with a warning).
   known terminal failure/cancellation. Structural request-cap interruption
   retains the prior checkpoint. Terminal failed/canceled rows do not hold the
   cursor back.
+- Gemini `mytrades` requires a symbol, so every active spot market is scanned
+  fairly in round-robin order. Full raw 500-row responses advance by Gemini's
+  documented timestamp recipe; CCXT-filtered length is never used as fullness
+  evidence, and native `tid` removes page overlap. One retry-inclusive phase
+  budget and a durable per-symbol checkpoint make bounded scans resumable.
+  Combined `/v1/transfers` is fetched once at 50 rows/page, exhaustively
+  timestamp-paginated and then split. Every physical request/retry is spaced
+  by at least five seconds. Pending rows hold the shared frontier; known
+  failed/canceled rows are terminal exclusions. Reward is imported as income;
+  AdminDebit/AdminCredit require review; unknown types make coverage partial.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -168,6 +178,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | htx | aggregate fills by `trade.order` → `sourceRef = orderId`; durable raw `id` evidence is unioned across syncs; API identity is connection-scoped while explicit sourceRef matching preserves CSV reconciliation | native wallet record `transfer.id` (fixture-matched to CSV `order-id`/`id`) |
 | cryptocom | native Exchange `trade_id`; identity is connection- and immutable `raw.exchangeSyncKind=trade`-scoped | native Exchange wallet record `id`; identity is connection- and immutable `raw.exchangeSyncKind=deposit/withdrawal`-scoped, with txid retained as evidence |
 | bitfinex | native Trade id; connection- and immutable-kind scoped; intentionally does **not** collide with beta CSV because parity is unverified | native Movement id; connection- and immutable-kind scoped; no Movements CSV backfill exists |
+| gemini | native `tid`, prefixed `trade:` and connection-scoped | native `eid`/`withdrawalId`, direction-prefixed and connection-scoped |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -244,6 +255,11 @@ Crypto.com Exchange fixtures carry `cryptocom/provenance.json` and
 transcriptions. There is intentionally no CSV twin: the existing `cryptocom`
 CSV parser imports Crypto.com **App** history, which is a separate product and
 must never auto-dedup with `cryptocom_api` Exchange rows.
+
+Gemini fixtures carry `gemini/provenance.json` and `_recorded: false`
+markers. They are hand-authored from documented v1 shapes and replay the real
+CCXT 4.5.68 signing/parser path. `transactionHistory.csv` is an economic twin,
+not an identity twin: Gemini CSV has no native fill or transfer ID.
 
 ## Known limitations / caveats
 
@@ -336,6 +352,15 @@ must never auto-dedup with `cryptocom_api` Exchange rows.
     CSV beta supports the Trades schema only, cannot backfill Movements, and
     API↔CSV trade-ID parity is unverified. API rows are therefore idempotent
     within a connection/kind but never auto-deduplicated against CSV rows.
+17. **Gemini CSV/API identity intentionally diverges** — Gemini's CSV parser
+    uses a second-resolution formula (`timestamp + type + asset + amount`),
+    while `/v1/mytrades` can contain distinct fills with identical values in
+    one second. Using that formula for API rows could silently erase a fill.
+    Auto-sync preserves native `tid`/`eid`/`withdrawalId` evidence and scopes
+    it by connection. API replay is idempotent, but importing a CSV twin can
+    leave a duplicate that requires review. Only Gemini `Complete`/`Advanced`
+    transfers (CCXT `ok`) import; all are flagged possible internal transfers.
+    No Gemini retention limit is fabricated.
 
 ## Adding an exchange?
 

@@ -62,7 +62,7 @@ Smoke test after deploy: open `https://YOUR-APP.up.railway.app/health` — shoul
 
 ## Exchange auto-sync tunnel
 
-`ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (supported exchange connectors, including Bitfinex — spot/read-only paths only).
+`ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (supported exchange connectors, including Bitfinex and Gemini — spot/read-only paths only).
 
 For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each request locally — the exchange API secret never leaves the user's device. This route receives the fully-signed request and replays it **byte-verbatim** to the exchange:
 
@@ -71,6 +71,7 @@ For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each
 - Upstream host comes from a server-side map (the client can never steer it); only allowlisted `x-exchange-*` headers are forwarded — cookies/origin/user-agent never leak upstream.
 - Exchange responses are piped back verbatim (status + raw body; only `content-type`/`retry-after` forwarded). Relay-origin errors are JSON stamped `x-sololedger-error: auth | subscription | disabled | unknown_exchange | bad_path | payload_too_large | upstream_timeout | upstream_failed` — the client distinguishes relay errors from native exchange errors by that header alone.
 - Gated by JWT + active subscription + the `exchangeSyncEnabled` admin flag (`EXCHANGE_SYNC_ENABLED`, default on; admin `PUT /api/admin/config`).
+- Gemini is pinned to `api.gemini.com`: only `GET /v1/symbols` and `POST /v1/balances`, `/v1/mytrades`, `/v1/transfers` are accepted, forwarding only `x-gemini-apikey`, `x-gemini-payload`, and `x-gemini-signature`.
 
 ### Binance gateway (geo unblock)
 
@@ -85,4 +86,4 @@ SL_EMAIL=you@example.com SL_PASSWORD=secret node scripts/live-verify-exchange-tu
 SL_TOKEN=<jwt> node scripts/live-verify-exchange-tunnel.mjs
 ```
 
-Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and asserts exchange-origin auth responses. The evidence is exchange-specific: Bitfinex `10100` / `digest invalid` proves bfx auth-header/key reachability, not signature or request-body integrity. Byte-exact Bitfinex header and signed-body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.
+Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and asserts distinctive exchange-origin auth errors. Gemini's dummy-key result proves only that the request reached Gemini's authenticated endpoint; it does not validate a real account key, secret, role, signature, or historical-data access. Byte-exact signed header/body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.

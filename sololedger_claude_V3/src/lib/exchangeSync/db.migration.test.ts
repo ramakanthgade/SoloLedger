@@ -109,6 +109,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'coinbase_api',
       'cryptocom_api',
       'gateio_api',
+      'gemini_api',
       'htx_api',
       'kraken_api',
       'kucoin_api',

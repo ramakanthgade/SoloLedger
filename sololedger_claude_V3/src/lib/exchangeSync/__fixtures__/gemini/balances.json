@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored Gemini v1 balances shape.",
+  "response": [
+    {"currency":"BTC","amount":"0.30000000","available":"0.25000000","availableForWithdrawal":"0.25000000","type":"exchange"},
+    {"currency":"USD","amount":"1200.50","available":"1200.50","availableForWithdrawal":"1200.50","type":"exchange"}
+  ]
+}
