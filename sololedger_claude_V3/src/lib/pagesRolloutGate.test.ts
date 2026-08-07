@@ -13,18 +13,18 @@ const pagesWorkflow = readFileSync(
 );
 
 describe('GitHub Pages wallet DeFi rollout gate', () => {
-  it('keeps the supported manual Pages build and deploy path explicitly off', () => {
+  it('keeps the supported manual Pages build and deploy path explicitly promoted', () => {
     expect(packageJson.devDependencies['cross-env']).toBeTruthy();
     expect(packageJson.scripts['build:pages']).toMatch(/^cross-env\s/);
     expect(packageJson.scripts['build:pages']).toMatch(
-      /(?:^|\s)VITE_WALLET_DEFI_NET_WORTH_V1=false(?:\s|$)/
+      /(?:^|\s)VITE_WALLET_DEFI_NET_WORTH_V1=true(?:\s|$)/
     );
     expect(packageJson.scripts['deploy:pages']).toContain('npm run build:pages');
   });
 
-  it('keeps the GitHub Pages workflow build explicitly off', () => {
+  it('keeps the GitHub Pages workflow build explicitly promoted', () => {
     expect(pagesWorkflow).toMatch(
-      /- name: Build for GitHub Pages \(SaaS\)[\s\S]*?run: npm run build[\s\S]*?VITE_WALLET_DEFI_NET_WORTH_V1: ['"]false['"]/
+      /- name: Build for GitHub Pages \(SaaS\)[\s\S]*?run: npm run build[\s\S]*?VITE_WALLET_DEFI_NET_WORTH_V1: ['"]true['"]/
     );
   });
 });
