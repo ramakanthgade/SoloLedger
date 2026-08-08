@@ -1,6 +1,43 @@
 import type { ValuedHolding } from '@/lib/dashboard/dashboardModel';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
 
+const DISPLAY_ROUNDING_UNIT = 0.005;
+
+export interface DashboardHoldingGroups {
+  visible: ValuedHolding[];
+  other: ValuedHolding[];
+}
+
+/** Keep positive dust reversible while the default table stays economically meaningful. */
+export function groupDashboardHoldings(holdings: readonly ValuedHolding[]): DashboardHoldingGroups {
+  const economicValue = (holding: ValuedHolding) => holding.valueNow ?? holding.costBasis;
+  const sorted = holdings.filter((holding) => holding.amount > 1e-9).sort((left, right) =>
+    economicValue(right) - economicValue(left) || Math.abs(right.amount) - Math.abs(left.amount));
+  return {
+    visible: sorted.filter((holding) => economicValue(holding) >= DISPLAY_ROUNDING_UNIT),
+    other: sorted.filter((holding) => economicValue(holding) < DISPLAY_ROUNDING_UNIT)
+  };
+}
+
+export type HoldingPnlPresentation =
+  | { kind: 'unavailable' }
+  | { kind: 'neutral' }
+  | { kind: 'amount-and-percent'; amount: number; percent: number }
+  | { kind: 'rounded-cost-basis'; amount: number }
+  | { kind: 'no-cost-basis'; amount: number };
+
+/** Presentation-only materiality rules; cost-basis calculation is untouched. */
+export function holdingPnlPresentation(holding: Pick<ValuedHolding, 'unrealized' | 'unrealizedPct' | 'costBasis'>): HoldingPnlPresentation {
+  if (holding.unrealized == null) return { kind: 'unavailable' };
+  if (Math.abs(holding.unrealized) < DISPLAY_ROUNDING_UNIT) return { kind: 'neutral' };
+  if (holding.costBasis >= DISPLAY_ROUNDING_UNIT && holding.unrealizedPct != null) {
+    return { kind: 'amount-and-percent', amount: holding.unrealized, percent: holding.unrealizedPct };
+  }
+  if (holding.costBasis > 0) return { kind: 'rounded-cost-basis', amount: holding.unrealized };
+  if (holding.unrealized > 0) return { kind: 'no-cost-basis', amount: holding.unrealized };
+  return { kind: 'neutral' };
+}
+
 /** Remove only custody slices replaced by complete protocol authority. */
 export function reaggregateUnreplacedCustody(
   valued: readonly ValuedHolding[],

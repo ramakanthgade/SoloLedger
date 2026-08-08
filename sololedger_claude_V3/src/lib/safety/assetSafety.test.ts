@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { materializeImportedTransactionSafety, resolveAssetSafety } from './assetSafety';
+import {
+  automaticDecisionsRespectingPrecedence,
+  backfillExactAssetSafetyRows,
+  materializeImportedTransactionSafety,
+  prepareTransactionSafetyPolicy,
+  resolveAssetSafety,
+  resolveTransactionSafetyPolicy,
+  transactionsUnderCurrentSafetyPolicy
+} from './assetSafety';
 import { assetSubjectKey } from './canonicalAssets';
 import type { ProviderEvidenceRow, SafetyDecisionRow } from './types';
 import type { Transaction } from '@/types/transaction';
@@ -67,9 +75,16 @@ describe('import safety materialization', () => {
 
   it('materializes only through the allowlisted resolver and retains revoked-rule evidence', () => {
     const result = materializeImportedTransactionSafety([transaction(1), transaction(2, 'revoked')]);
-    expect(result.transactions.map((row) => row.safetyState)).toEqual(['high_confidence_spam', 'unverified']);
-    expect(result.providerEvidence).toHaveLength(2);
-    expect(result.automaticDecisions).toHaveLength(1);
+    expect(result.transactions.map((row) => row.safetyState)).toEqual(['high_confidence_spam', 'high_confidence_spam']);
+    expect(result.providerEvidence).toHaveLength(3);
+    expect(result.automaticDecisions.map((row) => row.subjectKey)).toEqual([
+      expect.stringMatching(/^event:ethereum:/),
+      assetSubjectKey('ethereum', '0x1111111111111111111111111111111111111111')
+    ]);
+    expect(result.providerEvidence.find((row) => row.subjectKind === 'asset')).toMatchObject({
+      subjectKey: assetSubjectKey('ethereum', '0x1111111111111111111111111111111111111111'),
+      ruleId: 'possible_spam'
+    });
   });
 
   it('retains suspicious evidence without suppressing a proved wallet-initiated send', () => {
@@ -85,6 +100,133 @@ describe('import safety materialization', () => {
     const metrics = { evidenceIndexVisits: 0, transactionEvidenceLookups: 0 };
     const result = materializeImportedTransactionSafety(rows, metrics);
     expect(result.transactions).toHaveLength(5_000);
-    expect(metrics).toEqual({ evidenceIndexVisits: 5_000, transactionEvidenceLookups: 5_000 });
+    expect(metrics).toEqual({ evidenceIndexVisits: 10_000, transactionEvidenceLookups: 5_000 });
+  });
+
+  it('does not let refreshed automatic evidence overwrite user or trusted decisions', () => {
+    const automatic: SafetyDecisionRow[] = [
+      { subjectKey: 'asset:ethereum:0x1', state: 'high_confidence_spam', updatedAt: 2, origin: 'automatic' },
+      { subjectKey: 'asset:ethereum:0x2', state: 'high_confidence_spam', updatedAt: 2, origin: 'automatic' },
+      { subjectKey: 'asset:ethereum:0x3', state: 'high_confidence_spam', updatedAt: 2, origin: 'automatic' }
+    ];
+    expect(automaticDecisionsRespectingPrecedence(automatic, [
+      { subjectKey: automatic[0].subjectKey, state: 'user_visible', updatedAt: 1, origin: 'user' },
+      { subjectKey: automatic[1].subjectKey, state: 'trusted', updatedAt: 1, origin: 'automatic' },
+      undefined
+    ])).toEqual([automatic[2]]);
+  });
+
+  it('applies prior exact event and asset decisions to persisted state during reimport', () => {
+    const row = transaction(20);
+    const assetKey = assetSubjectKey(row.chain!, row.contractAddress);
+    const visible = materializeImportedTransactionSafety([row], undefined, [{
+      subjectKey: assetKey, state: 'user_visible', updatedAt: 19, origin: 'user',
+      previousAutomaticState: 'high_confidence_spam'
+    }]);
+    expect(visible.transactions[0]).toMatchObject({ safetyState: 'user_visible', isSpam: false });
+    expect(visible.automaticDecisions).toEqual([]);
+
+    const hidden = materializeImportedTransactionSafety([row], undefined, [{
+      subjectKey: row.safetySubjectKey!, state: 'user_hidden', updatedAt: 19, origin: 'user'
+    }]);
+    expect(hidden.transactions[0]).toMatchObject({ safetyState: 'user_hidden', isSpam: true });
+
+    const trusted = materializeImportedTransactionSafety([row], undefined, [{
+      subjectKey: assetKey, state: 'trusted', updatedAt: 19, origin: 'automatic'
+    }]);
+    expect(trusted.transactions[0]).toMatchObject({ safetyState: 'trusted', isSpam: false });
+  });
+
+  it('applies exact-contract policy without symbol scope and preserves an explicit event hide', () => {
+    const flagged = transaction(30);
+    const sameContract = { ...transaction(31), asset: 'DIFFERENT' };
+    const sameSymbolOtherContract = {
+      ...transaction(32),
+      contractAddress: '0x2222222222222222222222222222222222222222'
+    };
+    const assetKey = assetSubjectKey(flagged.chain!, flagged.contractAddress);
+    const hidden = transactionsUnderCurrentSafetyPolicy(
+      [flagged, sameContract, sameSymbolOtherContract],
+      [{ subjectKey: assetKey, state: 'high_confidence_spam', updatedAt: 1, origin: 'automatic' }]
+    );
+    expect(hidden.slice(0, 2)).toEqual([
+      expect.objectContaining({ safetyState: 'high_confidence_spam', isSpam: true }),
+      expect.objectContaining({ safetyState: 'high_confidence_spam', isSpam: true })
+    ]);
+    expect(hidden[2]).not.toMatchObject({ isSpam: true });
+
+    const restored = transactionsUnderCurrentSafetyPolicy([flagged, sameContract], [
+      { subjectKey: assetKey, state: 'user_visible', updatedAt: 2, origin: 'user' },
+      { subjectKey: sameContract.safetySubjectKey!, state: 'user_hidden', updatedAt: 3, origin: 'user' }
+    ]);
+    expect(restored[0]).toMatchObject({ safetyState: 'user_visible', isSpam: false });
+    expect(restored[1]).toMatchObject({ safetyState: 'user_hidden', isSpam: true });
+  });
+
+  it('builds one decision index for a scaled policy pass and preserves resolver parity', () => {
+    const rows = Array.from({ length: 4_000 }, (_, index) => ({
+      ...transaction(index + 100),
+      contractAddress: `0x${(index + 1).toString(16).padStart(40, '0')}`
+    }));
+    const decisions: SafetyDecisionRow[] = rows.map((row, index) => ({
+      subjectKey: row.safetySubjectKey!,
+      state: index % 2 === 0 ? 'user_hidden' : 'user_visible',
+      updatedAt: index,
+      origin: 'user'
+    }));
+    const metrics = { decisionIndexBuilds: 0, decisionIndexVisits: 0, transactionResolutions: 0 };
+    const result = transactionsUnderCurrentSafetyPolicy(rows, decisions, metrics);
+
+    expect(metrics).toEqual({
+      decisionIndexBuilds: 1,
+      decisionIndexVisits: decisions.length,
+      transactionResolutions: rows.length
+    });
+    expect(result.filter((row) => row.isSpam)).toHaveLength(2_000);
+    expect(result.filter((row) => row.safetyState === 'user_visible')).toHaveLength(2_000);
+
+    const prepared = prepareTransactionSafetyPolicy(decisions);
+    for (const row of [rows[0], rows[1], rows[rows.length - 1]]) {
+      expect(prepared(row)).toEqual(resolveTransactionSafetyPolicy(row, decisions));
+    }
+  });
+
+  it('indexes transactions and exact asset identities once for scaled v17 backfill', () => {
+    const rows = Array.from({ length: 3_000 }, (_, index) => ({
+      ...transaction(index + 10_000),
+      contractAddress: `0x${(index + 1).toString(16).padStart(40, '0')}`,
+      raw: undefined
+    }));
+    const providerEvidence: ProviderEvidenceRow[] = rows.map((row, index) => ({
+      id: `backfill-evidence-${index}`,
+      subjectKey: row.safetySubjectKey!,
+      subjectKind: 'event',
+      provider: 'moralis',
+      ruleId: 'possible_spam',
+      ruleVersion: '1',
+      confidence: 0.95,
+      observedAt: index
+    }));
+    const metrics = {
+      transactionIndexVisits: 0,
+      evidenceTransactionLookups: 0,
+      assetIdentityLookups: 0
+    };
+    const result = backfillExactAssetSafetyRows({
+      transactions: rows,
+      providerEvidence,
+      decisions: [],
+      metrics
+    });
+
+    expect(metrics).toEqual({
+      transactionIndexVisits: rows.length,
+      evidenceTransactionLookups: providerEvidence.length,
+      assetIdentityLookups: rows.length
+    });
+    expect(result.transactions.every((row) => row.isSpam && row.safetyState === 'high_confidence_spam')).toBe(true);
+    expect(result.providerEvidence).toHaveLength(providerEvidence.length * 2);
+    expect(result.decisions).toHaveLength(rows.length);
+    expect(new Set(result.decisions.map((row) => row.subjectKey)).size).toBe(rows.length);
   });
 });

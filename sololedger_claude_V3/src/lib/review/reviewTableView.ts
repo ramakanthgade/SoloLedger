@@ -37,6 +37,19 @@ export interface RowFilterOptions {
   derivedFlagsById?: ReadonlyMap<string, readonly FlagReason[]>;
 }
 
+/** One shared transaction-backed surface for every ordinary filter option. */
+export function activeTransactionSurface(
+  transactions: readonly Transaction[],
+  spamMode: boolean
+): Transaction[] {
+  return transactions.filter((transaction) => isTransactionExcluded(transaction) === spamMode);
+}
+
+export function visibleAssetOptions(transactions: readonly Transaction[]): string[] {
+  return Array.from(new Set(transactions
+    .map((transaction) => transaction.asset))).sort();
+}
+
 /** Keep only the rows visible for the current filter selection. */
 export function filterRows(txs: Transaction[], opts: RowFilterOptions): Transaction[] {
   return txs.filter((t) => {

@@ -111,7 +111,7 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
         await expect(mobilePostings.getByTestId('ledger-mobile-posting')).toHaveCount(1);
         await expect(details.getByRole('table')).toBeHidden();
         const labels = mobilePostings.getByTestId('ledger-mobile-label');
-        await expect(labels).toHaveText(['Posting', 'Ledger', 'Evidence', 'Signed change', 'Running balance']);
+        await expect(labels).toHaveText(['Posting', 'Asset / ledger', 'Signed change', 'Running balance']);
         const overflowedDescendants = await ledgerPanel.locator('*:visible').evaluateAll((elements) => elements
           .filter((element) => element.scrollWidth > element.clientWidth)
           .map((element) => ({ tag: element.tagName, text: element.textContent?.trim(), scrollWidth: element.scrollWidth, clientWidth: element.clientWidth })));
@@ -121,7 +121,7 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
           return { text: element.textContent?.trim(), left: rect.left, right: rect.right, width: rect.width };
         }));
         expect(labelBounds.every(({ left, right, width }) => left >= 0 && right <= 390 && width > 0)).toBe(true);
-        await expect(mobilePostings).toContainText('moralis:event:ethereum:erc20:staking-reward');
+        await expect(mobilePostings).not.toContainText('moralis:event:ethereum:erc20:staking-reward');
         await ledgerPanel.screenshot({
           path: `${ARTIFACTS}/transactions-ledger-mobile-390-${colorScheme}.png`,
         });

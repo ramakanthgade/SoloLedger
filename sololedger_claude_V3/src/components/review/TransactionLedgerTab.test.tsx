@@ -24,22 +24,27 @@ const posting: DerivedPosting = {
 };
 
 describe('TransactionLedgerTab', () => {
-  it('provides a complete semantic mobile posting card and retains the desktop table headers', () => {
+  it('keeps useful ledger values while hiding evidence and provider details', () => {
     render(<TransactionLedgerTab postings={[posting]} runningBalances={new Map([[posting.id, 125]])} />);
 
     const mobileRegion = screen.getByRole('region', { name: 'Transaction custody postings' });
     expect(mobileRegion).toContainElement(screen.getByRole('article', { name: 'Primary asset movement' }));
     expect(screen.getAllByTestId('ledger-mobile-label').map((label) => label.textContent)).toEqual([
-      'Posting', 'Ledger', 'Evidence', 'Signed change', 'Running balance'
+      'Posting', 'Asset / ledger', 'Signed change', 'Running balance'
     ]);
-    expect(mobileRegion).toHaveTextContent('moralis:event:ethereum:erc20:staking-reward');
+    expect(mobileRegion).toHaveTextContent('USDC');
+    expect(mobileRegion).toHaveTextContent('Wallet');
     expect(mobileRegion).toHaveTextContent('+25.0000 USDC');
     expect(mobileRegion).toHaveTextContent('125.0000 USDC');
+    expect(screen.queryByText('Evidence')).not.toBeInTheDocument();
+    expect(screen.queryByText(/rpc:ethereum/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/moralis/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Signed postings explain custody/i)).not.toBeInTheDocument();
 
     const table = screen.getByRole('table');
     expect(table).toHaveAccessibleName('');
     expect(screen.getAllByRole('columnheader').map((header) => header.textContent)).toEqual([
-      'Posting', 'Ledger', 'Evidence', 'Signed change', 'Running balance'
+      'Posting', 'Asset / ledger', 'Signed change', 'Running balance'
     ]);
   });
 });

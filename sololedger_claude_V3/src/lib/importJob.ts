@@ -29,7 +29,8 @@ import { isSaasMode } from '@/lib/saas/config';
 import { SAAS_PROXY_KEY } from '@/lib/saas/lookupConfig';
 import { canonicalWalletAddress, canonicalWalletSourceRefKey } from '@/lib/ledger/chainNamespace';
 import type { EndpointCoverageOutcome } from '@/lib/reconcile/sourceCoverage';
-import { materializeImportedTransactionSafety } from '@/lib/safety/assetSafety';
+import { automaticDecisionsRespectingPrecedence, materializeImportedTransactionSafety, transactionSafetySubject } from '@/lib/safety/assetSafety';
+import { assetSubjectKey } from '@/lib/safety/canonicalAssets';
 import { runInternalTransferMatching } from '@/lib/internalTransfers/persistence';
 import { applyClassificationEvidence } from '@/lib/taxonomy/classification';
 
@@ -368,9 +369,25 @@ async function runWalletImportCore(
     stagedIds = txsToStore.map((transaction) => transaction.id);
     if (txsToStore.length > 0) {
       txsToStore = txsToStore.map((transaction) => applyClassificationEvidence(transaction));
-      const materialized = materializeImportedTransactionSafety(txsToStore);
+      const priorSubjectKeys = [...new Set(txsToStore.flatMap((transaction) => [
+        transactionSafetySubject(transaction),
+        ...(transaction.chain && transaction.contractAddress
+          ? [assetSubjectKey(transaction.chain, transaction.contractAddress)] : [])
+      ]))];
+      const priorSafetyDecisions = await db.safetyDecisions.bulkGet(priorSubjectKeys);
+      const materialized = materializeImportedTransactionSafety(
+        txsToStore, undefined, priorSafetyDecisions.filter((row): row is NonNullable<typeof row> => row != null)
+      );
       txsToStore = materialized.transactions;
-      const { providerEvidence, automaticDecisions } = materialized;
+      const { providerEvidence } = materialized;
+      const priorDecisions = materialized.automaticDecisions.length > 0
+        ? await db.safetyDecisions.bulkGet(
+          materialized.automaticDecisions.map((decision) => decision.subjectKey)
+        )
+        : [];
+      const automaticDecisions = automaticDecisionsRespectingPrecedence(
+        materialized.automaticDecisions, priorDecisions
+      );
       await db.transaction('rw', [db.transactions, db.providerEvidence, db.safetyDecisions], async () => {
         await db.transactions.bulkPut(txsToStore);
         if (providerEvidence.length > 0) await db.providerEvidence.bulkPut(providerEvidence);

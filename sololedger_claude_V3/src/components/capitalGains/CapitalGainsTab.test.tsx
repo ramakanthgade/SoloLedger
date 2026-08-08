@@ -104,7 +104,11 @@ const SEED = vi.hoisted(() => {
       isInternalTransfer: false
     }
   ];
-  return { txs, hints: {} as Record<string, never> };
+  return {
+    txs,
+    hints: {} as Record<string, never>,
+    safetyDecisions: [] as import('@/lib/safety/types').SafetyDecisionRow[] | undefined
+  };
 });
 
 vi.mock('dexie-react-hooks', () => ({
@@ -113,7 +117,10 @@ vi.mock('dexie-react-hooks', () => ({
 }));
 
 vi.mock('@/lib/storage/db', () => ({
-  db: { transactions: { toArray: () => SEED.txs } },
+  db: {
+    transactions: { toArray: () => SEED.txs },
+    safetyDecisions: { toArray: () => SEED.safetyDecisions }
+  },
   getSettings: () =>
     Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN', defaultCostBasisMethod: 'FIFO' }),
   // Stable reference: the sync useLiveQuery stub re-invokes the querier on
@@ -130,6 +137,24 @@ vi.mock('@/lib/export/pdfTheme', () => ({
 vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
 
 import { CapitalGainsTab } from './CapitalGainsTab';
+
+describe('CapitalGainsTab safety loading gate', () => {
+  it('does not calculate or render gains while decisions are unresolved', async () => {
+    const backup = SEED.safetyDecisions;
+    SEED.safetyDecisions = undefined;
+    try {
+      await act(async () => {
+        render(<CapitalGainsTab />);
+        await Promise.resolve();
+      });
+      expect(screen.getByRole('status')).toHaveTextContent('Loading transaction safety policy');
+      expect(screen.queryByText('Gross gains')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Export/i })).not.toBeInTheDocument();
+    } finally {
+      SEED.safetyDecisions = backup;
+    }
+  });
+});
 
 async function renderTab() {
   let utils!: ReturnType<typeof render>;

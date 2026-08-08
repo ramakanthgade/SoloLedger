@@ -29,6 +29,7 @@ function tx(id: string, asset: string): Transaction {
 describe('fetchMissingPricesForAllTransactions', () => {
   beforeEach(async () => {
     await db.transactions.clear();
+    await db.safetyDecisions.clear();
     deferredPrices = null;
   });
 
@@ -94,5 +95,31 @@ describe('fetchMissingPricesForAllTransactions', () => {
 
     expect(await db.transactions.get('a')).toBeUndefined();
     expect(await db.transactions.get('b')).toMatchObject({ fiatValue: 777, notes: 'manual price' });
+  });
+
+  it('prices from the current exact-contract visibility snapshot without symbol scope', async () => {
+    const contract = '0x1111111111111111111111111111111111111111';
+    await db.transactions.bulkPut([
+      { ...tx('flagged', 'TOK'), chain: 'ethereum', contractAddress: contract },
+      { ...tx('same-contract', 'OTHER'), chain: 'ethereum', contractAddress: contract },
+      { ...tx('same-symbol-other-contract', 'TOK'), chain: 'ethereum', contractAddress: '0x2222222222222222222222222222222222222222' }
+    ]);
+    await db.safetyDecisions.put({
+      subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam', updatedAt: 1, origin: 'automatic'
+    });
+
+    expect(await fetchMissingPricesForAllTransactions({
+      reportingCurrency: 'INR', coingeckoApiKey: '', alchemyApiKey: '', birdeyeApiKey: ''
+    })).toEqual({ updated: 1, failed: 0, total: 1 });
+    expect((await db.transactions.get('flagged'))?.fiatValue).toBeUndefined();
+    expect((await db.transactions.get('same-contract'))?.fiatValue).toBeUndefined();
+    expect((await db.transactions.get('same-symbol-other-contract'))?.fiatValue).toBe(200);
+
+    await db.safetyDecisions.put({
+      subjectKey: `asset:ethereum:${contract}`, state: 'user_visible', updatedAt: 2, origin: 'user'
+    });
+    expect(await fetchMissingPricesForAllTransactions({
+      reportingCurrency: 'INR', coingeckoApiKey: '', alchemyApiKey: '', birdeyeApiKey: ''
+    })).toEqual({ updated: 2, failed: 0, total: 2 });
   });
 });

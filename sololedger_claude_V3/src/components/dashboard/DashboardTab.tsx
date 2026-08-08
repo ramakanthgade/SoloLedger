@@ -41,8 +41,8 @@ import { useTabNav } from '@/lib/tabNav';
 import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
 import { DataHealthWorkspace, type DataHealthViewState } from './DataHealthWorkspace';
-import { reaggregateUnreplacedCustody } from './dashboardEconomicRows';
-import { buildDashboardValueMetrics, historicalPeriodChange } from './dashboardValueMetrics';
+import { groupDashboardHoldings, holdingPnlPresentation, reaggregateUnreplacedCustody } from './dashboardEconomicRows';
+import { buildDashboardValueMetrics } from './dashboardValueMetrics';
 import { buildCoherentDataHealthShadow, buildDataHealthModel, buildLocalDataHealthDiagnostics } from './dataHealthModel';
 import { buildCards } from '@/components/connections/connectionModel';
 import { buildConnectionWorkspaceFromCard, buildConnectionWorkspaceSnapshot, prepareConnectionWorkspaceCollectionIndex } from '@/components/connections/connectionWorkspaceModel';
@@ -73,7 +73,6 @@ import {
   buildPriceIndex,
   formatRelativeTime,
   latestSyncAt,
-  moneyStrip,
   periodRange,
   projectionSourceBreakdown,
   sourceVisualShares,
@@ -83,6 +82,7 @@ import {
   type Insight,
   type ValuedHolding
 } from '@/lib/dashboard/dashboardModel';
+import { CHAINS } from '@/lib/rpc/providers';
 import {
   AlertTriangle,
   CheckCircle2,
@@ -100,7 +100,8 @@ import {
   TrendingDown,
   Wallet
 } from 'lucide-react';
-import { isTransactionExcluded } from '@/lib/safety/assetSafety';
+import { isTransactionExcluded, transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
+import type { SafetyDecisionRow } from '@/lib/safety/types';
 
 const PRIVACY_KEY = 'sololedger_dashboard_privacy';
 const DISMISS_KEY = 'sololedger_dashboard_dismissed_insights';
@@ -417,7 +418,7 @@ const NO_AUTHORITY_SNAPSHOTS: AuthoritySnapshotRow[] = [];
 const NO_AUTHORITY_ASSETS: AuthorityAssetRow[] = [];
 const NO_SOURCE_COVERAGE: SourceCoverageRow[] = [];
 const NO_OPENING_BALANCES: OpeningBalanceRow[] = [];
-const NO_SAFETY_DECISIONS: never[] = [];
+const NO_SAFETY_DECISIONS: SafetyDecisionRow[] = [];
 const EMPTY_DATA_HEALTH_MODEL = buildDataHealthModel([]);
 const EMPTY_HOLDINGS_PROJECTION = buildHoldingsProjection({
   transactions: [], exchangeConnections: [], openingBalances: [], snapshots: [],
@@ -481,7 +482,13 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const snapshotAuthorityAssets = holdingsSnapshot?.authorityAssets ?? NO_AUTHORITY_ASSETS;
   const snapshotSourceCoverageRows = holdingsSnapshot?.sourceCoverage ?? NO_SOURCE_COVERAGE;
   const snapshotOpeningBalances = holdingsSnapshot?.openingBalances ?? NO_OPENING_BALANCES;
-  const snapshotSafetyDecisions = holdingsSnapshot?.safetyDecisions ?? NO_SAFETY_DECISIONS;
+  // `undefined` belongs only to the pending live query. Once its coherent
+  // IndexedDB read has resolved, an absent/empty decision collection is a
+  // loaded empty policy snapshot. Do not default before the parent snapshot
+  // resolves: that could briefly project persisted excluded rows as visible.
+  const snapshotSafetyDecisions = holdingsSnapshot === undefined
+    ? undefined
+    : holdingsSnapshot.safetyDecisions ?? NO_SAFETY_DECISIONS;
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [period, setPeriod] = useState<DashboardPeriod>('FY');
@@ -494,6 +501,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   });
   const [dismissed, setDismissed] = useState<string[]>(readDismissed);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [showAllHoldings, setShowAllHoldings] = useState(false);
   const [dataHealthOpen, setDataHealthOpen] = useState(openDataHealthOnMount);
   const pillRefs = useRef<(HTMLButtonElement | null)[]>([]);
   // The existing price tick also carries projection time forward every five minutes.
@@ -541,13 +549,17 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const currency = settings?.reportingCurrency ?? 'INR';
   const jurisdiction = settings?.jurisdiction ?? 'IN';
 
-  const candidateTransactionViews = useMemo(() => {
-    const source = transactions ?? [];
-    return projectTransactionViews(source);
-  }, [projectTransactionViews, transactions]);
+  const policyTransactions = useMemo(() =>
+    transactions && snapshotSafetyDecisions
+      ? transactionsUnderCurrentSafetyPolicy(transactions, snapshotSafetyDecisions)
+      : undefined,
+  [transactions, snapshotSafetyDecisions]);
+  const candidateTransactionViews = useMemo(() =>
+    projectTransactionViews(policyTransactions ?? []),
+  [projectTransactionViews, policyTransactions]);
 
   const coherentLedgerRevision = useMemo(() => {
-    if (!transactions || !holdingsSnapshot) return undefined;
+    if (!policyTransactions || !holdingsSnapshot || !snapshotSafetyDecisions) return undefined;
     const input: HoldingsProjectionInput = {
       transactions: candidateTransactionViews.projection,
       exchangeConnections: snapshotExchangeConns,
@@ -559,13 +571,13 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
       now: nowMs
     };
     return publishCoherentLedger({
-      ledgerTransactions: transactions,
+      ledgerTransactions: policyTransactions,
       transactionViews: candidateTransactionViews,
       snapshot: holdingsSnapshot,
       projectionInput: input
     });
   }, [
-    publishCoherentLedger, transactions, candidateTransactionViews, holdingsSnapshot,
+    publishCoherentLedger, policyTransactions, candidateTransactionViews, holdingsSnapshot,
     snapshotExchangeConns, snapshotOpeningBalances, snapshotAuthoritySnapshots,
     snapshotAuthorityAssets, snapshotSourceCoverageRows, snapshotSafetyDecisions, nowMs
   ]);
@@ -770,6 +782,12 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const replacedCustodyIds = new Set([...economicExposure.assets, ...economicExposure.liabilities]
     .flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : []));
   const displayedValued = reaggregateUnreplacedCustody(valued, holdings, replacedCustodyIds);
+  const protocolHoldingCount = [...economicExposure.assets, ...economicExposure.liabilities]
+    .filter((row) => row.kind !== 'liquid' && row.protocolId).length;
+  const holdingGroups = useMemo(() => groupDashboardHoldings(displayedValued), [displayedValued]);
+  const renderedHoldings = showAllHoldings
+    ? [...holdingGroups.visible, ...holdingGroups.other]
+    : holdingGroups.visible;
 
   const valueMetrics = buildDashboardValueMetrics(valued, economicExposure);
   const totalCost = valueMetrics.historicalCostBasis;
@@ -777,19 +795,17 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const marketMode = valued.some((h) => h.valueNow != null);
   const adjustedNetWorth = economicExposure.netWorth;
   const netWorth = adjustedNetWorth ?? 0;
-  const historicalCurrentValue = valueMetrics.historicalCurrentValue;
   const unrealizedTotal = valueMetrics.historicalUnrealized;
-  const currentDefiAssets = valueMetrics.currentEconomicAssets;
-  const currentDefiLiabilities = valueMetrics.currentDefiLiabilities;
-  const currentDefiAdjustment = valueMetrics.currentDefiAdjustment;
   const pricesAsOf = valued.reduce<number | null>(
     (acc, h) => (h.priceAsOf != null && (acc == null || h.priceAsOf > acc) ? h.priceAsOf : acc),
     null
   );
 
   const disposals = useMemo(
-    () => settings ? calculateCostBasis(deferredTransactions, { method: 'FIFO', settings }).disposals : [],
-    [deferredTransactions, settings]
+    () => settings ? calculateCostBasis(deferredTransactions, {
+      method: 'FIFO', settings, safetyDecisions: snapshotSafetyDecisions
+    }).disposals : [],
+    [deferredTransactions, settings, snapshotSafetyDecisions]
   );
 
   const firstTxMs = useMemo(() => {
@@ -817,26 +833,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     [deferredTransactions, deferredProjection, instrumentation, priceIndex, range]
   );
 
-  const strip = useMemo(
-    () => moneyStrip(deferredTransactions, disposals, range.start, range.end),
-    [deferredTransactions, disposals, range]
-  );
-
-  const startValue = useMemo(() => {
-    if (series.length === 0) return 0;
-    const first = series[0];
-    return marketMode ? (first.market ?? first.cost) : first.cost;
-  }, [series, marketMode]);
   const chartEndpoint = series.length > 0 ? series[series.length - 1] : null;
   const btcQuantity = holdings
     .filter((holding) => holding.asset.toUpperCase() === 'BTC')
     .reduce((sum, holding) => sum + holding.amount, 0);
-  // Period performance remains the historical market/cost series. Current
-  // DeFi liabilities are a separate present-time adjustment, not chart P&L.
-  const periodPerformance = historicalPeriodChange(historicalCurrentValue, startValue);
-  const changeAbs = periodPerformance.change;
-  const changePct = periodPerformance.percentage;
-
   const currentFy = getCurrentFy(jurisdiction);
   const realizedFyGain = useMemo(
     () =>
@@ -1048,24 +1048,39 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         <AssetIcon symbol={h.asset} size={34} />
         <span className="min-w-0">
           <span className="block truncate font-bold text-hi">{h.asset}</span>
-          {h.chain && <span className="block text-xs capitalize text-low">{h.chain}</span>}
+          {h.chain && (
+            <span className="block text-xs text-low">
+              {CHAINS.find((chain) => chain.id === normalizeChainIdentity(h.chain!))?.label ?? h.chain}
+            </span>
+          )}
         </span>
       </button>
     );
 
+    const pnl = holdingPnlPresentation(h);
     const pnlCell =
-      h.unrealized != null ? (
+      pnl.kind === 'amount-and-percent' || pnl.kind === 'no-cost-basis' || pnl.kind === 'rounded-cost-basis' ? (
         <Badge
-          tone={h.unrealized >= 0 ? 'gain' : 'loss'}
+          tone={pnl.amount > 0 ? 'gain' : 'loss'}
           className="ml-auto max-w-full flex-col items-end gap-0 whitespace-normal px-2 py-1 leading-tight tabular-figures"
           data-layout="dashboard-holdings-pnl"
         >
           <span className="max-w-full break-all text-right [overflow-wrap:anywhere]">
-            {hideBalances ? '••••' : fmtSigned(h.unrealized)}
+            {hideBalances ? '••••' : fmtSigned(pnl.amount)}
           </span>
-          {!hideBalances && h.unrealizedPct != null && (
-            <span className="whitespace-nowrap opacity-80">· {fmtPct(h.unrealizedPct)}</span>
+          {!hideBalances && pnl.kind === 'amount-and-percent' && (
+            <span className="whitespace-nowrap opacity-80">· {fmtPct(pnl.percent)}</span>
           )}
+          {!hideBalances && pnl.kind === 'no-cost-basis' && (
+            <span className="whitespace-nowrap opacity-80">No cost basis</span>
+          )}
+          {!hideBalances && pnl.kind === 'rounded-cost-basis' && (
+            <span className="whitespace-nowrap opacity-80">Cost basis rounds to zero</span>
+          )}
+        </Badge>
+      ) : pnl.kind === 'neutral' ? (
+        <Badge tone="neutral" className="ml-auto tabular-figures">
+          {hideBalances ? '••••' : fm(0)}
         </Badge>
       ) : (
         <span className="text-mid">—</span>
@@ -1259,12 +1274,8 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
           </div>
 
           <dl className="flex flex-wrap items-start gap-x-10 gap-y-5">
-            <HeroStat label="Historical display cost basis" value={fm(totalCost)} />
-            <HeroStat label="Current assets incl. DeFi supplies" value={fm(currentDefiAssets)} />
-            <HeroStat label="Current liabilities" value={currentDefiLiabilities > 0 ? `−${fm(currentDefiLiabilities)}` : fm(0)} tone={currentDefiLiabilities > 0 ? 'loss' : 'mid'} />
-            <HeroStat label="Current DeFi adjustment" value={currentDefiAdjustment == null ? '—' : fmtSigned(currentDefiAdjustment)} tone={currentDefiAdjustment == null ? 'mid' : currentDefiAdjustment >= 0 ? 'gain' : 'loss'} note="Excluded from historical chart and period performance" />
             <HeroStat
-              label="Unrealized gain"
+              label="Current spot holdings unrealized P&amp;L"
               value={
                 unrealizedTotal != null ? (hideBalances ? '••••' : fmtSigned(unrealizedTotal)) : '—'
               }
@@ -1272,7 +1283,9 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               note={
                 unrealizedTotal == null
                   ? 'Enable live prices in Settings'
-                  : `${fmtPct(totalCost > 0 ? (unrealizedTotal / totalCost) * 100 : 0)} all time`
+                  : totalCost > 0
+                    ? `${fmtPct((unrealizedTotal / totalCost) * 100)} vs cost basis`
+                    : 'No cost basis'
               }
             />
             <div>
@@ -1314,70 +1327,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
           </dl>
         </div>
 
-        <section
-          aria-labelledby="historical-holdings-performance-title"
-          className="mt-4 border-t border-hi/10 px-6 pt-4 sm:px-8"
-          data-testid="historical-holdings-performance"
-        >
-          <div className="flex flex-wrap items-center gap-2">
-            <h2 id="historical-holdings-performance-title" className={eyebrowClass}>
-              Historical holdings performance
-            </h2>
-            {changePct != null && (
-              <Badge tone={changeAbs >= 0 ? 'gain' : 'loss'} className="tabular-figures">
-                {hideBalances ? '••••' : fmtPct(changePct)}
-              </Badge>
-            )}
-          </div>
-          <p className="mt-1 text-xs font-semibold tabular-figures text-mid">
-            {hideBalances ? '••••' : fmtSigned(changeAbs)}{' '}
-            <span className="font-medium text-low">{range.sinceCaption}</span>
-          </p>
-        </section>
-
-        <div className="px-3 sm:px-5">
+        <div className="mt-4 border-t border-hi/10 px-3 pt-4 sm:px-5">
           {chartContent}
         </div>
 
-        {/* 3 — money strip */}
-        <div
-          className="grid grid-cols-2 border-t border-hi/10 sm:grid-cols-5"
-          data-testid="money-strip"
-        >
-          {(
-            [
-              { label: 'Money in', value: strip.moneyIn, tone: 'hi' },
-              { label: 'Money out', value: strip.moneyOut, tone: 'hi' },
-              { label: 'Income', value: strip.income, tone: 'hi' },
-              { label: 'Trading fees', value: strip.fees, tone: 'hi' },
-              { label: 'Realized gains', value: strip.realizedGains, tone: 'pnl' }
-            ] as const
-          ).map((cell, i) => (
-            <div
-              key={cell.label}
-              className={cn(
-                'border-hi/10 px-5 py-4',
-                i >= 2 && 'border-t sm:border-t-0',
-                i % 2 === 1 && 'border-l sm:border-l',
-                i > 0 && 'sm:border-l'
-              )}
-            >
-              <p className={eyebrowClass}>{cell.label}</p>
-              <p
-                className={cn(
-                  'mt-1.5 text-[0.9375rem] font-bold tabular-figures',
-                  cell.tone === 'pnl'
-                    ? cell.value >= 0
-                      ? 'text-gain'
-                      : 'text-loss'
-                    : 'text-hi'
-                )}
-              >
-                {cell.tone === 'pnl' ? fmtSigned(cell.value) : fm(cell.value)}
-              </p>
-            </div>
-          ))}
-        </div>
       </section>
 
       {/* 4 — insights */}
@@ -1479,8 +1432,11 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
             <div className="flex items-center gap-2.5">
               <h3 className="text-sm font-semibold tracking-tight text-hi">Holdings</h3>
               <Badge tone="neutral" className="tabular-figures">
-                {economicExposure.assets.length + economicExposure.liabilities.length} asset{economicExposure.assets.length + economicExposure.liabilities.length === 1 ? '' : 's'}
+                {renderedHoldings.length + protocolHoldingCount} asset{renderedHoldings.length + protocolHoldingCount === 1 ? '' : 's'}
               </Badge>
+              {!showAllHoldings && holdingGroups.other.length > 0 && (
+                <span className="text-xs text-low">{holdingGroups.other.length} other hidden</span>
+              )}
             </div>
             <span className="text-xs text-low">
               {marketMode ? 'Current prices · refreshed automatically' : 'Valued at cost'}
@@ -1500,7 +1456,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               Binance Options balance unavailable — this CSV omits premiums and settlements. Import your Binance Options Transaction History CSV to include Options.
             </div>
           )}
-          {displayedValued.length > 0 && (
+          {renderedHoldings.length > 0 && (
             <div
               className="hidden grid-cols-[minmax(0,1.3fr)_minmax(0,.9fr)_minmax(0,.75fr)_minmax(0,.85fr)_minmax(7.5rem,1.3fr)_3.25rem] gap-2 border-b border-hi/10 bg-elev-1/60 px-5 py-2.5 text-[0.6875rem] font-bold uppercase tracking-[0.06em] text-faint sm:grid"
               data-testid="dashboard-holdings-columns"
@@ -1513,12 +1469,22 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               <span className="text-right">Share</span>
             </div>
           )}
-          {displayedValued.length === 0 && economicExposure.assets.length === 0 && economicExposure.liabilities.length === 0 ? (
+          {renderedHoldings.length === 0 && economicExposure.assets.length === 0 && economicExposure.liabilities.length === 0 ? (
             <p className="px-5 py-8 text-center text-sm text-low">
               No holdings yet — imports appear here.
             </p>
           ) : (
-            displayedValued.map(holdingRow)
+            renderedHoldings.map(holdingRow)
+          )}
+          {holdingGroups.other.length > 0 && (
+            <div className="flex items-center justify-between gap-3 border-t border-hi/10 bg-elev-1/50 px-5 py-2.5 text-xs text-low">
+              <span>{showAllHoldings
+                ? 'Showing dust and rounded-zero positive balances.'
+                : 'Dust and rounded-zero positive balances stay hidden by default.'}</span>
+              <Button type="button" size="sm" variant="ghost" onClick={() => setShowAllHoldings((shown) => !shown)}>
+                {showAllHoldings ? 'Show less' : `Show all (${holdingGroups.other.length})`}
+              </Button>
+            </div>
           )}
           <HoldingsList
             projection={economicExposure}

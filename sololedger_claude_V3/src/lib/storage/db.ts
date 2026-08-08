@@ -21,7 +21,8 @@ import {
 } from '@/lib/ledger/chainNamespace';
 import { binanceApiIdentity, binanceEconomicKey } from './binanceEconomicDedup';
 import type { ProviderEvidenceRow, SafetyDecisionRow } from '@/lib/safety/types';
-import { transactionSafetySubject } from '@/lib/safety/assetSafety';
+import { backfillExactAssetSafetyRows, transactionSafetySubject } from '@/lib/safety/assetSafety';
+import { assetSubjectKey, canonicalSafetyChain, canonicalSafetyContract } from '@/lib/safety/canonicalAssets';
 import type { DefiPositionRow, DefiPositionSnapshot, WalletDefiRefreshManifest } from '@/lib/defi/types';
 import {
   applyOwnershipUpdate,
@@ -649,6 +650,38 @@ class SoloLedgerDB extends Dexie {
       accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]',
       walletDefiRefreshManifests: 'accountIdentityScope, custodyScopeId, custodySnapshotId, capturedAt'
     });
+    // v17: project trusted exact provider event evidence to chain+contract
+    // decisions so preexisting spam is excluded without requiring reimport.
+    this.version(17).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId, category, internalTransferPairId',
+      lots: 'id, asset, acquiredAt, sourceTxId', disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id', specIdHints: 'txId', lookupAddresses: 'id, chain, address, lastSyncedAt, accountIdentityId',
+      priceCache: 'key, fetchedAt', csvImports: 'id, importedAt, fileName, accountIdentityId',
+      exchangeConnections: 'id, exchange, lastSyncAt, accountIdentityId', walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset',
+      authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+      authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+      sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+      openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]',
+      providerEvidence: 'id, subjectKey, subjectKind, provider, ruleId, ruleVersion, confidence, observedAt, [subjectKey+provider]',
+      safetyDecisions: 'subjectKey, state, updatedAt, [state+updatedAt]',
+      defiPositionSnapshots: 'snapshotId, generation, accountIdentityScope, protocolId, chainId, status, [accountIdentityScope+protocolId]',
+      defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]',
+      accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]',
+      walletDefiRefreshManifests: 'accountIdentityScope, custodyScopeId, custodySnapshotId, capturedAt'
+    }).upgrade(async (tx) => {
+      const transactions = tx.table<Transaction, string>('transactions');
+      const evidence = tx.table<ProviderEvidenceRow, string>('providerEvidence');
+      const decisions = tx.table<SafetyDecisionRow, string>('safetyDecisions');
+      const backfilled = backfillExactAssetSafetyRows({
+        transactions: await transactions.toArray(),
+        providerEvidence: await evidence.toArray(),
+        decisions: await decisions.toArray()
+      });
+      await transactions.bulkPut(backfilled.transactions);
+      await evidence.bulkPut(backfilled.providerEvidence);
+      await decisions.bulkPut(backfilled.decisions);
+    });
   }
 }
 
@@ -747,6 +780,11 @@ export async function setTransactionSafetyVisibility(
 ): Promise<void> {
   const subjectKey = transactionSafetySubject(transaction);
   const prior = await db.safetyDecisions.get(subjectKey);
+  const assetKey = visible && transaction.chain && transaction.contractAddress
+    ? assetSubjectKey(transaction.chain, transaction.contractAddress)
+    : undefined;
+  const priorAsset = assetKey ? await db.safetyDecisions.get(assetKey) : undefined;
+  const restoreProviderDerivedAsset = assetKey && priorAsset?.state === 'high_confidence_spam';
   const state = visible ? 'user_visible' as const : 'user_hidden' as const;
   await db.transaction('rw', [db.transactions, db.safetyDecisions], async () => {
     await db.safetyDecisions.put({
@@ -760,6 +798,23 @@ export async function setTransactionSafetyVisibility(
       safetySubjectKey: subjectKey, safetyState: state,
       isSpam: visible ? false : true
     });
+    if (restoreProviderDerivedAsset) {
+      await db.safetyDecisions.put({
+        subjectKey: assetKey,
+        state: 'user_visible', updatedAt, origin: 'user',
+        reason: 'User restored the exact provider-flagged chain and contract.',
+        evidenceIds: priorAsset.evidenceIds,
+        previousAutomaticState: 'high_confidence_spam'
+      });
+      await db.transactions.toCollection().modify((row) => {
+        if (!row.chain || !row.contractAddress ||
+          canonicalSafetyChain(row.chain) !== canonicalSafetyChain(transaction.chain!) ||
+          canonicalSafetyContract(row.contractAddress) !== canonicalSafetyContract(transaction.contractAddress) ||
+          row.safetyState === 'user_hidden') return;
+        row.safetyState = 'user_visible';
+        row.isSpam = false;
+      });
+    }
   });
 }
 
