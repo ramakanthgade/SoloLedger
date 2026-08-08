@@ -192,68 +192,6 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/api/v2/user_transactions/': ['POST'],
       '/api/v2/withdrawal-requests/': ['POST']
     }
-  },
-  bitget: {
-    host: 'api.bitget.com',
-    headers: ['access-key', 'access-sign', 'access-timestamp', 'access-passphrase'],
-    methods: ['GET'],
-    paths: [
-      '/api/v2/public/time',
-      '/api/v2/spot/public/symbols',
-      '/api/v2/spot/account/assets',
-      '/api/v2/spot/trade/fills',
-      '/api/v2/spot/wallet/deposit-records',
-      '/api/v2/spot/wallet/withdrawal-records'
-    ]
-  },
-  mexc: {
-    host: 'api.mexc.com',
-    headers: ['x-mexc-apikey'],
-    methods: ['GET'],
-    paths: [
-      '/api/v3/time',
-      '/api/v3/exchangeInfo',
-      '/api/v3/account',
-      '/api/v3/myTrades',
-      '/api/v3/capital/deposit/hisrec',
-      '/api/v3/capital/withdraw/history'
-    ]
-  },
-  bitmart: {
-    host: 'api-cloud.bitmart.com',
-    headers: ['x-bm-key', 'x-bm-sign', 'x-bm-timestamp', 'x-bm-broker-id'],
-    paths: [
-      '/system/time',
-      '/spot/v1/symbols/details',
-      '/spot/v1/wallet',
-      '/spot/v4/query/trades',
-      '/account/v2/deposit-withdraw/history'
-    ],
-    pathMethods: {
-      '/system/time': ['GET'],
-      '/spot/v1/symbols/details': ['GET'],
-      '/spot/v1/wallet': ['GET'],
-      '/spot/v4/query/trades': ['POST'],
-      '/account/v2/deposit-withdraw/history': ['GET']
-    }
-  },
-  bitvavo: {
-    host: 'api.bitvavo.com',
-    headers: [
-      'bitvavo-access-key',
-      'bitvavo-access-signature',
-      'bitvavo-access-timestamp',
-      'bitvavo-access-window'
-    ],
-    methods: ['GET'],
-    paths: [
-      '/v2/time',
-      '/v2/markets',
-      '/v2/balance',
-      '/v2/trades',
-      '/v2/depositHistory',
-      '/v2/withdrawalHistory'
-    ]
   }
 };
 

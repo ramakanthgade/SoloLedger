@@ -201,11 +201,7 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments'],
     ['bitfinex', 'api.bitfinex.com', '/v2/platform/status'],
     ['btcmarkets', 'api.btcmarkets.net', '/v3/time'],
-    ['bitstamp', 'www.bitstamp.net', '/api/v2/markets/'],
-    ['bitget', 'api.bitget.com', '/api/v2/public/time'],
-    ['mexc', 'api.mexc.com', '/api/v3/time'],
-    ['bitmart', 'api-cloud.bitmart.com', '/system/time'],
-    ['bitvavo', 'api.bitvavo.com', '/v2/time']
+    ['bitstamp', 'www.bitstamp.net', '/api/v2/markets/']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -468,44 +464,6 @@ describe('3. header allowlist', () => {
         'x-auth': 'BITSTAMP key', 'x-auth-signature': 'signature', 'x-auth-nonce': 'nonce',
         'x-auth-timestamp': '1785888000000', 'x-auth-version': 'v2'
       }
-    },
-    {
-      exchange: 'bitget', path: '/api/v2/spot/account/assets', method: 'GET',
-      headers: {
-        'x-exchange-access-key': 'key', 'x-exchange-access-sign': 'signature',
-        'x-exchange-access-timestamp': '1785888000000', 'x-exchange-access-passphrase': 'phrase'
-      },
-      expected: {
-        'access-key': 'key', 'access-sign': 'signature',
-        'access-timestamp': '1785888000000', 'access-passphrase': 'phrase'
-      }
-    },
-    {
-      exchange: 'mexc', path: '/api/v3/account?timestamp=1&signature=abc', method: 'GET',
-      headers: { 'x-exchange-x-mexc-apikey': 'key' }, expected: { 'x-mexc-apikey': 'key' }
-    },
-    {
-      exchange: 'bitmart', path: '/spot/v1/wallet', method: 'GET',
-      headers: {
-        'x-exchange-x-bm-key': 'key', 'x-exchange-x-bm-sign': 'signature',
-        'x-exchange-x-bm-timestamp': '1785888000000', 'x-exchange-x-bm-broker-id': 'broker'
-      },
-      expected: {
-        'x-bm-key': 'key', 'x-bm-sign': 'signature',
-        'x-bm-timestamp': '1785888000000', 'x-bm-broker-id': 'broker'
-      }
-    },
-    {
-      exchange: 'bitvavo', path: '/v2/balance', method: 'GET',
-      headers: {
-        'x-exchange-bitvavo-access-key': 'key', 'x-exchange-bitvavo-access-signature': 'signature',
-        'x-exchange-bitvavo-access-timestamp': '1785888000000',
-        'x-exchange-bitvavo-access-window': '10000'
-      },
-      expected: {
-        'bitvavo-access-key': 'key', 'bitvavo-access-signature': 'signature',
-        'bitvavo-access-timestamp': '1785888000000', 'bitvavo-access-window': '10000'
-      }
     }
   ] as const;
 
@@ -531,6 +489,22 @@ describe('4. exchangeId and path validation', () => {
     expect(res.status).toBe(404);
     expect(res.headers.get('x-sololedger-error')).toBe('unknown_exchange');
     expect(await res.json()).toEqual({ error: expect.any(String) });
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['bitget', '/api/v2/public/time', 'GET'],
+    ['mexc', '/api/v3/time', 'GET'],
+    ['bitmart', '/system/time', 'GET'],
+    ['bitvavo', '/v2/time', 'GET'],
+    ['bitget', '/api/v2/spot/account/assets', 'GET'],
+    ['mexc', '/api/v3/account', 'GET'],
+    ['bitmart', '/spot/v4/query/trades', 'POST'],
+    ['bitvavo', '/v2/balance', 'GET']
+  ] as const)('deferred %s route %s %s → 404 unknown_exchange', async (exchange, path, method) => {
+    const res = await client(`/${exchange}${path}`, { method, headers: AUTH });
+    expect(res.status).toBe(404);
+    expect(res.headers.get('x-sololedger-error')).toBe('unknown_exchange');
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 
@@ -747,15 +721,7 @@ describe('4. exchangeId and path validation', () => {
 
   it.each([
     ['bitstamp', '/api/v2/orders/', 'POST'],
-    ['bitstamp', '/api/v2/withdrawal/crypto/', 'POST'],
-    ['bitget', '/api/v2/spot/trade/place-order', 'POST'],
-    ['bitget', '/api/v2/mix/account/accounts', 'GET'],
-    ['mexc', '/api/v3/order', 'POST'],
-    ['mexc', '/api/v1/private/account/assets', 'GET'],
-    ['bitmart', '/spot/v2/submit_order', 'POST'],
-    ['bitmart', '/account/v1/withdraw/apply', 'POST'],
-    ['bitvavo', '/v2/order', 'POST'],
-    ['bitvavo', '/v2/withdrawal', 'POST']
+    ['bitstamp', '/api/v2/withdrawal/crypto/', 'POST']
   ] as const)('%s blocks non-sync path %s %s', async (exchange, path, method) => {
     const res = await client(`/${exchange}${path}`, { method, headers: AUTH });
     expect(res.status).toBe(400);
@@ -763,17 +729,6 @@ describe('4. exchangeId and path validation', () => {
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['bitget', '/api/v2/spot/account/assets'],
-    ['mexc', '/api/v3/account'],
-    ['bitmart', '/spot/v1/wallet'],
-    ['bitvavo', '/v2/balance']
-  ] as const)('%s rejects a mutation method on an allowed GET path', async (exchange, path) => {
-    const res = await client(`/${exchange}${path}`, { method: 'POST', headers: AUTH });
-    expect(res.status).toBe(400);
-    expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
-    expect(upstreamMock).not.toHaveBeenCalled();
-  });
 });
 
 /* ------------------------------------------------------------------ *

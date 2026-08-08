@@ -171,30 +171,6 @@ const TIER2 = [
     probe: 'GET /api/v2/markets/',
     path: '/api/v2/markets/',
     check: (r, json) => r.status === 200 && Array.isArray(json) && json.every((market) => typeof market?.market === 'string')
-  },
-  {
-    exchange: 'bitget',
-    probe: 'GET /api/v2/public/time',
-    path: '/api/v2/public/time',
-    check: (r, json) => r.status === 200 && json?.code === '00000' && Boolean(json?.data?.serverTime)
-  },
-  {
-    exchange: 'mexc',
-    probe: 'GET /api/v3/time',
-    path: '/api/v3/time',
-    check: (r, json) => r.status === 200 && typeof json?.serverTime === 'number'
-  },
-  {
-    exchange: 'bitmart',
-    probe: 'GET /system/time',
-    path: '/system/time',
-    check: (r, json) => r.status === 200 && json?.code === 1000 && typeof json?.data?.server_time === 'number'
-  },
-  {
-    exchange: 'bitvavo',
-    probe: 'GET /v2/time',
-    path: '/v2/time',
-    check: (r, json) => r.status === 200 && typeof json?.time === 'number'
   }
 ];
 
@@ -496,80 +472,6 @@ const tier3 = [
     // signature validation with HTTP 403 / API0001.
     check: (r, json) => r.status === 403 && json?.status === 'error' &&
       json?.code === 'API0001' && json?.reason === 'API key not found'
-  },
-  {
-    exchange: 'bitget',
-    probe: 'GET /api/v2/spot/account/assets (ACCESS-SIGN + passphrase)',
-    build() {
-      const apiKey = 'D'.repeat(32);
-      const secret = 'E'.repeat(32);
-      const timestamp = Date.now().toString();
-      const path = '/api/v2/spot/account/assets';
-      return {
-        path,
-        exchangeHeaders: {
-          'access-key': apiKey,
-          'access-sign': hmacB64('sha256', secret, timestamp + 'GET' + path),
-          'access-timestamp': timestamp,
-          'access-passphrase': 'dummy-passphrase'
-        }
-      };
-    },
-    // Unknown-key lookup precedes signature checking.
-    check: (r, json) => r.status === 400 && json?.code === '40037' && json?.msg === 'Apikey does not exist'
-  },
-  {
-    exchange: 'mexc',
-    probe: 'GET /api/v3/account (X-MEXC-APIKEY + query HMAC-SHA256)',
-    build() {
-      const apiKey = 'D'.repeat(64);
-      const secret = 'E'.repeat(64);
-      const query = `timestamp=${Date.now()}&recvWindow=5000`;
-      return {
-        path: `/api/v3/account?${query}&signature=${hmacHex('sha256', secret, query)}`,
-        exchangeHeaders: { 'x-mexc-apikey': apiKey }
-      };
-    },
-    // MEXC performs API-key lookup before signature verification.
-    check: (r, json) => r.status === 400 && json?.code === 10072 && json?.msg === 'Api key info invalid'
-  },
-  {
-    exchange: 'bitmart',
-    probe: 'GET /spot/v1/wallet (X-BM-SIGN + memo)',
-    build() {
-      const timestamp = Date.now().toString();
-      const memo = 'dummy-memo';
-      return {
-        path: '/spot/v1/wallet',
-        exchangeHeaders: {
-          'x-bm-key': 'D'.repeat(32),
-          'x-bm-sign': hmacHex('sha256', 'E'.repeat(32), `${timestamp}#${memo}#`),
-          'x-bm-timestamp': timestamp,
-          'x-bm-broker-id': 'CCXTxBitmart000'
-        }
-      };
-    },
-    // BitMart's exact unknown-key response precedes signature/memo checking.
-    check: (r, json) => r.status === 401 && json?.code === 30002 && json?.msg === 'Header X-BM-KEY not found'
-  },
-  {
-    exchange: 'bitvavo',
-    probe: 'GET /v2/balance (BITVAVO-ACCESS-SIGNATURE)',
-    build() {
-      const timestamp = Date.now().toString();
-      const path = '/v2/balance';
-      return {
-        path,
-        exchangeHeaders: {
-          'bitvavo-access-key': 'D'.repeat(64),
-          'bitvavo-access-signature': hmacHex('sha256', 'E'.repeat(64), timestamp + 'GET' + path),
-          'bitvavo-access-timestamp': timestamp,
-          'bitvavo-access-window': '10000'
-        }
-      };
-    },
-    // Bitvavo rejects an unknown format-valid key before checking the HMAC.
-    check: (r, json) => r.status === 403 && json?.errorCode === 305 && json?.error === 'No active API key found.'
   }
 ];
 
