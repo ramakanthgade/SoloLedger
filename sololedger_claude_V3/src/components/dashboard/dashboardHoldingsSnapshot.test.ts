@@ -23,7 +23,7 @@ function snapshot(
     transactionCount,
     csvImports,
     exchangeConnections: [], authoritySnapshots: [], authorityAssets: [],
-    sourceCoverage: [], openingBalances: []
+    sourceCoverage: [], openingBalances: [], safetyDecisions: []
   };
 }
 

@@ -33,6 +33,7 @@ import { TaxEstimateCard } from '@/components/reports/TaxEstimateCard';
 import { useExportGuard } from '@/components/billing/ExportGateDialog';
 import { useAuth } from '@/lib/saas/authContext';
 import { assertTaxExportsComplete, isFullyMatchedInventoryDisposal, unpricedTaxableReceiptsInPeriod } from '@/lib/costBasis/unpricedDisposals';
+import { transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
 
 export function ReportsTab() {
   const { goToImport } = useTabNav();
@@ -46,12 +47,19 @@ export function ReportsTab() {
   const [loadedSettings, setLoadedSettings] = useState<TaxSettings | null>(null);
 
   const transactionsRaw = useLiveQuery(() => db.transactions.toArray(), []);
-  const transactions = transactionsRaw ?? [];
+  const safetyDecisions = useLiveQuery(() => db.safetyDecisions.toArray(), []);
+  const policyTransactions = useMemo(
+    () => transactionsRaw && safetyDecisions
+      ? transactionsUnderCurrentSafetyPolicy(transactionsRaw, safetyDecisions)
+      : undefined,
+    [transactionsRaw, safetyDecisions]
+  );
+  const transactions = policyTransactions ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
   // Cost basis is (re)computed synchronously in useMemo once transactions
   // resolve; until the initial live query settles we show a skeleton so the
   // tab doesn't flash empty numbers.
-  const computing = transactionsRaw === undefined;
+  const computing = transactionsRaw === undefined || safetyDecisions === undefined;
 
   useEffect(() => {
     getSettings().then((s) => {
@@ -68,10 +76,12 @@ export function ReportsTab() {
     : 'business_income';
 
   const { disposals, inventoryDisposals, lots, shortfalls } = useMemo(
-    () => activeSettings
-      ? calculateCostBasis(transactions, { method, specIdHints: hints, settings: activeSettings })
+    () => activeSettings && !computing
+      ? calculateCostBasis(transactions, {
+        method, specIdHints: hints, settings: activeSettings, safetyDecisions: safetyDecisions ?? []
+      })
       : { disposals: [], inventoryDisposals: [], lots: [], shortfalls: [], flags: [], disposalCandidates: {} },
-    [transactions, method, hints, activeSettings]
+    [transactions, method, hints, activeSettings, safetyDecisions, computing]
   );
 
   const matchedRows = useMemo(
@@ -150,7 +160,7 @@ export function ReportsTab() {
       .filter((row) => isInFy(row.timestamp, year, jurisdiction)),
     [transactions, year, jurisdiction]
   );
-  const exportsBlocked = yearUnpricedDisposals.length > 0 || yearUnpricedReceipts.length > 0;
+  const exportsBlocked = computing || yearUnpricedDisposals.length > 0 || yearUnpricedReceipts.length > 0;
 
   const rules = JURISDICTIONS[jurisdiction];
   const yearLabel = getFyLabel(year, jurisdiction);

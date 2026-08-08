@@ -123,6 +123,10 @@ vi.mock('@/lib/rpc/providers', () => ({
     { id: 'solana', label: 'Solana', asset: 'SOL', provider: 'alchemy_solana', needsKey: true },
     { id: 'ethereum', label: 'Ethereum', asset: 'ETH', provider: 'alchemy_evm', needsKey: true },
     { id: 'polygon', label: 'Polygon', asset: 'POL', provider: 'alchemy_evm', needsKey: true },
+    { id: 'base', label: 'Base', asset: 'ETH', provider: 'alchemy_evm', needsKey: true },
+    { id: 'arbitrum', label: 'Arbitrum', asset: 'ETH', provider: 'alchemy_evm', needsKey: true },
+    { id: 'optimism', label: 'Optimism', asset: 'ETH', provider: 'alchemy_evm', needsKey: true },
+    { id: 'zora', label: 'Zora', asset: 'ETH', provider: 'alchemy_evm', needsKey: true },
     { id: 'bitcoin', label: 'Bitcoin', asset: 'BTC', provider: 'blockstream', needsKey: false }
   ],
   DROPDOWN_HIDDEN_CHAINS: new Set(['fantom'])
@@ -619,6 +623,25 @@ describe('ConnectionsHome — file actions', () => {
 });
 
 describe('ConnectionsHome — wallet actions', () => {
+  it('shows whole-wallet Sync, Rename, and Remove actions when collapsed and expanded', () => {
+    mocks.wallets.current = ['ethereum', 'polygon', 'base', 'arbitrum', 'optimism', 'zora'].map((chain) =>
+      wallet({ id: `${chain}:0xabc`, chain, address: '0xabc', accountIdentityId: 'wallet:evm:0xabc' })
+    );
+    render(<ConnectionsHome />);
+
+    const actions = screen.getByRole('button', { name: 'Phantom main actions' });
+    fireEvent.click(actions);
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Sync', 'Rename', 'Remove']);
+    fireEvent.click(actions);
+
+    const aggregateToggle = screen.getAllByRole('button').find((button) => button.hasAttribute('aria-controls'))!;
+    fireEvent.click(aggregateToggle);
+    expect(aggregateToggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByLabelText('Phantom main selected chains')).toBeInTheDocument();
+    fireEvent.click(actions);
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual(['Sync', 'Rename', 'Remove']);
+  });
+
   it('kebab Sync runs an incremental import per chain row of the group', async () => {
     mocks.wallets.current = [
       wallet({ id: 'ethereum:0xAAA', chain: 'ethereum', address: '0xAAA' }),
@@ -679,16 +702,19 @@ describe('ConnectionsHome — wallet actions', () => {
   });
 
   it('kebab Remove confirms then deletes every chain row of the group', async () => {
-    mocks.wallets.current = [wallet()];
+    const rows = ['ethereum', 'polygon', 'base', 'arbitrum', 'optimism', 'zora'].map((chain) =>
+      wallet({ id: `${chain}:0xabc`, chain, address: '0xabc', accountIdentityId: 'wallet:evm:0xabc' })
+    );
+    mocks.wallets.current = rows;
     render(<ConnectionsHome />);
     kebab('Phantom main', /^remove$/i);
 
     expect(screen.getByText('Remove wallet and its transactions?')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Remove wallet' }));
 
-    await waitFor(() =>
-      expect(mocks.deleteLookupAddressAndTransactions).toHaveBeenCalledWith('solana:addr1')
-    );
+    await waitFor(() => expect(mocks.deleteLookupAddressAndTransactions).toHaveBeenCalledTimes(6));
+    expect((mocks.deleteLookupAddressAndTransactions.mock.calls as unknown[][]).map(([id]) => id))
+      .toEqual(rows.map((row) => row.id));
     expect(await screen.findByText('Wallet removed')).toBeInTheDocument();
   });
 

@@ -7,7 +7,8 @@ import { specIdStrategy } from './specId';
 import { makeId } from '@/lib/parsers/types';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 import { D, add, sub, mul, div, toNumber, isPositive, isDust } from './decimal';
-import { isTransactionExcluded } from '@/lib/safety/assetSafety';
+import { isTransactionExcluded, transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
+import type { SafetyDecisionRow } from '@/lib/safety/types';
 import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 
 export type CostBasisMethod = 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
@@ -126,6 +127,8 @@ export interface EngineOptions {
   feePolicy?: FeePolicy;
   /** Active report-time settings. Canonical policy gates every taxable row. */
   settings: TaxSettings;
+  /** Current exact-asset visibility snapshot; reports follow this reversible policy. */
+  safetyDecisions?: readonly SafetyDecisionRow[];
 }
 
 export interface DisposalCandidateLot {
@@ -213,7 +216,10 @@ function sameTimestampRank(tx: Transaction): number {
  * rows (single pass per asset, O(n log n) for the sort).
  */
 export function calculateCostBasis(rawTransactions: Transaction[], options: EngineOptions): EngineResult {
-  const { transactions, droppedTradeLegs } = expandTrades(rawTransactions);
+  const policyTransactions = options.safetyDecisions
+    ? transactionsUnderCurrentSafetyPolicy(rawTransactions, options.safetyDecisions)
+    : rawTransactions;
+  const { transactions, droppedTradeLegs } = expandTrades(policyTransactions);
   const strategy = STRATEGIES[options.method];
   const feePolicy: FeePolicy = options.feePolicy ?? 'exclude';
   const lots: Lot[] = [];

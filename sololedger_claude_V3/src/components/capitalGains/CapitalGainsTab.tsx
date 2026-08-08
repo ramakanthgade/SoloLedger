@@ -25,6 +25,7 @@ import autoTable from 'jspdf-autotable';
 import { useExportGuard } from '@/components/billing/ExportGateDialog';
 import { useAuth } from '@/lib/saas/authContext';
 import { assertTaxExportsComplete, isFullyMatchedInventoryDisposal, unpricedInventoryDisposalsInPeriod, unpricedTaxableReceiptsInPeriod } from '@/lib/costBasis/unpricedDisposals';
+import { transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
 
 const INCOME_KIND_LABEL: Record<string, string> = {
   income: 'Income',
@@ -132,7 +133,16 @@ function TreatmentSeg({ businessMode }: { businessMode: boolean }) {
 
 export function CapitalGainsTab() {
   const { goToImport } = useTabNav();
-  const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
+  const rawTransactions = useLiveQuery(() => db.transactions.toArray(), []);
+  const safetyDecisions = useLiveQuery(() => db.safetyDecisions.toArray(), []);
+  const computing = rawTransactions === undefined || safetyDecisions === undefined;
+  const policyTransactions = useMemo(
+    () => rawTransactions && safetyDecisions
+      ? transactionsUnderCurrentSafetyPolicy(rawTransactions, safetyDecisions)
+      : undefined,
+    [rawTransactions, safetyDecisions]
+  );
+  const transactions = policyTransactions ?? [];
   const hints = useLiveQuery(() => getSpecIdHints(), []) ?? {};
   const [method, setMethod] = useState<'FIFO' | 'LIFO' | 'HIFO' | 'SpecID'>('FIFO');
   const [fy, setFy] = useState(getCurrentFy('IN'));
@@ -161,10 +171,12 @@ export function CapitalGainsTab() {
     : 0, [transactions, activeSettings]);
 
   const { disposals, inventoryDisposals, lots, shortfalls } = useMemo(
-    () => activeSettings
-      ? calculateCostBasis(transactions, { method, specIdHints: hints, settings: activeSettings })
+    () => activeSettings && !computing
+      ? calculateCostBasis(transactions, {
+        method, specIdHints: hints, settings: activeSettings, safetyDecisions: safetyDecisions ?? []
+      })
       : { disposals: [], inventoryDisposals: [], lots: [], shortfalls: [], flags: [], disposalCandidates: {} },
-    [transactions, method, hints, activeSettings]
+    [transactions, method, hints, activeSettings, safetyDecisions, computing]
   );
 
   const matchedRows = useMemo(
@@ -248,7 +260,7 @@ export function CapitalGainsTab() {
     () => unpricedTaxableReceiptsInPeriod(transactions, fyBounds.start, fyBounds.end),
     [transactions, fyBounds]
   );
-  const exportsBlocked = yearUnpricedDisposals.length > 0 || yearUnpricedReceipts.length > 0;
+  const exportsBlocked = computing || yearUnpricedDisposals.length > 0 || yearUnpricedReceipts.length > 0;
 
   const yearMatches = useMemo(
     () => matchedRows.filter((r) => r.sellDate >= fyBounds.start && r.sellDate <= fyBounds.end),
@@ -447,6 +459,17 @@ export function CapitalGainsTab() {
     });
     doc.save(`sololedger-capital-gains-${getFyLabel(fy, jurisdiction).replace(/\s/g, '')}.pdf`);
   };
+
+  if (computing) {
+    return (
+      <div className="space-y-6" aria-busy="true">
+        <PageHeader title="Capital Gains" subtitle="Loading the current transaction safety policy before calculating gains." />
+        <div role="status" className="rounded-xl border border-hi/10 bg-elev-2 px-4 py-4 text-sm text-mid">
+          Loading transaction safety policy…
+        </div>
+      </div>
+    );
+  }
 
   if (transactions.length === 0) {
     return (

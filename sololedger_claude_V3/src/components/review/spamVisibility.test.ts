@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import type { Transaction } from '@/types/transaction';
-import { filterRows, type RowFilterOptions } from '@/lib/review/reviewTableView';
+import { activeTransactionSurface, filterRows, visibleAssetOptions, type RowFilterOptions } from '@/lib/review/reviewTableView';
+import { transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
+import { calculateCostBasis } from '@/lib/costBasis/engine';
+import { TEST_TAX_SETTINGS } from '@/test/taxSettings';
 
 /**
  * Item 11 — spam hidden by default. The visibility rules themselves live in
@@ -76,5 +79,28 @@ describe('filterRows — spam hidden by default (item 11)', () => {
     const priced = tx({ type: 'buy', asset: 'ABC', fiatValue: undefined });
     const rows = filterRows([priced, spam], opts({ showNeedsPrice: true }));
     expect(rows.map((t) => t.id)).toEqual([priced.id]);
+  });
+
+  it('derives asset options from only the active normal or spam audit surface', () => {
+    expect(visibleAssetOptions(activeTransactionSurface([spam, clean], false))).toEqual(['ETH']);
+    expect(visibleAssetOptions(activeTransactionSurface([spam, clean], true))).toEqual(['SCAM']);
+  });
+
+  it('moves older exact-contract rows to Spam and keeps missing-basis analysis on the same snapshot', () => {
+    const contract = '0x1111111111111111111111111111111111111111';
+    const older = tx({ id: 'older', type: 'sell', asset: 'OLD', chain: 'ethereum', contractAddress: contract, fiatValue: 100 });
+    const later = tx({ id: 'later', type: 'buy', asset: 'NEW', chain: 'ethereum', contractAddress: contract, fiatValue: 50 });
+    const decisions = [{
+      subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam' as const,
+      updatedAt: 10, origin: 'automatic' as const
+    }];
+    const policyRows = transactionsUnderCurrentSafetyPolicy([older, later], decisions);
+    expect(activeTransactionSurface(policyRows, false)).toEqual([]);
+    expect(activeTransactionSurface(policyRows, true).map((row) => row.id)).toEqual(['older', 'later']);
+    const result = calculateCostBasis(policyRows, {
+      method: 'FIFO', settings: TEST_TAX_SETTINGS, safetyDecisions: decisions
+    });
+    expect(result.shortfalls).toEqual([]);
+    expect(result.flags).toEqual([]);
   });
 });

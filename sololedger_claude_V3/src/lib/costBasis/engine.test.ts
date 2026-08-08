@@ -44,6 +44,29 @@ describe('cost-basis engine', () => {
     expect(result.disposals[0]).toMatchObject({ proceeds: 200, costBasis: 100, gain: 100 });
     expect(result.lots.map((lot) => lot.sourceTxId)).toEqual(['buy']);
   });
+
+  it('applies current exact-contract safety decisions without changing cost-basis math or symbol scope', () => {
+    const contract = '0x1111111111111111111111111111111111111111';
+    const eventSubject = `event:ethereum:0xexplicit:${contract}:0:in`;
+    const rows = [
+      tx({ id: 'flagged-buy', type: 'buy', asset: 'TOK', chain: 'ethereum', contractAddress: contract, fiatValue: 100 }),
+      tx({ id: 'same-contract-buy', type: 'buy', asset: 'OTHER', chain: 'ethereum', contractAddress: contract, fiatValue: 200, safetySubjectKey: eventSubject }),
+      tx({ id: 'same-symbol-other-contract', type: 'buy', asset: 'TOK', chain: 'ethereum', contractAddress: '0x2222222222222222222222222222222222222222', fiatValue: 300 })
+    ];
+    const assetSubject = `asset:ethereum:${contract}`;
+    const hidden = run(rows, { safetyDecisions: [
+      { subjectKey: assetSubject, state: 'high_confidence_spam', updatedAt: 1, origin: 'automatic' }
+    ] });
+    expect(hidden.lots.map((lot) => lot.sourceTxId)).toEqual(['same-symbol-other-contract']);
+    expect(hidden.lots[0].costBasisTotal).toBe(300);
+
+    const restored = run(rows, { safetyDecisions: [
+      { subjectKey: assetSubject, state: 'user_visible', updatedAt: 2, origin: 'user' },
+      { subjectKey: eventSubject, state: 'user_hidden', updatedAt: 3, origin: 'user' }
+    ] });
+    expect(restored.lots.map((lot) => lot.sourceTxId)).toEqual(['flagged-buy', 'same-symbol-other-contract']);
+    expect(restored.lots.map((lot) => lot.costBasisTotal)).toEqual([100, 300]);
+  });
   it('consumes a lot partially and leaves the remainder open', () => {
     const { disposals, lots } = run([
       tx({ id: 'b', type: 'buy', amount: 2, fiatValue: 200, timestamp: 1 * DAY }),

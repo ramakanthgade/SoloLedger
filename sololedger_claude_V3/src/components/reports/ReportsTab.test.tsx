@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 const SEED = vi.hoisted(() => ({
   hints: {} as Record<string, never>,
+  safetyDecisions: [] as import('@/lib/safety/types').SafetyDecisionRow[] | undefined,
   txs: [
     {
       id: 'buy', timestamp: Date.UTC(2026, 3, 10), type: 'buy', asset: 'BTC', amount: 1,
@@ -17,7 +18,10 @@ const SEED = vi.hoisted(() => ({
 
 vi.mock('dexie-react-hooks', () => ({ useLiveQuery: (querier: () => unknown) => querier() }));
 vi.mock('@/lib/storage/db', () => ({
-  db: { transactions: { toArray: () => SEED.txs } },
+  db: {
+    transactions: { toArray: () => SEED.txs },
+    safetyDecisions: { toArray: () => SEED.safetyDecisions }
+  },
   getSettings: () => Promise.resolve({
     reportingCurrency: 'INR', jurisdiction: 'IN', defaultCostBasisMethod: 'FIFO'
   }),
@@ -34,6 +38,22 @@ vi.mock('jspdf-autotable', () => ({ default: vi.fn() }));
 import { ReportsTab } from './ReportsTab';
 
 describe('ReportsTab unpriced disposal guard', () => {
+  it('shows only the loading gate and disables exports until safety decisions resolve', async () => {
+    const backup = SEED.safetyDecisions;
+    SEED.safetyDecisions = undefined;
+    try {
+      await act(async () => {
+        render(<ReportsTab />);
+        await Promise.resolve();
+      });
+      for (const button of screen.getAllByRole('button').filter((row) => /^(CSV|JSON|Schedule VDA CSV|Export PDF)$/.test(row.textContent ?? ''))) {
+        expect(button).toBeDisabled();
+      }
+      expect(screen.queryByText('₹50,00,000.00')).not.toBeInTheDocument();
+    } finally {
+      SEED.safetyDecisions = backup;
+    }
+  });
   it('warns about fully matched unpriced disposals, excludes them from totals, and disables every export', async () => {
     await act(async () => {
       render(<ReportsTab />);

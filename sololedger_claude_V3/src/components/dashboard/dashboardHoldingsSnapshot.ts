@@ -17,7 +17,8 @@ export interface DashboardHoldingsSnapshot {
   readonly authorityAssets: AuthorityAssetRow[];
   readonly sourceCoverage: SourceCoverageRow[];
   readonly openingBalances: OpeningBalanceRow[];
-  readonly safetyDecisions?: SafetyDecisionRow[];
+  /** Always present after the coherent read resolves; an empty table is `[]`. */
+  readonly safetyDecisions: SafetyDecisionRow[];
   readonly defiPositionSnapshots?: DefiPositionSnapshot[];
   readonly defiPositionRows?: DefiPositionRow[];
   readonly walletDefiRefreshManifests?: WalletDefiRefreshManifest[];

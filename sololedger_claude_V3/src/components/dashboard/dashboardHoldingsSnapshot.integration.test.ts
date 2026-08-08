@@ -6,14 +6,16 @@ import { readDashboardHoldingsSnapshot } from './dashboardHoldingsSnapshot';
 
 const IDS = {
   transaction: 'dashboard-holdings-snapshot-transaction',
-  csv: 'dashboard-holdings-snapshot-csv'
+  csv: 'dashboard-holdings-snapshot-csv',
+  decision: 'asset:ethereum:0xdashboardholdingssnapshot'
 };
 
 async function cleanup(): Promise<void> {
-  await db.transaction('rw', [db.transactions, db.csvImports], async () => {
+  await db.transaction('rw', [db.transactions, db.csvImports, db.safetyDecisions], async () => {
     await Promise.all([
       db.transactions.delete(IDS.transaction),
-      db.csvImports.delete(IDS.csv)
+      db.csvImports.delete(IDS.csv),
+      db.safetyDecisions.delete(IDS.decision)
     ]);
   });
 }
@@ -24,6 +26,27 @@ afterEach(async () => {
 });
 
 describe('readDashboardHoldingsSnapshot', () => {
+  it('returns a loaded empty safety decision snapshot instead of undefined', async () => {
+    await cleanup();
+
+    const result = await readDashboardHoldingsSnapshot();
+
+    expect(result.safetyDecisions).toEqual([]);
+  });
+
+  it('returns persisted safety decisions in the same coherent snapshot', async () => {
+    await cleanup();
+    await db.safetyDecisions.put({
+      subjectKey: IDS.decision, state: 'high_confidence_spam', updatedAt: 1, origin: 'automatic'
+    });
+
+    const result = await readDashboardHoldingsSnapshot();
+
+    expect(result.safetyDecisions).toContainEqual(expect.objectContaining({
+      subjectKey: IDS.decision, state: 'high_confidence_spam'
+    }));
+  });
+
   it('reads evidence with a transaction count without materializing the ledger', async () => {
     await cleanup();
     const transaction: Transaction = {

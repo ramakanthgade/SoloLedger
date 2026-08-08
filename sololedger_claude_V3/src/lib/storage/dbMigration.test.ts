@@ -184,7 +184,7 @@ describe('Dexie v11 → v12 CSV survivor-count migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(16);
+    expect(upgraded.verno).toBe(17);
     expect(await upgraded.table('walletDefiRefreshManifests').count()).toBe(0);
     expect(await upgraded.csvImports.bulkGet(['partial', 'zero'])).toEqual([
       expect.objectContaining({ id: 'partial', txCount: 2 }),
@@ -263,7 +263,7 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(16);
+    expect(upgraded.verno).toBe(17);
     expect(await upgraded.table('walletDefiRefreshManifests').count()).toBe(0);
     expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
     expect(await upgraded.table('exchangeBalances').count()).toBe(4);
@@ -333,6 +333,124 @@ const V14_STORES = {
   defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]'
 };
 
+const V16_STORES = {
+  ...V14_STORES,
+  transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId, category, internalTransferPairId',
+  lookupAddresses: 'id, chain, address, lastSyncedAt, accountIdentityId',
+  csvImports: 'id, importedAt, fileName, accountIdentityId',
+  exchangeConnections: 'id, exchange, lastSyncAt, accountIdentityId',
+  accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]',
+  walletDefiRefreshManifests: 'accountIdentityScope, custodyScopeId, custodySnapshotId, capturedAt'
+};
+
+describe('Dexie v16 → v17 exact asset safety backfill', () => {
+  it('hides all rows for the exact provider-flagged contract and is idempotent on reopen', async () => {
+    const name = `migration_v17_safety_${Math.random().toString(36).slice(2)}`;
+    const legacy = new Dexie(name);
+    legacy.version(16).stores(V16_STORES);
+    await legacy.open();
+    const contract = '0x1111111111111111111111111111111111111111';
+    const restoredContract = '0x3333333333333333333333333333333333333333';
+    const trustedContract = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+    const flaggedSubject = `event:ethereum:0xflagged:${contract}:1:in`;
+    const restoredSubject = `event:ethereum:0xrestored:${restoredContract}:1:in`;
+    const trustedSubject = `event:ethereum:0xtrusted:${trustedContract}:1:in`;
+    await legacy.table('transactions').bulkPut([
+      makeTx('flagged', {
+        type: 'transfer_in', asset: 'SCAM', chain: 'ethereum', contractAddress: contract,
+        txHash: '0xflagged', safetySubjectKey: flaggedSubject,
+        safetyState: 'high_confidence_spam', isSpam: true
+      }),
+      makeTx('same-contract', {
+        type: 'buy', asset: 'SAME-SYMBOL-IS-IRRELEVANT', chain: 'ethereum', contractAddress: contract,
+        txHash: '0xother', safetyState: 'unverified', isSpam: false
+      }),
+      makeTx('same-symbol-other-contract', {
+        type: 'buy', asset: 'SCAM', chain: 'ethereum',
+        contractAddress: '0x2222222222222222222222222222222222222222', isSpam: false
+      }),
+      makeTx('restored-contract', {
+        type: 'transfer_in', asset: 'RESTORED', chain: 'ethereum', contractAddress: restoredContract,
+        txHash: '0xrestored', safetySubjectKey: restoredSubject, isSpam: true
+      }),
+      makeTx('trusted-contract', {
+        type: 'transfer_in', asset: 'USDC', chain: 'ethereum', contractAddress: trustedContract,
+        txHash: '0xtrusted', safetySubjectKey: trustedSubject, isSpam: true
+      })
+    ]);
+    await legacy.table('providerEvidence').bulkPut([
+      { id: 'legacy-event-evidence', subjectKey: flaggedSubject, subjectKind: 'event', provider: 'moralis', ruleId: 'possible_spam', ruleVersion: '1', confidence: 0.95, observedAt: 100 },
+      { id: 'restored-event-evidence', subjectKey: restoredSubject, subjectKind: 'event', provider: 'moralis', ruleId: 'possible_spam', ruleVersion: '1', confidence: 0.95, observedAt: 100 },
+      { id: 'trusted-event-evidence', subjectKey: trustedSubject, subjectKind: 'event', provider: 'moralis', ruleId: 'possible_spam', ruleVersion: '1', confidence: 0.95, observedAt: 100 }
+    ]);
+    await legacy.table('safetyDecisions').bulkPut([
+      { subjectKey: flaggedSubject, state: 'high_confidence_spam', updatedAt: 100, origin: 'automatic', evidenceIds: ['legacy-event-evidence'] },
+      { subjectKey: `asset:ethereum:${restoredContract}`, state: 'user_visible', updatedAt: 101, origin: 'user', evidenceIds: ['restored-event-evidence'] },
+      { subjectKey: `asset:ethereum:${trustedContract}`, state: 'trusted', updatedAt: 101, origin: 'automatic', evidenceIds: ['trusted-event-evidence'] }
+    ]);
+    legacy.close();
+
+    const { createDb } = await import('@/lib/storage/db');
+    let upgraded = createDb(name);
+    await upgraded.open();
+    const assetKey = `asset:ethereum:${contract}`;
+    expect(await upgraded.safetyDecisions.get(assetKey)).toMatchObject({
+      state: 'high_confidence_spam', origin: 'automatic'
+    });
+    expect(await upgraded.providerEvidence.get('legacy-event-evidence:asset')).toMatchObject({
+      subjectKey: assetKey, subjectKind: 'asset'
+    });
+    expect(await upgraded.transactions.get('same-contract')).toMatchObject({
+      safetyState: 'high_confidence_spam', isSpam: true
+    });
+    expect(await upgraded.transactions.get('same-symbol-other-contract')).toMatchObject({ isSpam: false });
+    expect((await upgraded.transactions.get('same-symbol-other-contract'))?.safetyState).toBeUndefined();
+    expect(await upgraded.transactions.get('restored-contract')).toMatchObject({ isSpam: true });
+    expect((await upgraded.transactions.get('restored-contract'))?.safetyState).toBeUndefined();
+    expect(await upgraded.transactions.get('trusted-contract')).toMatchObject({ isSpam: true });
+    expect((await upgraded.transactions.get('trusted-contract'))?.safetyState).toBeUndefined();
+    expect(await upgraded.safetyDecisions.get(`asset:ethereum:${trustedContract}`)).toMatchObject({
+      state: 'trusted'
+    });
+    const counts = [await upgraded.providerEvidence.count(), await upgraded.safetyDecisions.count()];
+    upgraded.close();
+
+    upgraded = createDb(name);
+    await upgraded.open();
+    expect([await upgraded.providerEvidence.count(), await upgraded.safetyDecisions.count()]).toEqual(counts);
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+
+  it('never creates an automatic spam decision for canonical Ethereum USDC', async () => {
+    const name = `migration_v17_usdc_${Math.random().toString(36).slice(2)}`;
+    const legacy = new Dexie(name);
+    legacy.version(16).stores(V16_STORES);
+    await legacy.open();
+    const usdc = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+    const eventSubject = `event:ethereum:0xusdc:${usdc}:1:in`;
+    await legacy.table('transactions').put(makeTx('canonical-usdc', {
+      type: 'transfer_in', asset: 'USDC', chain: 'ethereum', contractAddress: usdc,
+      txHash: '0xusdc', safetySubjectKey: eventSubject, isSpam: false
+    }));
+    await legacy.table('providerEvidence').put({
+      id: 'usdc-provider-spam', subjectKey: eventSubject, subjectKind: 'event',
+      provider: 'moralis', ruleId: 'possible_spam', ruleVersion: '1', confidence: 0.99, observedAt: 100
+    });
+    legacy.close();
+
+    const { createDb } = await import('@/lib/storage/db');
+    const upgraded = createDb(name);
+    await upgraded.open();
+    expect(await upgraded.safetyDecisions.get(`asset:ethereum:${usdc}`)).toBeUndefined();
+    expect(await upgraded.transactions.get('canonical-usdc')).toMatchObject({ isSpam: false });
+    expect((await upgraded.transactions.get('canonical-usdc'))?.safetyState).toBeUndefined();
+    expect(await upgraded.providerEvidence.get('usdc-provider-spam:asset')).toBeDefined();
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+});
+
 describe('Dexie v15 B1 and v16 wallet DeFi manifest migrations', () => {
   it('runs v12→v13→v14→v15 sequentially while preserving evidence and grouping accounts conservatively', async () => {
     const name = `migration_v15_sequential_${Math.random().toString(36).slice(2)}`;
@@ -375,7 +493,7 @@ describe('Dexie v15 B1 and v16 wallet DeFi manifest migrations', () => {
     const { createDb } = await import('@/lib/storage/db');
     const upgraded = createDb(name);
     await upgraded.open();
-    expect(upgraded.verno).toBe(16);
+    expect(upgraded.verno).toBe(17);
     expect(await upgraded.walletDefiRefreshManifests.count()).toBe(0);
     expect(await upgraded.transactions.get('typed-alias')).toMatchObject({
       category: 'staking_reward', categoryOrigin: 'legacy', amount: 1.25,

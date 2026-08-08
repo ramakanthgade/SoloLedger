@@ -124,8 +124,12 @@ describe('B6 database-backed integrated acceptance', () => {
     const authorityAssetSubjects = new Set((await db.authorityAssets.toArray())
       .filter((row) => row.assetKey.startsWith('evm:1:'))
       .map((row) => `asset:ethereum:${row.assetKey.slice('evm:1:'.length)}`));
+    const evidenceAssetSubjects = new Set(evidence
+      .filter((row) => safetySubjectKind(row.subjectKey) === 'asset')
+      .map((row) => row.subjectKey));
     expect([...decisions, ...evidence].every((row) => safetySubjectKind(row.subjectKey) != null)).toBe(true);
-    expect(decisions.every((row) => transactionSubjects.has(row.subjectKey) || authorityAssetSubjects.has(row.subjectKey))).toBe(true);
+    expect(decisions.every((row) => transactionSubjects.has(row.subjectKey) ||
+      authorityAssetSubjects.has(row.subjectKey) || evidenceAssetSubjects.has(row.subjectKey))).toBe(true);
     expect(decisions.filter((row) => row.origin === 'automatic').every((decision) =>
       decision.evidenceIds?.every((id) => evidence.some((row) => row.id === id && row.subjectKey === decision.subjectKey))))
       .toBe(true);

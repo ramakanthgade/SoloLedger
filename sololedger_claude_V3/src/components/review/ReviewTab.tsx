@@ -48,7 +48,7 @@ import {
 import { supportsSpecificIdEditing } from '@/lib/review/specificIdEditing';
 import type { BulkFlagsSelection } from '@/lib/review/bulkEdit';
 import { displayFlags } from '@/lib/review/displayFlags';
-import { filterRows, paginate } from '@/lib/review/reviewTableView';
+import { activeTransactionSurface, filterRows, paginate, visibleAssetOptions } from '@/lib/review/reviewTableView';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { AssetIcon, SourceIcon } from './brandIcons';
 import {
@@ -76,7 +76,7 @@ import { buildReviewReconciliationEvidence } from './reviewReconciliationEvidenc
 import { TransactionDetailPanel, type DetailTab } from './TransactionDetailPanel';
 import { LotPicker } from './LotPicker';
 import { type TransactionNavigationIntent, type TransactionScopeFilter } from '@/lib/navigationIntent';
-import { isTransactionExcluded } from '@/lib/safety/assetSafety';
+import { isTransactionExcluded, transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
 import { hasDurableNavigationScope, resolveReviewTransactionTarget, transactionMatchesNavigationScope } from './reviewNavigation';
 import { buildSourcePresentationIndexes, buildTransactionSourcePresentations } from '@/lib/sources/sourcePresentation';
 import { buildReviewSourceFilterOptions, transactionMatchesSourceFilter } from './reviewSourceFilters';
@@ -656,9 +656,12 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
   const { goToImport } = useTabNav();
   const transactionsLive = useLiveQuery(() => db.transactions.toArray(), []);
-  // Stable empty array while the query resolves, so dependent memos don't
-  // recompute on every render (react-hooks/exhaustive-deps).
-  const transactions = useMemo(() => transactionsLive ?? [], [transactionsLive]);
+  const safetyDecisionsLive = useLiveQuery(() => db.safetyDecisions.toArray(), []);
+  const transactions = useMemo(() =>
+    transactionsLive && safetyDecisionsLive
+      ? transactionsUnderCurrentSafetyPolicy(transactionsLive, safetyDecisionsLive)
+      : [],
+  [transactionsLive, safetyDecisionsLive]);
   const transactionsById = useMemo(() => buildTransactionById(transactions), [transactions]);
   const ledgerEvidenceLive = useLiveQuery(async () => {
     const [exchangeConnections, openingBalances, coverage, authoritySnapshots, authorityAssets, accountIdentities, csvImports, lookupAddresses] = await Promise.all([
@@ -716,19 +719,34 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     });
   }, []);
 
+  const spamAuditMode = showSpam || flagFilter === 'spam';
+  const activeSurface = useMemo(
+    () => activeTransactionSurface(transactions, spamAuditMode),
+    [transactions, spamAuditMode]
+  );
+  const previousSpamAuditMode = useRef(spamAuditMode);
+  useEffect(() => {
+    if (previousSpamAuditMode.current === spamAuditMode) return;
+    previousSpamAuditMode.current = spamAuditMode;
+    setAssetFilter('all');
+    setSourceFilter('all');
+    setWalletFilter('all');
+    setFyFilter(null);
+  }, [spamAuditMode, setWalletFilter]);
+
   const availableFys = useMemo(
-    () => getAvailableFys(transactions.map((t) => t.timestamp), jurisdiction),
-    [transactions, jurisdiction]
+    () => getAvailableFys(activeSurface.map((t) => t.timestamp), jurisdiction),
+    [activeSurface, jurisdiction]
   );
   const availableWallets = useMemo(
-    () => buildReviewWalletFilterOptions(transactions, sourcePresentations),
-    [transactions, sourcePresentations]
+    () => buildReviewWalletFilterOptions(activeSurface, sourcePresentations),
+    [activeSurface, sourcePresentations]
   );
 
   /** Exact source incarnations/generations; labels never collapse same-brand accounts. */
   const availableSources = useMemo(
-    () => buildReviewSourceFilterOptions(transactions, sourcePresentations),
-    [transactions, sourcePresentations]
+    () => buildReviewSourceFilterOptions(activeSurface, sourcePresentations),
+    [activeSurface, sourcePresentations]
   );
 
 
@@ -782,9 +800,12 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   }, [hosted, unresolvedSymbolTxs.length, resolvingSymbols, resolveTokenSymbols]);
 
   const engineResult = useMemo(() => {
-    if (!settings) return null;
-    return calculateCostBasis(transactions, { method: settings.defaultCostBasisMethod, specIdHints: hints, settings });
-  }, [transactions, settings, hints]);
+    if (!settings || !safetyDecisionsLive) return null;
+    return calculateCostBasis(transactions, {
+      method: settings.defaultCostBasisMethod, specIdHints: hints, settings,
+      safetyDecisions: safetyDecisionsLive
+    });
+  }, [transactions, settings, hints, safetyDecisionsLive]);
 
   /** Matched disposals keyed by their source transaction id (row cost/gain sublines + expanded Analysis). */
   const disposalByTxId = useMemo(
@@ -968,7 +989,10 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     setEditingFiat(null);
   };
 
-  const assets = useMemo(() => Array.from(new Set(transactions.map((t) => t.asset))).sort(), [transactions]);
+  const assets = useMemo(
+    () => visibleAssetOptions(activeSurface),
+    [activeSurface]
+  );
 
   // Detect DCA groups whenever transactions change. Detection is pure/offline;
   // spam/internal handling lives INSIDE detectDcaGroups so this caller and
@@ -1152,7 +1176,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   }, [navigationResetToken]);
 
   useEffect(() => {
-    if (!navigationIntent || appliedNavigationIntent.current === navigationIntent.id || transactionsLive === undefined) return;
+    if (!navigationIntent || appliedNavigationIntent.current === navigationIntent.id ||
+      transactionsLive === undefined || safetyDecisionsLive === undefined) return;
     appliedNavigationIntent.current = navigationIntent.id;
     setNavigationError(null);
     const target = resolveReviewTransactionTarget(navigationIntent, transactions);
@@ -1181,7 +1206,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
       setDetailTabByTxId((current) => ({ ...current, [target.id]: navigationIntent.detailTab ?? 'details' }));
     }
     setPendingNavigationFocus(navigationIntent);
-  }, [navigationIntent, onNavigationIntentAcknowledged, transactions, transactionsLive]);
+  }, [navigationIntent, onNavigationIntentAcknowledged, transactions, transactionsLive, safetyDecisionsLive]);
 
   useEffect(() => {
     if (!pendingNavigationFocus) return;
@@ -2050,12 +2075,14 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     );
   }
 
-  if (navigationIntent?.transactionId && transactionsLive === undefined) {
+  if (transactionsLive === undefined || safetyDecisionsLive === undefined) {
     return (
       <div className="space-y-5" aria-busy="true">
         {onNavigationBack && <Button variant="secondary" size="sm" onClick={onNavigationBack}><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Data Health</Button>}
         <h2 className="page-title">Transactions</h2>
-        <div role="status" className="rounded-xl border border-hi/10 bg-elev-2 px-4 py-4 text-sm text-mid">Locating the exact transaction…</div>
+        <div role="status" className="rounded-xl border border-hi/10 bg-elev-2 px-4 py-4 text-sm text-mid">
+          {navigationIntent?.transactionId ? 'Locating the exact transaction…' : 'Loading transaction safety policy…'}
+        </div>
       </div>
     );
   }
@@ -2400,7 +2427,12 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
         <button
           type="button"
           aria-pressed={showNeedsPrice}
-          onClick={() => { setShowNeedsPrice((v) => !v); setShowSpam(false); setShowNeedsReview(false); }}
+          onClick={() => {
+            setShowNeedsPrice((v) => !v);
+            setShowSpam(false);
+            setShowNeedsReview(false);
+            setFlagFilter('all');
+          }}
           className={cn(
             'h-11 rounded-full border px-4 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
             showNeedsPrice ? 'border-warn/40 bg-warn/15 text-warn' : 'border-hi/10 bg-elev-1 text-low shadow-xs hover:text-mid'
@@ -2412,7 +2444,12 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           <button
             type="button"
             aria-pressed={showNeedsReview}
-            onClick={() => { setShowNeedsReview((v) => !v); setShowSpam(false); setShowNeedsPrice(false); }}
+            onClick={() => {
+              setShowNeedsReview((v) => !v);
+              setShowSpam(false);
+              setShowNeedsPrice(false);
+              setFlagFilter('all');
+            }}
             className={cn(
               'h-11 rounded-full border px-4 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
               showNeedsReview ? 'border-warn/40 bg-warn/15 text-warn' : 'border-hi/10 bg-elev-1 text-low shadow-xs hover:text-mid'
@@ -2425,7 +2462,12 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           <button
             type="button"
             aria-pressed={showSpam}
-            onClick={() => { setShowSpam((v) => !v); setShowNeedsPrice(false); setShowNeedsReview(false); }}
+            onClick={() => {
+              setShowSpam((v) => !v);
+              setFlagFilter('all');
+              setShowNeedsPrice(false);
+              setShowNeedsReview(false);
+            }}
             className={cn(
               'h-11 rounded-full border px-4 text-xs font-bold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
               showSpam ? 'border-loss/40 bg-loss/15 text-loss' : 'border-hi/10 bg-elev-1 text-low shadow-xs hover:text-mid'

@@ -29,7 +29,7 @@ describe('TransactionDetailPanel', () => {
     expect(screen.getByRole('tabpanel')).toHaveAttribute('id', 'transaction-panel-cost');
   });
 
-  it('separates persisted source/event/account evidence from derived safety, pair, and A4 tax policy', () => {
+  it('keeps useful imported facts while hiding internal evidence and interpretation panels', () => {
     const transaction: Transaction = {
       id: 'paired', timestamp: 1, type: 'transfer_out', asset: 'ETH', amount: 1,
       fiatCurrency: 'USD', source: 'rpc:alchemy', sourceRef: 'event-7', flags: [],
@@ -59,18 +59,16 @@ describe('TransactionDetailPanel', () => {
       taxPolicy={{ treatment: 'requires_review', reasonCode: 'unsupported_transaction', explanation: 'No validated automatic policy outcome exists for this transaction.', policyVersion: 'b5.1', reason: 'No validated automatic policy outcome exists for this transaction.', confidence: 0, jurisdiction: 'US', evidenceIds: ['paired'] }}
     />);
 
-    expect(screen.getByText('Persisted source and account evidence')).toBeInTheDocument();
-    expect(screen.getByText('wallet-source:ethereum:0xabc:incarnation')).toBeInTheDocument();
-    expect(screen.getByText('event-7')).toBeInTheDocument();
-    expect(screen.getByText('owned · revision 3')).toBeInTheDocument();
-    expect(screen.getByText('Derived interpretations')).toBeInTheDocument();
-    expect(screen.getByText('unverified')).toBeInTheDocument();
-    expect(screen.getByText('suggested · heuristic')).toBeInTheDocument();
-    expect(screen.getByText(/requires review · No validated automatic policy outcome/)).toBeInTheDocument();
-    expect(screen.getByText(/shared report-time policy resolver/)).toBeInTheDocument();
+    expect(screen.getByText('Persisted transaction fields')).toBeInTheDocument();
+    expect(screen.getByText('Imported event')).toBeInTheDocument();
+    expect(screen.queryByText('Persisted source and account evidence')).not.toBeInTheDocument();
+    expect(screen.queryByText('Derived interpretations')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Source coverage:/)).not.toBeInTheDocument();
+    expect(screen.queryByText('wallet-source:ethereum:0xabc:incarnation')).not.toBeInTheDocument();
+    expect(screen.queryByText(/shared report-time policy resolver/)).not.toBeInTheDocument();
   });
 
-  it('shows linked deleted API provenance separately from a resolved CSV source', () => {
+  it('does not expose linked deleted API provenance beside a useful CSV event', () => {
     const deletedSourceEvidence = {
       kind: 'deleted_exchange_source' as const, sourceIdentityId: 'api-source-1', transactionId: 'api-twin-1',
       source: 'binance_api', sourceRef: 'order-1', apiIdentity: 'redacted-api-identity', deletedAt: 1_700_000_000_000
@@ -91,16 +89,15 @@ describe('TransactionDetailPanel', () => {
       postings={[]} runningBalances={new Map()} costAnalysis={costAnalysis} activeTab="details"
       onActiveTabChange={vi.fn()} transaction={transaction} presentation={presentation}
     />);
-    expect(screen.getByText('resolved · Binance archive')).toBeInTheDocument();
-    expect(screen.getByText('Linked deleted API provenance')).toBeInTheDocument();
-    expect(screen.getByText('binance_api · api-source-1 · redacted-api-identity')).toBeInTheDocument();
-    expect(screen.getByText(/deleted · 2023-11-14T22:13:20.000Z/)).toBeInTheDocument();
+    expect(screen.getByText('CSV event')).toBeInTheDocument();
+    expect(screen.queryByText('Linked deleted API provenance')).not.toBeInTheDocument();
+    expect(screen.queryByText('binance_api · api-source-1 · redacted-api-identity')).not.toBeInTheDocument();
   });
 
   it('keeps keyboard tabs as 44px targets and responsive theme-token panels', () => {
     const { container } = render(<TransactionDetailPanel details={<p>Facts</p>} scope={{ scopeStatus: 'unresolved', accountScopeId: 'unknown', accountClass: 'unknown', reason: 'test' }} postings={[]} runningBalances={new Map()} costAnalysis={costAnalysis} activeTab="details" onActiveTabChange={vi.fn()} />);
     for (const tab of screen.getAllByRole('tab')) expect(tab).toHaveClass('h-11');
-    expect(screen.getByRole('tabpanel')).toHaveClass('lg:grid-cols-[minmax(0,1fr)_310px]');
+    expect(screen.getByRole('tabpanel')).toHaveClass('max-w-full');
     expect(container.querySelector('.bg-elev-1')).toBeInTheDocument();
   });
 });

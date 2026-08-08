@@ -163,6 +163,7 @@ vi.mock('@/lib/storage/db', () => ({
       }
     },
     safetyDecisions: {
+      bulkGet: async (keys: string[]) => keys.map((key) => safetyDecisionStore.get(key)),
       bulkPut: async (rows: SafetyDecisionRow[]) => {
         for (const row of rows) safetyDecisionStore.set(row.subjectKey, row);
       }
@@ -409,6 +410,56 @@ describe('runWalletImport post-dedup imported count', () => {
     expect(state.active).toBe(false);
     expect(state.phase).toBe('idle');
     expect(state.error).toBeNull();
+  });
+});
+
+describe('runWalletImport prior safety decisions', () => {
+  const contract = '0x1111111111111111111111111111111111111111';
+  const safetySubjectKey = `event:ethereum:0xspam:${contract}:1:in`;
+  const spamTx: Transaction = {
+    ...importedTx,
+    id: 'provider-spam',
+    type: 'transfer_in',
+    asset: 'TOK',
+    txHash: '0xspam',
+    contractAddress: contract,
+    safetySubjectKey,
+    raw: { safetyEvidence: [{
+      id: 'provider-spam-evidence', provider: 'moralis', ruleId: 'possible_spam',
+      ruleVersion: '1', confidence: 0.95, observedAt: 10
+    }] }
+  };
+
+  beforeEach(() => {
+    store.clear();
+    importJob.reset();
+  });
+
+  it('keeps an exact asset user-visible restore after removal and provider reimport', async () => {
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [spamTx], warnings: [], failed: [],
+      perAddress: [{ address: '0xabc', count: 1 }]
+    });
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG);
+    const assetKey = `asset:ethereum:${contract}`;
+    expect(store.get(spamTx.id)).toMatchObject({ safetyState: 'high_confidence_spam', isSpam: true });
+    expect(safetyDecisionStore.get(assetKey)).toMatchObject({ state: 'high_confidence_spam', origin: 'automatic' });
+
+    safetyDecisionStore.set(assetKey, {
+      subjectKey: assetKey, state: 'user_visible', updatedAt: 20, origin: 'user',
+      previousAutomaticState: 'high_confidence_spam'
+    });
+    store.delete(spamTx.id);
+    lookupRows = [{ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' }];
+    vi.mocked(lookupManyAddresses).mockResolvedValueOnce({
+      transactions: [spamTx], warnings: [], failed: [],
+      perAddress: [{ address: '0xabc', count: 1 }]
+    });
+    await runWalletImport(['0xabc'], CHAIN, settings(), CONFIG, true);
+
+    expect(store.get(spamTx.id)).toMatchObject({ safetyState: 'user_visible', isSpam: false });
+    expect(safetyDecisionStore.get(assetKey)).toMatchObject({ state: 'user_visible', origin: 'user' });
+    expect(providerEvidenceStore.has('provider-spam-evidence')).toBe(true);
   });
 });
 

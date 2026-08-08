@@ -20,6 +20,7 @@ const SEED = vi.hoisted(() => {
   const txs: Array<{
     id: string; timestamp: number; type: string; asset: string; amount: number;
     fiatCurrency: string; fiatValue?: number; source: string; chain?: string;
+    contractAddress?: string; safetySubjectKey?: string;
     walletAddress?: string; flags: string[]; isInternalTransfer: boolean;
     importBatchId?: string; sourceRef?: string; category?: string;
     raw?: Record<string, unknown>; instrumentClass?: string; parserAccountClass?: string;
@@ -69,7 +70,7 @@ const SEED = vi.hoisted(() => {
 });
 
 const COST_BASIS_INPUTS = vi.hoisted(() => [] as string[][]);
-const QUERY_READINESS = vi.hoisted(() => ({ coherentDataHealth: true }));
+const QUERY_READINESS = vi.hoisted(() => ({ holdings: true, coherentDataHealth: true }));
 const PRICE_REFRESH = vi.hoisted(() => vi.fn(async () => {}));
 const EFFECTIVE_SETTINGS = vi.hoisted(() => ({ priceApiEnabled: false }));
 
@@ -122,7 +123,7 @@ vi.mock('./dashboardHoldingsSnapshot', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./dashboardHoldingsSnapshot')>();
   return {
     ...actual,
-    readDashboardHoldingsSnapshot: () => ({
+    readDashboardHoldingsSnapshot: () => QUERY_READINESS.holdings ? ({
       transactionCount: SEED.txs.length,
       csvImports: SEED.csvImports,
       exchangeConnections: SEED.exchangeConns,
@@ -133,7 +134,7 @@ vi.mock('./dashboardHoldingsSnapshot', async (importOriginal) => {
       defiPositionSnapshots: SEED.defiPositionSnapshots,
       defiPositionRows: SEED.defiPositionRows,
       openingBalances: SEED.openingBalances
-    })
+    }) : undefined
   };
 });
 
@@ -252,6 +253,7 @@ beforeEach(() => {
   SEED.defiPositionRows.length = 0;
   SEED.openingBalances.length = 0;
   COST_BASIS_INPUTS.length = 0;
+  QUERY_READINESS.holdings = true;
   QUERY_READINESS.coherentDataHealth = true;
   EFFECTIVE_SETTINGS.priceApiEnabled = false;
   PRICE_REFRESH.mockClear();
@@ -260,6 +262,63 @@ beforeEach(() => {
 });
 
 describe('DashboardTab — staggered Data Health readiness', () => {
+  it('waits only for the coherent holdings query, then renders a loaded empty safety snapshot', async () => {
+    QUERY_READINESS.holdings = false;
+    const view = await renderTab();
+
+    expect(document.querySelector('[aria-busy="true"]')).toBeInTheDocument();
+    expect(screen.queryByTestId('net-worth-value')).not.toBeInTheDocument();
+
+    QUERY_READINESS.holdings = true;
+    await act(async () => {
+      view.rerender(<TabNavProvider value={{ goToImport: () => {}, goTo: () => {} }}><DashboardTab /></TabNavProvider>);
+      await Promise.resolve();
+    });
+
+    expect(document.querySelector('[aria-busy="true"]')).not.toBeInTheDocument();
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹35,000.00');
+    expect(screen.getByTestId('net-worth-chart')).toBeInTheDocument();
+    expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('BTC');
+  });
+
+  it('never publishes persisted excluded rows while the safety snapshot is pending', async () => {
+    const txBackup = [...SEED.txs];
+    const decisionBackup = [...SEED.safetyDecisions];
+    const contract = '0x1111111111111111111111111111111111111111';
+    SEED.txs.splice(0, SEED.txs.length,
+      { id: 'safe-row', timestamp: Date.UTC(2025, 0, 1), type: 'buy', asset: 'SAFE', amount: 1,
+        fiatValue: 100, fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'excluded-row', timestamp: Date.UTC(2025, 0, 2), type: 'buy', asset: 'SCAM', amount: 1000,
+        fiatValue: 999_999, fiatCurrency: 'INR', source: 'rpc:moralis', chain: 'ethereum',
+        contractAddress: contract, flags: [], isInternalTransfer: false }
+    );
+    SEED.safetyDecisions.splice(0, SEED.safetyDecisions.length, {
+      subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam',
+      updatedAt: Date.UTC(2025, 0, 3), origin: 'automatic'
+    });
+    QUERY_READINESS.holdings = false;
+    try {
+      const view = await renderTab();
+      expect(screen.queryByTestId('net-worth-value')).not.toBeInTheDocument();
+      expect(screen.queryByText('SCAM')).not.toBeInTheDocument();
+
+      QUERY_READINESS.holdings = true;
+      await act(async () => {
+        view.rerender(<TabNavProvider value={{ goToImport: () => {}, goTo: () => {} }}><DashboardTab /></TabNavProvider>);
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹100.00');
+      expect(screen.getByTestId('net-worth-chart')).toBeInTheDocument();
+      expect(within(screen.getByTestId('dashboard-holdings')).getAllByText('SAFE').length).toBeGreaterThan(0);
+      expect(within(screen.getByTestId('dashboard-holdings')).queryByText('SCAM')).not.toBeInTheDocument();
+      expect(COST_BASIS_INPUTS[COST_BASIS_INPUTS.length - 1]).toEqual(['safe-row']);
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
+      SEED.safetyDecisions.splice(0, SEED.safetyDecisions.length, ...decisionBackup);
+    }
+  });
+
   it('does not permit a closed coherent read until deferred history catches up', () => {
     const currentTransactions = [{}];
     expect(historicalRevisionCaughtUp(
@@ -463,7 +522,7 @@ describe('DashboardTab — hero honesty', () => {
       `4:${deferredGeneration.getAttribute('data-chart-point-count')}:` +
       `${deferredGeneration.getAttribute('data-chart-end-t')}:${chartEndCost}`
     );
-    expect(within(hero).getByText('Unrealized gain')).toBeInTheDocument();
+    expect(within(hero).getByText('Current spot holdings unrealized P&L')).toBeInTheDocument();
     expect(within(hero).getByText('—')).toBeInTheDocument();
     expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(
       /enable live prices in Settings/i
@@ -497,18 +556,13 @@ describe('DashboardTab — hero honesty', () => {
     expect(within(hero).getByText('Total net worth')).toBeInTheDocument();
     // 0.5 BTC × 100,000 + 2 ETH × 6,000 + DOGE at cost 0 = ₹62,000.
     expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹62,000.00');
-    const historicalPerformance = screen.getByRole('region', { name: 'Historical holdings performance' });
-    expect(historicalPerformance).toBe(screen.getByTestId('historical-holdings-performance'));
-    expect(historicalPerformance).toHaveTextContent('+₹37,000.00');
-    expect(screen.getByTestId('net-worth-value').parentElement).not.toHaveTextContent('Historical holdings performance');
-    // Unrealized = 62,000 − 35,000 = +₹27,000 (stat + change caption).
-    expect(within(hero).getAllByText('+₹27,000.00').length).toBeGreaterThanOrEqual(1);
-    expect(within(hero).getByText('Historical display cost basis').parentElement).toHaveTextContent('₹35,000.00');
-    expect(within(hero).getByText('Current assets incl. DeFi supplies').parentElement).toHaveTextContent('₹62,000.00');
-    expect(within(hero).getByText('Current liabilities').parentElement).toHaveTextContent('₹0.00');
-    expect(within(hero).getByText('Current DeFi adjustment').parentElement).toHaveTextContent('+₹0.00');
-    expect(within(hero).getByText('Current DeFi adjustment').parentElement)
-      .toHaveTextContent('Excluded from historical chart and period performance');
+    expect(screen.queryByTestId('historical-holdings-performance')).not.toBeInTheDocument();
+    expect(within(hero).getByText('+₹27,000.00')).toBeInTheDocument();
+    expect(within(hero).getByText('Current spot holdings unrealized P&L').parentElement)
+      .toHaveTextContent('vs cost basis');
+    expect(within(hero).queryByText('Historical display cost basis')).not.toBeInTheDocument();
+    expect(within(hero).queryByText('Current DeFi adjustment')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('money-strip')).not.toBeInTheDocument();
     // DOGE has no stored price → honesty note counts it at cost.
     expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(/1 asset.*at cost/i);
   });
@@ -633,21 +687,10 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     }
   });
 
-  it('computes the money strip for the selected (FY) period only', async () => {
+  it('does not show the misleading five-cell money strip', async () => {
     await renderTab();
-    const strip = screen.getByTestId('money-strip');
-    const cells = within(strip)
-      .getAllByText(/Money in|Money out|Income|Trading fees|Realized gains/)
-      .map((el) => ({
-        label: el.textContent,
-        value: el.parentElement?.querySelector('p:last-child')?.textContent
-      }));
-    const byLabel = Object.fromEntries(cells.map((c) => [c.label, c.value]));
-    // FY 2026-27: ETH buy 10,000 in · BTC sell 12,000 out · FIFO gain +2,000.
-    expect(byLabel['Money in']).toBe('₹10,000.00');
-    expect(byLabel['Money out']).toBe('₹12,000.00');
-    expect(byLabel['Income']).toBe('₹0.00');
-    expect(byLabel['Realized gains']).toBe('+₹2,000.00');
+    expect(screen.queryByTestId('money-strip')).not.toBeInTheDocument();
+    expect(screen.queryByText('Money in')).not.toBeInTheDocument();
   });
 
   it('estimates FY tax at 30% + 4% cess with the not-advice caveat', async () => {
@@ -777,6 +820,8 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
+      expect(within(holdings).getByText('1 other hidden')).toBeInTheDocument();
+      fireEvent.click(within(holdings).getByRole('button', { name: 'Show all (1)' }));
       expect(within(holdings).getAllByText(/10\.0000/).length).toBeGreaterThan(0);
       fireEvent.click(within(holdings).getAllByRole('button', { expanded: false })[0]);
       const positive = screen.getByTestId('source-allocation-manual:manual');
@@ -904,9 +949,37 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       expect(within(holdings).queryByText('TOKEN')).not.toBeInTheDocument();
       expect(within(holdings).queryByText('NEG')).not.toBeInTheDocument();
       expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹100.00');
-      expect(screen.getByText('Money in').parentElement).toHaveTextContent('₹100.00');
+      expect(screen.queryByText('Money in')).not.toBeInTheDocument();
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
+  });
+
+  it('applies a later exact-contract decision to older rows before holdings and chart projection', async () => {
+    const txBackup = [...SEED.txs];
+    const decisionBackup = [...SEED.safetyDecisions];
+    const contract = '0x1111111111111111111111111111111111111111';
+    SEED.txs.splice(0, SEED.txs.length,
+      { id: 'older-contract-row', timestamp: Date.UTC(2025, 0, 1), type: 'buy', asset: 'OLD', amount: 2,
+        fiatValue: 200, fiatCurrency: 'INR', source: 'rpc:moralis', chain: 'ethereum', contractAddress: contract,
+        flags: [], isInternalTransfer: false },
+      { id: 'later-contract-row', timestamp: Date.UTC(2026, 0, 1), type: 'buy', asset: 'NEW', amount: 1,
+        fiatValue: 100, fiatCurrency: 'INR', source: 'rpc:moralis', chain: 'ethereum', contractAddress: contract,
+        flags: [], isInternalTransfer: false }
+    );
+    SEED.safetyDecisions.splice(0, SEED.safetyDecisions.length, {
+      subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam',
+      updatedAt: Date.UTC(2026, 0, 2), origin: 'automatic'
+    });
+    try {
+      await renderTab();
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹0.00');
+      expect(within(screen.getByTestId('dashboard-holdings')).queryByText('OLD')).not.toBeInTheDocument();
+      expect(within(screen.getByTestId('dashboard-holdings')).queryByText('NEW')).not.toBeInTheDocument();
+      expect(COST_BASIS_INPUTS[COST_BASIS_INPUTS.length - 1]).toEqual([]);
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
+      SEED.safetyDecisions.splice(0, SEED.safetyDecisions.length, ...decisionBackup);
     }
   });
 
@@ -925,6 +998,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holding = screen.getByTestId('dashboard-holdings');
+      fireEvent.click(within(holding).getByRole('button', { name: 'Show all (1)' }));
       expect(within(holding).getAllByText(/10\.0000/).length).toBeGreaterThan(0);
       const toggle = within(holding).getAllByRole('button', { expanded: false })
         .find((button) => button.textContent?.includes('USDT'))!;
@@ -962,11 +1036,16 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
+      expect(within(holdings).getByText('0 assets')).toBeInTheDocument();
+      expect(within(holdings).getByText('1 other hidden')).toBeInTheDocument();
+      fireEvent.click(within(holdings).getByRole('button', { name: 'Show all (1)' }));
+      expect(within(holdings).getByText('1 asset')).toBeInTheDocument();
+      expect(within(holdings).queryByText(/hidden/i)).not.toBeInTheDocument();
+      expect(within(holdings).getByText('Showing dust and rounded-zero positive balances.')).toBeInTheDocument();
       const usdtButtons = within(holdings).getAllByRole('button', { expanded: false })
         .filter((button) => button.textContent?.includes('USDT'));
       // The responsive row renders one asset button for mobile and one for desktop.
       expect(usdtButtons).toHaveLength(2);
-      expect(within(holdings).getByText('1 asset')).toBeInTheDocument();
       expect(within(holdings).getAllByText(/119\.5193/).length).toBeGreaterThan(0);
       expect(within(holdings).queryByText('ethereum')).not.toBeInTheDocument();
       fireEvent.click(usdtButtons[0]);
@@ -974,6 +1053,9 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       expect(within(expansion).getByText('Binance Spot')).toBeInTheDocument();
       expect(within(expansion).getByText(/119\.5193 USDT/)).toBeInTheDocument();
       expect(screen.queryByTestId('holding-qty-caption')).not.toBeInTheDocument();
+      fireEvent.click(within(holdings).getByRole('button', { name: 'Show less' }));
+      expect(within(holdings).getByText('0 assets')).toBeInTheDocument();
+      expect(within(holdings).getByText('1 other hidden')).toBeInTheDocument();
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...txBackup);
       SEED.exchangeBalanceRows.length = 0;

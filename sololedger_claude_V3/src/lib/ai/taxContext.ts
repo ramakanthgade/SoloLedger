@@ -19,6 +19,7 @@ import { buildMatchedGainRows, buildIncomeRows } from '@/lib/costBasis/matchedGa
 import { JURISDICTIONS } from '@/lib/tax/jurisdictions';
 import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
 import { formatCurrency, getCurrentFy, getFyLabel, isInFy } from '@/lib/utils';
+import { transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
 
 /** A single open-position holding, aggregated by asset. */
 export interface HoldingSummary {
@@ -111,15 +112,17 @@ export function buildTaxContext(input: TaxContextInput): string {
  * IndexedDB data and hands it to the pure `buildTaxContext` builder.
  */
 export async function buildTaxContextFromDb(year?: number): Promise<string> {
-  const [settings, allTxs, hints] = await Promise.all([
+  const [settings, rawTransactions, safetyDecisions, hints] = await Promise.all([
     getSettings(),
     db.transactions.toArray(),
+    db.safetyDecisions.toArray(),
     db.specIdHints.toArray().then((rows) => {
       const m: Record<string, string[]> = {};
       for (const r of rows) m[r.txId] = r.preferredLotIds;
       return m;
     })
   ]);
+  const allTxs = transactionsUnderCurrentSafetyPolicy(rawTransactions, safetyDecisions);
 
   const targetYear = year ?? getCurrentFy(settings.jurisdiction);
   const fy = targetYear;
@@ -128,7 +131,8 @@ export async function buildTaxContextFromDb(year?: number): Promise<string> {
   const { disposals, lots, shortfalls } = calculateCostBasis(allTxs, {
     method: settings.defaultCostBasisMethod,
     specIdHints: hints,
-    settings
+    settings,
+    safetyDecisions
   });
 
   const matchedRows = buildMatchedGainRows(disposals, lots, allTxs);

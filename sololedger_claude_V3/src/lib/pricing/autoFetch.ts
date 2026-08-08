@@ -4,7 +4,7 @@
  * so it isn't duplicated.
  */
 import { db } from '@/lib/storage/db';
-import { isTransactionExcluded } from '@/lib/safety/assetSafety';
+import { isTransactionExcluded, transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
 import { fetchHistoricalPricesBatch } from './coingecko';
 import { convertTransactionsToReportingCurrency, normalizeFiatCurrency } from './fiatConvert';
 import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
@@ -128,7 +128,9 @@ export async function fetchMissingPricesForAllTransactions(
   settings: PricingSettings,
   onProgress?: (done: number, total: number) => void
 ): Promise<AutoFetchResult> {
-  const all = await db.transactions.toArray();
+  const all = transactionsUnderCurrentSafetyPolicy(
+    await db.transactions.toArray(), await db.safetyDecisions.toArray()
+  );
   const needsPrice = all.filter((t) =>
     t.fiatValue == null && !isTransactionExcluded(t) && !t.isInternalTransfer && requiresMarketValue(t)
   );

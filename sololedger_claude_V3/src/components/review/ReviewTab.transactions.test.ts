@@ -55,6 +55,31 @@ describe('ReviewTab — item 11: spam hidden by default', () => {
   it('counts the default (non-spam) view in the header pill', () => {
     expect(source).toContain('(transactions.length - spamTxCount).toLocaleString');
   });
+
+  it('derives every dynamic option from one normal/spam surface and resets stale filters both ways', () => {
+    expect(source).toContain("const spamAuditMode = showSpam || flagFilter === 'spam';");
+    expect(source).toContain('activeTransactionSurface(transactions, spamAuditMode)');
+    expect(source).toContain('getAvailableFys(activeSurface.map((t) => t.timestamp), jurisdiction)');
+    expect(source).toContain('buildReviewWalletFilterOptions(activeSurface, sourcePresentations)');
+    expect(source).toContain('buildReviewSourceFilterOptions(activeSurface, sourcePresentations)');
+    expect(source).toContain('visibleAssetOptions(activeSurface)');
+    expect(source).toContain('if (previousSpamAuditMode.current === spamAuditMode) return;');
+    expect(source).toContain("setAssetFilter('all');");
+    expect(source).toContain("setSourceFilter('all');");
+    expect(source).toContain("setWalletFilter('all');");
+    expect(source).toContain('setFyFilter(null);');
+  });
+
+  it('loads one decision snapshot before rows and cost analysis, and warning chips leave Spam mode', () => {
+    expect(source).toContain('const safetyDecisionsLive = useLiveQuery(() => db.safetyDecisions.toArray(), []);');
+    expect(source).toContain('transactionsUnderCurrentSafetyPolicy(transactionsLive, safetyDecisionsLive)');
+    expect(source).toContain('safetyDecisions: safetyDecisionsLive');
+    expect(source).toContain('transactionsLive === undefined || safetyDecisionsLive === undefined');
+    const needsPriceHandler = source.slice(source.indexOf('aria-pressed={showNeedsPrice}'), source.indexOf('{needsReviewCount > 0'));
+    const needsReviewHandler = source.slice(source.indexOf('aria-pressed={showNeedsReview}'), source.indexOf('{spamTxCount > 0'));
+    expect(needsPriceHandler).toContain("setFlagFilter('all');");
+    expect(needsReviewHandler).toContain("setFlagFilter('all');");
+  });
 });
 
 describe('ReviewTab — item 10: richer rows + click-anywhere details', () => {
