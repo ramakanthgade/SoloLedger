@@ -178,7 +178,12 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   gemini: Date.UTC(2015, 9, 8), // Gemini exchange launch, 2015-10-08
   // BTC Markets launched during 2013; the first day of the best-supported
   // launch month is a conservative scan floor, not an API-retention claim.
-  btcmarkets: Date.UTC(2013, 8, 1)
+  btcmarkets: Date.UTC(2013, 8, 1),
+  bitstamp: Date.UTC(2011, 7, 1), // Bitstamp launched August 2011
+  bitget: Date.UTC(2018, 6, 1), // Bitget founded mid-2018
+  mexc: Date.UTC(2018, 3, 1), // MEXC founded April 2018
+  bitmart: Date.UTC(2018, 2, 15), // BitMart exchange launched 2018-03-15
+  bitvavo: Date.UTC(2018, 9, 1) // Bitvavo exchange launched late 2018
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -222,7 +227,7 @@ const REAUTHORIZE_ERROR = 'Reauthorize this connection before syncing.';
 function hasRequiredCredentials(row: ExchangeConnectionRow): boolean {
   if ((row.credentialsState ?? 'ready') !== 'ready') return false;
   if (!row.apiKey?.trim() || !row.secret?.trim()) return false;
-  return (row.exchange !== 'okx' && row.exchange !== 'kucoin') || !!row.passphrase?.trim();
+  return (row.exchange !== 'okx' && row.exchange !== 'kucoin' && row.exchange !== 'bitget' && row.exchange !== 'bitmart') || !!row.passphrase?.trim();
 }
 
 /** Engine-boundary authorization plus one monotonic generation reservation. */
@@ -1879,6 +1884,49 @@ async function fetchTransferKind(
     });
   }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
+  if (exchange === 'bitget' || exchange === 'mexc') {
+    // startTime/endTime window params; page caps 500 (Bitget) / 1000 (MEXC).
+    const limit = exchange === 'bitget' ? 500 : 1000;
+    return paginatePhase<UnifiedTransfer>({
+      fetchPage: (_i, s, u) =>
+        fetchDeposits
+          ? client.fetchDeposits(undefined, s, limit, { until: u })
+          : client.fetchWithdrawals(undefined, s, limit, { until: u }),
+      since,
+      windowMs: BINANCE_TRANSFER_WINDOW_MS,
+      fullPage: limit,
+      now
+    });
+  }
+  if (exchange === 'bitmart') {
+    // V2 deposit-withdraw history: startTime/endTime params (forwarded as
+    // `until`), N caps at 1000.
+    return paginatePhase<UnifiedTransfer>({
+      fetchPage: (_i, s, u) =>
+        fetchDeposits
+          ? client.fetchDeposits(undefined, s, 1000, { until: u })
+          : client.fetchWithdrawals(undefined, s, 1000, { until: u }),
+      since,
+      windowMs: BINANCE_TRANSFER_WINDOW_MS,
+      fullPage: 1000,
+      now
+    });
+  }
+  if (exchange === 'bitvavo') {
+    // start/end window params, default page 100 (deposit) / 1000 (withdrawal
+    // default is 500). Use the documented caps per kind.
+    const limit = fetchDeposits ? 100 : 500;
+    return paginatePhase<UnifiedTransfer>({
+      fetchPage: (_i, s, u) =>
+        fetchDeposits
+          ? client.fetchDeposits(undefined, s, limit, { until: u })
+          : client.fetchWithdrawals(undefined, s, limit, { until: u }),
+      since,
+      windowMs: BINANCE_TRANSFER_WINDOW_MS,
+      fullPage: limit,
+      now
+    });
+  }
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
       fetchDeposits
@@ -2067,6 +2115,61 @@ async function fetchTradesForSymbol(
         now,
         maxRequests: opts?.btcmarketsMaxRequests,
         sleep: opts?.sleep
+      });
+    case 'bitstamp': {
+      // user_transactions accepts a trailing `offset` (forwarded via params);
+      // rows come newest-first, cap 1000. `since` only post-filters client-
+      // side, so pages walk the offset chain until rows age past the floor.
+      let offset = 0;
+      return paginatePhase<UnifiedTrade>({
+        fetchPage: async (_i, s) => {
+          const page = await client.fetchMyTrades(undefined, s, 1000, offset > 0 ? { offset } : {});
+          offset += 1000;
+          return page;
+        },
+        since,
+        windowMs: Number.POSITIVE_INFINITY,
+        fullPage: 1000,
+        now,
+        advanceOnFullPage: false
+      });
+    }
+    case 'bitget':
+      // V2 spot fills: startTime/endTime window params, max limit 500, one
+      // page per window (an API-full page splits the window — replayable).
+      return paginatePhase<UnifiedTrade>({
+        fetchPage: (_i, s, u) => client.fetchMyTrades(symbol, s, 500, { until: u }),
+        since,
+        windowMs: TRADE_WINDOW_MS,
+        fullPage: 500,
+        now
+      });
+    case 'mexc':
+      // Binance-style myTrades: startTime/endTime, limit cap 1000.
+      return paginatePhase<UnifiedTrade>({
+        fetchPage: (_i, s, u) => client.fetchMyTrades(symbol, s, 1000, { until: u }),
+        since,
+        windowMs: TRADE_WINDOW_MS,
+        fullPage: 1000,
+        now
+      });
+    case 'bitmart':
+      // V4 query-trades: startTime/endTime, limit cap 200, symbol optional.
+      return paginatePhase<UnifiedTrade>({
+        fetchPage: (_i, s, u) => client.fetchMyTrades(undefined, s, 200, { until: u }),
+        since,
+        windowMs: TRADE_WINDOW_MS,
+        fullPage: 200,
+        now
+      });
+    case 'bitvavo':
+      // start/end window params, default page 500 / max 1000.
+      return paginatePhase<UnifiedTrade>({
+        fetchPage: (_i, s, u) => client.fetchMyTrades(symbol, s, 500, { until: u }),
+        since,
+        windowMs: TRADE_WINDOW_MS,
+        fullPage: 500,
+        now
       });
   }
 }
@@ -2572,6 +2675,42 @@ export async function syncConnection(
       tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
+    } else if (exchange === 'bitget' || exchange === 'mexc' || exchange === 'bitvavo') {
+      // These APIs require a symbol for fetchMyTrades. Iterate the active
+      // spot universe (same discovery approach as HTX/Gemini); each symbol's
+      // window plan lives in fetchTradesForSymbol. A delisted symbol is
+      // skipped with a warning instead of aborting the whole sync.
+      const symbols = [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])]
+        .filter((symbol) => markets[symbol]?.spot === true && markets[symbol]?.active !== false)
+        .sort();
+      discoveryUniverseCount = symbols.length;
+      newKnownSymbols = symbols;
+      let done = 0;
+      hooks.onProgress?.({ done: 0, total: symbols.length });
+      for (const symbol of symbols) {
+        let outcome: FetchPlanOutcome<UnifiedTrade>;
+        try {
+          outcome = await withRetries(
+            () => fetchTradesForSymbol(client, exchange, symbol, tradeSince, nowMs),
+            sleep
+          );
+        } catch (err) {
+          if (hasErrorName(err, 'BadSymbol', 'InvalidSymbol')) {
+            warnings.push(`${symbol}: market no longer available on ${exchangeLabel(exchange)} — skipped.`);
+            skippedSymbols += 1;
+            done += 1;
+            hooks.onProgress?.({ done, total: symbols.length });
+            continue;
+          }
+          throw err;
+        }
+        tradeOutcomes.push(outcome);
+        tradeRows.push(...outcome.rows);
+        fetchedCount += outcome.rows.length;
+        done += 1;
+        hooks.onProgress?.({ done, total: symbols.length });
+      }
+      discoveredCount = done;
     } else {
       const outcome = exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'btcmarkets'
         ? await fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs, {
@@ -2636,7 +2775,8 @@ export async function syncConnection(
       ? (tradeOutcomes.length > 0
           ? tradeOutcomes.reduce((min, outcome) => Math.min(min, outcome.maxTs ?? tradeSince), nowMs)
           : nowMs)
-      : exchange === 'bybit' || exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex'
+      : exchange === 'bybit' || exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex' ||
+        exchange === 'bitget' || exchange === 'mexc' || exchange === 'bitvavo'
       ? tradeOutcomes.reduce((max, outcome) => Math.max(max, outcome.maxTs ?? 0), 0)
       : maxTimestamp(tradeRows) ?? 0;
     const mergedTrades = Math.max(oldCursors.trades ?? 0, tradeCursorCandidate);

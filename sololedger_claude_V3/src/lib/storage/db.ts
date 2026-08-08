@@ -891,7 +891,12 @@ export const EXCHANGE_API_SOURCES = new Set([
   'cryptocom_api',
   'bitfinex_api',
   'gemini_api',
-  'btcmarkets_api'
+  'btcmarkets_api',
+  'bitstamp_api',
+  'bitget_api',
+  'mexc_api',
+  'bitmart_api',
+  'bitvavo_api'
 ]);
 
 /**

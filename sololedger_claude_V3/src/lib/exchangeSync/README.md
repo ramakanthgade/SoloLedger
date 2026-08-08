@@ -9,10 +9,34 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, bitstamp, bitget, mexc, bitmart, bitvavo** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
+
+Batch 1 (bitstamp, bitget, mexc, bitmart, bitvavo) notes:
+- **Bitstamp** trades come from the all-accounts `user_transactions` ledger
+  (type `2` market-trade rows), offset-paginated newest-first; deposits and
+  withdrawals are the type `0`/`1` rows of the same ledger plus the dedicated
+  `withdrawal_requests` endpoint. No CSV twin parser exists yet, so the
+  connector guarantees API↔API idempotence via the native numeric `id`.
+- **Bitget** spot fills are per-symbol (startTime/endTime windows, page cap
+  500); wallet history uses startTime/endTime windows. Bitget keys carry a
+  user-chosen passphrase (ccxt `password`), like OKX/KuCoin.
+- **MEXC** is Binance-style: per-symbol myTrades (startTime/endTime, cap
+  1000) plus capital deposit/withdraw hisrec. Only settled statuses import
+  (deposit `5`, withdrawal `7`-mapped `ok` set).
+- **BitMart** trades are symbol-optional V4 query-trades (startTime/endTime,
+  cap 200); wallet history is the V2 deposit-withdraw endpoint. BitMart keys
+  carry an API memo (ccxt `password`). Verify-at-build finding: ccxt 4.5.68
+  emits the non-standard unified transfer type `withdraw` (not `withdrawal`);
+  `normalizeTransfer` maps it explicitly.
+- **Bitvavo** trades are per-symbol (start/end windows, page 500); deposits
+  and withdrawals are separate history endpoints. Only `completed` imports.
+- Brand marks: only Bitstamp has a sourced colored brand asset
+  (`bitstamp.svg`, Iconify token-branded). Bitget/MEXC/BitMart/Bitvavo render
+  the in-app monogram chip (no downloadable colored mark exists — see
+  `public/assets/brand-icons/SOURCES.md`).
 
 **Hosted-only.** All exchange traffic egresses through the SoloLedger relay
 (the browser can't reach the exchanges directly — CORS + user IP privacy),

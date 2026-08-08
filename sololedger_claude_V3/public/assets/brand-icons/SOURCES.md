@@ -35,6 +35,9 @@ never redraw the glyph.
 | `htx.png` | HTX official site icon: `https://www.htx.com/web-v4/static/favicon.ico` | Official brand asset; nominative identification only | 2026-08-04 |
 | `coinspot.png` | CoinSpot official site Android icon: `https://www.coinspot.com.au/public/img/favicons/android-icon-192x192.png` | Official brand asset; nominative identification only | 2026-08-04 |
 | `hyperliquid.png` | Hyperliquid Foundation official site Apple icon: `https://hyperfoundation.org/apple-touch-icon.png` | Official brand asset; nominative identification only | 2026-08-04 |
+| `bitstamp.svg` | Iconify API, Token Icons (branded) collection `token-branded:bitstamp`: `https://api.iconify.design/token-branded/bitstamp.svg` | Token Icons collection asset; Bitstamp trademark; nominative identification only | 2026-08-08 |
+
+Batch-1 note (Bitget, MEXC, BitMart, Bitvavo): these four auto-sync exchanges render the in-app monogram chip, not a brand mark, because no downloadable colored brand asset could be sourced — their official sites anti-bot favicon/icon endpoints and there is no Iconify / Simple-Icons / coin-logos CDN coverage for them. Bitget's existing `bitget.svg` is the RainbowKit *Bitget Wallet* mark (a different product), so it is intentionally NOT reused for the exchange. If an official colored mark becomes available, add it here and remove the exchange from `MONOGRAM_ONLY` in `WhichStep.exchange.test.tsx`.
 
 ## Wallets
 

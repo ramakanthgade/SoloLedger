@@ -106,6 +106,10 @@ describe('EXCHANGE_API_SOURCES', () => {
       'binance_api',
       'bitfinex_api',
       'btcmarkets_api',
+      'bitget_api',
+      'bitmart_api',
+      'bitstamp_api',
+      'bitvavo_api',
       'bybit_api',
       'coinbase_api',
       'cryptocom_api',
@@ -114,6 +118,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'htx_api',
       'kraken_api',
       'kucoin_api',
+      'mexc_api',
       'okx_api'
     ]);
   });

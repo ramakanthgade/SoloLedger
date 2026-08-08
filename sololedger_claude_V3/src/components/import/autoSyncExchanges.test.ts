@@ -11,16 +11,16 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(12);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(17);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
     expect(AUTO_SYNC_EXCHANGES.map((e) => e.id)).toEqual([...SYNC_EXCHANGES]);
   });
 
-  it('needsPassphrase is true ONLY for okx and kucoin', () => {
+  it('needsPassphrase is true ONLY for okx, kucoin, bitget and bitmart', () => {
     const withPassphrase = AUTO_SYNC_EXCHANGES.filter((e) => e.needsPassphrase).map((e) => e.id);
-    expect(withPassphrase.sort()).toEqual(['kucoin', 'okx']);
+    expect(withPassphrase.sort()).toEqual(['bitget', 'bitmart', 'kucoin', 'okx']);
   });
 
   it('monograms are two characters', () => {
