@@ -195,6 +195,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['Gemini', 'Account', 'Settings', 'API', 'Create API Key'],
     docsUrl: 'https://exchange.gemini.com/settings/api'
+  },
+  {
+    id: 'btcmarkets',
+    label: 'BTC Markets',
+    monogram: 'BM',
+    needsPassphrase: false,
+    formatHint: 'API key + base64 secret',
+    keyInstructions: [
+      'Log in to BTC Markets on the web and open Account → API Key.',
+      'Create a key with only the read permissions needed for balances, trades and fund-transfer history.',
+      'Never enable order placement, trading or withdrawal permissions.',
+      'Copy the API Key and base64 Secret and paste them here. BTC Markets does not require a passphrase.',
+      'API retention is undocumented. SoloLedger backfills until the endpoint is exhausted but cannot verify account-lifetime coverage. There is no BTC Markets CSV parser, so CSV/API deduplication is unavailable.'
+    ],
+    path: ['BTC Markets', 'Account', 'API Key', 'Create API Key'],
+    docsUrl: 'https://support.btcmarkets.net/hc/en-us/articles/360046326934-How-to-Access-and-Generate-Revoke-Your-API-Keys'
   }
 ];
 

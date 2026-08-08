@@ -80,6 +80,7 @@ function buildApp() {
     tunnelBodyErrorHandler
   );
   app.use(express.json({ limit: '2mb' }));
+  app.get('/health', (_req, res) => res.json({ ok: true }));
   return app;
 }
 
@@ -198,7 +199,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['gateio', 'api.gateio.ws', '/api/v4/spot/time'],
     ['htx', 'api.huobi.pro', '/v1/common/timestamp'],
     ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments'],
-    ['bitfinex', 'api.bitfinex.com', '/v2/platform/status']
+    ['bitfinex', 'api.bitfinex.com', '/v2/platform/status'],
+    ['btcmarkets', 'api.btcmarkets.net', '/v3/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -425,6 +427,27 @@ describe('3. header allowlist', () => {
     });
     expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
   });
+
+  it('btcmarkets: forwards only the three BM-AUTH headers on signed GET requests', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    await rawRequest({
+      path: '/btcmarkets/v3/trades?limit=200&before=818047',
+      headers: {
+        ...AUTH,
+        'x-exchange-bm-auth-apikey': 'BM_KEY',
+        'x-exchange-bm-auth-timestamp': '1785888000000',
+        'x-exchange-bm-auth-signature': 'signature',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.btcmarkets.net/v3/trades?limit=200&before=818047');
+    expect(init.headers).toEqual({
+      'bm-auth-apikey': 'BM_KEY',
+      'bm-auth-timestamp': '1785888000000',
+      'bm-auth-signature': 'signature'
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -558,6 +581,20 @@ describe('4. exchangeId and path validation', () => {
     }
     expect(upstreamMock).not.toHaveBeenCalled();
   });
+
+  it('BTC Markets allows only exact read-only GET paths', async () => {
+    for (const [path, method] of [
+      ['/btcmarkets/v3/orders', 'GET'],
+      ['/btcmarkets/v3/withdrawals', 'POST'],
+      ['/btcmarkets/v3/trades/123', 'GET'],
+      ['/btcmarkets/v3/accounts/me/balances', 'POST']
+    ] as const) {
+      const res = await client(path, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -582,13 +619,15 @@ describe('5. native error passthrough', () => {
  *    set-cookie; keep content-type + retry-after.
  * ------------------------------------------------------------------ */
 describe('6. response header hygiene', () => {
-  it('strips hop headers, forwards content-type + retry-after', async () => {
+  it('does not forward or expose BTC Markets pagination headers on another exchange', async () => {
     upstreamMock.mockResolvedValue(
       upstreamJson('{"ok":true}', 200, {
         'content-encoding': 'gzip',
         'content-length': '999',
         'set-cookie': 'session=abc; HttpOnly',
-        'retry-after': '7'
+        'retry-after': '7',
+        'bm-before': '818047',
+        'bm-after': '818075'
       })
     );
 
@@ -598,10 +637,31 @@ describe('6. response header hygiene', () => {
     expect(await res.text()).toBe('{"ok":true}');
     expect(res.headers.get('content-type')).toBe('application/json');
     expect(res.headers.get('retry-after')).toBe('7');
+    expect(res.headers.get('bm-before')).toBeNull();
+    expect(res.headers.get('bm-after')).toBeNull();
+    expect(res.headers.get('access-control-expose-headers')).not.toMatch(/bm-before|bm-after/i);
     expect(res.headers.get('content-encoding')).toBeNull();
     expect(res.headers.get('set-cookie')).toBeNull();
     // The upstream's bogus content-length (999) must not leak downstream.
     expect(res.headers.get('content-length')).toBe(String('{"ok":true}'.length));
+  });
+
+  it('forwards and exposes pagination headers only on the BTC Markets tunnel', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]', 200, {
+      'bm-before': '818047', 'bm-after': '818075'
+    }));
+    const res = await client('/btcmarkets/v3/trades?limit=200', {
+      headers: { ...AUTH, origin: 'http://localhost:5173' }
+    });
+    expect(res.headers.get('bm-before')).toBe('818047');
+    expect(res.headers.get('bm-after')).toBe('818075');
+    expect(res.headers.get('access-control-expose-headers')).toMatch(/bm-before.*bm-after/i);
+
+    const unrelated = await fetch(`${base}/health`, {
+      headers: { origin: 'http://localhost:5173' }
+    });
+    expect(unrelated.headers.get('bm-before')).toBeNull();
+    expect(unrelated.headers.get('access-control-expose-headers')).not.toMatch(/bm-before|bm-after/i);
   });
 });
 

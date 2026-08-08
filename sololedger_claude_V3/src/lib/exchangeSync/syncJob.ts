@@ -18,6 +18,7 @@ import type { Transaction } from '@/types/transaction';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { connectionSourceToken, getConnectionRow } from './connections';
 import type { UnifiedBalance } from './ccxtLoader';
+import type { BtcMarketsPaginationCheckpoint } from '@/lib/storage/db';
 import { persistSyncedRows, syncConnection, type SyncEngineDeps } from './engine';
 import { exchangeLabel } from './ccxtLoader';
 import { flattenBalanceTotals } from './binanceSymbols';
@@ -51,6 +52,10 @@ interface StagedMeta {
   geminiTradeProgress?: import('./engine').GeminiTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
+  btcmarketsNativeCursors?: { trades?: string; transfers?: string };
+  btcmarketsPagination?: { trades?: BtcMarketsPaginationCheckpoint; transfers?: BtcMarketsPaginationCheckpoint };
+  btcmarketsUnresolvedTransferIds?: string[];
+  btcmarketsUnsafeTradeIds?: string[];
   /** Private current-balance authority fetched with the staged rows. */
   balance: UnifiedBalance;
   /** Non-secret source revision/state token captured with operation evidence. */
@@ -288,6 +293,10 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         geminiTradeProgress: outcome.geminiTradeProgress,
         cryptocomPendingTransfers: outcome.cryptocomPendingTransfers,
         bitfinexPendingTransfers: outcome.bitfinexPendingTransfers,
+        btcmarketsNativeCursors: outcome.btcmarketsNativeCursors,
+        btcmarketsPagination: outcome.btcmarketsPagination,
+        btcmarketsUnresolvedTransferIds: outcome.btcmarketsUnresolvedTransferIds,
+        btcmarketsUnsafeTradeIds: outcome.btcmarketsUnsafeTradeIds,
         // Keep only normalized totals in memory. ccxt's raw `info` can carry
         // account metadata (for example a Binance UID) and is not needed for
         // confirmation.
@@ -338,6 +347,10 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       geminiTradeProgress: staged.meta?.geminiTradeProgress,
       cryptocomPendingTransfers: staged.meta?.cryptocomPendingTransfers,
       bitfinexPendingTransfers: staged.meta?.bitfinexPendingTransfers,
+      btcmarketsNativeCursors: staged.meta?.btcmarketsNativeCursors,
+      btcmarketsPagination: staged.meta?.btcmarketsPagination,
+      btcmarketsUnresolvedTransferIds: staged.meta?.btcmarketsUnresolvedTransferIds,
+      btcmarketsUnsafeTradeIds: staged.meta?.btcmarketsUnsafeTradeIds,
       balance: staged.meta?.balance,
       operation: staged.meta.operation,
       hooks: hooks(),

@@ -1,0 +1,9 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored newest-first combined /v3/transfers response. Includes one pending withdrawal to pin the native cursor.",
+  "response": [
+    { "id": "920003", "assetName": "BTC", "amount": "0.05", "type": "Withdraw", "creationTime": "2025-06-06T06:07:08.901000Z", "status": "Pending Authorization", "description": "BTC withdrawal pending authorization", "fee": "0.0002", "lastUpdate": "2025-06-06T06:07:09.001000Z", "paymentDetail": { "address": "bc1qfixturepending" } },
+    { "id": "920002", "assetName": "BTC", "amount": "0.1", "type": "Withdraw", "creationTime": "2025-06-05T05:06:07.890000Z", "status": "Complete", "description": "BTC withdrawal complete", "fee": "0.0002", "lastUpdate": "2025-06-05T05:10:07.890000Z", "paymentDetail": { "txId": "0000000000000000000000000000000000000000000000000000000000000001", "address": "bc1qfixturecomplete" } },
+    { "id": "920001", "assetName": "BTC", "amount": "0.5", "type": "Deposit", "creationTime": "2025-06-04T04:05:06.789000Z", "status": "Complete", "description": "BTC deposit complete", "fee": "0", "lastUpdate": "2025-06-04T04:06:06.789000Z", "paymentDetail": { "txId": "0000000000000000000000000000000000000000000000000000000000000002", "address": "bc1qfixturedeposit" } }
+  ]
+}

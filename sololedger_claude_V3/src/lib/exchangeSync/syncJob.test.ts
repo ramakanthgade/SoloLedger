@@ -135,4 +135,24 @@ describe('exchange sync credential-state guards', () => {
     await commitInitialSync('source-1');
     expect(mocks.persistSyncedRows).toHaveBeenCalledWith(expect.objectContaining({ geminiTradeProgress }));
   });
+
+  it('carries BTC Markets continuation and unresolved replay metadata through confirmed commit', async () => {
+    const btcmarketsPagination = {
+      trades: { mode: 'backfill' as const, cursor: '910001', newest: '910003' }
+    };
+    const btcmarketsUnresolvedTransferIds = ['920003'];
+    const btcmarketsUnsafeTradeIds = ['910002'];
+    mocks.syncConnection.mockResolvedValue({
+      ...stageOutcome(),
+      outcome: {
+        ...stageOutcome().outcome, btcmarketsPagination,
+        btcmarketsUnresolvedTransferIds, btcmarketsUnsafeTradeIds
+      }
+    });
+    await runInitialSync('source-1');
+    await commitInitialSync('source-1');
+    expect(mocks.persistSyncedRows).toHaveBeenCalledWith(expect.objectContaining({
+      btcmarketsPagination, btcmarketsUnresolvedTransferIds, btcmarketsUnsafeTradeIds
+    }));
+  });
 });

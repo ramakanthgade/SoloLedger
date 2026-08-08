@@ -147,6 +147,18 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
       deposits: row.bitfinexPendingTransfers.deposits,
       withdrawals: row.bitfinexPendingTransfers.withdrawals
     },
+    btcmarketsNativeCursors: row.btcmarketsNativeCursors == null ? undefined : {
+      trades: row.btcmarketsNativeCursors.trades,
+      transfers: row.btcmarketsNativeCursors.transfers
+    },
+    btcmarketsPagination: row.btcmarketsPagination == null ? undefined : {
+      trades: row.btcmarketsPagination.trades == null ? undefined : { ...row.btcmarketsPagination.trades },
+      transfers: row.btcmarketsPagination.transfers == null ? undefined : { ...row.btcmarketsPagination.transfers }
+    },
+    btcmarketsUnresolvedTransferIds: row.btcmarketsUnresolvedTransferIds == null
+      ? undefined : [...row.btcmarketsUnresolvedTransferIds],
+    btcmarketsUnsafeTradeIds: row.btcmarketsUnsafeTradeIds == null
+      ? undefined : [...row.btcmarketsUnsafeTradeIds],
     lastSyncAt: row.lastSyncAt, status: row.status,
     lastError: typeof row.lastError === 'string' ? row.lastError : undefined,
     accountIdentityId: row.accountIdentityId
@@ -395,6 +407,43 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
       throw new Error('Invalid backup file: Bitfinex pending-movement checkpoint is malformed.');
     }
     const progress = row.htxTradeProgress;
+    const btcmarketsCursors = row.btcmarketsNativeCursors;
+    if (btcmarketsCursors != null && (!isPlainObject(btcmarketsCursors) ||
+      Object.keys(btcmarketsCursors).some((key) => key !== 'trades' && key !== 'transfers') ||
+      (['trades', 'transfers'] as const).some((kind) =>
+        Object.prototype.hasOwnProperty.call(btcmarketsCursors, kind) &&
+        (typeof btcmarketsCursors[kind] !== 'string' || !/^(0|[1-9]\d*)$/.test(btcmarketsCursors[kind]!))))) {
+      throw new Error('Invalid backup file: BTC Markets native cursor is malformed.');
+    }
+    const btcmarketsPagination = row.btcmarketsPagination;
+    if (btcmarketsPagination != null && (!isPlainObject(btcmarketsPagination) ||
+      Object.keys(btcmarketsPagination).some((key) => key !== 'trades' && key !== 'transfers') ||
+      (['trades', 'transfers'] as const).some((kind) => {
+        const checkpoint = btcmarketsPagination[kind];
+        return checkpoint != null && (!isPlainObject(checkpoint) ||
+          Object.keys(checkpoint).some((key) => !['mode', 'cursor', 'newest'].includes(key)) ||
+          (checkpoint.mode !== 'backfill' && checkpoint.mode !== 'incremental') ||
+          typeof checkpoint.cursor !== 'string' || !/^(0|[1-9]\d*)$/.test(checkpoint.cursor) ||
+          typeof checkpoint.newest !== 'string' || !/^(0|[1-9]\d*)$/.test(checkpoint.newest) ||
+          (checkpoint.mode === 'backfill'
+            ? btcmarketsCursors?.[kind] != null || BigInt(checkpoint.cursor) > BigInt(checkpoint.newest)
+            : btcmarketsCursors?.[kind] == null || checkpoint.newest !== checkpoint.cursor ||
+              BigInt(checkpoint.cursor) < BigInt(btcmarketsCursors[kind]!)));
+      }))) {
+      throw new Error('Invalid backup file: BTC Markets pagination checkpoint is malformed.');
+    }
+    const unresolvedIds = row.btcmarketsUnresolvedTransferIds;
+    if (unresolvedIds != null && (!Array.isArray(unresolvedIds) || unresolvedIds.length > 100 ||
+      unresolvedIds.some((id) => typeof id !== 'string' || !/^(0|[1-9]\d*)$/.test(id)) ||
+      new Set(unresolvedIds).size !== unresolvedIds.length)) {
+      throw new Error('Invalid backup file: BTC Markets unresolved transfer evidence is malformed.');
+    }
+    const unsafeTradeIds = row.btcmarketsUnsafeTradeIds;
+    if (unsafeTradeIds != null && (!Array.isArray(unsafeTradeIds) || unsafeTradeIds.length > 100 ||
+      unsafeTradeIds.some((id) => typeof id !== 'string' || !/^(0|[1-9]\d*)$/.test(id)) ||
+      new Set(unsafeTradeIds).size !== unsafeTradeIds.length)) {
+      throw new Error('Invalid backup file: BTC Markets unsafe trade evidence is malformed.');
+    }
     if (progress != null && (!Number.isSafeInteger(progress.windowStart) || progress.windowStart < 0 ||
       !Number.isSafeInteger(progress.windowEnd) || progress.windowEnd <= progress.windowStart ||
       !Array.isArray(progress.completedSymbols) ||

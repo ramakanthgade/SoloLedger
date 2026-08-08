@@ -1,0 +1,9 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored /v3/accounts/me/balances response.",
+  "response": [
+    { "assetName": "AUD", "balance": "2500.00", "available": "2500.00", "locked": "0" },
+    { "assetName": "BTC", "balance": "0.41", "available": "0.41", "locked": "0" },
+    { "assetName": "ETH", "balance": "1.5", "available": "1.5", "locked": "0" }
+  ]
+}

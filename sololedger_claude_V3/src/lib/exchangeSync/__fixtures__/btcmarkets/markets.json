@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored /v3/markets response.",
+  "response": [
+    { "marketId": "BTC-AUD", "baseAssetName": "BTC", "quoteAssetName": "AUD", "minOrderAmount": "0.0001", "maxOrderAmount": "100", "amountDecimals": "8", "priceDecimals": "2", "status": "Online" },
+    { "marketId": "ETH-BTC", "baseAssetName": "ETH", "quoteAssetName": "BTC", "minOrderAmount": "0.001", "maxOrderAmount": "1000", "amountDecimals": "8", "priceDecimals": "8", "status": "Online" }
+  ]
+}

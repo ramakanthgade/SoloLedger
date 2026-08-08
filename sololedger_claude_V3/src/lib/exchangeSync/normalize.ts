@@ -45,7 +45,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   htx: 'exhx',
   cryptocom: 'excx',
   bitfinex: 'exbf',
-  gemini: 'exgm'
+  gemini: 'exgm',
+  btcmarkets: 'exbm'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -120,6 +121,10 @@ function tradeSourceRef(
       // can collide for two equal fills in one second. Native `tid` is the
       // only safe API replay identity; CSV/API divergence is documented.
       return trade.id ? `trade:${trade.id}` : undefined;
+    case 'btcmarkets':
+      // No BTC Markets CSV parser exists. Keep the provider's account-local
+      // fill id for API replay without manufacturing an API↔CSV collision.
+      return trade.id;
   }
 }
 
@@ -145,7 +150,9 @@ export function normalizeTrade(
 
   const quoteFiat = exchange === 'gemini'
     ? GEMINI_FIAT_QUOTES.get(quote) ?? quoteToFiatCurrency(quote)
-    : quoteToFiatCurrency(quote);
+    : exchange === 'btcmarkets' && quote === 'AUD'
+      ? 'AUD'
+      : quoteToFiatCurrency(quote);
   const fiatCurrency = quoteFiat ?? 'USD';
   const fiatValue = (quoteFiat != null || STABLE_QUOTES.has(quote)) && cost != null ? cost : undefined;
 
@@ -210,7 +217,7 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets'
         ? { exchangeSyncKind: 'trade' as const }
         : {})
     }
@@ -642,6 +649,8 @@ function transferSourceRef(
       // As with fills, prefer immutable Gemini evidence over an unsafe
       // second-resolution economic formula.
       return transfer.id ? `${type === 'transfer_in' ? 'deposit' : 'withdrawal'}:${transfer.id}` : undefined;
+    case 'btcmarkets':
+      return transfer.id;
   }
 }
 
@@ -790,7 +799,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

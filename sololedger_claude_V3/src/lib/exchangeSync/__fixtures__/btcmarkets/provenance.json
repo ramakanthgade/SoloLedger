@@ -1,0 +1,7 @@
+{
+  "_recorded": false,
+  "_note": "Schema-faithful hand-authored BTC Markets API v3 fixtures. No credentials or production account data were used. Shapes follow pinned CCXT 4.5.68 btcmarkets parser examples and the public v3 API/SDK documentation.",
+  "ccxt": "4.5.68",
+  "host": "api.btcmarkets.net",
+  "capturedAt": "2026-08-07T00:00:00.000Z"
+}

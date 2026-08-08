@@ -1,0 +1,9 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored newest-first /v3/trades response. Replay supplies BM-BEFORE=910001 and BM-AFTER=910003.",
+  "response": [
+    { "id": "910003", "marketId": "ETH-BTC", "timestamp": "2025-06-03T03:04:05.678000Z", "price": "0.05", "amount": "1", "side": "Bid", "fee": "0.001", "orderId": "810003", "liquidityType": "Taker" },
+    { "id": "910002", "marketId": "BTC-AUD", "timestamp": "2025-06-02T02:03:04.567000Z", "price": "105000", "amount": "0.1", "side": "Ask", "fee": "89.25", "orderId": "810002", "liquidityType": "Maker" },
+    { "id": "910001", "marketId": "BTC-AUD", "timestamp": "2025-06-01T01:02:03.456000Z", "price": "100000", "amount": "0.25", "side": "Bid", "fee": "212.50", "orderId": "810001", "liquidityType": "Taker" }
+  ]
+}
