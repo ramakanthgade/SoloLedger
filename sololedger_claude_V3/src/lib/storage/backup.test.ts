@@ -772,6 +772,12 @@ describe('importFullBackup', () => {
       cursors: {}, status: 'ok', btcmarketsNativeCursors: { trades: '910003', transfers: '920002' },
       btcmarketsPagination: { trades: { mode: 'incremental', cursor: '910010', newest: '910010' } },
       btcmarketsUnresolvedTransferIds: ['920003'], btcmarketsUnsafeTradeIds: ['910009']
+    }, {
+      id: 'bitstamp-source', exchange: 'bitstamp', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', bitstampPagination: {
+        offset: 2000, since: 700, highWater: { trades: 900, deposits: 800 },
+        unresolvedTrades: true, unsafeTransfers: { withdrawals: true }
+      }
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -801,6 +807,41 @@ describe('importFullBackup', () => {
       btcmarketsPagination: { trades: { mode: 'incremental', cursor: '910010', newest: '910010' } },
       btcmarketsUnresolvedTransferIds: ['920003'], btcmarketsUnsafeTradeIds: ['910009']
     });
+    expect(await db.exchangeConnections.get('bitstamp-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      bitstampPagination: {
+        offset: 2000, since: 700, highWater: { trades: 900, deposits: 800 },
+        unresolvedTrades: true, unsafeTransfers: { withdrawals: true }
+      }
+    });
+  });
+
+  it('restores compatibility-only exchange rows as deferred rather than reauthorizable', async () => {
+    await db.exchangeConnections.put({
+      id: 'deferred-source', exchange: 'bitget', apiKey: 'key', secret: 'secret',
+      createdAt: 1, cursors: {}, status: 'ok', credentialsState: 'ready'
+    });
+    const payload = await createFullBackupPayload();
+    await importFullBackup(backupFile(payload));
+    expect(await db.exchangeConnections.get('deferred-source')).toMatchObject({
+      credentialsState: 'deferred', status: 'idle',
+      lastError: expect.stringMatching(/connector is deferred.*import a file/i)
+    });
+  });
+
+  it.each([
+    { offset: 1, since: 0, highWater: {} },
+    { offset: 1000, since: -1, highWater: {} },
+    { offset: 1000, since: 0, highWater: { trades: -1 } },
+    { offset: 1000, since: 0, highWater: {}, unresolvedTrades: 'yes' },
+    { offset: 1000, since: 0, highWater: {}, unsafeTransfers: { deposits: 1 } }
+  ])('rejects malformed Bitstamp pagination checkpoints %#', async (bitstampPagination) => {
+    await db.exchangeConnections.put({
+      id: 'bitstamp-source', exchange: 'bitstamp', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { bitstampPagination: unknown }).bitstampPagination = bitstampPagination;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow('Bitstamp pagination checkpoint is malformed');
   });
 
   it.each([

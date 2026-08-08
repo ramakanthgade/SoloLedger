@@ -6,6 +6,7 @@ import {
   EXCHANGE_API_SOURCES,
   isStableRefSource,
   transactionExchangeKey,
+  normalizeDeferredExchangeConnection,
   type ExchangeConnectionRow
 } from '@/lib/storage/db';
 
@@ -32,8 +33,9 @@ describe('Dexie v8 — exchangeConnections', () => {
     // reconciliation evidence, v12 finalized CSV survivor counts, v13 added
     // immutable safety evidence/decisions, and v14 added immutable Ethereum
     // protocol position generations, v15 added canonical accounts/FKs, and
-    // v16 added atomic wallet/DeFi refresh manifests.
-    expect(db.verno).toBe(16);
+    // v16 added atomic wallet/DeFi refresh manifests; v17 normalizes
+    // compatibility-only exchange connectors to a deferred lifecycle state.
+    expect(db.verno).toBe(17);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
@@ -90,6 +92,18 @@ describe('Dexie v8 — exchangeConnections', () => {
     const row = await db.exchangeConnections.get('exc_test_1');
     expect(row?.exchange).toBe('binance');
     expect(row?.cursors.trades).toBe(1_700_000_000_000);
+  });
+
+  it('normalizes compatibility-only connection rows to the deferred v17 lifecycle state', () => {
+    const row = makeRow('legacy-deferred');
+    row.exchange = 'bitget';
+    row.credentialsState = 'ready';
+    row.status = 'ok';
+    normalizeDeferredExchangeConnection(row);
+    expect(row).toMatchObject({
+      credentialsState: 'deferred', status: 'idle',
+      lastError: expect.stringMatching(/connector is deferred.*import a file/i)
+    });
   });
 
   it('clearAllData() clears exchangeConnections too', async () => {

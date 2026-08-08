@@ -290,9 +290,9 @@ describe('syncConnection — cursor safety with a fake client', () => {
       await db.exchangeConnections.put(makeRow({ exchange, passphrase: exchange === 'bitget' || exchange === 'bitmart' ? 'memo' : undefined }));
       const { client } = fakeClient();
       await expect(syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client)))
-        .rejects.toThrow(/temporarily deferred.*not yet exhaustive/i);
+        .rejects.toThrow(/connector is deferred.*cannot sync/i);
       expect(await db.transactions.count()).toBe(0);
-      expect((await db.exchangeConnections.get('exc_cursor_test'))?.status).toBe('error');
+      expect((await db.exchangeConnections.get('exc_cursor_test'))?.status).toBe('idle');
     }
   );
 
@@ -307,11 +307,14 @@ describe('syncConnection — cursor safety with a fake client', () => {
     client.fetchWithdrawals = async () => { throw new Error('separate withdrawal path must not be used'); };
     client.fetchDepositsWithdrawals = async () => {
       combinedCalls += 1;
-      return combinedCalls === 1 ? [
+      const rows = combinedCalls === 1 ? [
         { id: 'same-id', timestamp: NOW - DAY, currency: 'BTC', amount: 1, status: 'ok', type: 'deposit', info: { type: '0' } },
         { id: 'same-id', timestamp: NOW - DAY + 1, currency: 'BTC', amount: 0.25, status: 'ok', type: 'withdrawal', info: { type: '1' } }
       ] : [];
+      client.last_json_response = rows.map((row) => row.info);
+      return rows;
     };
+    client.parseTrade = () => { throw new Error('no trade rows expected'); };
 
     const result = await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
     expect(result.mode).toBe('commit');

@@ -121,7 +121,7 @@ export interface ExchangeConnectionRow {
   secret?: string;
   passphrase?: string;  // OKX / KuCoin only (ccxt `password`)
   /** Legacy rows migrate to ready; redacted restores use reauthorization_required. */
-  credentialsState?: 'ready' | 'reauthorization_required';
+  credentialsState?: 'ready' | 'reauthorization_required' | 'deferred';
   /** Monotonic authority/coverage source-operation generation. */
   authorityGeneration?: number;
   /** Compare-and-save revision for credential/source lifecycle changes. */
@@ -149,6 +149,8 @@ export interface ExchangeConnectionRow {
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** Oldest still-pending Bitfinex Movement per direction. */
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
+  /** Exact continuation for Bitstamp's shared newest-first account ledger. */
+  bitstampPagination?: BitstampPaginationCheckpoint;
   /** Exclusive native record-id cursors; BTC Markets `after` is not a timestamp. */
   btcmarketsNativeCursors?: { trades?: string; transfers?: string };
   /** First unfinished native page walk; separate from the proven newest high-water. */
@@ -165,6 +167,25 @@ export interface ExchangeConnectionRow {
   lastError?: string;
   /** Exact one-to-one account identity for this connection. */
   accountIdentityId?: string;
+}
+
+export interface BitstampPaginationCheckpoint {
+  offset: number;
+  since: number;
+  highWater: { trades?: number; deposits?: number; withdrawals?: number };
+  /** A visited trade row lacked authoritative spot/derivative classification. */
+  unresolvedTrades?: boolean;
+  unsafeTransfers?: { deposits?: boolean; withdrawals?: boolean };
+}
+
+const DEFERRED_EXCHANGE_IDS = new Set(['bitget', 'mexc', 'bitmart', 'bitvavo']);
+
+/** Shared by the v17 upgrade and focused migration regression tests. */
+export function normalizeDeferredExchangeConnection(row: ExchangeConnectionRow): void {
+  if (!DEFERRED_EXCHANGE_IDS.has(row.exchange)) return;
+  row.credentialsState = 'deferred';
+  row.status = 'idle';
+  row.lastError = 'This exchange connector is deferred. Import a file or remove this connection.';
 }
 
 export interface BtcMarketsPaginationCheckpoint {
@@ -648,6 +669,13 @@ class SoloLedgerDB extends Dexie {
       defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]',
       accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]',
       walletDefiRefreshManifests: 'accountIdentityScope, custodyScopeId, custodySnapshotId, capturedAt'
+    });
+    // v17: connectors retained only for compatibility cannot silently remain
+    // ready/reauthorizable after their production relay support is removed.
+    this.version(17).upgrade(async (tx) => {
+      await tx.table<ExchangeConnectionRow, string>('exchangeConnections').toCollection().modify((row) => {
+        normalizeDeferredExchangeConnection(row);
+      });
     });
   }
 }

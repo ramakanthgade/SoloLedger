@@ -184,7 +184,7 @@ describe('Dexie v11 → v12 CSV survivor-count migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(16);
+    expect(upgraded.verno).toBe(17);
     expect(await upgraded.table('walletDefiRefreshManifests').count()).toBe(0);
     expect(await upgraded.csvImports.bulkGet(['partial', 'zero'])).toEqual([
       expect.objectContaining({ id: 'partial', txCount: 2 }),
@@ -263,7 +263,7 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(16);
+    expect(upgraded.verno).toBe(17);
     expect(await upgraded.table('walletDefiRefreshManifests').count()).toBe(0);
     expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
     expect(await upgraded.table('exchangeBalances').count()).toBe(4);
@@ -348,7 +348,8 @@ describe('Dexie v15 B1 and v16 wallet DeFi manifest migrations', () => {
     ]);
     await legacy.table('exchangeConnections').bulkPut([
       { id: 'same-brand-1', exchange: 'binance', createdAt: 1, cursors: {}, status: 'idle' },
-      { id: 'same-brand-2', exchange: 'binance', createdAt: 2, cursors: {}, status: 'idle' }
+      { id: 'same-brand-2', exchange: 'binance', createdAt: 2, cursors: {}, status: 'idle' },
+      { id: 'legacy-deferred', exchange: 'bitget', createdAt: 3, cursors: {}, status: 'ok', credentialsState: 'ready' }
     ]);
     await legacy.table('csvImports').bulkPut([
       { id: 'hash-one', fileName: 'statement.csv', importedAt: 1, txCount: 0, parserId: 'binance' },
@@ -375,7 +376,7 @@ describe('Dexie v15 B1 and v16 wallet DeFi manifest migrations', () => {
     const { createDb } = await import('@/lib/storage/db');
     const upgraded = createDb(name);
     await upgraded.open();
-    expect(upgraded.verno).toBe(16);
+    expect(upgraded.verno).toBe(17);
     expect(await upgraded.walletDefiRefreshManifests.count()).toBe(0);
     expect(await upgraded.transactions.get('typed-alias')).toMatchObject({
       category: 'staking_reward', categoryOrigin: 'legacy', amount: 1.25,
@@ -405,6 +406,10 @@ describe('Dexie v15 B1 and v16 wallet DeFi manifest migrations', () => {
       .toBe(`wallet:solana:solana:${VALID_SOLANA_ADDRESS}`);
     expect((await upgraded.exchangeConnections.bulkGet(['same-brand-1', 'same-brand-2']))
       .map((row) => row?.accountIdentityId)).toEqual(['exchange:same-brand-1', 'exchange:same-brand-2']);
+    expect(await upgraded.exchangeConnections.get('legacy-deferred')).toMatchObject({
+      credentialsState: 'deferred', status: 'idle',
+      lastError: expect.stringMatching(/connector is deferred.*import a file/i)
+    });
     expect((await upgraded.csvImports.bulkGet(['hash-one', 'hash-two'])).map((row) => row?.accountIdentityId))
       .toEqual(['csv-account:hash-one', 'csv-account:hash-two']);
     expect(upgraded.transactions.schema.indexes.map((index) => index.name)).toEqual(expect.arrayContaining([

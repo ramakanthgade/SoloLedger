@@ -509,6 +509,23 @@ describe('ConnectionsHome — exchange actions', () => {
     expect(screen.queryByTestId('sync-all')).not.toBeInTheDocument();
   });
 
+  it('shows deferred connections as file-import/remove only and excludes them from Sync all and detail', () => {
+    mocks.connections.current = [
+      conn({ id: 'deferred-source', exchange: 'bitget', credentialsState: 'deferred' })
+    ];
+    render(<ConnectionsHome />);
+
+    expect(screen.queryByTestId('sync-all')).not.toBeInTheDocument();
+    expect(screen.getByText('Connector deferred')).toBeInTheDocument();
+    expect(screen.getByText(/connector is deferred.*import an exchange file/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'bitget actions' }));
+    expect(screen.queryByRole('menuitem', { name: /sync now/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('menuitem', { name: /reauthorize/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /import file/i })).toBeInTheDocument();
+    expect(screen.getByRole('menuitem', { name: /remove/i })).toBeInTheDocument();
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+  });
+
   it('replaces ordinary sync and detail actions with exact-source reauthorization until ready', () => {
     mocks.connections.current = [
       conn({

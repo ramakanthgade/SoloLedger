@@ -401,6 +401,15 @@ describe('ExchangeConnectStep — reauthorization', () => {
 });
 
 describe('ExchangeConnectStep — concise guidance', () => {
+  it('fails safely for a deferred catalog id and offers file import', async () => {
+    const onUseFile = vi.fn();
+    render(<ExchangeConnectStep exchangeId="bitget" onConnected={vi.fn()} onUseFile={onUseFile} />);
+    expect(screen.getByText('This exchange connector is deferred.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /import a file instead/i }));
+    expect(onUseFile).toHaveBeenCalledOnce();
+    expect(screen.queryByTestId('exchange-connect')).not.toBeInTheDocument();
+  });
+
   it('renders static read-only guidance without mandatory checklist acknowledgements or duplicate notes', async () => {
     await renderForm('binance');
     expect(screen.getByText('Get a read-only key')).toBeInTheDocument();

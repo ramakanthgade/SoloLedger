@@ -18,7 +18,7 @@ import type { Transaction } from '@/types/transaction';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { connectionSourceToken, getConnectionRow } from './connections';
 import type { UnifiedBalance } from './ccxtLoader';
-import type { BtcMarketsPaginationCheckpoint } from '@/lib/storage/db';
+import type { BitstampPaginationCheckpoint, BtcMarketsPaginationCheckpoint } from '@/lib/storage/db';
 import { persistSyncedRows, syncConnection, type SyncEngineDeps } from './engine';
 import { exchangeLabel } from './ccxtLoader';
 import { flattenBalanceTotals } from './binanceSymbols';
@@ -52,6 +52,7 @@ interface StagedMeta {
   geminiTradeProgress?: import('./engine').GeminiTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitstampPagination?: BitstampPaginationCheckpoint;
   btcmarketsNativeCursors?: { trades?: string; transfers?: string };
   btcmarketsPagination?: { trades?: BtcMarketsPaginationCheckpoint; transfers?: BtcMarketsPaginationCheckpoint };
   btcmarketsUnresolvedTransferIds?: string[];
@@ -189,7 +190,10 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Something went wrong while syncing — please try again.';
 }
 
-function requireReady(row: { credentialsState?: 'ready' | 'reauthorization_required' }): void {
+function requireReady(row: { credentialsState?: 'ready' | 'reauthorization_required' | 'deferred' }): void {
+  if (row.credentialsState === 'deferred') {
+    throw new Error('This exchange connector is deferred and cannot sync. Import a file or remove it.');
+  }
   if ((row.credentialsState ?? 'ready') !== 'ready') {
     throw new Error('Reauthorize this connection before syncing.');
   }
@@ -293,6 +297,7 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         geminiTradeProgress: outcome.geminiTradeProgress,
         cryptocomPendingTransfers: outcome.cryptocomPendingTransfers,
         bitfinexPendingTransfers: outcome.bitfinexPendingTransfers,
+        bitstampPagination: outcome.bitstampPagination,
         btcmarketsNativeCursors: outcome.btcmarketsNativeCursors,
         btcmarketsPagination: outcome.btcmarketsPagination,
         btcmarketsUnresolvedTransferIds: outcome.btcmarketsUnresolvedTransferIds,
@@ -347,6 +352,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       geminiTradeProgress: staged.meta?.geminiTradeProgress,
       cryptocomPendingTransfers: staged.meta?.cryptocomPendingTransfers,
       bitfinexPendingTransfers: staged.meta?.bitfinexPendingTransfers,
+      bitstampPagination: staged.meta?.bitstampPagination,
       btcmarketsNativeCursors: staged.meta?.btcmarketsNativeCursors,
       btcmarketsPagination: staged.meta?.btcmarketsPagination,
       btcmarketsUnresolvedTransferIds: staged.meta?.btcmarketsUnresolvedTransferIds,

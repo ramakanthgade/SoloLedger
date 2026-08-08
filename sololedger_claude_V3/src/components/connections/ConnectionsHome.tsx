@@ -22,6 +22,7 @@ import {
   listConnections,
   syncNow,
   useExchangeSyncJob,
+  isEnabledExchangeId,
   type ExchangeConnectionView
 } from '@/lib/exchangeSync';
 import {
@@ -228,7 +229,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
   const detailLoading = detailId != null && !detailSourceLoaded;
   const visibleCards = pill === 'all' ? cards : cards.filter((c) => c.lane === pill);
   const readyConnections = useMemo(
-    () => connections.filter((c) => c.credentialsState !== 'reauthorization_required'),
+    () => connections.filter((c) => c.credentialsState === 'ready' && isEnabledExchangeId(c.exchange)),
     [connections]
   );
 
@@ -371,6 +372,21 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
   const menuItemsFor = (card: ConnectionCardData): CardMenuItem[] | undefined => {
     if (card.kind === 'exchange-api' && card.exchange) {
       const c = card.exchange;
+      if (card.deferred) {
+        return [
+          {
+            label: 'Import file',
+            icon: <Upload className="h-4 w-4" aria-hidden="true" />,
+            onSelect: () => openDrawer({ initialFlow: 'file' })
+          },
+          {
+            label: 'Remove',
+            icon: <Trash2 className="h-4 w-4" aria-hidden="true" />,
+            danger: true,
+            onSelect: () => setRemoveExchange(c)
+          }
+        ];
+      }
       if (card.requiresReauthorization) {
         return [
           {
@@ -773,7 +789,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
                 card.kind === 'manual' ? () => openDrawer({ initialFlow: 'manual' }) : undefined
               }
               onOpenDetail={
-                card.kind === 'manual' || card.requiresReauthorization
+                card.kind === 'manual' || card.requiresReauthorization || card.deferred
                   ? undefined
                   : () => {
                       detailOpenerId.current = card.id;

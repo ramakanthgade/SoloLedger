@@ -271,6 +271,20 @@ describe('connection credential lifecycle', () => {
     expect(token).not.toContain(persisted.secret!);
   });
 
+  it.each(['bitget', 'mexc', 'bitmart', 'bitvavo'] as const)(
+    'rejects creating and reauthorizing deferred %s connections', async (exchange) => {
+      await expect(addConnection({ exchange, apiKey: 'key', secret: 'secret' }))
+        .rejects.toThrow(/deferred.*import a file/i);
+      await db.exchangeConnections.put({
+        id: 'deferred-source', exchange, createdAt: 1, cursors: {}, status: 'idle',
+        credentialsState: 'deferred'
+      });
+      await expect(reauthorizeConnection('deferred-source', candidateCredentials(), validatingDeps()))
+        .rejects.toThrow(/deferred.*cannot be reauthorized/i);
+      expect((await listConnections())[0].credentialsState).toBe('deferred');
+    }
+  );
+
   it('validates before one atomic existing-row update while preserving identity and references', async () => {
     await putRestoredConnection();
     await db.transactions.put({

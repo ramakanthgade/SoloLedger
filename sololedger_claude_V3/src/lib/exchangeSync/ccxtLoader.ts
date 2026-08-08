@@ -120,6 +120,8 @@ export interface ExchangeClient {
     limit?: number,
     params?: Record<string, unknown>
   ): Promise<UnifiedTransfer[]>;
+  /** Public CCXT parser used to split Bitstamp's shared raw account ledger. */
+  parseTrade?(trade: unknown, market?: UnifiedMarket): UnifiedTrade;
   handleRestResponse(...args: unknown[]): unknown;
   fetch(url: string, method?: string, headers?: Record<string, string>, body?: string): Promise<unknown>;
 }

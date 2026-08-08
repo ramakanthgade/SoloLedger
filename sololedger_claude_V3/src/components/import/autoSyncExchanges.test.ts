@@ -14,9 +14,8 @@ describe('autoSyncExchanges catalog', () => {
   });
 
   it('is an ordered safe subset of the typed ccxt exchange ids', () => {
-    expect(AUTO_SYNC_EXCHANGES.map((e) => e.id)).toEqual(
-      SYNC_EXCHANGES.filter((id) => !['bitget', 'mexc', 'bitmart', 'bitvavo'].includes(id))
-    );
+    expect(SYNC_EXCHANGES).toHaveLength(13);
+    expect(AUTO_SYNC_EXCHANGES.map((e) => e.id)).toEqual(SYNC_EXCHANGES);
     for (const deferred of ['bitget', 'mexc', 'bitmart', 'bitvavo']) {
       expect(getAutoSyncExchange(deferred)).toBeUndefined();
     }
