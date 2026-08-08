@@ -52,7 +52,10 @@ async function persistedSafetyLinksAreValid(page: import('@playwright/test').Pag
       transaction.onerror = () => reject(transaction.error);
       transaction.oncomplete = () => {
         const [transactions, decisions, evidence] = requests.map((row) => row.result);
-        const subjects = new Set(transactions.map((row) => row.safetySubjectKey).filter(Boolean));
+        const subjects = new Set([
+          ...transactions.map((row) => row.safetySubjectKey).filter(Boolean),
+          ...evidence.map((row) => row.subjectKey).filter(Boolean)
+        ]);
         resolve(decisions.every((decision) => subjects.has(decision.subjectKey) &&
           (decision.origin !== 'automatic' || decision.evidenceIds?.every((id: string) =>
             evidence.some((row) => row.id === id && row.subjectKey === decision.subjectKey)))));
