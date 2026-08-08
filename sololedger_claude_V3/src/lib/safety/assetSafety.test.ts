@@ -191,6 +191,20 @@ describe('import safety materialization', () => {
     }
   });
 
+  it('reuses the exact ledger generation when the loaded policy snapshot is empty', () => {
+    const rows = Array.from({ length: 30_000 }, (_, index) => transaction(index + 10_000));
+    const metrics = { decisionIndexBuilds: 0, decisionIndexVisits: 0, transactionResolutions: 0 };
+
+    const result = transactionsUnderCurrentSafetyPolicy(rows, [], metrics);
+
+    expect(result).toBe(rows);
+    expect(metrics).toEqual({
+      decisionIndexBuilds: 0,
+      decisionIndexVisits: 0,
+      transactionResolutions: 0
+    });
+  });
+
   it('indexes transactions and exact asset identities once for scaled v17 backfill', () => {
     const rows = Array.from({ length: 3_000 }, (_, index) => ({
       ...transaction(index + 10_000),
