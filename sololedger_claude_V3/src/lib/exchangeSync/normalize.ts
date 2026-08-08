@@ -171,9 +171,7 @@ export function normalizeTrade(
 
   const quoteFiat = exchange === 'gemini'
     ? GEMINI_FIAT_QUOTES.get(quote) ?? quoteToFiatCurrency(quote)
-    : exchange === 'btcmarkets' && quote === 'AUD'
-      ? 'AUD'
-      : quoteToFiatCurrency(quote);
+    : quoteToFiatCurrency(quote);
   const fiatCurrency = quoteFiat ?? 'USD';
   const fiatValue = (quoteFiat != null || STABLE_QUOTES.has(quote)) && cost != null ? cost : undefined;
 
@@ -238,7 +236,8 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' ||
+        exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'mexc' || exchange === 'bitmart' || exchange === 'bitvavo'
         ? { exchangeSyncKind: 'trade' as const }
         : {})
     }
@@ -672,15 +671,24 @@ function transferSourceRef(
       return transfer.id ? `${type === 'transfer_in' ? 'deposit' : 'withdrawal'}:${transfer.id}` : undefined;
     case 'btcmarkets':
       return transfer.id;
+    case 'bitvavo': {
+      // CCXT 4.5.68 deliberately parses Bitvavo transaction `id` as undefined.
+      // Raw txId is provider evidence but may be reused for batched credits, so
+      // retain it with immutable endpoint/economic disambiguation.
+      const providerTxId = transfer.txid ?? transfer.info?.txId;
+      return providerTxId != null && String(providerTxId).trim()
+        ? `bitvavo:${String(providerTxId)}:${type}:${ts}:${asset}:${amount}`
+        : exchangeSourceRef('bitvavo-api', ts, type, asset, amount);
+    }
     case 'bitstamp':
     case 'bitget':
     case 'mexc':
     case 'bitmart':
-    case 'bitvavo':
       // Each of these returns a native record id (Bitstamp numeric id, Bitget
-      // orderId, MEXC record id, BitMart withdraw/deposit id, Bitvavo uuid).
+      // orderId, MEXC record id, BitMart withdraw/deposit id).
       // The id is the stable API replay identity; formula is a fallback only.
-      return transfer.id ?? exchangeSourceRef(exchange, floorToSeconds(ts), type, asset, amount);
+      // API-only fallback intentionally cannot collide with a future CSV parser.
+      return transfer.id ?? exchangeSourceRef(`${exchange}-api`, ts, type, asset, amount);
   }
 }
 
@@ -835,7 +843,8 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' ||
+        exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'mexc' || exchange === 'bitmart' || exchange === 'bitvavo' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

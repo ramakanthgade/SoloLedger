@@ -564,6 +564,74 @@ describe('4. exchangeId and path validation', () => {
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    '/bitstamp/api/v2/user_transactions/../buy/btcusd/',
+    '/bitstamp/api/v2/user_transactions/%2e%2e/sell/btcusd/',
+    '/bitstamp/api/v2/user_transactions/%2E%2e/withdrawal/crypto/',
+    '/bitstamp/api/v2/user_transactions/%2e%2E/btc_address/',
+    '/bitstamp/api/v2/user_transactions/%252e%252e/buy/btcusd/',
+    '/bitstamp/api/v2/user_transactions/%2f..%2fwithdrawal/crypto/'
+  ])('rejects traversal/canonicalization trick %s before fetch', async (url) => {
+    const { res, state } = makeStubRes();
+    await exchangeTunnelHandler({ method: 'POST', url, headers: {} } as unknown as Request, res);
+    expect(state.statusCode).toBe(400);
+    expect(res.locals.tunnelErrorKind).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects raw and encoded backslash normalization tricks before fetch', async () => {
+    for (const url of [
+      '/bitstamp/api/v2/user_transactions/\\..\\withdrawal/crypto/',
+      '/bitstamp/api/v2/user_transactions/%5c..%5Cbtc_address/'
+    ]) {
+      const { res, state } = makeStubRes();
+      await exchangeTunnelHandler({ method: 'POST', url, headers: {} } as unknown as Request, res);
+      expect(state.statusCode).toBe(400);
+      expect(res.locals.tunnelErrorKind).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['/api/v2/markets/', 'GET'],
+    ['/api/v2/account_balances/', 'POST'],
+    ['/api/v2/user_transactions/', 'POST'],
+    ['/api/v2/withdrawal-requests/', 'POST']
+  ] as const)('Bitstamp permits legitimate exact %s %s only', async (path, method) => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    const res = await client(`/bitstamp${path}`, {
+      method,
+      headers: AUTH,
+      body: method === 'POST' ? 'foo=bar' : undefined
+    });
+    expect(res.status).toBe(200);
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe(`https://www.bitstamp.net${path}`);
+    expect(init.method).toBe(method);
+  });
+
+  it('Bitstamp trailing-slash paths are exact, not prefixes', async () => {
+    for (const path of [
+      '/bitstamp/api/v2/user_transactions/buy/btcusd/',
+      '/bitstamp/api/v2/account_balances/extra',
+      '/bitstamp/api/v2/withdrawal-requests/address/'
+    ]) {
+      const res = await client(path, { method: 'POST', headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('pathMethods fails closed when an allowed path has no exact method entry', async () => {
+    // Regression guard for future edits: a case-only mismatch must not fall
+    // through merely because the path exists in `paths`.
+    const res = await client('/bitstamp/api/v2/Markets/', { headers: AUTH });
+    expect(res.status).toBe(400);
+    expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
   it('Bybit rejects non-sync and derivatives REST paths before fetch', async () => {
     for (const path of [
       '/bybit/v5/order/create',
@@ -610,6 +678,15 @@ describe('4. exchangeId and path validation', () => {
     const post = await client('/htx/v1/order/matchresults', { method: 'POST', headers: AUTH });
     expect(post.status).toBe(400);
     expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('HTX typed account-id path remains available without restoring generic prefix matching', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"status":"ok","data":{}}'));
+    const res = await client('/htx/v1/account/accounts/123/balance', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.huobi.pro/v1/account/accounts/123/balance');
+    expect(init.method).toBe('GET');
   });
 
   it('Crypto.com enforces exact read-only paths with per-path GET/POST methods', async () => {

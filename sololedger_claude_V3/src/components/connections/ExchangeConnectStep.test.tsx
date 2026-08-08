@@ -183,7 +183,7 @@ describe('ExchangeConnectStep — credential fields per exchange', () => {
     }
   );
 
-  it.each(['okx', 'kucoin', 'bitget', 'bitmart'] as const)('%s additionally requires a passphrase', async (exchangeId) => {
+  it.each(['okx', 'kucoin'] as const)('%s additionally requires a passphrase', async (exchangeId) => {
     await renderForm(exchangeId);
     expect(screen.getByLabelText(/Passphrase/)).toBeInTheDocument();
   });
@@ -278,7 +278,7 @@ describe('ExchangeConnectStep — test-gated Connect (ported from AddConnectionF
     expect(onConnected).not.toHaveBeenCalled();
   });
 
-  it.each(['kucoin', 'bitget', 'bitmart'] as const)('%s requires the passphrase before Test/Connect unlock', async (exchangeId) => {
+  it.each(['kucoin'] as const)('%s requires the passphrase before Test/Connect unlock', async (exchangeId) => {
     await renderForm(exchangeId);
 
     fillCredentials();

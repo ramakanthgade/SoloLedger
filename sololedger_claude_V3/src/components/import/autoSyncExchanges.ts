@@ -227,66 +227,10 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     path: ['Bitstamp', 'Settings', 'API Access', 'Create Key'],
     docsUrl: 'https://www.bitstamp.net/api/'
   },
-  {
-    id: 'bitget',
-    label: 'Bitget',
-    monogram: 'BG',
-    needsPassphrase: true,
-    formatHint: 'Also needs a passphrase',
-    keyInstructions: [
-      'Log in to Bitget on the web and open Profile → API Management.',
-      'Create a new API key and set a Passphrase — you chose it, and you need it here too.',
-      'Tick only the Read permission for spot/account. Never enable Trade or Withdraw.',
-      'Copy the API Key, Secret and your Passphrase and paste them here.'
-    ],
-    path: ['Bitget', 'Profile', 'API Management', 'Create API Key'],
-    docsUrl: 'https://www.bitget.com/account/api'
-  },
-  {
-    id: 'mexc',
-    label: 'MEXC',
-    monogram: 'MX',
-    needsPassphrase: false,
-    formatHint: 'API key + secret',
-    keyInstructions: [
-      'Log in to MEXC on the web and open Profile → API Management.',
-      'Create a new API key and complete the security verification.',
-      'Enable only read / view permissions (account and trade history). Never enable trading or withdrawals.',
-      'Copy the API Key and Secret Key and paste them here. MEXC does not require a passphrase.'
-    ],
-    path: ['MEXC', 'Profile', 'API Management', 'Create API Key'],
-    docsUrl: 'https://www.mexc.com/user/openapi'
-  },
-  {
-    id: 'bitmart',
-    label: 'BitMart',
-    monogram: 'BM',
-    needsPassphrase: true,
-    formatHint: 'Also needs a memo / passphrase',
-    keyInstructions: [
-      'Log in to BitMart on the web and open Account → API Management.',
-      'Create a new API key and set an API Memo (a name/passphrase you choose) — you need it here too.',
-      'Enable only the Read permission. Never enable Trade or Withdraw.',
-      'Copy the API Key, Secret and your Memo and paste them here.'
-    ],
-    path: ['BitMart', 'Account', 'API Management', 'Create API Key'],
-    docsUrl: 'https://www.bitmart.com/api-management'
-  },
-  {
-    id: 'bitvavo',
-    label: 'Bitvavo',
-    monogram: 'BV',
-    needsPassphrase: false,
-    formatHint: 'API key + secret',
-    keyInstructions: [
-      'Log in to Bitvavo on the web and open Settings → API.',
-      'Create a new API key.',
-      'Enable only the read / view permission (account and trade history). Never enable trading or withdrawals.',
-      'Copy the API Key and API Secret and paste them here. Bitvavo does not require a passphrase.'
-    ],
-    path: ['Bitvavo', 'Settings', 'API', 'Create API Key'],
-    docsUrl: 'https://account.bitvavo.com/settings/api'
-  }
+  // Bitget, MEXC, BitMart and Bitvavo remain typed/parser-supported for
+  // migration and fixture verification, but are intentionally absent from
+  // this user-facing catalog until their native pagination and durable replay
+  // checkpoints can prove exhaustive tax-history coverage.
 ];
 
 export function getAutoSyncExchange(id: string | null): AutoSyncExchange | undefined {

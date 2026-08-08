@@ -9,30 +9,38 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, bitstamp, bitget, mexc, bitmart, bitvavo** — the
+Enabled exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, bitstamp**. Bitget, MEXC, BitMart and Bitvavo remain
+parser/migration-supported but are deferred and absent from the connection UI — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
 
 Batch 1 (bitstamp, bitget, mexc, bitmart, bitvavo) notes:
-- **Bitstamp** trades come from the all-accounts `user_transactions` ledger
-  (type `2` market-trade rows), offset-paginated newest-first; deposits and
-  withdrawals are the type `0`/`1` rows of the same ledger plus the dedicated
-  `withdrawal_requests` endpoint. No CSV twin parser exists yet, so the
+- **Bitstamp** trades and transfers come from one offset-paginated, all-account
+  `user_transactions` request. Pinned CCXT 4.5.68 marks `fetchDeposits` as
+  unsupported; SoloLedger therefore calls `fetchDepositsWithdrawals` once and
+  consistently splits native type `0`/`1` rows into deposit/withdrawal outcomes.
+  Trades are the type `2` rows of that same account-wide ledger and are filtered
+  fail-closed through the loaded spot-market catalog.
+- No CSV twin parser exists yet, so the
   connector guarantees API↔API idempotence via the native numeric `id`.
-- **Bitget** spot fills are per-symbol (startTime/endTime windows, page cap
-  500); wallet history uses startTime/endTime windows. Bitget keys carry a
-  user-chosen passphrase (ccxt `password`), like OKX/KuCoin.
-- **MEXC** is Binance-style: per-symbol myTrades (startTime/endTime, cap
-  1000) plus capital deposit/withdraw hisrec. Only settled statuses import
-  (deposit `5`, withdrawal `7`-mapped `ok` set).
-- **BitMart** trades are symbol-optional V4 query-trades (startTime/endTime,
-  cap 200); wallet history is the V2 deposit-withdraw endpoint. BitMart keys
-  carry an API memo (ccxt `password`). Verify-at-build finding: ccxt 4.5.68
-  emits the non-standard unified transfer type `withdraw` (not `withdrawal`);
-  `normalizeTransfer` maps it explicitly.
-- **Bitvavo** trades are per-symbol (start/end windows, page 500); deposits
-  and withdrawals are separate history endpoints. Only `completed` imports.
+- **Deferred — Bitget:** pinned CCXT documents `idLessThan` backward cursors for
+  both wallet endpoints and defaults an omitted start to 90 days. A safe trade
+  cursor plus interrupted per-symbol checkpoint has not yet been proven, so no
+  launch-to-now claim is made and the connector is disabled.
+- **Deferred — MEXC:** provider trade history is approximately one month; older
+  activity requires MEXC CSV/account statements. Per-symbol inactive-market
+  discovery and replay-safe frontiers are not yet proven, so the connector is disabled.
+  Source: [MEXC Spot API — Account Trade List](https://www.mexc.com/api-docs/spot-v3/spot-account-trade#account-trade-list).
+- **Deferred — BitMart:** provider query-trades history is approximately three
+  months and the pinned V4 endpoint caps pages at 200. Older activity requires
+  a BitMart export. Native backward pagination and durable replay are not yet
+  proven, so the connector is disabled. CCXT uses `uid` for its API memo.
+  Source: [BitMart Spot API — Trade History V4](https://developer-pro.bitmart.com/en/spot/#trade-history-v4).
+- **Deferred — Bitvavo:** the API supports `tradeIdFrom`/`tradeIdTo` boundaries,
+  but a saturated-window implementation with a window strictly below 24 hours
+  is not yet committed. Transfers have no CCXT unified id; fixtures prove raw
+  `txId` plus endpoint/time/asset/amount disambiguation. The connector is disabled.
 - Brand marks: only Bitstamp has a sourced colored brand asset
   (`bitstamp.svg`, Iconify token-branded). Bitget/MEXC/BitMart/Bitvavo render
   the in-app monogram chip (no downloadable colored mark exists — see

@@ -9,17 +9,22 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  * `password`/memo in addition to apiKey+secret.
  */
 describe('autoSyncExchanges catalog', () => {
-  it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(17);
+  it('lists exactly the enabled exchanges', () => {
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(13);
   });
 
-  it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
-    expect(AUTO_SYNC_EXCHANGES.map((e) => e.id)).toEqual([...SYNC_EXCHANGES]);
+  it('is an ordered safe subset of the typed ccxt exchange ids', () => {
+    expect(AUTO_SYNC_EXCHANGES.map((e) => e.id)).toEqual(
+      SYNC_EXCHANGES.filter((id) => !['bitget', 'mexc', 'bitmart', 'bitvavo'].includes(id))
+    );
+    for (const deferred of ['bitget', 'mexc', 'bitmart', 'bitvavo']) {
+      expect(getAutoSyncExchange(deferred)).toBeUndefined();
+    }
   });
 
-  it('needsPassphrase is true ONLY for okx, kucoin, bitget and bitmart', () => {
+  it('needsPassphrase is true only for enabled OKX and KuCoin', () => {
     const withPassphrase = AUTO_SYNC_EXCHANGES.filter((e) => e.needsPassphrase).map((e) => e.id);
-    expect(withPassphrase.sort()).toEqual(['bitget', 'bitmart', 'kucoin', 'okx']);
+    expect(withPassphrase.sort()).toEqual(['kucoin', 'okx']);
   });
 
   it('monograms are two characters', () => {

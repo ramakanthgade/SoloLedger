@@ -78,11 +78,62 @@ describe('createExchangeClient', () => {
     expect(client.fetch).not.toBe(fresh.fetch);
   });
 
-  it('maps passphrase → ccxt password for every passphrase exchange', async () => {
-    for (const exchange of ['okx', 'kucoin', 'bitget', 'bitmart'] as const) {
+  it('maps passphrase → ccxt password for OKX, KuCoin and Bitget', async () => {
+    for (const exchange of ['okx', 'kucoin', 'bitget'] as const) {
       const client = await createExchangeClient(row({ exchange, passphrase: 'phrase' }));
       expect((client as unknown as Record<string, unknown>).password).toBe('phrase');
     }
+  });
+
+  it('maps the BitMart memo to CCXT uid and produces a signed private request', async () => {
+    const client = await createExchangeClient(row({ exchange: 'bitmart', passphrase: 'api-memo' }));
+    const raw = client as unknown as {
+      uid?: string; password?: string; requiredCredentials: Record<string, boolean>;
+      sign(path: string, api: string, method: string, params: Record<string, unknown>): {
+        url: string; method: string; headers: Record<string, string>;
+      };
+    };
+    expect(raw.uid).toBe('api-memo');
+    expect(raw.password).toBeUndefined();
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, uid: true });
+    const signed = raw.sign('spot/v1/wallet', 'private', 'GET', {});
+    expect(signed).toMatchObject({
+      url: 'https://api-cloud.bitmart.com/spot/v1/wallet',
+      method: 'GET',
+      headers: {
+        'X-BM-KEY': 'key',
+        'X-BM-SIGN': expect.stringMatching(/^[a-f0-9]{64}$/),
+        'X-BM-TIMESTAMP': expect.stringMatching(/^\d+$/)
+      }
+    });
+  });
+
+  it.each([
+    {
+      exchange: 'bitget',
+      expected: [['api.bitget.com', '/api/v2/spot/public/symbols', 'GET']],
+      response: { code: '00000', msg: 'success', requestTime: 1, data: [] }
+    },
+    {
+      exchange: 'mexc',
+      expected: [['api.mexc.com', '/api/v3/exchangeInfo', 'GET']],
+      response: { timezone: 'UTC', serverTime: 1, rateLimits: [], exchangeFilters: [], symbols: [] }
+    },
+    {
+      exchange: 'bitmart',
+      expected: [['api-cloud.bitmart.com', '/spot/v1/symbols/details', 'GET']],
+      response: { message: 'OK', code: 1000, trace: 'fixture', data: { symbols: [] } }
+    }
+  ] as const)('$exchange loadMarkets emits only the pinned spot request', async ({ exchange, expected, response }) => {
+    const client = await createExchangeClient(row({ exchange }));
+    const calls: string[][] = [];
+    client.fetch = async (url, method = 'GET') => {
+      const parsed = new URL(url);
+      calls.push([parsed.host, parsed.pathname, method]);
+      return response;
+    };
+    await client.loadMarkets(true);
+    expect(calls).toEqual(expected);
   });
 
   it('configures Bybit as spot-only without signed currency discovery', async () => {

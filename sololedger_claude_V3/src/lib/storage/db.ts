@@ -997,6 +997,20 @@ export function transactionExchangeKey(
             : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:btcmarkets:${kind}:${t.sourceRef}`;
   }
+  const scopedBatch1Api = /^(bitstamp|bitget|mexc|bitmart|bitvavo)_api$/.exec(t.source);
+  if (scopedBatch1Api) {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind
+      : t.raw?.tradeId != null
+        ? 'trade'
+        : t.raw?.transferType === 'deposit'
+          ? 'deposit'
+          : t.raw?.transferType === 'withdrawal' || t.raw?.transferType === 'withdraw'
+            ? 'withdrawal'
+            : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:${scopedBatch1Api[1]}:${kind}:${t.sourceRef}`;
+  }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;
   }

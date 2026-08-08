@@ -1,6 +1,7 @@
 import 'fake-indexeddb/auto';
 import { describe, expect, it } from 'vitest';
 import { normalizeTrade, normalizeTransfer } from './normalize';
+import { filterBitstampSpotTrades } from './engine';
 import type { UnifiedMarket, UnifiedTrade, UnifiedTransfer } from './ccxtLoader';
 
 /**
@@ -16,6 +17,9 @@ import type { UnifiedMarket, UnifiedTrade, UnifiedTransfer } from './ccxtLoader'
 interface CcxtParser {
   parseTrades(rows: unknown[], market?: UnifiedMarket): UnifiedTrade[];
   parseTransactions(rows: unknown[]): UnifiedTransfer[];
+  fetchMarkets(params?: object): Promise<UnifiedMarket[]>;
+  setMarkets(markets: UnifiedMarket[]): void;
+  publicGetMarkets?: (params?: object) => Promise<unknown[]>;
 }
 
 const btcUsdt: UnifiedMarket = { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', spot: true, active: true };
@@ -45,6 +49,56 @@ describe('Bitstamp (user_transactions type=2 trade rows)', () => {
     expect(trades).toHaveLength(1);
     const tx = normalizeTrade('bitstamp', trades[0], btcUsd);
     expect(tx).toMatchObject({ source: 'bitstamp_api', sourceRef: '209895701', type: 'buy', asset: 'BTC', amount: 0.005 });
+    expect(tx?.raw?.exchangeSyncKind).toBe('trade');
+  });
+
+  it('fails closed on perpetual and unresolved account-wide transaction rows', () => {
+    const spot = { id: 'btcusd', symbol: 'BTC/USD', base: 'BTC', quote: 'USD', spot: true };
+    const perpetual = {
+      id: 'btcusd-perp', symbol: 'BTC/USD:USD', base: 'BTC', quote: 'USD', spot: false
+    };
+    const rows: UnifiedTrade[] = [
+      { id: 'spot-fill', symbol: spot.symbol },
+      { id: 'perp-fill', symbol: perpetual.symbol },
+      { id: 'unknown-fill', symbol: 'UNKNOWN/USD' },
+      { id: 'missing-symbol' }
+    ];
+    expect(filterBitstampSpotTrades({ [spot.symbol]: spot, [perpetual.symbol]: perpetual }, rows))
+      .toEqual([rows[0]]);
+    expect(filterBitstampSpotTrades(undefined, rows)).toEqual([]);
+  });
+
+  it('uses pinned raw market_type semantics to exclude a perpetual user_transaction', async () => {
+    const client = await parser('bitstamp');
+    client.publicGetMarkets = async () => [
+      {
+        name: 'BTC/USD', market_symbol: 'btcusd', base_currency: 'BTC', counter_currency: 'USD',
+        base_decimals: 8, counter_decimals: 2, trading: 'Enabled', market_type: 'SPOT'
+      },
+      {
+        name: 'BTC/USD-PERP', market_symbol: 'btcusd-perp', base_currency: 'BTC', counter_currency: 'USD',
+        base_decimals: 5, counter_decimals: 2, trading: 'Enabled', market_type: 'PERPETUAL',
+        payoff_type: 'Linear'
+      }
+    ];
+    const markets = await client.fetchMarkets();
+    client.setMarkets(markets);
+    const common = {
+      fee: '0.1', datetime: '2021-11-25 12:59:59.322000', order_id: 1,
+      type: '2', usd: '-10', btc: '0.001'
+    };
+    const parsed = client.parseTrades([
+      { ...common, id: 1, btc_usd: '10000' },
+      { ...common, id: 2, 'btc_usd-perp': '10001' }
+    ]);
+    // The pinned parser exposes the raw account-wide derivative key as
+    // BTC/USD-PERP rather than the canonical market symbol BTC/USD:USD. That
+    // mismatch is intentionally unresolved and therefore fails closed too.
+    expect(parsed.map((trade) => trade.symbol)).toEqual(['BTC/USD', 'BTC/USD-PERP']);
+    expect(filterBitstampSpotTrades(
+      Object.fromEntries(markets.map((market) => [market.symbol, market])),
+      parsed
+    ).map((trade) => trade.id)).toEqual(['1']);
   });
 });
 
@@ -203,7 +257,11 @@ describe('Bitvavo (trade history)', () => {
     const client = await parser('bitvavo');
     const done = [{ transactionId: 'abc-1', timestamp: 1590505649245, type: 'withdrawal', amount: '0.1', symbol: 'BTC', status: 'completed', address: '1xyz', txId: 'txhash' }];
     const pending = [{ ...done[0], status: 'sending' }];
-    expect(normalizeTransfer('bitvavo', client.parseTransactions(done)[0])).toMatchObject({ source: 'bitvavo_api', type: 'transfer_out' });
+    expect(normalizeTransfer('bitvavo', client.parseTransactions(done)[0])).toMatchObject({
+      source: 'bitvavo_api', type: 'transfer_out',
+      sourceRef: 'bitvavo:txhash:transfer_out:1590505649245:BTC:0.1',
+      raw: { exchangeSyncKind: 'withdrawal', txid: 'txhash' }
+    });
     expect(normalizeTransfer('bitvavo', client.parseTransactions(pending)[0])).toBeNull();
   });
 });
