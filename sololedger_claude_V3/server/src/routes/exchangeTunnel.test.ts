@@ -492,6 +492,71 @@ describe('4. exchangeId and path validation', () => {
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    '/binance/api/v3//time',
+    '/binance//api/v3/time'
+  ])('repeated slash path %s → 400 bad_path before fetch (direct handler)', async (url) => {
+    const { res, state } = makeStubRes();
+    await exchangeTunnelHandler({ method: 'GET', url, headers: {} } as unknown as Request, res);
+    expect(state.statusCode).toBe(400);
+    expect(res.locals.tunnelErrorKind).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps one legitimate leading slash and the raw query in a direct handler call', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"ok":true}'));
+    const { res, state } = makeStubRes();
+    await exchangeTunnelHandler({
+      method: 'GET', url: '/binance/api/v3/time?signature=Ab%2B%2F%3D', headers: {}
+    } as unknown as Request, res);
+    const [url] = lastUpstreamCall();
+    expect(url).toBe('https://api.binance.com/api/v3/time?signature=Ab%2B%2F%3D');
+    expect(state.statusCode).toBe(200);
+  });
+
+  it.each([
+    '/cryptocom/exchange/v1/private/../create-order',
+    '/cryptocom/exchange/v1/private/%2e%2e/create-order',
+    '/cryptocom/exchange/v1/private/%2E%2e/create-order',
+    '/cryptocom/exchange/v1/private/%252e%252e/create-order',
+    '/cryptocom/exchange/v1/private/%2f..%2fcreate-order',
+    '/cryptocom/exchange/v1/private/\\..\\create-order',
+    '/cryptocom/exchange/v1/private/%5c..%5Ccreate-order'
+  ])('rejects non-canonical traversal path %s before fetch', async (url) => {
+    const { res, state } = makeStubRes();
+    await exchangeTunnelHandler({ method: 'POST', url, headers: {} } as unknown as Request, res);
+    expect(state.statusCode).toBe(400);
+    expect(res.locals.tunnelErrorKind).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps allowlisted paths and per-path methods exact', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    const allowed = await client('/cryptocom/exchange/v1/public/get-instruments', { headers: AUTH });
+    expect(allowed.status).toBe(200);
+
+    upstreamMock.mockClear();
+    for (const [path, method] of [
+      ['/cryptocom/exchange/v1/public/get-instruments/extra', 'GET'],
+      ['/cryptocom/exchange/v1/public/Get-Instruments', 'GET'],
+      ['/cryptocom/exchange/v1/public/get-instruments', 'POST']
+    ] as const) {
+      const rejected = await client(path, { method, headers: AUTH });
+      expect(rejected.status).toBe(400);
+      expect(rejected.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps HTX numeric account-id paths available without generic prefix matching', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"status":"ok","data":{}}'));
+    const res = await client('/htx/v1/account/accounts/123/balance', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.huobi.pro/v1/account/accounts/123/balance');
+    expect(init.method).toBe('GET');
+  });
+
   it('Bybit rejects non-sync and derivatives REST paths before fetch', async () => {
     for (const path of [
       '/bybit/v5/order/create',

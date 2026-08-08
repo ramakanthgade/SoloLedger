@@ -33,7 +33,7 @@ interface ExchangeSpec {
   host: string;
   /** Headers the client may forward, sent as `x-exchange-<name>` (contract C2). */
   headers: readonly string[];
-  /** Optional exact endpoint allowlist. Prefix entries ending in `/` allow descendants. */
+  /** Optional endpoint allowlist. Entries are exact unless they contain a typed placeholder. */
   paths?: readonly string[];
   /** Optional HTTP-method allowlist (used when a connector is read-only). */
   methods?: readonly string[];
@@ -198,7 +198,6 @@ exchangeTunnelRouter.use((req, res, next) => {
 });
 
 function pathAllowed(path: string, allowed: string): boolean {
-  if (allowed.endsWith('/')) return path.startsWith(allowed);
   if (!allowed.includes('{account-id}')) return path === allowed;
   const [prefix, suffix] = allowed.split('{account-id}');
   if (!path.startsWith(prefix) || !path.endsWith(suffix)) return false;
@@ -281,6 +280,26 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
     fail(res, 'bad_path', 400, 'Missing upstream path');
     return;
   }
+  // Fail closed before URL construction. No connector needs path escapes, and
+  // accepting them creates multiple interpretations between Express, WHATWG
+  // URL, fetch and the upstream proxy. Queries remain raw and may contain `%`.
+  // Path percent-encoding is rejected wholesale, covering encoded/mixed-case
+  // dot segments, encoded slashes and encoded backslashes without relying on
+  // one decoder's normalization behavior.
+  const pathSegments = upstreamPath.split('/');
+  if (
+    upstreamPath.includes('%') ||
+    upstreamPath.includes('\\') ||
+    pathSegments.slice(1).some((segment) => segment === '' || segment === '.' || segment === '..')
+  ) {
+    fail(res, 'bad_path', 400, 'Non-canonical upstream path');
+    return;
+  }
+  const canonicalUrl = new URL(`https://${spec.host}${upstreamPath}`);
+  if (canonicalUrl.host !== spec.host || canonicalUrl.pathname !== upstreamPath) {
+    fail(res, 'bad_path', 400, 'Non-canonical upstream path');
+    return;
+  }
   if (spec.paths && !spec.paths.some((allowed) => pathAllowed(upstreamPath, allowed))) {
     fail(res, 'bad_path', 400, 'Upstream path is not allowed for this exchange');
     return;
@@ -290,7 +309,7 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
     return;
   }
   const allowedPathMethods = spec.pathMethods?.[upstreamPath];
-  if (allowedPathMethods && !allowedPathMethods.includes(method)) {
+  if (spec.pathMethods && (!allowedPathMethods || !allowedPathMethods.includes(method))) {
     fail(res, 'bad_path', 400, 'Upstream method is not allowed for this exchange path');
     return;
   }
