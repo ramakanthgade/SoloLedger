@@ -75,7 +75,6 @@ import type {
   SyncErrorKind,
   SyncRunResult
 } from './types';
-import { isEnabledExchangeId } from './types';
 
 // ---- Pinned constants (§B-3) ----
 
@@ -179,31 +178,11 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   gemini: Date.UTC(2015, 9, 8), // Gemini exchange launch, 2015-10-08
   // BTC Markets launched during 2013; the first day of the best-supported
   // launch month is a conservative scan floor, not an API-retention claim.
-  btcmarkets: Date.UTC(2013, 8, 1),
-  bitstamp: Date.UTC(2011, 7, 1), // Bitstamp launched August 2011
-  bitget: Date.UTC(2018, 6, 1), // Bitget founded mid-2018
-  mexc: Date.UTC(2018, 3, 1), // MEXC founded April 2018
-  bitmart: Date.UTC(2018, 2, 15), // BitMart exchange launched 2018-03-15
-  bitvavo: Date.UTC(2018, 9, 1) // Bitvavo exchange launched late 2018
+  btcmarkets: Date.UTC(2013, 8, 1)
 };
 
 /** Retryable classifications — everything else aborts immediately. */
 const RETRYABLE_KINDS: ReadonlySet<SyncErrorKind> = new Set(['rate_limit', 'network']);
-
-/**
- * Bitstamp's account-wide `user_transactions` endpoint can contain both spot
- * and perpetual fills. CCXT 4.5.68 derives each unified trade symbol from the
- * raw `<base>_<quote>` price key, then resolves it through markets loaded from
- * `/api/v2/markets/`, whose verified `market_type` maps to `market.spot`.
- * Unknown/unresolved symbols fail closed rather than entering the tax ledger.
- */
-export function filterBitstampSpotTrades(
-  markets: Record<string, UnifiedMarket> | undefined,
-  rows: UnifiedTrade[]
-): UnifiedTrade[] {
-  if (!markets) return [];
-  return rows.filter((trade) => trade.symbol != null && markets[trade.symbol]?.spot === true);
-}
 
 // ---- Dependency injection (tests drive fake clients / clocks) ----
 
@@ -243,7 +222,7 @@ const REAUTHORIZE_ERROR = 'Reauthorize this connection before syncing.';
 function hasRequiredCredentials(row: ExchangeConnectionRow): boolean {
   if ((row.credentialsState ?? 'ready') !== 'ready') return false;
   if (!row.apiKey?.trim() || !row.secret?.trim()) return false;
-  return (row.exchange !== 'okx' && row.exchange !== 'kucoin' && row.exchange !== 'bitget' && row.exchange !== 'bitmart') || !!row.passphrase?.trim();
+  return (row.exchange !== 'okx' && row.exchange !== 'kucoin') || !!row.passphrase?.trim();
 }
 
 /** Engine-boundary authorization plus one monotonic generation reservation. */
@@ -253,9 +232,6 @@ async function reserveExchangeOperation(
   return db.transaction('rw', db.exchangeConnections, async () => {
     const current = await db.exchangeConnections.get(connectionId);
     if (!current) throw new Error('Connection not found — it may have been removed.');
-    if (!isEnabledExchangeId(current.exchange)) {
-      throw new Error('This exchange connector is deferred and cannot sync. Import a file or remove it.');
-    }
     if (!hasRequiredCredentials(current)) throw new Error(REAUTHORIZE_ERROR);
     const generation = Math.max(0, current.authorityGeneration ?? 0) + 1;
     const expectedRevision = Math.max(0, current.revision ?? 0) + 1;
@@ -593,8 +569,6 @@ export async function paginatePhase<T extends PageRow>(args: {
   advanceOnFullPage?: boolean;
   maxPages?: number;
   maxEmptyHops?: number;
-  /** Immutable provider identity; combined endpoints may reuse ids by kind. */
-  rowIdentity?: (row: T) => string | undefined;
 }): Promise<PaginateResult<T>> {
   const maxPages = args.maxPages ?? MAX_PAGES_PER_PHASE;
   const maxEmptyHops = args.maxEmptyHops ?? MAX_EMPTY_HOPS_PER_PHASE;
@@ -615,7 +589,7 @@ export async function paginatePhase<T extends PageRow>(args: {
     const page = await args.fetchPage(fetches, windowStart, until);
     fetches += 1;
     for (const row of page) {
-      const key = args.rowIdentity?.(row) ?? (row.id != null ? String(row.id) : null);
+      const key = row.id != null ? String(row.id) : null;
       if (key != null) {
         if (seenIds.has(key)) continue;
         seenIds.add(key);
@@ -1904,71 +1878,7 @@ async function fetchTransferKind(
       sleep
     });
   }
-  if (exchange === 'bitstamp') {
-    if (!client.fetchDepositsWithdrawals) {
-      throw new Error('Bitstamp combined transfer history is unavailable in this CCXT build.');
-    }
-    let offset = 0;
-    return paginatePhase<UnifiedTransfer>({
-      fetchPage: async (_i, pageSince) => {
-        const page = await client.fetchDepositsWithdrawals!(
-          undefined, pageSince, 1000, offset > 0 ? { offset } : {}
-        );
-        offset += 1000;
-        return page;
-      },
-      since,
-      windowMs: Number.POSITIVE_INFINITY,
-      fullPage: 1000,
-      now,
-      advanceOnFullPage: false,
-      rowIdentity: (row) => row.id == null ? undefined : `${row.type ?? 'unknown'}:${String(row.id)}`
-    });
-  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
-  if (exchange === 'bitget' || exchange === 'mexc') {
-    // startTime/endTime window params; page caps 500 (Bitget) / 1000 (MEXC).
-    const limit = exchange === 'bitget' ? 500 : 1000;
-    return paginatePhase<UnifiedTransfer>({
-      fetchPage: (_i, s, u) =>
-        fetchDeposits
-          ? client.fetchDeposits(undefined, s, limit, { until: u })
-          : client.fetchWithdrawals(undefined, s, limit, { until: u }),
-      since,
-      windowMs: BINANCE_TRANSFER_WINDOW_MS,
-      fullPage: limit,
-      now
-    });
-  }
-  if (exchange === 'bitmart') {
-    // V2 deposit-withdraw history: startTime/endTime params (forwarded as
-    // `until`), N caps at 1000.
-    return paginatePhase<UnifiedTransfer>({
-      fetchPage: (_i, s, u) =>
-        fetchDeposits
-          ? client.fetchDeposits(undefined, s, 1000, { until: u })
-          : client.fetchWithdrawals(undefined, s, 1000, { until: u }),
-      since,
-      windowMs: BINANCE_TRANSFER_WINDOW_MS,
-      fullPage: 1000,
-      now
-    });
-  }
-  if (exchange === 'bitvavo') {
-    // start/end window params, default page 100 (deposit) / 1000 (withdrawal
-    // default is 500). Use the documented caps per kind.
-    const limit = fetchDeposits ? 100 : 500;
-    return paginatePhase<UnifiedTransfer>({
-      fetchPage: (_i, s, u) =>
-        fetchDeposits
-          ? client.fetchDeposits(undefined, s, limit, { until: u })
-          : client.fetchWithdrawals(undefined, s, limit, { until: u }),
-      since,
-      windowMs: BINANCE_TRANSFER_WINDOW_MS,
-      fullPage: limit,
-      now
-    });
-  }
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
       fetchDeposits
@@ -2158,62 +2068,6 @@ async function fetchTradesForSymbol(
         maxRequests: opts?.btcmarketsMaxRequests,
         sleep: opts?.sleep
       });
-    case 'bitstamp': {
-      // user_transactions accepts a trailing `offset` (forwarded via params);
-      // rows come newest-first, cap 1000. `since` only post-filters client-
-      // side, so pages walk the offset chain until rows age past the floor.
-      let offset = 0;
-      const outcome = await paginatePhase<UnifiedTrade>({
-        fetchPage: async (_i, s) => {
-          const page = await client.fetchMyTrades(undefined, s, 1000, offset > 0 ? { offset } : {});
-          offset += 1000;
-          return page;
-        },
-        since,
-        windowMs: Number.POSITIVE_INFINITY,
-        fullPage: 1000,
-        now,
-        advanceOnFullPage: false
-      });
-      return { ...outcome, rows: filterBitstampSpotTrades(client.markets, outcome.rows) };
-    }
-    case 'bitget':
-      // V2 spot fills: startTime/endTime window params, max limit 500, one
-      // page per window (an API-full page splits the window — replayable).
-      return paginatePhase<UnifiedTrade>({
-        fetchPage: (_i, s, u) => client.fetchMyTrades(symbol, s, 500, { until: u }),
-        since,
-        windowMs: TRADE_WINDOW_MS,
-        fullPage: 500,
-        now
-      });
-    case 'mexc':
-      // Binance-style myTrades: startTime/endTime, limit cap 1000.
-      return paginatePhase<UnifiedTrade>({
-        fetchPage: (_i, s, u) => client.fetchMyTrades(symbol, s, 1000, { until: u }),
-        since,
-        windowMs: TRADE_WINDOW_MS,
-        fullPage: 1000,
-        now
-      });
-    case 'bitmart':
-      // V4 query-trades: startTime/endTime, limit cap 200, symbol optional.
-      return paginatePhase<UnifiedTrade>({
-        fetchPage: (_i, s, u) => client.fetchMyTrades(undefined, s, 200, { until: u }),
-        since,
-        windowMs: TRADE_WINDOW_MS,
-        fullPage: 200,
-        now
-      });
-    case 'bitvavo':
-      // start/end window params, default page 500 / max 1000.
-      return paginatePhase<UnifiedTrade>({
-        fetchPage: (_i, s, u) => client.fetchMyTrades(symbol, s, 500, { until: u }),
-        since,
-        windowMs: TRADE_WINDOW_MS,
-        fullPage: 500,
-        now
-      });
   }
 }
 
@@ -2268,14 +2122,6 @@ export interface SyncFetchOutcome {
   /** Set when the connection row no longer exists mid-run. */
 }
 
-function rejectDeferredTaxConnector(exchange: ExchangeId): void {
-  if (!isEnabledExchangeId(exchange)) {
-    throw new Error(
-      `${exchangeLabel(exchange)} auto-sync is temporarily deferred: its pinned native pagination and durable replay contract is not yet exhaustive enough for tax history.`
-    );
-  }
-}
-
 export interface SyncCommitOutcome {
   imported: number;
   pricesUpdated: number;
@@ -2311,7 +2157,6 @@ export async function syncConnection(
   let phase: 'validating' | 'fetching' = 'validating';
   let fetchedCount = 0;
   try {
-    rejectDeferredTaxConnector(exchange);
     // ---- validating ----
     hooks.onPhase?.('validating');
     if (exchange === 'btcmarkets' && !validBtcMarketsConnectionState(row)) {
@@ -2372,10 +2217,6 @@ export async function syncConnection(
       transferRequestedStarts.deposits,
       transferRequestedStarts.withdrawals
     );
-    const bitstampSharedTransferStart = Math.min(
-      transferRequestedStarts.deposits,
-      transferRequestedStarts.withdrawals
-    );
     let btcmarketsTransferCursor = row.btcmarketsNativeCursors?.transfers;
     let btcmarketsTransferCursorCandidate: string | undefined;
     let btcmarketsTransferCheckpoint = row.btcmarketsPagination?.transfers;
@@ -2393,8 +2234,6 @@ export async function syncConnection(
           ? geminiSharedTransferStart
         : exchange === 'btcmarkets'
           ? btcmarketsSharedTransferStart
-        : exchange === 'bitstamp'
-          ? bitstampSharedTransferStart
         : transferRequestedStarts[kind];
       if (exchange === 'cryptocom' && row.cryptocomPendingTransfers?.[kind] != null) {
         since = Math.min(since, row.cryptocomPendingTransfers[kind]!);
@@ -2408,9 +2247,9 @@ export async function syncConnection(
       if (exchange === 'bitfinex') since = bitfinexRetainedMovement.since;
       const cbAssets = [...new Set([...balanceAssets, ...(row.knownAssets ?? [])])];
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
-      if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitstamp') && kind === 'withdrawals') {
+      if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets') && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
-      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitstamp') {
+      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets') {
         // Gate/HTX/Crypto.com/Bitfinex retry each physical request inside their paginator so
         // a retry cannot restart pagination or reset the attempt cap.
         outcome = await fetchTransferKind(
@@ -2487,16 +2326,6 @@ export async function syncConnection(
           if (unknownDirection > 0 || unknownStatus > 0) {
             warnings.push(`BTC Markets returned ${unclassified} transfer(s) with unknown direction or status; coverage remains partial and the raw activity requires review.`);
           }
-          outcome = transferOutcomes.get(kind)!;
-        } else if (exchange === 'bitstamp') {
-          const shared = (rows: UnifiedTransfer[]): FetchPlanOutcome<UnifiedTransfer> => ({
-            rows,
-            maxTs: outcome.maxTs,
-            partial: outcome.partial,
-            termination: outcome.termination
-          });
-          transferOutcomes.set('deposits', shared(outcome.rows.filter((item) => item.type === 'deposit')));
-          transferOutcomes.set('withdrawals', shared(outcome.rows.filter((item) => item.type === 'withdrawal')));
           outcome = transferOutcomes.get(kind)!;
         } else {
           transferOutcomes.set(kind, outcome);
@@ -2743,42 +2572,6 @@ export async function syncConnection(
       tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
-    } else if (exchange === 'bitget' || exchange === 'mexc' || exchange === 'bitvavo') {
-      // These APIs require a symbol for fetchMyTrades. Iterate the active
-      // spot universe (same discovery approach as HTX/Gemini); each symbol's
-      // window plan lives in fetchTradesForSymbol. A delisted symbol is
-      // skipped with a warning instead of aborting the whole sync.
-      const symbols = [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])]
-        .filter((symbol) => markets[symbol]?.spot === true && markets[symbol]?.active !== false)
-        .sort();
-      discoveryUniverseCount = symbols.length;
-      newKnownSymbols = symbols;
-      let done = 0;
-      hooks.onProgress?.({ done: 0, total: symbols.length });
-      for (const symbol of symbols) {
-        let outcome: FetchPlanOutcome<UnifiedTrade>;
-        try {
-          outcome = await withRetries(
-            () => fetchTradesForSymbol(client, exchange, symbol, tradeSince, nowMs),
-            sleep
-          );
-        } catch (err) {
-          if (hasErrorName(err, 'BadSymbol', 'InvalidSymbol')) {
-            warnings.push(`${symbol}: market no longer available on ${exchangeLabel(exchange)} — skipped.`);
-            skippedSymbols += 1;
-            done += 1;
-            hooks.onProgress?.({ done, total: symbols.length });
-            continue;
-          }
-          throw err;
-        }
-        tradeOutcomes.push(outcome);
-        tradeRows.push(...outcome.rows);
-        fetchedCount += outcome.rows.length;
-        done += 1;
-        hooks.onProgress?.({ done, total: symbols.length });
-      }
-      discoveredCount = done;
     } else {
       const outcome = exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'btcmarkets'
         ? await fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs, {
@@ -2837,8 +2630,7 @@ export async function syncConnection(
       }
     }
 
-    const tradeCursorCandidate = exchange === 'htx' || exchange === 'gemini' || exchange === 'btcmarkets' ||
-      exchange === 'bitget' || exchange === 'mexc' || exchange === 'bitvavo'
+    const tradeCursorCandidate = exchange === 'htx' || exchange === 'gemini' || exchange === 'btcmarkets'
       // Every symbol must have been verified through the same frontier. A
       // max would skip an interrupted symbol; min keeps its window replayable.
       ? (tradeOutcomes.length > 0
@@ -2892,10 +2684,6 @@ export async function syncConnection(
     } else {
       let cryptocomUnresolvedTrades = 0;
       for (const trade of tradeRows) {
-        if (exchange === 'bitstamp' && (trade.timestamp ?? nowMs + 1) > nowMs) {
-          tradeNormalizationDrops += 1;
-          continue;
-        }
         if (exchange === 'gemini' && geminiTradeDisposition(trade) === 'fully_broken') {
           geminiBrokenTradesExcluded += 1;
           continue;
@@ -2947,10 +2735,6 @@ export async function syncConnection(
     };
     for (const kind of ['deposits', 'withdrawals'] as const) {
       for (const transfer of transferOutcomes.get(kind)?.rows ?? []) {
-        if (exchange === 'bitstamp' && (transfer.timestamp ?? nowMs + 1) > nowMs) {
-          skippedTransfersByKind[kind] += 1;
-          continue;
-        }
         const terminal = exchange === 'cryptocom'
           ? cryptocomTransferDisposition(transfer) === 'terminal'
           : exchange === 'bitfinex'
@@ -2969,25 +2753,6 @@ export async function syncConnection(
     }
     const skippedUnsettled = skippedTransfersByKind.deposits + skippedTransfersByKind.withdrawals;
     const terminalTransferExclusions = terminalTransfersByKind.deposits + terminalTransfersByKind.withdrawals;
-    if (exchange === 'bitstamp') {
-      const futureTrades = tradeRows.filter((item) => (item.timestamp ?? nowMs) > nowMs).length;
-      if (tradeNormalizationDrops > 0 || futureTrades > 0) {
-        newCursors.trades = oldCursors.trades;
-        warnings.push(
-          `Bitstamp retained the prior trade cursor because ${tradeNormalizationDrops} trade record(s) were malformed, unresolved, or future-dated; the account ledger will replay them.`
-        );
-      }
-      for (const kind of ['deposits', 'withdrawals'] as const) {
-        const future = (transferOutcomes.get(kind)?.rows ?? [])
-          .filter((item) => (item.timestamp ?? nowMs) > nowMs).length;
-        if (skippedTransfersByKind[kind] > 0 || future > 0) {
-          newCursors[kind] = oldCursors[kind];
-          warnings.push(
-            `Bitstamp retained the prior ${kind} cursor because ${skippedTransfersByKind[kind]} record(s) were unsettled, malformed, or future-dated; the account ledger will replay them.`
-          );
-        }
-      }
-    }
     if (skippedUnsettled > 0) {
       warnings.push(exchange === 'btcmarkets'
         ? `BTC Markets retained native-ID replay evidence for ${skippedUnsettled} transfer${skippedUnsettled === 1 ? '' : 's'} that could not be safely normalized or ${skippedUnsettled === 1 ? 'has not' : 'have not'} settled; newer settled history can still advance.`
@@ -3040,8 +2805,8 @@ export async function syncConnection(
 
     const completedAt = now();
     const requestedStarts = [
-      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : exchange === 'btcmarkets' ? btcmarketsSharedTransferStart : exchange === 'bitstamp' ? bitstampSharedTransferStart : transferRequestedStarts.deposits,
-      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : exchange === 'btcmarkets' ? btcmarketsSharedTransferStart : exchange === 'bitstamp' ? bitstampSharedTransferStart : transferRequestedStarts.withdrawals,
+      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : exchange === 'btcmarkets' ? btcmarketsSharedTransferStart : transferRequestedStarts.deposits,
+      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : exchange === 'btcmarkets' ? btcmarketsSharedTransferStart : transferRequestedStarts.withdrawals,
       exchange === 'gemini' ? requestedTradeSince : tradeSince
     ];
     const tradeStructuralFailure = tradeOutcomes.find((outcome) =>
@@ -3227,9 +2992,7 @@ export async function syncConnection(
       phase === 'validating'
         ? `Could not connect to ${label}.`
         : `Sync failed while fetching (${fetchedCount} rows fetched so far).`;
-    const message = err instanceof Error && err.message.includes('auto-sync is temporarily deferred')
-      ? `${err.message} Nothing was saved.`
-      : `${detail} ${syncErrorMessage(kind, exchange)} Nothing was saved — sync again to retry.`;
+    const message = `${detail} ${syncErrorMessage(kind, exchange)} Nothing was saved — sync again to retry.`;
     try {
       await appendFailedCoverage({
         connectionId,
@@ -3521,7 +3284,6 @@ export async function validateConnection(
   input: NewConnectionInput,
   deps: SyncEngineDeps = {}
 ): Promise<void> {
-  rejectDeferredTaxConnector(input.exchange);
   const createClient = deps.createClient ?? createExchangeClient;
   const probe: ExchangeConnectionRow = {
     id: 'exc_validate',
@@ -3543,12 +3305,6 @@ export async function testConnection(
   input: NewConnectionInput,
   deps: SyncEngineDeps = {}
 ): Promise<{ ok: boolean; error?: string }> {
-  if (!isEnabledExchangeId(input.exchange)) {
-    return {
-      ok: false,
-      error: `${exchangeLabel(input.exchange)} auto-sync is temporarily deferred. Import a file instead.`
-    };
-  }
   try {
     await validateConnection(input, deps);
     return { ok: true };

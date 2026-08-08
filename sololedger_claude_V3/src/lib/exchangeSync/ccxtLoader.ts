@@ -120,8 +120,6 @@ export interface ExchangeClient {
     limit?: number,
     params?: Record<string, unknown>
   ): Promise<UnifiedTransfer[]>;
-  /** Public CCXT parser used to split Bitstamp's shared raw account ledger. */
-  parseTrade?(trade: unknown, market?: UnifiedMarket): UnifiedTrade;
   handleRestResponse(...args: unknown[]): unknown;
   fetch(url: string, method?: string, headers?: Record<string, string>, body?: string): Promise<unknown>;
 }
@@ -139,12 +137,7 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   cryptocom: 'Crypto.com Exchange',
   bitfinex: 'Bitfinex',
   gemini: 'Gemini',
-  btcmarkets: 'BTC Markets',
-  bitstamp: 'Bitstamp',
-  bitget: 'Bitget',
-  mexc: 'MEXC',
-  bitmart: 'BitMart',
-  bitvavo: 'Bitvavo'
+  btcmarkets: 'BTC Markets'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -155,8 +148,7 @@ export function exchangeLabel(exchange: ExchangeId): string {
  * Create a ccxt client for a saved connection row, with the tunnel transport
  * installed. Constructor config per contract C5:
  * `enableRateLimit: true, timeout: 30000`; binance/okx also
- * `options: { defaultType: 'spot' }`; passphrase maps to ccxt `password`,
- * except BitMart's UI "memo / passphrase", which CCXT calls `uid`.
+ * `options: { defaultType: 'spot' }`; passphrase maps to ccxt `password`.
  * Throws TunnelError('not_hosted') outside hosted mode.
  */
 export async function createExchangeClient(row: ExchangeConnectionRow): Promise<ExchangeClient> {
@@ -178,11 +170,8 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     enableRateLimit: true,
     timeout: 30_000
   };
-  if (row.passphrase) {
-    if (exchangeId === 'bitmart') config.uid = row.passphrase;
-    else config.password = row.passphrase;
-  }
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini' || exchangeId === 'btcmarkets' || exchangeId === 'bitstamp' || exchangeId === 'bitget' || exchangeId === 'mexc' || exchangeId === 'bitmart' || exchangeId === 'bitvavo') {
+  if (row.passphrase) config.password = row.passphrase;
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini' || exchangeId === 'btcmarkets') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -249,20 +238,6 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
                 // discovery to the one public /v3/markets call.
                 fetchCurrencies: false
               }
-          : exchangeId === 'bitget'
-            ? {
-                defaultType: 'spot',
-                fetchMarkets: { types: ['spot'] },
-                // The pinned class joins margin currencies into its nominal
-                // spot market load. The instance override below supplies an
-                // empty join so no margin endpoint is emitted.
-                fetchCurrencies: false
-              }
-          : exchangeId === 'mexc' || exchangeId === 'bitmart' || exchangeId === 'bitvavo'
-            ? {
-                defaultType: 'spot',
-                fetchCurrencies: false
-              }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -305,9 +280,6 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     config.enableLastJsonResponse = true;
     config.enableLastResponseHeaders = true;
   }
-  if (exchangeId === 'bitget' || exchangeId === 'mexc' || exchangeId === 'bitmart' || exchangeId === 'bitvavo') {
-    config.has = { fetchCurrencies: false };
-  }
   const exchange = new Ctor(config) as ExchangeClient;
   if (exchangeId === 'bitfinex') {
     // Bitfinex defaults its public v2 URL to api-pub.bitfinex.com. Keep both
@@ -323,23 +295,6 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // relay deliberately blocks that path, so satisfy the join locally.
     (exchange as unknown as { publicMarginGetCurrencyPairs: () => Promise<unknown[]> })
       .publicMarginGetCurrencyPairs = async () => [];
-  }
-  if (exchangeId === 'bitget') {
-    // CCXT 4.5.68 fetchDefaultMarkets(['spot']) still joins the public margin
-    // currencies endpoint. Margin metadata is irrelevant to spot sync.
-    (exchange as unknown as { publicMarginGetV2MarginCurrencies: () => Promise<unknown> })
-      .publicMarginGetV2MarginCurrencies = async () => ({ code: '00000', data: [] });
-  }
-  if (exchangeId === 'mexc' || exchangeId === 'bitmart') {
-    // Both pinned classes implement fetchMarkets() as spot + derivatives in
-    // parallel regardless of defaultType. Replace only that dispatcher with
-    // the class's own spot parser; signing and all response semantics remain
-    // the pinned CCXT implementation.
-    const raw = exchange as unknown as {
-      fetchMarkets: (params?: Record<string, unknown>) => Promise<UnifiedMarket[]>;
-      fetchSpotMarkets: (params?: Record<string, unknown>) => Promise<UnifiedMarket[]>;
-    };
-    raw.fetchMarkets = raw.fetchSpotMarkets.bind(raw);
   }
   installTunnelFetch(exchange, exchangeId);
   return exchange;

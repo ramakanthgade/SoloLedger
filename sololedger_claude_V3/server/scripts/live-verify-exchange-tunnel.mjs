@@ -474,7 +474,7 @@ async function main() {
     try {
       const { path, method, exchangeHeaders, body, contentType } = t.build();
       const r = await tunnel(token, t.exchange, path, { method, exchangeHeaders, body, contentType });
-      const ok = t.check(r, tryJson(r.text)) && r.relayError === null;
+      const ok = t.check(r) && r.relayError === null;
       record(
         3,
         t.exchange,

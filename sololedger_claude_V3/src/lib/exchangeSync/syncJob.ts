@@ -189,10 +189,7 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : 'Something went wrong while syncing — please try again.';
 }
 
-function requireReady(row: { credentialsState?: 'ready' | 'reauthorization_required' | 'deferred' }): void {
-  if (row.credentialsState === 'deferred') {
-    throw new Error('This exchange connector is deferred and cannot sync. Import a file or remove it.');
-  }
+function requireReady(row: { credentialsState?: 'ready' | 'reauthorization_required' }): void {
   if ((row.credentialsState ?? 'ready') !== 'ready') {
     throw new Error('Reauthorize this connection before syncing.');
   }

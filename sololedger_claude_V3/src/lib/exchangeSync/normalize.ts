@@ -46,12 +46,7 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   cryptocom: 'excx',
   bitfinex: 'exbf',
   gemini: 'exgm',
-  btcmarkets: 'exbm',
-  bitstamp: 'exbs',
-  bitget: 'exbg',
-  mexc: 'exmx',
-  bitmart: 'exbm',
-  bitvavo: 'exbv'
+  btcmarkets: 'exbm'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -130,22 +125,6 @@ function tradeSourceRef(
       // No BTC Markets CSV parser exists. Keep the provider's account-local
       // fill id for API replay without manufacturing an API↔CSV collision.
       return trade.id;
-    case 'bitstamp':
-      // user_transactions rows carry a native numeric `id`; it is the stable
-      // API replay identity (Bitstamp has no CSV twin parser here yet).
-      return trade.id ?? exchangeSourceRef('bitstamp', floorToSeconds(ts), side, base, amount);
-    case 'bitget':
-      // Native fill `tradeId`; the order id is the aggregation key only.
-      return trade.id ?? exchangeSourceRef('bitget', floorToSeconds(ts), side, base, amount);
-    case 'mexc':
-      // Binance-style native fill `id`.
-      return trade.id ?? exchangeSourceRef('mexc', floorToSeconds(ts), side, base, amount);
-    case 'bitmart':
-      // Native `tradeId` (order id is the coarser aggregation identity).
-      return trade.id ?? exchangeSourceRef('bitmart', floorToSeconds(ts), side, base, amount);
-    case 'bitvavo':
-      // Native fill `id` (uuid string).
-      return trade.id ?? exchangeSourceRef('bitvavo', floorToSeconds(ts), side, base, amount);
   }
 }
 
@@ -171,7 +150,9 @@ export function normalizeTrade(
 
   const quoteFiat = exchange === 'gemini'
     ? GEMINI_FIAT_QUOTES.get(quote) ?? quoteToFiatCurrency(quote)
-    : quoteToFiatCurrency(quote);
+    : exchange === 'btcmarkets' && quote === 'AUD'
+      ? 'AUD'
+      : quoteToFiatCurrency(quote);
   const fiatCurrency = quoteFiat ?? 'USD';
   const fiatValue = (quoteFiat != null || STABLE_QUOTES.has(quote)) && cost != null ? cost : undefined;
 
@@ -236,8 +217,7 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' ||
-        exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'mexc' || exchange === 'bitmart' || exchange === 'bitvavo'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets'
         ? { exchangeSyncKind: 'trade' as const }
         : {})
     }
@@ -671,24 +651,6 @@ function transferSourceRef(
       return transfer.id ? `${type === 'transfer_in' ? 'deposit' : 'withdrawal'}:${transfer.id}` : undefined;
     case 'btcmarkets':
       return transfer.id;
-    case 'bitvavo': {
-      // CCXT 4.5.68 deliberately parses Bitvavo transaction `id` as undefined.
-      // Raw txId is provider evidence but may be reused for batched credits, so
-      // retain it with immutable endpoint/economic disambiguation.
-      const providerTxId = transfer.txid ?? transfer.info?.txId;
-      return providerTxId != null && String(providerTxId).trim()
-        ? `bitvavo:${String(providerTxId)}:${type}:${ts}:${asset}:${amount}`
-        : exchangeSourceRef('bitvavo-api', ts, type, asset, amount);
-    }
-    case 'bitstamp':
-    case 'bitget':
-    case 'mexc':
-    case 'bitmart':
-      // Each of these returns a native record id (Bitstamp numeric id, Bitget
-      // orderId, MEXC record id, BitMart withdraw/deposit id).
-      // The id is the stable API replay identity; formula is a fallback only.
-      // API-only fallback intentionally cannot collide with a future CSV parser.
-      return transfer.id ?? exchangeSourceRef(`${exchange}-api`, ts, type, asset, amount);
   }
 }
 
@@ -761,12 +723,6 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
   const geminiType = exchange === 'gemini' && typeof infoType === 'string' ? infoType.toLowerCase() : undefined;
   let type: TxType | null =
     transfer.type === 'deposit' ? 'transfer_in' : transfer.type === 'withdrawal' ? 'transfer_out' : null;
-  // Verify-at-build finding: ccxt 4.5.68 bitmart emits the non-standard
-  // unified type 'withdraw' (not 'withdrawal') from parseTransaction. Map it
-  // here so BitMart withdrawals classify as transfer_out.
-  if (exchange === 'bitmart' && type == null && transfer.type === 'withdraw') {
-    type = 'transfer_out';
-  }
   // Verify-at-build finding: ccxt 4.5.68 coinbase parses v2 'send' rows as
   // unified 'deposit' (positive network.transaction_amount). The raw
   // info.type is authoritative for direction.
@@ -843,8 +799,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' ||
-        exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'mexc' || exchange === 'bitmart' || exchange === 'bitvavo' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

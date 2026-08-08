@@ -6,7 +6,6 @@ import {
   EXCHANGE_API_SOURCES,
   isStableRefSource,
   transactionExchangeKey,
-  normalizeDeferredExchangeConnection,
   type ExchangeConnectionRow
 } from '@/lib/storage/db';
 
@@ -33,9 +32,8 @@ describe('Dexie v8 — exchangeConnections', () => {
     // reconciliation evidence, v12 finalized CSV survivor counts, v13 added
     // immutable safety evidence/decisions, and v14 added immutable Ethereum
     // protocol position generations, v15 added canonical accounts/FKs, and
-    // v16 added atomic wallet/DeFi refresh manifests; v17 normalizes
-    // compatibility-only exchange connectors to a deferred lifecycle state.
-    expect(db.verno).toBe(17);
+    // v16 added atomic wallet/DeFi refresh manifests.
+    expect(db.verno).toBe(16);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
@@ -94,18 +92,6 @@ describe('Dexie v8 — exchangeConnections', () => {
     expect(row?.cursors.trades).toBe(1_700_000_000_000);
   });
 
-  it('normalizes compatibility-only connection rows to the deferred v17 lifecycle state', () => {
-    const row = makeRow('legacy-deferred');
-    row.exchange = 'bitget';
-    row.credentialsState = 'ready';
-    row.status = 'ok';
-    normalizeDeferredExchangeConnection(row);
-    expect(row).toMatchObject({
-      credentialsState: 'deferred', status: 'idle',
-      lastError: expect.stringMatching(/connector is deferred.*import a file/i)
-    });
-  });
-
   it('clearAllData() clears exchangeConnections too', async () => {
     await db.exchangeConnections.put(makeRow('exc_test_2'));
     expect(await db.exchangeConnections.count()).toBe(1);
@@ -119,10 +105,6 @@ describe('EXCHANGE_API_SOURCES', () => {
     expect([...EXCHANGE_API_SOURCES].sort()).toEqual([
       'binance_api',
       'bitfinex_api',
-      'bitget_api',
-      'bitmart_api',
-      'bitstamp_api',
-      'bitvavo_api',
       'btcmarkets_api',
       'bybit_api',
       'coinbase_api',
@@ -132,7 +114,6 @@ describe('EXCHANGE_API_SOURCES', () => {
       'htx_api',
       'kraken_api',
       'kucoin_api',
-      'mexc_api',
       'okx_api'
     ]);
   });

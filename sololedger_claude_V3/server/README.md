@@ -73,7 +73,6 @@ For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each
 - Gated by JWT + active subscription + the `exchangeSyncEnabled` admin flag (`EXCHANGE_SYNC_ENABLED`, default on; admin `PUT /api/admin/config`).
 - Gemini is pinned to `api.gemini.com`: only `GET /v1/symbols` and `POST /v1/balances`, `/v1/mytrades`, `/v1/transfers` are accepted, forwarding only `x-gemini-apikey`, `x-gemini-payload`, and `x-gemini-signature`.
 - BTC Markets is pinned to `api.btcmarkets.net`: only `GET /v3/time`, `/v3/markets`, `/v3/accounts/me/balances`, `/v3/trades`, and `/v3/transfers` are accepted. Only `bm-auth-apikey`, `bm-auth-timestamp`, and `bm-auth-signature` are forwarded; `bm-before`/`bm-after` response cursors are forwarded and CORS-exposed only on the BTC Markets tunnel.
-- Bitstamp, Bitget, MEXC, BitMart, and Bitvavo are tax-safety deferred and have no production relay entries. Their exchange IDs return `404 unknown_exchange`; no public or private upstream route is reachable.
 
 ### Binance gateway (geo unblock)
 
@@ -88,4 +87,4 @@ SL_EMAIL=you@example.com SL_PASSWORD=secret node scripts/live-verify-exchange-tu
 SL_TOKEN=<jwt> node scripts/live-verify-exchange-tunnel.mjs
 ```
 
-Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped, format-valid dummy-key auth requests and asserts exact observed exchange-origin status/code/message tuples. Gemini's dummy-key result likewise proves only that the request reached Gemini's authenticated endpoint; it does not validate a real account key, secret, role, signature, or historical-data access. Deferred Bitstamp, Bitget, MEXC, BitMart, and Bitvavo are intentionally not probed because they have no relay surface. Byte-exact signed header/body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.
+Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and asserts distinctive exchange-origin auth errors. Gemini's dummy-key result proves only that the request reached Gemini's authenticated endpoint; it does not validate a real account key, secret, role, signature, or historical-data access. Byte-exact signed header/body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.

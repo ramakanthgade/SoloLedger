@@ -448,7 +448,6 @@ describe('3. header allowlist', () => {
       'bm-auth-signature': 'signature'
     });
   });
-
 });
 
 /* ------------------------------------------------------------------ *
@@ -460,24 +459,6 @@ describe('4. exchangeId and path validation', () => {
     expect(res.status).toBe(404);
     expect(res.headers.get('x-sololedger-error')).toBe('unknown_exchange');
     expect(await res.json()).toEqual({ error: expect.any(String) });
-    expect(upstreamMock).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['bitstamp', '/api/v2/markets/', 'GET'],
-    ['bitstamp', '/api/v2/user_transactions/', 'POST'],
-    ['bitget', '/api/v2/public/time', 'GET'],
-    ['mexc', '/api/v3/time', 'GET'],
-    ['bitmart', '/system/time', 'GET'],
-    ['bitvavo', '/v2/time', 'GET'],
-    ['bitget', '/api/v2/spot/account/assets', 'GET'],
-    ['mexc', '/api/v3/account', 'GET'],
-    ['bitmart', '/spot/v4/query/trades', 'POST'],
-    ['bitvavo', '/v2/balance', 'GET']
-  ] as const)('deferred %s route %s %s → 404 unknown_exchange', async (exchange, path, method) => {
-    const res = await client(`/${exchange}${path}`, { method, headers: AUTH });
-    expect(res.status).toBe(404);
-    expect(res.headers.get('x-sololedger-error')).toBe('unknown_exchange');
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 
@@ -509,6 +490,49 @@ describe('4. exchangeId and path validation', () => {
       expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
     }
     expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/cryptocom/exchange/v1/private/../create-order',
+    '/cryptocom/exchange/v1/private/%2e%2e/create-order',
+    '/cryptocom/exchange/v1/private/%2E%2e/create-order',
+    '/cryptocom/exchange/v1/private/%252e%252e/create-order',
+    '/cryptocom/exchange/v1/private/%2f..%2fcreate-order',
+    '/cryptocom/exchange/v1/private/\\..\\create-order',
+    '/cryptocom/exchange/v1/private/%5c..%5Ccreate-order'
+  ])('rejects non-canonical traversal path %s before fetch', async (url) => {
+    const { res, state } = makeStubRes();
+    await exchangeTunnelHandler({ method: 'POST', url, headers: {} } as unknown as Request, res);
+    expect(state.statusCode).toBe(400);
+    expect(res.locals.tunnelErrorKind).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps allowlisted paths and per-path methods exact', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    const allowed = await client('/cryptocom/exchange/v1/public/get-instruments', { headers: AUTH });
+    expect(allowed.status).toBe(200);
+
+    upstreamMock.mockClear();
+    for (const [path, method] of [
+      ['/cryptocom/exchange/v1/public/get-instruments/extra', 'GET'],
+      ['/cryptocom/exchange/v1/public/Get-Instruments', 'GET'],
+      ['/cryptocom/exchange/v1/public/get-instruments', 'POST']
+    ] as const) {
+      const rejected = await client(path, { method, headers: AUTH });
+      expect(rejected.status).toBe(400);
+      expect(rejected.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps HTX numeric account-id paths available without generic prefix matching', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"status":"ok","data":{}}'));
+    const res = await client('/htx/v1/account/accounts/123/balance', { headers: AUTH });
+    expect(res.status).toBe(200);
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.huobi.pro/v1/account/accounts/123/balance');
+    expect(init.method).toBe('GET');
   });
 
   it('Bybit rejects non-sync and derivatives REST paths before fetch', async () => {
@@ -557,15 +581,6 @@ describe('4. exchangeId and path validation', () => {
     const post = await client('/htx/v1/order/matchresults', { method: 'POST', headers: AUTH });
     expect(post.status).toBe(400);
     expect(upstreamMock).not.toHaveBeenCalled();
-  });
-
-  it('HTX typed account-id path remains available without restoring generic prefix matching', async () => {
-    upstreamMock.mockResolvedValue(upstreamJson('{"status":"ok","data":{}}'));
-    const res = await client('/htx/v1/account/accounts/123/balance', { headers: AUTH });
-    expect(res.status).toBe(200);
-    const [url, init] = lastUpstreamCall();
-    expect(url).toBe('https://api.huobi.pro/v1/account/accounts/123/balance');
-    expect(init.method).toBe('GET');
   });
 
   it('Crypto.com enforces exact read-only paths with per-path GET/POST methods', async () => {
@@ -623,8 +638,6 @@ describe('4. exchangeId and path validation', () => {
     }
     expect(upstreamMock).not.toHaveBeenCalled();
   });
-
-
 });
 
 /* ------------------------------------------------------------------ *

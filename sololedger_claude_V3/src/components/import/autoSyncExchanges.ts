@@ -211,11 +211,7 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['BTC Markets', 'Account', 'API Key', 'Create API Key'],
     docsUrl: 'https://support.btcmarkets.net/hc/en-us/articles/360046326934-How-to-Access-and-Generate-Revoke-Your-API-Keys'
-  },
-  // Bitstamp, Bitget, MEXC, BitMart and Bitvavo remain typed/parser-supported for
-  // migration and fixture verification, but are intentionally absent from
-  // this user-facing catalog until their native pagination and durable replay
-  // checkpoints can prove exhaustive tax-history coverage.
+  }
 ];
 
 export function getAutoSyncExchange(id: string | null): AutoSyncExchange | undefined {

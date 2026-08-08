@@ -14,7 +14,6 @@ import type {
   ExchangeId,
   NewConnectionInput
 } from './types';
-import { isEnabledExchangeId } from './types';
 import { exchangeAccountCanonicalKey, newAccountIdentity } from '@/lib/accounts/accountIdentity';
 import { cleanCounterpartsForDeletedTransactions } from '@/lib/internalTransfers/persistence';
 
@@ -31,7 +30,6 @@ const REAUTHORIZATION_CHANGED_ERROR =
   'Connection changed while reauthorization was in progress — test the connection again.';
 
 function credentialsState(row: CredentialAwareConnectionRow): ExchangeCredentialsState {
-  if (!isEnabledExchangeId(row.exchange)) return 'deferred';
   // Pre-credential-state rows are existing authorized connections.
   return row.credentialsState ?? 'ready';
 }
@@ -96,7 +94,6 @@ export async function getConnectionRow(id: string): Promise<ExchangeConnectionRo
 
 /** Persist a new connection and return its redacted view. */
 export async function addConnection(input: NewConnectionInput): Promise<ExchangeConnectionView> {
-  if (!isEnabledExchangeId(input.exchange)) throw new Error('This exchange connector is deferred and cannot be connected. Import a file instead.');
   const id = makeId('exc');
   const accountIdentityId = exchangeAccountCanonicalKey(id);
   const row: CredentialAwareConnectionRow = {
@@ -139,7 +136,6 @@ export async function reauthorizeConnection(
     | CredentialAwareConnectionRow
     | undefined;
   if (!existing) throw new Error('Connection not found — it may have been removed.');
-  if (!isEnabledExchangeId(existing.exchange)) throw new Error('This exchange connector is deferred and cannot be reauthorized. Import a file or remove it.');
   if (credentialsState(existing) !== 'reauthorization_required') {
     throw new Error('This connection does not require reauthorization.');
   }

@@ -7,12 +7,9 @@
 import type { Transaction } from '@/types/transaction';
 
 /** Exchanges supported by auto-sync. (ONE name — no aliases.) */
-export type EnabledExchangeId = 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio' | 'htx' | 'cryptocom' | 'bitfinex' | 'gemini' | 'btcmarkets';
-export type DeferredExchangeId = 'bitstamp' | 'bitget' | 'mexc' | 'bitmart' | 'bitvavo';
-/** Compatibility identity for persisted transactions and legacy source rows. */
-export type ExchangeId = EnabledExchangeId | DeferredExchangeId;
+export type ExchangeId = 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio' | 'htx' | 'cryptocom' | 'bitfinex' | 'gemini' | 'btcmarkets';
 
-export const SYNC_EXCHANGES: readonly EnabledExchangeId[] = [
+export const SYNC_EXCHANGES: readonly ExchangeId[] = [
   'binance',
   'coinbase',
   'kraken',
@@ -26,11 +23,6 @@ export const SYNC_EXCHANGES: readonly EnabledExchangeId[] = [
   'gemini',
   'btcmarkets'
 ] as const;
-
-const ENABLED_EXCHANGES = new Set<string>(SYNC_EXCHANGES);
-export function isEnabledExchangeId(value: string): value is EnabledExchangeId {
-  return ENABLED_EXCHANGES.has(value);
-}
 
 /** Per-kind sync cursors (epoch ms) persisted on the connection row. */
 export interface ExchangeSyncCursors {
@@ -47,7 +39,7 @@ export interface NewConnectionInput {
   passphrase?: string;
 }
 
-export type ExchangeCredentialsState = 'ready' | 'reauthorization_required' | 'deferred';
+export type ExchangeCredentialsState = 'ready' | 'reauthorization_required';
 
 /** Candidate credentials are accepted only by validation/persistence boundaries. */
 export interface ExchangeCredentials {

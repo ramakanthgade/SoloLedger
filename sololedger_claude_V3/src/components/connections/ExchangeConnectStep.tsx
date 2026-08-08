@@ -64,7 +64,7 @@ export function ExchangeConnectStep({
   const { mode, selectMode } = useAppMode();
   const hosted = mode === 'hosted';
   const job = useExchangeSyncJob();
-  const exchange = getAutoSyncExchange(exchangeId);
+  const exchange = getAutoSyncExchange(exchangeId)!;
 
   const [flagEnabled, setFlagEnabled] = useState<boolean | null>(null);
   const [apiKey, setApiKey] = useState('');
@@ -99,7 +99,7 @@ export function ExchangeConnectStep({
   const requiredFilled =
     apiKey.trim().length > 0 &&
     secret.trim().length > 0 &&
-    (!exchange?.needsPassphrase || passphrase.trim().length > 0);
+    (!exchange.needsPassphrase || passphrase.trim().length > 0);
   /** Connect unlocks only when the CURRENT values are exactly the tested ones. */
   const tested = testedFingerprint === fingerprint;
   const busy = testing || saving;
@@ -110,7 +110,7 @@ export function ExchangeConnectStep({
     label: label.trim() || undefined,
     apiKey: apiKey.trim(),
     secret: secret.trim(),
-    passphrase: exchange?.needsPassphrase ? passphrase.trim() || undefined : undefined
+    passphrase: exchange.needsPassphrase ? passphrase.trim() || undefined : undefined
   });
 
   const runTest = async () => {
@@ -184,16 +184,6 @@ export function ExchangeConnectStep({
     setSavedConnection(null);
     onConnected(view);
   };
-
-  if (!exchange) {
-    return (
-      <div className="space-y-4 rounded-xl border border-warn/30 bg-warn/10 p-4 text-sm text-mid">
-        <p className="font-semibold text-hi">This exchange connector is deferred.</p>
-        <p>API sync and reauthorization are unavailable. Import an exchange file instead.</p>
-        <Button variant="secondary" onClick={onUseFile}>Import a file instead</Button>
-      </div>
-    );
-  }
 
   // ── local / BYOK: hosted-only explainer (pinned copy, unchanged) ──
   if (!hosted) {

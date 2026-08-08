@@ -6,8 +6,6 @@ import type { Transaction } from '@/types/transaction';
 
 export type {
   ExchangeId,
-  EnabledExchangeId,
-  DeferredExchangeId,
   ExchangeCredentials,
   ExchangeCredentialsState,
   NewConnectionInput,
@@ -15,7 +13,7 @@ export type {
   InitialSyncPreview,
   ExchangeSyncJobState
 } from './types';
-export { SYNC_EXCHANGES, isEnabledExchangeId } from './types';
+export { SYNC_EXCHANGES } from './types';
 
 export {
   listConnections,

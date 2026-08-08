@@ -96,23 +96,13 @@ describe('WhichStep — exchange modes', () => {
     expect(screen.queryByTestId('exchange-row-binance')).not.toBeInTheDocument();
   });
 
-  it('renders a local logo for exchanges with a brand asset and a monogram chip for the rest', () => {
-    // Exchanges whose brand mark could not be sourced as a downloadable
-    // colored asset (official sites anti-bot favicon/icon requests and no
-    // CDN coverage) render the monogram chip fallback instead of an <img>.
-    // Bitstamp is the one Batch-1 addition with a real colored brand asset
-    // (Iconify token-branded). See public/assets/brand-icons/SOURCES.md.
-    const MONOGRAM_ONLY = new Set(['mexc', 'bitmart', 'bitvavo']);
+  it('renders a local logo for every named exchange and reserves fallback artwork for Other', () => {
     renderChooser();
     for (const row of screen.getAllByTestId(/exchange-row-/)) {
       const id = row.getAttribute('data-testid')!.replace('exchange-row-', '');
       if (id === 'other') continue;
-      if (MONOGRAM_ONLY.has(id)) {
-        expect(row.querySelector('img'), id).toBeNull();
-        expect(row.querySelector('.bg-aurora'), id).not.toBeNull();
-        continue;
-      }
       expect(row.querySelector('img'), id).not.toBeNull();
+      expect(row.querySelector('.bg-aurora'), id).toBeNull();
       const src = row.querySelector('img')!.getAttribute('src');
       expect(src, id).toMatch(/^\/assets\/brand-icons\//);
     }

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import type { ExchangeConnectionView, ExchangeId, ExchangeSyncJobState } from '@/lib/exchangeSync';
+import type { ExchangeConnectionView, ExchangeSyncJobState } from '@/lib/exchangeSync';
 
 /**
  * ExchangeConnectStep — the Connections v2 drawer form that replaced
@@ -10,7 +10,7 @@ import type { ExchangeConnectionView, ExchangeId, ExchangeSyncJobState } from '@
  *   flag off → "temporarily unavailable"), and
  * - the test-gated Connect: "Connect securely" stays disabled until
  *   "Test connection" passes for the EXACT current field values — any edit
- *   re-locks it. Passphrase fields follow the exchange catalog.
+ *   re-locks it. Passphrase only for OKX/KuCoin.
  *
  * The barrel is mocked EXCEPT its constants/types (importOriginal keeps the
  * pinned AUTO_SYNC_HOSTED_ONLY copy honest).
@@ -83,7 +83,7 @@ const savedView: ExchangeConnectionView = {
 };
 
 async function renderForm(
-  exchangeId: ExchangeId = 'binance',
+  exchangeId: 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' = 'binance',
   props: { mode?: 'connect' | 'reauthorize'; existingId?: string } = {}
 ) {
   const onConnected = vi.fn();
@@ -278,8 +278,8 @@ describe('ExchangeConnectStep — test-gated Connect (ported from AddConnectionF
     expect(onConnected).not.toHaveBeenCalled();
   });
 
-  it.each(['kucoin'] as const)('%s requires the passphrase before Test/Connect unlock', async (exchangeId) => {
-    await renderForm(exchangeId);
+  it('passphrase exchanges require the passphrase before Test/Connect unlock', async () => {
+    await renderForm('kucoin');
 
     fillCredentials();
     // key+secret filled but passphrase empty → Test stays disabled
@@ -292,7 +292,7 @@ describe('ExchangeConnectStep — test-gated Connect (ported from AddConnectionF
     fireEvent.click(test);
     await screen.findByText(/Connected — read-only access confirmed/);
     expect(mocks.testConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ exchange: exchangeId, passphrase: 'phrase-1' })
+      expect.objectContaining({ exchange: 'kucoin', passphrase: 'phrase-1' })
     );
   });
 
@@ -401,15 +401,6 @@ describe('ExchangeConnectStep — reauthorization', () => {
 });
 
 describe('ExchangeConnectStep — concise guidance', () => {
-  it('fails safely for a deferred catalog id and offers file import', async () => {
-    const onUseFile = vi.fn();
-    render(<ExchangeConnectStep exchangeId="bitget" onConnected={vi.fn()} onUseFile={onUseFile} />);
-    expect(screen.getByText('This exchange connector is deferred.')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: /import a file instead/i }));
-    expect(onUseFile).toHaveBeenCalledOnce();
-    expect(screen.queryByTestId('exchange-connect')).not.toBeInTheDocument();
-  });
-
   it('renders static read-only guidance without mandatory checklist acknowledgements or duplicate notes', async () => {
     await renderForm('binance');
     expect(screen.getByText('Get a read-only key')).toBeInTheDocument();

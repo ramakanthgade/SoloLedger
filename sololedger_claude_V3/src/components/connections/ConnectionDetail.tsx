@@ -327,8 +327,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
     : syncingThisWallet;
   const walletRowsAvailable = card.kind !== 'wallet' || representedWalletRows == null || representedWalletRows.length > 0;
   const syncDisabled = card.kind === 'exchange-api' ? exchangeJob.active : syncingThisWallet || !walletRowsAvailable;
-  const canSync = (card.kind === 'exchange-api' && !card.deferred && !card.requiresReauthorization) ||
-    (card.kind === 'wallet' && walletRowsAvailable);
+  const canSync = card.kind === 'exchange-api' || (card.kind === 'wallet' && walletRowsAvailable);
   const handleSync = async () => {
     if (card.kind === 'exchange-api' && card.exchange) {
       await syncNow(card.exchange.id).catch(() => undefined);

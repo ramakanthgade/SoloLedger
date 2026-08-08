@@ -803,19 +803,6 @@ describe('importFullBackup', () => {
     });
   });
 
-  it.each(['bitstamp', 'bitget'] as const)('restores compatibility-only %s rows as deferred rather than reauthorizable', async (exchange) => {
-    await db.exchangeConnections.put({
-      id: 'deferred-source', exchange, apiKey: 'key', secret: 'secret',
-      createdAt: 1, cursors: {}, status: 'ok', credentialsState: 'ready'
-    });
-    const payload = await createFullBackupPayload();
-    await importFullBackup(backupFile(payload));
-    expect(await db.exchangeConnections.get('deferred-source')).toMatchObject({
-      credentialsState: 'deferred', status: 'idle',
-      lastError: expect.stringMatching(/connector is deferred.*import a file/i)
-    });
-  });
-
   it.each([
     [],
     { trades: '' },

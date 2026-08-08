@@ -28,6 +28,5 @@ export function quoteToFiatCurrency(quote?: string): string | undefined {
   if (q === 'EUR') return 'EUR';
   if (q === 'GBP') return 'GBP';
   if (q === 'INR') return 'INR';
-  if (q === 'AUD') return 'AUD';
   return undefined;
 }

@@ -9,42 +9,10 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Enabled exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, bitstamp**. Bitget, MEXC, BitMart and Bitvavo remain
-parser/migration-supported but are deferred and absent from the connection UI — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
-
-Batch 1 (bitstamp, bitget, mexc, bitmart, bitvavo) notes:
-- **Bitstamp** trades and transfers come from one offset-paginated, all-account
-  `user_transactions` request. Pinned CCXT 4.5.68 marks `fetchDeposits` as
-  unsupported; SoloLedger therefore calls `fetchDepositsWithdrawals` once and
-  consistently splits native type `0`/`1` rows into deposit/withdrawal outcomes.
-  Trades are the type `2` rows of that same account-wide ledger and are filtered
-  fail-closed through the loaded spot-market catalog.
-- No CSV twin parser exists yet, so the
-  connector guarantees API↔API idempotence via the native numeric `id`.
-- **Deferred — Bitget:** pinned CCXT documents `idLessThan` backward cursors for
-  both wallet endpoints and defaults an omitted start to 90 days. A safe trade
-  cursor plus interrupted per-symbol checkpoint has not yet been proven, so no
-  launch-to-now claim is made and the connector is disabled.
-- **Deferred — MEXC:** provider trade history is approximately one month; older
-  activity requires MEXC CSV/account statements. Per-symbol inactive-market
-  discovery and replay-safe frontiers are not yet proven, so the connector is disabled.
-  Source: [MEXC Spot API — Account Trade List](https://www.mexc.com/api-docs/spot-v3/spot-account-trade#account-trade-list).
-- **Deferred — BitMart:** provider query-trades history is approximately three
-  months and the pinned V4 endpoint caps pages at 200. Older activity requires
-  a BitMart export. Native backward pagination and durable replay are not yet
-  proven, so the connector is disabled. CCXT uses `uid` for its API memo.
-  Source: [BitMart Spot API — Trade History V4](https://developer-pro.bitmart.com/en/spot/#trade-history-v4).
-- **Deferred — Bitvavo:** the API supports `tradeIdFrom`/`tradeIdTo` boundaries,
-  but a saturated-window implementation with a window strictly below 24 hours
-  is not yet committed. Transfers have no CCXT unified id; fixtures prove raw
-  `txId` plus endpoint/time/asset/amount disambiguation. The connector is disabled.
-- Brand marks: only Bitstamp has a sourced colored brand asset
-  (`bitstamp.svg`, Iconify token-branded). Bitget/MEXC/BitMart/Bitvavo render
-  the in-app monogram chip (no downloadable colored mark exists — see
-  `public/assets/brand-icons/SOURCES.md`).
 
 **Hosted-only.** All exchange traffic egresses through the SoloLedger relay
 (the browser can't reach the exchanges directly — CORS + user IP privacy),

@@ -35,7 +35,6 @@ import {
   normalizeImportedTransactionCategory
 } from '@/lib/taxonomy/categories';
 import { assertValidReciprocalTransferPairs } from '@/lib/internalTransfers/model';
-import { isEnabledExchangeId } from '@/lib/exchangeSync/types';
 
 type SettingsBackup = Omit<TaxSettings,
   | 'alchemyApiKey' | 'coingeckoApiKey' | 'birdeyeApiKey' | 'novesApiKey'
@@ -948,15 +947,10 @@ export async function importFullBackup(file: File): Promise<{ imported: number }
   const restoredExchangeConnections = v6?.exchangeConnections ?? legacyAccounts!.exchangeConnections;
   const accountIdentities = (v6?.accountIdentities ?? legacyAccounts!.accountIdentities)
     .map(safeAccountIdentityProjection);
-  const exchangeConnections = restoredExchangeConnections.map((row) => {
-    const enabled = isEnabledExchangeId(row.exchange);
-    return {
-      ...redactedExchangeSource(row),
-      credentialsState: enabled ? 'reauthorization_required' as const : 'deferred' as const,
-      status: 'idle' as const,
-      lastError: enabled ? undefined : 'This exchange connector is deferred. Import a file or remove this connection.'
-    };
-  });
+  const exchangeConnections = restoredExchangeConnections.map((row) => ({
+    ...redactedExchangeSource(row), credentialsState: 'reauthorization_required' as const,
+    status: 'idle' as const, lastError: undefined
+  }));
   const authoritySnapshots = (v3?.authoritySnapshots ?? []).map((row) => ({
     ...row, asOf: row.asOf, restoredAt
   }));

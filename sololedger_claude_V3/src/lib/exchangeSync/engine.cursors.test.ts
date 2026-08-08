@@ -284,18 +284,6 @@ describe('paginatePhase — scripted pages', () => {
 });
 
 describe('syncConnection — cursor safety with a fake client', () => {
-  it.each(['bitstamp', 'bitget', 'mexc', 'bitmart', 'bitvavo'] as const)(
-    'fails closed for deferred %s tax-history pagination',
-    async (exchange) => {
-      await db.exchangeConnections.put(makeRow({ exchange, passphrase: exchange === 'bitget' || exchange === 'bitmart' ? 'memo' : undefined }));
-      const { client } = fakeClient();
-      await expect(syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client)))
-        .rejects.toThrow(/connector is deferred.*cannot sync/i);
-      expect(await db.transactions.count()).toBe(0);
-      expect((await db.exchangeConnections.get('exc_cursor_test'))?.status).toBe('idle');
-    }
-  );
-
   it('persists explicit zero fiat while keeping absent exchange fiat absent', async () => {
     await db.exchangeConnections.put(makeRow({ cursors: {} }));
     const { client } = fakeClient();

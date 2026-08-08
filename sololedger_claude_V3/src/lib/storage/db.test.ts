@@ -61,37 +61,6 @@ describe('transactionExchangeKey', () => {
   it('returns null for non-exchange sources', () => {
     expect(transactionExchangeKey({ source: 'ethereum', sourceRef: 'x' })).toBeNull();
   });
-
-  it('scopes batch-1 API identities by connection, exchange and immutable endpoint kind', () => {
-    for (const exchange of ['bitstamp', 'bitget', 'mexc', 'bitmart', 'bitvavo']) {
-      const source = `${exchange}_api`;
-      expect(transactionExchangeKey({ source, sourceRef: '42', importBatchId: 'a', raw: { exchangeSyncKind: 'trade' } }))
-        .toBe(`ex-api:a:${exchange}:trade:42`);
-      expect(transactionExchangeKey({ source, sourceRef: '42', importBatchId: 'b', raw: { exchangeSyncKind: 'trade' } }))
-        .toBe(`ex-api:b:${exchange}:trade:42`);
-      expect(transactionExchangeKey({ source, sourceRef: '42', importBatchId: 'a', raw: { exchangeSyncKind: 'deposit' } }))
-        .toBe(`ex-api:a:${exchange}:deposit:42`);
-      expect(transactionExchangeKey({ source, sourceRef: '42', importBatchId: 'a', raw: { exchangeSyncKind: 'withdrawal' } }))
-        .toBe(`ex-api:a:${exchange}:withdrawal:42`);
-    }
-    expect(transactionExchangeKey({ source: 'bitstamp', sourceRef: '42' })).toBeNull();
-  });
-
-  it('does not dedup reused batch-1 ids across two connections or endpoint kinds', async () => {
-    const base: Transaction = {
-      id: 'base', timestamp: 1, type: 'buy', asset: 'BTC', amount: 1,
-      fiatCurrency: 'USD', source: 'bitstamp_api', sourceRef: 'reused',
-      flags: [], isInternalTransfer: false
-    };
-    await db.transactions.bulkPut([
-      { ...base, id: 'a-trade', importBatchId: 'a', raw: { exchangeSyncKind: 'trade' } },
-      { ...base, id: 'b-trade', importBatchId: 'b', raw: { exchangeSyncKind: 'trade' } },
-      { ...base, id: 'a-deposit', type: 'transfer_in', importBatchId: 'a', raw: { exchangeSyncKind: 'deposit' } },
-      { ...base, id: 'a-withdrawal', type: 'transfer_out', importBatchId: 'a', raw: { exchangeSyncKind: 'withdrawal' } }
-    ]);
-    expect(await deduplicateTransactions()).toBe(0);
-    expect(await db.transactions.count()).toBe(4);
-  });
 });
 
 describe('transactionSourceKey', () => {

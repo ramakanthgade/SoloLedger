@@ -121,7 +121,7 @@ export interface ExchangeConnectionRow {
   secret?: string;
   passphrase?: string;  // OKX / KuCoin only (ccxt `password`)
   /** Legacy rows migrate to ready; redacted restores use reauthorization_required. */
-  credentialsState?: 'ready' | 'reauthorization_required' | 'deferred';
+  credentialsState?: 'ready' | 'reauthorization_required';
   /** Monotonic authority/coverage source-operation generation. */
   authorityGeneration?: number;
   /** Compare-and-save revision for credential/source lifecycle changes. */
@@ -165,16 +165,6 @@ export interface ExchangeConnectionRow {
   lastError?: string;
   /** Exact one-to-one account identity for this connection. */
   accountIdentityId?: string;
-}
-
-const DEFERRED_EXCHANGE_IDS = new Set(['bitstamp', 'bitget', 'mexc', 'bitmart', 'bitvavo']);
-
-/** Shared by the v17 upgrade and focused migration regression tests. */
-export function normalizeDeferredExchangeConnection(row: ExchangeConnectionRow): void {
-  if (!DEFERRED_EXCHANGE_IDS.has(row.exchange)) return;
-  row.credentialsState = 'deferred';
-  row.status = 'idle';
-  row.lastError = 'This exchange connector is deferred. Import a file or remove this connection.';
 }
 
 export interface BtcMarketsPaginationCheckpoint {
@@ -659,13 +649,6 @@ class SoloLedgerDB extends Dexie {
       accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]',
       walletDefiRefreshManifests: 'accountIdentityScope, custodyScopeId, custodySnapshotId, capturedAt'
     });
-    // v17: connectors retained only for compatibility cannot silently remain
-    // ready/reauthorizable after their production relay support is removed.
-    this.version(17).upgrade(async (tx) => {
-      await tx.table<ExchangeConnectionRow, string>('exchangeConnections').toCollection().modify((row) => {
-        normalizeDeferredExchangeConnection(row);
-      });
-    });
   }
 }
 
@@ -908,12 +891,7 @@ export const EXCHANGE_API_SOURCES = new Set([
   'cryptocom_api',
   'bitfinex_api',
   'gemini_api',
-  'btcmarkets_api',
-  'bitstamp_api',
-  'bitget_api',
-  'mexc_api',
-  'bitmart_api',
-  'bitvavo_api'
+  'btcmarkets_api'
 ]);
 
 /**
@@ -1013,20 +991,6 @@ export function transactionExchangeKey(
             ? 'withdrawal'
             : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:btcmarkets:${kind}:${t.sourceRef}`;
-  }
-  const scopedBatch1Api = /^(bitstamp|bitget|mexc|bitmart|bitvavo)_api$/.exec(t.source);
-  if (scopedBatch1Api) {
-    const rawKind = t.raw?.exchangeSyncKind;
-    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
-      ? rawKind
-      : t.raw?.tradeId != null
-        ? 'trade'
-        : t.raw?.transferType === 'deposit'
-          ? 'deposit'
-          : t.raw?.transferType === 'withdrawal' || t.raw?.transferType === 'withdraw'
-            ? 'withdrawal'
-            : 'unknown';
-    return `ex-api:${t.importBatchId ?? 'unscoped'}:${scopedBatch1Api[1]}:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;
