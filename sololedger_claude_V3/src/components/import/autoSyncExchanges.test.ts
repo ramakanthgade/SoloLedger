@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(11);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(12);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -101,5 +101,13 @@ describe('autoSyncExchanges catalog', () => {
     expect(gemini.keyInstructions.join(' ')).toMatch(/account-level.*not a master key.*Auditor.*read-only.*never enable.*trading.*withdrawals/i);
     expect(gemini.keyInstructions.join(' ')).toMatch(/does not require a passphrase/i);
     expect(gemini.needsPassphrase).toBe(false);
+  });
+
+  it('documents BTC Markets read-only credentials and history limitations', () => {
+    const btcmarkets = getAutoSyncExchange('btcmarkets')!;
+    expect(btcmarkets.formatHint).toMatch(/base64 secret/i);
+    expect(btcmarkets.keyInstructions.join(' ')).toMatch(/read permissions.*never enable.*order.*trading.*withdrawal/i);
+    expect(btcmarkets.keyInstructions.join(' ')).toMatch(/retention is undocumented.*cannot verify account-lifetime.*no BTC Markets CSV parser.*deduplication is unavailable/i);
+    expect(btcmarkets.needsPassphrase).toBe(false);
   });
 });

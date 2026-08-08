@@ -767,6 +767,11 @@ describe('importFullBackup', () => {
         requestedStart: 700, requestedEnd: 900,
         symbolStarts: { 'BTC/USD': 800 }, completedSymbols: ['ETH/USD'], nextSymbolIndex: 1
       }
+    }, {
+      id: 'btcmarkets-source', exchange: 'btcmarkets', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', btcmarketsNativeCursors: { trades: '910003', transfers: '920002' },
+      btcmarketsPagination: { trades: { mode: 'incremental', cursor: '910010', newest: '910010' } },
+      btcmarketsUnresolvedTransferIds: ['920003'], btcmarketsUnsafeTradeIds: ['910009']
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -790,7 +795,86 @@ describe('importFullBackup', () => {
         symbolStarts: { 'BTC/USD': 800 }, completedSymbols: ['ETH/USD'], nextSymbolIndex: 1
       }
     });
+    expect(await db.exchangeConnections.get('btcmarkets-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      btcmarketsNativeCursors: { trades: '910003', transfers: '920002' },
+      btcmarketsPagination: { trades: { mode: 'incremental', cursor: '910010', newest: '910010' } },
+      btcmarketsUnresolvedTransferIds: ['920003'], btcmarketsUnsafeTradeIds: ['910009']
+    });
   });
+
+  it.each([
+    [],
+    { trades: '' },
+    { trades: '01' },
+    { transfers: 'not-an-id' },
+    { trades: '910003', unexpected: '1' }
+  ])('rejects malformed BTC Markets native cursors %#', async (btcmarketsNativeCursors) => {
+    await db.exchangeConnections.put({
+      id: 'btcmarkets-source', exchange: 'btcmarkets', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { btcmarketsNativeCursors: unknown })
+      .btcmarketsNativeCursors = btcmarketsNativeCursors;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'BTC Markets native cursor is malformed'
+    );
+  });
+
+  it.each([
+    { trades: { mode: 'other', cursor: '1' } },
+    { trades: { mode: 'backfill', cursor: '01', newest: '2' } },
+    { transfers: { mode: 'backfill', cursor: 'bad' } },
+    { trades: { mode: 'incremental', cursor: '1', extra: '2' } }
+  ])('rejects malformed BTC Markets pagination checkpoints %#', async (btcmarketsPagination) => {
+    await db.exchangeConnections.put({
+      id: 'btcmarkets-source', exchange: 'btcmarkets', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { btcmarketsPagination: unknown }).btcmarketsPagination = btcmarketsPagination;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow('BTC Markets pagination checkpoint is malformed');
+  });
+
+  it.each([
+    { checkpoint: { mode: 'backfill', cursor: '2' } },
+    { native: '1', checkpoint: { mode: 'backfill', cursor: '1', newest: '2' } },
+    { checkpoint: { mode: 'backfill', cursor: '3', newest: '2' } },
+    { checkpoint: { mode: 'incremental', cursor: '2', newest: '2' } },
+    { native: '1', checkpoint: { mode: 'incremental', cursor: '2', newest: '3' } },
+    { native: '3', checkpoint: { mode: 'incremental', cursor: '2', newest: '2' } }
+  ])('rejects incompatible BTC Markets checkpoint/native cursor state %#', async ({ native, checkpoint }) => {
+    await db.exchangeConnections.put({
+      id: 'btcmarkets-source', exchange: 'btcmarkets', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    payload.exchangeConnections[0].btcmarketsNativeCursors = native ? { trades: native } : undefined;
+    payload.exchangeConnections[0].btcmarketsPagination = { trades: checkpoint } as never;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow('BTC Markets pagination checkpoint is malformed');
+  });
+
+  it.each([['bad'], ['1', '1'], Array.from({ length: 101 }, (_, i) => String(i))])(
+    'rejects malformed BTC Markets unresolved replay evidence %#', async (btcmarketsUnresolvedTransferIds) => {
+      await db.exchangeConnections.put({
+        id: 'btcmarkets-source', exchange: 'btcmarkets', createdAt: 1, cursors: {}, status: 'idle'
+      });
+      const payload = await createFullBackupPayload();
+      (payload.exchangeConnections[0] as unknown as { btcmarketsUnresolvedTransferIds: unknown })
+        .btcmarketsUnresolvedTransferIds = btcmarketsUnresolvedTransferIds;
+      await expect(importFullBackup(backupFile(payload))).rejects.toThrow('BTC Markets unresolved transfer evidence is malformed');
+    }
+  );
+
+  it.each([['01'], ['1', '1'], Array.from({ length: 101 }, (_, i) => String(i))])(
+    'rejects malformed BTC Markets unsafe trade evidence %#', async (btcmarketsUnsafeTradeIds) => {
+      await db.exchangeConnections.put({
+        id: 'btcmarkets-source', exchange: 'btcmarkets', createdAt: 1, cursors: {}, status: 'idle'
+      });
+      const payload = await createFullBackupPayload();
+      (payload.exchangeConnections[0] as unknown as { btcmarketsUnsafeTradeIds: unknown })
+        .btcmarketsUnsafeTradeIds = btcmarketsUnsafeTradeIds;
+      await expect(importFullBackup(backupFile(payload))).rejects.toThrow('BTC Markets unsafe trade evidence is malformed');
+    }
+  );
 
   it.each([
     { requestedStart: -1, requestedEnd: 2, symbolStarts: {}, completedSymbols: [] },

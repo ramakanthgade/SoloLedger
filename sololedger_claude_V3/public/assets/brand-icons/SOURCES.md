@@ -31,6 +31,7 @@ never redraw the glyph.
 | `gateio.svg` | Iconify API, Token Icons collection `token:gate-io`: `https://api.iconify.design/token/gate-io.svg` | Token Icons collection asset; Gate trademark; nominative identification only | 2026-08-04 |
 | `bitfinex.png` | Bitfinex official site icon: `https://www.bitfinex.com/assets/favicons/bitfinex.ico` | Official brand asset; nominative identification only | 2026-08-04 |
 | `gemini.png` | Gemini official site Android icon: `https://www.gemini.com/android-icon-192x192.png` | Official brand asset; nominative identification only | 2026-08-04 |
+| `btcmarkets.png` | CCXT 4.5.68 BTC Markets exchange logo asset: `https://github.com/user-attachments/assets/8c8d6907-3873-4cc4-ad20-e22fba28247e` | Exchange logo referenced by the pinned connector; nominative identification only | 2026-08-07 |
 | `htx.png` | HTX official site icon: `https://www.htx.com/web-v4/static/favicon.ico` | Official brand asset; nominative identification only | 2026-08-04 |
 | `coinspot.png` | CoinSpot official site Android icon: `https://www.coinspot.com.au/public/img/favicons/android-icon-192x192.png` | Official brand asset; nominative identification only | 2026-08-04 |
 | `hyperliquid.png` | Hyperliquid Foundation official site Apple icon: `https://hyperfoundation.org/apple-touch-icon.png` | Official brand asset; nominative identification only | 2026-08-04 |

@@ -159,6 +159,12 @@ const TIER2 = [
     probe: 'GET /v1/symbols',
     path: '/v1/symbols',
     check: (r, json) => r.status === 200 && Array.isArray(json) && json.every((symbol) => typeof symbol === 'string')
+  },
+  {
+    exchange: 'btcmarkets',
+    probe: 'GET /v3/time',
+    path: '/v3/time',
+    check: (r, json) => r.status === 200 && typeof json?.timestamp === 'string' && Number.isFinite(Date.parse(json.timestamp))
   }
 ];
 
@@ -406,6 +412,27 @@ const tier3 = [
     // Distinctive exchange-origin evidence only. A dummy key cannot validate
     // real credentials, role permissions, signature correctness or history access.
     check: (r) => r.status === 400 && /"result"\s*:\s*"error"/i.test(r.text) && /InvalidSignature/i.test(r.text)
+  },
+  {
+    exchange: 'btcmarkets',
+    probe: 'GET /v3/accounts/me/balances (BM-AUTH HMAC-SHA512)',
+    build() {
+      const apiKey = 'dummy-btcmarkets-key';
+      const secret = Buffer.from('dummy-btcmarkets-secret').toString('base64');
+      const timestamp = Date.now().toString();
+      const path = '/v3/accounts/me/balances';
+      const signature = crypto.createHmac('sha512', Buffer.from(secret, 'base64'))
+        .update(`GET${path}${timestamp}`, 'utf8').digest('base64');
+      return {
+        path,
+        exchangeHeaders: {
+          'bm-auth-apikey': apiKey,
+          'bm-auth-timestamp': timestamp,
+          'bm-auth-signature': signature
+        }
+      };
+    },
+    check: (r) => r.status === 401 && r.text.includes('"code":"InvalidAPIKey"') && /invalid api key/i.test(r.text)
   }
 ];
 

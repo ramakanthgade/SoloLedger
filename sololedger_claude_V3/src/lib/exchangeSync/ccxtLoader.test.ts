@@ -51,6 +51,7 @@ describe('loadCcxt', () => {
     expect(typeof a.cryptocom).toBe('function');
     expect(typeof a.bitfinex).toBe('function');
     expect(typeof a.gemini).toBe('function');
+    expect(typeof a.btcmarkets).toBe('function');
   });
 });
 
@@ -188,6 +189,36 @@ describe('createExchangeClient', () => {
     expect(raw.password).toBeUndefined();
     expect(raw.enableLastJsonResponse).toBe(true);
     expect(typeof raw.fetchDepositsWithdrawals).toBe('function');
+  });
+
+  it('configures the pinned BTC Markets class and signs only the observed v3 GET shape', async () => {
+    const secret = Buffer.from('fixture-secret').toString('base64');
+    const client = await createExchangeClient(row({ exchange: 'btcmarkets', apiKey: 'BM_KEY', secret }));
+    const raw = client as unknown as {
+      id: string; options: Record<string, unknown>; has: Record<string, unknown>;
+      requiredCredentials: Record<string, boolean>; password?: string;
+      enableLastJsonResponse: boolean; enableLastResponseHeaders: boolean;
+      fetchDepositsWithdrawals?: unknown;
+      sign(path: string, api: string, method: string, params: Record<string, unknown>): {
+        url: string; method: string; headers: Record<string, string>;
+      };
+    };
+    expect(raw.id).toBe('btcmarkets');
+    expect(raw.options).toMatchObject({ defaultType: 'spot', fetchCurrencies: false });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    expect(raw.password).toBeUndefined();
+    expect(raw.enableLastJsonResponse).toBe(true);
+    expect(raw.enableLastResponseHeaders).toBe(true);
+    expect(typeof raw.fetchDepositsWithdrawals).toBe('function');
+    const signed = raw.sign('trades', 'private', 'GET', { limit: 200, before: '818047' });
+    expect(signed.url).toBe('https://api.btcmarkets.net/v3/trades?before=818047&limit=200');
+    expect(signed.method).toBe('GET');
+    expect(signed.headers).toMatchObject({
+      'BM-AUTH-APIKEY': 'BM_KEY',
+      'BM-AUTH-TIMESTAMP': expect.stringMatching(/^\d+$/),
+      'BM-AUTH-SIGNATURE': expect.any(String)
+    });
   });
 
   it('does not set password for exchanges without a passphrase', async () => {

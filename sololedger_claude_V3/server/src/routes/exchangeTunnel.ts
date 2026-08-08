@@ -162,6 +162,20 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/v1/mytrades': ['POST'],
       '/v1/transfers': ['POST']
     }
+  },
+  btcmarkets: {
+    host: 'api.btcmarkets.net',
+    headers: ['bm-auth-apikey', 'bm-auth-timestamp', 'bm-auth-signature'],
+    methods: ['GET'],
+    // Exact pinned-CCXT 4.5.68 read surface. Order, report, address and
+    // withdrawal mutation paths are deliberately unreachable.
+    paths: [
+      '/v3/time',
+      '/v3/markets',
+      '/v3/accounts/me/balances',
+      '/v3/trades',
+      '/v3/transfers'
+    ]
   }
 };
 
@@ -173,6 +187,15 @@ const UPSTREAM_TIMEOUT_MS = 30_000;
 const MAX_UPSTREAM_BODY_BYTES = 25 * 1024 * 1024;
 
 export const exchangeTunnelRouter = Router();
+
+// CORS cursor visibility is route-scoped: no non-BTC exchange or unrelated
+// API response should advertise BTC Markets' pagination headers.
+exchangeTunnelRouter.use((req, res, next) => {
+  if (req.url === '/btcmarkets' || req.url.startsWith('/btcmarkets/')) {
+    res.append('Access-Control-Expose-Headers', 'bm-before, bm-after');
+  }
+  next();
+});
 
 function pathAllowed(path: string, allowed: string): boolean {
   if (allowed.endsWith('/')) return path.startsWith(allowed);
@@ -343,7 +366,8 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
   }
 
   // Pipe the exchange response verbatim (ccxt must see native codes/bodies).
-  // Forward only content-type + retry-after; content-encoding (undici already
+  // Forward only content-type + retry-after and BTC Markets' two pagination
+  // cursors; content-encoding (undici already
   // decompressed), content-length, transfer-encoding, connection and set-cookie
   // are stripped simply by never being re-set. NEVER res.json here.
   res.status(upstream.status);
@@ -351,6 +375,12 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
   if (contentType) res.setHeader('content-type', contentType);
   const retryAfter = upstream.headers.get('retry-after');
   if (retryAfter) res.setHeader('retry-after', retryAfter);
+  if (exchangeId === 'btcmarkets') {
+    for (const name of ['bm-before', 'bm-after']) {
+      const value = upstream.headers.get(name);
+      if (value) res.setHeader(name, value);
+    }
+  }
   res.send(buffer);
 }
 

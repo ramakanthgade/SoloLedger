@@ -91,6 +91,8 @@ export interface ExchangeClient {
   markets?: Record<string, UnifiedMarket>;
   /** Enabled for HTX so pagination can use the raw response's final item before CCXT sorts parsed rows. */
   last_json_response?: unknown;
+  /** BTC Markets exposes its native pagination cursors only in response headers. */
+  last_response_headers?: Record<string, string>;
   loadMarkets(reload?: boolean): Promise<Record<string, UnifiedMarket>>;
   fetchBalance(params?: Record<string, unknown>): Promise<UnifiedBalance>;
   fetchMyTrades(
@@ -134,7 +136,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   htx: 'HTX',
   cryptocom: 'Crypto.com Exchange',
   bitfinex: 'Bitfinex',
-  gemini: 'Gemini'
+  gemini: 'Gemini',
+  btcmarkets: 'BTC Markets'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -168,7 +171,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     timeout: 30_000
   };
   if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini') {
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini' || exchangeId === 'btcmarkets') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -228,6 +231,13 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
                 // universe needed by the symbol-required mytrades endpoint.
                 fetchMarketsMethod: 'fetch_markets_from_api'
               }
+          : exchangeId === 'btcmarkets'
+            ? {
+                defaultType: 'spot',
+                // The pinned class has no currency endpoint. Keep market
+                // discovery to the one public /v3/markets call.
+                fetchCurrencies: false
+              }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -264,6 +274,11 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
   }
   if (exchangeId === 'bitfinex') {
     config.has = { fetchCurrencies: false };
+  }
+  if (exchangeId === 'btcmarkets') {
+    config.has = { fetchCurrencies: false };
+    config.enableLastJsonResponse = true;
+    config.enableLastResponseHeaders = true;
   }
   const exchange = new Ctor(config) as ExchangeClient;
   if (exchangeId === 'bitfinex') {

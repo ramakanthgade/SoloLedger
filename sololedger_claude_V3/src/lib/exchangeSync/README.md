@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -137,6 +137,24 @@ a sync discards any staged preview (with a warning).
   by at least five seconds. Pending rows hold the shared frontier; known
   failed/canceled rows are terminal exclusions. Reward is imported as income;
   AdminDebit/AdminCredit require review; unknown types make coverage partial.
+- BTC Markets newest-first history uses exclusive numeric record-id cursors,
+  never timestamps. Initial backfill follows `BM-BEFORE` through `before=...`;
+  incremental sync follows the saved id and `BM-AFTER` through `after=...`.
+  Unified `since` is not passed because pinned CCXT 4.5.68 incorrectly maps
+  milliseconds into that native-id parameter. Trades and one combined transfer
+  stream use limit 200 and retry-inclusive bounded budgets. Full pages without
+  an advancing header, repeated pages/cursors, and unknown activity fail closed.
+  Budget termination atomically persists a separate continuation checkpoint,
+  so committed backfills and incremental scans resume at the next native page.
+  Future-dated or malformed trades retain bounded native-ID replay evidence
+  independently of that checkpoint, preventing a later resumed exhaustion
+  from advancing past unsafe economics.
+  `Accepted`/`Pending Authorization`, unknown, future-dated, and malformed
+  transfers retain bounded native-ID replay evidence without pinning newer
+  settled history; `Complete` settles and `Cancelled`/`Failed` are terminal exclusions. API retention is
+  undocumented. API v3 was announced on 2019-11-19, but that date is not a
+  documented history-retention floor: endpoint exhaustion establishes an
+  observed frontier, not account-lifetime completeness.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -179,6 +197,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | cryptocom | native Exchange `trade_id`; identity is connection- and immutable `raw.exchangeSyncKind=trade`-scoped | native Exchange wallet record `id`; identity is connection- and immutable `raw.exchangeSyncKind=deposit/withdrawal`-scoped, with txid retained as evidence |
 | bitfinex | native Trade id; connection- and immutable-kind scoped; intentionally does **not** collide with beta CSV because parity is unverified | native Movement id; connection- and immutable-kind scoped; no Movements CSV backfill exists |
 | gemini | native `tid`, prefixed `trade:` and connection-scoped | native `eid`/`withdrawalId`, direction-prefixed and connection-scoped |
+| btcmarkets | native trade `id`, connection + immutable `trade` kind scoped | native transfer `id`, connection + immutable direction scoped |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -260,6 +279,11 @@ Gemini fixtures carry `gemini/provenance.json` and `_recorded: false`
 markers. They are hand-authored from documented v1 shapes and replay the real
 CCXT 4.5.68 signing/parser path. `transactionHistory.csv` is an economic twin,
 not an identity twin: Gemini CSV has no native fill or transfer ID.
+
+BTC Markets fixtures carry `btcmarkets/provenance.json` and `_recorded: false`.
+They are schema-faithful hand-authored v3 responses replayed through the real
+pinned CCXT class. No BTC Markets CSV parser exists; API↔CSV deduplication is
+explicitly unavailable rather than approximated with an economic collision.
 
 ## Known limitations / caveats
 

@@ -149,11 +149,29 @@ export interface ExchangeConnectionRow {
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** Oldest still-pending Bitfinex Movement per direction. */
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
+  /** Exclusive native record-id cursors; BTC Markets `after` is not a timestamp. */
+  btcmarketsNativeCursors?: { trades?: string; transfers?: string };
+  /** First unfinished native page walk; separate from the proven newest high-water. */
+  btcmarketsPagination?: {
+    trades?: BtcMarketsPaginationCheckpoint;
+    transfers?: BtcMarketsPaginationCheckpoint;
+  };
+  /** Bounded native IDs that must be replayed until their transfer economics settle. */
+  btcmarketsUnresolvedTransferIds?: string[];
+  /** Bounded native trade IDs whose economics/timestamp were unsafe to advance past. */
+  btcmarketsUnsafeTradeIds?: string[];
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
   /** Exact one-to-one account identity for this connection. */
   accountIdentityId?: string;
+}
+
+export interface BtcMarketsPaginationCheckpoint {
+  mode: 'backfill' | 'incremental';
+  cursor: string;
+  /** Newest record observed while a backfill/incremental walk is unfinished. */
+  newest: string;
 }
 
 export interface PriceCacheRow {
@@ -872,7 +890,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'htx_api',
   'cryptocom_api',
   'bitfinex_api',
-  'gemini_api'
+  'gemini_api',
+  'btcmarkets_api'
 ]);
 
 /**
@@ -957,6 +976,21 @@ export function transactionExchangeKey(
   // account-scoped native tid/eid identity instead of unsafe CSV collision.
   if (t.source === 'gemini_api') {
     return `ex-api:${t.importBatchId ?? 'unscoped'}:gemini:${t.sourceRef}`;
+  }
+  // BTC Markets has no CSV parser. Its native trade/transfer ids are stable
+  // replay evidence but account-local and can overlap across endpoint kinds.
+  if (t.source === 'btcmarkets_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind
+      : t.raw?.tradeId != null
+        ? 'trade'
+        : t.raw?.transferType === 'deposit'
+          ? 'deposit'
+          : t.raw?.transferType === 'withdrawal'
+            ? 'withdrawal'
+            : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:btcmarkets:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;
