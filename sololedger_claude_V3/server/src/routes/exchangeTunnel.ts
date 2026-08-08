@@ -176,22 +176,6 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/v3/trades',
       '/v3/transfers'
     ]
-  },
-  bitstamp: {
-    host: 'www.bitstamp.net',
-    headers: ['x-auth', 'x-auth-signature', 'x-auth-nonce', 'x-auth-timestamp', 'x-auth-version'],
-    paths: [
-      '/api/v2/markets/',
-      '/api/v2/account_balances/',
-      '/api/v2/user_transactions/',
-      '/api/v2/withdrawal-requests/'
-    ],
-    pathMethods: {
-      '/api/v2/markets/': ['GET'],
-      '/api/v2/account_balances/': ['POST'],
-      '/api/v2/user_transactions/': ['POST'],
-      '/api/v2/withdrawal-requests/': ['POST']
-    }
   }
 };
 

@@ -148,14 +148,6 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
       deposits: row.bitfinexPendingTransfers.deposits,
       withdrawals: row.bitfinexPendingTransfers.withdrawals
     },
-    bitstampPagination: row.bitstampPagination == null ? undefined : {
-      offset: row.bitstampPagination.offset,
-      since: row.bitstampPagination.since,
-      highWater: { ...row.bitstampPagination.highWater },
-      unresolvedTrades: row.bitstampPagination.unresolvedTrades,
-      unsafeTransfers: row.bitstampPagination.unsafeTransfers == null
-        ? undefined : { ...row.bitstampPagination.unsafeTransfers }
-    },
     btcmarketsNativeCursors: row.btcmarketsNativeCursors == null ? undefined : {
       trades: row.btcmarketsNativeCursors.trades,
       transfers: row.btcmarketsNativeCursors.transfers
@@ -414,22 +406,6 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
         Object.prototype.hasOwnProperty.call(bitfinexPending, kind) &&
         (!Number.isSafeInteger(bitfinexPending[kind]) || bitfinexPending[kind]! < 0)))) {
       throw new Error('Invalid backup file: Bitfinex pending-movement checkpoint is malformed.');
-    }
-    const bitstamp = row.bitstampPagination;
-    if (bitstamp != null && (!isPlainObject(bitstamp) ||
-      Object.keys(bitstamp).some((key) => !['offset', 'since', 'highWater', 'unresolvedTrades', 'unsafeTransfers'].includes(key)) ||
-      !Number.isSafeInteger(bitstamp.offset) || bitstamp.offset <= 0 || bitstamp.offset % 1000 !== 0 ||
-      !Number.isSafeInteger(bitstamp.since) || bitstamp.since < 0 ||
-      (bitstamp.unresolvedTrades != null && typeof bitstamp.unresolvedTrades !== 'boolean') ||
-      (bitstamp.unsafeTransfers != null && (!isPlainObject(bitstamp.unsafeTransfers) ||
-        Object.keys(bitstamp.unsafeTransfers).some((key) => key !== 'deposits' && key !== 'withdrawals') ||
-        Object.values(bitstamp.unsafeTransfers).some((value) => typeof value !== 'boolean'))) ||
-      !isPlainObject(bitstamp.highWater) ||
-      Object.keys(bitstamp.highWater).some((key) => !['trades', 'deposits', 'withdrawals'].includes(key)) ||
-      (['trades', 'deposits', 'withdrawals'] as const).some((kind) =>
-        Object.prototype.hasOwnProperty.call(bitstamp.highWater, kind) &&
-        (!Number.isSafeInteger(bitstamp.highWater[kind]) || bitstamp.highWater[kind]! < 0)))) {
-      throw new Error('Invalid backup file: Bitstamp pagination checkpoint is malformed.');
     }
     const progress = row.htxTradeProgress;
     const btcmarketsCursors = row.btcmarketsNativeCursors;

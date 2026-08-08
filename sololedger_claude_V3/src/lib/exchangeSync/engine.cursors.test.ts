@@ -284,7 +284,7 @@ describe('paginatePhase — scripted pages', () => {
 });
 
 describe('syncConnection — cursor safety with a fake client', () => {
-  it.each(['bitget', 'mexc', 'bitmart', 'bitvavo'] as const)(
+  it.each(['bitstamp', 'bitget', 'mexc', 'bitmart', 'bitvavo'] as const)(
     'fails closed for deferred %s tax-history pagination',
     async (exchange) => {
       await db.exchangeConnections.put(makeRow({ exchange, passphrase: exchange === 'bitget' || exchange === 'bitmart' ? 'memo' : undefined }));
@@ -295,43 +295,6 @@ describe('syncConnection — cursor safety with a fake client', () => {
       expect((await db.exchangeConnections.get('exc_cursor_test'))?.status).toBe('idle');
     }
   );
-
-  it('runs a full Bitstamp sync with one combined transfer walk and splits endpoint outcomes', async () => {
-    await db.exchangeConnections.put(makeRow({
-      exchange: 'bitstamp', passphrase: undefined, cursors: {}, knownAssets: [], knownSymbols: []
-    }));
-    const { client } = fakeClient();
-    client.id = 'bitstamp';
-    let combinedCalls = 0;
-    client.fetchDeposits = async () => { throw new Error('fetchDeposits is unsupported on pinned Bitstamp'); };
-    client.fetchWithdrawals = async () => { throw new Error('separate withdrawal path must not be used'); };
-    client.fetchDepositsWithdrawals = async () => {
-      combinedCalls += 1;
-      const rows = combinedCalls === 1 ? [
-        { id: 'same-id', timestamp: NOW - DAY, currency: 'BTC', amount: 1, status: 'ok', type: 'deposit', info: { type: '0' } },
-        { id: 'same-id', timestamp: NOW - DAY + 1, currency: 'BTC', amount: 0.25, status: 'ok', type: 'withdrawal', info: { type: '1' } }
-      ] : [];
-      client.last_json_response = rows.map((row) => row.info);
-      return rows;
-    };
-    client.parseTrade = () => { throw new Error('no trade rows expected'); };
-
-    const result = await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
-    expect(result.mode).toBe('commit');
-    expect(combinedCalls).toBe(1);
-    const rows = await db.transactions.where('source').equals('bitstamp_api').toArray();
-    expect(rows, JSON.stringify(rows, null, 2)).toHaveLength(2);
-    expect(new Set(rows.map((row) => row.raw?.exchangeSyncKind))).toEqual(new Set(['deposit', 'withdrawal']));
-    expect(new Set(rows.map((row) => row.sourceRef))).toEqual(new Set(['same-id']));
-    expect(new Set(rows.map((row) => row.id)).size).toBe(2);
-    const coverage = (await db.sourceCoverage.toArray())[0];
-    expect(coverage.endpointOutcomes.find((item) => item.endpoint === 'deposits')).toMatchObject({
-      observedStart: NOW - DAY, observedEnd: NOW - DAY
-    });
-    expect(coverage.endpointOutcomes.find((item) => item.endpoint === 'withdrawals')).toMatchObject({
-      observedStart: NOW - DAY + 1, observedEnd: NOW - DAY + 1
-    });
-  });
 
   it('persists explicit zero fiat while keeping absent exchange fiat absent', async () => {
     await db.exchangeConnections.put(makeRow({ cursors: {} }));

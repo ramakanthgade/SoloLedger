@@ -10,13 +10,13 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the enabled exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(13);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(12);
   });
 
   it('is an ordered safe subset of the typed ccxt exchange ids', () => {
-    expect(SYNC_EXCHANGES).toHaveLength(13);
+    expect(SYNC_EXCHANGES).toHaveLength(12);
     expect(AUTO_SYNC_EXCHANGES.map((e) => e.id)).toEqual(SYNC_EXCHANGES);
-    for (const deferred of ['bitget', 'mexc', 'bitmart', 'bitvavo']) {
+    for (const deferred of ['bitstamp', 'bitget', 'mexc', 'bitmart', 'bitvavo']) {
       expect(getAutoSyncExchange(deferred)).toBeUndefined();
     }
   });

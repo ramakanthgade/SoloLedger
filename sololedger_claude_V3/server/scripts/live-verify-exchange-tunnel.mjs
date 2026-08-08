@@ -165,12 +165,6 @@ const TIER2 = [
     probe: 'GET /v3/time',
     path: '/v3/time',
     check: (r, json) => r.status === 200 && typeof json?.timestamp === 'string' && Number.isFinite(Date.parse(json.timestamp))
-  },
-  {
-    exchange: 'bitstamp',
-    probe: 'GET /api/v2/markets/',
-    path: '/api/v2/markets/',
-    check: (r, json) => r.status === 200 && Array.isArray(json) && json.every((market) => typeof market?.market === 'string')
   }
 ];
 
@@ -439,39 +433,6 @@ const tier3 = [
       };
     },
     check: (r) => r.status === 401 && r.text.includes('"code":"InvalidAPIKey"') && /invalid api key/i.test(r.text)
-  },
-  {
-    exchange: 'bitstamp',
-    probe: 'POST /api/v2/account_balances/ (X-Auth HMAC-SHA256)',
-    build() {
-      const apiKey = 'D'.repeat(32);
-      const secret = 'E'.repeat(32);
-      const path = '/api/v2/account_balances/';
-      const nonce = crypto.randomUUID();
-      const timestamp = Date.now().toString();
-      const version = 'v2';
-      const contentType = 'application/x-www-form-urlencoded';
-      const body = 'foo=bar';
-      const xAuth = `BITSTAMP ${apiKey}`;
-      const auth = xAuth + 'POST' + `www.bitstamp.net${path}` + contentType + nonce + timestamp + version + body;
-      return {
-        path,
-        method: 'POST',
-        body,
-        contentType,
-        exchangeHeaders: {
-          'x-auth': xAuth,
-          'x-auth-signature': hmacHex('sha256', secret, auth),
-          'x-auth-nonce': nonce,
-          'x-auth-timestamp': timestamp,
-          'x-auth-version': version
-        }
-      };
-    },
-    // Observed 2026-08-08: format-valid unknown keys are rejected before
-    // signature validation with HTTP 403 / API0001.
-    check: (r, json) => r.status === 403 && json?.status === 'error' &&
-      json?.code === 'API0001' && json?.reason === 'API key not found'
   }
 ];
 

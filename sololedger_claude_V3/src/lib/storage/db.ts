@@ -149,8 +149,6 @@ export interface ExchangeConnectionRow {
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** Oldest still-pending Bitfinex Movement per direction. */
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
-  /** Exact continuation for Bitstamp's shared newest-first account ledger. */
-  bitstampPagination?: BitstampPaginationCheckpoint;
   /** Exclusive native record-id cursors; BTC Markets `after` is not a timestamp. */
   btcmarketsNativeCursors?: { trades?: string; transfers?: string };
   /** First unfinished native page walk; separate from the proven newest high-water. */
@@ -169,16 +167,7 @@ export interface ExchangeConnectionRow {
   accountIdentityId?: string;
 }
 
-export interface BitstampPaginationCheckpoint {
-  offset: number;
-  since: number;
-  highWater: { trades?: number; deposits?: number; withdrawals?: number };
-  /** A visited trade row lacked authoritative spot/derivative classification. */
-  unresolvedTrades?: boolean;
-  unsafeTransfers?: { deposits?: boolean; withdrawals?: boolean };
-}
-
-const DEFERRED_EXCHANGE_IDS = new Set(['bitget', 'mexc', 'bitmart', 'bitvavo']);
+const DEFERRED_EXCHANGE_IDS = new Set(['bitstamp', 'bitget', 'mexc', 'bitmart', 'bitvavo']);
 
 /** Shared by the v17 upgrade and focused migration regression tests. */
 export function normalizeDeferredExchangeConnection(row: ExchangeConnectionRow): void {

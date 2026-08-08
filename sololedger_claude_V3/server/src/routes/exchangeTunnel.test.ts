@@ -200,8 +200,7 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['htx', 'api.huobi.pro', '/v1/common/timestamp'],
     ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments'],
     ['bitfinex', 'api.bitfinex.com', '/v2/platform/status'],
-    ['btcmarkets', 'api.btcmarkets.net', '/v3/time'],
-    ['bitstamp', 'www.bitstamp.net', '/api/v2/markets/']
+    ['btcmarkets', 'api.btcmarkets.net', '/v3/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -450,34 +449,6 @@ describe('3. header allowlist', () => {
     });
   });
 
-  const NEW_AUTH_CASES = [
-    {
-      exchange: 'bitstamp', path: '/api/v2/account_balances/', method: 'POST',
-      headers: {
-        'x-exchange-x-auth': 'BITSTAMP key',
-        'x-exchange-x-auth-signature': 'signature',
-        'x-exchange-x-auth-nonce': 'nonce',
-        'x-exchange-x-auth-timestamp': '1785888000000',
-        'x-exchange-x-auth-version': 'v2'
-      },
-      expected: {
-        'x-auth': 'BITSTAMP key', 'x-auth-signature': 'signature', 'x-auth-nonce': 'nonce',
-        'x-auth-timestamp': '1785888000000', 'x-auth-version': 'v2'
-      }
-    }
-  ] as const;
-
-  it.each(NEW_AUTH_CASES)('$exchange forwards only its exact auth headers', async (entry) => {
-    upstreamMock.mockResolvedValue(upstreamJson('{}'));
-    await rawRequest({
-      method: entry.method,
-      path: `/${entry.exchange}${entry.path}`,
-      headers: { ...AUTH, ...entry.headers, 'x-exchange-cookie': 'never', origin: 'https://evil.example' },
-      body: entry.method === 'POST' ? 'foo=bar' : undefined
-    });
-    const [, init] = lastUpstreamCall();
-    expect(init.headers).toEqual(entry.expected);
-  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -493,6 +464,8 @@ describe('4. exchangeId and path validation', () => {
   });
 
   it.each([
+    ['bitstamp', '/api/v2/markets/', 'GET'],
+    ['bitstamp', '/api/v2/user_transactions/', 'POST'],
     ['bitget', '/api/v2/public/time', 'GET'],
     ['mexc', '/api/v3/time', 'GET'],
     ['bitmart', '/system/time', 'GET'],
@@ -535,74 +508,6 @@ describe('4. exchangeId and path validation', () => {
       expect(res.status).toBe(400);
       expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
     }
-    expect(upstreamMock).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    '/bitstamp/api/v2/user_transactions/../buy/btcusd/',
-    '/bitstamp/api/v2/user_transactions/%2e%2e/sell/btcusd/',
-    '/bitstamp/api/v2/user_transactions/%2E%2e/withdrawal/crypto/',
-    '/bitstamp/api/v2/user_transactions/%2e%2E/btc_address/',
-    '/bitstamp/api/v2/user_transactions/%252e%252e/buy/btcusd/',
-    '/bitstamp/api/v2/user_transactions/%2f..%2fwithdrawal/crypto/'
-  ])('rejects traversal/canonicalization trick %s before fetch', async (url) => {
-    const { res, state } = makeStubRes();
-    await exchangeTunnelHandler({ method: 'POST', url, headers: {} } as unknown as Request, res);
-    expect(state.statusCode).toBe(400);
-    expect(res.locals.tunnelErrorKind).toBe('bad_path');
-    expect(upstreamMock).not.toHaveBeenCalled();
-  });
-
-  it('rejects raw and encoded backslash normalization tricks before fetch', async () => {
-    for (const url of [
-      '/bitstamp/api/v2/user_transactions/\\..\\withdrawal/crypto/',
-      '/bitstamp/api/v2/user_transactions/%5c..%5Cbtc_address/'
-    ]) {
-      const { res, state } = makeStubRes();
-      await exchangeTunnelHandler({ method: 'POST', url, headers: {} } as unknown as Request, res);
-      expect(state.statusCode).toBe(400);
-      expect(res.locals.tunnelErrorKind).toBe('bad_path');
-    }
-    expect(upstreamMock).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ['/api/v2/markets/', 'GET'],
-    ['/api/v2/account_balances/', 'POST'],
-    ['/api/v2/user_transactions/', 'POST'],
-    ['/api/v2/withdrawal-requests/', 'POST']
-  ] as const)('Bitstamp permits legitimate exact %s %s only', async (path, method) => {
-    upstreamMock.mockResolvedValue(upstreamJson('[]'));
-    const res = await client(`/bitstamp${path}`, {
-      method,
-      headers: AUTH,
-      body: method === 'POST' ? 'foo=bar' : undefined
-    });
-    expect(res.status).toBe(200);
-    const [url, init] = lastUpstreamCall();
-    expect(url).toBe(`https://www.bitstamp.net${path}`);
-    expect(init.method).toBe(method);
-  });
-
-  it('Bitstamp trailing-slash paths are exact, not prefixes', async () => {
-    for (const path of [
-      '/bitstamp/api/v2/user_transactions/buy/btcusd/',
-      '/bitstamp/api/v2/account_balances/extra',
-      '/bitstamp/api/v2/withdrawal-requests/address/'
-    ]) {
-      const res = await client(path, { method: 'POST', headers: AUTH });
-      expect(res.status).toBe(400);
-      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
-    }
-    expect(upstreamMock).not.toHaveBeenCalled();
-  });
-
-  it('pathMethods fails closed when an allowed path has no exact method entry', async () => {
-    // Regression guard for future edits: a case-only mismatch must not fall
-    // through merely because the path exists in `paths`.
-    const res = await client('/bitstamp/api/v2/Markets/', { headers: AUTH });
-    expect(res.status).toBe(400);
-    expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 
@@ -719,15 +624,6 @@ describe('4. exchangeId and path validation', () => {
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 
-  it.each([
-    ['bitstamp', '/api/v2/orders/', 'POST'],
-    ['bitstamp', '/api/v2/withdrawal/crypto/', 'POST']
-  ] as const)('%s blocks non-sync path %s %s', async (exchange, path, method) => {
-    const res = await client(`/${exchange}${path}`, { method, headers: AUTH });
-    expect(res.status).toBe(400);
-    expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
-    expect(upstreamMock).not.toHaveBeenCalled();
-  });
 
 });
 

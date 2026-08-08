@@ -1412,6 +1412,17 @@ describe('ConnectionDetail — navigation', () => {
     await waitFor(() => expect(sync).toHaveFocus());
     expect(acknowledged).toHaveBeenCalledWith('intent-sync');
   });
+  it('reports a deferred exchange Sync intent as absent and exposes no sync action', async () => {
+    const acknowledged = vi.fn();
+    const notFound = vi.fn();
+    render(<ConnectionDetail card={exchangeCard({ deferred: true })} onBack={() => {}} navigationIntent={{
+      id: 'intent-deferred-sync', destination: 'connections', target: { kind: 'exchange', connectionId: 'exc_1' },
+      workspaceTab: 'overview', focus: { kind: 'sync' }
+    }} onNavigationIntentAcknowledged={acknowledged} onNavigationTargetNotFound={notFound} />);
+    await waitFor(() => expect(notFound).toHaveBeenCalledWith('intent-deferred-sync'));
+    expect(screen.queryByTestId('detail-sync-now')).not.toBeInTheDocument();
+    expect(acknowledged).not.toHaveBeenCalled();
+  });
   it('reports an absent explicit Sync target without fallback acknowledgment', async () => {
     const acknowledged = vi.fn();
     const notFound = vi.fn();

@@ -7,8 +7,8 @@
 import type { Transaction } from '@/types/transaction';
 
 /** Exchanges supported by auto-sync. (ONE name — no aliases.) */
-export type EnabledExchangeId = 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio' | 'htx' | 'cryptocom' | 'bitfinex' | 'gemini' | 'btcmarkets' | 'bitstamp';
-export type DeferredExchangeId = 'bitget' | 'mexc' | 'bitmart' | 'bitvavo';
+export type EnabledExchangeId = 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bybit' | 'gateio' | 'htx' | 'cryptocom' | 'bitfinex' | 'gemini' | 'btcmarkets';
+export type DeferredExchangeId = 'bitstamp' | 'bitget' | 'mexc' | 'bitmart' | 'bitvavo';
 /** Compatibility identity for persisted transactions and legacy source rows. */
 export type ExchangeId = EnabledExchangeId | DeferredExchangeId;
 
@@ -24,8 +24,7 @@ export const SYNC_EXCHANGES: readonly EnabledExchangeId[] = [
   'cryptocom',
   'bitfinex',
   'gemini',
-  'btcmarkets',
-  'bitstamp'
+  'btcmarkets'
 ] as const;
 
 const ENABLED_EXCHANGES = new Set<string>(SYNC_EXCHANGES);

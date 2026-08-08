@@ -212,22 +212,7 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     path: ['BTC Markets', 'Account', 'API Key', 'Create API Key'],
     docsUrl: 'https://support.btcmarkets.net/hc/en-us/articles/360046326934-How-to-Access-and-Generate-Revoke-Your-API-Keys'
   },
-  {
-    id: 'bitstamp',
-    label: 'Bitstamp',
-    monogram: 'BS',
-    needsPassphrase: false,
-    formatHint: 'API key + secret',
-    keyInstructions: [
-      'Log in to Bitstamp on the web and open Settings → API Access (or Account → API).',
-      'Create a new API key and complete the security confirmation.',
-      'Enable only the read / account-history permissions (balances, transactions, orders). Never enable trading or withdrawals.',
-      'Copy the API Key and API Secret and paste them here. Bitstamp does not require a passphrase.'
-    ],
-    path: ['Bitstamp', 'Settings', 'API Access', 'Create Key'],
-    docsUrl: 'https://www.bitstamp.net/api/'
-  },
-  // Bitget, MEXC, BitMart and Bitvavo remain typed/parser-supported for
+  // Bitstamp, Bitget, MEXC, BitMart and Bitvavo remain typed/parser-supported for
   // migration and fixture verification, but are intentionally absent from
   // this user-facing catalog until their native pagination and durable replay
   // checkpoints can prove exhaustive tax-history coverage.

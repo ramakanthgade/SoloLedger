@@ -271,7 +271,7 @@ describe('connection credential lifecycle', () => {
     expect(token).not.toContain(persisted.secret!);
   });
 
-  it.each(['bitget', 'mexc', 'bitmart', 'bitvavo'] as const)(
+  it.each(['bitstamp', 'bitget', 'mexc', 'bitmart', 'bitvavo'] as const)(
     'rejects creating and reauthorizing deferred %s connections', async (exchange) => {
       await expect(addConnection({ exchange, apiKey: 'key', secret: 'secret' }))
         .rejects.toThrow(/deferred.*import a file/i);
