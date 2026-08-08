@@ -493,6 +493,28 @@ describe('4. exchangeId and path validation', () => {
   });
 
   it.each([
+    '/binance/api/v3//time',
+    '/binance//api/v3/time'
+  ])('repeated slash path %s → 400 bad_path before fetch (direct handler)', async (url) => {
+    const { res, state } = makeStubRes();
+    await exchangeTunnelHandler({ method: 'GET', url, headers: {} } as unknown as Request, res);
+    expect(state.statusCode).toBe(400);
+    expect(res.locals.tunnelErrorKind).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('keeps one legitimate leading slash and the raw query in a direct handler call', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"ok":true}'));
+    const { res, state } = makeStubRes();
+    await exchangeTunnelHandler({
+      method: 'GET', url: '/binance/api/v3/time?signature=Ab%2B%2F%3D', headers: {}
+    } as unknown as Request, res);
+    const [url] = lastUpstreamCall();
+    expect(url).toBe('https://api.binance.com/api/v3/time?signature=Ab%2B%2F%3D');
+    expect(state.statusCode).toBe(200);
+  });
+
+  it.each([
     '/cryptocom/exchange/v1/private/../create-order',
     '/cryptocom/exchange/v1/private/%2e%2e/create-order',
     '/cryptocom/exchange/v1/private/%2E%2e/create-order',

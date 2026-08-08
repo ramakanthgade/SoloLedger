@@ -290,7 +290,7 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
   if (
     upstreamPath.includes('%') ||
     upstreamPath.includes('\\') ||
-    pathSegments.some((segment) => segment === '.' || segment === '..')
+    pathSegments.slice(1).some((segment) => segment === '' || segment === '.' || segment === '..')
   ) {
     fail(res, 'bad_path', 400, 'Non-canonical upstream path');
     return;
