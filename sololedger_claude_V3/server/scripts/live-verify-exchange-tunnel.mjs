@@ -165,6 +165,36 @@ const TIER2 = [
     probe: 'GET /v3/time',
     path: '/v3/time',
     check: (r, json) => r.status === 200 && typeof json?.timestamp === 'string' && Number.isFinite(Date.parse(json.timestamp))
+  },
+  {
+    exchange: 'bitstamp',
+    probe: 'GET /api/v2/markets/',
+    path: '/api/v2/markets/',
+    check: (r, json) => r.status === 200 && Array.isArray(json) && json.every((market) => typeof market?.market === 'string')
+  },
+  {
+    exchange: 'bitget',
+    probe: 'GET /api/v2/public/time',
+    path: '/api/v2/public/time',
+    check: (r, json) => r.status === 200 && json?.code === '00000' && Boolean(json?.data?.serverTime)
+  },
+  {
+    exchange: 'mexc',
+    probe: 'GET /api/v3/time',
+    path: '/api/v3/time',
+    check: (r, json) => r.status === 200 && typeof json?.serverTime === 'number'
+  },
+  {
+    exchange: 'bitmart',
+    probe: 'GET /system/time',
+    path: '/system/time',
+    check: (r, json) => r.status === 200 && json?.code === 1000 && typeof json?.data?.server_time === 'number'
+  },
+  {
+    exchange: 'bitvavo',
+    probe: 'GET /v2/time',
+    path: '/v2/time',
+    check: (r, json) => r.status === 200 && typeof json?.time === 'number'
   }
 ];
 
@@ -433,6 +463,106 @@ const tier3 = [
       };
     },
     check: (r) => r.status === 401 && r.text.includes('"code":"InvalidAPIKey"') && /invalid api key/i.test(r.text)
+  },
+  {
+    exchange: 'bitstamp',
+    probe: 'POST /api/v2/account_balances/ (X-Auth HMAC-SHA256)',
+    build() {
+      const apiKey = 'dummy-bitstamp-key';
+      const secret = 'dummy-bitstamp-secret';
+      const path = '/api/v2/account_balances/';
+      const nonce = crypto.randomUUID();
+      const timestamp = Date.now().toString();
+      const version = 'v2';
+      const contentType = 'application/x-www-form-urlencoded';
+      const body = 'foo=bar';
+      const xAuth = `BITSTAMP ${apiKey}`;
+      const auth = xAuth + 'POST' + `www.bitstamp.net${path}` + contentType + nonce + timestamp + version + body;
+      return {
+        path,
+        method: 'POST',
+        body,
+        contentType,
+        exchangeHeaders: {
+          'x-auth': xAuth,
+          'x-auth-signature': hmacHex('sha256', secret, auth),
+          'x-auth-nonce': nonce,
+          'x-auth-timestamp': timestamp,
+          'x-auth-version': version
+        }
+      };
+    },
+    check: (r) => (r.status === 401 || r.status === 403) && /API\d{4}|auth|signature|key/i.test(r.text)
+  },
+  {
+    exchange: 'bitget',
+    probe: 'GET /api/v2/spot/account/assets (ACCESS-SIGN + passphrase)',
+    build() {
+      const apiKey = 'dummy-bitget-key';
+      const secret = 'dummy-bitget-secret';
+      const timestamp = Date.now().toString();
+      const path = '/api/v2/spot/account/assets';
+      return {
+        path,
+        exchangeHeaders: {
+          'access-key': apiKey,
+          'access-sign': hmacB64('sha256', secret, timestamp + 'GET' + path),
+          'access-timestamp': timestamp,
+          'access-passphrase': 'dummy-bitget-passphrase'
+        }
+      };
+    },
+    check: (r) => (r.status === 400 || r.status === 401) && /"code":"4000(?:3|5|9)"|api key|signature/i.test(r.text)
+  },
+  {
+    exchange: 'mexc',
+    probe: 'GET /api/v3/account (X-MEXC-APIKEY + query HMAC-SHA256)',
+    build() {
+      const apiKey = 'dummy-mexc-key';
+      const secret = 'dummy-mexc-secret';
+      const query = `timestamp=${Date.now()}&recvWindow=5000`;
+      return {
+        path: `/api/v3/account?${query}&signature=${hmacHex('sha256', secret, query)}`,
+        exchangeHeaders: { 'x-mexc-apikey': apiKey }
+      };
+    },
+    check: (r) => (r.status === 400 || r.status === 401) && /"code":-2015|invalid api-key/i.test(r.text)
+  },
+  {
+    exchange: 'bitmart',
+    probe: 'GET /spot/v1/wallet (X-BM-SIGN + memo)',
+    build() {
+      const timestamp = Date.now().toString();
+      const memo = 'dummy-bitmart-memo';
+      return {
+        path: '/spot/v1/wallet',
+        exchangeHeaders: {
+          'x-bm-key': 'dummy-bitmart-key',
+          'x-bm-sign': hmacHex('sha256', 'dummy-bitmart-secret', `${timestamp}#${memo}#`),
+          'x-bm-timestamp': timestamp,
+          'x-bm-broker-id': 'CCXTxBitmart000'
+        }
+      };
+    },
+    check: (r) => (r.status === 401 || r.status === 400) && /"code":3000[12458]|X-BM-KEY|X-BM-SIGN/i.test(r.text)
+  },
+  {
+    exchange: 'bitvavo',
+    probe: 'GET /v2/balance (BITVAVO-ACCESS-SIGNATURE)',
+    build() {
+      const timestamp = Date.now().toString();
+      const path = '/v2/balance';
+      return {
+        path,
+        exchangeHeaders: {
+          'bitvavo-access-key': 'dummy-bitvavo-key',
+          'bitvavo-access-signature': hmacHex('sha256', 'dummy-bitvavo-secret', timestamp + 'GET' + path),
+          'bitvavo-access-timestamp': timestamp,
+          'bitvavo-access-window': '10000'
+        }
+      };
+    },
+    check: (r) => (r.status === 401 || r.status === 403) && /"errorCode":(?:105|107|308)|API key|signature/i.test(r.text)
   }
 ];
 

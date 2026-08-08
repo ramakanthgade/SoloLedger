@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import type { ExchangeConnectionView, ExchangeSyncJobState } from '@/lib/exchangeSync';
+import type { ExchangeConnectionView, ExchangeId, ExchangeSyncJobState } from '@/lib/exchangeSync';
 
 /**
  * ExchangeConnectStep — the Connections v2 drawer form that replaced
@@ -10,7 +10,7 @@ import type { ExchangeConnectionView, ExchangeSyncJobState } from '@/lib/exchang
  *   flag off → "temporarily unavailable"), and
  * - the test-gated Connect: "Connect securely" stays disabled until
  *   "Test connection" passes for the EXACT current field values — any edit
- *   re-locks it. Passphrase only for OKX/KuCoin.
+ *   re-locks it. Passphrase fields follow the exchange catalog.
  *
  * The barrel is mocked EXCEPT its constants/types (importOriginal keeps the
  * pinned AUTO_SYNC_HOSTED_ONLY copy honest).
@@ -83,7 +83,7 @@ const savedView: ExchangeConnectionView = {
 };
 
 async function renderForm(
-  exchangeId: 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' = 'binance',
+  exchangeId: ExchangeId = 'binance',
   props: { mode?: 'connect' | 'reauthorize'; existingId?: string } = {}
 ) {
   const onConnected = vi.fn();
@@ -183,7 +183,7 @@ describe('ExchangeConnectStep — credential fields per exchange', () => {
     }
   );
 
-  it.each(['okx', 'kucoin'] as const)('%s additionally requires a passphrase', async (exchangeId) => {
+  it.each(['okx', 'kucoin', 'bitget', 'bitmart'] as const)('%s additionally requires a passphrase', async (exchangeId) => {
     await renderForm(exchangeId);
     expect(screen.getByLabelText(/Passphrase/)).toBeInTheDocument();
   });
@@ -278,8 +278,8 @@ describe('ExchangeConnectStep — test-gated Connect (ported from AddConnectionF
     expect(onConnected).not.toHaveBeenCalled();
   });
 
-  it('passphrase exchanges require the passphrase before Test/Connect unlock', async () => {
-    await renderForm('kucoin');
+  it.each(['kucoin', 'bitget', 'bitmart'] as const)('%s requires the passphrase before Test/Connect unlock', async (exchangeId) => {
+    await renderForm(exchangeId);
 
     fillCredentials();
     // key+secret filled but passphrase empty → Test stays disabled
@@ -292,7 +292,7 @@ describe('ExchangeConnectStep — test-gated Connect (ported from AddConnectionF
     fireEvent.click(test);
     await screen.findByText(/Connected — read-only access confirmed/);
     expect(mocks.testConnection).toHaveBeenCalledWith(
-      expect.objectContaining({ exchange: 'kucoin', passphrase: 'phrase-1' })
+      expect.objectContaining({ exchange: exchangeId, passphrase: 'phrase-1' })
     );
   });
 

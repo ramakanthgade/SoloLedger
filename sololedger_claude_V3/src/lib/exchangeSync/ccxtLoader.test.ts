@@ -78,8 +78,8 @@ describe('createExchangeClient', () => {
     expect(client.fetch).not.toBe(fresh.fetch);
   });
 
-  it('maps passphrase → ccxt password for okx and kucoin', async () => {
-    for (const exchange of ['okx', 'kucoin'] as const) {
+  it('maps passphrase → ccxt password for every passphrase exchange', async () => {
+    for (const exchange of ['okx', 'kucoin', 'bitget', 'bitmart'] as const) {
       const client = await createExchangeClient(row({ exchange, passphrase: 'phrase' }));
       expect((client as unknown as Record<string, unknown>).password).toBe('phrase');
     }

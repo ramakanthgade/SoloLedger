@@ -73,6 +73,8 @@ For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each
 - Gated by JWT + active subscription + the `exchangeSyncEnabled` admin flag (`EXCHANGE_SYNC_ENABLED`, default on; admin `PUT /api/admin/config`).
 - Gemini is pinned to `api.gemini.com`: only `GET /v1/symbols` and `POST /v1/balances`, `/v1/mytrades`, `/v1/transfers` are accepted, forwarding only `x-gemini-apikey`, `x-gemini-payload`, and `x-gemini-signature`.
 - BTC Markets is pinned to `api.btcmarkets.net`: only `GET /v3/time`, `/v3/markets`, `/v3/accounts/me/balances`, `/v3/trades`, and `/v3/transfers` are accepted. Only `bm-auth-apikey`, `bm-auth-timestamp`, and `bm-auth-signature` are forwarded; `bm-before`/`bm-after` response cursors are forwarded and CORS-exposed only on the BTC Markets tunnel.
+- Bitstamp, Bitget, MEXC, BitMart, and Bitvavo are pinned to their single spot hosts with exact sync endpoint and method allowlists. Read-only private endpoints that those APIs define as POST (Bitstamp account/history and BitMart trade history) are allowed only on those exact paths; order, margin, futures, transfer mutation, and withdrawal mutation paths remain unreachable.
+- Their forwarded authentication surfaces are similarly exact: Bitstamp `x-auth-*`, Bitget `access-*`, MEXC `x-mexc-apikey`, BitMart `x-bm-*`, and Bitvavo `bitvavo-access-*`. Browser cookies, origin, user-agent, and unlisted exchange headers are never forwarded.
 
 ### Binance gateway (geo unblock)
 

@@ -211,6 +211,8 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['BTC Markets', 'Account', 'API Key', 'Create API Key'],
     docsUrl: 'https://support.btcmarkets.net/hc/en-us/articles/360046326934-How-to-Access-and-Generate-Revoke-Your-API-Keys'
+  },
+  {
     id: 'bitstamp',
     label: 'Bitstamp',
     monogram: 'BS',

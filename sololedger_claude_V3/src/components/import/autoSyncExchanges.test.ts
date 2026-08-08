@@ -5,9 +5,8 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
 /**
  * The auto-sync catalog drives the AddConnectionForm picker — its ids must
  * stay exactly the ccxt exchange ids (contract C3 `SYNC_EXCHANGES`), and
- * `needsPassphrase` must be true ONLY for OKX and KuCoin (contract C5:
- * their `requiredCredentials` include `password`; the others take
- * apiKey+secret only).
+ * `needsPassphrase` must track the exchanges whose CCXT credentials include
+ * `password`/memo in addition to apiKey+secret.
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
