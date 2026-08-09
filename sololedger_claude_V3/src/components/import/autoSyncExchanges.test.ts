@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(13);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(14);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -110,5 +110,12 @@ describe('autoSyncExchanges catalog', () => {
     expect(btcmarkets.keyInstructions.join(' ')).toMatch(/read permissions.*never enable.*order.*trading.*withdrawal/i);
     expect(btcmarkets.keyInstructions.join(' ')).toMatch(/retention is undocumented.*cannot verify account-lifetime.*no BTC Markets CSV parser.*deduplication is unavailable/i);
     expect(btcmarkets.needsPassphrase).toBe(false);
+  });
+
+  it('documents Bitvavo view-only credentials and delisted-market fallback', () => {
+    const bitvavo = getAutoSyncExchange('bitvavo')!;
+    expect(bitvavo.keyInstructions.join(' ')).toMatch(/only View information.*never enable trading or withdrawals/i);
+    expect(bitvavo.keyInstructions.join(' ')).toMatch(/delisted.*import an account export/i);
+    expect(bitvavo.needsPassphrase).toBe(false);
   });
 });

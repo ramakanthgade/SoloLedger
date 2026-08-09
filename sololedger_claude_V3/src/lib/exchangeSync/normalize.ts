@@ -48,7 +48,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   bitfinex: 'exbf',
   gemini: 'exgm',
   btcmarkets: 'exbm',
-  mexc: 'exmx'
+  mexc: 'exmx',
+  bitvavo: 'exbv'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -130,6 +131,8 @@ function tradeSourceRef(
     case 'mexc':
       // Native fill id. MEXC has no SoloLedger CSV parser, so do not invent
       // API/CSV parity; storage additionally scopes this by connection/kind.
+      return trade.id;
+    case 'bitvavo':
       return trade.id;
   }
 }
@@ -223,7 +226,7 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo'
         ? { exchangeSyncKind: 'trade' as const }
         : {})
     }
@@ -661,7 +664,59 @@ function transferSourceRef(
       if (type === 'transfer_out') return transfer.id;
       return mexcDepositSourceRef(transfer);
     }
+    case 'bitvavo': {
+      const endpoint = type === 'transfer_in' ? 'deposit' : 'withdrawal';
+      return bitvavoTransferIdentity(transfer, endpoint);
+    }
   }
+}
+
+export type BitvavoTransferEndpoint = 'deposit' | 'withdrawal';
+
+function nonEmptyString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/** The current documented digital-deposit schema has no status field. */
+export function isDocumentedBitvavoDigitalDeposit(transfer: UnifiedTransfer): boolean {
+  const info = transfer.info;
+  const symbol = nonEmptyString(info?.symbol)?.toUpperCase();
+  const timestamp = Number(info?.timestamp);
+  const amount = Number(info?.amount);
+  const fee = Number(info?.fee);
+  return transfer.type === 'deposit' && transfer.status == null && info?.status == null &&
+    symbol != null && symbol !== 'EUR' && Number.isFinite(timestamp) && timestamp >= 0 &&
+    Number.isFinite(amount) && amount > 0 && Number.isFinite(fee) && fee >= 0 &&
+    nonEmptyString(info?.address) != null && nonEmptyString(info?.txId) != null;
+}
+
+/**
+ * Stable Bitvavo replay identity. CCXT leaves transfer.id undefined. Digital
+ * rows retain the established txId identity; documented fiat deposits have no
+ * txId, so use a lossless JSON tuple of every immutable fiat field. JSON tuple
+ * boundaries avoid delimiter collisions and the endpoint prevents cross-kind
+ * collisions.
+ */
+export function bitvavoTransferIdentity(
+  transfer: UnifiedTransfer,
+  endpoint: BitvavoTransferEndpoint
+): string | undefined {
+  const ts = transfer.timestamp;
+  const asset = transfer.currency?.toUpperCase();
+  const amount = transfer.amount;
+  if (ts == null || !Number.isFinite(ts) || !asset || amount == null || !Number.isFinite(amount) || amount <= 0) {
+    return undefined;
+  }
+  const providerTxId = nonEmptyString(transfer.info?.txId) ?? nonEmptyString(transfer.txid);
+  const rawAmount = Number(transfer.info?.amount ?? amount);
+  if (!Number.isFinite(rawAmount) || rawAmount <= 0) return undefined;
+  if (providerTxId) return `bitvavo:${providerTxId}:${endpoint}:${ts}:${asset}:${String(rawAmount)}`;
+  if (endpoint !== 'deposit' || asset !== 'EUR') return undefined;
+  const fee = Number(transfer.info?.fee ?? transfer.fee?.cost);
+  const address = nonEmptyString(transfer.info?.address) ?? nonEmptyString(transfer.address);
+  const status = nonEmptyString(transfer.info?.status)?.toLowerCase();
+  if (!Number.isFinite(fee) || fee < 0 || !address || !status) return undefined;
+  return `bitvavo:fiat:${JSON.stringify([endpoint, ts, asset, rawAmount, fee, status, address])}`;
 }
 
 /**
@@ -745,7 +800,10 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     else if (infoType === 'receive') type = 'transfer_in';
   }
   const isGeminiAdjustment = geminiType === 'reward' || geminiType === 'admincredit' || geminiType === 'admindebit';
-  if ((!type && !isGeminiAdjustment) || !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status)) return null;
+  const documentedBitvavoDeposit = exchange === 'bitvavo' && type === 'transfer_in' &&
+    isDocumentedBitvavoDigitalDeposit(transfer);
+  if ((!type && !isGeminiAdjustment) || (!documentedBitvavoDeposit &&
+    !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status))) return null;
   const ts = transfer.timestamp;
   const asset = transfer.currency?.toUpperCase();
   const amount = transfer.amount != null ? Math.abs(transfer.amount) : 0;
@@ -813,7 +871,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

@@ -227,6 +227,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['MEXC', 'Profile', 'API Management', 'Create API'],
     docsUrl: 'https://www.mexc.com/user/openapi'
+  },
+  {
+    id: 'bitvavo',
+    label: 'Bitvavo',
+    monogram: 'BV',
+    needsPassphrase: false,
+    formatHint: 'API key + secret',
+    keyInstructions: [
+      'Log in to Bitvavo on the web and open Settings → API.',
+      'Create a new API key and enable only View information.',
+      'Never enable trading or withdrawals, and leave the IP restriction enabled when your setup supports it.',
+      'Copy the API Key and API Secret and paste them here. Bitvavo does not require a passphrase.',
+      'Trade history is scanned in resumable per-market windows. If a previously used market is delisted and no longer appears in the API catalog, import an account export to verify that market.'
+    ],
+    path: ['Bitvavo', 'Settings', 'API', 'Create API Key'],
+    docsUrl: 'https://account.bitvavo.com/settings/api'
   }
 ];
 

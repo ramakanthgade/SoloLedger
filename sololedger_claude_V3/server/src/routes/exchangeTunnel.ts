@@ -190,6 +190,24 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/api/v3/capital/deposit/hisrec',
       '/api/v3/capital/withdraw/history'
     ]
+  },
+  bitvavo: {
+    host: 'api.bitvavo.com',
+    headers: [
+      'bitvavo-access-key',
+      'bitvavo-access-signature',
+      'bitvavo-access-timestamp',
+      'bitvavo-access-window'
+    ],
+    methods: ['GET'],
+    paths: [
+      '/v2/time',
+      '/v2/markets',
+      '/v2/balance',
+      '/v2/trades',
+      '/v2/depositHistory',
+      '/v2/withdrawalHistory'
+    ]
   }
 };
 

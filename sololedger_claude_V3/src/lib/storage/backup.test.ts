@@ -780,6 +780,16 @@ describe('importFullBackup', () => {
         deposits: { requestedStart: 1, requestedEnd: 10, pendingWindows: [{ start: 1, end: 10 }], unsafeEvidence: [] },
         withdrawals: { requestedStart: 1, requestedEnd: 10, pendingWindows: [], unsafeEvidence: [] }
       }
+    }, {
+      id: 'bitvavo-source', exchange: 'bitvavo', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', bitvavoTradeState: {
+        frontiers: { 'BTC/EUR': { timestamp: 1000, tradeIdFrom: 'newest-id' } },
+        continuations: { 'BTC/EUR': {
+          windowStart: 1000, windowEnd: 2000, tradeIdTo: 'oldest-id', tradeIdFrom: 'newest-id'
+        } },
+        nextSymbolIndex: 0
+      },
+      bitvavoUnsafeTransfers: { deposits: 700, withdrawals: 800 }
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -815,6 +825,17 @@ describe('importFullBackup', () => {
     });
     expect(payload.exchangeConnections.find((row) => row.id === 'mexc-source')).not.toHaveProperty('apiKey');
     expect(payload.exchangeConnections.find((row) => row.id === 'mexc-source')).not.toHaveProperty('secret');
+    expect(await db.exchangeConnections.get('bitvavo-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      bitvavoTradeState: {
+        frontiers: { 'BTC/EUR': { timestamp: 1000, tradeIdFrom: 'newest-id' } },
+        continuations: { 'BTC/EUR': {
+          windowStart: 1000, windowEnd: 2000, tradeIdTo: 'oldest-id', tradeIdFrom: 'newest-id'
+        } },
+        nextSymbolIndex: 0
+      },
+      bitvavoUnsafeTransfers: { deposits: 700, withdrawals: 800 }
+    });
   });
 
   it('rejects malformed MEXC checkpoint before clearing existing data', async () => {
@@ -828,6 +849,24 @@ describe('importFullBackup', () => {
     };
     await expect(importFullBackup(backupFile(payload))).rejects.toThrow('MEXC checkpoint is malformed');
     expect(await db.exchangeConnections.get('mexc-source')).toBeDefined();
+  });
+
+  it.each([
+    { frontiers: [] },
+    { frontiers: { 'BTC/EUR': { timestamp: -1 } } },
+    { frontiers: { 'BTC/EUR': { timestamp: 1 } }, continuations: {
+      'BTC/EUR': { windowStart: 1, windowEnd: 100_000_000, tradeIdTo: 'id' }
+    } },
+    { frontiers: { 'BTC/EUR': { timestamp: 1 } }, continuations: {
+      'ETH/EUR': { windowStart: 1, windowEnd: 2, tradeIdTo: 'id' }
+    } }
+  ])('rejects malformed Bitvavo trade checkpoints %#', async (bitvavoTradeState) => {
+    await db.exchangeConnections.put({
+      id: 'bitvavo-source', exchange: 'bitvavo', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { bitvavoTradeState: unknown }).bitvavoTradeState = bitvavoTradeState;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow('Bitvavo trade checkpoint is malformed');
   });
 
   it.each([

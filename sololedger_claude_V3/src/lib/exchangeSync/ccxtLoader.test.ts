@@ -55,6 +55,7 @@ describe('loadCcxt', () => {
     expect(typeof a.gemini).toBe('function');
     expect(typeof a.btcmarkets).toBe('function');
     expect(typeof a.mexc).toBe('function');
+    expect(typeof a.bitvavo).toBe('function');
   });
 });
 
@@ -254,6 +255,20 @@ describe('createExchangeClient', () => {
     const signedTrades = raw.sign('myTrades', ['spot', 'private'], 'GET', { symbol: 'BTCUSDT', limit: 100 });
     expect(new URL(signedTrades.url).pathname).toBe('/api/v3/myTrades');
     expect(new URL(signedTrades.url).searchParams.get('limit')).toBe('100');
+  });
+
+  it('configures Bitvavo spot history without currency probes or a passphrase', async () => {
+    const client = await createExchangeClient(row({ exchange: 'bitvavo' }));
+    const raw = client as unknown as {
+      options: Record<string, unknown>; has: Record<string, unknown>;
+      requiredCredentials: Record<string, boolean>; password?: string;
+      enableLastJsonResponse: boolean;
+    };
+    expect(raw.options).toMatchObject({ defaultType: 'spot', fetchCurrencies: false });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    expect(raw.password).toBeUndefined();
+    expect(raw.enableLastJsonResponse).toBe(true);
   });
 
   it('does not set password for exchanges without a passphrase', async () => {

@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -173,9 +173,38 @@ a sync discards any staged preview (with a warning).
   scanning newer activity. Coverage records the greatest frozen end actually
   queried, not merely the newly checkpointed target. Export older records from MEXC;
   SoloLedger has no MEXC CSV parser and makes no API/CSV deduplication promise.
+- Bitvavo trade history is symbol-required and every request uses a 23.5-hour
+  `start`/`end` window (the API maximum is 24 hours). Dense newest-first
+  windows continue by native `tradeIdTo`; once exhausted, the newest native
+  id becomes the next `tradeIdFrom` frontier. Per-symbol frontiers and the
+  first unfinished native continuation are committed only after rows save,
+  so request-budget interruption resumes without skipping the dense window.
+  Inactive markets still present in `/v2/markets` remain scanable. A known
+  market that disappears from the catalog retains its conservative frontier
+  and marks coverage partial instead of advancing the account-wide cursor.
+  Transfers use independent <=23.5-hour windows. Full pages are time-bisected;
+  fullness and safety come from CCXT's captured raw response, not its parsed
+  length. Raw/parsed count mismatch or a malformed raw row fails closed and
+  pins replay at that window instead of advancing over hidden activity.
+  Transfer validation is endpoint/schema aware: documented digital deposits
+  omit status and are settled by that strict schema, while EUR deposits require
+  their fiat status/address shape and use an endpoint-scoped immutable
+  timestamp/asset/amount/fee/address tuple when no txId exists. Ambiguous shapes
+  still fail closed. Native pages are newest-first while pinned CCXT sorts
+  parsed transfers ascending, so validation reconciles a one-to-one identity
+  multiset rather than array positions; duplicate identities fail closed.
+  pending, unknown, future-dated, or malformed economics retain an endpoint
+  replay checkpoint until a later exhaustive scan settles them. Known
+  canceled/failed rows are explained terminal exclusions and do not pin
+  replay. Pinned CCXT intentionally leaves unified transfer `id` undefined,
+  so transfer identity
+  is raw `txId + endpoint + timestamp + asset + amount`, scoped to the durable
+  connection and immutable endpoint kind.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
-  6.5-day windows from the unix epoch would need thousands of requests.
+  6.5-day windows from the unix epoch would need thousands of requests. The
+  Bitvavo floor is conservatively `2018-01-01`: 2018 is supported, but no
+  exact first trading day is asserted without documented source evidence.
 - Retries: `MAX_RETRIES = 3`, backoff `[2 s, 5 s, 15 s]`, and ONLY for
   `rate_limit`/`network`. Everything else (including `region_blocked`)
   aborts immediately.
@@ -216,7 +245,8 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | bitfinex | native Trade id; connection- and immutable-kind scoped; intentionally does **not** collide with beta CSV because parity is unverified | native Movement id; connection- and immutable-kind scoped; no Movements CSV backfill exists |
 | gemini | native `tid`, prefixed `trade:` and connection-scoped | native `eid`/`withdrawalId`, direction-prefixed and connection-scoped |
 | btcmarkets | native trade `id`, connection + immutable `trade` kind scoped | native transfer `id`, connection + immutable direction scoped |
-| mexc | native trade `id`, scoped by connection + exchange + immutable `trade` kind | withdrawal native `id`; deposits use the exact provider evidence tuple (`txId`/`transHash`, network, coin, time, amount, address, memo, index), scoped by immutable direction; no CSV identity promise |
+| mexc | native trade `id`, scoped by connection + exchange + immutable `trade` kind | withdrawal native `id`; deposits prefer raw `info.txId`, then unified `txid`, then unified `id`; all are scoped by connection + exchange + immutable direction, with no CSV identity promise |
+| bitvavo | native trade UUID, connection + immutable `trade` kind scoped | raw `txId + endpoint + timestamp + asset + amount`, connection + immutable direction scoped |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change

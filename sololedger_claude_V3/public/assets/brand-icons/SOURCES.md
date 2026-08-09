@@ -16,6 +16,7 @@ never redraw the glyph.
 
 | File | Exact origin / provenance | License / use | Retrieved |
 | --- | --- | --- | --- |
+| `bitvavo.svg` | Wikimedia Commons copy of Bitvavo's official press mark: `https://commons.wikimedia.org/wiki/File:Bitvavo-mark-black.svg`; source links to `https://bitvavo.com/en/press` | Bitvavo trademark; nominative use | 2026-08-09 |
 | `binance.svg` | Simple Icons `simple-icons@15`, slug `binance`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/binance.svg` | CC0 1.0; Binance trademark | 2026-08-04 |
 | `coinbase.svg` | Simple Icons `simple-icons@15`, slug `coinbase`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/coinbase.svg` | CC0 1.0; Coinbase trademark | 2026-08-04 |
 | `okx.svg` | Simple Icons `simple-icons@15`, slug `okx`: `https://cdn.jsdelivr.net/npm/simple-icons@15/icons/okx.svg` | CC0 1.0; OKX trademark | 2026-08-04 |

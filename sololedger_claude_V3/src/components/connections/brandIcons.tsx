@@ -48,6 +48,7 @@ export const BRAND_ICONS: Record<string, BrandIconDef> = {
   gemini: { src: `${ICONS}/gemini.png`, label: 'Gemini' },
   btcmarkets: { src: `${ICONS}/btcmarkets.png`, label: 'BTC Markets' },
   mexc: { src: `${ICONS}/mexc.png`, label: 'MEXC' },
+  bitvavo: { src: `${ICONS}/bitvavo.svg`, label: 'Bitvavo', lightChip: true },
   htx: { src: `${ICONS}/htx.png`, label: 'HTX' },
   coinspot: { src: `${ICONS}/coinspot.png`, label: 'CoinSpot' },
   hyperliquid: { src: `${ICONS}/hyperliquid.png`, label: 'Hyperliquid' },

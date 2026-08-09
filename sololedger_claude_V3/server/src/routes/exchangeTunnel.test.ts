@@ -201,7 +201,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments'],
     ['bitfinex', 'api.bitfinex.com', '/v2/platform/status'],
     ['btcmarkets', 'api.btcmarkets.net', '/v3/time'],
-    ['mexc', 'api.mexc.com', '/api/v3/time']
+    ['mexc', 'api.mexc.com', '/api/v3/time'],
+    ['bitvavo', 'api.bitvavo.com', '/v2/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -468,6 +469,29 @@ describe('3. header allowlist', () => {
     expect(init.method).toBe('GET');
     expect(init.headers).toEqual({ 'x-mexc-apikey': 'MEXC_KEY', source: 'CCXT' });
   });
+
+  it('bitvavo: forwards only the four exact signed GET headers', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    await rawRequest({
+      path: '/bitvavo/v2/trades?market=BTC-EUR&start=1&end=2',
+      headers: {
+        ...AUTH,
+        'x-exchange-bitvavo-access-key': 'key',
+        'x-exchange-bitvavo-access-signature': 'signature',
+        'x-exchange-bitvavo-access-timestamp': '1785888000000',
+        'x-exchange-bitvavo-access-window': '10000',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.bitvavo.com/v2/trades?market=BTC-EUR&start=1&end=2');
+    expect(init.headers).toEqual({
+      'bitvavo-access-key': 'key',
+      'bitvavo-access-signature': 'signature',
+      'bitvavo-access-timestamp': '1785888000000',
+      'bitvavo-access-window': '10000'
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -693,6 +717,20 @@ describe('4. exchangeId and path validation', () => {
     }
     expect(upstreamMock).not.toHaveBeenCalled();
   });
+
+  it('Bitvavo allows only exact read-only GET paths', async () => {
+    for (const [path, method] of [
+      ['/bitvavo/v2/order', 'POST'],
+      ['/bitvavo/v2/withdrawal', 'POST'],
+      ['/bitvavo/v2/balance', 'POST'],
+      ['/bitvavo/v2/trades/BTC-EUR', 'GET']
+    ] as const) {
+      const res = await client(path, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -872,6 +910,32 @@ describe('11. CORS', () => {
     });
     expect(res.status).toBe(204);
     expect(res.headers['access-control-allow-headers']).toContain('x-exchange-x-mbx-apikey');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('Bitvavo OPTIONS preflight allows all four tunnel auth headers', async () => {
+    const requestedHeaders = [
+      'authorization',
+      'x-exchange-bitvavo-access-key',
+      'x-exchange-bitvavo-access-signature',
+      'x-exchange-bitvavo-access-timestamp',
+      'x-exchange-bitvavo-access-window'
+    ];
+    const res = await rawRequest({
+      method: 'OPTIONS',
+      path: '/bitvavo/v2/trades',
+      headers: {
+        origin: 'https://ramakanthgade.github.io',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': requestedHeaders.join(', ')
+      }
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers['access-control-allow-methods']).toContain('GET');
+    const allowedHeaders = String(res.headers['access-control-allow-headers'])
+      .split(',')
+      .map((header) => header.trim().toLowerCase());
+    expect(new Set(allowedHeaders)).toEqual(new Set(requestedHeaders));
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 

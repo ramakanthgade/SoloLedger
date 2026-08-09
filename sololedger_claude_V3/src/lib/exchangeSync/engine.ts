@@ -26,7 +26,8 @@ import {
   getSettings,
   exchangeBalanceId,
   type ExchangeConnectionRow,
-  type BtcMarketsPaginationCheckpoint
+  type BtcMarketsPaginationCheckpoint,
+  type BitvavoTradeState
 } from '@/lib/storage/db';
 import { binanceSpotEndpointProof, bitfinexSpotEndpointProof, type AuthorityAssetRow, type AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import {
@@ -65,6 +66,9 @@ import {
   normalizeTrade,
   normalizeTransfer,
   cryptocomTransferDisposition,
+  bitvavoTransferIdentity,
+  isDocumentedBitvavoDigitalDeposit,
+  type BitvavoTransferEndpoint,
   resolveMarket
 } from './normalize';
 import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols, flattenBalanceTotals } from './binanceSymbols';
@@ -152,6 +156,10 @@ const GEMINI_MAX_REQUESTS_PER_PHASE = 8_000;
 const GEMINI_TRANSFER_REQUEST_SPACING_MS = 5_000;
 export const BTCMARKETS_HISTORY_LIMIT = 200;
 export const BTCMARKETS_MAX_REQUESTS_PER_PHASE = 8_000;
+export const BITVAVO_MAX_REQUESTS_PER_PHASE = 8_000;
+export const BITVAVO_WINDOW_MS = 23.5 * 3_600_000;
+const BITVAVO_TRADE_LIMIT = 1000;
+const BITVAVO_TRANSFER_LIMIT = 1000;
 /** Bybit advertises two years of execution history for the V5 endpoint. */
 const BYBIT_TRADE_RETENTION_MS = 2 * 365 * 86_400_000;
 /**
@@ -187,7 +195,10 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   // BTC Markets launched during 2013; the first day of the best-supported
   // launch month is a conservative scan floor, not an API-retention claim.
   btcmarkets: Date.UTC(2013, 8, 1),
-  mexc: Date.UTC(2018, 3, 1)
+  mexc: Date.UTC(2018, 3, 1),
+  // Bitvavo launched during 2018, but an exact first trading day is not
+  // documented in the connector evidence. Use the conservative year floor.
+  bitvavo: Date.UTC(2018, 0, 1)
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -214,6 +225,9 @@ export interface SyncEngineDeps {
   /** Test seams; MEXC counts every closed-window request against its phase budget. */
   mexcMaxTradeRequests?: number;
   mexcMaxTransferRequests?: number;
+  /** Bitvavo caps count physical attempts, including retries. */
+  bitvavoMaxTradeRequests?: number;
+  bitvavoMaxTransferRequests?: number;
 }
 
 export interface SyncHooks {
@@ -421,6 +435,8 @@ export interface PaginateResult<T> {
   partial: boolean;
   pages: number;
   termination: 'exhausted' | 'page_budget' | 'empty_hop_budget' | 'nonadvancing';
+  /** Oldest window whose raw response could not be proven complete/safe. */
+  replayFrom?: number;
 }
 
 const RETRYABLE_HISTORY_TERMINATIONS = new Set<string>([
@@ -997,6 +1013,355 @@ export async function paginateCryptocomTransfers<T extends PageRow>(args: {
   return { rows, maxTs: args.now, partial: false, pages: attempts.used, termination: 'exhausted' };
 }
 
+/**
+ * Bitvavo history ranges may not exceed 24 hours. Transfer endpoints expose
+ * no native row id/cursor, so a full window is bisected until every branch is
+ * short. A saturated one-millisecond branch fails closed and remains
+ * replayable instead of advancing over hidden rows.
+ */
+export async function paginateBitvavoTransfers(args: {
+  endpoint: BitvavoTransferEndpoint;
+  fetchPage: (since: number, until: number) => Promise<BitvavoNativeTransferPage>;
+  since: number;
+  now: number;
+  maxRequests?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<PaginateResult<UnifiedTransfer>> {
+  const rows: UnifiedTransfer[] = [];
+  const seen = new Set<string>();
+  const attempts = { used: 0, max: args.maxRequests ?? BITVAVO_MAX_REQUESTS_PER_PHASE };
+  const sleep = args.sleep ?? (async () => {});
+  const windows: Array<{ start: number; end: number }> = [];
+  for (let start = args.since; start <= args.now;) {
+    const end = Math.min(start + BITVAVO_WINDOW_MS, args.now);
+    windows.push({ start, end });
+    if (end >= args.now) break;
+    start = end;
+  }
+  while (windows.length > 0) {
+    const window = windows.shift()!;
+    const page = await physicalPage({
+      request: async () => [await args.fetchPage(window.start, window.end)], attempts, sleep
+    });
+    if (page == null) {
+      return {
+        rows, maxTs: window.start, partial: true, pages: attempts.used,
+        termination: 'page_budget', replayFrom: window.start
+      };
+    }
+    const captured = page[0]!;
+    if (!captured.rawValid || captured.rawCount !== captured.rows.length) {
+      return {
+        rows, maxTs: window.start, partial: true, pages: attempts.used,
+        termination: 'nonadvancing', replayFrom: window.start
+      };
+    }
+    for (const row of captured.rows) {
+      const key = bitvavoTransferIdentity(row, args.endpoint);
+      if (!key) {
+        return {
+          rows, maxTs: window.start, partial: true, pages: attempts.used,
+          termination: 'nonadvancing', replayFrom: window.start
+        };
+      }
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push(row);
+    }
+    if (captured.rawCount < BITVAVO_TRANSFER_LIMIT) continue;
+    const midpoint = Math.floor((window.start + window.end) / 2);
+    if (midpoint <= window.start || midpoint >= window.end) {
+      return {
+        rows, maxTs: window.start, partial: true, pages: attempts.used,
+        termination: 'nonadvancing', replayFrom: window.start
+      };
+    }
+    // Inclusive endpoint boundaries are intentional; economic identity above
+    // removes the one boundary replay without relying on unified id.
+    windows.unshift({ start: midpoint, end: window.end });
+    windows.unshift({ start: window.start, end: midpoint });
+  }
+  return { rows, maxTs: args.now, partial: false, pages: attempts.used, termination: 'exhausted' };
+}
+
+export interface BitvavoNativeTransferPage {
+  rows: UnifiedTransfer[];
+  rawCount: number;
+  rawValid: boolean;
+}
+
+const BITVAVO_WITHDRAWAL_STATUSES = new Set([
+  'awaiting_processing', 'awaiting_email_confirmation', 'awaiting_bitvavo_inspection',
+  'approved', 'sending', 'in_mempool', 'processed', 'completed', 'canceled'
+]);
+
+function bitvavoRawTransferSchema(
+  row: unknown,
+  endpoint: BitvavoTransferEndpoint
+): 'digital_deposit' | 'fiat_deposit' | 'withdrawal' | undefined {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return undefined;
+  const item = row as Record<string, unknown>;
+  const timestamp = Number(item.timestamp);
+  const amount = Number(item.amount);
+  const fee = Number(item.fee);
+  const symbol = typeof item.symbol === 'string' ? item.symbol.trim().toUpperCase() : '';
+  const address = typeof item.address === 'string' ? item.address.trim() : '';
+  const txId = typeof item.txId === 'string' ? item.txId.trim() : '';
+  const status = typeof item.status === 'string' ? item.status.trim().toLowerCase() : '';
+  if (!Number.isFinite(timestamp) || timestamp < 0 || !symbol || !Number.isFinite(amount) || amount <= 0 ||
+    !Number.isFinite(fee) || fee < 0 || !address) return undefined;
+  if (endpoint === 'withdrawal') {
+    return txId && BITVAVO_WITHDRAWAL_STATUSES.has(status) ? 'withdrawal' : undefined;
+  }
+  if (symbol === 'EUR') {
+    return !txId && (status === 'completed' || status === 'canceled') ? 'fiat_deposit' : undefined;
+  }
+  // The documented digital-deposit subschema deliberately omits status.
+  return txId && !status ? 'digital_deposit' : undefined;
+}
+
+function validBitvavoParsedTransfer(
+  row: UnifiedTransfer,
+  raw: Record<string, unknown>,
+  endpoint: BitvavoTransferEndpoint,
+  schema: 'digital_deposit' | 'fiat_deposit' | 'withdrawal'
+): boolean {
+  const expectedType = endpoint === 'deposit' ? 'deposit' : 'withdrawal';
+  if (row.type !== expectedType || row.timestamp !== Number(raw.timestamp) ||
+    row.currency?.toUpperCase() !== String(raw.symbol).toUpperCase() || row.amount !== Number(raw.amount) ||
+    bitvavoTransferIdentity(row, endpoint) == null) return false;
+  if (schema === 'digital_deposit') return isDocumentedBitvavoDigitalDeposit(row);
+  const expectedStatus = raw.status === 'completed'
+    ? 'ok'
+    : raw.status === 'canceled'
+      ? 'canceled'
+      : 'pending';
+  return row.status === expectedStatus;
+}
+
+function bitvavoRawTransferIdentity(
+  raw: Record<string, unknown>,
+  endpoint: BitvavoTransferEndpoint,
+  schema: 'digital_deposit' | 'fiat_deposit' | 'withdrawal'
+): string {
+  const timestamp = Number(raw.timestamp);
+  const asset = String(raw.symbol).toUpperCase();
+  const amount = Number(raw.amount);
+  if (schema !== 'fiat_deposit') {
+    return `bitvavo:${String(raw.txId).trim()}:${endpoint}:${timestamp}:${asset}:${String(amount)}`;
+  }
+  return `bitvavo:fiat:${JSON.stringify([
+    endpoint, timestamp, asset, amount, Number(raw.fee), String(raw.status).toLowerCase(), String(raw.address).trim()
+  ])}`;
+}
+
+/**
+ * Reconcile newest-first native evidence with CCXT's ascending parsed rows.
+ * Identity must form a one-to-one multiset: duplicate/colliding identities on
+ * either side are ambiguous and therefore fail closed.
+ */
+export function bitvavoTransferPageEvidence(
+  rows: UnifiedTransfer[],
+  response: unknown,
+  endpoint: BitvavoTransferEndpoint
+): BitvavoNativeTransferPage {
+  const raw = Array.isArray(response) ? response : [];
+  const rawByIdentity = new Map<string, {
+    row: Record<string, unknown>;
+    schema: 'digital_deposit' | 'fiat_deposit' | 'withdrawal';
+  }>();
+  let rawValid = Array.isArray(response) && raw.length === rows.length;
+  for (const item of raw) {
+    const schema = bitvavoRawTransferSchema(item, endpoint);
+    if (!schema) {
+      rawValid = false;
+      continue;
+    }
+    const row = item as Record<string, unknown>;
+    const identity = bitvavoRawTransferIdentity(row, endpoint, schema);
+    if (rawByIdentity.has(identity)) rawValid = false;
+    else rawByIdentity.set(identity, { row, schema });
+  }
+  const parsedIdentities = new Set<string>();
+  for (const row of rows) {
+    const identity = bitvavoTransferIdentity(row, endpoint);
+    if (!identity || parsedIdentities.has(identity)) {
+      rawValid = false;
+      continue;
+    }
+    parsedIdentities.add(identity);
+    const matched = rawByIdentity.get(identity);
+    if (!matched || !validBitvavoParsedTransfer(row, matched.row, endpoint, matched.schema)) rawValid = false;
+  }
+  if (parsedIdentities.size !== rawByIdentity.size) rawValid = false;
+  return { rows, rawCount: raw.length, rawValid };
+}
+
+async function bitvavoCapturedTransferPage(
+  client: ExchangeClient,
+  endpoint: BitvavoTransferEndpoint,
+  request: () => Promise<UnifiedTransfer[]>
+): Promise<BitvavoNativeTransferPage> {
+  client.last_json_response = undefined;
+  const rows = await request();
+  return bitvavoTransferPageEvidence(rows, client.last_json_response, endpoint);
+}
+
+interface BitvavoNativeTradePage {
+  rows: UnifiedTrade[];
+  rawCount: number;
+  rawValid: boolean;
+  oldestId?: string;
+  newestId?: string;
+}
+
+function validBitvavoRawTrade(row: unknown): row is Record<string, unknown> {
+  if (!row || typeof row !== 'object' || Array.isArray(row)) return false;
+  const item = row as Record<string, unknown>;
+  const timestamp = Number(item.timestamp);
+  const amount = Number(item.amount);
+  const price = Number(item.price);
+  return typeof item.id === 'string' && item.id.trim().length > 0 &&
+    Number.isFinite(timestamp) && timestamp >= 0 &&
+    typeof item.market === 'string' && item.market.trim().length > 0 &&
+    (item.side === 'buy' || item.side === 'sell') &&
+    Number.isFinite(amount) && amount > 0 && Number.isFinite(price) && price > 0;
+}
+
+async function bitvavoCapturedTradePage(
+  client: ExchangeClient,
+  request: () => Promise<UnifiedTrade[]>
+): Promise<BitvavoNativeTradePage> {
+  client.last_json_response = undefined;
+  const rows = await request();
+  const response = client.last_json_response;
+  const raw = Array.isArray(response) ? response : [];
+  const rawNewest = raw[0]?.id;
+  const rawOldest = raw[raw.length - 1]?.id;
+  const byTime = [...rows].sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
+  return {
+    rows,
+    rawCount: raw.length,
+    rawValid: Array.isArray(response) && raw.every(validBitvavoRawTrade),
+    oldestId: rawOldest != null ? String(rawOldest) : byTime[0]?.id,
+    newestId: rawNewest != null ? String(rawNewest) : byTime[byTime.length - 1]?.id
+  };
+}
+
+/** Native UUID bounds make dense Bitvavo trade windows resumable. */
+export async function fetchBitvavoTrades(args: {
+  client: ExchangeClient;
+  markets: Record<string, UnifiedMarket>;
+  symbols: string[];
+  launchFloor: number;
+  now: number;
+  priorState?: BitvavoTradeState;
+  maxRequests?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<{ outcome: FetchPlanOutcome<UnifiedTrade>; state: BitvavoTradeState; unavailable: string[] }> {
+  const rows: UnifiedTrade[] = [];
+  const seenIds = new Set<string>();
+  const attempts = { used: 0, max: args.maxRequests ?? BITVAVO_MAX_REQUESTS_PER_PHASE };
+  const sleep = args.sleep ?? (async () => {});
+  const frontiers = Object.fromEntries(Object.entries(args.priorState?.frontiers ?? {}).map(([symbol, value]) => [
+    symbol, { ...value }
+  ]));
+  const continuations = Object.fromEntries(Object.entries(args.priorState?.continuations ?? {}).map(([symbol, value]) => [
+    symbol, { ...value }
+  ]));
+  const unavailable: string[] = [];
+  if (args.symbols.length === 0) {
+    return {
+      outcome: { rows, maxTs: args.launchFloor, partial: true, termination: 'nonadvancing' },
+      state: { frontiers },
+      unavailable: ['<market catalog empty>']
+    };
+  }
+  const startIndex = Math.max(0, Math.min(args.priorState?.nextSymbolIndex ?? 0, Math.max(args.symbols.length - 1, 0)));
+  const ordered = args.symbols.map((_, offset) => (startIndex + offset) % args.symbols.length);
+
+  for (const symbolIndex of ordered) {
+    const symbol = args.symbols[symbolIndex]!;
+    const market = args.markets[symbol];
+    if (!market || market.spot !== true) {
+      unavailable.push(symbol);
+      continue;
+    }
+    const frontier = frontiers[symbol] ?? { timestamp: args.launchFloor };
+    frontiers[symbol] = frontier;
+    for (;;) {
+      const continuation = continuations[symbol];
+      const windowStart = continuation?.windowStart ?? frontier.timestamp;
+      if (windowStart >= args.now) break;
+      const windowEnd = continuation?.windowEnd ?? Math.min(windowStart + BITVAVO_WINDOW_MS, args.now);
+      const params: Record<string, unknown> = { until: windowEnd };
+      if (continuation?.tradeIdTo) params.tradeIdTo = continuation.tradeIdTo;
+      else if (frontier.tradeIdFrom) params.tradeIdFrom = frontier.tradeIdFrom;
+      const captured = await physicalPage({
+        request: async () => [await bitvavoCapturedTradePage(args.client, () =>
+          args.client.fetchMyTrades(symbol, windowStart, BITVAVO_TRADE_LIMIT, params))],
+        attempts,
+        sleep
+      });
+      if (captured == null) {
+        return {
+          outcome: { rows, maxTs: Math.min(...Object.values(frontiers).map((item) => item.timestamp), args.launchFloor), partial: true, termination: 'page_budget' },
+          state: { frontiers, continuations, nextSymbolIndex: symbolIndex },
+          unavailable
+        };
+      }
+      const page = captured[0]!;
+      let malformed = !page.rawValid || page.rawCount !== page.rows.length;
+      for (const row of page.rows) {
+        if (!row.id || row.timestamp == null || !Number.isFinite(row.timestamp) || row.timestamp > args.now ||
+          normalizeTrade('bitvavo', row, market) == null) malformed = true;
+      }
+      if (malformed) {
+        return {
+          outcome: { rows, maxTs: frontier.timestamp, partial: true, termination: 'nonadvancing' },
+          state: { frontiers, continuations, nextSymbolIndex: symbolIndex },
+          unavailable
+        };
+      }
+      for (const row of page.rows) {
+        if (row.id && !seenIds.has(row.id)) {
+          seenIds.add(row.id);
+          rows.push(row);
+        }
+      }
+      if (page.rawCount >= BITVAVO_TRADE_LIMIT) {
+        if (!page.oldestId || page.oldestId === continuation?.tradeIdTo) {
+          return {
+            outcome: { rows, maxTs: frontier.timestamp, partial: true, termination: 'nonadvancing' },
+            state: { frontiers, continuations, nextSymbolIndex: symbolIndex },
+            unavailable
+          };
+        }
+        continuations[symbol] = {
+          windowStart,
+          windowEnd,
+          tradeIdTo: page.oldestId,
+          tradeIdFrom: continuation?.tradeIdFrom ?? page.newestId
+        };
+        continue;
+      }
+      delete continuations[symbol];
+      frontier.timestamp = windowEnd;
+      const newestId = continuation?.tradeIdFrom ?? page.newestId;
+      if (newestId) frontier.tradeIdFrom = newestId;
+      frontiers[symbol] = frontier;
+    }
+  }
+  const minFrontier = args.symbols.length > 0
+    ? Math.min(...args.symbols.map((symbol) => frontiers[symbol]?.timestamp ?? args.launchFloor))
+    : args.now;
+  return {
+    outcome: { rows, maxTs: minFrontier, partial: unavailable.length > 0, termination: unavailable.length > 0 ? 'nonadvancing' : 'exhausted' },
+    state: { frontiers, ...(Object.keys(continuations).length > 0 ? { continuations } : {}) },
+    unavailable
+  };
+}
+
 function htxNativeRecordId(row: PageRow): string | undefined {
   const native = (row as { info?: Record<string, unknown> }).info?.id;
   return native == null || String(native).length === 0 ? undefined : String(native);
@@ -1135,6 +1500,8 @@ interface FetchPlanOutcome<T extends PageRow> {
   nativeCursor?: string;
   /** Durable continuation for an unfinished BTC Markets native page walk. */
   btcmarketsPagination?: BtcMarketsPaginationCheckpoint;
+  /** Oldest Bitvavo raw-response window that must be replayed. */
+  replayFrom?: number;
 }
 
 export interface GeminiRequestBudget {
@@ -1545,6 +1912,42 @@ export function bitfinexMovementDisposition(transfer: UnifiedTransfer): Bitfinex
   return 'pending';
 }
 
+export type BitvavoTransferDisposition = 'settled' | 'pending' | 'terminal';
+export function bitvavoTransferDisposition(transfer: UnifiedTransfer): BitvavoTransferDisposition {
+  if (transfer.status === 'ok') return 'settled';
+  if (transfer.status === 'canceled' || transfer.status === 'failed') return 'terminal';
+  if (isDocumentedBitvavoDigitalDeposit(transfer)) return 'settled';
+  return 'pending';
+}
+
+function bitvavoTransferUnsafe(transfer: UnifiedTransfer, now: number): boolean {
+  if (bitvavoTransferDisposition(transfer) === 'terminal') return false;
+  return bitvavoTransferDisposition(transfer) === 'pending' ||
+    (transfer.timestamp ?? now) > now ||
+    normalizeTransfer('bitvavo', transfer) == null;
+}
+
+export function validBitvavoTradeState(state: BitvavoTradeState | undefined, now: number): boolean {
+  if (state == null) return true;
+  if (!state.frontiers || typeof state.frontiers !== 'object' || Array.isArray(state.frontiers)) return false;
+  if (state.nextSymbolIndex != null && (!Number.isSafeInteger(state.nextSymbolIndex) || state.nextSymbolIndex < 0)) return false;
+  for (const [symbol, frontier] of Object.entries(state.frontiers)) {
+    if (!symbol.trim() || !frontier || !Number.isSafeInteger(frontier.timestamp) ||
+      frontier.timestamp < 0 || frontier.timestamp > now ||
+      (frontier.tradeIdFrom != null && !frontier.tradeIdFrom.trim())) return false;
+  }
+  for (const [symbol, continuation] of Object.entries(state.continuations ?? {})) {
+    const frontier = state.frontiers[symbol];
+    if (!frontier || !continuation || continuation.windowStart !== frontier.timestamp ||
+      !Number.isSafeInteger(continuation.windowStart) || !Number.isSafeInteger(continuation.windowEnd) ||
+      continuation.windowEnd <= continuation.windowStart || continuation.windowEnd > now ||
+      continuation.windowEnd - continuation.windowStart > BITVAVO_WINDOW_MS ||
+      !continuation.tradeIdTo.trim() ||
+      (continuation.tradeIdFrom != null && !continuation.tradeIdFrom.trim())) return false;
+  }
+  return true;
+}
+
 export type GeminiTransferDisposition = 'settled' | 'pending' | 'terminal';
 export function geminiTransferDisposition(transfer: UnifiedTransfer): GeminiTransferDisposition {
   if (transfer.status === 'ok') return 'settled';
@@ -1709,7 +2112,8 @@ async function fetchTransferKind(
   geminiMaxRequests?: number,
   btcmarketsSavedAfter?: string,
   btcmarketsMaxRequests?: number,
-  btcmarketsCheckpoint?: BtcMarketsPaginationCheckpoint
+  btcmarketsCheckpoint?: BtcMarketsPaginationCheckpoint,
+  bitvavoMaxRequests?: number
 ): Promise<FetchPlanOutcome<UnifiedTransfer>> {
   const fetchDeposits = kind === 'deposits';
   if (exchange === 'kraken') {
@@ -1894,6 +2298,19 @@ async function fetchTransferKind(
       since,
       now,
       maxRequests: btcmarketsMaxRequests,
+      sleep
+    });
+  }
+  if (exchange === 'bitvavo') {
+    const endpoint = fetchDeposits ? 'deposit' : 'withdrawal';
+    return paginateBitvavoTransfers({
+      endpoint,
+      fetchPage: (start, end) => bitvavoCapturedTransferPage(client, endpoint, () => fetchDeposits
+        ? client.fetchDeposits(undefined, undefined, BITVAVO_TRANSFER_LIMIT, { start, end })
+        : client.fetchWithdrawals(undefined, undefined, BITVAVO_TRANSFER_LIMIT, { start, end })),
+      since,
+      now,
+      maxRequests: bitvavoMaxRequests,
       sleep
     });
   }
@@ -2089,6 +2506,8 @@ async function fetchTradesForSymbol(
       });
     case 'mexc':
       throw new Error('MEXC trades use the recursive closed-window paginator.');
+    case 'bitvavo':
+      throw new Error('Bitvavo trades use the native per-symbol paginator.');
   }
 }
 
@@ -2132,6 +2551,8 @@ export interface SyncFetchOutcome {
   btcmarketsUnresolvedTransferIds?: string[];
   btcmarketsUnsafeTradeIds?: string[];
   mexcCheckpoint?: MexcCheckpoint;
+  bitvavoTradeState?: BitvavoTradeState;
+  bitvavoUnsafeTransfers?: { deposits?: number; withdrawals?: number };
   skippedUnsettled: number;
   /**
    * Balance fetched during validation. Stage mode keeps this in the private
@@ -2332,6 +2753,9 @@ export async function syncConnection(
     phase = 'fetching';
     hooks.onPhase?.('fetching');
     const nowMs = now();
+    if (exchange === 'bitvavo' && !validBitvavoTradeState(row.bitvavoTradeState, nowMs)) {
+      throw new Error('Bitvavo trade checkpoint is malformed or ahead of the current sync frontier.');
+    }
     const oldCursors = row.cursors ?? {};
     const balanceAssets = assetsFromBalance(balance);
 
@@ -2352,6 +2776,7 @@ export async function syncConnection(
     };
     const cryptocomPendingTransfers: { deposits?: number; withdrawals?: number } = {};
     const bitfinexPendingTransfers: { deposits?: number; withdrawals?: number } = {};
+    const bitvavoUnsafeTransfers: { deposits?: number; withdrawals?: number } = {};
     const coinbaseSharedTransferStart = Math.min(
       transferRequestedStarts.deposits,
       transferRequestedStarts.withdrawals
@@ -2391,6 +2816,9 @@ export async function syncConnection(
       if (exchange === 'cryptocom' && row.cryptocomPendingTransfers?.[kind] != null) {
         since = Math.min(since, row.cryptocomPendingTransfers[kind]!);
       }
+      if (exchange === 'bitvavo' && row.bitvavoUnsafeTransfers?.[kind] != null) {
+        since = Math.min(since, row.bitvavoUnsafeTransfers[kind]!);
+      }
       const retainedTransfer = cryptocomRetainedSince(since, nowMs);
       const cryptocomRetentionFloor = retainedTransfer.floor;
       const cryptocomRetentionTruncated = exchange === 'cryptocom' && retainedTransfer.truncated;
@@ -2402,7 +2830,7 @@ export async function syncConnection(
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
       if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets') && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
-      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets') {
+      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitvavo') {
         // Gate/HTX/Crypto.com/Bitfinex retry each physical request inside their paginator so
         // a retry cannot restart pagination or reset the attempt cap.
         outcome = await fetchTransferKind(
@@ -2414,7 +2842,8 @@ export async function syncConnection(
             ? btcMarketsReplayAfter(btcmarketsUnresolvedTransferIds)
             : row.btcmarketsNativeCursors?.transfers,
           deps.btcmarketsMaxTransferRequests,
-          btcmarketsTransferCheckpoint
+          btcmarketsTransferCheckpoint,
+          deps.bitvavoMaxTransferRequests
         );
         if (cryptocomRetentionTruncated) {
           outcome.partial = true;
@@ -2543,6 +2972,20 @@ export async function syncConnection(
         ];
         if (candidates.length > 0) bitfinexPendingTransfers[kind] = Math.min(...candidates);
       }
+      if (exchange === 'bitvavo') {
+        const unsafeTimestamps = outcome.rows
+          .filter((transfer) => bitvavoTransferUnsafe(transfer, nowMs))
+          .map((transfer) => transfer.timestamp)
+          .filter((timestamp): timestamp is number => timestamp != null && Number.isFinite(timestamp));
+        const structurallyPartial = outcome.termination === 'page_budget' || outcome.termination === 'nonadvancing';
+        const priorUnsafe = row.bitvavoUnsafeTransfers?.[kind];
+        const candidates = [
+          ...unsafeTimestamps,
+          ...(outcome.replayFrom != null ? [outcome.replayFrom] : []),
+          ...(structurallyPartial && priorUnsafe != null ? [priorUnsafe] : [])
+        ];
+        if (candidates.length > 0) bitvavoUnsafeTransfers[kind] = Math.min(...candidates);
+      }
       for (const t of outcome.rows) {
         if (t.currency) transferAssets.add(t.currency.toUpperCase());
       }
@@ -2588,6 +3031,7 @@ export async function syncConnection(
     let htxTradeProgress: HtxTradeProgress | undefined = row.htxTradeProgress;
     let geminiTradeProgress: GeminiTradeProgress | undefined = row.geminiTradeProgress;
     let btcmarketsTradeCursor = row.btcmarketsNativeCursors?.trades;
+    let bitvavoTradeState = row.bitvavoTradeState;
     let skippedSymbols = 0;
 
     if (exchange === 'binance') {
@@ -2720,6 +3164,39 @@ export async function syncConnection(
           );
         }
       }
+    } else if (exchange === 'bitvavo') {
+      // Bitvavo trade history is symbol-required. Keep inactive markets in
+      // the universe so delisted pairs already present in /v2/markets remain
+      // backfillable; a persisted symbol missing from the catalog retains its
+      // own conservative frontier and makes coverage partial.
+      const symbols = [...new Set([
+        ...Object.values(markets).filter((market) => market.spot === true).map((market) => market.symbol),
+        ...(row.knownSymbols ?? []),
+        ...Object.keys(row.bitvavoTradeState?.frontiers ?? {})
+      ])].sort();
+      discoveryUniverseCount = symbols.length;
+      newKnownSymbols = symbols;
+      const scan = await fetchBitvavoTrades({
+        client,
+        markets,
+        symbols,
+        launchFloor,
+        now: nowMs,
+        priorState: row.bitvavoTradeState,
+        maxRequests: deps.bitvavoMaxTradeRequests,
+        sleep
+      });
+      bitvavoTradeState = scan.state;
+      tradeOutcomes.push(scan.outcome);
+      tradeRows.push(...scan.outcome.rows);
+      fetchedCount += scan.outcome.rows.length;
+      discoveredCount = symbols.length - scan.unavailable.length;
+      if (scan.unavailable.length > 0) {
+        warnings.push(
+          `Bitvavo no longer lists ${scan.unavailable.length} previously tracked spot market(s). Their per-symbol frontiers were retained; import an account export if those markets were delisted.`
+        );
+        skippedSymbols += scan.unavailable.length;
+      }
     } else if (exchange === 'kraken') {
       const outcome = await withRetries(() => fetchKrakenTrades(client, tradeSince, nowMs), sleep);
       tradeOutcomes.push(outcome);
@@ -2783,7 +3260,7 @@ export async function syncConnection(
       }
     }
 
-    const tradeCursorCandidate = exchange === 'htx' || exchange === 'gemini' || exchange === 'btcmarkets'
+    const tradeCursorCandidate = exchange === 'htx' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitvavo'
       // Every symbol must have been verified through the same frontier. A
       // max would skip an interrupted symbol; min keeps its window replayable.
       ? (tradeOutcomes.length > 0
@@ -2894,7 +3371,9 @@ export async function syncConnection(
             ? bitfinexMovementDisposition(transfer) === 'terminal'
             : exchange === 'gemini'
               ? geminiTransferDisposition(transfer) === 'terminal'
-              : exchange === 'btcmarkets' && btcMarketsTransferDisposition(transfer) === 'terminal';
+              : exchange === 'btcmarkets'
+                ? btcMarketsTransferDisposition(transfer) === 'terminal'
+                : exchange === 'bitvavo' && bitvavoTransferDisposition(transfer) === 'terminal';
         if (terminal) {
           terminalTransfersByKind[kind] += 1;
           continue;
@@ -3084,6 +3563,8 @@ export async function syncConnection(
       } : undefined,
       btcmarketsUnresolvedTransferIds: exchange === 'btcmarkets' ? btcmarketsUnresolvedTransferIds : undefined,
       btcmarketsUnsafeTradeIds: exchange === 'btcmarkets' ? btcmarketsUnsafeTradeIds : undefined,
+      bitvavoTradeState: exchange === 'bitvavo' ? bitvavoTradeState : undefined,
+      bitvavoUnsafeTransfers: exchange === 'bitvavo' ? bitvavoUnsafeTransfers : undefined,
       skippedUnsettled,
       balance,
       operation
@@ -3123,6 +3604,8 @@ export async function syncConnection(
       } : undefined,
       btcmarketsUnresolvedTransferIds: exchange === 'btcmarkets' ? btcmarketsUnresolvedTransferIds : undefined,
       btcmarketsUnsafeTradeIds: exchange === 'btcmarkets' ? btcmarketsUnsafeTradeIds : undefined,
+      bitvavoTradeState: exchange === 'bitvavo' ? bitvavoTradeState : undefined,
+      bitvavoUnsafeTransfers: exchange === 'bitvavo' ? bitvavoUnsafeTransfers : undefined,
       balance,
       operation,
       hooks,
@@ -3190,6 +3673,8 @@ export async function persistSyncedRows(args: {
   btcmarketsUnresolvedTransferIds?: string[];
   btcmarketsUnsafeTradeIds?: string[];
   mexcCheckpoint?: MexcCheckpoint;
+  bitvavoTradeState?: BitvavoTradeState;
+  bitvavoUnsafeTransfers?: { deposits?: number; withdrawals?: number };
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
   /** Reserved generation and source revision/state captured by this operation. */
@@ -3371,6 +3856,8 @@ export async function persistSyncedRows(args: {
         btcmarketsUnresolvedTransferIds: args.btcmarketsUnresolvedTransferIds,
         btcmarketsUnsafeTradeIds: args.btcmarketsUnsafeTradeIds,
         mexcCheckpoint: args.mexcCheckpoint,
+        bitvavoTradeState: args.bitvavoTradeState,
+        bitvavoUnsafeTransfers: args.bitvavoUnsafeTransfers,
         lastSyncAt: asOf,
         status: 'ok',
         lastError: undefined,

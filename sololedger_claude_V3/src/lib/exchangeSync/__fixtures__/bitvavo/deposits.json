@@ -1,0 +1,30 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from Bitvavo's documented digital-asset and fiat deposit-history subschemas, parsed by pinned CCXT 4.5.68.",
+  "response": [
+    {
+      "timestamp": 1785887995000,
+      "symbol": "EUR",
+      "amount": "25.00",
+      "fee": "0",
+      "status": "canceled",
+      "address": "NL00BANK9876543210"
+    },
+    {
+      "timestamp": 1785887992000,
+      "symbol": "EUR",
+      "amount": "1250.50",
+      "fee": "0",
+      "status": "completed",
+      "address": "NL00BANK0123456789"
+    },
+    {
+      "timestamp": 1785887990000,
+      "symbol": "BTC",
+      "amount": "0.02",
+      "fee": "0",
+      "address": "bc1qbitvavodepositfixture",
+      "txId": "0x5167b473fd37811f9ef22364c3d54726a859ef9d98934b3a1e11d7baa8d2c2e2"
+    }
+  ]
+}

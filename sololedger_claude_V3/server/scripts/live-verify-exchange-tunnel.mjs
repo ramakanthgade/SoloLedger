@@ -171,6 +171,12 @@ const TIER2 = [
     probe: 'GET /api/v3/time',
     path: '/api/v3/time',
     check: (r, json) => r.status === 200 && typeof json?.serverTime === 'number'
+  },
+  {
+    exchange: 'bitvavo',
+    probe: 'GET /v2/time',
+    path: '/v2/time',
+    check: (r, json) => r.status === 200 && typeof json?.time === 'number'
   }
 ];
 
@@ -184,6 +190,26 @@ const TIER2 = [
  */
 
 const tier3 = [
+  {
+    exchange: 'bitvavo',
+    probe: 'GET /v2/balance (BITVAVO-ACCESS-SIGNATURE)',
+    build() {
+      const timestamp = Date.now().toString();
+      const path = '/v2/balance';
+      return {
+        path,
+        exchangeHeaders: {
+          'bitvavo-access-key': 'D'.repeat(64),
+          'bitvavo-access-signature': hmacHex('sha256', 'E'.repeat(64), timestamp + 'GET' + path),
+          'bitvavo-access-timestamp': timestamp,
+          'bitvavo-access-window': '10000'
+        }
+      };
+    },
+    // Exact production observation: the format-valid unknown key is rejected
+    // before signature validation. This proves host/path/header reachability.
+    check: (r, json) => r.status === 403 && json?.errorCode === 305 && json?.error === 'No active API key found.'
+  },
   {
     exchange: 'binance',
     probe: 'GET /api/v3/account (HMAC-SHA256 query signature)',

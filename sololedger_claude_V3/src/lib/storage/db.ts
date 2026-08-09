@@ -163,11 +163,27 @@ export interface ExchangeConnectionRow {
   btcmarketsUnsafeTradeIds?: string[];
   /** Frozen MEXC recursive closed-window work and fail-closed evidence. */
   mexcCheckpoint?: import('@/lib/exchangeSync/mexc').MexcCheckpoint;
+  /** Per-symbol verified Bitvavo frontier plus native saturated-window continuation. */
+  bitvavoTradeState?: BitvavoTradeState;
+  /** Oldest economically unsafe Bitvavo transfer per endpoint. */
+  bitvavoUnsafeTransfers?: { deposits?: number; withdrawals?: number };
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
   /** Exact one-to-one account identity for this connection. */
   accountIdentityId?: string;
+}
+
+export interface BitvavoTradeState {
+  frontiers: Record<string, { timestamp: number; tradeIdFrom?: string }>;
+  continuations?: Record<string, {
+    windowStart: number;
+    windowEnd: number;
+    tradeIdTo: string;
+    /** Newest native id observed in this window; becomes the next from-bound. */
+    tradeIdFrom?: string;
+  }>;
+  nextSymbolIndex?: number;
 }
 
 export interface BtcMarketsPaginationCheckpoint {
@@ -949,7 +965,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'bitfinex_api',
   'gemini_api',
   'btcmarkets_api',
-  'mexc_api'
+  'mexc_api',
+  'bitvavo_api'
 ]);
 
 /**
@@ -1054,6 +1071,22 @@ export function transactionExchangeKey(
     const rawKind = t.raw?.exchangeSyncKind;
     const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal' ? rawKind : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:mexc:${kind}:${t.sourceRef}`;
+  }
+  // Bitvavo trade UUIDs and transfer composite refs are account-local. Scope
+  // them by connection and immutable endpoint kind so user reclassification
+  // cannot change replay identity.
+  if (t.source === 'bitvavo_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind
+      : t.raw?.tradeId != null
+        ? 'trade'
+        : t.raw?.transferType === 'deposit'
+          ? 'deposit'
+          : t.raw?.transferType === 'withdrawal'
+            ? 'withdrawal'
+            : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:bitvavo:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;

@@ -1,0 +1,24 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from the pinned CCXT 4.5.68 Bitvavo adapter and withdrawal-history schema.",
+  "response": [
+    {
+      "timestamp": 1785888015000,
+      "symbol": "BTC",
+      "amount": "0.001",
+      "fee": "0.0001",
+      "status": "canceled",
+      "address": "bc1qfixture",
+      "txId": "a27b3ea50c5bb52c6854152d305dfa1e27fc01d10464cf10825d96d69d235eb3"
+    },
+    {
+      "timestamp": 1785888010000,
+      "symbol": "BTC",
+      "amount": "0.003",
+      "fee": "0.0001",
+      "status": "completed",
+      "address": "bc1qfixture",
+      "txId": "927b3ea50c5bb52c6854152d305dfa1e27fc01d10464cf10825d96d69d235eb3"
+    }
+  ]
+}

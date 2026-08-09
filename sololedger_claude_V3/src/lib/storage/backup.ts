@@ -161,6 +161,19 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
     btcmarketsUnsafeTradeIds: row.btcmarketsUnsafeTradeIds == null
       ? undefined : [...row.btcmarketsUnsafeTradeIds],
     mexcCheckpoint: row.mexcCheckpoint == null ? undefined : structuredClone(row.mexcCheckpoint),
+    bitvavoTradeState: row.bitvavoTradeState == null ? undefined : {
+      frontiers: Object.fromEntries(Object.entries(row.bitvavoTradeState.frontiers).map(([symbol, frontier]) => [
+        symbol, { ...frontier }
+      ])),
+      continuations: row.bitvavoTradeState.continuations == null ? undefined : Object.fromEntries(
+        Object.entries(row.bitvavoTradeState.continuations).map(([symbol, continuation]) => [symbol, { ...continuation }])
+      ),
+      nextSymbolIndex: row.bitvavoTradeState.nextSymbolIndex
+    },
+    bitvavoUnsafeTransfers: row.bitvavoUnsafeTransfers == null ? undefined : {
+      deposits: row.bitvavoUnsafeTransfers.deposits,
+      withdrawals: row.bitvavoUnsafeTransfers.withdrawals
+    },
     lastSyncAt: row.lastSyncAt, status: row.status,
     lastError: typeof row.lastError === 'string' ? row.lastError : undefined,
     accountIdentityId: row.accountIdentityId
@@ -445,6 +458,37 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
       unsafeTradeIds.some((id) => typeof id !== 'string' || !/^(0|[1-9]\d*)$/.test(id)) ||
       new Set(unsafeTradeIds).size !== unsafeTradeIds.length)) {
       throw new Error('Invalid backup file: BTC Markets unsafe trade evidence is malformed.');
+    }
+    const bitvavoUnsafe = row.bitvavoUnsafeTransfers;
+    if (bitvavoUnsafe != null && (!isPlainObject(bitvavoUnsafe) ||
+      Object.keys(bitvavoUnsafe).some((key) => key !== 'deposits' && key !== 'withdrawals') ||
+      (['deposits', 'withdrawals'] as const).some((kind) =>
+        Object.prototype.hasOwnProperty.call(bitvavoUnsafe, kind) &&
+        (!Number.isSafeInteger(bitvavoUnsafe[kind]) || bitvavoUnsafe[kind]! < 0)))) {
+      throw new Error('Invalid backup file: Bitvavo unsafe-transfer checkpoint is malformed.');
+    }
+    const bitvavoState = row.bitvavoTradeState;
+    if (bitvavoState != null) {
+      const frontiers = bitvavoState.frontiers;
+      const continuations = bitvavoState.continuations;
+      const malformed = !isPlainObject(bitvavoState) ||
+        Object.keys(bitvavoState).some((key) => !['frontiers', 'continuations', 'nextSymbolIndex'].includes(key)) ||
+        !isPlainObject(frontiers) ||
+        Object.entries(frontiers).some(([symbol, value]) => !symbol.trim() || !isPlainObject(value) ||
+          Object.keys(value).some((key) => key !== 'timestamp' && key !== 'tradeIdFrom') ||
+          !Number.isSafeInteger(value.timestamp) || (value.timestamp as number) < 0 ||
+          (value.tradeIdFrom != null && (typeof value.tradeIdFrom !== 'string' || !value.tradeIdFrom.trim()))) ||
+        (continuations != null && (!isPlainObject(continuations) || Object.entries(continuations).some(([symbol, value]) =>
+          !Object.prototype.hasOwnProperty.call(frontiers, symbol) || !isPlainObject(value) ||
+          Object.keys(value).some((key) => !['windowStart', 'windowEnd', 'tradeIdTo', 'tradeIdFrom'].includes(key)) ||
+          !Number.isSafeInteger(value.windowStart) || !Number.isSafeInteger(value.windowEnd) ||
+          (value.windowStart as number) < 0 || (value.windowEnd as number) <= (value.windowStart as number) ||
+          (value.windowEnd as number) - (value.windowStart as number) > 23.5 * 3_600_000 ||
+          typeof value.tradeIdTo !== 'string' || !value.tradeIdTo.trim() ||
+          (value.tradeIdFrom != null && (typeof value.tradeIdFrom !== 'string' || !value.tradeIdFrom.trim()))))) ||
+        (bitvavoState.nextSymbolIndex != null &&
+          (!Number.isSafeInteger(bitvavoState.nextSymbolIndex) || bitvavoState.nextSymbolIndex < 0));
+      if (malformed) throw new Error('Invalid backup file: Bitvavo trade checkpoint is malformed.');
     }
     if (progress != null && (!Number.isSafeInteger(progress.windowStart) || progress.windowStart < 0 ||
       !Number.isSafeInteger(progress.windowEnd) || progress.windowEnd <= progress.windowStart ||
