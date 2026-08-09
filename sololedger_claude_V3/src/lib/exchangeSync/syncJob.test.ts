@@ -155,4 +155,20 @@ describe('exchange sync credential-state guards', () => {
       btcmarketsPagination, btcmarketsUnresolvedTransferIds, btcmarketsUnsafeTradeIds
     }));
   });
+
+  it('carries the frozen MEXC window checkpoint from no-write stage to atomic confirmed commit', async () => {
+    const mexcCheckpoint = {
+      version: 1 as const,
+      trade: { requestedStart: 1, requestedEnd: 2, symbols: ['BTC/USDT'], pendingWindows: [{ symbol: 'BTC/USDT', start: 1, end: 2 }], completedSymbols: [], nextSymbolIndex: 0, unsafeEvidence: [] },
+      deposits: { requestedStart: 1, requestedEnd: 2, pendingWindows: [], unsafeEvidence: [] },
+      withdrawals: { requestedStart: 1, requestedEnd: 2, pendingWindows: [], unsafeEvidence: [] }
+    };
+    mocks.syncConnection.mockResolvedValue({
+      ...stageOutcome(), outcome: { ...stageOutcome().outcome, mexcCheckpoint }
+    });
+    await runInitialSync('source-1');
+    expect(mocks.persistSyncedRows).not.toHaveBeenCalled();
+    await commitInitialSync('source-1');
+    expect(mocks.persistSyncedRows).toHaveBeenCalledWith(expect.objectContaining({ mexcCheckpoint }));
+  });
 });

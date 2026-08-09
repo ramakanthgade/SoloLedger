@@ -35,6 +35,7 @@ import {
   normalizeImportedTransactionCategory
 } from '@/lib/taxonomy/categories';
 import { assertValidReciprocalTransferPairs } from '@/lib/internalTransfers/model';
+import { assertValidMexcCheckpoint } from '@/lib/exchangeSync/mexc';
 
 type SettingsBackup = Omit<TaxSettings,
   | 'alchemyApiKey' | 'coingeckoApiKey' | 'birdeyeApiKey' | 'novesApiKey'
@@ -159,6 +160,7 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
       ? undefined : [...row.btcmarketsUnresolvedTransferIds],
     btcmarketsUnsafeTradeIds: row.btcmarketsUnsafeTradeIds == null
       ? undefined : [...row.btcmarketsUnsafeTradeIds],
+    mexcCheckpoint: row.mexcCheckpoint == null ? undefined : structuredClone(row.mexcCheckpoint),
     lastSyncAt: row.lastSyncAt, status: row.status,
     lastError: typeof row.lastError === 'string' ? row.lastError : undefined,
     accountIdentityId: row.accountIdentityId
@@ -466,6 +468,13 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
       (geminiProgress.nextSymbolIndex != null &&
         (!Number.isSafeInteger(geminiProgress.nextSymbolIndex) || geminiProgress.nextSymbolIndex < 0)))) {
       throw new Error('Invalid backup file: Gemini trade progress is malformed.');
+    }
+    if (row.mexcCheckpoint != null) {
+      try {
+        assertValidMexcCheckpoint(row.mexcCheckpoint);
+      } catch {
+        throw new Error('Invalid backup file: MEXC checkpoint is malformed.');
+      }
     }
   }
   for (const row of payload.priceCache) {

@@ -114,6 +114,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'htx_api',
       'kraken_api',
       'kucoin_api',
+      'mexc_api',
       'okx_api'
     ]);
   });

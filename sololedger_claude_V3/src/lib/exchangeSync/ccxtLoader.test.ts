@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ExchangeConnectionRow } from '@/lib/storage/db';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 vi.mock('@/lib/saas/config', () => ({
   isSaasMode: vi.fn(() => true)
@@ -52,6 +54,7 @@ describe('loadCcxt', () => {
     expect(typeof a.bitfinex).toBe('function');
     expect(typeof a.gemini).toBe('function');
     expect(typeof a.btcmarkets).toBe('function');
+    expect(typeof a.mexc).toBe('function');
   });
 });
 
@@ -221,6 +224,34 @@ describe('createExchangeClient', () => {
     });
   });
 
+  it('pins MEXC loadMarkets to fetchSpotMarkets and records no contract path', async () => {
+    const client = await createExchangeClient(row({ exchange: 'mexc', apiKey: 'D'.repeat(32), secret: 'E'.repeat(32) }));
+    const raw = client as unknown as {
+      options: Record<string, unknown>; has: Record<string, unknown>; requiredCredentials: Record<string, boolean>;
+      password?: string; enableLastJsonResponse: boolean;
+      fetch: (url: string, method?: string, headers?: Record<string, string>, body?: string) => Promise<unknown>;
+      sign(path: string, api: unknown, method: string, params: Record<string, unknown>): { url: string; method: string; headers: Record<string, string> };
+    };
+    expect(raw.options).toMatchObject({ defaultType: 'spot', fetchCurrencies: false });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    expect(raw.password).toBeUndefined();
+    expect(raw.enableLastJsonResponse).toBe(true);
+
+    const exchangeInfo = JSON.parse(readFileSync(join(process.cwd(), 'src/lib/exchangeSync/__fixtures__/mexc/exchangeInfo.json'), 'utf8'));
+    const emitted: string[] = [];
+    raw.fetch = async (url) => { emitted.push(new URL(url).pathname); return exchangeInfo; };
+    const loaded = await client.loadMarkets();
+    expect(emitted).toEqual(['/api/v3/exchangeInfo']);
+    expect(emitted).not.toContain('/api/v1/contract/detail');
+    expect(loaded['OLD/USDT']).toMatchObject({ spot: true, active: false });
+
+    const signed = raw.sign('account', ['spot', 'private'], 'GET', { timestamp: 1, recvWindow: 5000 });
+    expect(new URL(signed.url).pathname).toBe('/api/v3/account');
+    expect(signed.method).toBe('GET');
+    expect(signed.headers).toMatchObject({ 'X-MEXC-APIKEY': 'D'.repeat(32), source: 'CCXT' });
+  });
+
   it('does not set password for exchanges without a passphrase', async () => {
     const client = await createExchangeClient(row({ exchange: 'kraken' }));
     expect((client as unknown as Record<string, unknown>).password).toBeUndefined();
@@ -253,6 +284,11 @@ describe('classifySyncError', () => {
     ['RequestTimeout', 'network']
   ])('ccxt %s → %s', async (className, kind) => {
     expect(classifySyncError(await ccxtError(className))).toBe(kind);
+  });
+
+  it('recognizes native MEXC 10072 as a credential error', () => {
+    expect(classifySyncError(new Error('mexc {"code":10072,"msg":"Api key info invalid"}'))).toBe('invalid_key');
+    expect(syncErrorMessage('invalid_key', 'mexc')).toContain('API key or secret rejected by MEXC');
   });
 
   it('still classifies when class binding names are minified (BUG-1 regression)', async () => {

@@ -1,0 +1,5 @@
+[
+ {"id":"w-1","txId":"whash:0","coin":"USDT-TRX","network":"TRX","address":"TOut","amount":"11","status":"7","transactionFee":"1","applyTime":"1786000010000","memo":null,"transHash":"whash","updateTime":"1786000011000"},
+ {"id":"w-2","txId":"pending:0","coin":"USDT-TRX","network":"TRX","address":"TOut","amount":"3","status":"4","transactionFee":"1","applyTime":"1786000012000","memo":null,"transHash":"pending","updateTime":"1786000013000"},
+ {"id":"w-3","txId":"failed:0","coin":"USDT-TRX","network":"TRX","address":"TOut","amount":"3","status":"8","transactionFee":"1","applyTime":"1786000014000","memo":null,"transHash":"failed","updateTime":"1786000015000"}
+]

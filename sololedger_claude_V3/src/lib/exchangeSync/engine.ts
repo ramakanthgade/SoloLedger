@@ -75,6 +75,14 @@ import type {
   SyncErrorKind,
   SyncRunResult
 } from './types';
+import {
+  assertValidMexcCheckpoint,
+  fetchMexcHistory,
+  MEXC_TRADE_RETENTION_MS,
+  MEXC_TRANSFER_RETENTION_MS,
+  MEXC_MAX_REQUESTS,
+  type MexcCheckpoint
+} from './mexc';
 
 // ---- Pinned constants (§B-3) ----
 
@@ -178,7 +186,8 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   gemini: Date.UTC(2015, 9, 8), // Gemini exchange launch, 2015-10-08
   // BTC Markets launched during 2013; the first day of the best-supported
   // launch month is a conservative scan floor, not an API-retention claim.
-  btcmarkets: Date.UTC(2013, 8, 1)
+  btcmarkets: Date.UTC(2013, 8, 1),
+  mexc: Date.UTC(2018, 3, 1)
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -202,6 +211,9 @@ export interface SyncEngineDeps {
   /** Test seam; each BTC Markets cap counts retries and successful requests. */
   btcmarketsMaxTradeRequests?: number;
   btcmarketsMaxTransferRequests?: number;
+  /** Test seams; MEXC counts every closed-window request against its phase budget. */
+  mexcMaxTradeRequests?: number;
+  mexcMaxTransferRequests?: number;
 }
 
 export interface SyncHooks {
@@ -233,6 +245,13 @@ async function reserveExchangeOperation(
     const current = await db.exchangeConnections.get(connectionId);
     if (!current) throw new Error('Connection not found — it may have been removed.');
     if (!hasRequiredCredentials(current)) throw new Error(REAUTHORIZE_ERROR);
+    // Durable MEXC traversal state is an input to the reservation itself.
+    // Reject malformed state before writing `syncing`, constructing CCXT, or
+    // touching the network; otherwise a corrupt checkpoint would be hidden
+    // behind the generic connection-error wrapper and mutate the row first.
+    if (current.exchange === 'mexc' && current.mexcCheckpoint != null) {
+      assertValidMexcCheckpoint(current.mexcCheckpoint);
+    }
     const generation = Math.max(0, current.authorityGeneration ?? 0) + 1;
     const expectedRevision = Math.max(0, current.revision ?? 0) + 1;
     const row = { ...current, authorityGeneration: generation, revision: expectedRevision, status: 'syncing' as const };
@@ -2068,6 +2087,8 @@ async function fetchTradesForSymbol(
         maxRequests: opts?.btcmarketsMaxRequests,
         sleep: opts?.sleep
       });
+    case 'mexc':
+      throw new Error('MEXC trades use the recursive closed-window paginator.');
   }
 }
 
@@ -2110,6 +2131,7 @@ export interface SyncFetchOutcome {
   btcmarketsPagination?: { trades?: BtcMarketsPaginationCheckpoint; transfers?: BtcMarketsPaginationCheckpoint };
   btcmarketsUnresolvedTransferIds?: string[];
   btcmarketsUnsafeTradeIds?: string[];
+  mexcCheckpoint?: MexcCheckpoint;
   skippedUnsettled: number;
   /**
    * Balance fetched during validation. Stage mode keeps this in the private
@@ -2162,6 +2184,7 @@ export async function syncConnection(
     if (exchange === 'btcmarkets' && !validBtcMarketsConnectionState(row)) {
       throw new Error('BTC Markets pagination checkpoint is incompatible with its committed native cursor.');
     }
+    if (exchange === 'mexc' && row.mexcCheckpoint != null) assertValidMexcCheckpoint(row.mexcCheckpoint);
     const client = await createClient(row);
     const loadedMarkets = (await client.loadMarkets()) as Record<string, UnifiedMarket>;
     // Crypto.com and Bitfinex public catalogs are mixed. Keep a
@@ -2174,6 +2197,136 @@ export async function syncConnection(
       () => client.fetchBalance(exchange === 'bitfinex' ? { type: 'exchange' } : undefined),
       sleep
     );
+
+    if (exchange === 'mexc') {
+      phase = 'fetching';
+      hooks.onPhase?.('fetching');
+      const nowMs = now();
+      const oldCursors = row.cursors ?? {};
+      const tradeFloor = nowMs - MEXC_TRADE_RETENTION_MS;
+      const transferFloor = nowMs - MEXC_TRANSFER_RETENTION_MS;
+      const unclampedTradeStart = sinceFromCursor(oldCursors.trades, TRADE_OVERLAP_MS);
+      const unclampedDepositStart = sinceFromCursor(oldCursors.deposits, TRANSFER_OVERLAP_MS);
+      const unclampedWithdrawalStart = sinceFromCursor(oldCursors.withdrawals, TRANSFER_OVERLAP_MS);
+      const requestedTradeStart = row.mexcCheckpoint
+        ? Math.max(row.mexcCheckpoint.trade.requestedEnd - TRADE_OVERLAP_MS, tradeFloor)
+        : Math.max(unclampedTradeStart, tradeFloor);
+      const requestedDepositStart = row.mexcCheckpoint
+        ? Math.max(row.mexcCheckpoint.deposits.requestedEnd - TRANSFER_OVERLAP_MS, transferFloor)
+        : Math.max(unclampedDepositStart, transferFloor);
+      const requestedWithdrawalStart = row.mexcCheckpoint
+        ? Math.max(row.mexcCheckpoint.withdrawals.requestedEnd - TRANSFER_OVERLAP_MS, transferFloor)
+        : Math.max(unclampedWithdrawalStart, transferFloor);
+      const requestedTransferStart = Math.min(requestedDepositStart, requestedWithdrawalStart);
+      const retentionTruncated = {
+        trades: unclampedTradeStart < tradeFloor,
+        deposits: unclampedDepositStart < transferFloor,
+        withdrawals: unclampedWithdrawalStart < transferFloor
+      };
+      if (!client.spotPublicGetSymbolOffline) throw new Error('Pinned MEXC offline-symbol endpoint is unavailable.');
+      const offlineResponse = await withRetries(() => client.spotPublicGetSymbolOffline!(), sleep);
+      const history = await fetchMexcHistory({
+        client, markets,
+        prior: row.mexcCheckpoint,
+        knownSymbols: row.knownSymbols ?? [],
+        offlineResponse,
+        now: nowMs,
+        tradeStart: requestedTradeStart,
+        transferStart: requestedTransferStart,
+        depositStart: requestedDepositStart,
+        withdrawalStart: requestedWithdrawalStart,
+        tradeBudget: deps.mexcMaxTradeRequests ?? MEXC_MAX_REQUESTS,
+        transferBudget: deps.mexcMaxTransferRequests ?? MEXC_MAX_REQUESTS,
+        sleep
+      });
+      fetchedCount = history.counts.recognized;
+      warnings.push(...history.warnings);
+      const cursors: ExchangeSyncCursors = {
+        ...oldCursors,
+        ...(history.cursors.trades != null ? { trades: Math.max(oldCursors.trades ?? 0, history.cursors.trades) } : {}),
+        ...(history.cursors.deposits != null ? { deposits: Math.max(oldCursors.deposits ?? 0, history.cursors.deposits) } : {}),
+        ...(history.cursors.withdrawals != null ? { withdrawals: Math.max(oldCursors.withdrawals ?? 0, history.cursors.withdrawals) } : {})
+      };
+      const endpointOutcomes: EndpointCoverageOutcome[] = [
+        { endpoint: 'balance', accountClass: 'spot', required: true, status: 'complete' },
+        ...(['deposits', 'withdrawals', 'trades'] as const).map((endpoint) => ({
+          endpoint,
+          accountClass: 'spot' as const,
+          required: true,
+          status: history.partial[endpoint] || retentionTruncated[endpoint] ? 'partial' as const : 'complete' as const,
+          paginationExhausted: !history.partial[endpoint] && !retentionTruncated[endpoint],
+          requestedStart: history.scannedRanges[endpoint].start,
+          requestedEnd: history.scannedRanges[endpoint].end,
+          retentionFloor: endpoint === 'trades' ? tradeFloor : transferFloor,
+          warning: history.partial[endpoint]
+            ? 'mexc_fail_closed_checkpoint'
+            : retentionTruncated[endpoint] ? 'retention_truncated' : undefined
+        }))
+      ];
+      const partial = history.partial.trades || history.partial.deposits || history.partial.withdrawals ||
+        retentionTruncated.trades || retentionTruncated.deposits || retentionTruncated.withdrawals;
+      const completedAt = now();
+      const coverage = operationCoverage({
+        connectionId, generation: reservation.generation, startedAt, completedAt,
+        status: partial ? 'partial' : 'complete', endpointOutcomes, warnings,
+        requestedStart: Math.min(
+          history.scannedRanges.trades.start,
+          history.scannedRanges.deposits.start,
+          history.scannedRanges.withdrawals.start
+        ),
+        requestedEnd: Math.max(
+          history.scannedRanges.trades.end,
+          history.scannedRanges.deposits.end,
+          history.scannedRanges.withdrawals.end
+        ),
+        discoveryUniverseCount: history.checkpoint?.trade.symbols.length ?? new Set([
+          ...Object.values(markets).filter((market) => market.spot === true).map((market) => market.symbol),
+          ...(row.knownSymbols ?? [])
+        ]).size,
+        discoveredCount: history.checkpoint?.trade.symbols.length ?? Object.values(markets).filter((market) => market.spot === true).length,
+        skippedCount: history.counts.failed,
+        excludedCount: history.counts.terminal,
+        recognizedCount: history.counts.recognized,
+        parsedCount: history.transactions.length,
+        failedCount: history.counts.failed,
+        exclusionReasons: history.counts.failed > 0 ? ['mexc_unsafe_or_unqueryable_evidence'] : undefined
+      });
+      const operation: SyncOperationEvidence = {
+        generation: reservation.generation,
+        expectedRevision: reservation.expectedRevision,
+        startedAt,
+        asOf: nowMs,
+        coverage
+      };
+      const knownSymbols = [...new Set([
+        ...(row.knownSymbols ?? []),
+        ...Object.values(markets).filter((market) => market.spot === true).map((market) => market.symbol),
+        ...(history.checkpoint?.trade.symbols ?? [])
+      ])].sort();
+      const fetchOutcome: SyncFetchOutcome = {
+        rows: history.transactions, warnings, cursors,
+        knownAssets: [...new Set([...assetsFromBalance(balance), ...(row.knownAssets ?? [])])].sort(),
+        knownSymbols, mexcCheckpoint: history.checkpoint, skippedUnsettled: history.counts.failed,
+        balance, operation
+      };
+      if (options.mode === 'stage') {
+        const released = await compareAndSetOperationStatus({
+          connectionId, expectedRevision: reservation.expectedRevision,
+          generation: reservation.generation, status: 'idle'
+        });
+        if (!released) throw new Error('Connection changed while the preview was being staged.');
+        return { mode: 'stage', outcome: fetchOutcome };
+      }
+      const commit = await persistSyncedRows({
+        connectionId, rows: history.transactions, cursors,
+        knownAssets: fetchOutcome.knownAssets, knownSymbols, mexcCheckpoint: history.checkpoint,
+        balance, operation, hooks, deps
+      });
+      return { mode: 'commit', outcome: {
+        imported: commit.saved, pricesUpdated: commit.pricesUpdated,
+        warnings: [...warnings, ...commit.warnings]
+      } };
+    }
 
     // ---- fetching ----
     phase = 'fetching';
@@ -3036,6 +3189,7 @@ export async function persistSyncedRows(args: {
   btcmarketsPagination?: { trades?: BtcMarketsPaginationCheckpoint; transfers?: BtcMarketsPaginationCheckpoint };
   btcmarketsUnresolvedTransferIds?: string[];
   btcmarketsUnsafeTradeIds?: string[];
+  mexcCheckpoint?: MexcCheckpoint;
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
   /** Reserved generation and source revision/state captured by this operation. */
@@ -3216,6 +3370,7 @@ export async function persistSyncedRows(args: {
         btcmarketsPagination: args.btcmarketsPagination,
         btcmarketsUnresolvedTransferIds: args.btcmarketsUnresolvedTransferIds,
         btcmarketsUnsafeTradeIds: args.btcmarketsUnsafeTradeIds,
+        mexcCheckpoint: args.mexcCheckpoint,
         lastSyncAt: asOf,
         status: 'ok',
         lastError: undefined,

@@ -161,6 +161,8 @@ export interface ExchangeConnectionRow {
   btcmarketsUnresolvedTransferIds?: string[];
   /** Bounded native trade IDs whose economics/timestamp were unsafe to advance past. */
   btcmarketsUnsafeTradeIds?: string[];
+  /** Frozen MEXC recursive closed-window work and fail-closed evidence. */
+  mexcCheckpoint?: import('@/lib/exchangeSync/mexc').MexcCheckpoint;
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
@@ -946,7 +948,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'cryptocom_api',
   'bitfinex_api',
   'gemini_api',
-  'btcmarkets_api'
+  'btcmarkets_api',
+  'mexc_api'
 ]);
 
 /**
@@ -1046,6 +1049,11 @@ export function transactionExchangeKey(
             ? 'withdrawal'
             : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:btcmarkets:${kind}:${t.sourceRef}`;
+  }
+  if (t.source === 'mexc_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal' ? rawKind : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:mexc:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;

@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -31,6 +31,7 @@ so auto-sync requires Hosted (SaaS) mode with the server flag
 | `binanceSymbols.ts` | Binance symbol discovery: balance ∪ transfer currencies ∪ `knownAssets` crossed with live spot markets. |
 | `normalize.ts` | ccxt unified structures → `Transaction` rows with CSV-colliding `sourceRef`s (the §B-5b ref contract). |
 | `engine.ts` | the sync state machine + pagination/cursor/window logic + shared save pipeline. |
+| `mexc.ts` | MEXC's frozen symbol universe, strict durable checkpoint validation, and recursive closed-window trade/transfer traversal. |
 | `syncJob.ts` | module-level job store (survives tab navigation) + `useExchangeSyncJob()` hook + the four public entry points. |
 | `index.ts` | barrel — the only import site the UI (Section C) should use. |
 | `__fixtures__/` | recorded-shape API responses per exchange + Binance CSV twins + `binanceReplay.ts` (shared replay scaffolding for tests). |
@@ -155,6 +156,23 @@ a sync discards any staged preview (with a warning).
   undocumented. API v3 was announced on 2019-11-19, but that date is not a
   documented history-retention floor: endpoint exhaustion establishes an
   observed frontier, not account-lifetime completeness.
+- MEXC scans every loaded spot market, including inactive markets, plus the
+  connection's frozen known symbols and queryable recent `/api/v3/symbol/offline`
+  entries. Trades require a symbol and are available only for the last month;
+  deposits and withdrawals are separate endpoints available only for the last
+  90 days. Each endpoint uses a frozen inclusive requested range. A full
+  100-row trade page or 1,000-row transfer page recursively bisects that range;
+  a short page proves structural exhaustion only inside the retention floor.
+  Per-symbol trade windows run in fair rounds and persist `nextSymbolIndex`.
+  Saturated 1 ms windows, malformed/repeated pages, unsafe rows, request-budget
+  interruption, and unqueryable recent offline symbols retain exact durable
+  replay evidence. Ordinary cursors advance only after the corresponding
+  frozen frontier is completely exhausted. On resume, each endpoint independently
+  appends an overlapped closed range through the new frozen `now`; an exact
+  unresolved deposit replay therefore cannot stop trades or withdrawals from
+  scanning newer activity. Coverage records the greatest frozen end actually
+  queried, not merely the newly checkpointed target. Export older records from MEXC;
+  SoloLedger has no MEXC CSV parser and makes no API/CSV deduplication promise.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -198,6 +216,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | bitfinex | native Trade id; connection- and immutable-kind scoped; intentionally does **not** collide with beta CSV because parity is unverified | native Movement id; connection- and immutable-kind scoped; no Movements CSV backfill exists |
 | gemini | native `tid`, prefixed `trade:` and connection-scoped | native `eid`/`withdrawalId`, direction-prefixed and connection-scoped |
 | btcmarkets | native trade `id`, connection + immutable `trade` kind scoped | native transfer `id`, connection + immutable direction scoped |
+| mexc | native trade `id`, scoped by connection + exchange + immutable `trade` kind | withdrawal native `id`; deposits use the exact provider evidence tuple (`txId`/`transHash`, network, coin, time, amount, address, memo, index), scoped by immutable direction; no CSV identity promise |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -284,6 +303,11 @@ BTC Markets fixtures carry `btcmarkets/provenance.json` and `_recorded: false`.
 They are schema-faithful hand-authored v3 responses replayed through the real
 pinned CCXT class. No BTC Markets CSV parser exists; API↔CSV deduplication is
 explicitly unavailable rather than approximated with an economic collision.
+
+MEXC fixtures carry `mexc/provenance.json` with `_recorded: false`, pinned
+CCXT `4.5.68`, and host `api.mexc.com`. They are schema-faithful hand-authored
+spot v3 shapes, not real-account evidence. The connector remains Beta; full
+read-only real-account validation is deferred and no CSV equivalence is claimed.
 
 ## Known limitations / caveats
 
@@ -385,6 +409,13 @@ explicitly unavailable rather than approximated with an economic collision.
     leave a duplicate that requires review. Only Gemini `Complete`/`Advanced`
     transfers (CCXT `ok`) import; all are flagged possible internal transfers.
     No Gemini retention limit is fabricated.
+18. **MEXC is retention-limited Beta** — API trades cover only the last month
+    and deposits/withdrawals only the last 90 days. Exhausting every recursive
+    window proves coverage only within those moving floors, never lifetime
+    completeness. MEXC documents website trade exports up to 540 days; export
+    older records before they age out. SoloLedger currently has no MEXC CSV
+    parser and does not promise API/CSV deduplication. Real-account validation
+    is deferred; fixtures and dummy-key relay probes do not replace it.
 
 ## Adding an exchange?
 

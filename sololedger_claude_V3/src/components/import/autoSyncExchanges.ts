@@ -211,6 +211,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['BTC Markets', 'Account', 'API Key', 'Create API Key'],
     docsUrl: 'https://support.btcmarkets.net/hc/en-us/articles/360046326934-How-to-Access-and-Generate-Revoke-Your-API-Keys'
+  },
+  {
+    id: 'mexc',
+    label: 'MEXC',
+    monogram: 'MX',
+    needsPassphrase: false,
+    formatHint: 'API key + secret · retention-limited beta',
+    keyInstructions: [
+      'Log in to MEXC on the web and open Profile → API Management.',
+      'Create an API key with read access for spot account, spot trade history, and deposit/withdrawal history only. Never enable trading, withdrawals, internal transfer, margin, futures, broker, or contract permissions.',
+      'Copy the Access Key and Secret Key and paste them here. MEXC does not require a passphrase.',
+      'MEXC API trade history covers only the last month; deposit and withdrawal API history covers only the last 90 days. This is not lifetime coverage.',
+      'Export older records from the MEXC website (trade exports support up to 540 days per MEXC documentation). SoloLedger has no MEXC CSV parser and makes no API/CSV deduplication promise.'
+    ],
+    path: ['MEXC', 'Profile', 'API Management', 'Create API'],
+    docsUrl: 'https://www.mexc.com/user/openapi'
   }
 ];
 

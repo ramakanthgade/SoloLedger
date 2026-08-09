@@ -176,6 +176,20 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/v3/trades',
       '/v3/transfers'
     ]
+  },
+  mexc: {
+    host: 'api.mexc.com',
+    headers: ['x-mexc-apikey', 'source'],
+    methods: ['GET'],
+    paths: [
+      '/api/v3/time',
+      '/api/v3/exchangeInfo',
+      '/api/v3/symbol/offline',
+      '/api/v3/account',
+      '/api/v3/myTrades',
+      '/api/v3/capital/deposit/hisrec',
+      '/api/v3/capital/withdraw/history'
+    ]
   }
 };
 

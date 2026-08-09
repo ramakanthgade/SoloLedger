@@ -1,0 +1,6 @@
+{
+  "_recorded": false,
+  "ccxt": "4.5.68",
+  "host": "api.mexc.com",
+  "_note": "Hand-authored schema-faithful fixtures based on pinned CCXT source and MEXC spot v3 response documentation; no account credentials were used."
+}
