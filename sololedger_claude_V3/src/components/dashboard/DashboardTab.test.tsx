@@ -535,9 +535,8 @@ describe('DashboardTab — hero honesty', () => {
     );
     expect(within(hero).getByText('Unrealized P&L')).toBeInTheDocument();
     expect(within(hero).getByText('Unavailable')).toBeInTheDocument();
-    expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(
-      /partial.*unpriced/i
-    );
+    expect(screen.queryByText(/Position values incomplete · shown subtotal uses retained custody/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Partial · \d+ unpriced assets?/i)).not.toBeInTheDocument();
     expect(screen.getByTestId('chart-honesty-note')).toHaveTextContent(
       /cost basis over time — enable live prices for market value/i
     );
@@ -573,7 +572,7 @@ describe('DashboardTab — hero honesty', () => {
     expect(within(hero).queryByText('Historical display cost basis')).not.toBeInTheDocument();
     expect(within(hero).queryByText('Current DeFi adjustment')).not.toBeInTheDocument();
     expect(screen.getByTestId('money-strip')).toBeInTheDocument();
-    expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(/partial.*1 unpriced asset/i);
+    expect(screen.queryByText(/Partial · 1 unpriced asset/i)).not.toBeInTheDocument();
   });
 
   it('masks balances with the privacy eye and persists the choice', async () => {
@@ -842,53 +841,11 @@ describe('DashboardTab — header, money strip and tax rail', () => {
 });
 
 describe('DashboardTab — insights', () => {
-  it('flags transactions that need a price, with Fix routing to Transactions', async () => {
-    const goTo = vi.fn();
-    await renderTab({ goToImport: () => {}, goTo });
-    const strip = screen.getByTestId('insights-strip');
-    const card = within(strip).getByTestId('insight-needs-price');
-    expect(card).toHaveTextContent('1 transaction needs a price');
-    fireEvent.click(within(card).getByRole('button', { name: /Fix/ }));
-    expect(goTo).toHaveBeenCalledWith('review');
-  });
-
-  it('opens the exact needs-price filter when typed navigation is available', async () => {
-    const onNavigationIntent = vi.fn();
-    await renderTab(undefined, undefined, { onNavigationIntent });
-    const card = within(screen.getByTestId('insights-strip')).getByTestId('insight-needs-price');
-    fireEvent.click(within(card).getByRole('button', { name: /Fix/ }));
-    expect(onNavigationIntent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        destination: 'transactions', focus: 'filters',
-        filter: { needsPrice: true }
-      }),
-      { filter: 'action', scrollTop: 0 }
-    );
-  });
-
-  it('excludes transfer classifications from the historical-price count', async () => {
-    SEED.txs.push({
-      id: 't-sol-transfer', timestamp: Date.UTC(2026, 6, 12, 12, 0, 0), type: 'transfer_in',
-      asset: 'SOL', amount: 10, fiatCurrency: 'INR', fiatValue: undefined, source: 'manual',
-      flags: ['missing_market_value'], isInternalTransfer: false
-    } as never);
-    try {
-      await renderTab();
-      const card = screen.getByTestId('insight-needs-price');
-      expect(card).toHaveTextContent('1 transaction needs a price');
-    } finally {
-      SEED.txs.pop();
-    }
-  });
-
-  it('dismisses an insight and persists the dismissal', async () => {
+  it('does not duplicate needs-price or needs-review notices in For you today', async () => {
     await renderTab();
-    const card = screen.getByTestId('insight-needs-price');
-    fireEvent.click(
-      within(card).getByRole('button', { name: /Dismiss insight: 1 transaction needs a price/ })
-    );
     expect(screen.queryByTestId('insight-needs-price')).toBeNull();
-    expect(localStorage.getItem('sololedger_dashboard_dismissed_insights')).toContain('needs-price');
+    expect(screen.queryByTestId('insight-needs-review')).toBeNull();
+    expect(screen.getByTestId('data-health-card')).toHaveTextContent(/transaction.*needs a price/i);
   });
 });
 
@@ -967,7 +924,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       expect(deficit).toHaveTextContent('-4.0000 BTC');
       expect(deficit).toHaveTextContent('28.6%');
       expect(screen.queryByTestId('source-allocation-caption')).toBeNull();
-      expect(screen.getByTestId('quantity-authority-summary')).toHaveTextContent('quantity authority issue');
+      expect(screen.queryByTestId('quantity-authority-summary')).not.toBeInTheDocument();
       expect(screen.getByTestId('source-allocation-bar-manual:manual')).toHaveStyle({
         width: `${(10 / 14) * 100}%`
       });
@@ -998,7 +955,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     }
   });
 
-  it('opens negative posting fallback diagnostics from the consolidated count in Data Health', async () => {
+  it('keeps negative posting fallback diagnostics in Data Health without a holdings banner', async () => {
     const backup = [...SEED.txs];
     SEED.txs.length = 0;
     SEED.txs.push({
@@ -1006,9 +963,8 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false
     });
     try {
-      await renderTab();
-      expect(screen.getByTestId('quantity-authority-summary')).toHaveTextContent('1 quantity authority issue');
-      fireEvent.click(screen.getByRole('button', { name: 'Review in Data Health →' }));
+      await renderTab(undefined, undefined, { openDataHealthOnMount: true });
+      expect(screen.queryByTestId('quantity-authority-summary')).not.toBeInTheDocument();
       expect(screen.getByRole('heading', { name: 'Data Health' })).toBeInTheDocument();
       fireEvent.click(screen.getByText('More actions (1)'));
       expect(screen.getByRole('button', {
@@ -1306,6 +1262,8 @@ describe('DashboardTab — period pills', () => {
   it('renders 1M/6M/FY/1Y/All as a roving radiogroup with FY selected', async () => {
     await renderTab();
     expect(screen.getByTestId('selected-range-summary')).toHaveTextContent(/Apr.*Mar/);
+    expect(screen.getByTestId('dashboard-hero')).not.toContainElement(screen.getByTestId('hero-period-pills'));
+    expect(screen.queryByText(/FY .*completed/i)).not.toBeInTheDocument();
     const group = screen.getByTestId('hero-period-pills');
     const radios = within(group).getAllByRole('radio');
     expect(radios.map((r) => r.textContent)).toEqual(['1M', '6M', 'FY', '1Y', 'All']);
@@ -1322,7 +1280,9 @@ describe('DashboardTab — period pills', () => {
 
   it('validates custom inclusive dates before applying them', async () => {
     await renderTab();
-    fireEvent.click(screen.getByRole('button', { name: 'Custom range' }));
+    expect(screen.getByText('Custom range')).toBeInTheDocument();
+    expect(screen.getByLabelText('Custom start date')).toBeVisible();
+    expect(screen.getByLabelText('Custom end date')).toBeVisible();
     fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2026-04-02' } });
     fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-04-01' } });
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
@@ -1351,7 +1311,6 @@ describe('DashboardTab — period pills', () => {
     );
     try {
       await renderTab();
-      fireEvent.click(screen.getByRole('button', { name: 'Custom range' }));
       fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2025-04-01' } });
       fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2025-04-01' } });
       fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
@@ -1365,7 +1324,6 @@ describe('DashboardTab — period pills', () => {
 
   it('clears a custom selection through the shared keyboard preset handler', async () => {
     await renderTab();
-    fireEvent.click(screen.getByRole('button', { name: 'Custom range' }));
     fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2025-04-01' } });
     fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-03-31' } });
     fireEvent.click(screen.getByRole('button', { name: 'Apply' }));

@@ -23,7 +23,6 @@ import { projectManifestSelectedWalletDefi, walletDefiCustodyFromHoldings } from
 import { isWalletDefiNetWorthV1Enabled } from '@/lib/features';
 import {
   buildHoldingsProjection,
-  countQuantityAuthorityIssues,
   type HoldingsProjectionInput
 } from '@/lib/portfolio/holdingsProjection';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
@@ -101,7 +100,6 @@ import {
   RefreshCw,
   ShieldCheck,
   TrendingDown,
-  CalendarDays,
   Wallet
 } from 'lucide-react';
 import { isTransactionExcluded, transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
@@ -502,7 +500,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const [customEnd, setCustomEnd] = useState('');
   const [customRange, setCustomRange] = useState<{ start: number; end: number } | null>(null);
   const [customError, setCustomError] = useState('');
-  const [customOpen, setCustomOpen] = useState(false);
   const [hideBalances, setHideBalances] = useState<boolean>(() => {
     try {
       return localStorage.getItem(PRIVACY_KEY) === '1';
@@ -603,7 +600,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const projection = coherentLedgerRevision?.projection ?? EMPTY_HOLDINGS_PROJECTION;
   const nonSpamTxs = coherentLedgerRevision?.transactionViews.nonSpam ?? NO_TRANSACTIONS;
   const holdings = projection.holdings;
-  const quantityAuthorityIssueCount = countQuantityAuthorityIssues(projection);
   const ledgerRevision = useMemo(() => ({
     transactionCount: coherentLedgerRevision?.transactionCount ?? 0,
     transactions: nonSpamTxs,
@@ -801,7 +797,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
 
   const valueMetrics = buildDashboardValueMetrics(valued, economicExposure);
   const totalCost = valueMetrics.historicalCostBasis;
-  const unpriced = valued.filter((h) => h.valueNow == null);
   const marketMode = valued.some((h) => h.valueNow != null);
   const exposureDisclosure = economicExposureDisclosure(economicExposure);
   const custodyCostFallbackById = useMemo(() => {
@@ -919,7 +914,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
       biggestLoss,
       formatMoney: (v) => formatCurrency(v, currency)
     });
-    return all.filter((i) => !dismissed.includes(i.id)).slice(0, 3);
+    return all
+      .filter((i) => i.kind !== 'needs-price' && i.kind !== 'needs-review')
+      .filter((i) => !dismissed.includes(i.id))
+      .slice(0, 3);
   }, [
     needsPriceCount,
     needsReviewCount,
@@ -952,6 +950,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
           points={series}
           mode={marketMode ? 'market' : 'cost'}
           currency={currency}
+          jurisdiction={jurisdiction}
           mask={hideBalances}
         />
       ) : (
@@ -965,7 +964,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         </p>
       )}
     </>
-  ), [currency, hideBalances, marketMode, series]);
+  ), [currency, hideBalances, jurisdiction, marketMode, series]);
 
   const fm = (v: number) => (hideBalances ? '••••' : formatCurrency(v, currency));
   const compactMoney = (v: number | null) => {
@@ -1257,7 +1256,67 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         </div>
       </div>
 
-      {/* 2 — net-worth hero */}
+      {/* 2 — chart range controls */}
+      <section
+        aria-label="Chart range controls"
+        className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-hi/10 bg-elev-2 px-5 py-4 shadow-card"
+      >
+        <div>
+          <p className={cn(eyebrowClass, 'mb-2')}>Period</p>
+          <div
+            role="radiogroup"
+            aria-label="Chart period"
+            data-testid="hero-period-pills"
+            onKeyDown={onPeriodKeyDown}
+            className="flex flex-wrap items-center gap-1 rounded-xl border border-hi/10 bg-elev-1 p-1 shadow-xs"
+          >
+            {DASHBOARD_PERIODS.map((option, i) => {
+              const active = customRange == null && period === option.value;
+              const roving = period === option.value;
+              return (
+                <button
+                  key={option.value}
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  tabIndex={roving ? 0 : -1}
+                  ref={(el) => {
+                    pillRefs.current[i] = el;
+                  }}
+                  onClick={() => selectPreset(option.value)}
+                  className={cn(
+                    'min-h-[44px] rounded-[10px] border px-3.5 text-xs font-bold transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
+                    active
+                      ? 'border-hi/10 bg-elev-2 text-hi shadow-xs'
+                      : 'border-transparent text-low hover:bg-elev-3/60 hover:text-hi'
+                  )}
+                >
+                  {option.label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div className="min-w-0">
+          <p className={cn(eyebrowClass, 'mb-2')}>Custom range</p>
+          <div id="dashboard-custom-range" className="flex flex-wrap items-end gap-2" aria-label="Custom inclusive date range">
+            <label className="text-[0.6875rem] font-bold text-low">Start<input aria-label="Custom start date" type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="mt-1 block min-h-[44px] rounded-lg border border-hi/10 bg-elev-1 px-2 text-xs text-hi" /></label>
+            <label className="text-[0.6875rem] font-bold text-low">End<input aria-label="Custom end date" type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="mt-1 block min-h-[44px] rounded-lg border border-hi/10 bg-elev-1 px-2 text-xs text-hi" /></label>
+            <Button type="button" onClick={() => {
+              const custom = inclusiveCivilDateRangeThroughNow(customStart, customEnd, jurisdiction, nowMs);
+              if (!custom) {
+                setCustomError('Choose a valid start and end on or before today.'); return;
+              }
+              setCustomError(''); setCustomRange(custom);
+            }}>Apply</Button>
+          </div>
+          {customError && <p className="mt-2 text-xs text-loss" role="alert">{customError}</p>}
+          <p className="mt-2 text-xs font-bold text-hi" data-testid="selected-range-summary">{selectedRangeLabel}</p>
+        </div>
+      </section>
+
+      {/* 3 — net-worth hero */}
       <section
         aria-label="Net worth summary"
         data-testid="dashboard-hero"
@@ -1292,11 +1351,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               {compactMoney(netWorth)}
             </p>
             {exposureDisclosure && <p className="mt-1.5 text-xs text-warn" data-testid={economicExposure.hasUnpricedLiabilities ? 'defi-net-worth-incomplete' : 'economic-exposure-honesty'} role="status">{exposureDisclosure}</p>}
-            {!economicExposure.hasUnpricedLiabilities && unpriced.length > 0 && (
-              <p className="mt-1.5 text-xs text-low" data-testid="hero-honesty-note">
-                Partial · {unpriced.length} unpriced asset{unpriced.length === 1 ? '' : 's'}
-              </p>
-            )}
             {marketMode && pricesAsOf != null && (
               <p className="mt-1 text-[0.6875rem] text-faint">
                 Prices as of {shortDateLabel(pricesAsOf)}
@@ -1329,66 +1383,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
           </dl>
         </div>
 
-        <div className="mt-5 flex flex-wrap items-end justify-between gap-4 border-y border-hi/10 bg-elev-1/40 px-5 py-3">
-            <div>
-              <p className={cn(eyebrowClass, 'mb-2')}>Period</p>
-              <div
-                role="radiogroup"
-                aria-label="Chart period"
-                data-testid="hero-period-pills"
-                onKeyDown={onPeriodKeyDown}
-                className="flex flex-wrap items-center gap-1 rounded-xl border border-hi/10 bg-elev-2 p-1 shadow-xs"
-              >
-                {DASHBOARD_PERIODS.map((option, i) => {
-                  const active = customRange == null && period === option.value;
-                  const roving = period === option.value;
-                  return (
-                    <button
-                      key={option.value}
-                      type="button"
-                      role="radio"
-                      aria-checked={active}
-                      tabIndex={roving ? 0 : -1}
-                      ref={(el) => {
-                        pillRefs.current[i] = el;
-                      }}
-                      onClick={() => selectPreset(option.value)}
-                      className={cn(
-                        'min-h-[44px] rounded-[10px] border px-3.5 text-xs font-bold transition-colors',
-                        'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
-                        active
-                          ? 'border-hi/10 bg-elev-1 text-hi shadow-xs'
-                          : 'border-transparent text-low hover:bg-elev-3/60 hover:text-hi'
-                      )}
-                    >
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-            <div className="min-w-0 text-right">
-              <p className="text-xs font-bold text-hi" data-testid="selected-range-summary">{selectedRangeLabel}</p>
-              <p className="mt-1 text-[0.6875rem] text-low">{customRange ? 'Custom · inclusive dates' : presetRange.sinceCaption}</p>
-              <button type="button" aria-expanded={customOpen} aria-controls="dashboard-custom-range" aria-pressed={customRange != null} onClick={() => setCustomOpen((open) => !open)} className="mt-2 inline-flex min-h-[44px] items-center gap-2 rounded-lg px-3 text-xs font-bold text-primary hover:bg-primary/10">
-                <CalendarDays className="h-4 w-4" aria-hidden="true" /> Custom range
-              </button>
-            </div>
-            {customOpen && <div id="dashboard-custom-range" className="flex w-full flex-wrap items-end justify-end gap-2" aria-label="Custom inclusive date range">
-                <label className="text-[0.6875rem] font-bold text-low">Start<input aria-label="Custom start date" type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="mt-1 block min-h-[44px] rounded-lg border border-hi/10 bg-elev-2 px-2 text-xs text-hi" /></label>
-                <label className="text-[0.6875rem] font-bold text-low">End<input aria-label="Custom end date" type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="mt-1 block min-h-[44px] rounded-lg border border-hi/10 bg-elev-2 px-2 text-xs text-hi" /></label>
-                <Button type="button" onClick={() => {
-                  const custom = inclusiveCivilDateRangeThroughNow(customStart, customEnd, jurisdiction, nowMs);
-                  if (!custom) {
-                    setCustomError('Choose a valid start and end on or before today.'); return;
-                  }
-                  setCustomError(''); setCustomRange(custom);
-                }}>Apply</Button>
-                {customError && <p className="w-full text-right text-xs text-loss" role="alert">{customError}</p>}
-              </div>}
-        </div>
-
-        <div className="mt-4 border-t border-hi/10 px-3 pt-4 sm:px-5">
+        <div className="mt-5 border-t border-hi/10 px-3 pt-4 sm:px-5">
           {chartContent}
         </div>
 
@@ -1516,12 +1511,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               {marketMode ? 'Current prices · refreshed automatically' : 'Valued at cost'}
             </span>
           </div>
-          {quantityAuthorityIssueCount > 0 && (
-            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-warn/20 bg-warn/10 px-5 py-2.5 text-xs text-mid" data-testid="quantity-authority-summary">
-              <span>{quantityAuthorityIssueCount} quantity authority issue{quantityAuthorityIssueCount === 1 ? '' : 's'} retained for review.</span>
-              <button type="button" onClick={() => setDataHealthOpen(true)} className="min-h-[44px] font-bold text-primary hover:underline">Review in Data Health →</button>
-            </div>
-          )}
           {optionsBalanceUnavailable && (
             <div
               className="border-b border-warn/25 bg-warn/10 px-5 py-3 text-xs text-warn"

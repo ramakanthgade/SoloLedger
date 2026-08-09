@@ -34,9 +34,9 @@ describe('dashboard current-economic and historical metric separation', () => {
 });
 
 describe('economicExposureDisclosure', () => {
-  it('discloses priced receipt custody retained for an unvalued replacement', () => {
+  it('omits the net-worth detail line for an unvalued replacement', () => {
     expect(economicExposureDisclosure({ status: 'partial', hasUnpricedValues: true, hasUnpricedLiabilities: false }))
-      .toContain('shown subtotal uses retained custody');
+      .toBeNull();
   });
 
   it('discloses that an unpriced liability is excluded from the shown subtotal', () => {

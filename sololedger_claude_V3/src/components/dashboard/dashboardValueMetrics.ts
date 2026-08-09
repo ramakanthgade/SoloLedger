@@ -6,7 +6,7 @@ export function economicExposureDisclosure(
   projection: Pick<EconomicExposureProjection, 'status' | 'hasUnpricedValues' | 'hasUnpricedLiabilities'>
 ): string | null {
   if (projection.hasUnpricedLiabilities) return 'Some liabilities are unpriced · shown subtotal excludes them.';
-  if (projection.hasUnpricedValues) return 'Position values incomplete · shown subtotal uses retained custody.';
+  if (projection.hasUnpricedValues) return null;
   if (projection.status === 'stale') return 'Position evidence may be stale · last complete holdings retained.';
   if (projection.status === 'unsupported') return 'Position look-through unavailable · custody retained.';
   if (projection.status === 'partial') return 'Position evidence partial · custody and known liabilities retained.';

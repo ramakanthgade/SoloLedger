@@ -2,6 +2,8 @@ import { useId, useMemo, useRef, useState } from 'react';
 import type { ChartPoint } from '@/lib/dashboard/dashboardModel';
 import { shortDateLabel } from '@/lib/dashboard/dashboardModel';
 import { formatCurrency } from '@/lib/utils';
+import type { Jurisdiction } from '@/types/transaction';
+import { chartTimelineTicks } from './dashboardChartTimeline';
 
 /**
  * Net-worth area chart — hand-rolled SVG (no chart dependency), matching the
@@ -19,7 +21,6 @@ const H = 240;
 const PAD_TOP = 14;
 const PAD_BOTTOM = 28;
 const PAD_X = 6;
-const DAY_MS = 86_400_000;
 
 interface Pt {
   x: number;
@@ -50,52 +51,17 @@ function smoothPath(pts: Pt[]): string {
   return d;
 }
 
-interface Tick {
-  frac: number;
-  label: string;
-}
-
-/** Month ticks for long spans, ~weekly date ticks for short ones. */
-function xTicks(start: number, end: number): Tick[] {
-  const span = end - start;
-  if (span <= 0) return [];
-  if (span <= 45 * DAY_MS) {
-    const step = 7 * DAY_MS;
-    const first = Math.ceil(start / step) * step;
-    const ticks: Tick[] = [];
-    for (let t = first; t < end; t += step) {
-      ticks.push({ frac: (t - start) / span, label: shortDateLabel(t) });
-    }
-    return ticks;
-  }
-  const ticks: Tick[] = [];
-  const cursor = new Date(start);
-  cursor.setUTCDate(1);
-  cursor.setUTCHours(0, 0, 0, 0);
-  if (cursor.getTime() <= start) cursor.setUTCMonth(cursor.getUTCMonth() + 1);
-  const withYear = span > 400 * DAY_MS;
-  while (cursor.getTime() < end && ticks.length < 8) {
-    const t = cursor.getTime();
-    const label = shortDateLabel(Date.UTC(cursor.getUTCFullYear(), cursor.getUTCMonth(), 1)).split(' ')[0];
-    ticks.push({
-      frac: (t - start) / span,
-      label: withYear ? `${label} '${String(cursor.getUTCFullYear()).slice(-2)}` : label
-    });
-    cursor.setUTCMonth(cursor.getUTCMonth() + 1);
-  }
-  return ticks;
-}
-
 export interface NetWorthChartProps {
   points: ChartPoint[];
   /** 'market' draws the solid area on the market series; 'cost' on cost. */
   mode: 'market' | 'cost';
   currency: string;
+  jurisdiction: Jurisdiction;
   /** Privacy mode — tooltip values render as ••••. */
   mask?: boolean;
 }
 
-export function NetWorthChart({ points, mode, currency, mask = false }: NetWorthChartProps) {
+export function NetWorthChart({ points, mode, currency, jurisdiction, mask = false }: NetWorthChartProps) {
   const gradientId = useId();
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const [hover, setHover] = useState<number | null>(null);
@@ -138,7 +104,7 @@ export function NetWorthChart({ points, mode, currency, mask = false }: NetWorth
       ? `${solidPath} L${solidPts[solidPts.length - 1].x},${H - PAD_BOTTOM} L${solidPts[0].x},${H - PAD_BOTTOM} Z`
       : '';
   const costPath = smoothPath(costPts);
-  const ticks = xTicks(start, end);
+  const ticks = chartTimelineTicks(start, end, jurisdiction);
 
   const money = (v: number) => (mask ? '••••' : formatCurrency(v, currency));
   const dateLabel = (t: number) => {

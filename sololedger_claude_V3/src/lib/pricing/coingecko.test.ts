@@ -153,16 +153,12 @@ describe('CoinGecko canonical symbol mappings', () => {
     });
   });
 
-  it('prices exact contracts sequentially and preserves request order', async () => {
-    let active = 0;
-    let maxActive = 0;
+  it('prices exact contracts in one platform batch and preserves request order', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      await Promise.resolve();
-      const address = new URL(String(input)).searchParams.get('contract_addresses')!;
-      active -= 1;
-      return new Response(JSON.stringify({ [address]: { usd: address.endsWith('1') ? 1 : 2 } }), { status: 200 });
+      const addresses = new URL(String(input)).searchParams.get('contract_addresses')!.split(',');
+      return new Response(JSON.stringify(Object.fromEntries(addresses.map((address) => [
+        address, { usd: address.endsWith('1') ? 1 : 2 }
+      ]))), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -171,31 +167,107 @@ describe('CoinGecko canonical symbol mappings', () => {
       { platform: 'ethereum', contractAddress: '0x2' }
     ], 'USD');
 
-    expect(maxActive).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(results.map((row) => [row.asset, row.price])).toEqual([['0x1', 1], ['0x2', 2]]);
+  });
+
+  it('retrieves LayerZero by its exact Ethereum contract in a shared trusted-token batch', async () => {
+    const zro = '0x6985884c4392d348587b19cb9eaaf157f13271cd';
+    const ausdc = '0xbcca60bb61934080951369a648fb03df4f96263c';
+    const busd = '0x4fabb145d64652a948d72533023f6e7a623c7c53';
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toContain('/simple/token_price/ethereum');
+      expect(url.searchParams.get('contract_addresses')?.split(',')).toEqual([ausdc, zro, busd]);
+      return new Response(JSON.stringify({
+        [zro]: { usd: 0.86 }, [busd]: { usd: 1 }, [ausdc]: { usd: 1 }
+      }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const results = await fetchCurrentContractPrices([
+      { platform: 'ethereum', contractAddress: ausdc },
+      { platform: 'ethereum', contractAddress: zro },
+      { platform: 'ethereum', contractAddress: busd }
+    ], 'USD');
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results[1]).toMatchObject({ asset: zro, platform: 'ethereum', price: 0.86 });
+  });
+
+  it('bounds same-platform batches while preserving all exact-contract results', async () => {
+    const requests = Array.from({ length: 31 }, (_, index) => ({
+      platform: 'ethereum', contractAddress: `0x${index.toString(16).padStart(40, '0')}`
+    }));
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const addresses = new URL(String(input)).searchParams.get('contract_addresses')!.split(',');
+      expect(addresses.length).toBeLessThanOrEqual(30);
+      return new Response(JSON.stringify(Object.fromEntries(
+        addresses.map((address) => [address, { usd: 1 }])
+      )), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const results = await fetchCurrentContractPrices(requests, 'USD');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(results.map((row) => row.asset)).toEqual(requests.map((row) => row.contractAddress));
+    expect(results.every((row) => row.price === 1)).toBe(true);
+  });
+
+  it('preserves cross-platform request priority ahead of later same-platform batches', async () => {
+    const requests = [
+      { platform: 'ethereum', contractAddress: '0xtrusted-ethereum' },
+      { platform: 'polygon-pos', contractAddress: '0xtrusted-polygon' },
+      ...Array.from({ length: 30 }, (_, index) => ({
+        platform: 'ethereum', contractAddress: `0xjunk-${index}`
+      }))
+    ];
+    const paths: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      paths.push(url.pathname);
+      const addresses = url.searchParams.get('contract_addresses')!.split(',');
+      return new Response(JSON.stringify(Object.fromEntries(
+        addresses.map((address) => [address, { usd: 1 }])
+      )), { status: 200 });
+    }));
+
+    await fetchCurrentContractPrices(requests, 'USD');
+
+    expect(paths).toEqual([
+      expect.stringContaining('/ethereum'),
+      expect.stringContaining('/polygon-pos'),
+      expect.stringContaining('/ethereum')
+    ]);
   });
 
   it('retries transient exact-contract throttling without losing other successes', async () => {
     const attempts = new Map<string, number>();
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const address = new URL(String(input)).searchParams.get('contract_addresses')!;
-      const attempt = (attempts.get(address) ?? 0) + 1;
-      attempts.set(address, attempt);
-      if (address === '0x1' && attempt === 1) {
+      const url = new URL(String(input));
+      const pathParts = url.pathname.split('/');
+      const platform = pathParts[pathParts.length - 1];
+      const attempt = (attempts.get(platform) ?? 0) + 1;
+      attempts.set(platform, attempt);
+      if (platform === 'ethereum' && attempt === 1) {
         return new Response('', { status: 429, headers: { 'retry-after': '0' } });
       }
-      if (address === '0x2') return new Response('', { status: 404 });
-      return new Response(JSON.stringify({ [address]: { usd: 7 } }), { status: 200 });
+      if (platform === 'polygon-pos') return new Response('', { status: 404 });
+      const addresses = url.searchParams.get('contract_addresses')!.split(',');
+      return new Response(JSON.stringify(Object.fromEntries(
+        addresses.map((address) => [address, { usd: 7 }])
+      )), { status: 200 });
     });
     vi.stubGlobal('fetch', fetchMock);
 
     const results = await fetchCurrentContractPrices([
       { platform: 'ethereum', contractAddress: '0x1' },
-      { platform: 'ethereum', contractAddress: '0x2' },
+      { platform: 'polygon-pos', contractAddress: '0x2' },
       { platform: 'ethereum', contractAddress: '0x3' }
     ], 'USD');
 
-    expect(attempts).toEqual(new Map([['0x1', 2], ['0x2', 1], ['0x3', 1]]));
+    expect(attempts).toEqual(new Map([['ethereum', 2], ['polygon-pos', 1]]));
     expect(results).toEqual([
       expect.objectContaining({ asset: '0x1', price: 7 }),
       expect.objectContaining({ asset: '0x2', price: null, error: 'Price API returned 404 for contract lookup' }),
