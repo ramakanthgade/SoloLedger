@@ -250,6 +250,10 @@ describe('createExchangeClient', () => {
     expect(new URL(signed.url).pathname).toBe('/api/v3/account');
     expect(signed.method).toBe('GET');
     expect(signed.headers).toMatchObject({ 'X-MEXC-APIKEY': 'D'.repeat(32), source: 'CCXT' });
+
+    const signedTrades = raw.sign('myTrades', ['spot', 'private'], 'GET', { symbol: 'BTCUSDT', limit: 100 });
+    expect(new URL(signedTrades.url).pathname).toBe('/api/v3/myTrades');
+    expect(new URL(signedTrades.url).searchParams.get('limit')).toBe('100');
   });
 
   it('does not set password for exchanges without a passphrase', async () => {

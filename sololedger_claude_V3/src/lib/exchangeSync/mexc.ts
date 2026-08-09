@@ -571,7 +571,7 @@ export async function fetchMexcHistory(args: {
   trades.rows.sort((left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0) ||
     String(tradeId(left) ?? '').localeCompare(String(tradeId(right) ?? '')));
   deposits.rows.sort((left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0) ||
-    mexcDepositSourceRef(left).localeCompare(mexcDepositSourceRef(right)));
+    String(mexcDepositSourceRef(left) ?? '').localeCompare(String(mexcDepositSourceRef(right) ?? '')));
   withdrawals.rows.sort((left, right) => (left.timestamp ?? 0) - (right.timestamp ?? 0) ||
     String(left.id ?? '').localeCompare(String(right.id ?? '')));
   const transactions = [

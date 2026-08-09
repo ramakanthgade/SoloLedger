@@ -41,7 +41,7 @@ describe('MEXC pinned parser, tax semantics and identity', () => {
     const rows = apiRows();
     expect(rows.map((row) => row.type)).toEqual(['buy', 'sell', 'transfer_in', 'transfer_in', 'transfer_out']);
     expect(rows[0]).toMatchObject({ source: 'mexc_api', sourceRef: '90001', fiatCurrency: 'USD', fiatValue: 600, raw: { exchangeSyncKind: 'trade' } });
-    expect(rows.filter((row) => row.type === 'transfer_in').every((row) => row.sourceRef?.startsWith('mexc-deposit:'))).toBe(true);
+    expect(rows.find((row) => row.type === 'transfer_in')).toMatchObject({ sourceRef: 'hash:0', raw: { exchangeSyncKind: 'deposit' } });
     expect(rows.find((row) => row.type === 'transfer_out')).toMatchObject({ sourceRef: 'w-1', amount: 10, feeAmount: 1, raw: { exchangeSyncKind: 'withdrawal' } });
   });
 
@@ -71,5 +71,20 @@ describe('MEXC pinned parser, tax semantics and identity', () => {
     await db.transactions.bulkPut([a, replay, same, other]);
     expect(await deduplicateTransactions()).toBe(1);
     expect(await db.transactions.count()).toBe(3);
+  });
+
+  it('scopes an actual pinned-CCXT deposit by connection, exchange and deposit endpoint', async () => {
+    const parsed = mexc.parseTransactions(fixture<unknown[]>('deposits.json'))[0]!;
+    parsed.txid = 'unified-fallback';
+    const deposit = normalizeTransfer('mexc', parsed)!;
+    const a = { ...deposit, id: 'deposit-a', importBatchId: 'account-a' };
+    const replay = { ...deposit, id: 'deposit-replay', importBatchId: 'account-a' };
+    const other = { ...deposit, id: 'deposit-b', importBatchId: 'account-b' };
+    expect(deposit.sourceRef).toBe('hash:0');
+    expect(transactionExchangeKey(a)).toBe('ex-api:account-a:mexc:deposit:hash:0');
+    expect(transactionExchangeKey(other)).toBe('ex-api:account-b:mexc:deposit:hash:0');
+    await db.transactions.bulkPut([a, replay, other]);
+    expect(await deduplicateTransactions()).toBe(1);
+    expect(await db.transactions.count()).toBe(2);
   });
 });

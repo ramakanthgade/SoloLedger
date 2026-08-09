@@ -63,6 +63,8 @@ describe('MEXC symbol universe and state validation', () => {
     });
     expect(result.partial.trades).toBe(true);
     expect(result.checkpoint?.trade.unsafeEvidence[0]?.reason).toBe('malformed_offline_symbol_response');
+    expect(result.warnings.join(' ')).toMatch(/coverage is partial|traversal is incomplete/i);
+    expect(result.warnings.join(' ')).not.toMatch(/exhausted.*every queryable/i);
   });
 
   it('rebuilds discovery evidence so a valid response clears a prior malformed-response failure', async () => {
@@ -139,7 +141,9 @@ describe('MEXC recursive closed-window history', () => {
   });
 
   it('binary-splits a full 100-row trade page and resumes the exact children', async () => {
-    const c = client(async (symbol, since) => {
+    const limits: number[] = [];
+    const c = client(async (symbol, since, limit) => {
+      limits.push(limit!);
       const rows = Array.from({ length: 100 }, (_, index) => trade(String(index), symbol!, since! + index));
       c.last_json_response = rows.map((row) => row.info!);
       return rows;
@@ -153,6 +157,37 @@ describe('MEXC recursive closed-window history', () => {
       { symbol: 'BTC/USDT', start: NOW - 1_000, end: NOW - 500 },
       { symbol: 'BTC/USDT', start: NOW - 499, end: NOW }
     ]);
+    expect(limits).toEqual([100]);
+  });
+
+  it('uses native bounded transfer params and endpoint-specific limits', async () => {
+    const tradeRequests: Array<{ limit: number | undefined; params: Record<string, unknown> | undefined }> = [];
+    const transferRequests: Array<{ kind: string; since: number | undefined; limit: number | undefined; params: Record<string, unknown> | undefined }> = [];
+    const c = client(async (_symbol, _since, limit, params) => {
+      tradeRequests.push({ limit, params });
+      c.last_json_response = [];
+      return [];
+    });
+    c.fetchDeposits = async (_code, since, limit, params) => {
+      transferRequests.push({ kind: 'deposit', since, limit, params });
+      c.last_json_response = [];
+      return [];
+    };
+    c.fetchWithdrawals = async (_code, since, limit, params) => {
+      transferRequests.push({ kind: 'withdrawal', since, limit, params });
+      c.last_json_response = [];
+      return [];
+    };
+    await fetchMexcHistory({
+      client: c, markets: { 'BTC/USDT': markets['BTC/USDT']! }, knownSymbols: [], offlineResponse: [], now: NOW,
+      tradeStart: NOW - 10, transferStart: NOW - 20, tradeBudget: 1, transferBudget: 1
+    });
+    expect(tradeRequests).toEqual([{ limit: 100, params: { until: NOW } }]);
+    expect(transferRequests).toEqual([
+      { kind: 'deposit', since: NOW - 20, limit: 1000, params: { endTime: NOW } },
+      { kind: 'withdrawal', since: NOW - 20, limit: 1000, params: { endTime: NOW } }
+    ]);
+    expect(transferRequests.every(({ params }) => !Object.prototype.hasOwnProperty.call(params ?? {}, 'until'))).toBe(true);
   });
 
   it('reports the prior scanned frontier when newly frozen extension windows were not queried', async () => {
@@ -332,11 +367,13 @@ describe('MEXC recursive closed-window history', () => {
       item.reason === 'conflicting_duplicate_transfer_id')).toBe(true);
   });
 
-  it('builds collision-resistant deposit refs from provider evidence fields', () => {
+  it('prefers the raw native deposit txId over CCXT fallbacks', () => {
     const base = {
       type: 'deposit', timestamp: NOW, currency: 'USDT', amount: 10, status: 'ok',
-      info: { status: '5', txId: 'hash:0', transHash: 'hash', network: 'TRX', coin: 'USDT-TRX', insertTime: String(NOW), amount: '10', address: 'a', memo: '' }
+      id: 'id-fallback', txid: 'unified-fallback',
+      info: { status: '5', txId: 'native:0', transHash: 'hash', network: 'TRX', coin: 'USDT-TRX', insertTime: String(NOW), amount: '10', address: 'a', memo: '' }
     };
-    expect(mexcDepositSourceRef(base)).not.toBe(mexcDepositSourceRef({ ...base, info: { ...base.info, txId: 'hash:1' } }));
+    expect(mexcDepositSourceRef(base)).toBe('native:0');
+    expect(mexcDepositSourceRef({ ...base, info: { ...base.info, txId: '' } })).toBe('unified-fallback');
   });
 });

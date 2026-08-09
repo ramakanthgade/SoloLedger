@@ -452,7 +452,7 @@ describe('3. header allowlist', () => {
 
   it('mexc: preserves signed query bytes and forwards only X-MEXC-APIKEY/source', async () => {
     upstreamMock.mockResolvedValue(upstreamJson('{"code":10072,"msg":"Api key info invalid"}', 400));
-    const query = 'symbol=BTCUSDT&timestamp=1&signature=Ab%2B%2F%3D';
+    const query = 'symbol=BTCUSDT&limit=100&timestamp=1&signature=Ab%2B%2F%3D';
     await rawRequest({
       path: `/mexc/api/v3/myTrades?${query}`,
       headers: {
