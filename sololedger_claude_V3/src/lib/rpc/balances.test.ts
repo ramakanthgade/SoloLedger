@@ -27,6 +27,9 @@ const SETTINGS = {
 const BTC_ADDR = '1J33sNnKbs52UjTK39kEEYDfbHijgDxyKU';
 const ETH_ADDR = '0x742d35Cc6634C0532925a3b844Bc454e4438f44e';
 const WBTC_CONTRACT = '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599';
+const AUSDC_CONTRACT = '0xbcca60bb61934080951369a648fb03df4f96263c';
+const ZRO_CONTRACT = '0x6985884c4392d348587b19cb9eaaf157f13271cd';
+const BUSD_CONTRACT = '0x4fabb145d64652a948d72533023f6e7a623c7c53';
 const SOL_ADDR = 'AbCdEfGhijkLmnoPqrstUvWxYz123456789ABCDE';
 const SOL_MINT = 'MintCaseSensitive1111111111111111111111111';
 const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -107,6 +110,33 @@ describe('fetchAddressBalances — bitcoin', () => {
 });
 
 describe('fetchAddressBalances — EVM (alchemy)', () => {
+  it('resolves exact trusted balances without spending the provider metadata budget', async () => {
+    const metadataCalls: string[] = [];
+    stubFetch((_url, method, params) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [
+        { contractAddress: AUSDC_CONTRACT, tokenBalance: `0x${(15_008_767n * 1_000n).toString(16)}` },
+        { contractAddress: ZRO_CONTRACT, tokenBalance: `0x${(836_021n * 10n ** 15n).toString(16)}` },
+        { contractAddress: BUSD_CONTRACT, tokenBalance: `0x${(359_578n * 10n ** 15n).toString(16)}` }
+      ] } };
+      if (method === 'alchemy_getTokenMetadata') {
+        metadataCalls.push(String(params?.[0]));
+        throw new Error('provider metadata budget exhausted');
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const rows = await fetchAddressBalances(
+      CHAINS.find((chain) => chain.id === 'ethereum')!, ETH_ADDR, SETTINGS
+    );
+    expect(metadataCalls).toEqual([]);
+    expect(rows).toEqual(expect.arrayContaining([
+      { asset: 'aEthUSDC', contractAddress: AUSDC_CONTRACT, amount: 15_008.767 },
+      { asset: 'ZRO', contractAddress: ZRO_CONTRACT, amount: 836.021 },
+      { asset: 'BUSD', contractAddress: BUSD_CONTRACT, amount: 359.578 }
+    ]));
+  });
+
   it('fetches native + token balances with metadata decimals', async () => {
     stubFetch((_url, method) => {
       if (method === 'eth_getBalance') return { result: '0xde0b6b3a7640000' }; // 1 ETH
@@ -336,11 +366,12 @@ describe('fetchAddressBalances — EVM (alchemy)', () => {
   });
 
   it('uses a stable contract label when optional symbol metadata is malformed', async () => {
+    const unknownContract = '0x2260fac5e5542a773aa44fbcfedf7c193bc2c598';
     await watch('ethereum', ETH_ADDR);
     stubFetch((_url, method) => {
       if (method === 'eth_getBalance') return { result: '0x0' };
       if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [
-        { contractAddress: WBTC_CONTRACT, tokenBalance: '0x5f5e100' }
+        { contractAddress: unknownContract, tokenBalance: '0x5f5e100' }
       ] } };
       if (method === 'alchemy_getTokenMetadata') return { result: { symbol: 123, decimals: 8 } };
       throw new Error(`unexpected method ${method}`);
@@ -352,8 +383,8 @@ describe('fetchAddressBalances — EVM (alchemy)', () => {
     expect((await db.authoritySnapshots.toArray())[0]).toMatchObject({
       status: 'complete', endpointProof: expect.objectContaining({ exhaustiveBalances: true })
     });
-    expect((await getWalletBalances()).find((row) => row.contractAddress === WBTC_CONTRACT)?.asset)
-      .toBe('0x2260…c599');
+    expect((await getWalletBalances()).find((row) => row.contractAddress === unknownContract)?.asset)
+      .toBe('0x2260…c598');
     expect((await db.sourceCoverage.toArray())[0]).toMatchObject({
       status: 'complete', failedCount: 0,
       endpointOutcomes: expect.arrayContaining([

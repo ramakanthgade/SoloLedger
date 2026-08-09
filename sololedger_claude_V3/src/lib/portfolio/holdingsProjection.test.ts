@@ -72,6 +72,31 @@ function apiTx(overrides: Partial<Transaction> = {}): Transaction {
 }
 
 describe('buildHoldingsProjection', () => {
+  it('normalizes authority-only Ethereum numeric keys for exact-contract pricing', () => {
+    const contract = '0x6985884c4392d348587b19cb9eaaf157f13271cd';
+    const walletSnapshot = snapshot({
+      snapshotId: 'wallet-snapshot', scopeId: 'wallet:evm:0xabc', authorityKind: 'rpc',
+      authorityClass: 'wallet_balance', accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+      sourceIdentityId: 'ethereum:0xabc', endpointProof: proof({
+        authorityKind: 'rpc', provider: 'alchemy', parametersClass: 'wallet',
+        requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet']
+      })
+    });
+    const walletCoverage = coverage({
+      id: 'wallet-coverage', scopeId: 'wallet:evm:0xabc', sourceIdentityId: 'ethereum:0xabc',
+      kind: 'rpc', accountClasses: ['wallet'], authoritySnapshotId: 'wallet-snapshot'
+    });
+    const result = buildHoldingsProjection(input({
+      snapshots: [walletSnapshot], coverage: [walletCoverage], assets: [authorityAsset({
+        id: 'wallet-zro', snapshotId: 'wallet-snapshot', scopeId: 'wallet:evm:0xabc',
+        accountClass: 'wallet', assetKey: `evm:1:${contract}`, asset: 'ZRO', quantity: 836.021
+      })]
+    }));
+    expect(result.holdings).toEqual([
+      expect.objectContaining({ asset: 'ZRO', chain: 'ethereum', contractAddress: contract, quantity: 836.021 })
+    ]);
+  });
+
   it('agrees with posting quantities for ordinary consumer holdings and exposes the prepared projection', () => {
     const result = buildHoldingsProjection(input({
       transactions: [tx({ id: 'in', amount: 5 }), tx({ id: 'out', type: 'transfer_out', amount: 2 })]
@@ -479,7 +504,7 @@ describe('buildHoldingsProjection', () => {
       coverage: [coverage()]
     }));
     expect(result.holdings[0]).toMatchObject({
-      assetKey: 'evm:1:0xabc', quantity: 4, costBasis: 0, chain: '1', contractAddress: '0xabc'
+      assetKey: 'evm:1:0xabc', quantity: 4, costBasis: 0, chain: 'ethereum', contractAddress: '0xabc'
     });
   });
 

@@ -195,6 +195,7 @@ import type {
   HoldingsProjectionInput
 } from '@/lib/portfolio/holdingsProjection';
 import type { Transaction } from '@/types/transaction';
+import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 
 async function renderTab(
   nav?: { goToImport: () => void; goTo: (id: string) => void },
@@ -269,6 +270,7 @@ beforeEach(() => {
   TAX_SETTINGS.defaultCostBasisMethod = 'FIFO';
   for (const key of Object.keys(SPEC_ID_HINTS)) delete SPEC_ID_HINTS[key];
   PRICE_REFRESH.mockClear();
+  vi.mocked(fetchMissingPricesForAllTransactions).mockClear();
   // Reset the tx list to the base seed (some tests append wallet rows).
   SEED.txs.length = 4;
 });
@@ -715,6 +717,45 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       'INR', undefined
     );
   });
+
+  it('starts historical pricing after the trusted batch without waiting for lower-priority holdings', async () => {
+    EFFECTIVE_SETTINGS.priceApiEnabled = true;
+    let releaseTrusted!: () => void;
+    let releaseHistorical!: () => void;
+    const trustedBatch = new Promise<void>((resolve) => { releaseTrusted = resolve; });
+    const historical = new Promise<{ updated: number; failed: number; total: number }>((resolve) => {
+      releaseHistorical = () => resolve({ updated: 0, failed: 0, total: 0 });
+    });
+    PRICE_REFRESH.mockImplementation(() => trustedBatch);
+    vi.mocked(fetchMissingPricesForAllTransactions).mockImplementationOnce(() => historical);
+
+    await renderTab();
+    expect(PRICE_REFRESH).toHaveBeenCalled();
+    const refreshCalls = PRICE_REFRESH.mock.calls as unknown as Array<[unknown[]]>;
+    const trustedCount = refreshCalls[0][0].length;
+    expect(fetchMissingPricesForAllTransactions).not.toHaveBeenCalled();
+
+    await act(async () => {
+      releaseTrusted();
+      await trustedBatch;
+      await Promise.resolve();
+    });
+    expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
+    expect(refreshCalls.some(([requested]) => requested.length > trustedCount)).toBe(false);
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+      await Promise.resolve();
+    });
+    expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
+    expect(refreshCalls.some(([requested]) => requested.length > trustedCount)).toBe(false);
+    await act(async () => {
+      releaseHistorical();
+      await historical;
+      await Promise.resolve();
+    });
+    expect(refreshCalls.some(([requested]) => requested.length > trustedCount)).toBe(true);
+  });
+
   it('shows the numeric holdings subtotal with a disclosure for a known unpriced DeFi liability', async () => {
     const scope = `wallet:evm:0x${'1'.repeat(40)}`;
     const reserve = `0x${'2'.repeat(40)}`;
@@ -1258,29 +1299,24 @@ describe('DashboardTab — empty state', () => {
   });
 });
 
-describe('DashboardTab — period pills', () => {
-  it('renders 1M/6M/FY/1Y/All as a roving radiogroup with FY selected', async () => {
+describe('DashboardTab — chart range controls', () => {
+  it('removes period presets and places the custom controls inside the hero between summary groups', async () => {
     await renderTab();
     expect(screen.getByTestId('selected-range-summary')).toHaveTextContent(/Apr.*Mar/);
-    expect(screen.getByTestId('dashboard-hero')).not.toContainElement(screen.getByTestId('hero-period-pills'));
+    expect(screen.queryByText('Period')).not.toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup', { name: 'Chart period' })).not.toBeInTheDocument();
     expect(screen.queryByText(/FY .*completed/i)).not.toBeInTheDocument();
-    const group = screen.getByTestId('hero-period-pills');
-    const radios = within(group).getAllByRole('radio');
-    expect(radios.map((r) => r.textContent)).toEqual(['1M', '6M', 'FY', '1Y', 'All']);
-    expect(radios[2]).toHaveAttribute('aria-checked', 'true');
-    expect(radios[2]).toHaveAttribute('tabindex', '0');
-    expect(radios[0]).toHaveAttribute('tabindex', '-1');
-    for (const radio of radios) expect(radio.className).toContain('min-h-[44px]');
-    fireEvent.keyDown(group, { key: 'ArrowRight' });
-    expect(
-      within(screen.getByTestId('hero-period-pills')).getAllByRole('radio')[3]
-    ).toHaveAttribute('aria-checked', 'true');
+    const hero = screen.getByTestId('dashboard-hero');
+    expect(within(hero).getByLabelText('Custom start date')).toBeVisible();
+    expect(within(hero).getByLabelText('Custom end date')).toBeVisible();
+    expect(within(hero).getByRole('button', { name: 'Apply' })).toBeVisible();
+    expect(within(hero).getByTestId('selected-range-summary')).toBeVisible();
+    expect(within(hero).getByText('Portfolio history')).toBeVisible();
     expect(screen.getByTestId('money-strip')).toHaveClass('overflow-x-auto', 'snap-mandatory');
   });
 
   it('validates custom inclusive dates before applying them', async () => {
     await renderTab();
-    expect(screen.getByText('Custom range')).toBeInTheDocument();
     expect(screen.getByLabelText('Custom start date')).toBeVisible();
     expect(screen.getByLabelText('Custom end date')).toBeVisible();
     fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2026-04-02' } });
@@ -1322,15 +1358,6 @@ describe('DashboardTab — period pills', () => {
     }
   });
 
-  it('clears a custom selection through the shared keyboard preset handler', async () => {
-    await renderTab();
-    fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2025-04-01' } });
-    fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-03-31' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
-    expect(within(screen.getByTestId('hero-period-pills')).getAllByRole('radio').every((radio) => radio.getAttribute('aria-checked') === 'false')).toBe(true);
-    fireEvent.keyDown(screen.getByTestId('hero-period-pills'), { key: 'ArrowRight' });
-    expect(within(screen.getByTestId('hero-period-pills')).getAllByRole('radio')[3]).toHaveAttribute('aria-checked', 'true');
-  });
 });
 
 
