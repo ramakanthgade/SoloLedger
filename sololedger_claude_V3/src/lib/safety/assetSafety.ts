@@ -169,6 +169,10 @@ export function transactionsUnderCurrentSafetyPolicy(
   decisions: readonly SafetyDecisionRow[],
   metrics?: SafetyPolicyMetrics
 ): Transaction[] {
+  // With no current overrides, persisted transaction safety is already the
+  // complete policy snapshot. Preserve the ledger generation by reference so
+  // append-aware consumers do not re-derive an event subject for every row.
+  if (decisions.length === 0) return transactions as Transaction[];
   const bySubject = decisionMap(decisions, metrics);
   return transactions.map((transaction) => {
     const eventSubject = transactionSafetySubject(transaction);
