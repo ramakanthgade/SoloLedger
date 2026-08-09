@@ -346,9 +346,11 @@ export function ExchangeConnectStep({
       {exchange.needsPassphrase && (
         <div>
           <label htmlFor="ecx-passphrase" className="text-xs font-semibold text-mid">
-            Passphrase{' '}
+            {exchange.extraCredentialLabel ?? 'Passphrase'}{' '}
             <span className="font-normal text-faint">
-              — {exchange.label} keys have this extra word; you chose it when creating the key
+              — {exchange.id === 'bitmart'
+                ? 'BitMart calls this the API Memo; CCXT uses it to sign every private request'
+                : `${exchange.label} keys have this extra word; you chose it when creating the key`}
             </span>
           </label>
           <div className="relative mt-1">

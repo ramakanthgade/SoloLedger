@@ -1117,6 +1117,54 @@ describe('importFullBackup', () => {
     }
   );
 
+  it('round-trips BitMart pagination and unsafe replay state', async () => {
+    await db.exchangeConnections.put({
+      id: 'bitmart-source', exchange: 'bitmart', createdAt: 1, cursors: {}, status: 'idle',
+      bitmartPagination: {
+        trades: { start: 100, end: 500, cursor: 300 },
+        withdrawals: { start: 200, end: 600, cursor: 400 }
+      },
+      bitmartUnsafeReplay: { trades: 250, deposits: 275 }
+    });
+    const payload = await createFullBackupPayload();
+    await clearDb();
+    await importFullBackup(backupFile(payload));
+    expect(await db.exchangeConnections.get('bitmart-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      bitmartPagination: {
+        trades: { start: 100, end: 500, cursor: 300 },
+        withdrawals: { start: 200, end: 600, cursor: 400 }
+      },
+      bitmartUnsafeReplay: { trades: 250, deposits: 275 }
+    });
+  });
+
+  it.each([
+    [],
+    { trades: { start: 5, end: 4, cursor: 5 } },
+    { deposits: { start: 1, end: 5, cursor: 6 } },
+    { withdrawals: { start: 1.5, end: 5, cursor: 2 } },
+    { trades: { start: 1, end: 5, cursor: 2, extra: 3 } }
+  ])('rejects malformed BitMart pagination checkpoints %#', async (bitmartPagination) => {
+    await db.exchangeConnections.put({
+      id: 'bitmart-source', exchange: 'bitmart', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { bitmartPagination: unknown }).bitmartPagination = bitmartPagination;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow('BitMart pagination checkpoint is malformed');
+  });
+
+  it.each([[], { trades: -1 }, { deposits: 1.5 }, { withdrawals: 1, extra: 2 }])(
+    'rejects malformed BitMart unsafe replay evidence %#', async (bitmartUnsafeReplay) => {
+      await db.exchangeConnections.put({
+        id: 'bitmart-source', exchange: 'bitmart', createdAt: 1, cursors: {}, status: 'idle'
+      });
+      const payload = await createFullBackupPayload();
+      (payload.exchangeConnections[0] as unknown as { bitmartUnsafeReplay: unknown }).bitmartUnsafeReplay = bitmartUnsafeReplay;
+      await expect(importFullBackup(backupFile(payload))).rejects.toThrow('BitMart unsafe replay evidence is malformed');
+    }
+  );
+
   it.each([
     { requestedStart: -1, requestedEnd: 2, symbolStarts: {}, completedSymbols: [] },
     { requestedStart: 2, requestedEnd: 1, symbolStarts: {}, completedSymbols: [] },

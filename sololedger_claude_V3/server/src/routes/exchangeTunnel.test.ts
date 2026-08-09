@@ -214,7 +214,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['mexc', 'api.mexc.com', '/api/v3/time'],
     ['bitvavo', 'api.bitvavo.com', '/v2/time'],
     ['bitstamp', 'www.bitstamp.net', '/api/v2/markets/'],
-    ['bitget', 'api.bitget.com', '/api/v2/public/time']
+    ['bitget', 'api.bitget.com', '/api/v2/public/time'],
+    ['bitmart', 'api-cloud.bitmart.com', '/system/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -438,6 +439,34 @@ describe('3. header allowlist', () => {
       'x-gemini-apikey': 'account-key',
       'x-gemini-payload': 'payload',
       'x-gemini-signature': 'signature'
+    });
+    expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
+  });
+
+  it('bitmart: forwards exact X-BM auth headers and signed JSON body', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"code":30002,"message":"Header X-BM-KEY not found"}', 401));
+    const body = '{"startTime":1780000000000,"endTime":1781000000000,"limit":200}';
+    await rawRequest({
+      method: 'POST', path: '/bitmart/spot/v4/query/trades', body,
+      headers: {
+        ...AUTH,
+        'content-type': 'application/json',
+        'x-exchange-x-bm-key': 'BITMART_KEY',
+        'x-exchange-x-bm-timestamp': '1781000000000',
+        'x-exchange-x-bm-sign': 'signature',
+        'x-exchange-x-bm-broker-id': 'CCXTxBitmart000',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api-cloud.bitmart.com/spot/v4/query/trades');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({
+      'content-type': 'application/json',
+      'x-bm-key': 'BITMART_KEY',
+      'x-bm-timestamp': '1781000000000',
+      'x-bm-sign': 'signature',
+      'x-bm-broker-id': 'CCXTxBitmart000'
     });
     expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
   });

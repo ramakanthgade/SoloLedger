@@ -143,7 +143,7 @@ function csvTransferRows(): Transaction[] {
 }
 
 describe('dedup contract — API sources are stable-ref sources', () => {
-  it.each(['binance_api', 'coinbase_api', 'kraken_api', 'okx_api', 'kucoin_api', 'bybit_api', 'gateio_api', 'htx_api', 'cryptocom_api', 'bitfinex_api', 'gemini_api', 'btcmarkets_api', 'mexc_api', 'bitstamp_api', 'bitget_api'])(
+  it.each(['binance_api', 'coinbase_api', 'kraken_api', 'okx_api', 'kucoin_api', 'bybit_api', 'gateio_api', 'htx_api', 'cryptocom_api', 'bitfinex_api', 'gemini_api', 'btcmarkets_api', 'mexc_api', 'bitstamp_api', 'bitget_api', 'bitmart_api'])(
     'isStableRefSource(%s) === true',
     (source) => {
       expect(isStableRefSource(source)).toBe(true);

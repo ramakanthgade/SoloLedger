@@ -34,6 +34,7 @@ never redraw the glyph.
 | `btcmarkets.png` | CCXT 4.5.68 BTC Markets exchange logo asset: `https://github.com/user-attachments/assets/8c8d6907-3873-4cc4-ad20-e22fba28247e` | Exchange logo referenced by the pinned connector; nominative identification only | 2026-08-07 |
 | `mexc.png` | MEXC's official `llms.txt` designates `https://static.mocortech.com/image-host/web/common/favicon/favicon.ico` as the current official logo (the downloaded payload is a 32×32 RGBA PNG and is stored locally without alteration) | Official brand asset; MEXC trademark; nominative identification only | 2026-08-09 |
 | `bitstamp.svg` | Iconify API, Logos collection `logos:bitstamp`: `https://api.iconify.design/logos/bitstamp.svg` | Logos collection asset; Bitstamp trademark; nominative identification only | 2026-08-09 |
+| `bitmart.svg` | Logotyp.us BitMart brand mark: `https://logotyp.us/file/bitmart.svg` (site attributes the mark to BitMart) | BitMart trademark; nominative identification only | 2026-08-09 |
 | `htx.png` | HTX official site icon: `https://www.htx.com/web-v4/static/favicon.ico` | Official brand asset; nominative identification only | 2026-08-04 |
 | `coinspot.png` | CoinSpot official site Android icon: `https://www.coinspot.com.au/public/img/favicons/android-icon-192x192.png` | Official brand asset; nominative identification only | 2026-08-04 |
 | `hyperliquid.png` | Hyperliquid Foundation official site Apple icon: `https://hyperfoundation.org/apple-touch-icon.png` | Official brand asset; nominative identification only | 2026-08-04 |

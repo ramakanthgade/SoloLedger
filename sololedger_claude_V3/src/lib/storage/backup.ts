@@ -205,6 +205,12 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
         ...row.bitgetHistory.tradeProgress, symbols: [...row.bitgetHistory.tradeProgress.symbols]
       }
     },
+  bitmartPagination: row.bitmartPagination == null ? undefined : {
+      trades: row.bitmartPagination.trades == null ? undefined : { ...row.bitmartPagination.trades },
+      deposits: row.bitmartPagination.deposits == null ? undefined : { ...row.bitmartPagination.deposits },
+      withdrawals: row.bitmartPagination.withdrawals == null ? undefined : { ...row.bitmartPagination.withdrawals }
+  },
+  bitmartUnsafeReplay: row.bitmartUnsafeReplay == null ? undefined : { ...row.bitmartUnsafeReplay },
     lastSyncAt: row.lastSyncAt, status: row.status,
     lastError: typeof row.lastError === 'string' ? row.lastError : undefined,
     accountIdentityId: row.accountIdentityId
@@ -617,6 +623,27 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
           !Number.isSafeInteger(progress.nextSymbolIndex) || typeof progress.nextSymbolIndex !== 'number' || progress.nextSymbolIndex < 0 || progress.nextSymbolIndex > progress.symbols.length))) {
         throw new Error('Invalid backup file: Bitget native history state is malformed.');
       }
+    }
+    const bitmartPagination = row.bitmartPagination;
+    if (bitmartPagination != null && (!isPlainObject(bitmartPagination) ||
+      Object.keys(bitmartPagination).some((key) => !['trades', 'deposits', 'withdrawals'].includes(key)) ||
+      (['trades', 'deposits', 'withdrawals'] as const).some((kind) => {
+        const checkpoint = bitmartPagination[kind];
+        return checkpoint != null && (!isPlainObject(checkpoint) ||
+          Object.keys(checkpoint).some((key) => !['start', 'end', 'cursor'].includes(key)) ||
+          !Number.isSafeInteger(checkpoint.start) || checkpoint.start < 0 ||
+          !Number.isSafeInteger(checkpoint.end) || checkpoint.end < checkpoint.start ||
+          !Number.isSafeInteger(checkpoint.cursor) || checkpoint.cursor < checkpoint.start ||
+          checkpoint.cursor > checkpoint.end);
+      }))) {
+      throw new Error('Invalid backup file: BitMart pagination checkpoint is malformed.');
+    }
+    const bitmartUnsafe = row.bitmartUnsafeReplay;
+    if (bitmartUnsafe != null && (!isPlainObject(bitmartUnsafe) ||
+      Object.keys(bitmartUnsafe).some((key) => !['trades', 'deposits', 'withdrawals'].includes(key)) ||
+      Object.values(bitmartUnsafe).some((value) => value != null &&
+        (!Number.isSafeInteger(value) || (value as number) < 0)))) {
+      throw new Error('Invalid backup file: BitMart unsafe replay evidence is malformed.');
     }
     if (progress != null && (!Number.isSafeInteger(progress.windowStart) || progress.windowStart < 0 ||
       !Number.isSafeInteger(progress.windowEnd) || progress.windowEnd <= progress.windowStart ||

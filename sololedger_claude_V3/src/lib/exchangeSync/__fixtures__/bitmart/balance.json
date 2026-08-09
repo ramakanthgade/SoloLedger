@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "GET /spot/v1/wallet official-example shape.",
+  "response": {"message":"OK","code":1000,"trace":"fixture-balance","data":{"wallet":[
+    {"id":"BTC","name":"Bitcoin","available":"0.40","frozen":"0.10"},
+    {"id":"USDT","name":"Tether","available":"5000","frozen":"0"}
+  ]}}
+}
