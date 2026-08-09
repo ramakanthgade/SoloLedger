@@ -42,7 +42,7 @@ import {
 import type { HoldingSourceVerification } from '@/lib/portfolio/holdingsProjection';
 import { buildCustodyCostSamples } from './chartCostIndex';
 import { buildDisplayCostSamples } from '@/lib/portfolio/displayCostProjection';
-import { getCurrentFy, getFyBoundaries, IST_OFFSET_MS } from '@/lib/utils';
+import { getFyBoundaries, getFyForTimestamp, IST_OFFSET_MS } from '@/lib/utils';
 
 // ---------------------------------------------------------------------------
 // Price cache indexing
@@ -279,7 +279,10 @@ export function periodRange(
     case '6M':
       return { start: nowMs - 182 * DAY_MS, end: nowMs, sinceCaption: 'past 6 months' };
     case 'FY': {
-      const fy = getCurrentFy(jurisdiction);
+      // Derive the FY from the same clock as the rest of the dashboard. Using
+      // Date.now() here makes historical snapshots and boundary tests depend
+      // on the host wall clock.
+      const fy = getFyForTimestamp(nowMs, jurisdiction);
       const { start } = getFyBoundaries(fy, jurisdiction);
       const fyLabel =
         jurisdiction === 'IN' ? `FY ${fy}-${String(fy + 1).slice(-2)}` : String(fy);
@@ -462,50 +465,224 @@ export function buildPostingChartSeries(
 // Money strip — period cash-flow summary
 // ---------------------------------------------------------------------------
 
+export type AggregateValuationStatus = 'complete' | 'partial' | 'unavailable';
+
+/**
+ * Reporting-currency total with explicit completeness. `amount` is null when
+ * contributors exist but none can be valued; it is never an invented zero.
+ */
+export interface ValuedAggregate {
+  amount: number | null;
+  status: AggregateValuationStatus;
+  contributorCount: number;
+  missingValuationCount: number;
+}
+
+/**
+ * Period flow semantics:
+ * - Money In/Out are external transfer_in/transfer_out value only. Confirmed
+ *   internal custody moves and buy/sell/trade rows are not external flows.
+ * - Income remains separate from external flows.
+ * - Trading Fees combines standalone fee rows and inline fees on
+ *   buy/sell/trade, deduplicated only with immutable provider/reference
+ *   evidence. Crypto fees require a timestamped reporting-currency price.
+ * - Realized gains come only from cost-basis disposals and remain separate.
+ */
 export interface MoneyStrip {
-  moneyIn: number;
-  moneyOut: number;
-  income: number;
-  fees: number;
-  realizedGains: number;
+  moneyIn: ValuedAggregate;
+  moneyOut: ValuedAggregate;
+  income: ValuedAggregate;
+  fees: ValuedAggregate;
+  realizedGains: ValuedAggregate;
+}
+
+interface AggregateAccumulator {
+  amount: number;
+  contributorCount: number;
+  missingValuationCount: number;
+}
+
+interface FeeCandidate {
+  transaction: Transaction;
+  asset: string | null;
+  amount: number;
+  inline: boolean;
+}
+
+function emptyAccumulator(): AggregateAccumulator {
+  return { amount: 0, contributorCount: 0, missingValuationCount: 0 };
+}
+
+function addValuation(acc: AggregateAccumulator, value: number | null): void {
+  acc.contributorCount++;
+  if (value == null || !Number.isFinite(value)) acc.missingValuationCount++;
+  else acc.amount += Math.abs(value);
+}
+
+function finishAggregate(acc: AggregateAccumulator): ValuedAggregate {
+  if (acc.contributorCount === 0) {
+    return { amount: 0, status: 'complete', contributorCount: 0, missingValuationCount: 0 };
+  }
+  if (acc.missingValuationCount === acc.contributorCount) {
+    return {
+      amount: null,
+      status: 'unavailable',
+      contributorCount: acc.contributorCount,
+      missingValuationCount: acc.missingValuationCount
+    };
+  }
+  return {
+    amount: acc.amount,
+    status: acc.missingValuationCount > 0 ? 'partial' : 'complete',
+    contributorCount: acc.contributorCount,
+    missingValuationCount: acc.missingValuationCount
+  };
+}
+
+function directReportingValue(t: Transaction, asset: string, amount: number): number | null {
+  return asset.trim().toUpperCase() === t.fiatCurrency.trim().toUpperCase()
+    ? Math.abs(amount)
+    : null;
+}
+
+function transactionValue(t: Transaction): number | null {
+  if (t.fiatValue != null && Number.isFinite(t.fiatValue)) return Math.abs(t.fiatValue);
+  return directReportingValue(t, t.asset, t.amount);
+}
+
+function feeValue(candidate: FeeCandidate, priceIndex?: PriceIndex): number | null {
+  const { transaction: t, asset, amount, inline } = candidate;
+  // A quantity without its unit is evidence of an unvalued contributor, not
+  // permission to assume the traded asset or reporting currency.
+  if (!asset) return null;
+  const direct = directReportingValue(t, asset, amount);
+  if (direct != null) return direct;
+
+  // On a standalone fee row fiatValue represents that fee. On a trade row it
+  // represents the trade economics and must never be repurposed as fee value.
+  if (!inline && t.fiatValue != null && Number.isFinite(t.fiatValue)) {
+    return Math.abs(t.fiatValue);
+  }
+  if (!priceIndex) return null;
+
+  const normalizedAsset = asset.trim().toUpperCase();
+  const primaryAsset = t.asset.trim().toUpperCase();
+  const points = normalizedAsset === primaryAsset
+    ? priceHistoryFor(t, priceIndex)
+    : priceIndex.bySymbol.get(normalizedAsset) ?? null;
+  const price = points ? priceAt(points, t.timestamp) : null;
+  return price == null ? null : Math.abs(amount) * price;
+}
+
+function immutableFeeRefs(t: Transaction): Set<string> {
+  const refs = new Set<string>();
+  const source = t.source.trim().toLowerCase();
+  if (t.sourceRef) refs.add(`${source}:source-ref:${t.sourceRef}`);
+  if (t.txHash) refs.add(`${source}:tx-hash:${t.txHash.toLowerCase()}`);
+  if (t.dedupMatchedApiId) refs.add(`dedup:${t.dedupMatchedApiId}`);
+  if (t.deletedSourceEvidence?.apiIdentity) refs.add(`dedup:${t.deletedSourceEvidence.apiIdentity}`);
+  return refs;
+}
+
+function isSameProvenFee(left: FeeCandidate, right: FeeCandidate): boolean {
+  if (!left.asset || !right.asset) return false;
+  if (left.asset.trim().toUpperCase() !== right.asset.trim().toUpperCase()) return false;
+  if (Math.abs(left.amount - right.amount) > Math.max(1e-12, Math.abs(left.amount) * 1e-12)) return false;
+  if (left.transaction.timestamp !== right.transaction.timestamp) return false;
+  const leftRefs = immutableFeeRefs(left.transaction);
+  if (leftRefs.size === 0) return false;
+  return [...immutableFeeRefs(right.transaction)].some((ref) => leftRefs.has(ref));
 }
 
 export function moneyStrip(
   transactions: Transaction[],
   disposals: Disposal[],
   start: number,
-  end: number
+  end: number,
+  priceIndex?: PriceIndex
 ): MoneyStrip {
   const inRange = (ts: number) => ts >= start && ts <= end;
-  const strip: MoneyStrip = { moneyIn: 0, moneyOut: 0, income: 0, fees: 0, realizedGains: 0 };
+  const moneyIn = emptyAccumulator();
+  const moneyOut = emptyAccumulator();
+  const income = emptyAccumulator();
+  const fees = emptyAccumulator();
+  const realizedGains = emptyAccumulator();
+  const feeCandidates: FeeCandidate[] = [];
+
   for (const t of transactions) {
     if (isTransactionExcluded(t) || !inRange(t.timestamp)) continue;
     // Premium cash flows are deferred until the Options lifecycle can be
     // matched (close/exercise/expiry). Do not mislabel them as income/fees.
     if (t.category === 'options_premium') continue;
-    const fiat = t.fiatValue ?? 0;
     switch (t.type) {
-      case 'buy':
-        strip.moneyIn += fiat;
+      case 'transfer_in':
+        if (!t.isInternalTransfer && t.internalTransferDecision !== 'confirmed') {
+          addValuation(moneyIn, transactionValue(t));
+        }
         break;
-      case 'sell':
-        strip.moneyOut += fiat;
+      case 'transfer_out':
+        if (!t.isInternalTransfer && t.internalTransferDecision !== 'confirmed') {
+          addValuation(moneyOut, transactionValue(t));
+        }
         break;
       case 'income':
       case 'gift_received':
-        strip.income += fiat;
+        addValuation(income, transactionValue(t));
         break;
       case 'fee':
-        strip.fees += fiat;
+        feeCandidates.push({
+          transaction: t,
+          // A standalone fee row's primary leg is the fee. feeAmount, when
+          // also present, is not a second fee and can name a different leg in
+          // legacy/provider data.
+          asset: t.asset,
+          amount: Math.abs(t.amount),
+          inline: false
+        });
+        break;
+      case 'buy':
+      case 'sell':
+      case 'trade':
+        if (t.feeAmount != null && Number.isFinite(t.feeAmount) && t.feeAmount > 0) {
+          feeCandidates.push({
+            transaction: t,
+            asset: t.feeAsset?.trim() || null,
+            amount: Math.abs(t.feeAmount),
+            inline: true
+          });
+        }
         break;
       default:
         break;
     }
   }
-  for (const d of disposals) {
-    if (inRange(d.disposedAt)) strip.realizedGains += d.gain;
+
+  // Prefer a standalone row when immutable evidence proves it is the same fee:
+  // its fiatValue, unlike a trade row's fiatValue, explicitly values the fee.
+  const deduplicatedFees: FeeCandidate[] = [];
+  for (const candidate of feeCandidates) {
+    const duplicateIndex = deduplicatedFees.findIndex((existing) =>
+      existing.inline !== candidate.inline && isSameProvenFee(existing, candidate)
+    );
+    if (duplicateIndex < 0) deduplicatedFees.push(candidate);
+    else if (!candidate.inline) deduplicatedFees[duplicateIndex] = candidate;
   }
-  return strip;
+  for (const candidate of deduplicatedFees) addValuation(fees, feeValue(candidate, priceIndex));
+
+  for (const d of disposals) {
+    if (inRange(d.disposedAt)) addValuation(realizedGains, d.gain);
+  }
+  // Gains are signed; addValuation intentionally normalizes flow magnitudes.
+  const gainRows = disposals.filter((d) => inRange(d.disposedAt));
+  realizedGains.amount = gainRows.reduce((sum, d) => sum + d.gain, 0);
+
+  return {
+    moneyIn: finishAggregate(moneyIn),
+    moneyOut: finishAggregate(moneyOut),
+    income: finishAggregate(income),
+    fees: finishAggregate(fees),
+    realizedGains: finishAggregate(realizedGains)
+  };
 }
 
 // ---------------------------------------------------------------------------
