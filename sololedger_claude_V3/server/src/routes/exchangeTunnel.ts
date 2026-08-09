@@ -211,6 +211,16 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/v2/depositHistory',
       '/v2/withdrawalHistory'
     ]
+  },
+  bitstamp: {
+    host: 'www.bitstamp.net',
+    headers: ['x-auth', 'x-auth-signature', 'x-auth-nonce', 'x-auth-timestamp', 'x-auth-version'],
+    paths: ['/api/v2/markets/', '/api/v2/account_balances/', '/api/v2/user_transactions/'],
+    pathMethods: {
+      '/api/v2/markets/': ['GET'],
+      '/api/v2/account_balances/': ['POST'],
+      '/api/v2/user_transactions/': ['POST']
+    }
   }
 };
 
@@ -322,10 +332,11 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
   // dot segments, encoded slashes and encoded backslashes without relying on
   // one decoder's normalization behavior.
   const pathSegments = upstreamPath.split('/');
+  const canonicalSegments = pathSegments.slice(1, upstreamPath.endsWith('/') ? -1 : undefined);
   if (
     upstreamPath.includes('%') ||
     upstreamPath.includes('\\') ||
-    pathSegments.slice(1).some((segment) => segment === '' || segment === '.' || segment === '..')
+    canonicalSegments.some((segment) => segment === '' || segment === '.' || segment === '..')
   ) {
     fail(res, 'bad_path', 400, 'Non-canonical upstream path');
     return;

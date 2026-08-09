@@ -1,0 +1,6 @@
+{
+  "_recorded": false,
+  "_note": "These deterministic fixtures are hand-authored from Bitstamp's current OpenAPI field schemas and CCXT 4.5.68 parser examples; they contain no user or production account data.",
+  "nativeDocs": "https://www.bitstamp.net/api/",
+  "ccxtVersion": "4.5.68"
+}

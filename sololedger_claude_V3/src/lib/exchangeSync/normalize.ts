@@ -49,7 +49,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   gemini: 'exgm',
   btcmarkets: 'exbm',
   mexc: 'exmx',
-  bitvavo: 'exbv'
+  bitvavo: 'exbv',
+  bitstamp: 'exbs'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -136,6 +137,8 @@ function tradeSourceRef(
       // Native fill UUID. Connection/kind scoping is applied by storage;
       // API↔CSV parity is intentionally not claimed.
       return trade.id;
+    case 'bitstamp':
+      return trade.id ?? exchangeSourceRef('bitstamp-api', ts, side, base, amount);
   }
 }
 
@@ -228,7 +231,7 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp'
         ? { exchangeSyncKind: 'trade' as const }
         : {}),
       ...(exchange === 'bitvavo' ? { bitvavoMarketSymbol: market.symbol } : {})
@@ -676,6 +679,8 @@ function transferSourceRef(
       const fee = transfer.fee?.cost ?? 0;
       return [kind, txId, ts, asset, amount, fee, address, paymentId].join('|');
     }
+    case 'bitstamp':
+      return transfer.id ?? exchangeSourceRef('bitstamp-api', ts, type, asset, amount);
   }
 }
 
@@ -828,7 +833,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

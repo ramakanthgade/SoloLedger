@@ -150,6 +150,12 @@ export interface ExchangeConnectionRow {
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   /** Oldest still-pending Bitfinex Movement per direction. */
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
+  /** Highest Bitstamp account-ledger transaction id after proven exhaustion. */
+  bitstampNativeCursor?: string;
+  /** Inclusive boundary `since_id` and consumed kind/id pairs for an interrupted ledger walk. */
+  bitstampPagination?: BitstampPaginationCheckpoint;
+  /** Bounded native ids replayed until malformed/future/pending activity settles. */
+  bitstampUnresolvedIds?: string[];
   /** Exclusive native record-id cursors; BTC Markets `after` is not a timestamp. */
   btcmarketsNativeCursors?: { trades?: string; transfers?: string };
   /** First unfinished native page walk; separate from the proven newest high-water. */
@@ -197,6 +203,13 @@ export interface BtcMarketsPaginationCheckpoint {
   cursor: string;
   /** Newest record observed while a backfill/incremental walk is unfinished. */
   newest: string;
+}
+
+export interface BitstampPaginationCheckpoint {
+  sinceId: string;
+  newest: string;
+  consumed: Array<{ id: string; type: string }>;
+  highWater: { trades?: number; deposits?: number; withdrawals?: number };
 }
 
 export interface PriceCacheRow {
@@ -706,6 +719,37 @@ class SoloLedgerDB extends Dexie {
       await evidence.bulkPut(backfilled.providerEvidence);
       await decisions.bulkPut(backfilled.decisions);
     });
+    // v18: Bitstamp native ids are account-local and can overlap across the
+    // mixed ledger's trade/deposit/withdrawal kinds. Persist immutable kind
+    // evidence before enabling its scoped replay identity.
+    this.version(18).stores({
+      transactions: 'id, timestamp, asset, type, source, *flags, isSpam, importBatchId, category, internalTransferPairId',
+      lots: 'id, asset, acquiredAt, sourceTxId', disposals: 'id, asset, disposedAt, sourceTxId',
+      settings: 'id', specIdHints: 'txId', lookupAddresses: 'id, chain, address, lastSyncedAt, accountIdentityId',
+      priceCache: 'key, fetchedAt', csvImports: 'id, importedAt, fileName, accountIdentityId',
+      exchangeConnections: 'id, exchange, lastSyncAt, accountIdentityId', walletBalances: 'id, chain, address, asset',
+      exchangeBalances: 'id, connectionId, exchange, asset',
+      authoritySnapshots: 'snapshotId, generation, scopeId, sourceIdentityId, [scopeId+accountClass], [sourceIdentityId+generation]',
+      authorityAssets: 'id, snapshotId, scopeId, [scopeId+accountClass], [snapshotId+assetKey]',
+      sourceCoverage: 'id, generation, scopeId, sourceIdentityId, evidenceId, [scopeId+generation], [sourceIdentityId+generation]',
+      openingBalances: 'id, &logicalKey, scopeId, [scopeId+accountClass+assetKey], [scopeId+accountClass+assetKey+effectiveAt]',
+      providerEvidence: 'id, subjectKey, subjectKind, provider, ruleId, ruleVersion, confidence, observedAt, [subjectKey+provider]',
+      safetyDecisions: 'subjectKey, state, updatedAt, [state+updatedAt]',
+      defiPositionSnapshots: 'snapshotId, generation, accountIdentityScope, protocolId, chainId, status, [accountIdentityScope+protocolId]',
+      defiPositionRows: 'id, snapshotId, protocolId, reserveKey, role, [snapshotId+role]',
+      accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]',
+      walletDefiRefreshManifests: 'accountIdentityScope, custodyScopeId, custodySnapshotId, capturedAt'
+    }).upgrade(async (tx) => {
+      await tx.table<Transaction, string>('transactions').toCollection().modify((row) => {
+        if (row.source !== 'bitstamp_api' || row.raw?.exchangeSyncKind != null) return;
+        row.raw = {
+          ...row.raw,
+          exchangeSyncKind: row.raw?.tradeId != null
+            ? 'trade'
+            : row.type === 'transfer_in' ? 'deposit' : row.type === 'transfer_out' ? 'withdrawal' : 'unknown'
+        };
+      });
+    });
   }
 }
 
@@ -972,7 +1016,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'gemini_api',
   'btcmarkets_api',
   'mexc_api',
-  'bitvavo_api'
+  'bitvavo_api',
+  'bitstamp_api'
 ]);
 
 /**
@@ -1083,6 +1128,19 @@ export function transactionExchangeKey(
     const kind = rawKind === 'trade' || rawKind === 'account_history' || rawKind === 'deposit' || rawKind === 'withdrawal'
       ? rawKind : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:bitvavo:${kind}:${t.sourceRef}`;
+  }
+  if (t.source === 'bitstamp_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind
+      : t.raw?.tradeId != null
+        ? 'trade'
+        : t.raw?.transferType === 'deposit'
+          ? 'deposit'
+          : t.raw?.transferType === 'withdrawal'
+            ? 'withdrawal'
+            : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:bitstamp:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;

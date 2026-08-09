@@ -32,8 +32,9 @@ describe('Dexie v8 — exchangeConnections', () => {
     // reconciliation evidence, v12 finalized CSV survivor counts, v13 added
     // immutable safety evidence/decisions, and v14 added immutable Ethereum
     // protocol position generations, v15 added canonical accounts/FKs, and
-    // v16 added atomic wallet/DeFi refresh manifests.
-    expect(db.verno).toBe(17);
+    // v16 added atomic wallet/DeFi refresh manifests, v17 added account
+    // lifecycle evidence, and v18 backfills immutable Bitstamp row kinds.
+    expect(db.verno).toBe(18);
     await db.open();
     const tableNames = db.tables.map((t) => t.name);
     expect(tableNames).toContain('exchangeConnections');
@@ -105,6 +106,7 @@ describe('EXCHANGE_API_SOURCES', () => {
     expect([...EXCHANGE_API_SOURCES].sort()).toEqual([
       'binance_api',
       'bitfinex_api',
+      'bitstamp_api',
       'bitvavo_api',
       'btcmarkets_api',
       'bybit_api',
