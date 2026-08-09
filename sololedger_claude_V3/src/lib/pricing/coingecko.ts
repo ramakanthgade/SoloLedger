@@ -24,18 +24,39 @@ function coingeckoHeaders(apiKey?: string): HeadersInit | undefined {
   return key ? { 'x-cg-pro-api-key': key } : undefined;
 }
 
+const RETRYABLE_COINGECKO_STATUSES = new Set([408, 429, 500, 502, 503, 504]);
+
+function retryDelayMs(response: Response | null, attempt: number): number {
+  const retryAfter = response?.headers.get('retry-after')?.trim();
+  if (retryAfter) {
+    const seconds = Number(retryAfter);
+    const fromHeader = Number.isFinite(seconds)
+      ? seconds * 1_000
+      : Date.parse(retryAfter) - Date.now();
+    if (Number.isFinite(fromHeader) && fromHeader >= 0) return Math.min(fromHeader, 10_000);
+  }
+  return Math.min(800 * (2 ** attempt), 5_000);
+}
+
 async function coingeckoFetch(url: string, headers?: HeadersInit, retries = 2): Promise<Response> {
   let last: Response | null = null;
+  let lastError: unknown;
   for (let attempt = 0; attempt <= retries; attempt++) {
-    recordNetworkActivity(resolveMode(isSaasMode()));
-    const res = isSaasMode()
-      ? await saasProxyFetch(url.replace(getApiBase(), ''), headers ? { headers } : {})
-      : await fetch(url, headers ? { headers } : undefined);
-    last = res;
-    if (res.status !== 429 || attempt === retries) return res;
-    await new Promise((r) => setTimeout(r, 800 * (attempt + 1)));
+    try {
+      recordNetworkActivity(resolveMode(isSaasMode()));
+      const res = isSaasMode()
+        ? await saasProxyFetch(url.replace(getApiBase(), ''), headers ? { headers } : {})
+        : await fetch(url, headers ? { headers } : undefined);
+      last = res;
+      if (!RETRYABLE_COINGECKO_STATUSES.has(res.status) || attempt === retries) return res;
+    } catch (error) {
+      lastError = error;
+      if (attempt === retries) throw error;
+    }
+    await new Promise((resolve) => setTimeout(resolve, retryDelayMs(last, attempt)));
   }
-  return last!;
+  if (last) return last;
+  throw lastError;
 }
 
 // CoinGecko internal coin ids (not tickers). Extended set + dynamic search fallback.
@@ -309,24 +330,27 @@ export async function fetchCurrentContractPrices(
   coingeckoApiKey?: string
 ): Promise<CurrentPriceResult[]> {
   const currency = fiatCurrency.toLowerCase();
-  return Promise.all(requests.map(async ({ contractAddress, platform }) => {
+  const results: CurrentPriceResult[] = [];
+  for (const { contractAddress, platform } of requests) {
     const address = contractAddress.trim().toLowerCase();
     try {
       const base = coingeckoBase(coingeckoApiKey);
       const url = `${base}/simple/token_price/${encodeURIComponent(platform)}?contract_addresses=${encodeURIComponent(address)}&vs_currencies=${encodeURIComponent(currency)}`;
       const res = await fetchWithRetry(url, coingeckoHeaders(coingeckoApiKey));
       if (!res.ok) {
-        return { asset: address, platform, price: null, currency: fiatCurrency, error: `Price API returned ${res.status} for contract lookup` };
+        results.push({ asset: address, platform, price: null, currency: fiatCurrency, error: `Price API returned ${res.status} for contract lookup` });
+        continue;
       }
       const data = await res.json() as Record<string, Record<string, number | undefined> | undefined>;
-      return { asset: address, platform, price: data[address]?.[currency] ?? null, currency: fiatCurrency };
+      results.push({ asset: address, platform, price: data[address]?.[currency] ?? null, currency: fiatCurrency });
     } catch (err) {
-      return {
+      results.push({
         asset: address, platform, price: null, currency: fiatCurrency,
         error: err instanceof Error ? err.message : 'Network request failed.'
-      };
+      });
     }
-  }));
+  }
+  return results;
 }
 
 export interface PriceLookupResult {

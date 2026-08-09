@@ -14,8 +14,10 @@ export function groupDashboardHoldings(holdings: readonly ValuedHolding[]): Dash
   const sorted = holdings.filter((holding) => holding.amount > 1e-9).sort((left, right) =>
     economicValue(right) - economicValue(left) || Math.abs(right.amount) - Math.abs(left.amount));
   return {
-    visible: sorted.filter((holding) => economicValue(holding) >= DISPLAY_ROUNDING_UNIT),
-    other: sorted.filter((holding) => economicValue(holding) < DISPLAY_ROUNDING_UNIT)
+    // Missing market value is not evidence of dust. Keep every positive
+    // unknown visible; only a known current value may place a row in Other.
+    visible: sorted.filter((holding) => holding.valueNow == null || holding.valueNow >= DISPLAY_ROUNDING_UNIT),
+    other: sorted.filter((holding) => holding.valueNow != null && holding.valueNow < DISPLAY_ROUNDING_UNIT)
   };
 }
 

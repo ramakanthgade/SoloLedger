@@ -29,9 +29,11 @@ export function walletDefiCustodyFromHoldings(
   const custody: CustodyExposure[] = [];
   for (const holding of holdings) {
     const valuedHolding = valueByKey.get(portfolioHoldingKey(holding));
-    const unitValue = holding.quantity > 1e-9
-      ? (valuedHolding?.valueNow ?? valuedHolding?.costBasis ?? holding.costBasis) / holding.quantity
-      : 0;
+    // Cost basis is historical evidence, not a current market mark. Preserve
+    // an unknown current valuation instead of turning it into a numeric zero.
+    const unitValue = holding.quantity > 1e-9 && valuedHolding?.valueNow != null
+      ? valuedHolding.valueNow / holding.quantity
+      : null;
     const slices = holding.sourceVerification.length > 0
       ? holding.sourceVerification
       : [{ scopeId: 'unscoped', quantity: holding.quantity }];
@@ -44,7 +46,7 @@ export function walletDefiCustodyFromHoldings(
         contractAddress: holding.contractAddress,
         symbol: holding.asset,
         quantity: slice.quantity,
-        value: slice.quantity * unitValue
+        value: unitValue == null ? null : slice.quantity * unitValue
       });
     }
   }

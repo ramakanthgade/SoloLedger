@@ -1,6 +1,6 @@
 # Dashboard flow aggregates
 
-The Dashboard metric strip remains intentionally hidden. Its underlying period model is retained for future summaries and must use the following finance semantics.
+The Dashboard displays these five metrics below the net-worth chart. The chart and strip always share the same inclusive date range. The default is the most recently completed financial year for the user's jurisdiction; presets and a validated custom start/end range are also available. Current holdings in the hero are intentionally not rewound when the historical range changes.
 
 ## Categories
 
@@ -10,6 +10,8 @@ The Dashboard metric strip remains intentionally hidden. Its underlying period m
 - **Income:** retained as a separate category. It is not folded into Money In.
 - **Trading Fees:** standalone `fee` rows plus inline `feeAmount`/`feeAsset` on `buy`, `sell`, and `trade` rows.
 - **Realized Gains:** signed gains from cost-basis disposal records only. Fee and flow aggregation does not alter cost-basis matching.
+
+Realized Gains uses the user's configured default cost-basis method. When that method is SpecID, the Dashboard reads and applies the same persisted lot-selection hints as Capital Gains; it does not silently fall back to a hard-coded Dashboard method.
 
 ## Valuation completeness
 

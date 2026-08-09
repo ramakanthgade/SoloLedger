@@ -282,14 +282,16 @@ export function periodRange(
       // Derive the FY from the same clock as the rest of the dashboard. Using
       // Date.now() here makes historical snapshots and boundary tests depend
       // on the host wall clock.
-      const fy = getFyForTimestamp(nowMs, jurisdiction);
-      const { start } = getFyBoundaries(fy, jurisdiction);
+      // Dashboard history defaults to the latest *completed* filing period,
+      // never the in-progress FY. This is deterministic for the supplied clock.
+      const fy = getFyForTimestamp(nowMs, jurisdiction) - 1;
+      const { start, end } = getFyBoundaries(fy, jurisdiction);
       const fyLabel =
         jurisdiction === 'IN' ? `FY ${fy}-${String(fy + 1).slice(-2)}` : String(fy);
       // IN boundaries are IST-correct instants (Mar 31 18:30 UTC) — label them
       // in IST so the caption reads "Apr 1", matching how India names its FY.
       const labelTs = jurisdiction === 'IN' ? start + IST_OFFSET_MS : start;
-      return { start, end: nowMs, sinceCaption: `since ${shortDateLabel(labelTs)} · ${fyLabel}` };
+      return { start, end, sinceCaption: `${shortDateLabel(labelTs)} · ${fyLabel} · completed` };
     }
     case '1Y':
       return { start: nowMs - 365 * DAY_MS, end: nowMs, sinceCaption: 'past year' };

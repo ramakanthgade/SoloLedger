@@ -143,11 +143,12 @@ export function projectScopedEconomicExposure(input: {
   const assets = projections.flatMap((item) => item.assets);
   const liabilities = projections.flatMap((item) => item.liabilities);
   const contributions = [...assets, ...liabilities].map((row) => row.contribution);
-  const hasUnpricedValues = contributions.some((value) => value == null);
+  const hasUnpricedValues = projections.some((item) => item.hasUnpricedValues)
+    || contributions.some((value) => value == null);
   const hasUnpricedLiabilities = liabilities.some((row) => row.quantity > 0 && row.contribution == null);
-  const netWorth = hasUnpricedLiabilities
+  const netWorth = hasUnpricedValues
     ? null
-    : contributions.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+    : contributions.reduce<number>((sum, value) => sum + value!, 0);
   const statuses = projections.map((item) => item.status);
   const status = statuses.includes('unsupported') ? 'unsupported' : statuses.includes('partial') || hasUnpricedValues ? 'partial' : statuses.includes('stale') ? 'stale' : 'complete';
   return { assets, liabilities, netWorth, hasUnpricedValues, hasUnpricedLiabilities, status, evidence: projections.flatMap((item) => item.evidence), retainedCustody: input.custody };
@@ -243,9 +244,9 @@ export function projectLegacyWalletNetWorth(
 ): EconomicExposureProjection {
   const values = custody.map((row) => row.value);
   const hasUnpricedLegacyValues = values.some((value) => value == null);
-  // Legacy wallet presentation excludes unpriced assets from its displayed
-  // total while retaining the rows and the accompanying disclosure.
-  const legacyNetWorth = values.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+  const legacyNetWorth = hasUnpricedLegacyValues
+    ? null
+    : values.reduce<number>((sum, value) => sum + value!, 0);
   return {
     assets: custody.map((row) => ({ ...row, kind: 'liquid', contribution: row.value })),
     liabilities: [], netWorth: legacyNetWorth,
@@ -291,13 +292,41 @@ export function projectEconomicExposure(input: {
   const now = input.now ?? Date.now();
   const prices = input.prices ?? new Map();
   const usableComplete = input.snapshot?.status === 'complete';
-  const mappedTokens = usableComplete ? new Set(input.rows.map((row) => row.protocolToken.contractAddress.toLowerCase())) : new Set<string>();
+  const rowValues = new Map(input.rows.map((row) => [
+    row.id,
+    valueFor(row, prices, input.reportingCurrency, input.usdToReportingCurrencyRate, now)
+  ]));
+  const custodyTokenAddresses = new Set(input.custody.flatMap((row) =>
+    row.contractAddress ? [row.contractAddress.toLowerCase()] : []));
+  const supplyRowsByToken = new Map<string, DefiPositionRow[]>();
+  for (const row of input.rows) if (row.role === 'supply') {
+    const token = row.protocolToken.contractAddress.toLowerCase();
+    const grouped = supplyRowsByToken.get(token) ?? [];
+    grouped.push(row);
+    supplyRowsByToken.set(token, grouped);
+  }
+  const mappedTokens = new Set<string>();
+  if (usableComplete) for (const row of input.rows) {
+    const token = row.protocolToken.contractAddress.toLowerCase();
+    if (row.role === 'debt' || (supplyRowsByToken.get(token) ?? []).every((item) => rowValues.get(item.id) != null)) {
+      mappedTokens.add(token);
+    }
+  }
   const retainedCustody = input.custody.filter((row) => !row.contractAddress || !mappedTokens.has(row.contractAddress.toLowerCase()));
   const assets: EconomicExposureRow[] = retainedCustody.map((row) => ({ ...row, kind: 'liquid', contribution: row.value }));
   const liabilities: EconomicExposureRow[] = [];
+  let hasUnvaluedReplacement = false;
   if (usableComplete) {
     for (const row of input.rows) {
-      const value = valueFor(row, prices, input.reportingCurrency, input.usdToReportingCurrencyRate, now);
+      const protocolToken = row.protocolToken.contractAddress.toLowerCase();
+      const value = rowValues.get(row.id) ?? null;
+      if (row.role === 'supply' && custodyTokenAddresses.has(protocolToken) && !mappedTokens.has(protocolToken)) {
+        // A coherent look-through with no reporting-currency valuation must
+        // not make the raw receipt disappear. Retain custody and disclose the
+        // projection as incomplete rather than displaying duplicate exposure.
+        hasUnvaluedReplacement = true;
+        continue;
+      }
       const base = { id: row.id, chainId: 1, contractAddress: row.underlying.contractAddress, symbol: row.underlying.symbol, quantity: row.quantity, value, protocolId: row.protocolId, replacedCustodyId: input.custody.find((item) => item.contractAddress?.toLowerCase() === row.protocolToken.contractAddress.toLowerCase())?.id };
       if (row.role === 'supply') assets.push({ ...base, kind: 'supply', isCollateral: row.isCollateral, contribution: value });
       else liabilities.push({ ...base, kind: 'liability', debtRateMode: row.debtRateMode, contribution: value == null ? null : -value });
@@ -320,13 +349,11 @@ export function projectEconomicExposure(input: {
     }
   }
   const contributions = [...assets, ...liabilities].map((row) => row.contribution);
-  const hasUnpricedValues = contributions.some((value) => value == null);
+  const hasUnpricedValues = hasUnvaluedReplacement || contributions.some((value) => value == null);
   const hasUnpricedLiabilities = liabilities.some((row) => row.quantity > 0 && row.contribution == null);
-  // Unpriced supply is conservatively zero. A known positive liability with
-  // unknown value makes adjusted net worth unknowable and must fail closed.
-  const netWorth = hasUnpricedLiabilities
+  const netWorth = hasUnpricedValues
     ? null
-    : contributions.reduce<number>((sum, value) => sum + (value ?? 0), 0);
+    : contributions.reduce<number>((sum, value) => sum + value!, 0);
   const status = input.unsupported ? 'unsupported' : !input.snapshot || hasUnpricedValues ? 'partial' : input.snapshot.restoredAt != null ? 'stale' : input.snapshot.status;
   return { assets, liabilities, netWorth, hasUnpricedValues, hasUnpricedLiabilities, status, evidence: input.snapshot?.evidence.map((item) => `${item.provider}:${item.status}:${item.detail}`) ?? [], retainedCustody: input.custody };
 }

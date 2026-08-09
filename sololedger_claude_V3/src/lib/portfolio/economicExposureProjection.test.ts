@@ -108,13 +108,13 @@ describe('economic exposure projection', () => {
     expect(output.defiNetWorth).toBeNull();
     expect(output.projection).toMatchObject({ netWorth: 93_176, liabilities: [], status: 'complete' });
   });
-  it('preserves the legacy known-value total when an unpriced custody asset is disclosed', () => {
+  it('marks legacy net worth unknown when an unpriced custody asset is disclosed', () => {
     const unpriced = { id: 'unpriced', chainId: 0, symbol: 'XYZ', quantity: 5, value: null };
     const output = projectWalletDefiNetWorth({
       custody: [...custody, unpriced], snapshots: [], rows: [], enabled: false
     });
     expect(output.projection).toMatchObject({
-      netWorth: 93_176,
+      netWorth: null,
       hasUnpricedValues: true,
       hasUnpricedLiabilities: false,
       status: 'partial'
@@ -329,12 +329,22 @@ describe('economic exposure projection', () => {
       now: 1
     }).status).toBe('complete');
   });
-  it('retains known liability arithmetic when another protocol row is unpriced', () => {
+  it('retains known liability rows but does not present a partial subtotal as net worth', () => {
     const debtWithValue = { ...rows[1], valueEvidence: { currency: 'USD' as const, value: 90, observedAt: 1, provider: 'moralis' } };
     const output = projectEconomicExposure({ custody: [custody[0]], snapshot, rows: [rows[0], debtWithValue] });
     expect(output.hasUnpricedValues).toBe(true);
     expect(output.status).toBe('partial');
-    expect(output.netWorth).toBe(92_986); // known liquid 93,076 - known debt 90; unpriced supply is explicit
+    expect(output.netWorth).toBeNull();
+  });
+
+  it('retains a raw receipt and marks the result incomplete when coherent look-through is unvalued', () => {
+    const output = projectEconomicExposureWithCurrency({
+      custody: [custody[1]], snapshot, rows: [rows[0]], reportingCurrency: 'INR', now: 1
+    });
+
+    expect(output.assets).toEqual([expect.objectContaining({ id: 'receipt', symbol: 'aUSDC', value: 100 })]);
+    expect(output.assets.some((row) => row.id === 'supply')).toBe(false);
+    expect(output).toMatchObject({ status: 'partial', hasUnpricedValues: true, netWorth: null });
   });
   it('fails closed when supply is priced but a known positive liability is unpriced', () => {
     const pricedSupply = { ...rows[0], valueEvidence: { currency: 'USD' as const, value: 100, observedAt: 1, provider: 'moralis' } };

@@ -1,6 +1,18 @@
 import type { ValuedHolding } from '@/lib/dashboard/dashboardModel';
 import type { EconomicExposureProjection } from '@/lib/portfolio/economicExposureProjection';
 
+/** Concise disclosure for conservative, stale, or incompletely valued projections. */
+export function economicExposureDisclosure(
+  projection: Pick<EconomicExposureProjection, 'status' | 'hasUnpricedValues' | 'hasUnpricedLiabilities'>
+): string | null {
+  if (projection.hasUnpricedLiabilities) return 'Some liabilities are unpriced · total unavailable.';
+  if (projection.hasUnpricedValues) return 'Position values incomplete · unvalued replacements remain in custody.';
+  if (projection.status === 'stale') return 'Position evidence may be stale · last complete holdings retained.';
+  if (projection.status === 'unsupported') return 'Position look-through unavailable · custody retained.';
+  if (projection.status === 'partial') return 'Position evidence partial · custody and known liabilities retained.';
+  return null;
+}
+
 export interface DashboardValueMetrics {
   historicalCostBasis: number;
   historicalCurrentValue: number;

@@ -7,7 +7,7 @@ import { TabNavProvider } from '@/lib/tabNav';
  * replaced with a synchronous in-memory stub (the real `useLiveQuery` effect
  * chains never settle under jsdom's microtask model), so the tab renders
  * deterministically. The portfolio engine, price-index, insights rules and
- * FIFO tax estimate all run for real.
+ * configured tax matching and tax estimate all run for real.
  */
 
 const keyDate = (ts: number) => {
@@ -73,6 +73,11 @@ const COST_BASIS_INPUTS = vi.hoisted(() => [] as string[][]);
 const QUERY_READINESS = vi.hoisted(() => ({ holdings: true, coherentDataHealth: true }));
 const PRICE_REFRESH = vi.hoisted(() => vi.fn(async () => {}));
 const EFFECTIVE_SETTINGS = vi.hoisted(() => ({ priceApiEnabled: false }));
+const TAX_SETTINGS = vi.hoisted(() => ({
+  reportingCurrency: 'INR', jurisdiction: 'IN' as const, defaultCostBasisMethod: 'FIFO' as 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID',
+  priceApiEnabled: false, rpcLookupEnabled: false
+}));
+const SPEC_ID_HINTS = vi.hoisted(() => ({} as Record<string, string[]>));
 
 vi.mock('@/lib/costBasis/engine', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/costBasis/engine')>();
@@ -107,7 +112,8 @@ vi.mock('@/lib/storage/db', () => ({
     safetyDecisions: { toArray: () => SEED.safetyDecisions },
     openingBalances: { toArray: () => SEED.openingBalances }
   },
-  getSettings: () => Promise.resolve({ reportingCurrency: 'INR', jurisdiction: 'IN' }),
+  getSettings: () => Promise.resolve({ ...TAX_SETTINGS }),
+  getSpecIdHints: () => SPEC_ID_HINTS,
   getLookupAddresses: () => SEED.wallets,
   transactionSourceKey: (t: { sourceRef?: string; walletAddress?: string }) =>
     t.sourceRef && t.walletAddress ? `${t.walletAddress}|${t.sourceRef}` : null
@@ -256,6 +262,8 @@ beforeEach(() => {
   QUERY_READINESS.holdings = true;
   QUERY_READINESS.coherentDataHealth = true;
   EFFECTIVE_SETTINGS.priceApiEnabled = false;
+  TAX_SETTINGS.defaultCostBasisMethod = 'FIFO';
+  for (const key of Object.keys(SPEC_ID_HINTS)) delete SPEC_ID_HINTS[key];
   PRICE_REFRESH.mockClear();
   // Reset the tx list to the base seed (some tests append wallet rows).
   SEED.txs.length = 4;
@@ -276,7 +284,7 @@ describe('DashboardTab — staggered Data Health readiness', () => {
     });
 
     expect(document.querySelector('[aria-busy="true"]')).not.toBeInTheDocument();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹35,000.00');
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
     expect(screen.getByTestId('net-worth-chart')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('BTC');
   });
@@ -308,7 +316,7 @@ describe('DashboardTab — staggered Data Health readiness', () => {
         await Promise.resolve();
       });
 
-      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹100.00');
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
       expect(screen.getByTestId('net-worth-chart')).toBeInTheDocument();
       expect(within(screen.getByTestId('dashboard-holdings')).getAllByText('SAFE').length).toBeGreaterThan(0);
       expect(within(screen.getByTestId('dashboard-holdings')).queryByText('SCAM')).not.toBeInTheDocument();
@@ -494,16 +502,15 @@ describe('DashboardTab — hero honesty', () => {
   it('values everything at cost and says so when no prices are cached', async () => {
     await renderTab();
     const hero = screen.getByTestId('dashboard-hero');
-    // The unresolved outbound BTC slice is diagnostic-only: 0.5 BTC @ 25,000 + 2 ETH @ 10,000.
-    expect(within(hero).getByText('Total value · at cost')).toBeInTheDocument();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹35,000.00');
+    expect(within(hero).getByText('Total net worth')).toBeInTheDocument();
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-transaction-count',
       '4'
     );
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-net-worth',
-      '35000'
+      'incomplete'
     );
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-btc-quantity',
@@ -522,10 +529,10 @@ describe('DashboardTab — hero honesty', () => {
       `4:${deferredGeneration.getAttribute('data-chart-point-count')}:` +
       `${deferredGeneration.getAttribute('data-chart-end-t')}:${chartEndCost}`
     );
-    expect(within(hero).getByText('Current spot holdings unrealized P&L')).toBeInTheDocument();
-    expect(within(hero).getByText('—')).toBeInTheDocument();
+    expect(within(hero).getByText('Unrealized P&L')).toBeInTheDocument();
+    expect(within(hero).getByText('Unavailable')).toBeInTheDocument();
     expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(
-      /enable live prices in Settings/i
+      /partial.*unpriced/i
     );
     expect(screen.getByTestId('chart-honesty-note')).toHaveTextContent(
       /cost basis over time — enable live prices for market value/i
@@ -554,25 +561,41 @@ describe('DashboardTab — hero honesty', () => {
     await renderTab();
     const hero = screen.getByTestId('dashboard-hero');
     expect(within(hero).getByText('Total net worth')).toBeInTheDocument();
-    // 0.5 BTC × 100,000 + 2 ETH × 6,000 + DOGE at cost 0 = ₹62,000.
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹62,000.00');
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
     expect(screen.queryByTestId('historical-holdings-performance')).not.toBeInTheDocument();
-    expect(within(hero).getByText('+₹27,000.00')).toBeInTheDocument();
-    expect(within(hero).getByText('Current spot holdings unrealized P&L').parentElement)
+    expect(within(hero).getByText('₹27,000.00')).toBeInTheDocument();
+    expect(within(hero).getByText('Unrealized P&L').parentElement)
       .toHaveTextContent('vs cost basis');
     expect(within(hero).queryByText('Historical display cost basis')).not.toBeInTheDocument();
     expect(within(hero).queryByText('Current DeFi adjustment')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('money-strip')).not.toBeInTheDocument();
-    // DOGE has no stored price → honesty note counts it at cost.
-    expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(/1 asset.*at cost/i);
+    expect(screen.getByTestId('money-strip')).toBeInTheDocument();
+    expect(screen.getByTestId('hero-honesty-note')).toHaveTextContent(/partial.*1 unpriced asset/i);
   });
 
   it('masks balances with the privacy eye and persists the choice', async () => {
+    const today = Date.now();
+    SEED.priceRows.push(
+      { key: 'spot:sym:BTC:INR', price: 100000, fetchedAt: today },
+      { key: 'spot:sym:ETH:INR', price: 6000, fetchedAt: today },
+      { key: `sym:BTC:${keyDate(today)}:INR`, price: 100000, fetchedAt: today },
+      { key: `sym:BTC:${keyDate(today - 86_400_000)}:INR`, price: 95000, fetchedAt: today },
+      { key: `sym:ETH:${keyDate(today)}:INR`, price: 6000, fetchedAt: today }
+    );
     await renderTab();
     const eye = screen.getByRole('button', { name: 'Hide balances' });
     fireEvent.click(eye);
     expect(localStorage.getItem('sololedger_dashboard_privacy')).toBe('1');
     expect(screen.getByTestId('net-worth-value')).toHaveTextContent('••••');
+    const hero = screen.getByTestId('dashboard-hero');
+    expect(within(hero).getAllByText('Cost basis')[0].parentElement).toHaveTextContent('••••');
+    const unrealizedStat = within(hero).getByText('Unrealized P&L').parentElement!;
+    expect(unrealizedStat).toHaveTextContent('••••');
+    expect(unrealizedStat).not.toHaveTextContent('%');
+    expect(unrealizedStat).not.toHaveTextContent('vs cost basis');
+    expect(within(screen.getByTestId('money-strip')).getAllByText('••••')).toHaveLength(5);
+    expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('••••');
+    const chart = screen.queryByTestId('net-worth-chart');
+    if (chart) expect(chart).not.toHaveTextContent(/₹[\d,]/);
     expect(screen.getByRole('button', { name: 'Show balances' })).toHaveAttribute(
       'aria-pressed',
       'true'
@@ -627,6 +650,7 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', 'incomplete');
     expect(screen.getByTestId('defi-net-worth-incomplete')).toBeInTheDocument();
+    expect(screen.getByTestId('defi-net-worth-incomplete')).toHaveTextContent('Some liabilities are unpriced');
     expect(JSON.parse(localStorage.getItem('sololedger_wallet_defi_net_worth_shadow_v1') ?? '{}')).toMatchObject({
       featureEnabled: true, defiNetWorth: null, status: 'partial'
     });
@@ -687,10 +711,12 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     }
   });
 
-  it('does not show the misleading five-cell money strip', async () => {
+  it('shows the canonical five-cell money strip', async () => {
     await renderTab();
-    expect(screen.queryByTestId('money-strip')).not.toBeInTheDocument();
-    expect(screen.queryByText('Money in')).not.toBeInTheDocument();
+    expect(screen.getByTestId('money-strip')).toBeInTheDocument();
+    for (const label of ['Money in', 'Money out', 'Income', 'Trading fees', 'Realized gains']) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
   });
 
   it('estimates FY tax at 30% + 4% cess with the not-advice caveat', async () => {
@@ -820,8 +846,6 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
-      expect(within(holdings).getByText('1 other hidden')).toBeInTheDocument();
-      fireEvent.click(within(holdings).getByRole('button', { name: 'Show all (1)' }));
       expect(within(holdings).getAllByText(/10\.0000/).length).toBeGreaterThan(0);
       fireEvent.click(within(holdings).getAllByRole('button', { expanded: false })[0]);
       const positive = screen.getByTestId('source-allocation-manual:manual');
@@ -948,8 +972,8 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       expect(within(holdings).getAllByText('GOOD').length).toBeGreaterThan(0);
       expect(within(holdings).queryByText('TOKEN')).not.toBeInTheDocument();
       expect(within(holdings).queryByText('NEG')).not.toBeInTheDocument();
-      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹100.00');
-      expect(screen.queryByText('Money in')).not.toBeInTheDocument();
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
+      expect(screen.getByText('Money in')).toBeInTheDocument();
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...backup);
     }
@@ -998,7 +1022,6 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holding = screen.getByTestId('dashboard-holdings');
-      fireEvent.click(within(holding).getByRole('button', { name: 'Show all (1)' }));
       expect(within(holding).getAllByText(/10\.0000/).length).toBeGreaterThan(0);
       const toggle = within(holding).getAllByRole('button', { expanded: false })
         .find((button) => button.textContent?.includes('USDT'))!;
@@ -1036,12 +1059,8 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
-      expect(within(holdings).getByText('0 assets')).toBeInTheDocument();
-      expect(within(holdings).getByText('1 other hidden')).toBeInTheDocument();
-      fireEvent.click(within(holdings).getByRole('button', { name: 'Show all (1)' }));
       expect(within(holdings).getByText('1 asset')).toBeInTheDocument();
       expect(within(holdings).queryByText(/hidden/i)).not.toBeInTheDocument();
-      expect(within(holdings).getByText('Showing dust and rounded-zero positive balances.')).toBeInTheDocument();
       const usdtButtons = within(holdings).getAllByRole('button', { expanded: false })
         .filter((button) => button.textContent?.includes('USDT'));
       // The responsive row renders one asset button for mobile and one for desktop.
@@ -1053,9 +1072,6 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       expect(within(expansion).getByText('Binance Spot')).toBeInTheDocument();
       expect(within(expansion).getByText(/119\.5193 USDT/)).toBeInTheDocument();
       expect(screen.queryByTestId('holding-qty-caption')).not.toBeInTheDocument();
-      fireEvent.click(within(holdings).getByRole('button', { name: 'Show less' }));
-      expect(within(holdings).getByText('0 assets')).toBeInTheDocument();
-      expect(within(holdings).getByText('1 other hidden')).toBeInTheDocument();
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...txBackup);
       SEED.exchangeBalanceRows.length = 0;
@@ -1114,6 +1130,7 @@ describe('DashboardTab — empty state', () => {
 describe('DashboardTab — period pills', () => {
   it('renders 1M/6M/FY/1Y/All as a roving radiogroup with FY selected', async () => {
     await renderTab();
+    expect(screen.getByTestId('selected-range-summary')).toHaveTextContent(/Apr.*Mar/);
     const group = screen.getByTestId('hero-period-pills');
     const radios = within(group).getAllByRole('radio');
     expect(radios.map((r) => r.textContent)).toEqual(['1M', '6M', 'FY', '1Y', 'All']);
@@ -1125,6 +1142,61 @@ describe('DashboardTab — period pills', () => {
     expect(
       within(screen.getByTestId('hero-period-pills')).getAllByRole('radio')[3]
     ).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByTestId('money-strip')).toHaveClass('overflow-x-auto', 'snap-mandatory');
+  });
+
+  it('validates custom inclusive dates before applying them', async () => {
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Custom range' }));
+    fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2026-04-02' } });
+    fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-04-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(screen.getByRole('alert')).toHaveTextContent('Choose a valid start and end');
+
+    fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2025-04-01' } });
+    fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-03-31' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('applies IST-inclusive boundaries to both chart and money strip', async () => {
+    const backup = [...SEED.txs];
+    const offset = (5 * 60 + 30) * 60 * 1000;
+    const start = Date.UTC(2025, 3, 1) - offset;
+    const end = Date.UTC(2025, 3, 2) - offset - 1;
+    SEED.txs.push(
+      { id: 'before-ist-day', timestamp: start - 1, type: 'transfer_in', asset: 'INR', amount: 100,
+        fiatCurrency: 'INR', fiatValue: 100, source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'at-ist-start', timestamp: start, type: 'transfer_in', asset: 'INR', amount: 10,
+        fiatCurrency: 'INR', fiatValue: 10, source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'at-ist-end', timestamp: end, type: 'transfer_in', asset: 'INR', amount: 20,
+        fiatCurrency: 'INR', fiatValue: 20, source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'after-ist-day', timestamp: end + 1, type: 'transfer_in', asset: 'INR', amount: 200,
+        fiatCurrency: 'INR', fiatValue: 200, source: 'manual', flags: [], isInternalTransfer: false }
+    );
+    try {
+      await renderTab();
+      fireEvent.click(screen.getByRole('button', { name: 'Custom range' }));
+      fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2025-04-01' } });
+      fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2025-04-01' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+      expect(within(screen.getByTestId('money-strip')).getByText('Money in').parentElement)
+        .toHaveTextContent('₹30.00');
+      expect(screen.getByTestId('dashboard-deferred-generation')).toHaveAttribute('data-chart-end-t', String(end));
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
+  });
+
+  it('clears a custom selection through the shared keyboard preset handler', async () => {
+    await renderTab();
+    fireEvent.click(screen.getByRole('button', { name: 'Custom range' }));
+    fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2025-04-01' } });
+    fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-03-31' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+    expect(within(screen.getByTestId('hero-period-pills')).getAllByRole('radio').every((radio) => radio.getAttribute('aria-checked') === 'false')).toBe(true);
+    fireEvent.keyDown(screen.getByTestId('hero-period-pills'), { key: 'ArrowRight' });
+    expect(within(screen.getByTestId('hero-period-pills')).getAllByRole('radio')[3]).toHaveAttribute('aria-checked', 'true');
   });
 });
 

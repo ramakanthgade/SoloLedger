@@ -22,8 +22,18 @@ describe('dashboard holdings presentation', () => {
       holding({ asset: 'ZERO_QTY', amount: 0, valueNow: 100 })
     ]);
 
-    expect(groups.visible.map((row) => row.asset)).toEqual(['HIGH', 'BASIS', 'LOW']);
-    expect(groups.other.map((row) => row.asset)).toEqual(['DUST', 'UNKNOWN']);
+    expect(groups.visible.map((row) => row.asset)).toEqual(['HIGH', 'BASIS', 'LOW', 'UNKNOWN']);
+    expect(groups.other.map((row) => row.asset)).toEqual(['DUST']);
+  });
+
+  it('never classifies a positive holding as dust without a known current value', () => {
+    const groups = groupDashboardHoldings([
+      holding({ asset: 'UNKNOWN_LOW_BASIS', amount: 1, valueNow: null, costBasis: 0.001 }),
+      holding({ asset: 'KNOWN_DUST', amount: 1, valueNow: 0.001, costBasis: 100 })
+    ]);
+
+    expect(groups.visible.map((row) => row.asset)).toEqual(['UNKNOWN_LOW_BASIS']);
+    expect(groups.other.map((row) => row.asset)).toEqual(['KNOWN_DUST']);
   });
 
   it('formats material gains and losses honestly without fabricated or rounded-zero percentages', () => {
