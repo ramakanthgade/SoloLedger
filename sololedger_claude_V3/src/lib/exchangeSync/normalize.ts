@@ -48,7 +48,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   bitfinex: 'exbf',
   gemini: 'exgm',
   btcmarkets: 'exbm',
-  mexc: 'exmx'
+  mexc: 'exmx',
+  bitvavo: 'exbv'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -130,6 +131,10 @@ function tradeSourceRef(
     case 'mexc':
       // Native fill id. MEXC has no SoloLedger CSV parser, so do not invent
       // API/CSV parity; storage additionally scopes this by connection/kind.
+      return trade.id;
+    case 'bitvavo':
+      // Native fill UUID. Connection/kind scoping is applied by storage;
+      // API↔CSV parity is intentionally not claimed.
       return trade.id;
   }
 }
@@ -223,9 +228,10 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo'
         ? { exchangeSyncKind: 'trade' as const }
-        : {})
+        : {}),
+      ...(exchange === 'bitvavo' ? { bitvavoMarketSymbol: market.symbol } : {})
     }
   };
 }
@@ -661,6 +667,15 @@ function transferSourceRef(
       if (type === 'transfer_out') return transfer.id;
       return mexcDepositSourceRef(transfer);
     }
+    case 'bitvavo': {
+      const info = transfer.info ?? {};
+      const kind = type === 'transfer_in' ? 'deposit' : 'withdrawal';
+      const txId = typeof info.txId === 'string' ? info.txId : transfer.txid ?? '';
+      const address = typeof info.address === 'string' ? info.address : transfer.address ?? '';
+      const paymentId = typeof info.paymentId === 'string' ? info.paymentId : '';
+      const fee = transfer.fee?.cost ?? 0;
+      return [kind, txId, ts, asset, amount, fee, address, paymentId].join('|');
+    }
   }
 }
 
@@ -813,7 +828,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.
@@ -823,4 +838,190 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       exchangeAddress: address
     }
   };
+}
+
+export interface BitvavoAccountHistoryItem {
+  transactionId?: unknown;
+  executedAt?: unknown;
+  type?: unknown;
+  priceCurrency?: unknown;
+  priceAmount?: unknown;
+  sentCurrency?: unknown;
+  sentAmount?: unknown;
+  receivedCurrency?: unknown;
+  receivedAmount?: unknown;
+  feesCurrency?: unknown;
+  feesAmount?: unknown;
+}
+
+/** Normalize documented buy/sell economics that native fills do not cover. */
+export function normalizeBitvavoAccountTrade(item: BitvavoAccountHistoryItem): Transaction | null {
+  const id = typeof item.transactionId === 'string' ? item.transactionId : undefined;
+  const timestamp = typeof item.executedAt === 'string' ? Date.parse(item.executedAt) : Number.NaN;
+  const nativeType = item.type === 'buy' ? 'buy' : item.type === 'sell' ? 'sell' : undefined;
+  const sentAsset = typeof item.sentCurrency === 'string' ? item.sentCurrency.toUpperCase() : undefined;
+  const receivedAsset = typeof item.receivedCurrency === 'string' ? item.receivedCurrency.toUpperCase() : undefined;
+  const sentAmount = Number(item.sentAmount);
+  const receivedAmount = Number(item.receivedAmount);
+  const feeAmount = Number(item.feesAmount ?? 0);
+  const feeAsset = typeof item.feesCurrency === 'string' ? item.feesCurrency.toUpperCase() : undefined;
+  if (!id || !Number.isFinite(timestamp) || !nativeType || !sentAsset || !receivedAsset ||
+      !(sentAmount > 0) || !(receivedAmount > 0) || !(feeAmount >= 0) ||
+      (feeAmount > 0 && !feeAsset)) return null;
+  const quote = nativeType === 'buy' ? sentAsset : receivedAsset;
+  const base = nativeType === 'buy' ? receivedAsset : sentAsset;
+  const amount = nativeType === 'buy' ? receivedAmount : sentAmount;
+  const counterAmount = nativeType === 'buy' ? sentAmount : receivedAmount;
+  const quoteFiat = quoteToFiatCurrency(quote);
+  const fiatValue = quoteFiat != null || STABLE_QUOTES.has(quote) ? counterAmount : undefined;
+  const type: TxType = fiatValue == null ? 'trade' : nativeType;
+  return {
+    id: makeId(ID_PREFIX.bitvavo), timestamp, type,
+    asset: type === 'trade' ? sentAsset : base,
+    amount: type === 'trade' ? sentAmount : amount,
+    counterAsset: type === 'trade' ? receivedAsset : quote,
+    counterAmount: type === 'trade' ? receivedAmount : counterAmount,
+    fiatCurrency: quoteFiat ?? 'USD', fiatValue,
+    feeAmount: feeAmount > 0 ? feeAmount : undefined,
+    feeAsset: feeAmount > 0 ? feeAsset : undefined,
+    source: 'bitvavo_api', sourceRef: id,
+    notes: 'Bitvavo account-history buy/sell activity (native fills not found)',
+    flags: fiatValue == null ? ['missing_market_value'] : [],
+    isInternalTransfer: false,
+    raw: {
+      transactionId: id,
+      accountHistoryType: nativeType,
+      exchangeSyncKind: 'account_history',
+      // Immutable reconciliation evidence. Review edits may legitimately
+      // change type/value/flags on the materialized row, so late native fills
+      // must never match against those mutable presentation fields.
+      bitvavoAccountHistoryEconomics: {
+        transactionId: id,
+        executedAt: item.executedAt,
+        type: nativeType,
+        sentCurrency: item.sentCurrency,
+        sentAmount: item.sentAmount,
+        receivedCurrency: item.receivedCurrency,
+        receivedAmount: item.receivedAmount,
+        feesCurrency: item.feesCurrency,
+        feesAmount: item.feesAmount
+      }
+    }
+  };
+}
+
+export function immutableBitvavoAccountTrade(row: Transaction): Transaction | null {
+  const economics = row.raw?.bitvavoAccountHistoryEconomics;
+  return economics && typeof economics === 'object' && !Array.isArray(economics)
+    ? normalizeBitvavoAccountTrade(economics as BitvavoAccountHistoryItem)
+    : null;
+}
+
+function almostEqual(a: number | undefined, b: number | undefined): boolean {
+  if (a == null || b == null) return false;
+  return Math.abs(a - b) <= Math.max(1e-12, Math.abs(a) * 1e-8, Math.abs(b) * 1e-8);
+}
+
+/**
+ * Advisory many-fill reconciliation. A history row is suppressed only when
+ * exactly one history row matches the complete deterministic fill aggregate;
+ * ambiguity retains both representations rather than forcing a destructive
+ * one-to-one link that Bitvavo does not document.
+ */
+export function reconcileBitvavoAccountTrades(
+  history: Transaction[],
+  fills: Transaction[]
+): {
+  retained: Transaction[];
+  matched: number;
+  ambiguous: number;
+  matches: Array<{ history: Transaction; fills: Transaction[] }>;
+} {
+  type Aggregate = {
+    key: string;
+    timestamp: number;
+    maxTimestamp: number;
+    type: Transaction['type'];
+    asset: string;
+    counterAsset?: string;
+    amount: number;
+    counterAmount: number;
+    fees: Map<string, number>;
+    valid: boolean;
+    fills: Transaction[];
+  };
+  const grouped = new Map<string, Transaction[]>();
+  for (const fill of fills) {
+    const orderId = typeof fill.raw?.orderId === 'string' && fill.raw.orderId.trim()
+      ? fill.raw.orderId.trim()
+      : undefined;
+    // Missing-order fallback is deliberately one fill, never an aggregate of
+    // nearby executions whose common order cannot be proved.
+    const key = orderId ? `order:${orderId}` : `fill:${fill.id}`;
+    grouped.set(key, [...(grouped.get(key) ?? []), fill]);
+  }
+  const aggregates: Aggregate[] = [...grouped.entries()].map(([key, group]) => {
+    const first = group[0];
+    const fees = new Map<string, number>();
+    let valid = Boolean(first?.asset && first.counterAsset);
+    for (const fill of group) {
+      valid = valid && fill.type === first.type && fill.asset === first.asset &&
+        fill.counterAsset === first.counterAsset && fill.counterAmount != null;
+      if ((fill.feeAmount ?? 0) > 0) {
+        if (!fill.feeAsset?.trim()) valid = false;
+        else fees.set(fill.feeAsset, (fees.get(fill.feeAsset) ?? 0) + fill.feeAmount!);
+      }
+    }
+    return {
+      key,
+      timestamp: Math.min(...group.map((fill) => fill.timestamp)),
+      maxTimestamp: Math.max(...group.map((fill) => fill.timestamp)),
+      type: first.type,
+      asset: first.asset,
+      counterAsset: first.counterAsset,
+      amount: group.reduce((sum, fill) => sum + fill.amount, 0),
+      counterAmount: group.reduce((sum, fill) => sum + (fill.counterAmount ?? 0), 0),
+      fees,
+      valid,
+      fills: group
+    };
+  });
+  const rowFees = (row: Transaction): Map<string, number> | null => {
+    const fees = new Map<string, number>();
+    if ((row.feeAmount ?? 0) > 0) {
+      if (!row.feeAsset?.trim()) return null;
+      fees.set(row.feeAsset, row.feeAmount!);
+    }
+    return fees;
+  };
+  const sameFees = (a: Map<string, number>, b: Map<string, number>): boolean =>
+    a.size === b.size && [...a].every(([asset, amount]) => almostEqual(amount, b.get(asset)));
+  const candidatesByRow = history.map((row) => {
+    const fees = rowFees(row);
+    return fees == null ? [] : aggregates.filter((aggregate) => aggregate.valid &&
+      row.timestamp >= aggregate.timestamp - 60_000 && row.timestamp <= aggregate.maxTimestamp + 60_000 &&
+      aggregate.type === row.type && aggregate.asset === row.asset &&
+      aggregate.counterAsset === row.counterAsset &&
+      almostEqual(aggregate.amount, row.amount) &&
+      almostEqual(aggregate.counterAmount, row.counterAmount) &&
+      sameFees(aggregate.fees, fees));
+  });
+  const retained: Transaction[] = [];
+  let matched = 0;
+  let ambiguous = 0;
+  const matches: Array<{ history: Transaction; fills: Transaction[] }> = [];
+  for (let index = 0; index < history.length; index += 1) {
+    const candidates = candidatesByRow[index];
+    const unambiguous = candidates.length === 1 &&
+      candidatesByRow.filter((others) => others.some((candidate) => candidate.key === candidates[0].key)).length === 1;
+    if (unambiguous) {
+      matched += 1;
+      matches.push({ history: history[index], fills: candidates[0].fills });
+    }
+    else {
+      if (candidates.length > 0) ambiguous += 1;
+      retained.push(history[index]);
+    }
+  }
+  return { retained, matched, ambiguous, matches };
 }

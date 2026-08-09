@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -173,6 +173,40 @@ a sync discards any staged preview (with a warning).
   scanning newer activity. Coverage records the greatest frozen end actually
   queried, not merely the newly checkpointed target. Export older records from MEXC;
   SoloLedger has no MEXC CSV parser and makes no API/CSV deduplication promise.
+- Bitvavo first exhausts official `GET /v2/account/history` as a sparse
+  activity/economic index. Every fixed `fromDate`/`toDate` range validates the
+  `{items,currentPage,totalPages,maxItems}` envelope, exhausts `maxItems=100`
+  pages without order assumptions, and re-fetches page 1 before acceptance;
+  unstable metadata gets bounded restarts and dense ranges are date-bisected.
+  Buy/sell currency pairs derive padded native-fill intervals, so SoloLedger
+  never performs a blind multi-year scan for every market. Unresolved/delisted
+  pairs retain account-history economics and fail closed for fill coverage.
+  `GET /v2/trades` uses windows no wider than 23.5 hours, newest-first native
+  `tradeIdTo` continuation, and adaptive time bisection when exclusive cursor
+  evidence is missing, repeated or nonadvancing. The `tradeIdTo` older and
+  `tradeIdFrom` newer directions and exclusivity were recorded against the
+  public endpoint on 2026-08-09. Per-symbol high-water and all current plus
+  previously known symbols are committed atomically with transactions.
+  Account-history buy/sell economics are first retained as durable connection
+  metadata, associated with the symbol/range task identities that must finish.
+  Across runs, persisted plus incoming native fills are reconciled only after
+  those tasks exhaust. An exact unambiguous complete-order match discards the
+  deferred metadata while preserving every fill ID, timestamp and economic
+  field; an unmatched candidate is then imported under its unique
+  `transactionId`, and ambiguity aborts without cursor advancement. No
+  undocumented link to fill/order/txId and no Price Guarantee label is inferred.
+  `GET /v2/depositHistory` and `/v2/withdrawalHistory` are account-wide and
+  newest-first, using adaptive disjoint date partitions. Pending, unknown and
+  future-dated rows retain a durable endpoint replay start; canceled is
+  terminal. Missing/malformed evidence fails closed. Transfer identity includes
+  endpoint kind, raw txId/provider evidence, timestamp, asset, amount, fee,
+  address and paymentId, then storage scopes it by connection/exchange/kind.
+  Indistinguishable duplicate multiplicity aborts advancement rather than
+  destructively deduplicating. A first sync cannot discover activity absent
+  from account history or a market delisted before that sync. Price Guarantee
+  and other non-fill buy/sell economics are covered only through account
+  history. This connector never claims account-lifetime coverage or API↔CSV
+  deduplication.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -217,6 +251,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | gemini | native `tid`, prefixed `trade:` and connection-scoped | native `eid`/`withdrawalId`, direction-prefixed and connection-scoped |
 | btcmarkets | native trade `id`, connection + immutable `trade` kind scoped | native transfer `id`, connection + immutable direction scoped |
 | mexc | native trade `id`, scoped by connection + exchange + immutable `trade` kind | withdrawal native `id`; deposits use the exact provider evidence tuple (`txId`/`transHash`, network, coin, time, amount, address, memo, index), scoped by immutable direction; no CSV identity promise |
+| bitvavo | native fill UUID, connection + immutable `trade` kind scoped; unmatched account-history `transactionId` uses immutable `account_history` kind | composite provider evidence, connection + immutable deposit/withdrawal kind scoped |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -277,6 +312,14 @@ hand, because Binance geo-blocks this build environment (HTTP 451, see
 `region_blocked` above) so nothing could be recorded live. When tier-4
 runs against a real account, refresh the Binance fixtures with sanitized
 real responses (mask account ids/addresses) and flip `_recorded`.
+
+Bitvavo is the explicit mixed-provenance exception: `time.recorded.json`,
+`public-trades.recorded.json`, and `dummy-balance-305.recorded.json` were
+recorded from `api.bitvavo.com` on 2026-08-09. Private account fixtures remain
+clearly marked hand-authored because no real credentials were supplied. The
+format-valid 64-character dummy signed balance request returned exact HTTP 403
+`errorCode:305`; unknown-key validation occurs before any real-secret check,
+so this proves route/header reachability, not credential or permission validity.
 
 Gate.io fixtures carry their own `gateio/provenance.json`: they are
 schema-faithful transcriptions of official API v4 examples and CCXT 4.5.68's

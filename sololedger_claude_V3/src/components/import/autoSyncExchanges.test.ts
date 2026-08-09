@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(13);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(14);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -55,6 +55,7 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('bitfinex')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('gemini')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('mexc')?.needsPassphrase).toBe(false);
+    expect(getAutoSyncExchange('bitvavo')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange(null)).toBeUndefined();
     expect(getAutoSyncExchange('nope')).toBeUndefined();
   });
@@ -110,5 +111,17 @@ describe('autoSyncExchanges catalog', () => {
     expect(btcmarkets.keyInstructions.join(' ')).toMatch(/read permissions.*never enable.*order.*trading.*withdrawal/i);
     expect(btcmarkets.keyInstructions.join(' ')).toMatch(/retention is undocumented.*cannot verify account-lifetime.*no BTC Markets CSV parser.*deduplication is unavailable/i);
     expect(btcmarkets.needsPassphrase).toBe(false);
+  });
+
+  it('documents Bitvavo permission and bounded-coverage caveats truthfully', () => {
+    const bitvavo = getAutoSyncExchange('bitvavo')!;
+    const copy = bitvavo.keyInstructions.join(' ');
+    expect(bitvavo).toMatchObject({ monogram: 'BV', needsPassphrase: false });
+    expect(copy).toMatch(/View information.*Trade digital assets/i);
+    expect(copy).toMatch(/Never enable Withdraw/i);
+    expect(copy).toMatch(/GET-only.*cannot place\/cancel orders or withdraw/i);
+    expect(copy).toMatch(/Price Guarantee.*without guessing/i);
+    expect(copy).toMatch(/first sync.*delisted before/i);
+    expect(copy).toMatch(/never claims account-lifetime.*does not claim API↔CSV deduplication/i);
   });
 });

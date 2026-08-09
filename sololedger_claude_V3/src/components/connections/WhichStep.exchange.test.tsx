@@ -96,11 +96,16 @@ describe('WhichStep — exchange modes', () => {
     expect(screen.queryByTestId('exchange-row-binance')).not.toBeInTheDocument();
   });
 
-  it('renders a local logo for every named exchange and reserves fallback artwork for Other', () => {
+  it('renders local logos for mapped exchanges and the catalog monogram for Bitvavo', () => {
     renderChooser();
     for (const row of screen.getAllByTestId(/exchange-row-/)) {
       const id = row.getAttribute('data-testid')!.replace('exchange-row-', '');
       if (id === 'other') continue;
+      if (id === 'bitvavo') {
+        expect(row.querySelector('img')).toBeNull();
+        expect(row.querySelector('.bg-aurora')).toHaveTextContent('BV');
+        continue;
+      }
       expect(row.querySelector('img'), id).not.toBeNull();
       expect(row.querySelector('.bg-aurora'), id).toBeNull();
       const src = row.querySelector('img')!.getAttribute('src');

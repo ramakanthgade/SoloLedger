@@ -190,6 +190,27 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/api/v3/capital/deposit/hisrec',
       '/api/v3/capital/withdraw/history'
     ]
+  },
+  bitvavo: {
+    host: 'api.bitvavo.com',
+    headers: [
+      'bitvavo-access-key',
+      'bitvavo-access-signature',
+      'bitvavo-access-timestamp',
+      'bitvavo-access-window'
+    ],
+    methods: ['GET'],
+    // Exact pinned-CCXT 4.5.68 read surface. No order, asset, withdrawal,
+    // RFQ, staking, lending, futures or mutation endpoint is reachable.
+    paths: [
+      '/v2/time',
+      '/v2/markets',
+      '/v2/balance',
+      '/v2/account/history',
+      '/v2/trades',
+      '/v2/depositHistory',
+      '/v2/withdrawalHistory'
+    ]
   }
 };
 

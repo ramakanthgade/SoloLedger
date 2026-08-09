@@ -1,0 +1,28 @@
+{
+  "_recorded": true,
+  "_recordedAt": "2026-08-09",
+  "_source": "GET https://api.bitvavo.com/v2/BTC-EUR/trades with a one-hour fixed range; sanitized only by truncating to three public rows",
+  "response": [
+    {
+      "id": "00000000-0000-0431-0000-00000363f323",
+      "timestamp": 1786235247712,
+      "amount": "0.01775132",
+      "price": "56193",
+      "side": "buy"
+    },
+    {
+      "id": "00000000-0000-0431-0000-00000363f322",
+      "timestamp": 1786235234772,
+      "amount": "0.00331054",
+      "price": "56192",
+      "side": "sell"
+    },
+    {
+      "id": "00000000-0000-0431-0000-00000363f321",
+      "timestamp": 1786235202865,
+      "amount": "0.00177519",
+      "price": "56191",
+      "side": "buy"
+    }
+  ]
+}

@@ -171,6 +171,12 @@ const TIER2 = [
     probe: 'GET /api/v3/time',
     path: '/api/v3/time',
     check: (r, json) => r.status === 200 && typeof json?.serverTime === 'number'
+  },
+  {
+    exchange: 'bitvavo',
+    probe: 'GET /v2/time',
+    path: '/v2/time',
+    check: (r, json) => r.status === 200 && typeof json?.time === 'number'
   }
 ];
 
@@ -456,6 +462,33 @@ const tier3 = [
     // Distinctive MEXC exchange-origin auth evidence. This validates relay
     // routing/header reachability, not real-key permissions or history scope.
     check: (r) => r.status === 401 && r.text.includes('"code":700002') && /signature[^\n]*not valid/i.test(r.text)
+  },
+  {
+    exchange: 'bitvavo',
+    probe: 'GET /v2/balance (four Bitvavo headers, HMAC-SHA256)',
+    build() {
+      const apiKey = 'A'.repeat(64);
+      const secret = 'B'.repeat(64);
+      const timestamp = Date.now().toString();
+      const path = '/v2/balance';
+      const signature = hmacHex('sha256', secret, timestamp + 'GET' + path);
+      return {
+        path,
+        exchangeHeaders: {
+          'bitvavo-access-key': apiKey,
+          'bitvavo-access-signature': signature,
+          'bitvavo-access-timestamp': timestamp,
+          'bitvavo-access-window': '10000'
+        }
+      };
+    },
+    // Bitvavo validates the format-valid 64-char key before a real secret:
+    // HTTP 403 errorCode 305 proves only unknown-key/header reachability.
+    check: (r, json) =>
+      r.status === 403 &&
+      json?.errorCode === 305 &&
+      json?.error === 'No active API key found.' &&
+      r.relayError === null
   }
 ];
 
@@ -497,7 +530,8 @@ async function main() {
     try {
       const { path, method, exchangeHeaders, body, contentType } = t.build();
       const r = await tunnel(token, t.exchange, path, { method, exchangeHeaders, body, contentType });
-      const ok = t.check(r) && r.relayError === null;
+      const json = tryJson(r.text);
+      const ok = t.check(r, json) && r.relayError === null;
       record(
         3,
         t.exchange,

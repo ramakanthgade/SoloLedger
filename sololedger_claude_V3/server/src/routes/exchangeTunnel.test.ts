@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { once } from 'events';
 import http from 'http';
+import { readFileSync } from 'fs';
 import type { AddressInfo } from 'net';
 import type { Request, Response } from 'express';
 
@@ -91,6 +92,15 @@ let server: http.Server;
 let base: string;
 
 const AUTH = { authorization: 'Bearer test-token' };
+const bitvavo305Fixture = JSON.parse(
+  readFileSync(
+    new URL('../../../src/lib/exchangeSync/__fixtures__/bitvavo/dummy-balance-305.recorded.json', import.meta.url),
+    'utf8'
+  )
+) as {
+  httpStatus: number;
+  response: { errorCode: number; error: string };
+};
 
 function client(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${base}/api/proxy/exchange${path}`, init);
@@ -201,7 +211,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments'],
     ['bitfinex', 'api.bitfinex.com', '/v2/platform/status'],
     ['btcmarkets', 'api.btcmarkets.net', '/v3/time'],
-    ['mexc', 'api.mexc.com', '/api/v3/time']
+    ['mexc', 'api.mexc.com', '/api/v3/time'],
+    ['bitvavo', 'api.bitvavo.com', '/v2/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -468,6 +479,30 @@ describe('3. header allowlist', () => {
     expect(init.method).toBe('GET');
     expect(init.headers).toEqual({ 'x-mexc-apikey': 'MEXC_KEY', source: 'CCXT' });
   });
+
+  it('bitvavo: forwards the exact four auth headers and signed query bytes', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    await rawRequest({
+      path: '/bitvavo/v2/trades?market=BTC-EUR&start=1&end=2&limit=1000&tradeIdTo=abc%2Fdef',
+      headers: {
+        ...AUTH,
+        'x-exchange-bitvavo-access-key': 'A'.repeat(64),
+        'x-exchange-bitvavo-access-signature': 'b'.repeat(64),
+        'x-exchange-bitvavo-access-timestamp': '1786235200000',
+        'x-exchange-bitvavo-access-window': '10000',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.bitvavo.com/v2/trades?market=BTC-EUR&start=1&end=2&limit=1000&tradeIdTo=abc%2Fdef');
+    expect(init.method).toBe('GET');
+    expect(init.headers).toEqual({
+      'bitvavo-access-key': 'A'.repeat(64),
+      'bitvavo-access-signature': 'b'.repeat(64),
+      'bitvavo-access-timestamp': '1786235200000',
+      'bitvavo-access-window': '10000'
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -693,6 +728,63 @@ describe('4. exchangeId and path validation', () => {
     }
     expect(upstreamMock).not.toHaveBeenCalled();
   });
+
+  describe('Bitvavo exact GET-only containment', () => {
+    const ALLOWED_PATHS = [
+      '/v2/time',
+      '/v2/markets',
+      '/v2/balance',
+      '/v2/account/history',
+      '/v2/trades',
+      '/v2/depositHistory',
+      '/v2/withdrawalHistory'
+    ] as const;
+
+    it.each(ALLOWED_PATHS)('allows GET %s', async (path) => {
+      upstreamMock.mockResolvedValue(upstreamJson('[]'));
+      const res = await client(`/bitvavo${path}`, { method: 'GET', headers: AUTH });
+      expect(res.status).toBe(200);
+      const [url, init] = lastUpstreamCall();
+      expect(url).toBe(`https://api.bitvavo.com${path}`);
+      expect(init.method).toBe('GET');
+    });
+
+    it.each(ALLOWED_PATHS.flatMap((path) => [
+      [path, 'POST'],
+      [path, 'PUT'],
+      [path, 'PATCH'],
+      [path, 'DELETE']
+    ] as const))('rejects %s %s', async (path, method) => {
+      const res = await client(`/bitvavo${path}`, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+      expect(upstreamMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['/v2/order', 'GET', 'order read'],
+      ['/v2/order', 'POST', 'order placement'],
+      ['/v2/order', 'DELETE', 'single-order cancellation'],
+      ['/v2/orders', 'DELETE', 'bulk-order cancellation'],
+      ['/v2/cancelOrdersAfter', 'POST', 'cancel-after mutation'],
+      ['/v2/withdrawal', 'POST', 'withdrawal mutation'],
+      ['/v2/trades/abc', 'GET', 'arbitrary trade subpath'],
+      ['/v2/assets', 'GET', 'assets'],
+      ['/v2/staking/assets', 'GET', 'staking'],
+      ['/v2/staking/history', 'GET', 'staking history'],
+      ['/v2/subaccounts', 'GET', 'subaccounts'],
+      ['/v2/institutional/transactions', 'GET', 'institutional'],
+      ['/v2/rfq/markets', 'GET', 'RFQ'],
+      ['/v2/rfq/quote', 'POST', 'RFQ mutation'],
+      ['/v2/derivatives/positions', 'GET', 'derivatives'],
+      ['/v2/futures/markets', 'GET', 'futures']
+    ] as const)('rejects %s %s (%s)', async (path, method) => {
+      const res = await client(`/bitvavo${path}`, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+      expect(upstreamMock).not.toHaveBeenCalled();
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -708,6 +800,19 @@ describe('5. native error passthrough', () => {
     expect(res.status).toBe(400);
     expect(await res.text()).toBe(binanceError);
     expect(res.headers.get('content-type')).toBe('application/json');
+    expect(res.headers.get('x-sololedger-error')).toBeNull();
+  });
+
+  it('pins the recorded Bitvavo 305 response as JSON, byte-identical and unstamped', async () => {
+    const body = JSON.stringify(bitvavo305Fixture.response);
+    upstreamMock.mockResolvedValue(upstreamJson(body, bitvavo305Fixture.httpStatus));
+
+    const res = await client('/bitvavo/v2/balance', { headers: AUTH });
+
+    const responseText = await res.text();
+    expect(res.status).toBe(403);
+    expect(responseText).toBe(body);
+    expect(JSON.parse(responseText)).toEqual({ errorCode: 305, error: 'No active API key found.' });
     expect(res.headers.get('x-sololedger-error')).toBeNull();
   });
 });

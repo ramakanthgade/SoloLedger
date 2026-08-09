@@ -55,6 +55,7 @@ describe('loadCcxt', () => {
     expect(typeof a.gemini).toBe('function');
     expect(typeof a.btcmarkets).toBe('function');
     expect(typeof a.mexc).toBe('function');
+    expect(typeof a.bitvavo).toBe('function');
   });
 });
 
@@ -231,6 +232,7 @@ describe('createExchangeClient', () => {
       password?: string; enableLastJsonResponse: boolean;
       fetch: (url: string, method?: string, headers?: Record<string, string>, body?: string) => Promise<unknown>;
       sign(path: string, api: unknown, method: string, params: Record<string, unknown>): { url: string; method: string; headers: Record<string, string> };
+      loadMarkets(reload?: boolean): Promise<unknown>;
     };
     expect(raw.options).toMatchObject({ defaultType: 'spot', fetchCurrencies: false });
     expect(raw.has.fetchCurrencies).toBe(false);
@@ -254,6 +256,26 @@ describe('createExchangeClient', () => {
     const signedTrades = raw.sign('myTrades', ['spot', 'private'], 'GET', { symbol: 'BTCUSDT', limit: 100 });
     expect(new URL(signedTrades.url).pathname).toBe('/api/v3/myTrades');
     expect(new URL(signedTrades.url).searchParams.get('limit')).toBe('100');
+  });
+
+  it('configures Bitvavo without passphrase/currencies and loadMarkets invokes only market discovery', async () => {
+    const client = await createExchangeClient(row({ exchange: 'bitvavo', apiKey: 'A'.repeat(64), secret: 'B'.repeat(64) }));
+    const raw = client as unknown as {
+      options: Record<string, unknown>; has: Record<string, unknown>; password?: string;
+      requiredCredentials: Record<string, boolean>; enableLastJsonResponse: boolean;
+      fetchMarkets: ReturnType<typeof vi.fn>; fetchCurrencies: ReturnType<typeof vi.fn>;
+      loadMarkets(reload?: boolean): Promise<unknown>;
+    };
+    expect(raw.options).toMatchObject({ defaultType: 'spot', fetchCurrencies: false });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    expect(raw.password).toBeUndefined();
+    expect(raw.enableLastJsonResponse).toBe(true);
+    raw.fetchMarkets = vi.fn(async () => []);
+    raw.fetchCurrencies = vi.fn(async () => { throw new Error('must not fetch currencies'); });
+    await raw.loadMarkets(true);
+    expect(raw.fetchMarkets).toHaveBeenCalledTimes(1);
+    expect(raw.fetchCurrencies).not.toHaveBeenCalled();
   });
 
   it('does not set password for exchanges without a passphrase', async () => {

@@ -5,7 +5,7 @@ import type { ExchangeId } from '@/lib/exchangeSync';
 import { AUTO_SYNC_EXCHANGES } from '@/components/import/autoSyncExchanges';
 import { IMPORT_SOURCES } from '@/components/import/importSources';
 import { CHAINS, DROPDOWN_HIDDEN_CHAINS } from '@/lib/rpc/providers';
-import { BrandIcon, chainIconId } from './brandIcons';
+import { BRAND_ICONS, BrandIcon, chainIconId } from './brandIcons';
 import { ANY_WALLET_DEFAULT_NAME, ANY_WALLET_ID, WALLET_CATALOG, WALLET_GROUP_ORDER } from './walletCatalog';
 import type { FlowKind } from './WhatStep';
 
@@ -31,6 +31,8 @@ interface Cell {
   label: string;
   meta: string;
   iconId: string | null;
+  /** Catalog-provided monogram when a bundled brand asset is not available. */
+  iconFallback?: string;
   searchText?: string;
   /** Generic affordance (not a brand) — render the neutral lucide glyph chip. */
   genericGlyph?: 'wallet';
@@ -113,7 +115,8 @@ function exchangeCells(
         id: exchange.id,
         label: exchange.label,
         meta: 'API sync with read-only credentials',
-        iconId: exchange.id,
+        iconId: exchange.id in BRAND_ICONS ? exchange.id : null,
+        iconFallback: exchange.monogram,
         selection,
         modes: [apiMode]
       });
@@ -273,7 +276,7 @@ export function WhichStep({ flow, apiExchangeStates, fileImportedSlugs, onPick }
                 aria-label={`${cell.label} import options`}
                 data-testid={`exchange-row-${cell.id}`}
               >
-                <BrandIcon id={cell.iconId} fallback={cell.label} size={40} />
+                <BrandIcon id={cell.iconId} fallback={cell.iconFallback ?? cell.label} size={40} />
                 <span className="min-w-0">
                   <span className="block text-sm font-bold text-hi">{cell.label}</span>
                   <span className="block text-[11px] text-low">{cell.meta}</span>

@@ -62,7 +62,7 @@ Smoke test after deploy: open `https://YOUR-APP.up.railway.app/health` — shoul
 
 ## Exchange auto-sync tunnel
 
-`ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (supported exchange connectors, including Bitfinex, Gemini and BTC Markets — spot/read-only paths only).
+`ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (supported exchange connectors, including Bitfinex, Gemini, BTC Markets and Bitvavo — spot/read-only paths only).
 
 For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each request locally — the exchange API secret never leaves the user's device. This route receives the fully-signed request and replays it **byte-verbatim** to the exchange:
 
@@ -74,6 +74,7 @@ For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each
 - Gemini is pinned to `api.gemini.com`: only `GET /v1/symbols` and `POST /v1/balances`, `/v1/mytrades`, `/v1/transfers` are accepted, forwarding only `x-gemini-apikey`, `x-gemini-payload`, and `x-gemini-signature`.
 - BTC Markets is pinned to `api.btcmarkets.net`: only `GET /v3/time`, `/v3/markets`, `/v3/accounts/me/balances`, `/v3/trades`, and `/v3/transfers` are accepted. Only `bm-auth-apikey`, `bm-auth-timestamp`, and `bm-auth-signature` are forwarded; `bm-before`/`bm-after` response cursors are forwarded and CORS-exposed only on the BTC Markets tunnel.
 - MEXC is pinned to `api.mexc.com` and GET-only: `/api/v3/time`, `/api/v3/exchangeInfo`, `/api/v3/symbol/offline`, `/api/v3/account`, `/api/v3/myTrades`, `/api/v3/capital/deposit/hisrec`, and `/api/v3/capital/withdraw/history`. Only `x-mexc-apikey` and CCXT's `source` header are forwarded. Orders, withdrawal mutations, internal transfers, margin, broker, futures/contract, and `config/getall` routes are not exposed.
+- Bitvavo is pinned to `api.bitvavo.com` and GET-only: `/v2/time`, `/v2/markets`, `/v2/balance`, `/v2/account/history`, `/v2/trades`, `/v2/depositHistory`, and `/v2/withdrawalHistory`. The four `bitvavo-access-key`, `bitvavo-access-signature`, `bitvavo-access-timestamp`, and `bitvavo-access-window` headers are the only forwarded exchange headers. Order, cancel, asset, withdrawal mutation, RFQ and futures paths are unreachable.
 
 ### Binance gateway (geo unblock)
 
@@ -88,4 +89,4 @@ SL_EMAIL=you@example.com SL_PASSWORD=secret node scripts/live-verify-exchange-tu
 SL_TOKEN=<jwt> node scripts/live-verify-exchange-tunnel.mjs
 ```
 
-Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and asserts distinctive exchange-origin auth errors. Gemini's dummy-key result proves only that the request reached Gemini's authenticated endpoint; it does not validate a real account key, secret, role, signature, or historical-data access. MEXC's expected HTTP 400/code `10072` probe likewise proves only its exact relay route/auth boundary: MEXC may reject an unknown key before validating the signature. Byte-exact signed header/body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.
+Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and asserts distinctive exchange-origin auth errors. Gemini's dummy-key result proves only that the request reached Gemini's authenticated endpoint; it does not validate a real account key, secret, role, signature, or historical-data access. MEXC's expected HTTP 400/code `10072` probe likewise proves only its exact relay route/auth boundary: MEXC may reject an unknown key before validating the signature. Bitvavo's format-valid 64-character dummy signed balance request is expected to return exact HTTP 403 / errorCode 305; unknown-key validation precedes real-secret validation, so it proves only route/header reachability. Byte-exact signed header/body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.
