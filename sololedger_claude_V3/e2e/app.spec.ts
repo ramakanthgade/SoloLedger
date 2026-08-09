@@ -79,7 +79,7 @@ async function persistedTransactionSafety(page: import('@playwright/test').Page,
 
 async function assertCoreRenderedState(page: import('@playwright/test').Page) {
   await page.getByRole('tab', { name: 'Dashboard', exact: true }).first().click();
-  await expect(page.getByTestId('net-worth-value')).toContainText('1,72,38,558.14');
+  await expect(page.getByTestId('net-worth-value')).toContainText('₹1.72Cr');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Aave');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Spark');
   await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
@@ -122,7 +122,7 @@ test('manifest, service worker, duplicate ids, and explicit persisted theme cont
 test('seeded v16 state drives rendered Dashboard, Connections, Transactions, attestation, and durable offline reload', async ({ page, context }) => {
   await seedWorkspace(page);
   const dashboardTotal = page.getByTestId('net-worth-value');
-  await expect(dashboardTotal).toContainText('₹1,72,38,558.14');
+  await expect(dashboardTotal).toContainText('₹1.72Cr');
   await expect(dashboardTotal).toHaveAttribute('data-defi-feature-enabled', 'true');
   await expect(dashboardTotal).toHaveAttribute('data-defi-shadow-status', 'complete');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Aave');
@@ -144,13 +144,13 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
   await page.screenshot({ path: dashboardScreenshot, fullPage: true });
   await allocation.screenshot({ path: allocationScreenshot });
   const dashboardCapture = {
-    dashboardNetWorth: money(await dashboardTotal.textContent() ?? ''),
+    dashboardNetWorth: Math.round(Number(await page.getByTestId('dashboard-holdings-generation').getAttribute('data-net-worth')) * 100) / 100,
     featureEnabled: await dashboardTotal.getAttribute('data-defi-feature-enabled') === 'true',
     shadowStatus: await dashboardTotal.getAttribute('data-defi-shadow-status')
   };
 
   await page.getByRole('tab', { name: 'Connections', exact: true }).first().click();
-  const walletCard = page.getByRole('button', { name: 'Open Diagnosed wallet details' });
+  const walletCard = page.getByRole('button', { name: 'Open overall holdings for Diagnosed wallet' });
   await walletCard.focus();
   await walletCard.press('Enter');
   await expect(page.getByTestId('account-ownership')).toContainText(/Mine|Owned by me/);
@@ -261,7 +261,7 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
       await assertCoreRenderedState(page);
     }
     await page.getByRole('tab', { name: 'Connections', exact: true }).first().click();
-    await page.getByRole('button', { name: 'Open Diagnosed wallet details' }).click();
+    await page.getByRole('button', { name: 'Open overall holdings for Diagnosed wallet' }).click();
     await expect(page.getByTestId('account-ownership')).toContainText(/Mine|Owned by me/);
     expect(await persistedSafetyStates(page)).toEqual(expect.arrayContaining([
       'trusted', 'high_confidence_spam', 'unverified', 'user_hidden', 'user_visible'
@@ -293,7 +293,7 @@ test('known positive debt without a verified INR price fails closed', async ({ p
   }));
   await page.reload();
   await expect(page.getByTestId('net-worth-value')).toHaveAttribute('data-defi-shadow-status', 'partial');
-  await expect(page.getByTestId('defi-net-worth-incomplete')).toContainText(/known liability.*no verified price/i);
+  await expect(page.getByTestId('defi-net-worth-incomplete')).toContainText(/liabilities are unpriced.*total unavailable/i);
 });
 
 test('exchange auto-sync remains online-only and is never silently cached', async ({ page }) => {
