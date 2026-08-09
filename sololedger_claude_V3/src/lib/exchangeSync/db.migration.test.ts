@@ -105,6 +105,7 @@ describe('EXCHANGE_API_SOURCES', () => {
   it('registers every <exchange>_api source', () => {
     expect([...EXCHANGE_API_SOURCES].sort()).toEqual([
       'binance_api',
+      'bingx_api',
       'bitfinex_api',
       'bitget_api',
       'bitmart_api',
@@ -113,14 +114,18 @@ describe('EXCHANGE_API_SOURCES', () => {
       'btcmarkets_api',
       'bybit_api',
       'coinbase_api',
+      'coinex_api',
       'cryptocom_api',
       'gateio_api',
       'gemini_api',
+      'hitbtc_api',
       'htx_api',
       'kraken_api',
       'kucoin_api',
       'mexc_api',
-      'okx_api'
+      'okx_api',
+      'poloniex_api',
+      'woo_api'
     ]);
   });
 

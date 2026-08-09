@@ -284,6 +284,168 @@ describe('paginatePhase — scripted pages', () => {
 });
 
 describe('syncConnection — cursor safety with a fake client', () => {
+  it('replays an old five-exchange pending transfer until it settles beyond the seven-day overlap', async () => {
+    const pendingAt = NOW - 20 * DAY;
+    const retainedCursor = NOW - 21 * DAY;
+    await db.exchangeConnections.put(makeRow({
+      exchange: 'coinex', passphrase: undefined,
+      cursors: { trades: NOW - DAY, deposits: retainedCursor, withdrawals: NOW - DAY },
+      knownSymbols: ['BTC/USDT']
+    }));
+    let depositCalls = 0;
+    const depositSince: number[] = [];
+    const client: ExchangeClient = {
+      id: 'coinex', markets: {}, last_json_response: undefined,
+      loadMarkets: async () => ({
+        'BTC/USDT': { id: 'BTCUSDT', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', spot: true, active: true }
+      }),
+      fetchBalance: async () => ({ total: {} }),
+      fetchMyTrades: async () => {
+        client.last_json_response = { pagination: { has_next: false } };
+        return [];
+      },
+      fetchDeposits: async (_code, since) => {
+        depositSince.push(since!);
+        depositCalls += 1;
+        client.last_json_response = { pagination: { has_next: false } };
+        return [{
+          id: 'old-pending-deposit', timestamp: pendingAt, type: 'deposit',
+          status: depositCalls === 1 ? 'pending' : 'ok', currency: 'ETH', amount: 2, info: {}
+        }];
+      },
+      fetchWithdrawals: async () => {
+        client.last_json_response = { pagination: { has_next: false } };
+        return [];
+      },
+      handleRestResponse: () => ({}), fetch: async () => ({})
+    };
+
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    expect((await db.exchangeConnections.get('exc_cursor_test'))?.cursors.deposits).toBe(retainedCursor);
+    expect((await db.transactions.toArray()).filter((row) => row.sourceRef === 'old-pending-deposit')).toHaveLength(0);
+
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    expect(depositSince).toEqual([retainedCursor - TRANSFER_OVERLAP_MS, retainedCursor - TRANSFER_OVERLAP_MS]);
+    expect((await db.exchangeConnections.get('exc_cursor_test'))?.cursors.deposits).toBe(NOW);
+    expect((await db.transactions.toArray()).find((row) => row.sourceRef === 'old-pending-deposit')).toMatchObject({
+      type: 'transfer_in', asset: 'ETH', amount: 2,
+      raw: expect.objectContaining({ exchangeSyncKind: 'deposit' })
+    });
+  });
+
+  it('persists and replay-deduplicates both linked legs of a five-exchange crypto fill', async () => {
+    await db.exchangeConnections.put(makeRow({
+      exchange: 'coinex', passphrase: undefined,
+      cursors: { trades: NOW - DAY, deposits: NOW - DAY, withdrawals: NOW - DAY },
+      knownAssets: ['BTC', 'ETH'], knownSymbols: ['ETH/BTC']
+    }));
+    const client: ExchangeClient = {
+      id: 'coinex', markets: {}, last_json_response: undefined,
+      loadMarkets: async () => ({
+        'ETH/BTC': { id: 'ETHBTC', symbol: 'ETH/BTC', base: 'ETH', quote: 'BTC', spot: true, active: true }
+      }),
+      fetchBalance: async () => ({ total: {} }),
+      fetchMyTrades: async () => {
+        client.last_json_response = { pagination: { has_next: false } };
+        return [{
+          id: 'crypto-fill', timestamp: NOW - 1_000, symbol: 'ETH/BTC', side: 'buy',
+          amount: 2, cost: 0.1, fee: { currency: 'ETH', cost: 0.002 }, info: {}
+        }];
+      },
+      fetchDeposits: async () => {
+        client.last_json_response = { pagination: { has_next: false } };
+        return [];
+      },
+      fetchWithdrawals: async () => {
+        client.last_json_response = { pagination: { has_next: false } };
+        return [];
+      },
+      handleRestResponse: () => ({}), fetch: async () => ({})
+    };
+
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+
+    const rows = (await db.transactions.where('source').equals('coinex_api').toArray())
+      .sort((a, b) => (a.sourceRef ?? '').localeCompare(b.sourceRef ?? ''));
+    expect(rows).toMatchObject([
+      {
+        type: 'buy', asset: 'ETH', amount: 2, sourceRef: 'crypto-fill:buy',
+        importBatchId: 'exc_cursor_test',
+        raw: expect.objectContaining({ exchangeSyncKind: 'trade', spotFillLeg: 'buy', spotFillLinkId: 'coinex:crypto-fill' })
+      },
+      {
+        type: 'sell', asset: 'BTC', amount: 0.1, feeAsset: 'ETH', feeAmount: 0.002,
+        sourceRef: 'crypto-fill:sell', importBatchId: 'exc_cursor_test',
+        raw: expect.objectContaining({ exchangeSyncKind: 'trade', spotFillLeg: 'sell', spotFillLinkId: 'coinex:crypto-fill' })
+      }
+    ]);
+    expect(rows).toHaveLength(2);
+  });
+
+  it('retains the five-exchange trade cursor when an old HitBTC fill is unresolved, then imports its replay', async () => {
+    const priorCursor = NOW - 21 * DAY;
+    const fillAt = NOW - 20 * DAY;
+    await db.exchangeConnections.put(makeRow({
+      exchange: 'hitbtc', passphrase: undefined,
+      cursors: { trades: priorCursor, deposits: NOW - DAY, withdrawals: NOW - DAY },
+      knownAssets: ['OLD'], knownSymbols: []
+    }));
+    let marketLoad = 0;
+    const tradeSince: number[] = [];
+    const oldFill: UnifiedTrade = {
+      id: 'old-hitbtc-fill', timestamp: fillAt, symbol: 'OLDBTC', side: 'buy',
+      amount: 2, cost: 0.1, fee: { currency: 'OLD', cost: 0.002 }, info: {}
+    };
+    const client: ExchangeClient = {
+      id: 'hitbtc', markets: {}, last_json_response: undefined,
+      loadMarkets: async () => {
+        marketLoad += 1;
+        const loaded: Record<string, import('./ccxtLoader').UnifiedMarket> = marketLoad === 1 ? {} : {
+          'OLD/BTC': { id: 'OLDBTC', symbol: 'OLD/BTC', base: 'OLD', quote: 'BTC', spot: true, active: true }
+        };
+        return loaded;
+      },
+      fetchBalance: async () => ({ total: {} }),
+      fetchMyTrades: async (_symbol, since) => {
+        tradeSince.push(since!);
+        return [oldFill];
+      },
+      fetchDeposits: async () => {
+        client.last_json_response = [];
+        return [];
+      },
+      fetchWithdrawals: async () => {
+        client.last_json_response = [];
+        return [];
+      },
+      handleRestResponse: () => ({}), fetch: async () => ({})
+    };
+
+    const first = await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    expect(first.mode).toBe('commit');
+    expect(first.outcome.warnings.some((warning) => warning.includes('retained the prior trade cursor'))).toBe(true);
+    expect((await db.exchangeConnections.get('exc_cursor_test'))?.cursors.trades).toBe(priorCursor);
+    expect((await db.transactions.toArray()).some((row) => row.sourceRef?.startsWith('old-hitbtc-fill'))).toBe(false);
+    const firstCoverage = await db.sourceCoverage.toArray();
+    expect(firstCoverage[firstCoverage.length - 1]).toMatchObject({
+      status: 'partial',
+      endpointOutcomes: expect.arrayContaining([
+        expect.objectContaining({ endpoint: 'trades', status: 'partial', paginationExhausted: false })
+      ])
+    });
+
+    const second = await syncConnection('exc_cursor_test', { mode: 'commit' }, {}, deps(client));
+    expect(second.mode).toBe('commit');
+    expect(tradeSince).toEqual([
+      priorCursor - TRADE_OVERLAP_MS,
+      priorCursor - TRADE_OVERLAP_MS
+    ]);
+    expect((await db.exchangeConnections.get('exc_cursor_test'))?.cursors.trades).toBe(NOW);
+    expect((await db.transactions.where('source').equals('hitbtc_api').toArray())
+      .map((row) => row.sourceRef).sort()).toEqual(['old-hitbtc-fill:buy', 'old-hitbtc-fill:sell']);
+  });
+
   it('persists explicit zero fiat while keeping absent exchange fiat absent', async () => {
     await db.exchangeConnections.put(makeRow({ cursors: {} }));
     const { client } = fakeClient();

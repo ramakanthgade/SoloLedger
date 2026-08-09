@@ -93,6 +93,32 @@ beforeAll(async () => {
   binance = new ccxt.binance({});
 });
 
+describe('five-exchange native identity isolation', () => {
+  beforeEach(async () => {
+    await db.transactions.clear();
+  });
+
+  it('dedups only an exact connection+exchange+kind+native-id replay', async () => {
+    const basis: Transaction = {
+      id: 'exact', timestamp: 1_700_000_000_000, type: 'sell', asset: 'BTC', amount: 1,
+      counterAsset: 'ETH', counterAmount: 10, fiatCurrency: 'USD', source: 'coinex_api',
+      sourceRef: 'shared-native-id', importBatchId: 'account-a', flags: [], isInternalTransfer: false,
+      raw: { exchangeSyncKind: 'trade' }
+    };
+    await db.transactions.bulkPut([
+      basis,
+      { ...basis, id: 'exact-replay' },
+      { ...basis, id: 'other-account', importBatchId: 'account-b' },
+      { ...basis, id: 'other-kind', type: 'transfer_in', raw: { exchangeSyncKind: 'deposit' } },
+      { ...basis, id: 'other-exchange', source: 'poloniex_api' }
+    ]);
+    expect(await deduplicateTransactions()).toBe(1);
+    expect((await db.transactions.toArray()).map((row) => row.id).sort()).toEqual([
+      'exact', 'other-account', 'other-exchange', 'other-kind'
+    ]);
+  });
+});
+
 /** API rows normalized from the recorded myTrades fixture (all 4 fills). */
 function apiTradeRows(): Transaction[] {
   const fixture = loadApiFixture<Record<string, unknown[]>>('myTrades.json');

@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(17);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(22);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {

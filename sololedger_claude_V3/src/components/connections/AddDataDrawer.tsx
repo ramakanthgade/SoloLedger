@@ -217,7 +217,7 @@ export function AddDataDrawer({
         />
       );
     }
-    if (flow === 'exchange' && which?.kind === 'exchange-file') return <FileImportFlow />;
+    if (flow === 'exchange' && which?.kind === 'exchange-file') return <FileImportFlow sourceId={which.id} />;
     if (flow === 'wallet-app' && which?.kind === 'wallet-app') {
       return (
         <WalletAddressForm

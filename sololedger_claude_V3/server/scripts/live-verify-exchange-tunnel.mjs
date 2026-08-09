@@ -213,6 +213,26 @@ const TIER2 = [
     probe: 'GET /system/time',
     path: '/system/time',
     check: (r, json) => r.status === 200 && json?.code === 1000 && Number.isFinite(Number(json?.data?.server_time))
+  },
+  {
+    exchange: 'coinex', probe: 'GET /v2/time', path: '/v2/time',
+    check: (r, json) => r.status === 200 && json?.code === 0 && Number.isFinite(Number(json?.data?.timestamp ?? json?.data))
+  },
+  {
+    exchange: 'poloniex', probe: 'GET /markets', path: '/markets',
+    check: (r, json) => r.status === 200 && Array.isArray(json)
+  },
+  {
+    exchange: 'woo', probe: 'GET /v3/systemInfo', path: '/v3/systemInfo',
+    check: (r, json) => r.status === 200 && json?.success === true
+  },
+  {
+    exchange: 'hitbtc', probe: 'GET /api/3/public/symbol', path: '/api/3/public/symbol',
+    check: (r, json) => r.status === 200 && (Array.isArray(json) || (json && typeof json === 'object'))
+  },
+  {
+    exchange: 'bingx', probe: 'GET /openApi/spot/v1/server/time', path: '/openApi/spot/v1/server/time',
+    check: (r, json) => r.status === 200 && json?.code === 0 && Number.isFinite(Number(json?.serverTime ?? json?.data?.serverTime))
   }
 ];
 
@@ -606,6 +626,62 @@ const tier3 = [
     // Unknown-key is distinctive and proves the signed POST/auth headers
     // reached BitMart. Fixture transport tests prove exact body preservation.
     check: (r) => r.status === 401 && /"code"\s*:\s*30002/.test(r.text) && /X-BM-KEY not found/i.test(r.text)
+  },
+  {
+    exchange: 'coinex', probe: 'GET /v2/assets/spot/balance (CoinEx v2 HMAC)',
+    build() {
+      const timestamp = Date.now().toString();
+      const path = '/v2/assets/spot/balance';
+      return { path, exchangeHeaders: {
+        'x-coinex-key': 'dummy-coinex-key', 'x-coinex-timestamp': timestamp,
+        'x-coinex-sign': hmacHex('sha256', 'dummy-coinex-secret', `GET${path}${timestamp}`)
+      } };
+    },
+    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth/i.test(r.text)
+  },
+  {
+    exchange: 'poloniex', probe: 'GET /accounts/balances (Key/Signature)',
+    build() {
+      const signTimestamp = Date.now().toString();
+      const path = '/accounts/balances';
+      const payload = `GET\n${path}\nsignTimestamp=${signTimestamp}`;
+      return { path: `${path}?signTimestamp=${signTimestamp}`, exchangeHeaders: {
+        key: 'dummy-poloniex-key', signature: hmacB64('sha256', 'dummy-poloniex-secret', payload), signTimestamp
+      } };
+    },
+    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth/i.test(r.text)
+  },
+  {
+    exchange: 'woo', probe: 'GET /v3/asset/balances (WOO HMAC)',
+    build() {
+      const timestamp = Date.now().toString();
+      const path = '/v3/asset/balances';
+      return { path, exchangeHeaders: {
+        'x-api-key': 'dummy-woo-key', 'x-api-timestamp': timestamp,
+        'x-api-signature': hmacHex('sha256', 'dummy-woo-secret', timestamp)
+      } };
+    },
+    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth|unauthorized/i.test(r.text)
+  },
+  {
+    exchange: 'hitbtc', probe: 'GET /api/3/spot/balance (HTTP Basic)',
+    build() {
+      return { path: '/api/3/spot/balance', exchangeHeaders: {
+        authorization: `Basic ${Buffer.from('dummy-hitbtc-key:dummy-hitbtc-secret').toString('base64')}`
+      } };
+    },
+    check: (r) => r.relayError === null && r.status === 401 && /auth|credential|unauthorized/i.test(r.text)
+  },
+  {
+    exchange: 'bingx', probe: 'GET /openApi/spot/v1/account/balance (HMAC query)',
+    build() {
+      const query = `timestamp=${Date.now()}`;
+      return {
+        path: `/openApi/spot/v1/account/balance?${query}&signature=${hmacHex('sha256', 'dummy-bingx-secret', query)}`,
+        exchangeHeaders: { 'x-bx-apikey': 'dummy-bingx-key' }
+      };
+    },
+    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth/i.test(r.text)
   }
 ];
 

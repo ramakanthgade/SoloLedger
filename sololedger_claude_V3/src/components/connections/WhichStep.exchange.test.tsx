@@ -3,6 +3,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { WhichStep } from './WhichStep';
 import type { ApiExchangeStates } from './WhichStep';
 import { AUTO_SYNC_EXCHANGES } from '@/components/import/autoSyncExchanges';
+import { IMPORT_SOURCES } from '@/components/import/importSources';
+import { BRAND_ICONS } from './brandIcons';
 
 function renderChooser(over: { api?: ApiExchangeStates; file?: string[] } = {}) {
   const onPick = vi.fn();
@@ -71,14 +73,19 @@ describe('WhichStep — exchange modes', () => {
     expect(screen.getByRole('button', { name: 'Binance API synced' })).toHaveClass('text-gain');
   });
 
-  it('shows file controls for the complete parser-backed catalog and API controls only for the wired catalog', () => {
+  it('shows file controls for parser-backed and flexible-mapping sources, and API controls only for the wired catalog', () => {
     renderChooser();
-    const fileIds = [
-      'binance', 'coinbase', 'coindcx', 'coinswitch', 'zebpay', 'wazirx', 'mudrex',
-      'kraken', 'kucoin', 'cryptocom', 'bybit', 'okx', 'gateio', 'bitfinex',
-      'gemini', 'htx', 'coinspot', 'hyperliquid', 'other'
-    ];
+    const fileIds = IMPORT_SOURCES.map((source) => source.id);
     for (const id of fileIds) expect(screen.getByTestId(`${id}-mode-file`)).toBeInTheDocument();
+
+    for (const id of [
+      'btcmarkets', 'mexc', 'bitvavo', 'bitstamp', 'bitget', 'bitmart',
+      'coinex', 'poloniex', 'woo', 'hitbtc', 'bingx'
+    ]) {
+      expect(screen.getByTestId(`${id}-mode-file`)).toHaveAccessibleName(
+        `${IMPORT_SOURCES.find((source) => source.id === id)!.label} Import file`
+      );
+    }
 
     const apiIds = AUTO_SYNC_EXCHANGES.map((exchange) => exchange.id);
     expect(document.querySelectorAll('[data-testid$="-mode-api"]')).toHaveLength(apiIds.length);
@@ -96,14 +103,15 @@ describe('WhichStep — exchange modes', () => {
     expect(screen.queryByTestId('exchange-row-binance')).not.toBeInTheDocument();
   });
 
-  it('renders local logos for mapped exchanges and the catalog monogram for Bitvavo', () => {
+  it('renders local logos where available and catalog monograms otherwise', () => {
     renderChooser();
     for (const row of screen.getAllByTestId(/exchange-row-/)) {
       const id = row.getAttribute('data-testid')!.replace('exchange-row-', '');
       if (id === 'other') continue;
-      if (id === 'bitvavo') {
+      if (!(id in BRAND_ICONS)) {
+        const source = IMPORT_SOURCES.find((candidate) => candidate.id === id);
         expect(row.querySelector('img')).toBeNull();
-        expect(row.querySelector('.bg-aurora')).toHaveTextContent('BV');
+        expect(row.querySelector('.bg-aurora')).toHaveTextContent(source?.monogram ?? id);
         continue;
       }
       expect(row.querySelector('img'), id).not.toBeNull();

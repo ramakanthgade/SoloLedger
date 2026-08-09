@@ -76,6 +76,7 @@ function exchangeCells(
       meta: source.id === 'other' ? 'Any CSV / Excel' : formatHint,
       searchText: `${source.id} ${source.formatHint}`,
       iconId: source.id === 'other' ? null : source.id,
+      iconFallback: source.monogram,
       selection,
       modes: [{
         kind: 'file',

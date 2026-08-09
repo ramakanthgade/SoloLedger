@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from the pinned CCXT 4.5.68 response comments; real credentials were not used.",
+  "exchange": "bingx",
+  "market": { "id": "BTCUSDT", "symbol": "BTC/USDT", "base": "BTC", "quote": "USDT", "spot": true, "active": true },
+  "trade": { "id": "bingx-fill-1", "timestamp": 1700000000000, "symbol": "BTC/USDT", "side": "buy", "amount": 0.1, "cost": 3000, "fee": { "cost": 1, "currency": "USDT" } },
+  "deposit": { "id": "bingx-deposit-1", "timestamp": 1700000001000, "type": "deposit", "status": "ok", "currency": "ETH", "amount": 2, "info": { "status": "ok" } }
+}

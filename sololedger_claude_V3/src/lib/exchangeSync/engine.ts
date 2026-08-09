@@ -68,6 +68,7 @@ import {
   normalizeBybitTradesByOrder,
   normalizeHtxTradesByOrder,
   normalizeTrade,
+  normalizeTradeRows,
   normalizeTransfer,
   cryptocomTransferDisposition,
   resolveMarket,
@@ -113,6 +114,17 @@ import {
   MEXC_MAX_REQUESTS,
   type MexcCheckpoint
 } from './mexc';
+import {
+  bisectClosedWindows,
+  paginateCoinex,
+  paginateHitbtcOffsets,
+  paginatePoloniexTrades,
+  paginateWoo,
+  safeFiveExchangeCursor,
+  hitbtcWalletTypesKnown,
+  poloniexWalletWindowParams,
+  poloniexWalletShapeKnown
+} from './fiveExchanges';
 
 // ---- Pinned constants (§B-3) ----
 
@@ -230,7 +242,12 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   bitvavo: Date.UTC(2018, 9, 1),
   bitstamp: Date.UTC(2011, 7, 1),
   bitget: Date.UTC(2018, 6, 1),
-  bitmart: Date.UTC(2018, 2, 15)
+  bitmart: Date.UTC(2018, 2, 15),
+  coinex: Date.UTC(2017, 11, 1),
+  poloniex: Date.UTC(2014, 0, 1),
+  woo: Date.UTC(2019, 9, 1),
+  hitbtc: Date.UTC(2014, 1, 1),
+  bingx: Date.UTC(2018, 4, 1)
 };
 
 export interface BitstampSpotTradeClassification {
@@ -2855,6 +2872,62 @@ async function fetchTransferKind(
       sleep
     });
   }
+  if (exchange === 'coinex') {
+    return paginateCoinex({
+      client,
+      fetchPage: (page) => fetchDeposits
+        ? client.fetchDeposits(undefined, since, 100, { page })
+        : client.fetchWithdrawals(undefined, since, 100, { page })
+    });
+  }
+  if (exchange === 'woo') {
+    return paginateWoo({
+      client,
+      fetchPage: (page) => fetchDeposits
+        ? client.fetchDeposits(undefined, since, 1000, { page })
+        : client.fetchWithdrawals(undefined, since, 1000, { page })
+    });
+  }
+  if (exchange === 'poloniex') {
+    let knownShape = true;
+    // The native endpoint accepts inclusive UNIX-second boundaries. Bisect in
+    // that native unit so adjacent windows cannot collapse onto one second.
+    const outcome = await bisectClosedWindows({
+      start: Math.floor(since / 1000), end: Math.floor(now / 1000), limit: 1000,
+      fetchWindow: async (startSecond, endSecond) => {
+        const rows = fetchDeposits
+          ? await client.fetchDeposits(undefined, startSecond * 1000, 1000, poloniexWalletWindowParams(endSecond))
+          : await client.fetchWithdrawals(undefined, startSecond * 1000, 1000, poloniexWalletWindowParams(endSecond));
+        knownShape = knownShape && poloniexWalletShapeKnown(client);
+        return rows;
+      }
+    });
+    if (!knownShape) return { ...outcome, partial: true, termination: 'nonadvancing' };
+    return outcome;
+  }
+  if (exchange === 'hitbtc') {
+    let knownTypes = true;
+    const outcome = await paginateHitbtcOffsets({
+      start: since, end: now, limit: 1000,
+      fetchPage: async (offset) => {
+        const rows = fetchDeposits
+          ? await client.fetchDeposits(undefined, since, 1000, { till: new Date(now).toISOString(), offset, sort: 'ASC' })
+          : await client.fetchWithdrawals(undefined, since, 1000, { till: new Date(now).toISOString(), offset, sort: 'ASC' });
+        knownTypes = knownTypes && hitbtcWalletTypesKnown(client, fetchDeposits ? 'DEPOSIT' : 'WITHDRAW');
+        return rows;
+      }
+    });
+    if (!knownTypes) return { ...outcome, partial: true, termination: 'nonadvancing' };
+    return outcome;
+  }
+  if (exchange === 'bingx') {
+    const rows = fetchDeposits
+      ? await client.fetchDeposits(undefined, since, 1000, { endTime: now })
+      : await client.fetchWithdrawals(undefined, since, 1000, { endTime: now });
+    const missingNativeId = rows.some((row) => row.id == null || String(row.id).trim() === '');
+    return { rows: missingNativeId ? [] : rows, maxTs: missingNativeId ? null : maxTimestamp(rows), partial: missingNativeId || rows.length >= 1000,
+      termination: missingNativeId ? 'nonadvancing' : rows.length >= 1000 ? 'full_page_truncated' : 'exhausted' };
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -3066,6 +3139,34 @@ async function fetchTradesForSymbol(
         maxRequests: opts?.bitmartMaxRequests,
         sleep: opts?.sleep
       });
+    case 'coinex':
+      return paginateCoinex({
+        client,
+        fetchPage: (page) => client.fetchMyTrades(symbol, since, 100, { until: now, page, type: 'spot' })
+      });
+    case 'woo':
+      return paginateWoo({
+        client,
+        fetchPage: (page) => client.fetchMyTrades(undefined, since, 500, { until: now, page, type: 'spot' })
+      });
+    case 'poloniex':
+      return paginatePoloniexTrades({
+        fetchPage: (from) => client.fetchMyTrades(undefined, since, 1000, {
+          until: now, type: 'spot', direction: 'NEXT', ...(from ? { from } : {})
+        })
+      });
+    case 'hitbtc':
+      return paginateHitbtcOffsets({
+        start: since, end: now, limit: 1000,
+        fetchPage: (offset) => client.fetchMyTrades(undefined, since, 1000, {
+          till: new Date(now).toISOString(), offset, sort: 'ASC', type: 'spot'
+        })
+      });
+    case 'bingx':
+      return bisectClosedWindows({
+        start: since, end: now, limit: 1000,
+        fetchWindow: (start, end) => client.fetchMyTrades(symbol, start, 1000, { until: end, type: 'spot' })
+      });
   }
 }
 
@@ -3196,7 +3297,7 @@ export async function syncConnection(
     const loadedMarkets = (await client.loadMarkets()) as Record<string, UnifiedMarket>;
     // Crypto.com and Bitfinex public catalogs are mixed. Keep a
     // strict active-spot market map for every downstream resolution step.
-    const markets = exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'bitmart'
+    const markets = exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'bitmart' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx'
       ? Object.fromEntries(Object.entries(loadedMarkets).filter(([, market]) =>
           market.spot === true && market.active !== false))
       : loadedMarkets;
@@ -3752,7 +3853,23 @@ export async function syncConnection(
       for (const t of outcome.rows) {
         if (t.currency) transferAssets.add(t.currency.toUpperCase());
       }
-      const merged = Math.max(oldCursors[kind] ?? 0, outcome.maxTs ?? 0);
+      const failClosedFive = exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx';
+      if (failClosedFive) {
+        const requestedKind = kind === 'deposits' ? 'deposit' as const : 'withdrawal' as const;
+        const needsReplay = outcome.rows.some((transfer) => {
+          const status = String(transfer.status ?? '').toLowerCase();
+          const terminal = status === 'failed' || status === 'canceled' || status === 'rejected';
+          return !terminal && normalizeTransfer(exchange, transfer, requestedKind) == null;
+        });
+        if (needsReplay) {
+          outcome.partial = true;
+          outcome.termination = 'nonadvancing';
+        }
+      }
+      const transferCandidate = failClosedFive
+        ? safeFiveExchangeCursor([outcome], oldCursors[kind], nowMs)
+        : (outcome.maxTs ?? 0);
+      const merged = Math.max(oldCursors[kind] ?? 0, transferCandidate);
       if (merged > 0) newCursors[kind] = merged;
       fetchedCount += outcome.rows.length;
       if (cryptocomRetentionTruncated) {
@@ -3834,7 +3951,33 @@ export async function syncConnection(
     let bitvavoUnresolvedPairs = 0;
     let skippedSymbols = 0;
 
-    if (exchange === 'binance') {
+    if (exchange === 'coinex' || exchange === 'bingx') {
+      // Both APIs require a symbol. Freeze the complete current active-spot
+      // universe together with every previously known symbol; this is
+      // especially important for BingX, where a delisting must not erase the
+      // only discoverable evidence that a market was once in scope.
+      const symbols = [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])].sort();
+      discoveryUniverseCount = symbols.length;
+      newKnownSymbols = symbols;
+      let done = 0;
+      hooks.onProgress?.({ done, total: symbols.length });
+      for (const symbol of symbols) {
+        const market = markets[symbol];
+        if (!market || market.spot !== true) {
+          warnings.push(`${symbol}: ${exchangeLabel(exchange)} no longer publishes this known spot market; coverage remains partial and retained exports are required.`);
+          skippedSymbols += 1;
+          tradeOutcomes.push({ rows: [], maxTs: oldCursors.trades ?? launchFloor, partial: true, termination: 'nonadvancing' });
+        } else {
+          const outcome = await fetchTradesForSymbol(client, exchange, symbol, tradeSince, nowMs);
+          tradeOutcomes.push(outcome);
+          tradeRows.push(...outcome.rows);
+          fetchedCount += outcome.rows.length;
+        }
+        done += 1;
+        hooks.onProgress?.({ done, total: symbols.length });
+      }
+      discoveredCount = done;
+    } else if (exchange === 'binance') {
       // §B-4 symbol discovery.
       //
       // INITIAL (cursorless) sync: probe EVERY live spot symbol. Binance's
@@ -4157,6 +4300,16 @@ export async function syncConnection(
         outcome.partial = true;
         outcome.retentionFloor = retentionFloor;
       }
+      if (exchange === 'woo') {
+        const accepted = outcome.rows.filter((trade) => resolveMarket(markets, trade.symbol)?.spot === true);
+        const unresolved = outcome.rows.length - accepted.length;
+        if (unresolved > 0) {
+          outcome.partial = true;
+          outcome.termination = 'nonadvancing';
+          warnings.push(`WOO X returned ${unresolved} derivative or unresolved trade row(s). They were excluded and the trade frontier was not advanced.`);
+          outcome.rows = accepted;
+        }
+      }
       if (bybitRetentionTruncated) {
         outcome.partial = true;
         outcome.retentionFloor = bybitRetentionFloor;
@@ -4238,7 +4391,29 @@ export async function syncConnection(
       })()
       : undefined;
 
-    const tradeCursorCandidate = exchange === 'bitvavo'
+    const failClosedFiveTrades = exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx';
+    if (failClosedFiveTrades) {
+      const unsafeTradeCount = tradeRows.reduce((count, trade) => {
+        const market = resolveMarket(markets, trade.symbol);
+        return count + (!market || normalizeTradeRows(exchange, trade, market).length === 0 ? 1 : 0);
+      }, 0);
+      if (unsafeTradeCount > 0) {
+        // Cursor safety must include semantic normalization, not only transport
+        // pagination. A synthetic partial outcome composes with every existing
+        // per-symbol outcome and forces the account-wide frontier to replay.
+        tradeOutcomes.push({
+          rows: [], maxTs: oldCursors.trades ?? launchFloor,
+          partial: true, termination: 'nonadvancing'
+        });
+        warnings.push(
+          `${exchangeLabel(exchange)} retained the prior trade cursor because ${unsafeTradeCount} fetched fill(s) could not resolve an active spot market or failed normalization; a future sync will replay them.`
+        );
+      }
+    }
+
+    const tradeCursorCandidate = exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx'
+      ? safeFiveExchangeCursor(tradeOutcomes, oldCursors.trades, nowMs)
+      : exchange === 'bitvavo'
       ? (tradeOutcomes.some((outcome) => outcome.partial) ? (oldCursors.trades ?? EXCHANGE_LAUNCH_MS.bitvavo) : nowMs)
       : exchange === 'bitget'
       ? (newKnownSymbols?.length
@@ -4342,8 +4517,8 @@ export async function syncConnection(
           }
           continue;
         }
-        const tx = normalizeTrade(exchange, trade, market);
-        if (tx) transactions.push(tx);
+        const normalized = normalizeTradeRows(exchange, trade, market);
+        if (normalized.length > 0) transactions.push(...normalized);
         else tradeNormalizationDrops += 1;
       }
       if (cryptocomDerivativeExcluded > 0) {
@@ -4406,7 +4581,10 @@ export async function syncConnection(
           terminalTransfersByKind[kind] += 1;
           continue;
         }
-        const tx = normalizeTransfer(exchange, transfer);
+        const requestedKind = exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx'
+          ? (kind === 'deposits' ? 'deposit' as const : 'withdrawal' as const)
+          : undefined;
+        const tx = normalizeTransfer(exchange, transfer, requestedKind);
         if (tx) transactions.push(tx);
         else skippedTransfersByKind[kind] += 1;
       }

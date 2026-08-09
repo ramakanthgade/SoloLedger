@@ -90,3 +90,9 @@ SL_TOKEN=<jwt> node scripts/live-verify-exchange-tunnel.mjs
 ```
 
 Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and asserts distinctive exchange-origin auth errors. Gemini's dummy-key result proves only that the request reached Gemini's authenticated endpoint; it does not validate a real account key, secret, role, signature, or historical-data access. MEXC's expected HTTP 400/code `10072` probe likewise proves only its exact relay route/auth boundary: MEXC may reject an unknown key before validating the signature. Bitvavo's format-valid 64-character dummy signed balance request is expected to return exact HTTP 403 / errorCode 305; unknown-key validation precedes real-secret validation, so it proves only route/header reachability. Byte-exact signed header/body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.
+
+### Five GET-only spot connectors
+
+CoinEx, Poloniex, WOO X, HitBTC and BingX are constrained to exact GET-only
+spot market, balance, fill and wallet-history paths in `exchangeTunnel.ts`.
+Mutation, margin, futures and swap routes are intentionally absent.

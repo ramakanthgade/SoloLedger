@@ -25,6 +25,20 @@ const NAMED_EXCHANGE_PARSERS: Record<string, string[]> = {
   hyperliquid: ['hyperliquid_trades', 'hyperliquid_deposits']
 };
 
+const FLEXIBLE_MAPPED_EXCHANGES = [
+  'btcmarkets',
+  'mexc',
+  'bitvavo',
+  'bitstamp',
+  'bitget',
+  'bitmart',
+  'coinex',
+  'poloniex',
+  'woo',
+  'hitbtc',
+  'bingx'
+] as const;
+
 describe('IMPORT_SOURCES — "Other / any exchange" catalog entry', () => {
   it('includes an "other" entry rendered last with exchange-agnostic steps', () => {
     const other = getImportSource('other');
@@ -40,7 +54,11 @@ describe('IMPORT_SOURCES — "Other / any exchange" catalog entry', () => {
 
   it('keeps the named-exchange tiles alongside the generic option', () => {
     const ids = IMPORT_SOURCES.map((s) => s.id);
-    expect(new Set(ids)).toEqual(new Set([...Object.keys(NAMED_EXCHANGE_PARSERS), 'other']));
+    expect(new Set(ids)).toEqual(new Set([
+      ...Object.keys(NAMED_EXCHANGE_PARSERS),
+      ...FLEXIBLE_MAPPED_EXCHANGES,
+      'other'
+    ]));
     expect(ids[ids.length - 1]).toBe('other');
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -52,6 +70,21 @@ describe('IMPORT_SOURCES — "Other / any exchange" catalog entry', () => {
       for (const parserId of requiredParserIds) {
         expect(parserIds.has(parserId), `${exchangeId} uses registered parser ${parserId}`).toBe(true);
       }
+    }
+  });
+
+  it('labels parserless exchange entry points as flexible mapping without schema or dedup claims', () => {
+    for (const exchangeId of FLEXIBLE_MAPPED_EXCHANGES) {
+      const source = getImportSource(exchangeId)!;
+      const guidance = `${source.steps.join(' ')} ${source.note}`;
+
+      expect(source.fileSupport, exchangeId).toBe('flexible');
+      expect(source.formatHint, exchangeId).toMatch(/flexible mapping/i);
+      expect(guidance, exchangeId).toMatch(/exact report names and menu path have not been verified/i);
+      expect(guidance, exchangeId).toMatch(/auto-detection.*review and map the columns manually/i);
+      expect(guidance, exchangeId).toMatch(/No dedicated .* file parser is claimed/i);
+      expect(guidance, exchangeId).toMatch(/overlapping API and file history may create duplicates/i);
+      expect(guidance, exchangeId).not.toMatch(/expected columns/i);
     }
   });
 

@@ -1059,7 +1059,12 @@ export const EXCHANGE_API_SOURCES = new Set([
   'bitvavo_api',
   'bitstamp_api',
   'bitget_api',
-  'bitmart_api'
+  'bitmart_api',
+  'coinex_api',
+  'poloniex_api',
+  'woo_api',
+  'hitbtc_api',
+  'bingx_api'
 ]);
 
 /**
@@ -1200,6 +1205,15 @@ export function transactionExchangeKey(
     const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
       ? rawKind : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:bitget:${kind}:${t.sourceRef}`;
+  }
+  const fiveExchange = t.source.endsWith('_api')
+    ? ['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx'].find((exchange) => t.source === `${exchange}_api`)
+    : undefined;
+  if (fiveExchange) {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:${fiveExchange}:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;
