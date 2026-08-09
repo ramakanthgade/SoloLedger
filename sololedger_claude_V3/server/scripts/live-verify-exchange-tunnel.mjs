@@ -442,7 +442,7 @@ const tier3 = [
   },
   {
     exchange: 'mexc',
-    probe: 'GET /api/v3/account (dummy-key HMAC-SHA256 route/auth-boundary probe)',
+    probe: 'GET /api/v3/account (X-MEXC-APIKEY + HMAC-SHA256 query)',
     build() {
       const apiKey = 'D'.repeat(32);
       const secret = 'E'.repeat(32);
@@ -450,12 +450,12 @@ const tier3 = [
       const signature = hmacHex('sha256', secret, query);
       return {
         path: `/api/v3/account?${query}&signature=${signature}`,
-        exchangeHeaders: { 'x-mexc-apikey': apiKey, source: 'CCXT' }
+        exchangeHeaders: { 'x-mexc-apikey': apiKey }
       };
     },
-    // Unknown keys may be checked before signatures. This proves only the
-    // exact relay route and auth boundary, not signature validation.
-    check: (r) => r.status === 400 && /"code"\s*:\s*10072/.test(r.text) && /Api key info invalid/i.test(r.text)
+    // Distinctive MEXC exchange-origin auth evidence. This validates relay
+    // routing/header reachability, not real-key permissions or history scope.
+    check: (r) => r.status === 401 && r.text.includes('"code":700002') && /signature[^\n]*not valid/i.test(r.text)
   }
 ];
 
