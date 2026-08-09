@@ -5,22 +5,20 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
 /**
  * The auto-sync catalog drives the AddConnectionForm picker — its ids must
  * stay exactly the ccxt exchange ids (contract C3 `SYNC_EXCHANGES`), and
- * `needsPassphrase` must be true ONLY for OKX and KuCoin (contract C5:
- * their `requiredCredentials` include `password`; the others take
- * apiKey+secret only).
+ * `needsPassphrase` follows CCXT requiredCredentials.password.
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(15);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(16);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
     expect(AUTO_SYNC_EXCHANGES.map((e) => e.id)).toEqual([...SYNC_EXCHANGES]);
   });
 
-  it('needsPassphrase is true ONLY for okx and kucoin', () => {
+  it('needsPassphrase is true ONLY for okx, kucoin and bitget', () => {
     const withPassphrase = AUTO_SYNC_EXCHANGES.filter((e) => e.needsPassphrase).map((e) => e.id);
-    expect(withPassphrase.sort()).toEqual(['kucoin', 'okx']);
+    expect(withPassphrase.sort()).toEqual(['bitget', 'kucoin', 'okx']);
   });
 
   it('monograms are two characters', () => {
@@ -132,5 +130,11 @@ describe('autoSyncExchanges catalog', () => {
     expect(bitstamp.keyInstructions.join(' ')).toMatch(/since_id/i);
     expect(bitstamp.keyInstructions.join(' ')).toMatch(/200,000|200000/i);
     expect(bitstamp.keyInstructions.join(' ')).toMatch(/CSV|manual/i);
+  });
+
+  it('documents Bitget passphrase, read-only scope, verified retention and export/dedup limits', () => {
+    const bitget = getAutoSyncExchange('bitget')!;
+    expect(bitget.needsPassphrase).toBe(true);
+    expect(bitget.keyInstructions.join(' ')).toMatch(/Passphrase.*Read-only.*Never enable.*90 days.*retain.*exports.*not verified.*scoped.*does not promise CSV auto-deduplication/i);
   });
 });

@@ -56,6 +56,7 @@ describe('loadCcxt', () => {
     expect(typeof a.btcmarkets).toBe('function');
     expect(typeof a.mexc).toBe('function');
     expect(typeof a.bitvavo).toBe('function');
+    expect(typeof a.bitget).toBe('function');
   });
 });
 
@@ -82,8 +83,8 @@ describe('createExchangeClient', () => {
     expect(client.fetch).not.toBe(fresh.fetch);
   });
 
-  it('maps passphrase → ccxt password for okx and kucoin', async () => {
-    for (const exchange of ['okx', 'kucoin'] as const) {
+  it('maps passphrase → ccxt password for okx, kucoin and bitget', async () => {
+    for (const exchange of ['okx', 'kucoin', 'bitget'] as const) {
       const client = await createExchangeClient(row({ exchange, passphrase: 'phrase' }));
       expect((client as unknown as Record<string, unknown>).password).toBe('phrase');
     }
@@ -276,6 +277,38 @@ describe('createExchangeClient', () => {
     await raw.loadMarkets(true);
     expect(raw.fetchMarkets).toHaveBeenCalledTimes(1);
     expect(raw.fetchCurrencies).not.toHaveBeenCalled();
+  });
+
+  it('pins Bitget to classic spot v2 without UTA, swap, currency or margin transport', async () => {
+    const client = await createExchangeClient(row({
+      exchange: 'bitget', apiKey: 'BG_KEY', secret: 'BG_SECRET', passphrase: 'BG_PHRASE'
+    }));
+    const raw = client as unknown as {
+      options: Record<string, unknown>; has: Record<string, unknown>;
+      requiredCredentials: Record<string, boolean>; password?: string;
+      enableLastJsonResponse: boolean;
+      publicMarginGetV2MarginCurrencies: () => Promise<unknown>;
+      sign(path: string, api: string[], method: string, params: Record<string, unknown>): {
+        url: string; method: string; headers: Record<string, string | undefined>;
+      };
+    };
+    expect(raw.options).toMatchObject({
+      defaultType: 'spot', fetchMarkets: { types: ['spot'] }, fetchCurrencies: false, uta: false
+    });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: true });
+    expect(raw.password).toBe('BG_PHRASE');
+    expect(raw.enableLastJsonResponse).toBe(true);
+    expect(await raw.publicMarginGetV2MarginCurrencies()).toEqual({ code: '00000', msg: 'success', data: [] });
+    const signed = raw.sign('v2/spot/trade/fills', ['private', 'spot'], 'GET', {
+      symbol: 'BTCUSDT', idLessThan: '1098394344974925824', limit: 100
+    });
+    expect(signed.url).toMatch(/^https:\/\/api\.bitget\.com\/api\/v2\/spot\/trade\/fills\?/);
+    expect(signed.url).toContain('idLessThan=1098394344974925824');
+    expect(signed.headers).toMatchObject({
+      'ACCESS-KEY': 'BG_KEY', 'ACCESS-SIGN': expect.any(String),
+      'ACCESS-TIMESTAMP': expect.stringMatching(/^\d+$/), 'ACCESS-PASSPHRASE': 'BG_PHRASE'
+    });
   });
 
   it('does not set password for exchanges without a passphrase', async () => {

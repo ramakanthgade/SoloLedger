@@ -221,6 +221,21 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/api/v2/account_balances/': ['POST'],
       '/api/v2/user_transactions/': ['POST']
     }
+  },
+  bitget: {
+    host: 'api.bitget.com',
+    headers: ['access-key', 'access-sign', 'access-timestamp', 'access-passphrase'],
+    methods: ['GET'],
+    // Exact classic spot-v2 read surface emitted by pinned CCXT 4.5.68.
+    // UTA, margin, mix/futures, order mutation and wallet mutation are absent.
+    paths: [
+      '/api/v2/public/time',
+      '/api/v2/spot/public/symbols',
+      '/api/v2/spot/account/assets',
+      '/api/v2/spot/trade/fills',
+      '/api/v2/spot/wallet/deposit-records',
+      '/api/v2/spot/wallet/withdrawal-records'
+    ]
   }
 };
 

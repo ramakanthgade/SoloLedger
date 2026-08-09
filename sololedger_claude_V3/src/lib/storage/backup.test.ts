@@ -810,6 +810,16 @@ describe('importFullBackup', () => {
         highWater: { trades: 700, deposits: 800, withdrawals: 900 }
       },
       bitstampUnresolvedIds: ['1100']
+    }, {
+      id: 'bitget-source', exchange: 'bitget', apiKey: 'key', secret: 'secret', passphrase: 'passphrase',
+      createdAt: 1, cursors: {}, status: 'ok', bitgetHistory: {
+        deposits: { newest: '930010', unsafeIds: ['930009'], verifiedAt: 1_000 },
+        withdrawals: { checkpoint: { cursor: '940005', newest: '940010', stopAt: '940001' } },
+        trades: {
+          'BTC/USDT': { newest: '950010', checkpoint: { cursor: '950005', newest: '950010' } }
+        },
+        tradeProgress: { requestedAt: 2_000, symbols: ['BTC/USDT', 'ETH/USDT'], nextSymbolIndex: 1 }
+      }
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -871,6 +881,17 @@ describe('importFullBackup', () => {
         highWater: { trades: 700, deposits: 800, withdrawals: 900 }
       },
       bitstampUnresolvedIds: ['1100']
+    });
+    expect(await db.exchangeConnections.get('bitget-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      bitgetHistory: {
+        deposits: { newest: '930010', unsafeIds: ['930009'], verifiedAt: 1_000 },
+        withdrawals: { checkpoint: { cursor: '940005', newest: '940010', stopAt: '940001' } },
+        trades: {
+          'BTC/USDT': { newest: '950010', checkpoint: { cursor: '950005', newest: '950010' } }
+        },
+        tradeProgress: { requestedAt: 2_000, symbols: ['BTC/USDT', 'ETH/USDT'], nextSymbolIndex: 1 }
+      }
     });
   });
 
@@ -1004,6 +1025,24 @@ describe('importFullBackup', () => {
       await expect(importFullBackup(backupFile(payload))).rejects.toThrow('Bitstamp unresolved replay evidence is malformed');
     }
   );
+
+  it.each([
+    { deposits: { newest: '01' } },
+    { withdrawals: { checkpoint: { cursor: '11', newest: '10' } } },
+    { trades: { 'BTC/USDT': { unsafeIds: ['1', '1'] } } },
+    { trades: { '': { newest: '1' } } },
+    { tradeProgress: { requestedAt: 1, symbols: ['BTC/USDT'], nextSymbolIndex: 2 } },
+    { unexpected: {} }
+  ])('rejects malformed Bitget native history state %#', async (bitgetHistory) => {
+    await db.exchangeConnections.put({
+      id: 'bitget-source', exchange: 'bitget', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { bitgetHistory: unknown }).bitgetHistory = bitgetHistory;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(
+      'Bitget native history state is malformed'
+    );
+  });
 
   it.each([
     [],

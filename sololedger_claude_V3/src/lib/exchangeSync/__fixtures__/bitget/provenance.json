@@ -1,0 +1,4 @@
+{
+  "_recorded": false,
+  "_note": "Schema-faithful hand-authored transcription of Bitget classic spot v2 examples and pinned CCXT 4.5.68 parser comments. No account key was used. These fixtures prove parser/transport behavior, not live retention or CSV identity parity."
+}

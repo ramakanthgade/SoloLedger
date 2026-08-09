@@ -2,8 +2,8 @@
  * Auto-sync exchange catalog (Section C, task 1) — mirrors importSources.ts.
  *
  * The exchanges supported by Exchange Auto-Sync (contract C3/C5): the
- * `id` IS the ccxt exchange id, `needsPassphrase` is true ONLY for OKX and
- * KuCoin (their `requiredCredentials` include `password`), and each entry
+ * `id` IS the ccxt exchange id, `needsPassphrase` is true only where CCXT
+ * requires `password` (OKX, KuCoin, Bitget), and each entry
  * carries plain-language instructions for creating a READ-ONLY API key plus
  * a link to the exchange's API-key page.
  */
@@ -260,6 +260,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['Bitstamp', 'Settings', 'API access', 'New API key'],
     docsUrl: 'https://www.bitstamp.net/account/security/api/'
+  },
+  {
+    id: 'bitget',
+    label: 'Bitget',
+    monogram: 'BG',
+    needsPassphrase: true,
+    formatHint: 'API key + secret + passphrase · 90-day API coverage',
+    keyInstructions: [
+      'Log in to Bitget on the web and open Profile → API Management.',
+      'Create a system-generated API key and set an API Passphrase — you chose it, and you need it here too.',
+      'Enable Read-only for Spot account, spot trade history, and deposit/withdrawal history. Never enable trading, transfers, or withdrawals.',
+      'Copy the API Key, Secret Key, and Passphrase and paste them here.',
+      'Bitget documents 90 days of history on these API surfaces. Before it expires, retain Bitget Spot order/fill and deposit/withdrawal exports for older tax records. Export IDs are not verified to match API IDs, so SoloLedger keeps API dedup scoped to this connection and does not promise CSV auto-deduplication.'
+    ],
+    path: ['Bitget', 'Profile', 'API Management', 'Create API Key'],
+    docsUrl: 'https://www.bitget.com/account/api'
   }
 ];
 

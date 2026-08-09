@@ -213,7 +213,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['btcmarkets', 'api.btcmarkets.net', '/v3/time'],
     ['mexc', 'api.mexc.com', '/api/v3/time'],
     ['bitvavo', 'api.bitvavo.com', '/v2/time'],
-    ['bitstamp', 'www.bitstamp.net', '/api/v2/markets/']
+    ['bitstamp', 'www.bitstamp.net', '/api/v2/markets/'],
+    ['bitget', 'api.bitget.com', '/api/v2/public/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -534,6 +535,30 @@ describe('3. header allowlist', () => {
     });
     expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
   });
+
+  it('bitget: forwards only the four ACCESS auth headers', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"code":"00000","data":[]}'));
+    const res = await client('/bitget/api/v2/spot/account/assets', {
+      headers: {
+        ...AUTH,
+        'x-exchange-access-key': 'BG_KEY',
+        'x-exchange-access-sign': 'signature',
+        'x-exchange-access-timestamp': '1700000000000',
+        'x-exchange-access-passphrase': 'phrase',
+        'x-exchange-x-channel-api-code': 'must-not-forward',
+        'x-exchange-cookie': 'must-not-forward'
+      }
+    });
+    expect(res.status).toBe(200);
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://api.bitget.com/api/v2/spot/account/assets');
+    expect(init.headers).toEqual({
+      'access-key': 'BG_KEY',
+      'access-sign': 'signature',
+      'access-timestamp': '1700000000000',
+      'access-passphrase': 'phrase'
+    });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -836,6 +861,23 @@ describe('4. exchangeId and path validation', () => {
       ['/bitstamp/api/v2/buy/btcusd/', 'POST'],
       ['/bitstamp/api/v2/withdrawal-requests/', 'POST'],
       ['/bitstamp/api/v2/open_orders/all/', 'POST']
+    ] as const) {
+      const res = await client(path, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('Bitget allows only exact classic spot-v2 read-only GET paths', async () => {
+    for (const [path, method] of [
+      ['/bitget/api/v2/mix/market/contracts', 'GET'],
+      ['/bitget/api/v2/margin/currencies', 'GET'],
+      ['/bitget/api/v3/account/settings', 'GET'],
+      ['/bitget/api/v2/spot/trade/place-order', 'POST'],
+      ['/bitget/api/v2/spot/wallet/withdrawal', 'POST'],
+      ['/bitget/api/v2/spot/trade/fills/123', 'GET'],
+      ['/bitget/api/v2/spot/trade/fills', 'POST']
     ] as const) {
       const res = await client(path, { method, headers: AUTH });
       expect(res.status).toBe(400);

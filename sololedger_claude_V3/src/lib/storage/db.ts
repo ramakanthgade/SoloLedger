@@ -120,7 +120,7 @@ export interface ExchangeConnectionRow {
   label?: string;       // user-assigned friendly name, e.g. "My Binance"
   apiKey?: string;
   secret?: string;
-  passphrase?: string;  // OKX / KuCoin only (ccxt `password`)
+  passphrase?: string;  // OKX / KuCoin / Bitget (ccxt `password`)
   /** Legacy rows migrate to ready; redacted restores use reauthorization_required. */
   credentialsState?: 'ready' | 'reauthorization_required';
   /** Monotonic authority/coverage source-operation generation. */
@@ -191,6 +191,8 @@ export interface ExchangeConnectionRow {
   };
   /** Deferred /account/history economics awaiting complete native task coverage. */
   bitvavoPendingAccountCandidates?: import('@/lib/exchangeSync/bitvavo').BitvavoPendingAccountCandidate[];
+  /** Bitget's proven newest IDs and unfinished newest-first idLessThan walks. */
+  bitgetHistory?: BitgetHistoryState;
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
@@ -210,6 +212,30 @@ export interface BitstampPaginationCheckpoint {
   newest: string;
   consumed: Array<{ id: string; type: string }>;
   highWater: { trades?: number; deposits?: number; withdrawals?: number };
+}
+
+export interface BitgetPaginationCheckpoint {
+  cursor: string;
+  newest: string;
+  /** Previously committed newest ID (or unsafe replay ID) this walk must reach. */
+  stopAt?: string;
+}
+
+export interface BitgetEndpointState {
+  newest?: string;
+  checkpoint?: BitgetPaginationCheckpoint;
+  /** Bounded native IDs whose status/economics must be replayed. */
+  unsafeIds?: string[];
+  /** Millisecond frontier through which this endpoint/symbol was fully walked. */
+  verifiedAt?: number;
+}
+
+export interface BitgetHistoryState {
+  deposits?: BitgetEndpointState;
+  withdrawals?: BitgetEndpointState;
+  trades?: Record<string, BitgetEndpointState>;
+  /** Frozen fair scan: page-budget resumes cannot restart at the first symbol. */
+  tradeProgress?: { requestedAt: number; symbols: string[]; nextSymbolIndex: number };
 }
 
 export interface PriceCacheRow {
@@ -1017,7 +1043,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'btcmarkets_api',
   'mexc_api',
   'bitvavo_api',
-  'bitstamp_api'
+  'bitstamp_api',
+  'bitget_api'
 ]);
 
 /**
@@ -1141,6 +1168,15 @@ export function transactionExchangeKey(
             ? 'withdrawal'
             : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:bitstamp:${kind}:${t.sourceRef}`;
+  }
+  // Bitget native IDs are stable within an account, but fills and wallet
+  // records can share numeric namespaces and no vendor-export parity has been
+  // verified. Scope replay identity by connection and immutable endpoint kind.
+  if (t.source === 'bitget_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:bitget:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;

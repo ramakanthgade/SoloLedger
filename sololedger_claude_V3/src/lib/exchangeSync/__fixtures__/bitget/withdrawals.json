@@ -1,0 +1,13 @@
+{
+  "_recorded": false,
+  "_note": "GET /api/v2/spot/wallet/withdrawal-records data shape, newest first.",
+  "response": [
+    {
+      "orderId": "1083832260799930268",
+      "tradeId": "35bf0e588a42b25c71a9d45abe7308cabdeec6b7b423910b9bd4743d3a9a9efb",
+      "clientOid": "123", "coin": "BTC", "type": "withdraw", "size": "0.01000000", "fee": "-0.00010000",
+      "status": "success", "toAddress": "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", "dest": "on_chain", "chain": "BTC",
+      "confirm": "100", "fromAddress": null, "cTime": "1693931668281", "uTime": "1693931680247"
+    }
+  ]
+}

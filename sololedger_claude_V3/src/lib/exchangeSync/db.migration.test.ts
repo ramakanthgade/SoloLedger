@@ -106,6 +106,7 @@ describe('EXCHANGE_API_SOURCES', () => {
     expect([...EXCHANGE_API_SOURCES].sort()).toEqual([
       'binance_api',
       'bitfinex_api',
+      'bitget_api',
       'bitstamp_api',
       'bitvavo_api',
       'btcmarkets_api',

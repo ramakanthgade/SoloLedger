@@ -152,7 +152,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   btcmarkets: 'BTC Markets',
   mexc: 'MEXC',
   bitvavo: 'Bitvavo',
-  bitstamp: 'Bitstamp'
+  bitstamp: 'Bitstamp',
+  bitget: 'Bitget'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -186,7 +187,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     timeout: 30_000
   };
   if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini' || exchangeId === 'btcmarkets' || exchangeId === 'mexc' || exchangeId === 'bitvavo' || exchangeId === 'bitstamp') {
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini' || exchangeId === 'btcmarkets' || exchangeId === 'mexc' || exchangeId === 'bitvavo' || exchangeId === 'bitstamp' || exchangeId === 'bitget') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -267,6 +268,15 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
               }
           : exchangeId === 'bitstamp'
             ? { defaultType: 'spot', fetchCurrencies: false }
+          : exchangeId === 'bitget'
+            ? {
+                defaultType: 'spot',
+                fetchMarkets: { types: ['spot'] },
+                fetchCurrencies: false,
+                // Avoid CCXT's signed UTA account-settings probe. This
+                // connector intentionally uses classic spot v2 only.
+                uta: false
+              }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -314,7 +324,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     config.enableLastJsonResponse = true;
     config.enableLastResponseHeaders = true;
   }
-  if (exchangeId === 'mexc' || exchangeId === 'bitstamp') {
+  if (exchangeId === 'mexc' || exchangeId === 'bitstamp' || exchangeId === 'bitget') {
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
   }
@@ -362,6 +372,13 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // relay deliberately blocks that path, so satisfy the join locally.
     (exchange as unknown as { publicMarginGetCurrencyPairs: () => Promise<unknown[]> })
       .publicMarginGetCurrencyPairs = async () => [];
+  }
+  if (exchangeId === 'bitget') {
+    // Pinned CCXT 4.5.68 unconditionally joins v2 margin currencies while
+    // loading spot markets. Return the documented empty shape locally so no
+    // margin route is transported and only /v2/spot/public/symbols is fetched.
+    (exchange as unknown as { publicMarginGetV2MarginCurrencies: () => Promise<unknown> })
+      .publicMarginGetV2MarginCurrencies = async () => ({ code: '00000', msg: 'success', data: [] });
   }
   installTunnelFetch(exchange, exchangeId);
   return exchange;

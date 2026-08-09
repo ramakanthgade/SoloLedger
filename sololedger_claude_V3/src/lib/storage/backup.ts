@@ -183,6 +183,28 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
     },
     bitvavoPendingAccountCandidates: row.bitvavoPendingAccountCandidates == null ? undefined :
       structuredClone(row.bitvavoPendingAccountCandidates),
+    bitgetHistory: row.bitgetHistory == null ? undefined : {
+      deposits: row.bitgetHistory.deposits == null ? undefined : {
+        ...row.bitgetHistory.deposits,
+        checkpoint: row.bitgetHistory.deposits.checkpoint == null ? undefined : { ...row.bitgetHistory.deposits.checkpoint },
+        unsafeIds: row.bitgetHistory.deposits.unsafeIds == null ? undefined : [...row.bitgetHistory.deposits.unsafeIds]
+      },
+      withdrawals: row.bitgetHistory.withdrawals == null ? undefined : {
+        ...row.bitgetHistory.withdrawals,
+        checkpoint: row.bitgetHistory.withdrawals.checkpoint == null ? undefined : { ...row.bitgetHistory.withdrawals.checkpoint },
+        unsafeIds: row.bitgetHistory.withdrawals.unsafeIds == null ? undefined : [...row.bitgetHistory.withdrawals.unsafeIds]
+      },
+      trades: row.bitgetHistory.trades == null ? undefined : Object.fromEntries(
+        Object.entries(row.bitgetHistory.trades).map(([symbol, state]) => [symbol, {
+          ...state,
+          checkpoint: state.checkpoint == null ? undefined : { ...state.checkpoint },
+          unsafeIds: state.unsafeIds == null ? undefined : [...state.unsafeIds]
+        }])
+      ),
+      tradeProgress: row.bitgetHistory.tradeProgress == null ? undefined : {
+        ...row.bitgetHistory.tradeProgress, symbols: [...row.bitgetHistory.tradeProgress.symbols]
+      }
+    },
     lastSyncAt: row.lastSyncAt, status: row.status,
     lastError: typeof row.lastError === 'string' ? row.lastError : undefined,
     accountIdentityId: row.accountIdentityId
@@ -564,6 +586,37 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
       unsafeTradeIds.some((id) => typeof id !== 'string' || !/^(0|[1-9]\d*)$/.test(id)) ||
       new Set(unsafeTradeIds).size !== unsafeTradeIds.length)) {
       throw new Error('Invalid backup file: BTC Markets unsafe trade evidence is malformed.');
+    }
+    const bitget = row.bitgetHistory;
+    if (bitget != null) {
+      const decimal = (value: unknown) => typeof value === 'string' && /^(0|[1-9]\d*)$/.test(value);
+      const endpointValid = (endpoint: unknown): boolean => {
+        if (!isPlainObject(endpoint) || Object.keys(endpoint).some((key) => !['newest', 'checkpoint', 'unsafeIds', 'verifiedAt'].includes(key))) return false;
+        if (endpoint.newest != null && !decimal(endpoint.newest)) return false;
+        if (endpoint.verifiedAt != null && (!Number.isSafeInteger(endpoint.verifiedAt) ||
+          typeof endpoint.verifiedAt !== 'number' || endpoint.verifiedAt < 0)) return false;
+        if (endpoint.unsafeIds != null && (!Array.isArray(endpoint.unsafeIds) || endpoint.unsafeIds.length > 100 ||
+          endpoint.unsafeIds.some((id) => !decimal(id)) || new Set(endpoint.unsafeIds).size !== endpoint.unsafeIds.length)) return false;
+        if (endpoint.checkpoint != null) {
+          const checkpoint = endpoint.checkpoint;
+          if (!isPlainObject(checkpoint) || Object.keys(checkpoint).some((key) => !['cursor', 'newest', 'stopAt'].includes(key)) ||
+            !decimal(checkpoint.cursor) || !decimal(checkpoint.newest) ||
+            (checkpoint.stopAt != null && !decimal(checkpoint.stopAt)) ||
+            BigInt(checkpoint.cursor as string) > BigInt(checkpoint.newest as string) ||
+            (checkpoint.stopAt != null && BigInt(checkpoint.stopAt as string) > BigInt(checkpoint.newest as string))) return false;
+        }
+        return true;
+      };
+      const progress = isPlainObject(bitget) ? bitget.tradeProgress : undefined;
+      if (!isPlainObject(bitget) || Object.keys(bitget).some((key) => !['deposits', 'withdrawals', 'trades', 'tradeProgress'].includes(key)) ||
+        (bitget.deposits != null && !endpointValid(bitget.deposits)) ||
+        (bitget.withdrawals != null && !endpointValid(bitget.withdrawals)) ||
+        (bitget.trades != null && (!isPlainObject(bitget.trades) || Object.entries(bitget.trades).some(([symbol, endpoint]) => !symbol.trim() || !endpointValid(endpoint)))) ||
+        (progress != null && (!isPlainObject(progress) || !Number.isSafeInteger(progress.requestedAt) || typeof progress.requestedAt !== 'number' || progress.requestedAt < 0 ||
+          !Array.isArray(progress.symbols) || progress.symbols.some((symbol) => typeof symbol !== 'string' || !symbol.trim()) ||
+          !Number.isSafeInteger(progress.nextSymbolIndex) || typeof progress.nextSymbolIndex !== 'number' || progress.nextSymbolIndex < 0 || progress.nextSymbolIndex > progress.symbols.length))) {
+        throw new Error('Invalid backup file: Bitget native history state is malformed.');
+      }
     }
     if (progress != null && (!Number.isSafeInteger(progress.windowStart) || progress.windowStart < 0 ||
       !Number.isSafeInteger(progress.windowEnd) || progress.windowEnd <= progress.windowStart ||
