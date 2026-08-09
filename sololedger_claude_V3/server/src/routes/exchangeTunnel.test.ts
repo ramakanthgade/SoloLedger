@@ -215,7 +215,12 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['bitvavo', 'api.bitvavo.com', '/v2/time'],
     ['bitstamp', 'www.bitstamp.net', '/api/v2/markets/'],
     ['bitget', 'api.bitget.com', '/api/v2/public/time'],
-    ['bitmart', 'api-cloud.bitmart.com', '/system/time']
+    ['bitmart', 'api-cloud.bitmart.com', '/system/time'],
+    ['coinex', 'api.coinex.com', '/v2/time'],
+    ['poloniex', 'api.poloniex.com', '/markets'],
+    ['woo', 'api.woox.io', '/v3/systemInfo'],
+    ['hitbtc', 'api.hitbtc.com', '/api/3/public/symbol'],
+    ['bingx', 'open-api.bingx.com', '/openApi/spot/v1/server/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -363,6 +368,34 @@ describe('3. header allowlist', () => {
     });
     const [, init] = lastUpstreamCall();
     expect(init.headers).toEqual({ key: 'GATE_KEY', timestamp: '1700000000', sign: 'signature' });
+  });
+
+  it('poloniex: lowercase prefixed inbound auth headers reach the private boundary with native names', async () => {
+    upstreamMock.mockImplementation(async (url, init) => {
+      expect(url).toBe('https://api.poloniex.com/accounts/balances');
+      expect(init?.method).toBe('GET');
+      expect(init?.headers).toEqual({
+        key: 'POLO_KEY', signature: 'signature',
+        signTimestamp: '1700000000000', recvWindow: '5000'
+      });
+      return upstreamJson('{"success":true}');
+    });
+
+    const res = await rawRequest({
+      path: '/poloniex/accounts/balances',
+      headers: {
+        ...AUTH,
+        'x-exchange-key': 'POLO_KEY',
+        'x-exchange-signature': 'signature',
+        'x-exchange-signtimestamp': '1700000000000',
+        'x-exchange-recvwindow': '5000',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.body.toString('utf8')).toBe('{"success":true}');
+    expect(upstreamMock).toHaveBeenCalledTimes(1);
   });
 
   it('htx: preserves signed raw query and forwards no private auth headers', async () => {
@@ -738,6 +771,35 @@ describe('4. exchangeId and path validation', () => {
     const post = await client('/gateio/api/v4/spot/my_trades', { method: 'POST', headers: AUTH });
     expect(post.status).toBe(400);
     expect(post.headers.get('x-sololedger-error')).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['coinex', '/v2/spot/user-deals', '/v2/spot/order'],
+    ['poloniex', '/trades', '/orders'],
+    ['woo', '/v3/trade/transactionHistory', '/v3/trade/order'],
+    ['hitbtc', '/api/3/spot/history/trade', '/api/3/spot/order'],
+    ['bingx', '/openApi/spot/v1/trade/myTrades', '/openApi/spot/v1/trade/order']
+  ])('%s is exact-path and GET-only', async (exchange, allowed, blocked) => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    const ok = await client(`/${exchange}${allowed}`, { headers: AUTH });
+    expect(ok.status).toBe(200);
+    upstreamMock.mockClear();
+    const mutation = await client(`/${exchange}${allowed}`, { method: 'POST', headers: AUTH });
+    expect(mutation.status).toBe(400);
+    const outside = await client(`/${exchange}${blocked}`, { headers: AUTH });
+    expect(outside.status).toBe(400);
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    '/openApi/api/v3/capital/deposit/hisrec',
+    '/openApi/api/v3/capital/withdraw/history'
+  ])('allows pinned BingX wallet GET path %s but no mutation', async (path) => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    expect((await client(`/bingx${path}`, { headers: AUTH })).status).toBe(200);
+    upstreamMock.mockClear();
+    expect((await client(`/bingx${path}`, { method: 'POST', headers: AUTH })).status).toBe(400);
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 

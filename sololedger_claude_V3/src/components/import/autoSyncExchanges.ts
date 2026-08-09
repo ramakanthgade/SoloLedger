@@ -294,6 +294,62 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['BitMart', 'Account', 'API Management', 'Create API'],
     docsUrl: 'https://www.bitmart.com/account/en-US/api'
+  },
+  {
+    id: 'coinex', label: 'CoinEx', monogram: 'CE', needsPassphrase: false,
+    formatHint: 'API key + secret',
+    keyInstructions: [
+      'Log in to CoinEx and open Account → API Management, then create an API key.',
+      'Enable only read access for spot balances, executions, deposits and withdrawals. Never enable trading or withdrawal permissions.',
+      'Copy the Access ID and Secret Key and paste them here. CoinEx does not require a passphrase.',
+      'CoinEx does not publish an account-lifetime API retention guarantee. SoloLedger exhausts every reported page but does not claim older history exists when the API stops.'
+    ],
+    path: ['CoinEx', 'Account', 'API Management', 'Create API'],
+    docsUrl: 'https://www.coinex.com/apikey'
+  },
+  {
+    id: 'poloniex', label: 'Poloniex', monogram: 'PL', needsPassphrase: false,
+    formatHint: 'API key + secret',
+    keyInstructions: [
+      'Log in to Poloniex and open Profile → API Keys.',
+      'Create a key with read-only access to spot trade and wallet history. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret and paste them here. Poloniex does not require a passphrase.',
+      'Wallet windows that remain saturated at one second or contain non-empty adjustments of unknown type are left partial and require an export or manual review.'
+    ],
+    path: ['Poloniex', 'Profile', 'API Keys'], docsUrl: 'https://poloniex.com/profile/apiKeys'
+  },
+  {
+    id: 'woo', label: 'WOO X', monogram: 'WX', needsPassphrase: false,
+    formatHint: 'API key + secret · spot only',
+    keyInstructions: [
+      'Log in to WOO X and open Account → API Management.',
+      'Create a read-only API key for balances, transaction history and wallet history. Never enable order or withdrawal permissions.',
+      'Copy the Application ID / API Key and Secret and paste them here.',
+      'SoloLedger imports spot fills only. Unstable page totals or any derivative/unresolved market row keep coverage partial.'
+    ],
+    path: ['WOO X', 'Account', 'API Management'], docsUrl: 'https://x.woo.org/account/api-management'
+  },
+  {
+    id: 'hitbtc', label: 'HitBTC', monogram: 'HB', needsPassphrase: false,
+    formatHint: 'API key + secret',
+    keyInstructions: [
+      'Log in to HitBTC and open Settings → API Keys.',
+      'Create a key with only Order book, History and Trading balance read permissions. Never enable order placement or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here.',
+      'SoloLedger scans closed windows by offset. Unknown wallet activity types fail closed instead of being silently ignored.'
+    ],
+    path: ['HitBTC', 'Settings', 'API Keys'], docsUrl: 'https://hitbtc.com/settings/api-keys'
+  },
+  {
+    id: 'bingx', label: 'BingX', monogram: 'BX', needsPassphrase: false,
+    formatHint: 'API key + secret · spot only',
+    keyInstructions: [
+      'Log in to BingX and open Profile → API Management.',
+      'Create a read-only key for spot account, spot trade history and deposit/withdrawal records. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here.',
+      'BingX trade history is scanned per spot symbol with recursively bisected closed windows. SoloLedger persists the known market universe so delisted symbols are not silently forgotten.'
+    ],
+    path: ['BingX', 'Profile', 'API Management'], docsUrl: 'https://bingx.com/account/api/'
   }
 ];
 

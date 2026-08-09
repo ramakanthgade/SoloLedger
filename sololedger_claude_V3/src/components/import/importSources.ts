@@ -61,6 +61,34 @@ function schemaCompatibleCsvSource(config: {
   };
 }
 
+/**
+ * Named entry point into the existing generic spreadsheet flow. These sources
+ * do not claim a vendor-schema parser: supported formats are auto-detected when
+ * possible and otherwise stay behind the user's explicit column review/map.
+ */
+function flexibleMappedFileSource(config: {
+  id: string;
+  label: string;
+  monogram: string;
+}): ImportSource {
+  const { id, label, monogram } = config;
+  return {
+    id,
+    label,
+    monogram,
+    formatHint: 'CSV / Excel · flexible mapping',
+    fileSupport: 'flexible',
+    region: 'global',
+    steps: [
+      `Export the transaction or trade history available from ${label} as CSV or Excel. The exact report names and menu path have not been verified by SoloLedger.`,
+      'Also export deposits, withdrawals or account history as separate files when the exchange offers them.',
+      'Drop the file(s) into the next step. SoloLedger will try its existing format auto-detection first; if the format is not recognized, review and map the columns manually before saving.'
+    ],
+    path: ['Exchange export', 'CSV / XLSX', 'Review & map columns'],
+    note: `No dedicated ${label} file parser is claimed. Review the imported rows carefully; importing overlapping API and file history may create duplicates.`
+  };
+}
+
 export const IMPORT_SOURCES: ImportSource[] = [
   {
     id: 'coindcx',
@@ -249,6 +277,17 @@ export const IMPORT_SOURCES: ImportSource[] = [
     expectedColumns: 'Date, Action, Coin, Amount, Rate, AUD, AUD Fee',
     coverageNote: 'The matching CoinSpot schema supports buys, sells, deposits, withdrawals, sends and receives with AUD values.'
   }),
+  flexibleMappedFileSource({ id: 'btcmarkets', label: 'BTC Markets', monogram: 'BM' }),
+  flexibleMappedFileSource({ id: 'mexc', label: 'MEXC', monogram: 'MX' }),
+  flexibleMappedFileSource({ id: 'bitvavo', label: 'Bitvavo', monogram: 'BV' }),
+  flexibleMappedFileSource({ id: 'bitstamp', label: 'Bitstamp', monogram: 'BS' }),
+  flexibleMappedFileSource({ id: 'bitget', label: 'Bitget', monogram: 'BG' }),
+  flexibleMappedFileSource({ id: 'bitmart', label: 'BitMart', monogram: 'BM' }),
+  flexibleMappedFileSource({ id: 'coinex', label: 'CoinEx', monogram: 'CX' }),
+  flexibleMappedFileSource({ id: 'poloniex', label: 'Poloniex', monogram: 'PX' }),
+  flexibleMappedFileSource({ id: 'woo', label: 'WOO X', monogram: 'WX' }),
+  flexibleMappedFileSource({ id: 'hitbtc', label: 'HitBTC', monogram: 'HB' }),
+  flexibleMappedFileSource({ id: 'bingx', label: 'BingX', monogram: 'BX' }),
   {
     id: 'hyperliquid',
     label: 'Hyperliquid',

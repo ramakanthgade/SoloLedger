@@ -215,6 +215,22 @@ beforeEach(() => {
 });
 
 describe('FileImportFlow — multi-file batch handling', () => {
+  it('shows honest auto-detect/manual-mapping guidance for a named flexible source', () => {
+    render(<FileImportFlow sourceId="coinex" />);
+
+    const guidance = screen.getByTestId('flexible-file-guidance');
+    expect(guidance).toHaveTextContent(/Flexible file import — review required/i);
+    expect(guidance).toHaveTextContent(/try its existing format auto-detection first/i);
+    expect(guidance).toHaveTextContent(/review and map the columns manually/i);
+    expect(guidance).toHaveTextContent(/No dedicated CoinEx file parser is claimed/i);
+    expect(guidance).toHaveTextContent(/overlapping API and file history may create duplicates/i);
+  });
+
+  it('preserves dedicated parser flows without the flexible-source warning', () => {
+    render(<FileImportFlow sourceId="binance" />);
+    expect(screen.queryByTestId('flexible-file-guidance')).not.toBeInTheDocument();
+  });
+
   it('rejects a second drop while account selection is pending without replacing the first resolver', async () => {
     mocks.parseImportFile.mockImplementation(async (file: File) => recognized(1, file.name));
     render(<FileImportFlow />);

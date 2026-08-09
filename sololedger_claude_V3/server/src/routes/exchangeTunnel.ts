@@ -254,6 +254,26 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/account/v2/deposit-withdraw/history': ['GET'],
       '/spot/v4/query/trades': ['POST']
     }
+  },
+  coinex: {
+    host: 'api.coinex.com', headers: ['x-coinex-key', 'x-coinex-sign', 'x-coinex-timestamp'], methods: ['GET'],
+    paths: ['/v2/time', '/v2/spot/market', '/v2/assets/spot/balance', '/v2/spot/user-deals', '/v2/assets/deposit-history', '/v2/assets/withdraw']
+  },
+  poloniex: {
+    host: 'api.poloniex.com', headers: ['key', 'signature', 'signTimestamp', 'recvWindow'], methods: ['GET'],
+    paths: ['/markets', '/accounts/balances', '/trades', '/wallets/activity']
+  },
+  woo: {
+    host: 'api.woox.io', headers: ['x-api-key', 'x-api-signature', 'x-api-timestamp'], methods: ['GET'],
+    paths: ['/v3/systemInfo', '/v3/instruments', '/v3/asset/balances', '/v3/trade/transactionHistory', '/v3/asset/wallet/history']
+  },
+  hitbtc: {
+    host: 'api.hitbtc.com', headers: ['authorization'], methods: ['GET'],
+    paths: ['/api/3/public/symbol', '/api/3/spot/balance', '/api/3/spot/history/trade', '/api/3/wallet/transactions']
+  },
+  bingx: {
+    host: 'open-api.bingx.com', headers: ['x-bx-apikey'], methods: ['GET'],
+    paths: ['/openApi/spot/v1/server/time', '/openApi/spot/v1/common/symbols', '/openApi/spot/v1/account/balance', '/openApi/spot/v1/trade/myTrades', '/openApi/api/v3/capital/deposit/hisrec', '/openApi/api/v3/capital/withdraw/history']
   }
 };
 
@@ -403,7 +423,11 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
     headers['content-type'] = String(req.headers['content-type']);
   }
   for (const name of spec.headers) {
-    const value = req.headers[`x-exchange-${name}`];
+    // Node/Express normalizes inbound header names to lowercase. Look up the
+    // prefixed allowlist key in that canonical form, while retaining the
+    // declared upstream spelling (some exchange docs/signature fixtures use
+    // mixed names such as Poloniex signTimestamp and recvWindow).
+    const value = req.headers[`x-exchange-${name}`.toLowerCase()];
     if (typeof value === 'string') headers[name] = value;
     else if (Array.isArray(value) && value.length > 0) headers[name] = value[0];
   }

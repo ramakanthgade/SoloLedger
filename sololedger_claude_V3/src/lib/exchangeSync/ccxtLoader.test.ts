@@ -16,6 +16,7 @@ import {
 } from './ccxtLoader';
 import { TunnelError } from './tunnel';
 import type { SyncErrorKind } from './types';
+import { normalizeTransfer } from './normalize';
 
 const isSaasModeMock = vi.mocked(isSaasMode);
 
@@ -58,10 +59,67 @@ describe('loadCcxt', () => {
     expect(typeof a.bitvavo).toBe('function');
     expect(typeof a.bitget).toBe('function');
     expect(typeof a.bitmart).toBe('function');
+    expect(typeof a.coinex).toBe('function');
+    expect(typeof a.poloniex).toBe('function');
+    expect(typeof a.woo).toBe('function');
+    expect(typeof a.hitbtc).toBe('function');
+    expect(typeof a.bingx).toBe('function');
   });
 });
 
 describe('createExchangeClient', () => {
+  it.each(['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx'] as const)(
+    'configures %s with API key/secret, spot scope and raw-response capture',
+    async (exchange) => {
+      const client = await createExchangeClient(row({ exchange }));
+      const raw = client as unknown as {
+        options: Record<string, unknown>; requiredCredentials: Record<string, boolean>;
+        enableLastJsonResponse: boolean;
+      };
+      expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+      expect(raw.options.defaultType).toBe('spot');
+      expect(raw.enableLastJsonResponse).toBe(true);
+    }
+  );
+  it('pins Poloniex loadMarkets to the spot transport only', async () => {
+    const client = await createExchangeClient(row({ exchange: 'poloniex' }));
+    const emitted: string[] = [];
+    client.fetch = async (url) => { emitted.push(new URL(url).pathname); return []; };
+    await client.loadMarkets(true);
+    expect(emitted).toEqual(['/markets']);
+    expect(emitted.some((path) => /future|swap/i.test(path))).toBe(false);
+  });
+
+  it('keeps BingX deposit/withdraw endpoint kind authoritative over pinned CCXT parsing', async () => {
+    const client = await createExchangeClient(row({ exchange: 'bingx' }));
+    client.markets = {};
+    const emitted: string[] = [];
+    client.fetch = async (url) => {
+      const path = new URL(url).pathname;
+      emitted.push(path);
+      if (path.endsWith('/deposit/hisrec')) return [{
+        id: 'bingx-deposit', amount: '1', coin: 'BTC', status: 1, insertTime: 1_700_000_000_000,
+        transferType: 0
+      }];
+      return [{
+        id: 'bingx-withdrawal', amount: '0.5', coin: 'BTC', status: 6,
+        applyTime: '2023-11-14T22:13:21.000Z', transferType: 0, transactionFee: '0.01'
+      }];
+    };
+    const [deposit] = await client.fetchDeposits(undefined, undefined, 1000);
+    const [withdrawal] = await client.fetchWithdrawals(undefined, undefined, 1000);
+    expect(deposit.type).toBe('deposit');
+    expect(withdrawal.type).toBe('deposit'); // pinned CCXT bug: transferType=0 wins
+    expect(normalizeTransfer('bingx', deposit, 'deposit')).toMatchObject({ type: 'transfer_in' });
+    expect(normalizeTransfer('bingx', withdrawal, 'withdrawal')).toMatchObject({
+      type: 'transfer_out', feeAmount: 0.01,
+      raw: expect.objectContaining({ exchangeSyncKind: 'withdrawal', transferType: 'withdrawal' })
+    });
+    expect(emitted).toEqual([
+      '/openApi/api/v3/capital/deposit/hisrec',
+      '/openApi/api/v3/capital/withdraw/history'
+    ]);
+  });
   it('sets enableRateLimit + timeout, credentials, and spot defaultType (binance/okx)', async () => {
     const client = await createExchangeClient(row());
     const raw = client as unknown as Record<string, unknown>;

@@ -19,6 +19,7 @@ import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings, isAiMappingAvailable } from '@/lib/saas/effectiveSettings';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
 import { buildFallbackMessages, FixTheFileGuidance } from '@/components/import/importFallback';
+import { getImportSource } from '@/components/import/importSources';
 import type { Transaction } from '@/types/transaction';
 import { Badge } from '@/components/ui/card';
 import { AlertTriangle, CheckCircle2, FileUp, Loader2, Upload } from 'lucide-react';
@@ -88,7 +89,8 @@ function conversionNoteText(converted: number, failed: number, currency: string)
  * dropzone (mockup `.drop`); the "Files already imported" list lives on the
  * Connections home as file cards now.
  */
-export function FileImportFlow() {
+export function FileImportFlow({ sourceId }: { sourceId?: string }) {
+  const source = getImportSource(sourceId ?? null);
   const [outcome, setOutcome] = useState<FileParseOutcome | null>(null);
   const [fileName, setFileName] = useState<string>('');
   const [fileHash, setFileHash] = useState<string>('');
@@ -565,6 +567,16 @@ export function FileImportFlow() {
   return (
     <div className="flex flex-col gap-4" data-testid="file-import-flow">
       <CsvAccountSelection flow={csvAccount} />
+      {source?.fileSupport === 'flexible' && source.id !== 'other' && (
+        <div
+          className="rounded-xl border border-hi/10 bg-elev-2 px-4 py-3 text-xs leading-relaxed text-low"
+          data-testid="flexible-file-guidance"
+        >
+          <p className="font-bold text-mid">Flexible file import — review required</p>
+          <p className="mt-1">{source.steps[source.steps.length - 1]}</p>
+          {source.note && <p className="mt-1">{source.note}</p>}
+        </div>
+      )}
       {/* The hidden file input stays mounted for the whole flow so the
           dropzone's browse control can open the real picker in one click. */}
       <input

@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget, bitmart** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget, bitmart, coinex, poloniex, woo, hitbtc, bingx** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -332,6 +332,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | bitstamp | native mixed-ledger `id`, connection + immutable `trade` kind scoped | native mixed-ledger `id`, connection + immutable deposit/withdrawal kind scoped |
 | bitget | native `tradeId`, connection + immutable `trade` kind scoped; no promised CSV collision | native `orderId`, connection + immutable deposit/withdrawal kind scoped; no promised CSV collision |
 | bitmart | native `tradeId`, connection + immutable `trade` kind scoped | native `deposit_id` / `withdraw_id`, connection + immutable direction scoped; no CSV collision is manufactured |
+| coinex / poloniex / woo / hitbtc / bingx | required native fill id, scoped by connection + exchange + immutable `trade` kind | required native wallet id, scoped by connection + exchange + requested immutable deposit/withdrawal endpoint kind; no CSV collision is manufactured |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -340,6 +341,16 @@ recovers kind from immutable raw evidence (`tradeId`, `transferType`, or
 `clientWid`). Only legacy transfer rows from the connector's earliest revision,
 which retained no endpoint marker at all, use `type` as a final compatibility
 fallback.
+
+The five connectors likewise reject any trade or wallet row without its native
+ID and retain the affected cursor. BingX's pinned CCXT parser can label a
+withdrawal as a deposit when `transferType=0`; the requested GET endpoint is
+therefore authoritative and is persisted as immutable `raw.exchangeSyncKind`.
+Crypto-quoted spot fills are persisted as two linked rows: a `sell` of the
+disposed asset and a `buy` of the acquired asset. Durable `:sell` / `:buy`
+source-reference suffixes keep both legs replay-idempotent, while the fee stays
+only on the disposal row. This opens the acquired cost-basis lot without a
+generic `trade` classification or duplicate custody postings.
 
 Crypto.com's `private/user-balance` response covers whole Exchange-account
 custody and does not prove an exhaustive spot-only subledger. Sync still calls
@@ -567,3 +578,31 @@ CCXT's mixed `fetchMarkets` with `fetchSpotMarkets` and disabling currencies.
 Follow the checklist in the repo-root `AGENTS.md` ("Adding an auto-sync
 exchange") — it covers BOTH the relay edit points and every client-core
 edit point in this module.
+
+## CoinEx, Poloniex, WOO X, HitBTC and BingX safety contracts
+
+All five connectors use the JWT- and active-subscription-gated exchange relay.
+Their host/path policies are GET-only; order, transfer and withdrawal mutation
+paths are not reachable from the browser.
+
+- **CoinEx** exhausts explicit `page` / `pagination.has_next` metadata for each
+  active or retained spot symbol and both wallet endpoints. Missing or repeated
+  metadata is partial/nonadvancing. Native record IDs provide replay identity;
+  lifetime retention and CSV parity are not claimed.
+- **Poloniex** spot trades continue by final native `pageId` with
+  `direction=NEXT`. Wallet history recursively bisects disjoint closed windows.
+  Saturated one-second wallet windows, repeated continuations, or response keys beyond
+  deposits/withdrawals (including adjustments) fail closed.
+- **WOO X** validates stable `total`, current-page and page-size metadata on
+  every trade and wallet page. Only rows resolving to active spot markets are
+  imported; derivative or unresolved rows make coverage partial.
+- **HitBTC** uses offsets only inside frozen `from`/`till` ranges in ascending
+  order. Out-of-window rows and wallet types other than the requested
+  DEPOSIT/WITHDRAW type fail closed. API lifetime retention is unverified.
+- **BingX** recursively bisects saturated per-symbol closed trade windows and
+  persists the union of current and previously known spot symbols atomically
+  with imported rows. A saturated 1 ms range and a full 1,000-row wallet page
+  are partial/nonadvancing. Futures and swaps are excluded.
+
+None of these connectors has a verified SoloLedger vendor CSV parser, so native
+API IDs are stable replay references but API-to-CSV deduplication is not claimed.

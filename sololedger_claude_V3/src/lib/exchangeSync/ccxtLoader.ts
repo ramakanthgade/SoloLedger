@@ -154,7 +154,12 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   bitvavo: 'Bitvavo',
   bitstamp: 'Bitstamp',
   bitget: 'Bitget',
-  bitmart: 'BitMart'
+  bitmart: 'BitMart',
+  coinex: 'CoinEx',
+  poloniex: 'Poloniex',
+  woo: 'WOO X',
+  hitbtc: 'HitBTC',
+  bingx: 'BingX'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -191,7 +196,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     if (exchangeId === 'bitmart') config.uid = row.passphrase;
     else config.password = row.passphrase;
   }
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini' || exchangeId === 'btcmarkets' || exchangeId === 'mexc' || exchangeId === 'bitvavo' || exchangeId === 'bitstamp' || exchangeId === 'bitget' || exchangeId === 'bitmart') {
+  if (exchangeId !== 'coinbase' && exchangeId !== 'kraken' && exchangeId !== 'kucoin') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -283,6 +288,10 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
               }
             : exchangeId === 'bitmart'
               ? { defaultType: 'spot', fetchCurrencies: false }
+            : exchangeId === 'woo' || exchangeId === 'bingx'
+              ? { defaultType: 'spot', fetchMarkets: { types: ['spot'] }, fetchCurrencies: false }
+            : exchangeId === 'coinex' || exchangeId === 'poloniex' || exchangeId === 'hitbtc'
+              ? { defaultType: 'spot', fetchCurrencies: false }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -330,7 +339,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     config.enableLastJsonResponse = true;
     config.enableLastResponseHeaders = true;
   }
-  if (exchangeId === 'mexc' || exchangeId === 'bitstamp' || exchangeId === 'bitget' || exchangeId === 'bitmart') {
+  if (exchangeId === 'mexc' || exchangeId === 'bitstamp' || exchangeId === 'bitget' || exchangeId === 'bitmart' || exchangeId === 'coinex' || exchangeId === 'poloniex' || exchangeId === 'woo' || exchangeId === 'hitbtc' || exchangeId === 'bingx') {
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
   }
@@ -367,6 +376,16 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
   if (exchangeId === 'bitmart') {
     // CCXT 4.5.68's BitMart fetchMarkets() also requests contracts.
     const raw = exchange as unknown as { fetchMarkets: (params?: Record<string, unknown>) => Promise<unknown>; fetchSpotMarkets: (params?: Record<string, unknown>) => Promise<unknown> };
+    raw.fetchMarkets = raw.fetchSpotMarkets.bind(exchange);
+  }
+  if (exchangeId === 'coinex' || exchangeId === 'poloniex' || exchangeId === 'bingx') {
+    // These pinned classes unconditionally join derivatives catalogs in their
+    // generic fetchMarkets implementation. Replace it before loadMarkets so
+    // the GET-only relay never needs a futures/swap path.
+    const raw = exchange as unknown as {
+      fetchMarkets: (params?: Record<string, unknown>) => Promise<unknown>;
+      fetchSpotMarkets: (params?: Record<string, unknown>) => Promise<unknown>;
+    };
     raw.fetchMarkets = raw.fetchSpotMarkets.bind(exchange);
   }
   if (exchangeId === 'bitfinex') {

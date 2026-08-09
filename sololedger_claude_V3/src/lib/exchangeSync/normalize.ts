@@ -33,6 +33,7 @@ const GEMINI_FIAT_QUOTES = new Map([
 
 /** Kraken fiat quotes (kraken.ts FIAT_ASSETS — intentionally NO stablecoins). */
 const KRAKEN_FIAT_ASSETS = new Set(['USD', 'EUR', 'CAD', 'GBP', 'JPY', 'AUD']);
+const FIVE_NATIVE_ID_EXCHANGES = new Set<ExchangeId>(['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx']);
 
 /** makeId prefixes per exchange. */
 const ID_PREFIX: Record<ExchangeId, string> = {
@@ -52,7 +53,12 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   bitvavo: 'exbv',
   bitstamp: 'exbs',
   bitget: 'exbg',
-  bitmart: 'exmt'
+  bitmart: 'exmt',
+  coinex: 'exce',
+  poloniex: 'expl',
+  woo: 'exwo',
+  hitbtc: 'exhb',
+  bingx: 'exbx'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -147,6 +153,14 @@ function tradeSourceRef(
       return trade.id;
     case 'bitmart':
       return trade.id;
+    case 'coinex':
+    case 'poloniex':
+    case 'woo':
+    case 'hitbtc':
+    case 'bingx':
+      // These connectors have no verified SoloLedger CSV parser. Native fill
+      // identity is stable for API replay and storage scopes it by connection.
+      return trade.id;
   }
 }
 
@@ -163,7 +177,8 @@ export function normalizeTrade(
   const ts = trade.timestamp;
   const side = trade.side === 'buy' ? 'buy' : trade.side === 'sell' ? 'sell' : undefined;
   const amount = trade.amount;
-  if (!market || ts == null || !Number.isFinite(ts) || !side || amount == null || !(amount > 0)) {
+  if (!market || ts == null || !Number.isFinite(ts) || !side || amount == null || !(amount > 0) ||
+    (FIVE_NATIVE_ID_EXCHANGES.has(exchange) && (trade.id == null || String(trade.id).trim() === ''))) {
     return null;
   }
   const base = market.base.toUpperCase();
@@ -199,6 +214,23 @@ export function normalizeTrade(
     if (exchange === 'binance' && (market.symbol ?? base) !== base) {
       // Mirrors binanceSpot.ts `Pair <pairRaw>` note.
       notes = `Pair ${market.symbol}`;
+    }
+  } else if (FIVE_NATIVE_ID_EXCHANGES.has(exchange)) {
+    // A crypto pair still contains one taxable disposal. Represent the fill as
+    // a sell of the disposed leg so policy remains disposal-aware while the
+    // derived postings stay byte-for-byte equivalent to the prior trade row.
+    type = 'sell';
+    notes = 'Crypto-for-crypto spot fill';
+    if (side === 'buy') {
+      asset = quote;
+      txAmount = cost ?? 0;
+      counterAsset = base;
+      counterAmount = amount;
+    } else {
+      asset = base;
+      txAmount = amount;
+      counterAsset = quote;
+      counterAmount = cost;
     }
   } else {
     // Crypto-quoted fill → 'trade' with binanceStitch.ts crypto orientation:
@@ -239,12 +271,58 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'bitmart'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'bitmart' || exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx'
         ? { exchangeSyncKind: 'trade' as const }
         : {}),
       ...(exchange === 'bitvavo' ? { bitvavoMarketSymbol: market.symbol } : {})
     }
   };
+}
+
+/**
+ * Materialize tax and custody-equivalent spot rows for persistence.
+ *
+ * The five API-only connectors use buy/sell/fee semantics. A crypto-quoted
+ * fill therefore becomes two linked rows: one sell of the disposed asset and
+ * one buy of the acquired asset. Each row owns exactly one custody principal;
+ * the fee stays only on the disposal row, so derived postings never double
+ * count either leg. Fiat valuation can later price both linked rows at the
+ * same execution FMV without requiring trade expansion in cost-basis.
+ */
+export function normalizeTradeRows(
+  exchange: PerFillExchange,
+  trade: UnifiedTrade,
+  market: UnifiedMarket | undefined
+): Transaction[] {
+  const row = normalizeTrade(exchange, trade, market);
+  if (!row) return [];
+  if (!FIVE_NATIVE_ID_EXCHANGES.has(exchange) || row.notes !== 'Crypto-for-crypto spot fill' ||
+    !row.counterAsset || row.counterAmount == null || !(row.counterAmount > 0) || !row.sourceRef) {
+    return [row];
+  }
+  const nativeRef = row.sourceRef;
+  const linkId = `${exchange}:${nativeRef}`;
+  const disposal: Transaction = {
+    ...row,
+    sourceRef: `${nativeRef}:sell`,
+    counterAsset: undefined,
+    counterAmount: undefined,
+    raw: { ...row.raw, exchangeSyncKind: 'trade', spotFillLeg: 'sell', spotFillLinkId: linkId }
+  };
+  const acquisition: Transaction = {
+    ...row,
+    id: makeId(ID_PREFIX[exchange]),
+    type: 'buy',
+    asset: row.counterAsset,
+    amount: row.counterAmount,
+    sourceRef: `${nativeRef}:buy`,
+    counterAsset: undefined,
+    counterAmount: undefined,
+    feeAmount: undefined,
+    feeAsset: undefined,
+    raw: { ...row.raw, exchangeSyncKind: 'trade', spotFillLeg: 'buy', spotFillLinkId: linkId }
+  };
+  return [disposal, acquisition];
 }
 
 /**
@@ -691,6 +769,11 @@ function transferSourceRef(
       return transfer.id ?? exchangeSourceRef('bitstamp-api', ts, type, asset, amount);
     case 'bitget':
     case 'bitmart':
+    case 'coinex':
+    case 'poloniex':
+    case 'woo':
+    case 'hitbtc':
+    case 'bingx':
       return transfer.id;
   }
 }
@@ -763,11 +846,18 @@ export function cryptocomTransferDisposition(
  * binanceTransfers.ts. Returns null when the transfer is unsettled
  * (status !== 'ok' → counted as skippedUnsettled by the engine) or invalid.
  */
-export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfer): Transaction | null {
+export function normalizeTransfer(
+  exchange: ExchangeId,
+  transfer: UnifiedTransfer,
+  requestedKind?: 'deposit' | 'withdrawal'
+): Transaction | null {
   const infoType = transfer.info?.type ?? transfer.info?.operation_type;
   const geminiType = exchange === 'gemini' && typeof infoType === 'string' ? infoType.toLowerCase() : undefined;
   let type: TxType | null =
     transfer.type === 'deposit' ? 'transfer_in' : transfer.type === 'withdrawal' ? 'transfer_out' : null;
+  if (FIVE_NATIVE_ID_EXCHANGES.has(exchange) && requestedKind) {
+    type = requestedKind === 'deposit' ? 'transfer_in' : 'transfer_out';
+  }
   // Verify-at-build finding: ccxt 4.5.68 coinbase parses v2 'send' rows as
   // unified 'deposit' (positive network.transaction_amount). The raw
   // info.type is authoritative for direction.
@@ -789,7 +879,9 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     else if (infoType === 'withdraw' || transfer.type === 'withdraw') type = 'transfer_out';
   }
   const isGeminiAdjustment = geminiType === 'reward' || geminiType === 'admincredit' || geminiType === 'admindebit';
-  if ((!type && !isGeminiAdjustment) || !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status)) return null;
+  if ((!type && !isGeminiAdjustment) ||
+    (FIVE_NATIVE_ID_EXCHANGES.has(exchange) && (transfer.id == null || String(transfer.id).trim() === '')) ||
+    !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status)) return null;
   const ts = transfer.timestamp;
   const asset = transfer.currency?.toUpperCase();
   const amount = transfer.amount != null ? Math.abs(transfer.amount) : 0;
@@ -863,11 +955,11 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       ...(exchange === 'bitmart' && type === 'transfer_in' && feeCost != null && feeCost > 0
         ? { providerFee: { amount: feeCost, asset: feeAsset, includedInAmount: true } }
         : {}),
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'bitmart' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'bitmart' || FIVE_NATIVE_ID_EXCHANGES.has(exchange) ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.
-        transferType: transfer.type,
+        transferType: requestedKind ?? transfer.type,
         clientWid: transfer.info?.client_wid
       } : {}),
       exchangeAddress: address

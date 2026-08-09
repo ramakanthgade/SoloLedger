@@ -32,10 +32,12 @@ const GENERIC_GLYPH_WALLETS = new Set(['any-wallet']);
 const publicDir = resolve(__dirname, '../../../public');
 const provenanceRows = readFileSync(resolve(publicDir, 'assets/brand-icons/SOURCES.md'), 'utf8').split('\n');
 
-function expectDocumented(file: string, id: string) {
+function expectDocumented(file: string, id: string, requireRetrievalDate = true) {
   const row = provenanceRows.find((line) => line.startsWith(`| \`${file}\``));
   expect(row, `${id} provenance`).toBeDefined();
-  expect(row, `${id} retrieval date`).toMatch(/2026-08-0[46]/);
+  if (requireRetrievalDate) {
+    expect(row, `${id} retrieval date`).toMatch(/\| 2026-08-\d{2} \|$/);
+  }
 }
 
 /**
@@ -123,14 +125,18 @@ describe('chainIconId', () => {
 });
 
 describe('exchange logo coverage', () => {
-  it('maps every named import exchange to a bundled logo', () => {
+  it('maps named import exchanges to a bundled logo or an explicit flexible-source monogram', () => {
     const named = IMPORT_SOURCES.filter((source) => source.id !== 'other');
     expect(named.length).toBeGreaterThan(0);
     for (const source of named) {
       const def = BRAND_ICONS[source.id];
-      expect(def, source.id).toBeDefined();
+      if (!def) {
+        expect(source.fileSupport, `${source.id} fallback support`).toBe('flexible');
+        expect(source.monogram, `${source.id} fallback monogram`).toMatch(/^\S.{0,2}$/);
+        continue;
+      }
       expect(existsSync(resolve(publicDir, `.${def.src}`)), source.id).toBe(true);
-      expectDocumented(def.src.split('/').pop()!, source.id);
+      expectDocumented(def.src.split('/').pop()!, source.id, source.fileSupport !== 'flexible');
     }
   });
 });
