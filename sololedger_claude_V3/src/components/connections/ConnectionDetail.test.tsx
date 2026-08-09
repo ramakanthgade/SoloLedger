@@ -693,8 +693,9 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(zeroRow).toHaveTextContent('0');
     expect(zeroRow).toHaveTextContent('₹0.00');
 
-    // Total = 45,00,000 + 1,000 (+ 0) — XYZ excluded with a note.
-    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹45,01,000.00');
+    // An unpriced positive holding makes the aggregate unavailable; no partial
+    // numeric total is presented as complete.
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('—');
     expect(screen.getByTestId('detail-wallet-authority-status')).toHaveTextContent(
       'on-chain balances as of'
     );
@@ -814,6 +815,19 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(mocks.runWalletImport.mock.calls[0][0]).toEqual(['bc1qaaa1111111111111']);
     expect(mocks.runWalletImport.mock.calls[0][4]).toBe(true);
     expect(mocks.runWalletImport.mock.calls[1][0]).toEqual(['bc1qbbb2222222222222']);
+  });
+
+  it('syncs only the selected row when given a chain-scoped wallet card', async () => {
+    const card = walletCard();
+    const selectedRow = card.walletRows![1];
+    mocks.lookupRows.current = [selectedRow];
+    render(<ConnectionDetail card={{ ...card, id: `${card.id}:${selectedRow.id}`, walletRows: [selectedRow] }} onBack={() => {}} />);
+
+    fireEvent.click(screen.getAllByTestId('detail-sync-now')[0]);
+
+    await waitFor(() => expect(mocks.runWalletImport).toHaveBeenCalledTimes(1));
+    expect(mocks.runWalletImport.mock.calls[0][0]).toEqual([selectedRow.address]);
+    expect(mocks.runWalletImport.mock.calls[0][1].id).toBe(selectedRow.chain);
   });
 
   it('D-4: the last-synced line reads the live lookup rows, not the stale card snapshot', () => {

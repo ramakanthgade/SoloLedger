@@ -1,4 +1,4 @@
-import { ChevronDown, Copy, Loader2, PanelsTopLeft } from 'lucide-react';
+import { ChevronDown, Copy, Loader2 } from 'lucide-react';
 import { formatLedgerCurrency } from '@/lib/utils';
 import { CHAINS } from '@/lib/rpc/providers';
 import { BrandIcon, chainIconId } from './brandIcons';
@@ -17,6 +17,8 @@ interface WalletConnectionCardProps {
   onExpandedChange: (expanded: boolean) => void;
   onOpenDetail: () => void;
   detailButtonRef?: React.Ref<HTMLButtonElement>;
+  onOpenChainDetail: (walletRowId: string) => void;
+  chainDetailButtonRef?: (walletRowId: string, element: HTMLButtonElement | null) => void;
   menuItems?: CardMenuItem[];
   renaming?: React.ReactNode;
   evidence?: WalletConnectionCardEvidence;
@@ -45,7 +47,8 @@ function coverageTone(status: string | undefined): string {
 }
 
 export function WalletConnectionCard({
-  card, expanded, onExpandedChange, onOpenDetail, detailButtonRef, menuItems, renaming, evidence
+  card, expanded, onExpandedChange, onOpenDetail, detailButtonRef, onOpenChainDetail,
+  chainDetailButtonRef, menuItems, renaming, evidence
 }: WalletConnectionCardProps) {
   const currency = evidence?.currency ?? 'INR';
   const total = evidence ? aggregateWalletCurrentValue(evidence.summaries) : null;
@@ -60,10 +63,10 @@ export function WalletConnectionCard({
     >
       <div className="grid grid-cols-[minmax(0,1fr)_88px] items-start gap-3 p-4 sm:p-5">
         <button
+          ref={detailButtonRef}
           type="button"
-          aria-expanded={expanded}
-          aria-controls={regionId}
-          onClick={() => onExpandedChange(!expanded)}
+          aria-label={`Open overall holdings for ${card.title}`}
+          onClick={onOpenDetail}
           className="grid min-h-11 min-w-0 grid-cols-1 items-center gap-4 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 md:grid-cols-[minmax(13rem,1.25fr)_minmax(6rem,.45fr)_minmax(8rem,.55fr)_minmax(9rem,.65fr)]"
         >
           <span className="flex min-w-0 items-center gap-3">
@@ -74,7 +77,6 @@ export function WalletConnectionCard({
               <span className="mt-1 block text-[11px] font-semibold text-gain">{card.status.label}</span>
               {card.syncChip && <span className="mt-1 inline-flex rounded-md border border-hi/10 bg-elev-3 px-2 py-0.5 font-mono text-[10px] text-low" data-testid="sync-chip">{card.syncChip}</span>}
             </span>
-            <ChevronDown className={`ml-auto h-4 w-4 shrink-0 text-low transition-transform md:hidden ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
           </span>
           <span className="hidden text-xs text-low md:block">
             <strong className="block text-sm text-hi">{card.walletRows?.length ?? 0} chains</strong>
@@ -97,12 +99,15 @@ export function WalletConnectionCard({
         </button>
         <span className="flex items-start justify-end">
           <button
-            ref={detailButtonRef}
             type="button"
-            aria-label={`Open ${card.title} details`}
-            onClick={onOpenDetail}
+            aria-label={`${expanded ? 'Collapse' : 'Expand'} ${card.title} chains`}
+            aria-expanded={expanded}
+            aria-controls={regionId}
+            onClick={() => onExpandedChange(!expanded)}
             className="grid h-11 w-11 place-items-center rounded-xl text-low hover:bg-elev-3 hover:text-hi focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-          ><PanelsTopLeft className="h-4 w-4" aria-hidden="true" /></button>
+          >
+            <ChevronDown className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`} aria-hidden="true" />
+          </button>
           {menuItems && <span onClick={(event) => event.stopPropagation()}><CardMenu label={`${card.title} actions`} items={menuItems} /></span>}
         </span>
         {renaming && <div className="col-span-2 ml-[54px]">{renaming}</div>}
@@ -122,10 +127,17 @@ export function WalletConnectionCard({
             return (
               <section
                 key={chain.row.id}
-                className="grid grid-cols-[minmax(0,1fr)_minmax(7rem,.55fr)] gap-3 border-b border-hi/10 px-4 py-4 last:border-b-0 md:grid-cols-[minmax(15rem,1.4fr)_minmax(7rem,.55fr)_minmax(10rem,.7fr)_minmax(9rem,.6fr)] md:items-center md:gap-6 md:px-5"
+                className="relative grid min-h-11 grid-cols-[minmax(0,1fr)_minmax(7rem,.55fr)] gap-3 border-b border-hi/10 px-4 py-4 last:border-b-0 md:grid-cols-[minmax(15rem,1.4fr)_minmax(7rem,.55fr)_minmax(10rem,.7fr)_minmax(9rem,.6fr)] md:items-center md:gap-6 md:px-5"
                 data-testid="wallet-chain-row"
                 data-chain={chain.row.chain}
               >
+                <button
+                  ref={(element) => chainDetailButtonRef?.(chain.row.id, element)}
+                  type="button"
+                  aria-label={`Open ${label} holdings for ${shortAddress(chain.row.address)}`}
+                  onClick={() => onOpenChainDetail(chain.row.id)}
+                  className="absolute inset-0 rounded-lg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-primary/60"
+                />
                 <div className="col-span-2 flex min-w-0 items-center gap-3 md:col-span-1">
                   <BrandIcon id={chainIconId(chain.row.chain)} fallback={label} size={38} />
                   <div className="min-w-0">
@@ -134,7 +146,7 @@ export function WalletConnectionCard({
                       type="button"
                       aria-label={`Copy ${label} address`}
                       onClick={() => void navigator.clipboard?.writeText(chain.row.address)}
-                      className="mt-0.5 flex min-h-11 max-w-full items-center gap-1 rounded-md font-mono text-[11px] text-low focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                      className="relative z-10 mt-0.5 flex min-h-11 max-w-full items-center gap-1 rounded-md font-mono text-[11px] text-low focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
                     >
                       <span className="truncate">{shortAddress(chain.row.address)}</span><Copy className="h-3 w-3 shrink-0" aria-hidden="true" />
                     </button>

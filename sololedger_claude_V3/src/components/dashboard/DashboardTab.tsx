@@ -7,13 +7,12 @@ import {
   type KeyboardEvent
 } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSettings, getLookupAddresses } from '@/lib/storage/db';
+import { db, getSettings, getLookupAddresses, getSpecIdHints } from '@/lib/storage/db';
 import type { CsvImportRow, ExchangeBalanceRow, ExchangeConnectionRow, PriceCacheRow } from '@/lib/storage/db';
 import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { TaxSettings, Transaction } from '@/types/transaction';
-import { calculateCostBasis } from '@/lib/costBasis/engine';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { aggregateTds } from '@/lib/tax/tds';
@@ -42,7 +41,8 @@ import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
 import { DataHealthWorkspace, type DataHealthViewState } from './DataHealthWorkspace';
 import { groupDashboardHoldings, holdingPnlPresentation, reaggregateUnreplacedCustody } from './dashboardEconomicRows';
-import { buildDashboardValueMetrics } from './dashboardValueMetrics';
+import { buildDashboardValueMetrics, economicExposureDisclosure } from './dashboardValueMetrics';
+import { calculateDashboardDisposals } from './dashboardDisposals';
 import { buildCoherentDataHealthShadow, buildDataHealthModel, buildLocalDataHealthDiagnostics } from './dataHealthModel';
 import { buildCards } from '@/components/connections/connectionModel';
 import { buildConnectionWorkspaceFromCard, buildConnectionWorkspaceSnapshot, prepareConnectionWorkspaceCollectionIndex } from '@/components/connections/connectionWorkspaceModel';
@@ -61,8 +61,10 @@ import {
   cn,
   formatCurrency,
   formatCompactAmount,
+  formatCompactCurrency,
   getCurrentFy,
   getFyLabel,
+  inclusiveCivilDateRangeThroughNow,
   isInFy
 } from '@/lib/utils';
 import {
@@ -73,6 +75,7 @@ import {
   buildPriceIndex,
   formatRelativeTime,
   latestSyncAt,
+  moneyStrip,
   periodRange,
   projectionSourceBreakdown,
   sourceVisualShares,
@@ -98,6 +101,7 @@ import {
   RefreshCw,
   ShieldCheck,
   TrendingDown,
+  CalendarDays,
   Wallet
 } from 'lucide-react';
 import { isTransactionExcluded, transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
@@ -419,6 +423,7 @@ const NO_AUTHORITY_ASSETS: AuthorityAssetRow[] = [];
 const NO_SOURCE_COVERAGE: SourceCoverageRow[] = [];
 const NO_OPENING_BALANCES: OpeningBalanceRow[] = [];
 const NO_SAFETY_DECISIONS: SafetyDecisionRow[] = [];
+const NO_SPEC_ID_HINTS: Record<string, string[]> = {};
 const EMPTY_DATA_HEALTH_MODEL = buildDataHealthModel([]);
 const EMPTY_HOLDINGS_PROJECTION = buildHoldingsProjection({
   transactions: [], exchangeConnections: [], openingBalances: [], snapshots: [],
@@ -475,6 +480,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const walletRowsQuery = useLiveQuery(() => getLookupAddresses(), []);
   const holdingsSnapshot = useLiveQuery(readDashboardHoldingsSnapshot, []);
   const priceRows = useLiveQuery(() => db.priceCache.toArray(), []) ?? NO_PRICE_ROWS;
+  const specIdHints = useLiveQuery(() => getSpecIdHints(), []) ?? NO_SPEC_ID_HINTS;
   const exchangeBalanceRows = useLiveQuery(() => db.exchangeBalances.toArray(), []) ?? NO_EXCHANGE_BALANCES;
   const wallets = walletRowsQuery ?? NO_WALLETS;
   const snapshotExchangeConns = holdingsSnapshot?.exchangeConnections ?? NO_EXCHANGE_CONNS;
@@ -492,6 +498,11 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
   const [period, setPeriod] = useState<DashboardPeriod>('FY');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [customRange, setCustomRange] = useState<{ start: number; end: number } | null>(null);
+  const [customError, setCustomError] = useState('');
+  const [customOpen, setCustomOpen] = useState(false);
   const [hideBalances, setHideBalances] = useState<boolean>(() => {
     try {
       return localStorage.getItem(PRIVACY_KEY) === '1';
@@ -794,6 +805,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const unpriced = valued.filter((h) => h.valueNow == null);
   const marketMode = valued.some((h) => h.valueNow != null);
   const adjustedNetWorth = economicExposure.netWorth;
+  const exposureDisclosure = economicExposureDisclosure(economicExposure);
   const netWorth = adjustedNetWorth ?? 0;
   const unrealizedTotal = valueMetrics.historicalUnrealized;
   const pricesAsOf = valued.reduce<number | null>(
@@ -802,10 +814,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   );
 
   const disposals = useMemo(
-    () => settings ? calculateCostBasis(deferredTransactions, {
-      method: 'FIFO', settings, safetyDecisions: snapshotSafetyDecisions
-    }).disposals : [],
-    [deferredTransactions, settings, snapshotSafetyDecisions]
+    () => settings ? calculateDashboardDisposals(
+      deferredTransactions, settings, specIdHints, snapshotSafetyDecisions
+    ) : [],
+    [deferredTransactions, settings, snapshotSafetyDecisions, specIdHints]
   );
 
   const firstTxMs = useMemo(() => {
@@ -813,9 +825,21 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     return Math.min(...deferredTransactions.map((t) => t.timestamp));
   }, [deferredTransactions]);
 
-  const range = useMemo(
+  const presetRange = useMemo(
     () => periodRange(period, jurisdiction, nowMs, firstTxMs),
     [period, jurisdiction, nowMs, firstTxMs]
+  );
+  const range = customRange ?? presetRange;
+  const rangeDateLabel = (timestamp: number) => {
+    const date = jurisdiction === 'IN' ? new Date(timestamp + 5.5 * 60 * 60_000) : new Date(timestamp);
+    return new Intl.DateTimeFormat('en', {
+      month: 'short', day: 'numeric', year: 'numeric', timeZone: jurisdiction === 'IN' ? 'UTC' : undefined
+    }).format(date);
+  };
+  const selectedRangeLabel = `${rangeDateLabel(range.start)} — ${rangeDateLabel(range.end)}`;
+  const strip = useMemo(
+    () => moneyStrip(deferredTransactions, disposals, range.start, range.end, priceIndex),
+    [deferredTransactions, disposals, priceIndex, range.end, range.start]
   );
 
   const series = useMemo(
@@ -933,6 +957,11 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   ), [currency, hideBalances, marketMode, series]);
 
   const fm = (v: number) => (hideBalances ? '••••' : formatCurrency(v, currency));
+  const compactMoney = (v: number | null) => {
+    if (hideBalances) return '••••';
+    if (v == null) return 'Unavailable';
+    return formatCompactCurrency(v, currency).replace(/^-/, '−');
+  };
   const fmtPct = (v: number) => `${v >= 0 ? '+' : '−'}${Math.abs(v).toFixed(1)}%`;
   const fmtSigned = (v: number) => `${v >= 0 ? '+' : '−'}${fm(Math.abs(v))}`;
 
@@ -960,6 +989,12 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     });
   };
 
+  const selectPreset = (nextPeriod: DashboardPeriod) => {
+    setPeriod(nextPeriod);
+    setCustomRange(null);
+    setCustomError('');
+  };
+
   const onPeriodKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     const count = DASHBOARD_PERIODS.length;
     const currentIndex = Math.max(0, DASHBOARD_PERIODS.findIndex((o) => o.value === period));
@@ -983,7 +1018,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         return;
     }
     e.preventDefault();
-    setPeriod(DASHBOARD_PERIODS[nextIndex].value);
+    selectPreset(DASHBOARD_PERIODS[nextIndex].value);
     pillRefs.current[nextIndex]?.focus();
   };
 
@@ -1221,7 +1256,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
           <div className="min-w-0 flex-1 basis-80">
             <div className="flex items-center gap-1.5">
               <p className={eyebrowClass}>
-                {marketMode ? 'Total net worth' : 'Total value · at cost'}
+                Total net worth
               </p>
               <button
                 type="button"
@@ -1243,27 +1278,12 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               data-defi-feature-enabled={walletDefiNetWorthEnabled ? 'true' : 'false'}
               data-defi-shadow-status={defiNetWorthShadow.projection.status}
             >
-              {adjustedNetWorth == null ? 'Incomplete' : fm(netWorth)}
+              {hideBalances ? '••••' : adjustedNetWorth == null ? 'Incomplete' : compactMoney(netWorth)}
             </p>
-            {economicExposure.hasUnpricedLiabilities && (
-              <p className="mt-1.5 text-xs text-warn" data-testid="defi-net-worth-incomplete" role="status">
-                Adjusted net worth is incomplete because a known liability has no verified price. Raw custody is not shown as debt-free.
-              </p>
-            )}
-            {!economicExposure.hasUnpricedLiabilities && economicExposure.status !== 'complete' && walletDefiNetWorthEnabled && (
-              <p className="mt-1.5 text-xs text-warn" data-testid="defi-net-worth-fallback" role="status">
-                Current DeFi look-through is incomplete. Custody is retained and known liabilities remain deducted until current same-block position evidence is complete.
-              </p>
-            )}
-            {!economicExposure.hasUnpricedLiabilities && !marketMode && (
+            {exposureDisclosure && <p className="mt-1.5 text-xs text-warn" data-testid={economicExposure.hasUnpricedLiabilities ? 'defi-net-worth-incomplete' : 'economic-exposure-honesty'} role="status">{exposureDisclosure}</p>}
+            {!economicExposure.hasUnpricedLiabilities && unpriced.length > 0 && (
               <p className="mt-1.5 text-xs text-low" data-testid="hero-honesty-note">
-                At cost — enable live prices in Settings for market value.
-              </p>
-            )}
-            {!economicExposure.hasUnpricedLiabilities && marketMode && unpriced.length > 0 && (
-              <p className="mt-1.5 text-xs text-low" data-testid="hero-honesty-note">
-                {unpriced.length} asset{unpriced.length === 1 ? '' : 's'} shown at cost — no stored
-                price.
+                Partial · {unpriced.length} unpriced asset{unpriced.length === 1 ? '' : 's'}
               </p>
             )}
             {marketMode && pricesAsOf != null && (
@@ -1275,19 +1295,30 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
 
           <dl className="flex flex-wrap items-start gap-x-10 gap-y-5">
             <HeroStat
-              label="Current spot holdings unrealized P&amp;L"
+              label="Cost basis"
+              value={compactMoney(totalCost)}
+              note="Current holdings"
+            />
+            <HeroStat
+              label="Unrealized P&amp;L"
               value={
-                unrealizedTotal != null ? (hideBalances ? '••••' : fmtSigned(unrealizedTotal)) : '—'
+                compactMoney(unrealizedTotal)
               }
               tone={unrealizedTotal == null ? 'mid' : unrealizedTotal >= 0 ? 'gain' : 'loss'}
               note={
-                unrealizedTotal == null
-                  ? 'Enable live prices in Settings'
-                  : totalCost > 0
-                    ? `${fmtPct((unrealizedTotal / totalCost) * 100)} vs cost basis`
-                    : 'No cost basis'
+                hideBalances
+                  ? undefined
+                  : unrealizedTotal == null
+                    ? 'Enable live prices in Settings'
+                    : totalCost > 0
+                      ? `${fmtPct((unrealizedTotal / totalCost) * 100)} vs cost basis`
+                      : 'No cost basis'
               }
             />
+          </dl>
+        </div>
+
+        <div className="mt-5 flex flex-wrap items-end justify-between gap-4 border-y border-hi/10 bg-elev-1/40 px-5 py-3">
             <div>
               <p className={cn(eyebrowClass, 'mb-2')}>Period</p>
               <div
@@ -1298,18 +1329,19 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
                 className="flex flex-wrap items-center gap-1 rounded-xl border border-hi/10 bg-elev-2 p-1 shadow-xs"
               >
                 {DASHBOARD_PERIODS.map((option, i) => {
-                  const active = period === option.value;
+                  const active = customRange == null && period === option.value;
+                  const roving = period === option.value;
                   return (
                     <button
                       key={option.value}
                       type="button"
                       role="radio"
                       aria-checked={active}
-                      tabIndex={active ? 0 : -1}
+                      tabIndex={roving ? 0 : -1}
                       ref={(el) => {
                         pillRefs.current[i] = el;
                       }}
-                      onClick={() => setPeriod(option.value)}
+                      onClick={() => selectPreset(option.value)}
                       className={cn(
                         'min-h-[44px] rounded-[10px] border px-3.5 text-xs font-bold transition-colors',
                         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
@@ -1324,11 +1356,40 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
                 })}
               </div>
             </div>
-          </dl>
+            <div className="min-w-0 text-right">
+              <p className="text-xs font-bold text-hi" data-testid="selected-range-summary">{selectedRangeLabel}</p>
+              <p className="mt-1 text-[0.6875rem] text-low">{customRange ? 'Custom · inclusive dates' : presetRange.sinceCaption}</p>
+              <button type="button" aria-expanded={customOpen} aria-controls="dashboard-custom-range" aria-pressed={customRange != null} onClick={() => setCustomOpen((open) => !open)} className="mt-2 inline-flex min-h-[44px] items-center gap-2 rounded-lg px-3 text-xs font-bold text-primary hover:bg-primary/10">
+                <CalendarDays className="h-4 w-4" aria-hidden="true" /> Custom range
+              </button>
+            </div>
+            {customOpen && <div id="dashboard-custom-range" className="flex w-full flex-wrap items-end justify-end gap-2" aria-label="Custom inclusive date range">
+                <label className="text-[0.6875rem] font-bold text-low">Start<input aria-label="Custom start date" type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="mt-1 block min-h-[44px] rounded-lg border border-hi/10 bg-elev-2 px-2 text-xs text-hi" /></label>
+                <label className="text-[0.6875rem] font-bold text-low">End<input aria-label="Custom end date" type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="mt-1 block min-h-[44px] rounded-lg border border-hi/10 bg-elev-2 px-2 text-xs text-hi" /></label>
+                <Button type="button" onClick={() => {
+                  const custom = inclusiveCivilDateRangeThroughNow(customStart, customEnd, jurisdiction, nowMs);
+                  if (!custom) {
+                    setCustomError('Choose a valid start and end on or before today.'); return;
+                  }
+                  setCustomError(''); setCustomRange(custom);
+                }}>Apply</Button>
+                {customError && <p className="w-full text-right text-xs text-loss" role="alert">{customError}</p>}
+              </div>}
         </div>
 
         <div className="mt-4 border-t border-hi/10 px-3 pt-4 sm:px-5">
           {chartContent}
+        </div>
+
+        <div className="flex snap-x snap-mandatory overflow-x-auto border-t border-hi/10 sm:grid sm:grid-cols-5 sm:overflow-visible" data-testid="money-strip">
+          {([
+            ['Money in', strip.moneyIn], ['Money out', strip.moneyOut], ['Income', strip.income],
+            ['Trading fees', strip.fees], ['Realized gains', strip.realizedGains]
+          ] as const).map(([label, metric]) => <div key={label} className="min-w-[9rem] snap-start border-r border-hi/10 px-4 py-4 last:border-r-0 sm:min-w-0">
+            <p className={eyebrowClass}>{label}</p>
+            <p className={cn('mt-1.5 text-base font-bold tabular-figures', metric.amount != null && metric.amount < 0 ? 'text-loss' : 'text-hi')}>{compactMoney(metric.amount)}</p>
+            {metric.status !== 'complete' && <p className="mt-1 text-[0.625rem] text-low">{metric.status === 'partial' ? 'Partial total' : 'No valued data'}</p>}
+          </div>)}
         </div>
 
       </section>

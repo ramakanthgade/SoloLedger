@@ -76,13 +76,34 @@ export function formatCompactAmount(amount: number): string {
   return amount.toPrecision(4);
 }
 
-/** Indian-style compact currency label: ₹42.3L, ₹1.2Cr. */
+/** Dashboard-friendly compact currency label: INR uses L/Cr; others use k/m/b. */
 export function formatCompactCurrency(amount: number, currency: string): string {
-  if (currency.toUpperCase() !== 'INR') return formatCurrency(amount, currency);
+  const normalizedCurrency = currency.toUpperCase();
   const abs = Math.abs(amount);
   const sign = amount < 0 ? '-' : '';
-  if (abs >= 1_00_00_000) return `${sign}₹${(abs / 1_00_00_000).toFixed(2)}Cr`;
-  if (abs >= 1_00_000) return `${sign}₹${(abs / 1_00_000).toFixed(2)}L`;
+  if (normalizedCurrency === 'INR') {
+    if (abs >= 1_00_00_000) return `${sign}₹${(abs / 1_00_00_000).toFixed(2)}Cr`;
+    if (abs >= 1_00_000) return `${sign}₹${(abs / 1_00_000).toFixed(2)}L`;
+    return formatCurrency(amount, currency);
+  }
+  const tier = abs >= 1_000_000_000
+    ? { divisor: 1_000_000_000, suffix: 'b' }
+    : abs >= 1_000_000
+      ? { divisor: 1_000_000, suffix: 'm' }
+      : abs >= 1_000
+        ? { divisor: 1_000, suffix: 'k' }
+        : null;
+  if (tier) {
+    let symbol = currency;
+    try {
+      symbol = new Intl.NumberFormat('en-US', {
+        style: 'currency', currency, currencyDisplay: 'narrowSymbol'
+      }).formatToParts(0).find((part) => part.type === 'currency')?.value ?? currency;
+    } catch {
+      // Preserve the existing graceful invalid/unsupported-currency behavior.
+    }
+    return `${sign}${symbol}${(abs / tier.divisor).toFixed(2)}${tier.suffix}`;
+  }
   return formatCurrency(amount, currency);
 }
 
@@ -115,6 +136,67 @@ export function formatDateTime(timestampMs: number): string {
 
 /** Fixed India Standard Time offset (UTC+5:30). India observes no DST. */
 export const IST_OFFSET_MS = (5 * 60 + 30) * 60 * 1000;
+
+export interface InclusiveCivilDateRange {
+  start: number;
+  end: number;
+}
+
+function parseCivilDate(value: string): { year: number; monthIndex: number; day: number } | null {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return null;
+  const year = Number(match[1]);
+  const monthIndex = Number(match[2]) - 1;
+  const day = Number(match[3]);
+  if (monthIndex < 0 || monthIndex > 11 || day < 1 || day > 31) return null;
+  // Validate through UTC solely as a calendar arithmetic check. No parsed
+  // timestamp is used as the resulting jurisdictional boundary.
+  const check = new Date(Date.UTC(year, monthIndex, day));
+  if (check.getUTCFullYear() !== year || check.getUTCMonth() !== monthIndex || check.getUTCDate() !== day) return null;
+  return { year, monthIndex, day };
+}
+
+/**
+ * Converts explicit YYYY-MM-DD inputs to an inclusive jurisdictional civil-day
+ * range without relying on implementation-dependent date-string parsing.
+ * India uses fixed IST; other jurisdictions use the documented local calendar.
+ */
+export function inclusiveCivilDateRange(
+  startDate: string,
+  endDate: string,
+  jurisdiction: Jurisdiction
+): InclusiveCivilDateRange | null {
+  const startParts = parseCivilDate(startDate);
+  const endParts = parseCivilDate(endDate);
+  if (!startParts || !endParts) return null;
+  const boundary = (parts: typeof startParts) => jurisdiction === 'IN'
+    ? Date.UTC(parts.year, parts.monthIndex, parts.day) - IST_OFFSET_MS
+    : new Date(parts.year, parts.monthIndex, parts.day).getTime();
+  const start = boundary(startParts);
+  const nextEndDay = jurisdiction === 'IN'
+    ? Date.UTC(endParts.year, endParts.monthIndex, endParts.day + 1) - IST_OFFSET_MS
+    : new Date(endParts.year, endParts.monthIndex, endParts.day + 1).getTime();
+  const end = nextEndDay - 1;
+  return start <= end ? { start, end } : null;
+}
+
+function civilDateKey(timestampMs: number, jurisdiction: Jurisdiction): string {
+  if (jurisdiction === 'IN') return new Date(timestampMs + IST_OFFSET_MS).toISOString().slice(0, 10);
+  const date = new Date(timestampMs);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** Accepts a range through today and clamps today's inclusive end to the current instant. */
+export function inclusiveCivilDateRangeThroughNow(
+  startDate: string,
+  endDate: string,
+  jurisdiction: Jurisdiction,
+  nowMs: number
+): InclusiveCivilDateRange | null {
+  const range = inclusiveCivilDateRange(startDate, endDate, jurisdiction);
+  if (!range || endDate > civilDateKey(nowMs, jurisdiction)) return null;
+  return { start: range.start, end: endDate === civilDateKey(nowMs, jurisdiction) ? nowMs : range.end };
+}
 
 /** IST civil calendar day key (YYYY-MM-DD) for a UTC-epoch timestamp. */
 export function istDateKey(timestampMs: number): string {

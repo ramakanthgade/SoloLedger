@@ -189,12 +189,12 @@ describe('valueHoldings', () => {
 });
 
 describe('periodRange', () => {
-  it('FY (IN) starts at the Apr 1 IST boundary with an honest caption', () => {
+  it('FY (IN) selects the most recently completed Apr-to-Mar year', () => {
     const now = day(2026, 7, 25);
     const range = periodRange('FY', 'IN', now, null);
-    expect(range.sinceCaption).toContain('FY 2026-27');
-    expect(range.start).toBe(Date.UTC(2026, 3, 1) - (5 * 60 + 30) * 60 * 1000);
-    expect(range.end).toBe(now);
+    expect(range.sinceCaption).toContain('FY 2025-26');
+    expect(range.start).toBe(Date.UTC(2025, 3, 1) - (5 * 60 + 30) * 60 * 1000);
+    expect(range.end).toBe(Date.UTC(2026, 3, 1) - (5 * 60 + 30) * 60 * 1000 - 1);
   });
   it('ALL starts at the first transaction', () => {
     const first = day(2025, 11, 3);
@@ -207,8 +207,8 @@ describe('periodRange', () => {
   it('derives FY from the supplied now rather than the host wall clock', () => {
     const now = day(2025, 1, 15);
     const range = periodRange('FY', 'IN', now, null);
-    expect(range.sinceCaption).toContain('FY 2024-25');
-    expect(range.start).toBe(Date.UTC(2024, 3, 1) - (5 * 60 + 30) * 60 * 1000);
+    expect(range.sinceCaption).toContain('FY 2023-24');
+    expect(range.start).toBe(Date.UTC(2023, 3, 1) - (5 * 60 + 30) * 60 * 1000);
   });
 });
 

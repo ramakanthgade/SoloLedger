@@ -73,9 +73,26 @@ vi.mock('dexie-react-hooks', () => ({
     if (s.includes('getCsvImports')) return mocks.csvImports.current;
     if (s.includes('getLookupAddresses')) return mocks.wallets.current;
     if (s.includes('manual')) return mocks.manualCount.current;
+    if (s.includes('prepareWalletChainCollectionEvidence')) return { currency: 'INR', preparedAt: Date.now() };
     return undefined;
   }
 }));
+
+vi.mock('./walletChainModel', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./walletChainModel')>();
+  return {
+    ...actual,
+    buildWalletChainSummaries: vi.fn((card: { walletRows?: Array<Record<string, unknown>> }) =>
+      (card.walletRows ?? []).map((row) => ({
+        row,
+        transactionCount: Number(row.txCount ?? 0),
+        currentValue: null,
+        pricedAssetCount: 0,
+        unpricedAssetCount: 0
+      }))
+    )
+  };
+});
 
 vi.mock('@/lib/exchangeSync', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/exchangeSync')>();
@@ -160,7 +177,7 @@ vi.mock('./AddDataDrawer', () => ({
 // the opened card and exposes the Back action.
 vi.mock('./ConnectionDetail', () => ({
   ConnectionDetail: (props: {
-    card: { id: string };
+    card: { id: string; walletRows?: Array<{ id: string }> };
     navigationIntent?: { id: string };
     onNavigationIntentAcknowledged?: (id: string) => void;
     onNavigationTargetNotFound?: (id: string) => void;
@@ -170,6 +187,7 @@ vi.mock('./ConnectionDetail', () => ({
     <div
       data-testid="connection-detail-mock"
       data-card-id={props.card.id}
+      data-wallet-row-ids={props.card.walletRows?.map((row) => row.id).join(',') ?? ''}
       data-navigation-id={props.navigationIntent?.id ?? ''}
       data-has-target-missing={String(props.onNavigationTargetNotFound != null)}
     >
@@ -915,13 +933,13 @@ describe('ConnectionsHome — per-connection detail (round 4)', () => {
     mocks.wallets.current = [wallet()];
     const view = render(<ConnectionsHome />);
     fireEvent.click(screen.getByRole('radio', { name: /wallet apps/i }));
-    fireEvent.click(screen.getByRole('button', { name: 'Open Phantom main details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open overall holdings for Phantom main' }));
 
     mocks.wallets.current = [];
     view.rerender(<ConnectionsHome />);
 
     await waitFor(() => expect(screen.getByRole('radio', { name: /wallet apps/i })).toHaveFocus());
-    expect(screen.queryByRole('button', { name: 'Open Phantom main details' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open overall holdings for Phantom main' })).not.toBeInTheDocument();
   });
 
   it('keeps the drawer mounted and opens detail Import file in the existing file flow', () => {
@@ -937,14 +955,81 @@ describe('ConnectionsHome — per-connection detail (round 4)', () => {
     expect(screen.getByTestId('add-data-drawer-mounted')).toBe(drawerMount);
   });
 
-  it('clicking a wallet card body opens the detail view', () => {
-    mocks.wallets.current = [wallet()];
+  it('the wallet header opens overall detail scoped to every chain row', () => {
+    mocks.wallets.current = [
+      wallet({ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' }),
+      wallet({ id: 'polygon:0xabc', chain: 'polygon', address: '0xabc' })
+    ];
     render(<ConnectionsHome />);
-    fireEvent.click(screen.getByRole('button', { name: 'Open Phantom main details' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open overall holdings for Phantom main' }));
     expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute(
       'data-card-id',
-      'wallet:solana:solana:addr1'
+      'wallet:evm:0xabc'
     );
+    expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute(
+      'data-wallet-row-ids',
+      'ethereum:0xabc,polygon:0xabc'
+    );
+  });
+
+  it('the separate chevron expands without navigating and a chain row opens one-row detail', () => {
+    mocks.wallets.current = [
+      wallet({ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' }),
+      wallet({ id: 'polygon:0xabc', chain: 'polygon', address: '0xabc' })
+    ];
+    render(<ConnectionsHome />);
+
+    const expand = screen.getByRole('button', { name: 'Expand Phantom main chains' });
+    fireEvent.click(expand);
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Polygon holdings for 0xabc' }));
+    expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute(
+      'data-card-id',
+      'wallet:evm:0xabc:polygon:0xabc'
+    );
+    expect(screen.getByTestId('connection-detail-mock')).toHaveAttribute('data-wallet-row-ids', 'polygon:0xabc');
+  });
+
+  it('Back preserves expansion and restores focus to the exact chain opener', () => {
+    mocks.wallets.current = [wallet({ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' })];
+    render(<ConnectionsHome />);
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Phantom main chains' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Ethereum holdings for 0xabc' }));
+
+    fireEvent.click(screen.getByTestId('detail-back-mock'));
+
+    expect(screen.getByRole('button', { name: 'Collapse Phantom main chains' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Open Ethereum holdings for 0xabc' })).toHaveFocus();
+  });
+
+  it('falls safely back to the grid when the selected chain row is deleted', async () => {
+    const ethereum = wallet({ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' });
+    const polygon = wallet({ id: 'polygon:0xabc', chain: 'polygon', address: '0xabc' });
+    mocks.wallets.current = [ethereum, polygon];
+    const view = render(<ConnectionsHome />);
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Phantom main chains' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open Ethereum holdings for 0xabc' }));
+
+    mocks.wallets.current = [polygon];
+    view.rerender(<ConnectionsHome />);
+
+    await waitFor(() => expect(screen.getByTestId('connections-grid')).toBeInTheDocument());
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /all sources/i })).toHaveFocus();
+  });
+
+  it('Copy address stays separate and does not navigate', () => {
+    const writeText = vi.fn(async () => undefined);
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+    mocks.wallets.current = [wallet({ id: 'ethereum:0xabc', chain: 'ethereum', address: '0xabc' })];
+    render(<ConnectionsHome />);
+    fireEvent.click(screen.getByRole('button', { name: 'Expand Phantom main chains' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy Ethereum address' }));
+
+    expect(writeText).toHaveBeenCalledWith('0xabc');
+    expect(screen.queryByTestId('connection-detail-mock')).not.toBeInTheDocument();
   });
 
   it('clicking a file card body opens the detail view', () => {
@@ -1007,12 +1092,16 @@ describe('ConnectionsHome — typed Data Health navigation', () => {
     {
       name: 'normalized wallet chain and address',
       setup: () => {
-        mocks.wallets.current = [wallet({ id: 'ethereum:0xabcdef', chain: 'ethereum', address: '0xAbCdEf' })];
+        mocks.wallets.current = [
+          wallet({ id: 'ethereum:0xabcdef', chain: 'ethereum', address: '0xAbCdEf' }),
+          wallet({ id: 'polygon:0xabcdef', chain: 'polygon', address: '0xAbCdEf' })
+        ];
       },
       target: { kind: 'wallet' as const, chain: 'ETH', address: '0xABCDEF' },
-      cardId: 'wallet:evm:0xabcdef'
+      cardId: 'wallet:evm:0xabcdef:ethereum:0xabcdef',
+      walletRowIds: 'ethereum:0xabcdef'
     }
-  ])('opens the exact $name and waits for detail acknowledgment', async ({ setup, target, cardId }) => {
+  ])('opens the exact $name and waits for detail acknowledgment', async ({ setup, target, cardId, walletRowIds }) => {
     setup();
     const acknowledged = vi.fn();
     render(<ConnectionsHome navigationIntent={{
@@ -1021,6 +1110,7 @@ describe('ConnectionsHome — typed Data Health navigation', () => {
 
     const detail = await screen.findByTestId('connection-detail-mock');
     expect(detail).toHaveAttribute('data-card-id', cardId);
+    if (walletRowIds) expect(detail).toHaveAttribute('data-wallet-row-ids', walletRowIds);
     expect(detail).toHaveAttribute('data-navigation-id', 'health-intent');
     expect(acknowledged).not.toHaveBeenCalled();
 

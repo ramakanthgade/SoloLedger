@@ -59,7 +59,8 @@ import {
 import { AddDataDrawer } from './AddDataDrawer';
 import type { ApiExchangeState, ApiExchangeStates } from './WhichStep';
 import type { FlowKind } from './WhatStep';
-import { resolveSourceTarget, type SourceNavigationIntent } from '@/lib/navigationIntent';
+import { normalizeSourceTarget, resolveSourceTarget, type SourceNavigationIntent } from '@/lib/navigationIntent';
+import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 
 /** Locked pill order (mockup `cv2-filter-pills`): Manual entry before + New. */
 const PILLS: Array<{ id: PillFilter; label: string }> = [
@@ -100,6 +101,15 @@ interface DrawerState {
   reauthorizationTarget: ExchangeConnectionView | null;
 }
 
+export interface DetailSelection {
+  cardId: string;
+  walletRowId?: string;
+}
+
+function detailOpenerKey(selection: DetailSelection): string {
+  return selection.walletRowId == null ? selection.cardId : `${selection.cardId}::${selection.walletRowId}`;
+}
+
 /**
  * ConnectionsHome — the Connections v2 screen. One honest card per source
  * (exchange API connection, imported file, watched wallet address group,
@@ -126,8 +136,8 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
 
   const [pill, setPill] = useState<PillFilter>('all');
   const pillRefs = useRef<Array<HTMLButtonElement | null>>([]);
-  /** Open per-connection detail view (round 4) — null shows the cards grid. */
-  const [detailId, setDetailId] = useState<string | null>(null);
+  /** Open per-connection detail view — null shows the cards grid. */
+  const [detailSelection, setDetailSelection] = useState<DetailSelection | null>(null);
   const [expandedWalletIds, setExpandedWalletIds] = useState<Set<string>>(() => new Set());
   const cardElements = useRef(new Map<string, HTMLElement>());
   const detailOpenerId = useRef<string | null>(null);
@@ -179,12 +189,12 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
   const [renameDraft, setRenameDraft] = useState('');
 
   useEffect(() => {
-    if (detailId !== null || detailOpenerId.current === null) return;
+    if (detailSelection !== null || detailOpenerId.current === null) return;
     const opener = cardElements.current.get(detailOpenerId.current);
     if (opener) opener.focus();
     else pillRefs.current[PILLS.findIndex((candidate) => candidate.id === pill)]?.focus();
     detailOpenerId.current = null;
-  }, [detailId, pill]);
+  }, [detailSelection, pill]);
 
   const cards = useMemo(
     () =>
@@ -212,20 +222,33 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
     }
     return byCard;
   }, [cards, liveWalletEvidence]);
-  const detail = detailId == null ? null : cards.find((card) => card.id === detailId) ?? null;
-  const detailSourceLoaded = detailId == null ||
-    (detailId.startsWith('wallet:') ? liveWalletRows !== undefined :
-      detailId.startsWith('file:') ? liveCsvImports !== undefined : liveConnections !== undefined);
+  const detailParent = detailSelection == null ? null : cards.find((card) => card.id === detailSelection.cardId) ?? null;
+  const detail = useMemo(() => {
+    if (!detailParent || detailSelection?.walletRowId == null) return detailParent;
+    const row = detailParent.walletRows?.find((candidate) => candidate.id === detailSelection.walletRowId);
+    if (!row) return null;
+    const chainLabel = CHAINS.find((chain) => chain.id === row.chain)?.label ?? row.chain;
+    return {
+      ...detailParent,
+      id: `${detailParent.id}:${row.id}`,
+      title: `${detailParent.title} · ${chainLabel}`,
+      subtitle: row.address,
+      walletRows: [row]
+    };
+  }, [detailParent, detailSelection]);
+  const detailSourceLoaded = detailSelection == null ||
+    (detailSelection.cardId.startsWith('wallet:') ? liveWalletRows !== undefined :
+      detailSelection.cardId.startsWith('file:') ? liveCsvImports !== undefined : liveConnections !== undefined);
   useEffect(() => {
-    if (detailId != null && detailSourceLoaded && detail == null) {
+    if (detailSelection != null && detailSourceLoaded && detail == null) {
       if (externalDetailIntentId) {
         setExternalDetailIntentId(null);
         setNavigationError('This source was deleted while it was opening. Return to Data Health to review the remaining evidence.');
       }
-      setDetailId(null);
+      setDetailSelection(null);
     }
-  }, [detail, detailId, detailSourceLoaded, externalDetailIntentId]);
-  const detailLoading = detailId != null && !detailSourceLoaded;
+  }, [detail, detailSelection, detailSourceLoaded, externalDetailIntentId]);
+  const detailLoading = detailSelection != null && !detailSourceLoaded;
   const visibleCards = pill === 'all' ? cards : cards.filter((c) => c.lane === pill);
   const readyConnections = useMemo(
     () => connections.filter((c) => c.credentialsState !== 'reauthorization_required'),
@@ -265,7 +288,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
       const deletedWhileOpening = externalDetailIntentId === navigationIntent.id;
       acknowledgedIntent.current = navigationIntent.id;
       setExternalDetailIntentId(null);
-      setDetailId(null);
+      setDetailSelection(null);
       setNavigationError(deletedWhileOpening
         ? 'This source was deleted while it was opening. Return to Data Health to review the remaining evidence.'
         : 'That exact source no longer exists. Return to Data Health to review the live evidence.');
@@ -274,7 +297,16 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
     }
     setExternalDetailIntentId(navigationIntent.id);
     setPill('all');
-    setDetailId(target.id);
+    let walletRowId: string | undefined;
+    const targetCard = cards.find((card) => card.id === target.id);
+    if (navigationIntent.target.kind === 'wallet' && targetCard?.kind === 'wallet') {
+      const normalized = normalizeSourceTarget(navigationIntent.target);
+      const identity = canonicalWalletIdentity(normalized.chain, normalized.address);
+      walletRowId = targetCard.walletRows?.find((row) =>
+        canonicalWalletIdentity(row.chain, row.address) === identity
+      )?.id;
+    }
+    setDetailSelection({ cardId: target.id, walletRowId });
   }, [cards, externalDetailIntentId, liveConnections, liveCsvImports, liveManualCount, liveWalletRows, navigationIntent, onNavigationIntentAcknowledged]);
 
   const openDrawer = (opts?: { initialFlow?: FlowKind | null }) =>
@@ -500,10 +532,10 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
             missingDetailTargetIntent.current = id;
             setNavigationError('That exact asset or opening evidence no longer exists. Return to Data Health to review the live findings.');
             setExternalDetailIntentId(null);
-            setDetailId(null);
+            setDetailSelection(null);
           }}
           onBack={() => {
-            setDetailId(null);
+            setDetailSelection(null);
             if (externalDetailIntentId) {
               setExternalDetailIntentId(null);
               onNavigationBack?.();
@@ -734,11 +766,21 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
                 menuItems={menuItemsFor(card)}
                 onOpenDetail={() => {
                   detailOpenerId.current = card.id;
-                  setDetailId(card.id);
+                  setDetailSelection({ cardId: card.id });
                 }}
                 detailButtonRef={(element) => {
                   if (element) cardElements.current.set(card.id, element);
                   else cardElements.current.delete(card.id);
+                }}
+                onOpenChainDetail={(walletRowId) => {
+                  const selection = { cardId: card.id, walletRowId };
+                  detailOpenerId.current = detailOpenerKey(selection);
+                  setDetailSelection(selection);
+                }}
+                chainDetailButtonRef={(walletRowId, element) => {
+                  const key = detailOpenerKey({ cardId: card.id, walletRowId });
+                  if (element) cardElements.current.set(key, element);
+                  else cardElements.current.delete(key);
                 }}
                 renaming={renaming?.cardId === card.id ? (
                   <div className="flex items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
@@ -777,7 +819,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
                   ? undefined
                   : () => {
                       detailOpenerId.current = card.id;
-                      setDetailId(card.id);
+                      setDetailSelection({ cardId: card.id });
                     }
               }
               renaming={

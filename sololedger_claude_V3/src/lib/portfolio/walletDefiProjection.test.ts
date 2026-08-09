@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DefiPositionSnapshot, ProtocolId } from '@/lib/defi/types';
-import { projectManifestSelectedWalletDefi } from './walletDefiProjection';
+import { projectManifestSelectedWalletDefi, walletDefiCustodyFromHoldings } from './walletDefiProjection';
 
 const ADDRESS = `0x${'1'.repeat(40)}`;
 const EMPTY_ADDRESS = `0x${'2'.repeat(40)}`;
@@ -42,6 +42,22 @@ function manifest(scope: string) {
 }
 
 describe('manifest-selected wallet DeFi projection', () => {
+  it('preserves missing current valuation instead of substituting cost basis or zero', () => {
+    const custody = walletDefiCustodyFromHoldings([{
+      assetKey: 'ethereum:token', asset: 'TOK', chain: 'ethereum', contractAddress: USDC,
+      quantity: 10, costBasis: 500, sourceVerification: [{ scopeId: SCOPE, quantity: 4 }, { scopeId: EMPTY_SCOPE, quantity: 6 }]
+    }], [{
+      asset: 'TOK', chain: 'ethereum', contractAddress: USDC,
+      amount: 10, costBasis: 500, avgCost: 50, priceNow: null, priceAsOf: null,
+      dayChangePct: null, valueNow: null, unrealized: null, unrealizedPct: null
+    }]);
+
+    expect(custody).toEqual([
+      expect.objectContaining({ quantity: 4, value: null }),
+      expect.objectContaining({ quantity: 6, value: null })
+    ]);
+  });
+
   it('uses the same scoped result for aggregate Dashboard/Data Health and filtered Connections inputs', () => {
     const allSnapshots = [...snapshots(SCOPE), ...snapshots(EMPTY_SCOPE)];
     const v3 = `${SCOPE}:aave-v3-ethereum:1`;

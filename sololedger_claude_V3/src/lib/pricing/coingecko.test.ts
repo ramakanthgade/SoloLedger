@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { db, buildPriceCacheKey } from '@/lib/storage/db';
-import { fetchHistoricalPrice, fetchHistoricalPricesBatch } from './coingecko';
+import { fetchCurrentContractPrices, fetchHistoricalPrice, fetchHistoricalPricesBatch } from './coingecko';
 
 describe('CoinGecko canonical symbol mappings', () => {
   afterEach(async () => {
@@ -151,5 +151,55 @@ describe('CoinGecko canonical symbol mappings', () => {
         `ctr:v2:kyber-network-crystal:ethereum:${contract}:15-05-2021:USD`
       )).toMatchObject({ price: 5 });
     });
+  });
+
+  it('prices exact contracts sequentially and preserves request order', async () => {
+    let active = 0;
+    let maxActive = 0;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await Promise.resolve();
+      const address = new URL(String(input)).searchParams.get('contract_addresses')!;
+      active -= 1;
+      return new Response(JSON.stringify({ [address]: { usd: address.endsWith('1') ? 1 : 2 } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const results = await fetchCurrentContractPrices([
+      { platform: 'ethereum', contractAddress: '0x1' },
+      { platform: 'ethereum', contractAddress: '0x2' }
+    ], 'USD');
+
+    expect(maxActive).toBe(1);
+    expect(results.map((row) => [row.asset, row.price])).toEqual([['0x1', 1], ['0x2', 2]]);
+  });
+
+  it('retries transient exact-contract throttling without losing other successes', async () => {
+    const attempts = new Map<string, number>();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const address = new URL(String(input)).searchParams.get('contract_addresses')!;
+      const attempt = (attempts.get(address) ?? 0) + 1;
+      attempts.set(address, attempt);
+      if (address === '0x1' && attempt === 1) {
+        return new Response('', { status: 429, headers: { 'retry-after': '0' } });
+      }
+      if (address === '0x2') return new Response('', { status: 404 });
+      return new Response(JSON.stringify({ [address]: { usd: 7 } }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const results = await fetchCurrentContractPrices([
+      { platform: 'ethereum', contractAddress: '0x1' },
+      { platform: 'ethereum', contractAddress: '0x2' },
+      { platform: 'ethereum', contractAddress: '0x3' }
+    ], 'USD');
+
+    expect(attempts).toEqual(new Map([['0x1', 2], ['0x2', 1], ['0x3', 1]]));
+    expect(results).toEqual([
+      expect.objectContaining({ asset: '0x1', price: 7 }),
+      expect.objectContaining({ asset: '0x2', price: null, error: 'Price API returned 404 for contract lookup' }),
+      expect.objectContaining({ asset: '0x3', price: 7 })
+    ]);
   });
 });

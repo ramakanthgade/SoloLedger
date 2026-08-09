@@ -7,6 +7,8 @@ import {
   getFyBoundaries,
   getFyForTimestamp,
   getFyLabel,
+  inclusiveCivilDateRange,
+  inclusiveCivilDateRangeThroughNow,
   isInFy
 } from '@/lib/utils';
 
@@ -50,6 +52,62 @@ describe('formatCompactCurrency', () => {
 
   it('preserves the sign for negative INR amounts', () => {
     expect(formatCompactCurrency(-15000000, 'INR')).toBe('-₹1.50Cr');
+  });
+
+  it('uses exact INR lakh/crore thresholds', () => {
+    expect(formatCompactCurrency(99_999, 'INR')).toBe('₹99,999.00');
+    expect(formatCompactCurrency(100_000, 'INR')).toBe('₹1.00L');
+    expect(formatCompactCurrency(10_000_000, 'INR')).toBe('₹1.00Cr');
+  });
+
+  it('uses k/m/b thresholds and preserves sign for non-INR currencies', () => {
+    expect(formatCompactCurrency(999, 'USD')).toBe('$999.00');
+    expect(formatCompactCurrency(1_000, 'USD')).toBe('$1.00k');
+    expect(formatCompactCurrency(-1_000_000, 'USD')).toBe('-$1.00m');
+    expect(formatCompactCurrency(1_000_000_000, 'USD')).toBe('$1.00b');
+  });
+});
+
+describe('inclusiveCivilDateRange', () => {
+  it('uses IST midnight through IST end-of-day for India', () => {
+    const range = inclusiveCivilDateRange('2025-04-01', '2026-03-31', 'IN');
+    const offset = (5 * 60 + 30) * 60 * 1000;
+    expect(range).toEqual({
+      start: Date.UTC(2025, 3, 1) - offset,
+      end: Date.UTC(2026, 3, 1) - offset - 1
+    });
+  });
+
+  it('uses local civil-day constructors for non-India ranges', () => {
+    expect(inclusiveCivilDateRange('2025-01-01', '2025-12-31', 'US')).toEqual({
+      start: new Date(2025, 0, 1).getTime(),
+      end: new Date(2026, 0, 1).getTime() - 1
+    });
+  });
+
+  it('rejects malformed, impossible, and reversed dates', () => {
+    expect(inclusiveCivilDateRange('2025-02-29', '2025-03-01', 'IN')).toBeNull();
+    expect(inclusiveCivilDateRange('03/01/2025', '2025-03-02', 'US')).toBeNull();
+    expect(inclusiveCivilDateRange('2025-03-02', '2025-03-01', 'US')).toBeNull();
+  });
+});
+
+describe('inclusiveCivilDateRangeThroughNow', () => {
+  it('allows today in India and clamps its end to now', () => {
+    const now = Date.UTC(2026, 7, 9, 6, 15); // Aug 9, 11:45 IST
+    expect(inclusiveCivilDateRangeThroughNow('2026-08-01', '2026-08-09', 'IN', now)).toEqual({
+      start: Date.UTC(2026, 7, 1) - (5 * 60 + 30) * 60 * 1000,
+      end: now
+    });
+    expect(inclusiveCivilDateRangeThroughNow('2026-08-01', '2026-08-10', 'IN', now)).toBeNull();
+  });
+
+  it('allows today in the local civil calendar and clamps its end to now', () => {
+    const now = new Date(2026, 7, 9, 11, 45).getTime();
+    expect(inclusiveCivilDateRangeThroughNow('2026-08-01', '2026-08-09', 'US', now)).toEqual({
+      start: new Date(2026, 7, 1).getTime(), end: now
+    });
+    expect(inclusiveCivilDateRangeThroughNow('2026-08-01', '2026-08-10', 'US', now)).toBeNull();
   });
 });
 

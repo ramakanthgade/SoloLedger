@@ -17,7 +17,7 @@ const card: ConnectionCardData = {
 describe('WalletConnectionCard coverage copy', () => {
   it('renders persisted complete time and provider-specific attention reason', () => {
     vi.setSystemTime(NOW);
-    render(<WalletConnectionCard card={card} expanded onExpandedChange={() => undefined} onOpenDetail={() => undefined} evidence={{
+    render(<WalletConnectionCard card={card} expanded onExpandedChange={() => undefined} onOpenDetail={() => undefined} onOpenChainDetail={() => undefined} evidence={{
       currency: 'INR', summaries: [
         { row: card.walletRows![0], transactionCount: 1, coverageStatus: 'complete', syncAt: NOW - 2 * 60 * 60_000, currentValue: 0, pricedAssetCount: 0, unpricedAssetCount: 0 },
         { row: card.walletRows![1], transactionCount: 0, coverageStatus: 'partial', syncAt: NOW - 2 * 60 * 60_000, coverageReason: 'RPC rate limit', currentValue: null, pricedAssetCount: 0, unpricedAssetCount: 0 },

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildDashboardValueMetrics, historicalPeriodChange } from './dashboardValueMetrics';
+import { buildDashboardValueMetrics, economicExposureDisclosure, historicalPeriodChange } from './dashboardValueMetrics';
 
 describe('dashboard current-economic and historical metric separation', () => {
   it('does not classify current DeFi debt as historical unrealized or period loss', () => {
@@ -30,5 +30,19 @@ describe('dashboard current-economic and historical metric separation', () => {
     expect(buildDashboardValueMetrics([{ costBasis: 100, valueNow: null }], {
       assets: [], liabilities: [], netWorth: 100
     }).historicalUnrealized).toBeNull();
+  });
+});
+
+describe('economicExposureDisclosure', () => {
+  it('discloses priced receipt custody retained for an unvalued replacement', () => {
+    expect(economicExposureDisclosure({ status: 'partial', hasUnpricedValues: true, hasUnpricedLiabilities: false }))
+      .toContain('unvalued replacements remain in custody');
+  });
+
+  it('discloses stale and partial authority without verbose DeFi explanation copy', () => {
+    expect(economicExposureDisclosure({ status: 'stale', hasUnpricedValues: false, hasUnpricedLiabilities: false }))
+      .toContain('last complete holdings retained');
+    expect(economicExposureDisclosure({ status: 'partial', hasUnpricedValues: false, hasUnpricedLiabilities: false }))
+      .toContain('custody and known liabilities retained');
   });
 });
