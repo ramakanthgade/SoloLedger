@@ -42,6 +42,7 @@ import type { TaxSettings } from '@/types/transaction';
 import type { EndpointCoverageOutcome } from '@/lib/reconcile/sourceCoverage';
 import { assetKey as canonicalAssetKey } from '@/lib/ledger/assetKey';
 import { canonicalWalletAddress } from '@/lib/ledger/chainNamespace';
+import { canonicalTrustedTokenMetadata } from '@/lib/safety/canonicalAssets';
 
 export interface FetchedBalance {
   asset: string;
@@ -380,6 +381,19 @@ async function fetchBalanceOperation(
     }> => {
       const identity = canonicalAssetKey({ asset: 'TOKEN', chain: chain.id, contractAddress: contract });
       const quantityEndpoint = walletEndpoint(chain.id, identity, 'alchemy_getTokenMetadata:decimals');
+      const canonicalMetadata = canonicalTrustedTokenMetadata(chain.id, contract);
+      if (canonicalMetadata) {
+        return {
+          balance: {
+            asset: canonicalMetadata.symbol,
+            contractAddress: contract,
+            amount: hexToAmount(`0x${raw.toString(16)}`, canonicalMetadata.decimals)
+          },
+          endpointOutcomes: [requestOutcome(
+            walletEndpoint(chain.id, identity, 'canonical-token-metadata'), 'complete'
+          )]
+        };
+      }
       try {
         const metadata = await alchemyCall(url, headers, 'alchemy_getTokenMetadata', [contract]);
         if (!metadata || typeof metadata !== 'object' ||

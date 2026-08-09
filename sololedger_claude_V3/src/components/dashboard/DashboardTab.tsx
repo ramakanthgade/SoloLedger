@@ -3,8 +3,7 @@ import {
   useEffect,
   useMemo,
   useRef,
-  useState,
-  type KeyboardEvent
+  useState
 } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db, getSettings, getLookupAddresses, getSpecIdHints } from '@/lib/storage/db';
@@ -67,7 +66,6 @@ import {
   isInFy
 } from '@/lib/utils';
 import {
-  DASHBOARD_PERIODS,
   allocationSlices,
   buildPostingChartSeries,
   buildInsights,
@@ -80,7 +78,6 @@ import {
   sourceVisualShares,
   shortDateLabel,
   valueHoldings,
-  type DashboardPeriod,
   type Insight,
   type ValuedHolding
 } from '@/lib/dashboard/dashboardModel';
@@ -495,7 +492,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     : holdingsSnapshot.safetyDecisions ?? NO_SAFETY_DECISIONS;
 
   const [settings, setSettings] = useState<TaxSettings | null>(null);
-  const [period, setPeriod] = useState<DashboardPeriod>('FY');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [customRange, setCustomRange] = useState<{ start: number; end: number } | null>(null);
@@ -511,11 +507,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showAllHoldings, setShowAllHoldings] = useState(false);
   const [dataHealthOpen, setDataHealthOpen] = useState(openDataHealthOnMount);
-  const pillRefs = useRef<(HTMLButtonElement | null)[]>([]);
   // The existing price tick also carries projection time forward every five minutes.
   const [spotRefreshTick, setSpotRefreshTick] = useState(Date.now);
   const nowMs = spotRefreshTick;
-  const autoPriceAttemptedRef = useRef(false);
+  const historicalPricingRef = useRef<Promise<unknown> | null>(null);
   const [projectTransactionViews] = useState(createTransactionViewsProjector);
   const [projectHoldings] = useState(createHoldingsProjector);
   const [publishCoherentLedger] = useState(() =>
@@ -719,14 +714,31 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     let cancelled = false;
     getEffectiveSettings().then((effective) => {
       if (cancelled || !effective.priceApiEnabled) return;
-      void refreshCurrentHoldingPrices([
-        ...holdings,
-        ...defiUnderlyingPriceHoldings(acceptedSnapshot?.defiPositionRows ?? [])
-      ], currency, effective.coingeckoApiKey);
-      if (!autoPriceAttemptedRef.current) {
-        autoPriceAttemptedRef.current = true;
-        void fetchMissingPricesForAllTransactions(effective);
-      }
+      void (async () => {
+        const priceHoldings = [
+          ...holdings,
+          ...defiUnderlyingPriceHoldings(acceptedSnapshot?.defiPositionRows ?? [])
+        ];
+        // Reserve the first bounded request for exact contracts we explicitly
+        // trust (notably Ethereum ZRO). Historical transaction pricing starts
+        // immediately afterward; it must not wait behind hundreds of
+        // unverified current holdings in a token-heavy wallet.
+        await refreshCurrentHoldingPrices(
+          priceHoldings.filter((holding) => holding.safetyState === 'trusted'),
+          currency,
+          effective.coingeckoApiKey
+        ).catch(() => undefined);
+        if (!cancelled && !historicalPricingRef.current) {
+          historicalPricingRef.current = fetchMissingPricesForAllTransactions(effective)
+            .catch(() => undefined);
+        }
+        if (historicalPricingRef.current) await historicalPricingRef.current;
+        if (!cancelled) {
+          void refreshCurrentHoldingPrices(
+            priceHoldings, currency, effective.coingeckoApiKey
+          ).catch(() => undefined);
+        }
+      })();
     }).catch(() => {
       // Price services are optional; the UI remains honest at cost when unavailable.
     });
@@ -832,8 +844,8 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   }, [deferredTransactions]);
 
   const presetRange = useMemo(
-    () => periodRange(period, jurisdiction, nowMs, firstTxMs),
-    [period, jurisdiction, nowMs, firstTxMs]
+    () => periodRange('FY', jurisdiction, nowMs, firstTxMs),
+    [jurisdiction, nowMs, firstTxMs]
   );
   const range = customRange ?? presetRange;
   const rangeDateLabel = (timestamp: number) => {
@@ -999,37 +1011,14 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     });
   };
 
-  const selectPreset = (nextPeriod: DashboardPeriod) => {
-    setPeriod(nextPeriod);
-    setCustomRange(null);
-    setCustomError('');
-  };
-
-  const onPeriodKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
-    const count = DASHBOARD_PERIODS.length;
-    const currentIndex = Math.max(0, DASHBOARD_PERIODS.findIndex((o) => o.value === period));
-    let nextIndex: number;
-    switch (e.key) {
-      case 'ArrowRight':
-      case 'ArrowDown':
-        nextIndex = (currentIndex + 1) % count;
-        break;
-      case 'ArrowLeft':
-      case 'ArrowUp':
-        nextIndex = (currentIndex - 1 + count) % count;
-        break;
-      case 'Home':
-        nextIndex = 0;
-        break;
-      case 'End':
-        nextIndex = count - 1;
-        break;
-      default:
-        return;
+  const applyCustomRange = () => {
+    const custom = inclusiveCivilDateRangeThroughNow(customStart, customEnd, jurisdiction, nowMs);
+    if (!custom) {
+      setCustomError('Choose a valid start and end on or before today.');
+      return;
     }
-    e.preventDefault();
-    selectPreset(DASHBOARD_PERIODS[nextIndex].value);
-    pillRefs.current[nextIndex]?.focus();
+    setCustomError('');
+    setCustomRange(custom);
   };
 
   const scrollToHoldings = (e: React.MouseEvent) => {
@@ -1256,74 +1245,14 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         </div>
       </div>
 
-      {/* 2 — chart range controls */}
-      <section
-        aria-label="Chart range controls"
-        className="flex flex-wrap items-end justify-between gap-4 rounded-2xl border border-hi/10 bg-elev-2 px-5 py-4 shadow-card"
-      >
-        <div>
-          <p className={cn(eyebrowClass, 'mb-2')}>Period</p>
-          <div
-            role="radiogroup"
-            aria-label="Chart period"
-            data-testid="hero-period-pills"
-            onKeyDown={onPeriodKeyDown}
-            className="flex flex-wrap items-center gap-1 rounded-xl border border-hi/10 bg-elev-1 p-1 shadow-xs"
-          >
-            {DASHBOARD_PERIODS.map((option, i) => {
-              const active = customRange == null && period === option.value;
-              const roving = period === option.value;
-              return (
-                <button
-                  key={option.value}
-                  type="button"
-                  role="radio"
-                  aria-checked={active}
-                  tabIndex={roving ? 0 : -1}
-                  ref={(el) => {
-                    pillRefs.current[i] = el;
-                  }}
-                  onClick={() => selectPreset(option.value)}
-                  className={cn(
-                    'min-h-[44px] rounded-[10px] border px-3.5 text-xs font-bold transition-colors',
-                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60',
-                    active
-                      ? 'border-hi/10 bg-elev-2 text-hi shadow-xs'
-                      : 'border-transparent text-low hover:bg-elev-3/60 hover:text-hi'
-                  )}
-                >
-                  {option.label}
-                </button>
-              );
-            })}
-          </div>
-        </div>
-        <div className="min-w-0">
-          <p className={cn(eyebrowClass, 'mb-2')}>Custom range</p>
-          <div id="dashboard-custom-range" className="flex flex-wrap items-end gap-2" aria-label="Custom inclusive date range">
-            <label className="text-[0.6875rem] font-bold text-low">Start<input aria-label="Custom start date" type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="mt-1 block min-h-[44px] rounded-lg border border-hi/10 bg-elev-1 px-2 text-xs text-hi" /></label>
-            <label className="text-[0.6875rem] font-bold text-low">End<input aria-label="Custom end date" type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="mt-1 block min-h-[44px] rounded-lg border border-hi/10 bg-elev-1 px-2 text-xs text-hi" /></label>
-            <Button type="button" onClick={() => {
-              const custom = inclusiveCivilDateRangeThroughNow(customStart, customEnd, jurisdiction, nowMs);
-              if (!custom) {
-                setCustomError('Choose a valid start and end on or before today.'); return;
-              }
-              setCustomError(''); setCustomRange(custom);
-            }}>Apply</Button>
-          </div>
-          {customError && <p className="mt-2 text-xs text-loss" role="alert">{customError}</p>}
-          <p className="mt-2 text-xs font-bold text-hi" data-testid="selected-range-summary">{selectedRangeLabel}</p>
-        </div>
-      </section>
-
-      {/* 3 — net-worth hero */}
+      {/* 2 — net-worth hero */}
       <section
         aria-label="Net worth summary"
         data-testid="dashboard-hero"
         className="rounded-[20px] border border-primary/40 bg-gradient-to-br from-elev-2 to-elev-3 shadow-card"
       >
-        <div className="flex flex-wrap items-start gap-x-12 gap-y-6 px-6 pt-6 sm:px-8 sm:pt-7">
-          <div className="min-w-0 flex-1 basis-80">
+        <div className="grid items-start gap-x-8 gap-y-5 px-6 pt-6 sm:px-8 sm:pt-7 lg:grid-cols-[minmax(15rem,1fr)_minmax(20rem,auto)_auto]">
+          <div className="order-1 min-w-0">
             <div className="flex items-center gap-1.5">
               <p className={eyebrowClass}>
                 Total net worth
@@ -1358,7 +1287,20 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
             )}
           </div>
 
-          <dl className="flex flex-wrap items-start gap-x-10 gap-y-5">
+          <form
+            className="order-2 min-w-0"
+            aria-label="Chart date range"
+            onSubmit={(event) => { event.preventDefault(); applyCustomRange(); }}
+          >
+            <div id="dashboard-custom-range" className="grid grid-cols-2 items-end gap-2 sm:flex sm:flex-wrap">
+              <label className="min-w-0 text-[0.6875rem] font-bold text-low">Start<input aria-label="Custom start date" aria-invalid={customError ? 'true' : undefined} aria-describedby={customError ? 'dashboard-custom-range-error' : undefined} type="date" value={customStart} onChange={(e) => setCustomStart(e.target.value)} className="mt-1 block min-h-[44px] w-full min-w-0 rounded-lg border border-hi/10 bg-elev-1 px-2 text-xs tabular-figures text-hi sm:w-[8.5rem]" /></label>
+              <label className="min-w-0 text-[0.6875rem] font-bold text-low">End<input aria-label="Custom end date" aria-invalid={customError ? 'true' : undefined} aria-describedby={customError ? 'dashboard-custom-range-error' : undefined} type="date" value={customEnd} onChange={(e) => setCustomEnd(e.target.value)} className="mt-1 block min-h-[44px] w-full min-w-0 rounded-lg border border-hi/10 bg-elev-1 px-2 text-xs tabular-figures text-hi sm:w-[8.5rem]" /></label>
+              <Button type="submit" className="col-span-2 w-full sm:w-auto">Apply</Button>
+            </div>
+            {customError && <p id="dashboard-custom-range-error" className="mt-2 max-w-sm text-xs text-loss" role="alert">{customError}</p>}
+          </form>
+
+          <dl className="order-3 grid min-w-0 grid-cols-2 items-start gap-x-8 gap-y-5 lg:justify-self-end lg:gap-x-10">
             <HeroStat
               label="Cost basis"
               value={compactMoney(totalCost)}
@@ -1384,6 +1326,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         </div>
 
         <div className="mt-5 border-t border-hi/10 px-3 pt-4 sm:px-5">
+          <div className="mb-3 flex flex-wrap items-center justify-between gap-2 px-1">
+            <p className={eyebrowClass}>Portfolio history</p>
+            <p className="text-xs font-bold text-mid" data-testid="selected-range-summary">{selectedRangeLabel}</p>
+          </div>
           {chartContent}
         </div>
 

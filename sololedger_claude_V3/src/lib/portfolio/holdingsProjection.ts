@@ -22,6 +22,7 @@ import {
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
+import { EVM_CHAIN_NUMERIC_IDS } from '@/lib/ledger/chainNamespace';
 import { assetSubjectKey, isCanonicalTrustedAsset } from '@/lib/safety/canonicalAssets';
 import { isExcludedSafetyState, type SafetyDecisionRow, type SafetyState } from '@/lib/safety/types';
 import {
@@ -175,8 +176,10 @@ function chainFromCanonicalKey(key: string): string | undefined {
   if (key.startsWith('solana:')) return 'solana';
   if (key.startsWith('bitcoin:')) return 'bitcoin';
   if (key.startsWith('starknet:')) return 'starknet';
-  const qualified = /^(?:evm|unsupported):([^:]+):/.exec(key);
-  return qualified?.[1];
+  const qualified = /^(evm|unsupported):([^:]+):/.exec(key);
+  if (!qualified) return undefined;
+  if (qualified[1] !== 'evm') return qualified[2];
+  return Object.entries(EVM_CHAIN_NUMERIC_IDS).find(([, id]) => id === qualified[2])?.[0] ?? qualified[2];
 }
 
 function transactionLegIdentity(
