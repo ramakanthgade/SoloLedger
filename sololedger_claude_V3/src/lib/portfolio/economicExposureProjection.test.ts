@@ -355,6 +355,52 @@ describe('economic exposure projection', () => {
     expect(output.status).toBe('partial');
     expect(output.netWorth).toBeNull();
   });
+  it('keeps production-shaped priced manifest supplies when a separate liability price is missing', () => {
+    const scope = diagnosedWallet.accountIdentityScope;
+    const selectedSnapshots = [...new Set(diagnosedWallet.protocolClaims.map((claim) => claim.protocolId))].map((protocolId, index) => ({
+      snapshotId: `partial-priced-${index}`, generation: 1, accountIdentityScope: scope,
+      protocolId: protocolId as DefiPositionSnapshot['protocolId'], chainId: 1, status: 'complete' as const,
+      capturedAt: diagnosedWallet.capturedAt, blockNumber: diagnosedWallet.blockNumber,
+      evidence: [{ provider: 'ethereum-rpc' as const, status: 'complete' as const, blockNumber: diagnosedWallet.blockNumber, detail: 'fixture' }]
+    }));
+    const fixtureRows = diagnosedWallet.protocolClaims.map((claim, index): DefiPositionRow => {
+      const header = selectedSnapshots.find((item) => item.protocolId === claim.protocolId)!;
+      const common = {
+        id: `partial-priced-row-${index}`, snapshotId: header.snapshotId,
+        protocolId: claim.protocolId as DefiPositionRow['protocolId'], reserveKey: claim.underlyingContract,
+        quantity: claim.quantity, rawQuantity: claim.rawQuantity,
+        underlying: { chainId: 1 as const, contractAddress: claim.underlyingContract, symbol: claim.asset, decimals: claim.decimals },
+        protocolToken: { chainId: 1 as const, contractAddress: claim.protocolTokenContract, symbol: `protocol${claim.asset}`, decimals: claim.decimals }
+      };
+      return claim.role === 'supply'
+        ? { ...common, role: 'supply', isCollateral: claim.isCollateral! }
+        : { ...common, role: 'debt', debtRateMode: claim.debtRateMode as 'stable' | 'variable' };
+    });
+    const custody = diagnosedWallet.custody.filter((row) => row.quantity > 0).map((row) => ({
+      id: row.id, scopeId: scope, chainId: 1,
+      contractAddress: row.contractAddress, symbol: row.asset, quantity: row.quantity, value: null
+    }));
+    const prices = new Map(diagnosedWallet.protocolClaims
+      .filter((claim) => claim.asset !== 'USDC')
+      .map((claim) => [
+        claim.underlyingContract.toLowerCase(),
+        diagnosedWallet.prices[claim.asset as keyof typeof diagnosedWallet.prices]
+      ]));
+    const snapshots = completeFamilies({ custody, snapshots: selectedSnapshots, rows: fixtureRows, prices });
+    const manifests = manifestsFor({ custody, snapshots, rows: fixtureRows, prices });
+    const output = projectScopedEconomicExposureWithCurrency({
+      custody, snapshots, rows: fixtureRows, prices, reportingCurrency: 'INR', now: diagnosedWallet.capturedAt,
+      custodyAuthoritySnapshots: manifests.map((manifest) =>
+        authorityFor(manifest.custodyScopeId, 'custody-snapshot', 1, manifest.custodyAsOf)),
+      refreshManifests: manifests
+    });
+
+    const knownSupplies = output.assets.filter((row) => row.kind === 'supply' && row.contribution != null)
+      .reduce((sum, row) => sum + row.contribution!, 0);
+    expect(output.netWorth).toBeNull();
+    expect(output.hasUnpricedLiabilities).toBe(true);
+    expect(knownSupplies).toBeGreaterThanOrEqual(9_448_000);
+  });
   it('never treats USD position evidence as INR and prefers exact INR underlying prices', () => {
     const usdEvidenceRows = rows.map((row) => ({
       ...row,

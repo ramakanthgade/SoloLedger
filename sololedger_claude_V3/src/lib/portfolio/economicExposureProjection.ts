@@ -125,12 +125,15 @@ export function projectScopedEconomicExposure(input: {
         && row.evidence.every((item) => item.status === 'complete' &&
           (item.provider !== 'ethereum-rpc' || item.blockNumber === row.blockNumber)));
     const debtRows = conservativeDebtByPosition(conservativeDebtRows);
-    const allLiabilitiesPriced = debtRows.every((row) => valueFor(row, input.prices ?? new Map(), input.reportingCurrency, input.usdToReportingCurrencyRate, now) != null);
-    const rolloutReady = coherentCompleteAuthority && !hasPostManifestGeneration && allLiabilitiesPriced;
-    const header = rolloutReady ? manifestHeaders[0] : undefined;
+    const coherentSelectedPositions = coherentCompleteAuthority && !hasPostManifestGeneration;
+    const header = coherentSelectedPositions ? manifestHeaders[0] : undefined;
     const isEvmWallet = scope.startsWith('wallet:evm:');
     const projection = !isEvmWallet && latestHeaders.length === 0 ? projectLegacyWalletNetWorth(custody) : projectEconomicExposure({
-      custody, snapshot: header, rows: rolloutReady ? selectedRows : [], latestPartialRows: rolloutReady ? [] : debtRows,
+      // A missing liability price makes the aggregate incomplete, but does not
+      // invalidate independently priced supplies selected by the same coherent
+      // manifest. Keep those known rows while conservative debt remains fail-closed.
+      custody, snapshot: header, rows: coherentSelectedPositions ? selectedRows : [],
+      latestPartialRows: debtRows,
       prices: input.prices, reportingCurrency: input.reportingCurrency,
       usdToReportingCurrencyRate: input.usdToReportingCurrencyRate, now
     });

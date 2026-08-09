@@ -21,6 +21,7 @@ const SEED = vi.hoisted(() => {
     id: string; timestamp: number; type: string; asset: string; amount: number;
     fiatCurrency: string; fiatValue?: number; source: string; chain?: string;
     contractAddress?: string; safetySubjectKey?: string;
+    safetyState?: import('@/lib/safety/types').SafetyState;
     walletAddress?: string; flags: string[]; isInternalTransfer: boolean;
     importBatchId?: string; sourceRef?: string; category?: string;
     raw?: Record<string, unknown>; instrumentClass?: string; parserAccountClass?: string;
@@ -65,6 +66,7 @@ const SEED = vi.hoisted(() => {
     safetyDecisions: [] as import('@/lib/safety/types').SafetyDecisionRow[],
     defiPositionSnapshots: [] as import('@/lib/defi/types').DefiPositionSnapshot[],
     defiPositionRows: [] as import('@/lib/defi/types').DefiPositionRow[],
+    walletDefiRefreshManifests: [] as import('@/lib/defi/types').WalletDefiRefreshManifest[],
     openingBalances: [] as unknown[]
   };
 });
@@ -139,6 +141,7 @@ vi.mock('./dashboardHoldingsSnapshot', async (importOriginal) => {
       safetyDecisions: SEED.safetyDecisions,
       defiPositionSnapshots: SEED.defiPositionSnapshots,
       defiPositionRows: SEED.defiPositionRows,
+      walletDefiRefreshManifests: SEED.walletDefiRefreshManifests,
       openingBalances: SEED.openingBalances
     }) : undefined
   };
@@ -257,6 +260,7 @@ beforeEach(() => {
   SEED.safetyDecisions.length = 0;
   SEED.defiPositionSnapshots.length = 0;
   SEED.defiPositionRows.length = 0;
+  SEED.walletDefiRefreshManifests.length = 0;
   SEED.openingBalances.length = 0;
   COST_BASIS_INPUTS.length = 0;
   QUERY_READINESS.holdings = true;
@@ -284,7 +288,7 @@ describe('DashboardTab — staggered Data Health readiness', () => {
     });
 
     expect(document.querySelector('[aria-busy="true"]')).not.toBeInTheDocument();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent(/₹/);
     expect(screen.getByTestId('net-worth-chart')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-holdings')).toHaveTextContent('BTC');
   });
@@ -316,7 +320,7 @@ describe('DashboardTab — staggered Data Health readiness', () => {
         await Promise.resolve();
       });
 
-      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent(/₹/);
       expect(screen.getByTestId('net-worth-chart')).toBeInTheDocument();
       expect(within(screen.getByTestId('dashboard-holdings')).getAllByText('SAFE').length).toBeGreaterThan(0);
       expect(within(screen.getByTestId('dashboard-holdings')).queryByText('SCAM')).not.toBeInTheDocument();
@@ -503,14 +507,14 @@ describe('DashboardTab — hero honesty', () => {
     await renderTab();
     const hero = screen.getByTestId('dashboard-hero');
     expect(within(hero).getByText('Total net worth')).toBeInTheDocument();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent(/₹/);
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-transaction-count',
       '4'
     );
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-net-worth',
-      'incomplete'
+      expect.stringMatching(/^\d/)
     );
     expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute(
       'data-btc-quantity',
@@ -561,7 +565,7 @@ describe('DashboardTab — hero honesty', () => {
     await renderTab();
     const hero = screen.getByTestId('dashboard-hero');
     expect(within(hero).getByText('Total net worth')).toBeInTheDocument();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent(/₹/);
     expect(screen.queryByTestId('historical-holdings-performance')).not.toBeInTheDocument();
     expect(within(hero).getByText('₹27,000.00')).toBeInTheDocument();
     expect(within(hero).getByText('Unrealized P&L').parentElement)
@@ -604,6 +608,91 @@ describe('DashboardTab — hero honesty', () => {
 });
 
 describe('DashboardTab — header, money strip and tax rail', () => {
+  it('shows exact Aave receipt custody while net worth and allocation count its underlying once', async () => {
+    const txBackup = [...SEED.txs];
+    const address = `0x${'1'.repeat(40)}`;
+    const scope = `wallet:evm:${address}`;
+    const custodyScope = `wallet:evm:1:${address}`;
+    const awbtc = '0x5ee5bf7ae06d1be5997a1a72006fe6c607ec6de8';
+    const wbtc = '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599';
+    const now = Date.now();
+    const token = (contractAddress: string, symbol: string, decimals: number) => ({
+      chainId: 1 as const, contractAddress, symbol, decimals
+    });
+    SEED.txs.splice(0, SEED.txs.length, {
+      id: 'awbtc-custody', timestamp: now, type: 'transfer_in', asset: 'AWBTC', amount: 1,
+      fiatCurrency: 'INR', source: 'rpc:moralis', chain: 'ethereum', contractAddress: awbtc,
+      walletAddress: address, flags: [], isInternalTransfer: false
+    });
+    SEED.safetyDecisions.push({
+      subjectKey: `asset:ethereum:${awbtc}`, state: 'high_confidence_spam', updatedAt: now, origin: 'automatic'
+    });
+    SEED.authoritySnapshots.push({
+      snapshotId: 'awbtc-custody-snapshot', generation: 1, scopeId: custodyScope,
+      authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet',
+      coveredAccountClasses: ['wallet'], asOf: now, capturedAt: now,
+      sourceIdentityId: `ethereum:${address}`, status: 'complete', endpointProof: {
+        authorityKind: 'rpc', provider: 'alchemy', operation: 'balance', parametersClass: 'wallet',
+        requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true
+      }
+    });
+    SEED.authorityAssets.push({
+      id: 'awbtc-custody-asset', snapshotId: 'awbtc-custody-snapshot', generation: 1, scopeId: custodyScope,
+      accountClass: 'wallet', assetKey: `evm:ethereum:${awbtc}`, asset: 'AWBTC', quantity: 1
+    });
+    SEED.sourceCoverage.push({
+      id: 'awbtc-custody-coverage', generation: 1, scopeId: custodyScope,
+      sourceIdentityId: `ethereum:${address}`, evidenceId: 'awbtc-custody-evidence', kind: 'rpc',
+      accountClasses: ['wallet'], endpoints: ['history'], authoritySnapshotId: 'awbtc-custody-snapshot',
+      authorityAsOf: now, requestedHistoryStart: 0, requestedHistoryEnd: now,
+      observedHistoryStart: 0, observedHistoryEnd: now, startedAt: 0, completedAt: now,
+      status: 'complete', paginationExhausted: true, endpointOutcomes: [{
+        endpoint: 'history', accountClass: 'wallet', required: true, status: 'complete',
+        requestedStart: 0, requestedEnd: now, observedStart: 0, observedEnd: now,
+        paginationRequired: true, paginationExhausted: true
+      }]
+    });
+    SEED.priceRows.push(
+      { key: `spot:ctr:ethereum:${awbtc}:INR`, price: 5_000_000, fetchedAt: now },
+      { key: `spot:ctr:ethereum:${wbtc}:INR`, price: 5_000_000, fetchedAt: now }
+    );
+    const protocolSnapshots = [
+      ['aave-v2-ethereum', 'aave-v2-awbtc-snapshot'],
+      ['aave-v3-ethereum', 'aave-v3-awbtc-snapshot'],
+      ['spark-v1-ethereum', 'spark-awbtc-snapshot']
+    ] as const;
+    SEED.defiPositionSnapshots.push(...protocolSnapshots.map(([protocolId, snapshotId]) => ({
+      snapshotId, generation: 1, accountIdentityScope: scope,
+      protocolId, chainId: 1, status: 'complete' as const, capturedAt: now, blockNumber: 1,
+      evidence: [{ provider: 'ethereum-rpc' as const, status: 'complete' as const, blockNumber: 1, detail: 'exact production-shaped fixture' }]
+    })));
+    SEED.walletDefiRefreshManifests.push({
+      accountIdentityScope: scope, custodyScopeId: custodyScope, custodySnapshotId: 'awbtc-custody-snapshot',
+      custodyGeneration: 1, custodyAsOf: now, blockNumber: 1, capturedAt: now,
+      protocolSnapshotIds: Object.fromEntries(protocolSnapshots) as Record<typeof protocolSnapshots[number][0], string>
+    });
+    SEED.defiPositionRows.push({
+      id: 'aave-awbtc-supply', snapshotId: 'aave-v3-awbtc-snapshot', protocolId: 'aave-v3-ethereum',
+      reserveKey: wbtc, role: 'supply', underlying: token(wbtc, 'WBTC', 8),
+      protocolToken: token(awbtc, 'AWBTC', 8), quantity: 1, rawQuantity: '100000000', isCollateral: true
+    });
+
+    try {
+      await renderTab();
+      const custody = screen.getByTestId('dashboard-holdings');
+      expect(within(custody).getAllByText('AWBTC').length).toBeGreaterThan(0);
+      expect(JSON.parse(localStorage.getItem('sololedger_wallet_defi_net_worth_shadow_v1') ?? '{}')).toMatchObject({
+        legacyNetWorth: 5_000_000, defiNetWorth: 5_000_000, difference: 0, status: 'complete'
+      });
+      expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', '5000000');
+      const allocation = screen.getByTestId('allocation-section');
+      expect(within(allocation).getByText('WBTC')).toBeInTheDocument();
+      expect(within(allocation).queryByText('AWBTC')).not.toBeInTheDocument();
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
+    }
+  });
+
   it('requests an exact INR mark for a DeFi underlying absent from custody', async () => {
     EFFECTIVE_SETTINGS.priceApiEnabled = true;
     const reserve = `0x${'9'.repeat(40)}`;
@@ -627,7 +716,7 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       'INR', undefined
     );
   });
-  it('fails closed instead of showing a gross total for a known unpriced DeFi liability', async () => {
+  it('shows the numeric holdings subtotal with a disclosure for a known unpriced DeFi liability', async () => {
     const scope = `wallet:evm:0x${'1'.repeat(40)}`;
     const reserve = `0x${'2'.repeat(40)}`;
     const token = (contractAddress: string, symbol: string) => ({ chainId: 1 as const, contractAddress, symbol, decimals: 6 });
@@ -647,10 +736,10 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable'
     });
     await renderTab();
-    expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
-    expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', 'incomplete');
+    expect(screen.getByTestId('net-worth-value')).toHaveTextContent(/₹/);
+    expect(Number(screen.getByTestId('dashboard-holdings-generation').getAttribute('data-net-worth'))).toBeGreaterThanOrEqual(0);
     expect(screen.getByTestId('defi-net-worth-incomplete')).toBeInTheDocument();
-    expect(screen.getByTestId('defi-net-worth-incomplete')).toHaveTextContent('Some liabilities are unpriced');
+    expect(screen.getByTestId('defi-net-worth-incomplete')).toHaveTextContent(/Some liabilities are unpriced.*subtotal excludes them/);
     expect(JSON.parse(localStorage.getItem('sololedger_wallet_defi_net_worth_shadow_v1') ?? '{}')).toMatchObject({
       featureEnabled: true, defiNetWorth: null, status: 'partial'
     });
@@ -717,6 +806,28 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     for (const label of ['Money in', 'Money out', 'Income', 'Trading fees', 'Realized gains']) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+  });
+
+  it('renders historical crypto flows numerically and uses zero with an unpriced exclusion note', async () => {
+    const timestamp = Date.UTC(2025, 4, 10, 12, 0, 0);
+    SEED.txs.push(
+      { id: 'historical-in', timestamp, type: 'transfer_in', asset: 'ETH', amount: 2,
+        fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'unpriced-out', timestamp, type: 'transfer_out', asset: 'UNKNOWN', amount: 3,
+        fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'direct-income', timestamp, type: 'income', asset: 'INR', amount: 75,
+        fiatCurrency: 'INR', source: 'manual', flags: [], isInternalTransfer: false }
+    );
+    SEED.priceRows.push({ key: `sym:ETH:${keyDate(timestamp)}:INR`, price: 2_000, fetchedAt: timestamp });
+
+    await renderTab();
+
+    const strip = screen.getByTestId('money-strip');
+    expect(within(strip).getByText('Money in').parentElement).toHaveTextContent('₹4,000.00');
+    expect(within(strip).getByText('Money out').parentElement).toHaveTextContent('₹0.00');
+    expect(within(strip).getByText('Money out').parentElement).toHaveTextContent('1 excluded · unpriced');
+    expect(within(strip).getByText('Income').parentElement).toHaveTextContent('₹75.00');
+    expect(strip).not.toHaveTextContent('Unavailable');
   });
 
   it('estimates FY tax at 30% + 4% cess with the not-advice caveat', async () => {
@@ -846,6 +957,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
+      fireEvent.click(within(holdings).getByRole('button', { name: 'Show all (1)' }));
       expect(within(holdings).getAllByText(/10\.0000/).length).toBeGreaterThan(0);
       fireEvent.click(within(holdings).getAllByRole('button', { expanded: false })[0]);
       const positive = screen.getByTestId('source-allocation-manual:manual');
@@ -954,6 +1066,67 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     }
   });
 
+  it('keeps exact production holdings ordinary, groups zero-basis junk behind Show all/less, and never reveals excluded rows', async () => {
+    const txBackup = [...SEED.txs];
+    const decisionBackup = [...SEED.safetyDecisions];
+    const exact = [
+      ['AWBTC', '0x5ee5bf7ae06d1be5997a1a72006fe6c607ec6de8'],
+      ['AUSDC', '0xbcca60bb61934080951369a648fb03df4f96263c'],
+      ['ZRO', '0x6985884c4392d348587b19cb9eaaf157f13271cd'],
+      ['BUSD', '0x4fabb145d64652a948d72533023f6e7a623c7c53']
+    ] as const;
+    const walletAddress = `0x${'a'.repeat(40)}`;
+    const now = Date.now();
+    const contractTx = (id: string, asset: string, contractAddress: string, fiatValue?: number) => ({
+      id, timestamp: now, type: fiatValue == null ? 'transfer_in' : 'buy', asset, amount: 1,
+      fiatValue, fiatCurrency: 'INR', source: 'rpc:moralis', chain: 'ethereum', contractAddress,
+      walletAddress, flags: [], isInternalTransfer: false
+    });
+    const junk = Array.from({ length: 24 }, (_, index) => contractTx(
+      `junk-${index}`, `JUNK-${index}`, `0x${(index + 100).toString(16).padStart(40, '0')}`
+    ));
+    const spamContract = `0x${'d'.repeat(40)}`;
+    const visibleContract = `0x${'e'.repeat(40)}`;
+    const hiddenContract = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+    SEED.txs.splice(0, SEED.txs.length,
+      ...exact.map(([asset, contract]) => contractTx(`exact-${asset}`, asset, contract)),
+      ...junk,
+      contractTx('explicit-visible', 'RESTORED', visibleContract),
+      contractTx('lookalike-spam', 'AWBTC', spamContract),
+      contractTx('explicit-hidden', 'USDC-HIDDEN', hiddenContract, 500)
+    );
+    SEED.safetyDecisions.splice(0, SEED.safetyDecisions.length,
+      ...exact.map(([, contract]) => ({
+        subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam' as const,
+        updatedAt: now, origin: 'automatic' as const
+      })),
+      { subjectKey: `asset:ethereum:${visibleContract}`, state: 'user_visible', updatedAt: now, origin: 'user' },
+      { subjectKey: `asset:ethereum:${spamContract}`, state: 'high_confidence_spam', updatedAt: now, origin: 'automatic' },
+      { subjectKey: `asset:ethereum:${hiddenContract}`, state: 'user_hidden', updatedAt: now, origin: 'user' }
+    );
+
+    try {
+      await renderTab();
+      const holdings = screen.getByTestId('dashboard-holdings');
+      for (const [asset] of exact) expect(within(holdings).getAllByText(asset).length).toBeGreaterThan(0);
+      expect(within(holdings).getAllByText('RESTORED').length).toBeGreaterThan(0);
+      expect(within(holdings).queryByText('JUNK-0')).not.toBeInTheDocument();
+      expect(within(holdings).queryByText('USDC-HIDDEN')).not.toBeInTheDocument();
+      expect(within(holdings).getAllByText('AWBTC')).toHaveLength(2);
+
+      fireEvent.click(within(holdings).getByRole('button', { name: 'Show all (24)' }));
+      expect(within(holdings).getAllByText('JUNK-0').length).toBeGreaterThan(0);
+      expect(within(holdings).queryByText('USDC-HIDDEN')).not.toBeInTheDocument();
+      expect(within(holdings).getAllByText('AWBTC')).toHaveLength(2);
+
+      fireEvent.click(within(holdings).getByRole('button', { name: 'Show less' }));
+      expect(within(holdings).queryByText('JUNK-0')).not.toBeInTheDocument();
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...txBackup);
+      SEED.safetyDecisions.splice(0, SEED.safetyDecisions.length, ...decisionBackup);
+    }
+  });
+
   it('excludes high-confidence fake TOKEN activity and negative posting quantities from holdings and net worth', async () => {
     const backup = [...SEED.txs];
     SEED.txs.length = 0;
@@ -972,7 +1145,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
       expect(within(holdings).getAllByText('GOOD').length).toBeGreaterThan(0);
       expect(within(holdings).queryByText('TOKEN')).not.toBeInTheDocument();
       expect(within(holdings).queryByText('NEG')).not.toBeInTheDocument();
-      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Incomplete');
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹100.00');
       expect(screen.getByText('Money in')).toBeInTheDocument();
     } finally {
       SEED.txs.splice(0, SEED.txs.length, ...backup);
@@ -1022,6 +1195,7 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holding = screen.getByTestId('dashboard-holdings');
+      fireEvent.click(within(holding).getByRole('button', { name: 'Show all (1)' }));
       expect(within(holding).getAllByText(/10\.0000/).length).toBeGreaterThan(0);
       const toggle = within(holding).getAllByRole('button', { expanded: false })
         .find((button) => button.textContent?.includes('USDT'))!;
@@ -1059,8 +1233,9 @@ describe('DashboardTab — holdings with per-source expansion', () => {
     try {
       await renderTab();
       const holdings = screen.getByTestId('dashboard-holdings');
+      fireEvent.click(within(holdings).getByRole('button', { name: 'Show all (1)' }));
       expect(within(holdings).getByText('1 asset')).toBeInTheDocument();
-      expect(within(holdings).queryByText(/hidden/i)).not.toBeInTheDocument();
+      expect(within(holdings).queryByText(/other hidden/i)).not.toBeInTheDocument();
       const usdtButtons = within(holdings).getAllByRole('button', { expanded: false })
         .filter((button) => button.textContent?.includes('USDT'));
       // The responsive row renders one asset button for mobile and one for desktop.

@@ -735,6 +735,65 @@ describe('moneyStrip', () => {
     expect(strip.moneyIn).toEqual({ amount: 100, status: 'partial', contributorCount: 2, missingValuationCount: 1 });
   });
 
+  it('values crypto flows from exact-contract and symbol historical prices after persisted and direct values', () => {
+    const timestamp = day(2026, 5, 1);
+    const contract = '0x1111111111111111111111111111111111111111';
+    const index = buildPriceIndex([
+      priceRow(`ctr:ethereum:${contract}:${keyDate(timestamp)}:INR`, 25),
+      priceRow(`sym:ETH:${keyDate(timestamp)}:INR`, 2_000),
+      priceRow(`sym:BTC:${keyDate(timestamp)}:INR`, 5_000)
+    ], 'INR');
+    const strip = moneyStrip([
+      tx({ id: 'exact', timestamp, type: 'transfer_in', asset: 'TOKEN', amount: 4, chain: 'ethereum', contractAddress: contract }),
+      tx({ id: 'symbol', timestamp, type: 'transfer_out', asset: 'ETH', amount: 0.5 }),
+      tx({ id: 'income', timestamp, type: 'income', asset: 'BTC', amount: 0.1 }),
+      tx({ id: 'persisted', timestamp, type: 'transfer_in', asset: 'BTC', amount: 1, fiatValue: 7_500 }),
+      tx({ id: 'direct', timestamp, type: 'income', asset: 'INR', amount: 75 })
+    ], [], timestamp, timestamp, index);
+
+    expect(strip.moneyIn).toEqual({ amount: 7_600, status: 'complete', contributorCount: 2, missingValuationCount: 0 });
+    expect(strip.moneyOut).toEqual({ amount: 1_000, status: 'complete', contributorCount: 1, missingValuationCount: 0 });
+    expect(strip.income).toEqual({ amount: 575, status: 'complete', contributorCount: 2, missingValuationCount: 0 });
+  });
+
+  it('preserves unavailable aggregate status when every external flow remains unpriced', () => {
+    const timestamp = day(2026, 5, 1);
+    const strip = moneyStrip([
+      tx({ id: 'missing', timestamp, type: 'transfer_in', asset: 'UNKNOWN', amount: 3 })
+    ], [], timestamp, timestamp, buildPriceIndex([], 'INR'));
+
+    expect(strip.moneyIn).toEqual({ amount: null, status: 'unavailable', contributorCount: 1, missingValuationCount: 1 });
+  });
+
+  it('rejects a stale monthly close for transaction-date flow valuation', () => {
+    const timestamp = day(2026, 5, 31);
+    const stale = day(2026, 5, 1);
+    const strip = moneyStrip([
+      tx({ id: 'stale', timestamp, type: 'transfer_in', asset: 'BTC', amount: 2, safetyState: 'trusted' })
+    ], [], timestamp, timestamp, buildPriceIndex([
+      priceRow(`sym:BTC:${keyDate(stale)}:INR`, 5_000)
+    ], 'INR'));
+
+    expect(strip.moneyIn).toEqual({ amount: null, status: 'unavailable', contributorCount: 1, missingValuationCount: 1 });
+  });
+
+  it('does not value an unverified contract from a same-symbol lookalike price', () => {
+    const timestamp = day(2026, 5, 1);
+    const lookalike = '0x2222222222222222222222222222222222222222';
+    const index = buildPriceIndex([
+      priceRow(`sym:USDC:${keyDate(timestamp)}:INR`, 83)
+    ], 'INR');
+    const unverified = moneyStrip([
+      tx({ id: 'lookalike', timestamp, type: 'transfer_in', asset: 'USDC', amount: 100, chain: 'ethereum', contractAddress: lookalike, safetyState: 'unverified' })
+    ], [], timestamp, timestamp, index);
+    const trusted = moneyStrip([
+      tx({ id: 'trusted', timestamp, type: 'transfer_in', asset: 'USDC', amount: 100, chain: 'ethereum', contractAddress: lookalike, safetyState: 'trusted' })
+    ], [], timestamp, timestamp, index);
+
+    expect(unverified.moneyIn.status).toBe('unavailable');
+    expect(trusted.moneyIn).toEqual({ amount: 8_300, status: 'complete', contributorCount: 1, missingValuationCount: 0 });
+  });
+
   it('defers both sides of unmatched Options premiums from income and fees', () => {
     const start = day(2026, 4, 1);
     const end = day(2026, 7, 25);

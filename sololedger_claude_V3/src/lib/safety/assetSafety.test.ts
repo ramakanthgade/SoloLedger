@@ -55,6 +55,31 @@ describe('five-state asset safety', () => {
       subjectKey, chain: 'ethereum', contractAddress: '0x1111111111111111111111111111111111111111'
     })).toMatchObject({ state: 'unverified', warned: true, exactContractPriceOnly: true });
   });
+
+  it('trusts the production Ethereum contracts exactly despite automatic spam, while user-hidden still wins', () => {
+    const contracts = [
+      ['AWBTC', '0x5ee5bf7ae06d1be5997a1a72006fe6c607ec6de8'],
+      ['AUSDC', '0xbcca60bb61934080951369a648fb03df4f96263c'],
+      ['ZRO', '0x6985884c4392d348587b19cb9eaaf157f13271cd'],
+      ['BUSD', '0x4fabb145d64652a948d72533023f6e7a623c7c53']
+    ] as const;
+    for (const [, contract] of contracts) {
+      const exactSubject = assetSubjectKey('ethereum', contract);
+      const automatic = evidence({ subjectKey: exactSubject });
+      expect(resolveAssetSafety({
+        subjectKey: exactSubject, chain: '0x1', contractAddress: contract.toUpperCase(), evidence: [automatic]
+      }).state).toBe('trusted');
+      expect(resolveAssetSafety({
+        subjectKey: exactSubject, chain: 'ethereum', contractAddress: contract, evidence: [automatic],
+        decision: { subjectKey: exactSubject, state: 'user_hidden', updatedAt: 20, origin: 'user' }
+      }).state).toBe('user_hidden');
+      expect(resolveAssetSafety({
+        subjectKey: assetSubjectKey('ethereum', `${contract.slice(0, -1)}0`), chain: 'ethereum',
+        contractAddress: `${contract.slice(0, -1)}0`
+      }).state).toBe('unverified');
+    }
+    expect(contracts.map(([symbol]) => symbol)).toEqual(['AWBTC', 'AUSDC', 'ZRO', 'BUSD']);
+  });
 });
 
 describe('import safety materialization', () => {

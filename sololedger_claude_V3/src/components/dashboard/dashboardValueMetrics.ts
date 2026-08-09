@@ -5,8 +5,8 @@ import type { EconomicExposureProjection } from '@/lib/portfolio/economicExposur
 export function economicExposureDisclosure(
   projection: Pick<EconomicExposureProjection, 'status' | 'hasUnpricedValues' | 'hasUnpricedLiabilities'>
 ): string | null {
-  if (projection.hasUnpricedLiabilities) return 'Some liabilities are unpriced · total unavailable.';
-  if (projection.hasUnpricedValues) return 'Position values incomplete · unvalued replacements remain in custody.';
+  if (projection.hasUnpricedLiabilities) return 'Some liabilities are unpriced · shown subtotal excludes them.';
+  if (projection.hasUnpricedValues) return 'Position values incomplete · shown subtotal uses retained custody.';
   if (projection.status === 'stale') return 'Position evidence may be stale · last complete holdings retained.';
   if (projection.status === 'unsupported') return 'Position look-through unavailable · custody retained.';
   if (projection.status === 'partial') return 'Position evidence partial · custody and known liabilities retained.';
@@ -20,6 +20,30 @@ export interface DashboardValueMetrics {
   currentEconomicAssets: number;
   currentDefiLiabilities: number;
   currentDefiAdjustment: number | null;
+}
+
+/**
+ * Numeric subtotal for an incomplete current-economic projection. Known
+ * protocol assets and liabilities retain their signed contributions. Only an
+ * unpriced liquid custody row may use its own corresponding cost fallback;
+ * custody replaced by a protocol row is never counted a second time.
+ */
+export function knownEconomicSubtotal(
+  projection: Pick<EconomicExposureProjection, 'assets' | 'liabilities' | 'netWorth'>,
+  custodyCostFallbackById: ReadonlyMap<string, number>
+): number {
+  if (projection.netWorth != null) return projection.netWorth;
+  const replacedCustodyIds = new Set([...projection.assets, ...projection.liabilities]
+    .flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : []));
+  const assets = projection.assets.reduce((sum, row) => {
+    if (row.kind === 'liquid' && replacedCustodyIds.has(row.id)) return sum;
+    if (row.contribution != null) return sum + row.contribution;
+    return row.kind === 'liquid' ? sum + (custodyCostFallbackById.get(row.id) ?? 0) : sum;
+  }, 0);
+  const liabilities = projection.liabilities.reduce(
+    (sum, row) => sum + (row.contribution ?? 0), 0
+  );
+  return assets + liabilities;
 }
 
 /** Current DeFi economics are deliberately separate from historical lot/chart performance. */

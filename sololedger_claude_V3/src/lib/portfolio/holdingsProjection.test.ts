@@ -331,6 +331,28 @@ describe('buildHoldingsProjection', () => {
     expect(hidden.allHoldings[0].safetyState).toBe('user_hidden');
   });
 
+  it('lets explicit user-hidden beat canonical trust for exact authority holdings', () => {
+    const contract = '0x5ee5bf7ae06d1be5997a1a72006fe6c607ec6de8';
+    const walletTx = tx({
+      source: 'rpc:moralis', chain: 'ethereum', walletAddress: '0xabc', asset: 'AWBTC',
+      contractAddress: contract, amount: 1
+    });
+    const automatic = buildHoldingsProjection(input({
+      exchangeConnections: [], transactions: [walletTx], safetyDecisions: [{
+        subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam', updatedAt: NOW, origin: 'automatic'
+      }]
+    }));
+    expect(automatic.holdings[0]).toMatchObject({ asset: 'AWBTC', safetyState: 'trusted' });
+
+    const hidden = buildHoldingsProjection(input({
+      exchangeConnections: [], transactions: [walletTx], safetyDecisions: [{
+        subjectKey: `asset:ethereum:${contract}`, state: 'user_hidden', updatedAt: NOW, origin: 'user'
+      }]
+    }));
+    expect(hidden.holdings).toEqual([]);
+    expect(hidden.allHoldings[0]).toMatchObject({ asset: 'AWBTC', safetyState: 'user_hidden' });
+  });
+
   it('preserves wallet contract identity, Base58 case, and native SOL separation', () => {
     const wallet = 'Base58Wallet';
     const result = buildHoldingsProjection(input({
