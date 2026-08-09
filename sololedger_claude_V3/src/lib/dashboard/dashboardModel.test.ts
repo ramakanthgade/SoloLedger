@@ -204,6 +204,12 @@ describe('periodRange', () => {
     const now = day(2026, 7, 25);
     expect(periodRange('1M', 'IN', now, null).start).toBe(now - 30 * DAY);
   });
+  it('derives FY from the supplied now rather than the host wall clock', () => {
+    const now = day(2025, 1, 15);
+    const range = periodRange('FY', 'IN', now, null);
+    expect(range.sinceCaption).toContain('FY 2024-25');
+    expect(range.start).toBe(Date.UTC(2024, 3, 1) - (5 * 60 + 30) * 60 * 1000);
+  });
 });
 
 describe('buildChartSeries', () => {
@@ -618,16 +624,21 @@ describe('projectionSourceBreakdown', () => {
 });
 
 describe('moneyStrip', () => {
-  it('buckets period flows and realized gains, skipping spam and out-of-range rows', () => {
+  it('counts only external deposits and withdrawals, excluding trades and confirmed internal transfers', () => {
     const start = day(2026, 4, 1);
     const end = day(2026, 7, 25);
     const txs = [
-      tx({ id: 'in', timestamp: day(2026, 5, 1), type: 'buy', fiatValue: 1000 }),
-      tx({ id: 'out', timestamp: day(2026, 6, 1), type: 'sell', fiatValue: 1500 }),
+      tx({ id: 'deposit', timestamp: day(2026, 5, 1), type: 'transfer_in', fiatValue: 1000 }),
+      tx({ id: 'withdrawal', timestamp: day(2026, 6, 1), type: 'transfer_out', fiatValue: 1500 }),
+      tx({ id: 'internal-in', timestamp: day(2026, 6, 1), type: 'transfer_in', fiatValue: 700, isInternalTransfer: true }),
+      tx({ id: 'internal-out', timestamp: day(2026, 6, 1), type: 'transfer_out', fiatValue: 700, internalTransferDecision: 'confirmed' }),
+      tx({ id: 'buy', timestamp: day(2026, 6, 1), type: 'buy', fiatValue: 9000 }),
+      tx({ id: 'sell', timestamp: day(2026, 6, 1), type: 'sell', fiatValue: 8000 }),
+      tx({ id: 'trade', timestamp: day(2026, 6, 1), type: 'trade', fiatValue: 7000 }),
       tx({ id: 'inc', timestamp: day(2026, 6, 2), type: 'income', asset: 'ETH', fiatValue: 40 }),
       tx({ id: 'fee', timestamp: day(2026, 6, 3), type: 'fee', fiatValue: 5 }),
-      tx({ id: 'old', timestamp: day(2025, 1, 1), type: 'buy', fiatValue: 9999 }), // out of range
-      tx({ id: 'spam', timestamp: day(2026, 6, 4), type: 'buy', fiatValue: 777, isSpam: true })
+      tx({ id: 'old', timestamp: day(2025, 1, 1), type: 'transfer_in', fiatValue: 9999 }),
+      tx({ id: 'spam', timestamp: day(2026, 6, 4), type: 'transfer_in', fiatValue: 777, isSpam: true })
     ];
     const { disposals } = calculateCostBasis(
       [
@@ -637,11 +648,91 @@ describe('moneyStrip', () => {
       { method: 'FIFO', settings: TEST_TAX_SETTINGS }
     );
     const strip = moneyStrip(txs, disposals, start, end);
-    expect(strip.moneyIn).toBe(1000);
-    expect(strip.moneyOut).toBe(1500);
-    expect(strip.income).toBe(40);
-    expect(strip.fees).toBe(5);
-    expect(strip.realizedGains).toBeCloseTo(60);
+    expect(strip.moneyIn).toEqual({ amount: 1000, status: 'complete', contributorCount: 1, missingValuationCount: 0 });
+    expect(strip.moneyOut.amount).toBe(1500);
+    expect(strip.income.amount).toBe(40);
+    expect(strip.fees.amount).toBe(5);
+    expect(strip.realizedGains.amount).toBeCloseTo(60);
+  });
+
+  it('values an inline reporting-currency fee directly without using trade fiatValue', () => {
+    const timestamp = day(2026, 5, 1);
+    const strip = moneyStrip([
+      tx({ id: 'trade', timestamp, type: 'buy', fiatValue: 50_000, feeAsset: 'INR', feeAmount: 125 })
+    ], [], timestamp, timestamp);
+    expect(strip.fees).toEqual({ amount: 125, status: 'complete', contributorCount: 1, missingValuationCount: 0 });
+  });
+
+  it('values a crypto inline fee from the timestamped reporting-currency price cache', () => {
+    const timestamp = day(2026, 5, 3);
+    const index = buildPriceIndex([
+      priceRow(`sym:BNB:${keyDate(timestamp)}:INR`, 50_000)
+    ], 'INR');
+    const strip = moneyStrip([
+      tx({ id: 'trade', timestamp, type: 'sell', feeAsset: 'BNB', feeAmount: 0.01, fiatValue: 100_000 })
+    ], [], timestamp, timestamp, index);
+    expect(strip.fees).toEqual({ amount: 500, status: 'complete', contributorCount: 1, missingValuationCount: 0 });
+  });
+
+  it('marks an unvalued crypto fee unavailable instead of returning zero', () => {
+    const timestamp = day(2026, 5, 3);
+    const strip = moneyStrip([
+      tx({ id: 'trade', timestamp, type: 'trade', feeAsset: 'BNB', feeAmount: 0.01, fiatValue: 100_000 })
+    ], [], timestamp, timestamp);
+    expect(strip.fees).toEqual({ amount: null, status: 'unavailable', contributorCount: 1, missingValuationCount: 1 });
+  });
+
+  it('counts an inline fee with no asset as unavailable instead of guessing its unit', () => {
+    const timestamp = day(2026, 5, 3);
+    const strip = moneyStrip([
+      tx({ id: 'trade', timestamp, type: 'buy', feeAmount: 25, feeAsset: undefined, fiatValue: 100_000 })
+    ], [], timestamp, timestamp);
+    expect(strip.fees).toEqual({ amount: null, status: 'unavailable', contributorCount: 1, missingValuationCount: 1 });
+  });
+
+  it('returns a partial known subtotal when only some fee contributors are valued', () => {
+    const timestamp = day(2026, 5, 3);
+    const strip = moneyStrip([
+      tx({ id: 'inr', timestamp, type: 'buy', feeAsset: 'INR', feeAmount: 25 }),
+      tx({ id: 'crypto', timestamp, type: 'sell', feeAsset: 'BNB', feeAmount: 0.01 })
+    ], [], timestamp, timestamp);
+    expect(strip.fees).toEqual({ amount: 25, status: 'partial', contributorCount: 2, missingValuationCount: 1 });
+  });
+
+  it('deduplicates standalone and inline representations only when immutable source evidence matches', () => {
+    const timestamp = day(2026, 5, 3);
+    const proven = moneyStrip([
+      tx({ id: 'trade', timestamp, type: 'buy', source: 'provider', sourceRef: 'immutable-fill-1', feeAsset: 'BNB', feeAmount: 0.01 }),
+      tx({ id: 'fee', timestamp, type: 'fee', source: 'provider', sourceRef: 'immutable-fill-1', asset: 'BNB', amount: 0.01, fiatValue: 450 })
+    ], [], timestamp, timestamp);
+    expect(proven.fees).toEqual({ amount: 450, status: 'complete', contributorCount: 1, missingValuationCount: 0 });
+
+    const unproven = moneyStrip([
+      tx({ id: 'trade', timestamp, type: 'buy', feeAsset: 'INR', feeAmount: 450 }),
+      tx({ id: 'fee', timestamp, type: 'fee', asset: 'INR', amount: 450 })
+    ], [], timestamp, timestamp);
+    expect(unproven.fees).toEqual({ amount: 900, status: 'complete', contributorCount: 2, missingValuationCount: 0 });
+  });
+
+  it('includes exact period boundaries and excludes adjacent instants', () => {
+    const start = day(2026, 5, 1);
+    const end = day(2026, 5, 31);
+    const strip = moneyStrip([
+      tx({ id: 'before', timestamp: start - 1, type: 'transfer_in', fiatValue: 1 }),
+      tx({ id: 'start', timestamp: start, type: 'transfer_in', fiatValue: 2 }),
+      tx({ id: 'end', timestamp: end, type: 'transfer_in', fiatValue: 3 }),
+      tx({ id: 'after', timestamp: end + 1, type: 'transfer_in', fiatValue: 4 })
+    ], [], start, end);
+    expect(strip.moneyIn).toEqual({ amount: 5, status: 'complete', contributorCount: 2, missingValuationCount: 0 });
+  });
+
+  it('does not coerce a missing external-flow valuation to zero', () => {
+    const timestamp = day(2026, 5, 1);
+    const strip = moneyStrip([
+      tx({ id: 'known', timestamp, type: 'transfer_in', fiatValue: 100 }),
+      tx({ id: 'missing', timestamp, type: 'transfer_in', asset: 'BTC', fiatValue: undefined })
+    ], [], timestamp, timestamp);
+    expect(strip.moneyIn).toEqual({ amount: 100, status: 'partial', contributorCount: 2, missingValuationCount: 1 });
   });
 
   it('defers both sides of unmatched Options premiums from income and fees', () => {
@@ -651,8 +742,8 @@ describe('moneyStrip', () => {
       tx({ id: 'paid', timestamp: day(2026, 5, 1), type: 'fee', category: 'options_premium', fiatValue: 100 }),
       tx({ id: 'received', timestamp: day(2026, 5, 2), type: 'income', category: 'options_premium', fiatValue: 100 })
     ], [], start, end);
-    expect(strip.income).toBe(0);
-    expect(strip.fees).toBe(0);
+    expect(strip.income.amount).toBe(0);
+    expect(strip.fees.amount).toBe(0);
   });
 });
 
