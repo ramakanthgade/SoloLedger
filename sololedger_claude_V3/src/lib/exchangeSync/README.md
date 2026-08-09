@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -19,6 +19,12 @@ order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
 so auto-sync requires Hosted (SaaS) mode with the server flag
 `exchangeSyncEnabled`. In local/BYOK mode every entry point fails closed as
 `not_hosted` (see `AUTO_SYNC_HOSTED_ONLY` in `index.ts`).
+
+The browser never talks directly to Bitget. Signed exchange traffic rides the
+JWT- and active-subscription-gated `GET/POST /api/proxy/exchange/<id>/<path>`
+relay, whose per-exchange policy fixes the upstream host and exact method/path
+allowlist. Bitget is restricted to GET-only public spot metadata, spot account
+assets, fills, deposits, and withdrawals on `api.bitget.com`.
 
 ## Module map
 
@@ -242,6 +248,21 @@ a sync discards any staged preview (with a warning).
   silently complete. Bitstamp documents no account-lifetime retention
   guarantee, so endpoint exhaustion remains `retention_unverified` partial
   coverage and proves only the observed API frontier.
+- Bitget classic spot v2 history walks newest-first with the exclusive native
+  `idLessThan` cursor at limit 100. Native raw response order and page fullness
+  are authoritative because CCXT may sort unified rows. Missing, malformed,
+  repeated, or non-decreasing native IDs fail closed without moving the prior
+  verified frontier. Retry-inclusive request budgets persist durable endpoint
+  checkpoints only after the staged rows commit. Trades freeze the complete
+  spot-symbol scan (including inactive markets and persisted delisted symbols)
+  and resume fairly; the global trade cursor is the minimum verified frontier
+  across symbols. Pinned CCXT 4.5.68 is forced to classic spot (`uta: false`,
+  spot market type only, currency loading disabled), and its unconditional
+  margin-currency catalog call is locally replaced with an empty response, so
+  no swap, UTA-settings, or margin-currency transport occurs. Bitget documents
+  only 90 days on these API history surfaces: retain spot fill/order and wallet
+  exports for older tax records. Export/API native-ID parity is unverified, so
+  CSV auto-deduplication is not promised.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -288,6 +309,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | mexc | native trade `id`, scoped by connection + exchange + immutable `trade` kind | withdrawal native `id`; deposits use the exact provider evidence tuple (`txId`/`transHash`, network, coin, time, amount, address, memo, index), scoped by immutable direction; no CSV identity promise |
 | bitvavo | native fill UUID, connection + immutable `trade` kind scoped; unmatched account-history `transactionId` uses immutable `account_history` kind | composite provider evidence, connection + immutable deposit/withdrawal kind scoped |
 | bitstamp | native mixed-ledger `id`, connection + immutable `trade` kind scoped | native mixed-ledger `id`, connection + immutable deposit/withdrawal kind scoped |
+| bitget | native `tradeId`, connection + immutable `trade` kind scoped; no promised CSV collision | native `orderId`, connection + immutable deposit/withdrawal kind scoped; no promised CSV collision |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change

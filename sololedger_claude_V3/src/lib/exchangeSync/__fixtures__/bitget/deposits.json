@@ -1,0 +1,19 @@
+{
+  "_recorded": false,
+  "_note": "GET /api/v2/spot/wallet/deposit-records data shape, newest first.",
+  "response": [
+    {
+      "orderId": "1083832260799930368",
+      "tradeId": "35bf0e588a42b25c71a9d45abe7308cabdeec6b7b423910b9bd4743d3a9a9efa",
+      "coin": "BTC", "type": "deposit", "size": "0.00030000", "status": "success",
+      "toAddress": "1BfZh7JESJGBUszCGeZnzxbVVvBycbJSbA", "dest": "on_chain", "chain": "BTC",
+      "fromAddress": null, "cTime": "1694131668281", "uTime": "1694131680247"
+    },
+    {
+      "orderId": "1083832260799930300",
+      "tradeId": "pending-deposit", "coin": "ETH", "type": "deposit", "size": "1", "status": "Pending",
+      "toAddress": "0x1111111111111111111111111111111111111111", "dest": "on_chain", "chain": "ETH",
+      "fromAddress": null, "cTime": "1694031668281", "uTime": "1694031680247"
+    }
+  ]
+}

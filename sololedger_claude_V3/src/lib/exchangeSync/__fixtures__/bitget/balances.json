@@ -1,0 +1,11 @@
+{
+  "_recorded": false,
+  "_note": "GET /api/v2/spot/account/assets response.",
+  "response": {
+    "code": "00000", "msg": "success", "requestTime": 1700111073740,
+    "data": [
+      { "coin": "BTC", "available": "0.0102", "frozen": "0", "locked": "0", "limitAvailable": "0", "uTime": "1700111073740" },
+      { "coin": "USDT", "available": "100", "frozen": "0", "locked": "0", "limitAvailable": "0", "uTime": "1700111073740" }
+    ]
+  }
+}

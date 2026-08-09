@@ -18,7 +18,7 @@ import type { Transaction } from '@/types/transaction';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { connectionSourceToken, getConnectionRow } from './connections';
 import type { UnifiedBalance } from './ccxtLoader';
-import type { BtcMarketsPaginationCheckpoint, BitstampPaginationCheckpoint } from '@/lib/storage/db';
+import type { BitgetHistoryState, BtcMarketsPaginationCheckpoint, BitstampPaginationCheckpoint } from '@/lib/storage/db';
 import { persistSyncedRows, syncConnection, type SyncEngineDeps } from './engine';
 import { exchangeLabel } from './ccxtLoader';
 import { flattenBalanceTotals } from './binanceSymbols';
@@ -66,6 +66,7 @@ interface StagedMeta {
   bitvavoMarkets?: import('./bitvavo').BitvavoMarketDescriptor[];
   bitvavoPendingTransferEvidence?: import('./engine').SyncFetchOutcome['bitvavoPendingTransferEvidence'];
   bitvavoPendingAccountCandidates?: import('./engine').SyncFetchOutcome['bitvavoPendingAccountCandidates'];
+  bitgetHistory?: BitgetHistoryState;
   /** Private current-balance authority fetched with the staged rows. */
   balance: UnifiedBalance;
   /** Non-secret source revision/state token captured with operation evidence. */
@@ -317,6 +318,7 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         bitvavoMarkets: outcome.bitvavoMarkets,
         bitvavoPendingTransferEvidence: outcome.bitvavoPendingTransferEvidence,
         bitvavoPendingAccountCandidates: outcome.bitvavoPendingAccountCandidates,
+        bitgetHistory: outcome.bitgetHistory,
         // Keep only normalized totals in memory. ccxt's raw `info` can carry
         // account metadata (for example a Binance UID) and is not needed for
         // confirmation.
@@ -381,6 +383,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       bitvavoMarkets: staged.meta?.bitvavoMarkets,
       bitvavoPendingTransferEvidence: staged.meta?.bitvavoPendingTransferEvidence,
       bitvavoPendingAccountCandidates: staged.meta?.bitvavoPendingAccountCandidates,
+      bitgetHistory: staged.meta?.bitgetHistory,
       balance: staged.meta?.balance,
       operation: staged.meta.operation,
       hooks: hooks(),

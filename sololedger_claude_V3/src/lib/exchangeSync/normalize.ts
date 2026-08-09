@@ -50,7 +50,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   btcmarkets: 'exbm',
   mexc: 'exmx',
   bitvavo: 'exbv',
-  bitstamp: 'exbs'
+  bitstamp: 'exbs',
+  bitget: 'exbg'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -139,6 +140,10 @@ function tradeSourceRef(
       return trade.id;
     case 'bitstamp':
       return trade.id ?? exchangeSourceRef('bitstamp-api', ts, side, base, amount);
+    case 'bitget':
+      // No verified Bitget CSV identity contract. Native tradeId is the only
+      // safe fill identity; storage scopes it to the connection and kind.
+      return trade.id;
   }
 }
 
@@ -231,7 +236,7 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget'
         ? { exchangeSyncKind: 'trade' as const }
         : {}),
       ...(exchange === 'bitvavo' ? { bitvavoMarketSymbol: market.symbol } : {})
@@ -681,6 +686,8 @@ function transferSourceRef(
     }
     case 'bitstamp':
       return transfer.id ?? exchangeSourceRef('bitstamp-api', ts, type, asset, amount);
+    case 'bitget':
+      return transfer.id;
   }
 }
 
@@ -764,6 +771,12 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     if (infoType === 'send') type = 'transfer_out';
     else if (infoType === 'receive') type = 'transfer_in';
   }
+  // Pinned CCXT 4.5.68 preserves Bitget's raw `withdraw` type instead of the
+  // unified `withdrawal` spelling. Raw endpoint direction is authoritative.
+  if (exchange === 'bitget') {
+    if (infoType === 'withdraw') type = 'transfer_out';
+    else if (infoType === 'deposit') type = 'transfer_in';
+  }
   const isGeminiAdjustment = geminiType === 'reward' || geminiType === 'admincredit' || geminiType === 'admindebit';
   if ((!type && !isGeminiAdjustment) || !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status)) return null;
   const ts = transfer.timestamp;
@@ -833,7 +846,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

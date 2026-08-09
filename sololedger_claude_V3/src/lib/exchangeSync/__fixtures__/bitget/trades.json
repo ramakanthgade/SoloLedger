@@ -1,0 +1,36 @@
+{
+  "_recorded": false,
+  "_note": "GET /api/v2/spot/trade/fills data shape, newest first.",
+  "response": [
+    {
+      "userId": "7264631751",
+      "symbol": "BTCUSDT",
+      "orderId": "1098394344925597696",
+      "tradeId": "1098394344974925824",
+      "orderType": "market",
+      "side": "sell",
+      "priceAvg": "28467.68",
+      "size": "0.0002",
+      "amount": "5.693536",
+      "feeDetail": { "deduction": "no", "feeCoin": "USDT", "totalDeductionFee": "", "totalFee": "-0.005693536" },
+      "tradeScope": "taker",
+      "cTime": "1697603539699",
+      "uTime": "1697603539754"
+    },
+    {
+      "userId": "7264631751",
+      "symbol": "BTCUSDT",
+      "orderId": "1098394344925597600",
+      "tradeId": "1098394344974925800",
+      "orderType": "limit",
+      "side": "buy",
+      "priceAvg": "28000",
+      "size": "0.001",
+      "amount": "28",
+      "feeDetail": { "deduction": "no", "feeCoin": "BTC", "totalDeductionFee": "", "totalFee": "-0.000001" },
+      "tradeScope": "maker",
+      "cTime": "1697503539699",
+      "uTime": "1697503539754"
+    }
+  ]
+}

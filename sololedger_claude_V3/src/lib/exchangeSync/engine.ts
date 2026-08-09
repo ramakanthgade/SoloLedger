@@ -27,7 +27,10 @@ import {
   exchangeBalanceId,
   type ExchangeConnectionRow,
   type BtcMarketsPaginationCheckpoint,
-  type BitstampPaginationCheckpoint
+  type BitstampPaginationCheckpoint,
+  type BitgetEndpointState,
+  type BitgetHistoryState,
+  type BitgetPaginationCheckpoint
 } from '@/lib/storage/db';
 import { binanceSpotEndpointProof, bitfinexSpotEndpointProof, type AuthorityAssetRow, type AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import {
@@ -178,6 +181,10 @@ const GEMINI_MAX_REQUESTS_PER_PHASE = 8_000;
 const GEMINI_TRANSFER_REQUEST_SPACING_MS = 5_000;
 export const BTCMARKETS_HISTORY_LIMIT = 200;
 export const BTCMARKETS_MAX_REQUESTS_PER_PHASE = 8_000;
+export const BITGET_HISTORY_LIMIT = 100;
+export const BITGET_MAX_REQUESTS_PER_PHASE = 200;
+/** Bitget v2 spot fills and wallet-history surfaces expose the latest 90 days. */
+export const BITGET_RETENTION_MS = 90 * 86_400_000;
 /** Bybit advertises two years of execution history for the V5 endpoint. */
 const BYBIT_TRADE_RETENTION_MS = 2 * 365 * 86_400_000;
 /**
@@ -215,7 +222,8 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   btcmarkets: Date.UTC(2013, 8, 1),
   mexc: Date.UTC(2018, 3, 1),
   bitvavo: Date.UTC(2018, 9, 1),
-  bitstamp: Date.UTC(2011, 7, 1)
+  bitstamp: Date.UTC(2011, 7, 1),
+  bitget: Date.UTC(2018, 6, 1)
 };
 
 export interface BitstampSpotTradeClassification {
@@ -269,6 +277,9 @@ export interface SyncEngineDeps {
   bitvavoMaxTransferRequests?: number;
   /** Test seam; includes retry attempts and unresolved-id replay requests. */
   bitstampMaxRequests?: number;
+  /** Bitget caps count every physical attempt; trades share one fair-scan budget. */
+  bitgetMaxTradeRequests?: number;
+  bitgetMaxTransferRequests?: number;
 }
 
 export interface SyncHooks {
@@ -289,7 +300,7 @@ const REAUTHORIZE_ERROR = 'Reauthorize this connection before syncing.';
 function hasRequiredCredentials(row: ExchangeConnectionRow): boolean {
   if ((row.credentialsState ?? 'ready') !== 'ready') return false;
   if (!row.apiKey?.trim() || !row.secret?.trim()) return false;
-  return (row.exchange !== 'okx' && row.exchange !== 'kucoin') || !!row.passphrase?.trim();
+  return (row.exchange !== 'okx' && row.exchange !== 'kucoin' && row.exchange !== 'bitget') || !!row.passphrase?.trim();
 }
 
 /** Engine-boundary authorization plus one monotonic generation reservation. */
@@ -527,6 +538,21 @@ export function btcMarketsHistoryWarnings(
     warnings.push(
       `BTC Markets history reached the bounded request budget before exhaustion. Its durable continuation checkpoint was retained; sync again to continue. ${limitations}`
     );
+  }
+  return warnings;
+}
+
+export function bitgetHistoryWarnings(
+  outcomes: ReadonlyArray<{ termination?: string }>
+): string[] {
+  const terminations = new Set(outcomes.map((outcome) => outcome.termination).filter(Boolean));
+  const exportCopy = 'Bitget documents 90 days on these spot API history surfaces. Retain Bitget spot fill/order and deposit/withdrawal exports for older tax records; export/API ID parity is unverified, so CSV auto-deduplication is not promised.';
+  const warnings = [exportCopy];
+  if (terminations.has('page_budget')) {
+    warnings.push('Bitget history reached the bounded request budget. Its durable native-ID checkpoint was retained; sync again to continue from the next older page.');
+  }
+  if (terminations.has('nonadvancing')) {
+    warnings.push('Bitget returned a missing, malformed, repeated, or non-decreasing native ID page. SoloLedger failed closed and retained the prior verified frontier; sync again after reviewing/exporting the affected history.');
   }
   return warnings;
 }
@@ -1800,6 +1826,167 @@ export async function paginateBtcMarkets<T extends PageRow>(args: {
   }
 }
 
+export interface BitgetRequestBudget {
+  used: number;
+  max: number;
+}
+
+export interface BitgetNativePage<T> {
+  rows: T[];
+  /** Native response order, before CCXT sorts unified rows. */
+  rawIds: string[];
+}
+
+const BITGET_NATIVE_ID_RE = /^(0|[1-9]\d*)$/;
+
+function minNativeId(ids: readonly string[]): string | undefined {
+  const valid = ids.filter((id) => BITGET_NATIVE_ID_RE.test(id));
+  return valid.length ? valid.reduce((min, id) => BigInt(id) < BigInt(min) ? id : min) : undefined;
+}
+
+function validBitgetCheckpoint(checkpoint: BitgetPaginationCheckpoint): boolean {
+  if (!BITGET_NATIVE_ID_RE.test(checkpoint.cursor) || !BITGET_NATIVE_ID_RE.test(checkpoint.newest)) return false;
+  if (checkpoint.stopAt != null && !BITGET_NATIVE_ID_RE.test(checkpoint.stopAt)) return false;
+  return BigInt(checkpoint.cursor) <= BigInt(checkpoint.newest) &&
+    (checkpoint.stopAt == null || BigInt(checkpoint.stopAt) <= BigInt(checkpoint.newest));
+}
+
+function validBitgetHistoryState(state: BitgetHistoryState | undefined): boolean {
+  if (!state) return true;
+  const endpoints: BitgetEndpointState[] = [
+    state.deposits ?? {}, state.withdrawals ?? {}, ...Object.values(state.trades ?? {})
+  ];
+  if (endpoints.some((endpoint) =>
+    (endpoint.newest != null && !BITGET_NATIVE_ID_RE.test(endpoint.newest)) ||
+    (endpoint.checkpoint != null && !validBitgetCheckpoint(endpoint.checkpoint)) ||
+    (endpoint.unsafeIds ?? []).some((id) => !BITGET_NATIVE_ID_RE.test(id)) ||
+    (endpoint.verifiedAt != null && !Number.isFinite(endpoint.verifiedAt)))) return false;
+  const progress = state.tradeProgress;
+  return progress == null || (Number.isFinite(progress.requestedAt) &&
+    Number.isInteger(progress.nextSymbolIndex) && progress.nextSymbolIndex >= 0 &&
+    progress.nextSymbolIndex <= progress.symbols.length &&
+    progress.symbols.every((symbol) => typeof symbol === 'string' && symbol.length > 0));
+}
+
+/**
+ * Bitget classic spot v2 history is newest-first and pages backward with the
+ * exclusive native `idLessThan` cursor. CCXT's unified arrays are sorted, so
+ * page order/fullness comes from the captured raw response. Any malformed or
+ * non-decreasing native page fails closed and preserves the prior checkpoint.
+ */
+export async function paginateBitgetNewestFirst<T extends PageRow>(args: {
+  fetchPage: (idLessThan?: string) => Promise<BitgetNativePage<T>>;
+  savedNewest?: string;
+  checkpoint?: BitgetPaginationCheckpoint;
+  unsafeIds?: string[];
+  now: number;
+  budget: BitgetRequestBudget;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<FetchPlanOutcome<T> & { bitgetCheckpoint?: BitgetPaginationCheckpoint }> {
+  const rows: T[] = [];
+  const priorCheckpoint = args.checkpoint;
+  if ((args.savedNewest != null && !BITGET_NATIVE_ID_RE.test(args.savedNewest)) ||
+    (priorCheckpoint != null && !validBitgetCheckpoint(priorCheckpoint)) ||
+    (args.unsafeIds ?? []).some((id) => !BITGET_NATIVE_ID_RE.test(id))) {
+    return { rows, maxTs: null, partial: true, termination: 'nonadvancing', bitgetCheckpoint: priorCheckpoint };
+  }
+  const replayStop = minNativeId([
+    ...(args.savedNewest ? [args.savedNewest] : []), ...(args.unsafeIds ?? [])
+  ]);
+  // A checkpoint without stopAt records an initial backfill that must continue
+  // to structural exhaustion. Unsafe evidence discovered on its committed
+  // pages must not retroactively add a stop boundary behind the saved cursor.
+  const stopAt = priorCheckpoint ? priorCheckpoint.stopAt : replayStop;
+  let cursor = priorCheckpoint?.cursor;
+  let newest = priorCheckpoint?.newest;
+  const seenIds = new Set<string>();
+  const seenPages = new Set<string>();
+  const sleep = args.sleep ?? (async () => {});
+  const unfinished = (): BitgetPaginationCheckpoint | undefined => cursor && newest
+    ? { cursor, newest, ...(stopAt ? { stopAt } : {}) } : undefined;
+
+  for (;;) {
+    let page: BitgetNativePage<T>;
+    let retry = 0;
+    for (;;) {
+      if (args.budget.used >= args.budget.max) {
+        return {
+          rows, maxTs: null, partial: true, termination: 'page_budget',
+          bitgetCheckpoint: unfinished() ?? priorCheckpoint
+        };
+      }
+      args.budget.used += 1;
+      try {
+        page = await args.fetchPage(cursor);
+        break;
+      } catch (err) {
+        const kind = classifySyncError(err);
+        if (retry >= MAX_RETRIES || !RETRYABLE_KINDS.has(kind)) throw err;
+        await sleep(RETRY_BACKOFF_MS[retry] ?? RETRY_BACKOFF_MS[RETRY_BACKOFF_MS.length - 1]);
+        retry += 1;
+      }
+    }
+
+    const ids = page.rawIds;
+    const parsedIds = page.rows.map((row) => row.id == null ? '' : String(row.id));
+    const signature = ids.join(',');
+    const malformed = ids.some((id) => !BITGET_NATIVE_ID_RE.test(id)) ||
+      parsedIds.length !== ids.length || parsedIds.some((id) => !ids.includes(id)) ||
+      ids.some((id, index) => index > 0 && BigInt(id) >= BigInt(ids[index - 1]!)) ||
+      (cursor != null && ids.some((id) => BigInt(id) >= BigInt(cursor!))) ||
+      (ids.length > 0 && seenPages.has(signature));
+    if (malformed) {
+      return {
+        rows, maxTs: null, partial: true, termination: 'nonadvancing',
+        bitgetCheckpoint: priorCheckpoint
+      };
+    }
+    if (ids.length > 0) seenPages.add(signature);
+    for (const row of page.rows) {
+      const id = String(row.id);
+      if (seenIds.has(id)) {
+        return { rows, maxTs: null, partial: true, termination: 'nonadvancing', bitgetCheckpoint: priorCheckpoint };
+      }
+      seenIds.add(id);
+      rows.push(row);
+    }
+    if (!newest && ids.length > 0) newest = ids[0];
+
+    const reachedStop = stopAt != null && ids.some((id) => BigInt(id) <= BigInt(stopAt));
+    if (reachedStop || ids.length < BITGET_HISTORY_LIMIT) {
+      return {
+        rows, maxTs: args.now, partial: true, termination: 'retention_truncated',
+        retentionFloor: args.now - BITGET_RETENTION_MS,
+        nativeCursor: newest
+      };
+    }
+    const next = ids[ids.length - 1];
+    if (!next || next === cursor) {
+      return { rows, maxTs: null, partial: true, termination: 'nonadvancing', bitgetCheckpoint: priorCheckpoint };
+    }
+    cursor = next;
+  }
+}
+
+function bitgetRawIds(client: ExchangeClient, key: 'tradeId' | 'orderId'): string[] | null {
+  const response = client.last_json_response;
+  if (response == null || typeof response !== 'object') return null;
+  const data = (response as { data?: unknown }).data;
+  if (!Array.isArray(data)) return null;
+  return data.map((item) => item != null && typeof item === 'object'
+    ? String((item as Record<string, unknown>)[key] ?? '') : '');
+}
+
+async function bitgetCapturedPage<T extends PageRow>(
+  client: ExchangeClient,
+  key: 'tradeId' | 'orderId',
+  request: () => Promise<T[]>
+): Promise<BitgetNativePage<T>> {
+  client.last_json_response = undefined;
+  const rows = await request();
+  return { rows, rawIds: bitgetRawIds(client, key) ?? ['__missing_raw_response__'] };
+}
+
 export interface GeminiTradeProgress {
   requestedStart: number;
   requestedEnd: number;
@@ -2088,6 +2275,78 @@ function btcMarketsTransferUnsafeForReplay(transfer: UnifiedTransfer, now: numbe
     btcMarketsTransferDirection(transfer) === 'unknown' ||
     (transfer.timestamp ?? now) > now ||
     (disposition === 'settled' && normalizeTransfer('btcmarkets', transfer) == null);
+}
+
+type BitgetTransferDisposition = 'settled' | 'pending' | 'terminal' | 'unknown';
+
+function bitgetTransferDisposition(transfer: UnifiedTransfer): BitgetTransferDisposition {
+  const raw = String(transfer.info?.status ?? transfer.status ?? '');
+  if (transfer.status === 'ok' || raw === 'success') return 'settled';
+  if (transfer.status === 'failed' || raw === 'pending_review_fail' || raw === 'reject') return 'terminal';
+  if (transfer.status === 'pending' || raw === 'Pending' || raw === 'pending_review') return 'pending';
+  return 'unknown';
+}
+
+function bitgetUnsafeTransfer(transfer: UnifiedTransfer, now: number): boolean {
+  return (transfer.timestamp ?? now + 1) > now || bitgetTransferDisposition(transfer) === 'pending' ||
+    bitgetTransferDisposition(transfer) === 'unknown' ||
+    (bitgetTransferDisposition(transfer) === 'settled' && normalizeTransfer('bitget', transfer) == null);
+}
+
+function bitgetSpotSymbols(markets: Record<string, UnifiedMarket>): string[] {
+  return [...new Set(Object.values(markets)
+    .filter((market) => market.spot === true && market.base.toUpperCase() !== market.quote.toUpperCase())
+    .map((market) => market.symbol))].sort();
+}
+
+async function fetchBitgetTransfers(args: {
+  client: ExchangeClient;
+  kind: 'deposits' | 'withdrawals';
+  state?: BitgetEndpointState;
+  now: number;
+  budget: BitgetRequestBudget;
+  sleep: (ms: number) => Promise<void>;
+}): Promise<FetchPlanOutcome<UnifiedTransfer> & { bitgetCheckpoint?: BitgetPaginationCheckpoint }> {
+  const startTime = args.now - BITGET_RETENTION_MS;
+  return paginateBitgetNewestFirst({
+    savedNewest: args.state?.newest,
+    checkpoint: args.state?.checkpoint,
+    unsafeIds: args.state?.unsafeIds,
+    now: args.now,
+    budget: args.budget,
+    sleep: args.sleep,
+    fetchPage: (idLessThan) => bitgetCapturedPage(args.client, 'orderId', () =>
+      args.kind === 'deposits'
+        ? args.client.fetchDeposits(undefined, startTime, BITGET_HISTORY_LIMIT, {
+            until: args.now, ...(idLessThan ? { idLessThan } : {})
+          })
+        : args.client.fetchWithdrawals(undefined, startTime, BITGET_HISTORY_LIMIT, {
+            until: args.now, ...(idLessThan ? { idLessThan } : {})
+          }))
+  });
+}
+
+async function fetchBitgetTrades(args: {
+  client: ExchangeClient;
+  symbol: string;
+  state?: BitgetEndpointState;
+  now: number;
+  budget: BitgetRequestBudget;
+  sleep: (ms: number) => Promise<void>;
+}): Promise<FetchPlanOutcome<UnifiedTrade> & { bitgetCheckpoint?: BitgetPaginationCheckpoint }> {
+  const startTime = args.now - BITGET_RETENTION_MS;
+  return paginateBitgetNewestFirst({
+    savedNewest: args.state?.newest,
+    checkpoint: args.state?.checkpoint,
+    unsafeIds: args.state?.unsafeIds,
+    now: args.now,
+    budget: args.budget,
+    sleep: args.sleep,
+    fetchPage: (idLessThan) => bitgetCapturedPage(args.client, 'tradeId', () =>
+      args.client.fetchMyTrades(args.symbol, undefined, BITGET_HISTORY_LIMIT, {
+        startTime, until: args.now, ...(idLessThan ? { idLessThan } : {})
+      }))
+  });
 }
 
 /** Fair, resumable traversal of Gemini's symbol-required timestamp history. */
@@ -2585,6 +2844,8 @@ async function fetchTradesForSymbol(
       throw new Error('MEXC trades use the recursive closed-window paginator.');
     case 'bitstamp':
       throw new Error('Bitstamp trades use the shared account-ledger paginator.');
+    case 'bitget':
+      throw new Error('Bitget trades use the shared native-ID fair paginator.');
   }
 }
 
@@ -2644,6 +2905,7 @@ export interface SyncFetchOutcome {
     withdrawals?: BitvavoPendingTransferEvidence[];
   };
   bitvavoPendingAccountCandidates?: BitvavoPendingAccountCandidate[];
+  bitgetHistory?: BitgetHistoryState;
   skippedUnsettled: number;
   /**
    * Balance fetched during validation. Stage mode keeps this in the private
@@ -2697,6 +2959,9 @@ export async function syncConnection(
       throw new Error('BTC Markets pagination checkpoint is incompatible with its committed native cursor.');
     }
     if (exchange === 'mexc' && row.mexcCheckpoint != null) assertValidMexcCheckpoint(row.mexcCheckpoint);
+    if (exchange === 'bitget' && !validBitgetHistoryState(row.bitgetHistory)) {
+      throw new Error('Bitget pagination checkpoint is malformed; history frontiers were not changed.');
+    }
     const client = await createClient(row);
     const loadedMarkets = (await client.loadMarkets()) as Record<string, UnifiedMarket>;
     // Crypto.com and Bitfinex public catalogs are mixed. Keep a
@@ -2978,6 +3243,12 @@ export async function syncConnection(
     let btcmarketsUnresolvedTransferIds = row.btcmarketsUnresolvedTransferIds ?? [];
     let btcmarketsUnsafeTradeIds = row.btcmarketsUnsafeTradeIds ?? [];
     let btcmarketsCombinedTransfers: UnifiedTransfer[] = [];
+    const bitgetHistory: BitgetHistoryState = row.bitgetHistory == null ? {} : {
+      ...row.bitgetHistory,
+      deposits: row.bitgetHistory.deposits == null ? undefined : { ...row.bitgetHistory.deposits },
+      withdrawals: row.bitgetHistory.withdrawals == null ? undefined : { ...row.bitgetHistory.withdrawals },
+      trades: Object.fromEntries(Object.entries(row.bitgetHistory.trades ?? {}).map(([symbol, state]) => [symbol, { ...state }]))
+    };
 
     for (const kind of ['deposits', 'withdrawals'] as const) {
       let since = exchange === 'coinbase'
@@ -3010,6 +3281,31 @@ export async function syncConnection(
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
       if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitstamp') && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
+      } else if (exchange === 'bitget') {
+        const prior = bitgetHistory[kind];
+        outcome = await fetchBitgetTransfers({
+          client,
+          kind,
+          state: prior,
+          now: nowMs,
+          budget: { used: 0, max: deps.bitgetMaxTransferRequests ?? BITGET_MAX_REQUESTS_PER_PHASE },
+          sleep
+        });
+        const bitgetOutcome = outcome as typeof outcome & { bitgetCheckpoint?: BitgetPaginationCheckpoint };
+        const observed = new Set(outcome.rows.map((item) => String(item.id ?? '')));
+        const unsafeNow = outcome.rows.filter((item) => bitgetUnsafeTransfer(item, nowMs))
+          .map((item) => String(item.id ?? '')).filter((id) => BITGET_NATIVE_ID_RE.test(id));
+        const unsafeIds = [...new Set([
+          ...(prior?.unsafeIds ?? []).filter((id) => !observed.has(id)), ...unsafeNow
+        ])].sort(compareNativeIds).slice(0, 100);
+        const verified = bitgetOutcome.termination === 'retention_truncated';
+        bitgetHistory[kind] = {
+          newest: bitgetOutcome.nativeCursor ?? prior?.newest,
+          checkpoint: bitgetOutcome.bitgetCheckpoint,
+          unsafeIds,
+          verifiedAt: verified ? nowMs : prior?.verifiedAt
+        };
+        transferOutcomes.set(kind, outcome);
       } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitvavo' || exchange === 'bitstamp') {
         // Connector-local paginators count retries without restarting pagination or resetting attempt caps.
         outcome = exchange === 'bitstamp' ? bitstampLedger!.transfers : await fetchTransferKind(
@@ -3235,6 +3531,7 @@ export async function syncConnection(
     const retainedBitfinexTrades = bitfinexRetainedSince(requestedTradeSince, nowMs, BITFINEX_TRADE_RETENTION_MS);
     const bitfinexTradeRetentionTruncated = exchange === 'bitfinex' && retainedBitfinexTrades.truncated;
     if (exchange === 'bitfinex') tradeSince = retainedBitfinexTrades.since;
+    if (exchange === 'bitget') tradeSince = Math.max(tradeSince, nowMs - BITGET_RETENTION_MS);
     const tradeRows: UnifiedTrade[] = [];
     const tradeOutcomes: FetchPlanOutcome<UnifiedTrade>[] = [];
     let newKnownSymbols: string[] | undefined;
@@ -3313,6 +3610,69 @@ export async function syncConnection(
         ...new Set([...(row.knownSymbols ?? []).filter((s) => symbols.includes(s)), ...symbolHits])
       ].sort();
       discoveredCount = done;
+    } else if (exchange === 'bitget') {
+      const priorProgress = bitgetHistory.tradeProgress;
+      const scanAt = priorProgress?.requestedAt ?? nowMs;
+      const symbols = priorProgress?.symbols ?? [...new Set([
+        ...bitgetSpotSymbols(markets), ...(row.knownSymbols ?? [])
+      ])].sort();
+      const budget: BitgetRequestBudget = {
+        used: 0, max: deps.bitgetMaxTradeRequests ?? BITGET_MAX_REQUESTS_PER_PHASE
+      };
+      let index = priorProgress?.nextSymbolIndex ?? 0;
+      discoveryUniverseCount = symbols.length;
+      newKnownSymbols = symbols;
+      hooks.onProgress?.({ done: index, total: symbols.length });
+      while (index < symbols.length) {
+        const symbol = symbols[index];
+        const market = markets[symbol];
+        if (!market || market.spot !== true) {
+          warnings.push(`${symbol}: Bitget no longer publishes this spot market. Its prior verified frontier was retained; use retained Bitget exports for older/delisted activity.`);
+          skippedSymbols += 1;
+          index += 1;
+          hooks.onProgress?.({ done: index, total: symbols.length });
+          continue;
+        }
+        const prior = bitgetHistory.trades?.[symbol];
+        let outcome: FetchPlanOutcome<UnifiedTrade> & { bitgetCheckpoint?: BitgetPaginationCheckpoint };
+        try {
+          outcome = await fetchBitgetTrades({ client, symbol, state: prior, now: scanAt, budget, sleep });
+        } catch (err) {
+          if (hasErrorName(err, 'BadSymbol', 'InvalidSymbol')) {
+            warnings.push(`${symbol}: Bitget rejected this inactive/delisted spot symbol. Its prior verified frontier was retained; use retained Bitget exports for that market.`);
+            skippedSymbols += 1;
+            index += 1;
+            hooks.onProgress?.({ done: index, total: symbols.length });
+            continue;
+          }
+          throw err;
+        }
+        tradeOutcomes.push(outcome);
+        tradeRows.push(...outcome.rows);
+        fetchedCount += outcome.rows.length;
+        const observed = new Set(outcome.rows.map((item) => String(item.id ?? '')));
+        const unsafeNow = outcome.rows.filter((item) =>
+          (item.timestamp ?? scanAt + 1) > scanAt || normalizeTrade('bitget', item, market) == null)
+          .map((item) => String(item.id ?? '')).filter((id) => BITGET_NATIVE_ID_RE.test(id));
+        const unsafeIds = [...new Set([
+          ...(prior?.unsafeIds ?? []).filter((id) => !observed.has(id)), ...unsafeNow
+        ])].sort(compareNativeIds).slice(0, 100);
+        const verified = outcome.termination === 'retention_truncated';
+        bitgetHistory.trades ??= {};
+        bitgetHistory.trades[symbol] = {
+          newest: outcome.nativeCursor ?? prior?.newest,
+          checkpoint: outcome.bitgetCheckpoint,
+          unsafeIds,
+          verifiedAt: verified ? scanAt : prior?.verifiedAt
+        };
+        if (outcome.termination === 'page_budget' || outcome.termination === 'nonadvancing') break;
+        index += 1;
+        hooks.onProgress?.({ done: index, total: symbols.length });
+      }
+      bitgetHistory.tradeProgress = index < symbols.length
+        ? { requestedAt: scanAt, symbols, nextSymbolIndex: index }
+        : undefined;
+      discoveredCount = index;
     } else if (exchange === 'htx' || exchange === 'gemini') {
       // Both APIs require a symbol. Iterate the complete loaded active-spot
       // universe; HTX additionally shares one physical request budget.
@@ -3588,6 +3948,12 @@ export async function syncConnection(
 
     const tradeCursorCandidate = exchange === 'bitvavo'
       ? (tradeOutcomes.some((outcome) => outcome.partial) ? (oldCursors.trades ?? EXCHANGE_LAUNCH_MS.bitvavo) : nowMs)
+      : exchange === 'bitget'
+      ? (newKnownSymbols?.length
+          ? newKnownSymbols.reduce((min, symbol) => Math.min(
+              min, bitgetHistory.trades?.[symbol]?.verifiedAt ?? (nowMs - BITGET_RETENTION_MS)
+            ), nowMs)
+          : nowMs)
       : exchange === 'htx' || exchange === 'gemini' || exchange === 'btcmarkets'
       // Every symbol must have been verified through the same frontier. A
       // max would skip an interrupted symbol; min keeps its window replayable.
@@ -3607,6 +3973,7 @@ export async function syncConnection(
     const allHistoryOutcomes = [...transferOutcomes.values(), ...tradeOutcomes];
     warnings.push(...historyContinuationWarnings(exchange, allHistoryOutcomes));
     if (exchange === 'btcmarkets') warnings.push(...btcMarketsHistoryWarnings(allHistoryOutcomes));
+    if (exchange === 'bitget') warnings.push(...bitgetHistoryWarnings(allHistoryOutcomes));
 
     // ---- normalize (pure) ----
     const transactions: Transaction[] = [];
@@ -3619,6 +3986,7 @@ export async function syncConnection(
       tradeNormalizationDrops += bitstampLedger!.unresolvedCountByKind.trades;
       transactions.push(...bitstampLedger!.selfTradeFees);
     }
+    let bitgetFutureTradesWithheld = 0;
     if (exchange === 'kraken') {
       const { transactions: krakenTxs, skipped: krakenSkipped } = normalizeKrakenTradesByOrder(
         tradeRows,
@@ -3652,6 +4020,11 @@ export async function syncConnection(
     } else {
       let cryptocomUnresolvedTrades = 0;
       for (const trade of tradeRows) {
+        if (exchange === 'bitget' && (trade.timestamp ?? nowMs + 1) > nowMs) {
+          bitgetFutureTradesWithheld += 1;
+          tradeNormalizationDrops += 1;
+          continue;
+        }
         if (exchange === 'gemini' && geminiTradeDisposition(trade) === 'fully_broken') {
           geminiBrokenTradesExcluded += 1;
           continue;
@@ -3710,8 +4083,17 @@ export async function syncConnection(
       deposits: 0,
       withdrawals: 0
     };
+    const bitgetFutureTransfersWithheld: Record<'deposits' | 'withdrawals', number> = {
+      deposits: 0,
+      withdrawals: 0
+    };
     for (const kind of ['deposits', 'withdrawals'] as const) {
       for (const transfer of transferOutcomes.get(kind)?.rows ?? []) {
+        if (exchange === 'bitget' && (transfer.timestamp ?? nowMs + 1) > nowMs) {
+          bitgetFutureTransfersWithheld[kind] += 1;
+          skippedTransfersByKind[kind] += 1;
+          continue;
+        }
         const terminal = exchange === 'cryptocom'
           ? cryptocomTransferDisposition(transfer) === 'terminal'
           : exchange === 'bitfinex'
@@ -3722,7 +4104,9 @@ export async function syncConnection(
                 ? btcMarketsTransferDisposition(transfer) === 'terminal'
                 : exchange === 'bitvavo'
                   ? bitvavoTransferDisposition(transfer) === 'terminal'
-                  : exchange === 'bitstamp' && (transfer.status === 'failed' || transfer.status === 'canceled');
+                  : exchange === 'bitstamp'
+                    ? transfer.status === 'failed' || transfer.status === 'canceled'
+                    : exchange === 'bitget' && bitgetTransferDisposition(transfer) === 'terminal';
         if (terminal) {
           terminalTransfersByKind[kind] += 1;
           continue;
@@ -3779,6 +4163,19 @@ export async function syncConnection(
         warnings.push(`BTC Markets retained native-ID replay evidence for ${futureTransfers} future-dated transfer record(s); newer settled history can still advance without stranding them.`);
       }
     }
+    if (exchange === 'bitget') {
+      const futureTransfersWithheld = bitgetFutureTransfersWithheld.deposits + bitgetFutureTransfersWithheld.withdrawals;
+      if (bitgetFutureTradesWithheld > 0 || futureTransfersWithheld > 0) {
+        warnings.push(`Withheld ${bitgetFutureTradesWithheld} future-dated Bitget trade fill(s) and ${futureTransfersWithheld} future-dated transfer(s) from the ledger. Scoped native-ID evidence was retained until a safe replay verifies them.`);
+      }
+      const unsafeTransfers = (bitgetHistory.deposits?.unsafeIds?.length ?? 0) +
+        (bitgetHistory.withdrawals?.unsafeIds?.length ?? 0);
+      const unsafeTrades = Object.values(bitgetHistory.trades ?? {})
+        .reduce((count, state) => count + (state.unsafeIds?.length ?? 0), 0);
+      if (unsafeTransfers > 0 || unsafeTrades > 0) {
+        warnings.push(`Bitget retained scoped native-ID replay evidence for ${unsafeTrades} unsafe trade fill(s) and ${unsafeTransfers} unsettled, future-dated, unknown-status, or malformed transfer(s). Newer verified history can advance while those records remain replayable.`);
+      }
+    }
 
     const newKnownAssets = [
       ...new Set([...balanceAssets, ...transferAssets, ...(row.knownAssets ?? [])])
@@ -3786,9 +4183,9 @@ export async function syncConnection(
 
     const completedAt = now();
     const requestedStarts = [
-      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : exchange === 'btcmarkets' ? btcmarketsSharedTransferStart : transferRequestedStarts.deposits,
-      exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : exchange === 'btcmarkets' ? btcmarketsSharedTransferStart : transferRequestedStarts.withdrawals,
-      exchange === 'gemini' ? requestedTradeSince : tradeSince
+      exchange === 'bitget' ? nowMs - BITGET_RETENTION_MS : exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : exchange === 'btcmarkets' ? btcmarketsSharedTransferStart : transferRequestedStarts.deposits,
+      exchange === 'bitget' ? nowMs - BITGET_RETENTION_MS : exchange === 'coinbase' ? coinbaseSharedTransferStart : exchange === 'bitfinex' ? bitfinexSharedTransferStart : exchange === 'gemini' ? geminiSharedTransferStart : exchange === 'btcmarkets' ? btcmarketsSharedTransferStart : transferRequestedStarts.withdrawals,
+      exchange === 'bitget' ? nowMs - BITGET_RETENTION_MS : exchange === 'gemini' ? requestedTradeSince : tradeSince
     ];
     const tradeStructuralFailure = tradeOutcomes.find((outcome) =>
       outcome.termination && outcome.termination !== 'exhausted');
@@ -3949,6 +4346,7 @@ export async function syncConnection(
       bitvavoMarkets: exchange === 'bitvavo' ? bitvavoMarkets : undefined,
       bitvavoPendingTransferEvidence: exchange === 'bitvavo' ? bitvavoPendingTransferEvidence : undefined,
       bitvavoPendingAccountCandidates,
+      bitgetHistory: exchange === 'bitget' ? bitgetHistory : undefined,
       skippedUnsettled,
       balance,
       operation
@@ -3997,6 +4395,7 @@ export async function syncConnection(
       bitvavoMarkets: exchange === 'bitvavo' ? bitvavoMarkets : undefined,
       bitvavoPendingTransferEvidence: exchange === 'bitvavo' ? bitvavoPendingTransferEvidence : undefined,
       bitvavoPendingAccountCandidates,
+      bitgetHistory: exchange === 'bitget' ? bitgetHistory : undefined,
       balance,
       operation,
       hooks,
@@ -4073,6 +4472,7 @@ export async function persistSyncedRows(args: {
   bitvavoMarkets?: BitvavoMarketDescriptor[];
   bitvavoPendingTransferEvidence?: SyncFetchOutcome['bitvavoPendingTransferEvidence'];
   bitvavoPendingAccountCandidates?: BitvavoPendingAccountCandidate[];
+  bitgetHistory?: BitgetHistoryState;
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
   /** Reserved generation and source revision/state captured by this operation. */
@@ -4359,6 +4759,7 @@ export async function persistSyncedRows(args: {
         bitvavoMarkets: args.bitvavoMarkets,
         bitvavoPendingTransferEvidence: args.bitvavoPendingTransferEvidence,
         bitvavoPendingAccountCandidates: retainedAccountCandidates.length > 0 ? retainedAccountCandidates : undefined,
+        bitgetHistory: args.bitgetHistory,
         lastSyncAt: asOf,
         status: 'ok',
         lastError: undefined,

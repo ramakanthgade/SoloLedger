@@ -26,6 +26,7 @@
  */
 
 import crypto from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 
 const RELAY = (process.env.RELAY ?? 'https://sololedger-production.up.railway.app').replace(
   /\/+$/,
@@ -40,6 +41,22 @@ const hmacB64 = (algo, secret, data) =>
   crypto.createHmac(algo, secret).update(data, 'utf8').digest('base64');
 
 const results = [];
+
+export function isBitgetPublicTimeResponse(response, json) {
+  return response.status === 200 && json?.code === '00000' &&
+    typeof json?.data?.serverTime === 'string' && /^\d+$/.test(json.data.serverTime);
+}
+
+export function isBitgetInvalidAccessKeyResponse(response) {
+  if (response.status !== 400) return false;
+  try {
+    const json = JSON.parse(response.text);
+    return (json?.code === '40006' && json?.msg === 'Invalid ACCESS_KEY') ||
+      (json?.code === '40037' && json?.msg === 'Apikey does not exist');
+  } catch {
+    return false;
+  }
+}
 function record(tier, exchange, probe, ok, detail) {
   results.push({ tier, exchange, probe, ok, detail });
 }
@@ -184,6 +201,12 @@ const TIER2 = [
     path: '/api/v2/markets/',
     check: (r, json) => r.status === 200 && Array.isArray(json) &&
       json.some((market) => market?.market_type === 'SPOT')
+  },
+  {
+    exchange: 'bitget',
+    probe: 'GET /api/v2/public/time',
+    path: '/api/v2/public/time',
+    check: isBitgetPublicTimeResponse
   }
 ];
 
@@ -531,6 +554,28 @@ const tier3 = [
       };
     },
     check: (r) => r.status === 403 && r.text.includes('"code":"API0001"') && /API key not found/i.test(r.text)
+  },
+  {
+    exchange: 'bitget',
+    probe: 'GET /api/v2/spot/account/assets (ACCESS-SIGN HMAC-SHA256)',
+    build() {
+      const apiKey = 'dummy-bitget-key';
+      const secret = 'dummy-bitget-secret';
+      const passphrase = 'dummy-bitget-passphrase';
+      const timestamp = Date.now().toString();
+      const path = '/api/v2/spot/account/assets';
+      const signature = hmacB64('sha256', secret, timestamp + 'GET' + path);
+      return {
+        path,
+        exchangeHeaders: {
+          'access-key': apiKey,
+          'access-sign': signature,
+          'access-timestamp': timestamp,
+          'access-passphrase': passphrase
+        }
+      };
+    },
+    check: isBitgetInvalidAccessKeyResponse
   }
 ];
 
@@ -599,7 +644,9 @@ async function main() {
   if (failed.length > 0) process.exit(1);
 }
 
-main().catch((err) => {
-  console.error('live-verify crashed:', err);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().catch((err) => {
+    console.error('live-verify crashed:', err);
+    process.exit(1);
+  });
+}
