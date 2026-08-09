@@ -279,7 +279,7 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
   }
 });
 
-test('known positive debt without a verified INR price fails closed', async ({ page }) => {
+test('known positive debt without a verified INR price keeps a numeric subtotal and disclosure', async ({ page }) => {
   await seedWorkspace(page);
   await page.evaluate(async () => new Promise<void>((resolve, reject) => {
     const request = indexedDB.open('sololedger_local');
@@ -293,7 +293,11 @@ test('known positive debt without a verified INR price fails closed', async ({ p
   }));
   await page.reload();
   await expect(page.getByTestId('net-worth-value')).toHaveAttribute('data-defi-shadow-status', 'partial');
-  await expect(page.getByTestId('defi-net-worth-incomplete')).toContainText(/liabilities are unpriced.*total unavailable/i);
+  const knownSubtotal = Number(await page.getByTestId('dashboard-holdings-generation').getAttribute('data-net-worth'));
+  expect(knownSubtotal).toBe(9_448_000);
+  await expect(page.getByTestId('net-worth-value')).toContainText('₹94.48L');
+  await expect(page.getByTestId('net-worth-value')).not.toContainText(/Incomplete|Unavailable/);
+  await expect(page.getByTestId('defi-net-worth-incomplete')).toContainText(/liabilities are unpriced.*subtotal excludes them/i);
 });
 
 test('exchange auto-sync remains online-only and is never silently cached', async ({ page }) => {

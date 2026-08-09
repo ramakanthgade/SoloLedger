@@ -120,4 +120,21 @@ describe('refreshCurrentHoldingPrices', () => {
     expect(mocks.rows.get('spot:ctr:polygon-pos:0xsame:USD')?.price).toBe(20);
     expect(mocks.rows.has('spot:sym:0XSAME:USD')).toBe(false);
   });
+
+  it('prioritizes trusted, user-visible, and material-basis exact contracts ahead of junk', async () => {
+    mocks.fetchCurrentPrices.mockResolvedValue([]);
+    await refreshCurrentHoldingPrices([
+      { asset: 'JUNK', amount: 1_000_000, costBasis: 0, chain: 'ethereum', contractAddress: '0xjunk', safetyState: 'unverified' },
+      { asset: 'BASIS', amount: 1, costBasis: 50, chain: 'ethereum', contractAddress: '0xbasis', safetyState: 'unverified' },
+      { asset: 'VISIBLE', amount: 1, costBasis: 0, chain: 'ethereum', contractAddress: '0xvisible', safetyState: 'user_visible' },
+      { asset: 'AWBTC', amount: 1, costBasis: 0, chain: 'ethereum', contractAddress: '0xtrusted', safetyState: 'trusted' }
+    ], 'USD');
+
+    expect(mocks.fetchCurrentContractPrices).toHaveBeenCalledWith([
+      { platform: 'ethereum', contractAddress: '0xtrusted' },
+      { platform: 'ethereum', contractAddress: '0xvisible' },
+      { platform: 'ethereum', contractAddress: '0xbasis' },
+      { platform: 'ethereum', contractAddress: '0xjunk' }
+    ], 'USD', undefined);
+  });
 });

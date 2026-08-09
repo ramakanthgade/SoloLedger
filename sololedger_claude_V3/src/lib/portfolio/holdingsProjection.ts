@@ -398,9 +398,11 @@ export function buildHoldingsProjection(input: HoldingsProjectionInput): Holding
     const exactAssetDecision = identity.chain
       ? assetDecisions.get(assetSubjectKey(identity.chain, identity.contractAddress))
       : undefined;
-    const safetyState: SafetyState = identity.chain && isCanonicalTrustedAsset(identity.chain, identity.contractAddress)
-      ? 'trusted'
-      : exactAssetDecision?.state ?? 'unverified';
+    const safetyState: SafetyState = exactAssetDecision?.state === 'user_hidden' || exactAssetDecision?.state === 'user_visible'
+      ? exactAssetDecision.state
+      : identity.chain && isCanonicalTrustedAsset(identity.chain, identity.contractAddress)
+        ? 'trusted'
+        : exactAssetDecision?.state ?? 'unverified';
     const statuses = new Set(custodialSlices.map((slice) => slice.verificationStatus));
     let unresolvedQuantity = 0;
     const exactCost = custodialSlices.reduce((sum, slice) => {
@@ -546,8 +548,10 @@ export function appendHoldingsProjection(
     const exactAssetDecision = identity.chain
       ? assetDecisions.get(assetSubjectKey(identity.chain, identity.contractAddress))
       : undefined;
-    const safetyState: SafetyState = identity.chain && isCanonicalTrustedAsset(identity.chain, identity.contractAddress)
-      ? 'trusted' : exactAssetDecision?.state ?? 'unverified';
+    const safetyState: SafetyState = exactAssetDecision?.state === 'user_hidden' || exactAssetDecision?.state === 'user_visible'
+      ? exactAssetDecision.state
+      : identity.chain && isCanonicalTrustedAsset(identity.chain, identity.contractAddress)
+        ? 'trusted' : exactAssetDecision?.state ?? 'unverified';
     const statuses = new Set(custodialSlices.map((slice) => slice.verificationStatus));
     let unresolvedQuantity = 0;
     const exactCost = custodialSlices.reduce((sum, slice) => {

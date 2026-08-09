@@ -15,7 +15,7 @@
  */
 import type { Disposal, Jurisdiction, Transaction } from '@/types/transaction';
 import type { SafetyState } from '@/lib/safety/types';
-import { isTransactionExcluded } from '@/lib/safety/assetSafety';
+import { isTransactionExcluded, resolvedTransactionSafetyState } from '@/lib/safety/assetSafety';
 import type { CsvImportRow, ExchangeBalanceRow, LookupAddressRow, PriceCacheRow, WalletBalanceRow } from '@/lib/storage/db';
 import type { ExchangeConnectionRow } from '@/lib/storage/db';
 import {
@@ -31,7 +31,7 @@ import {
   type PortfolioHolding
 } from '@/lib/portfolio/portfolioCompute';
 import { isNativeSolAsset, isNativeSolHolding } from '@/lib/portfolio/solBalance';
-import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
+import { canUseSymbolPrice, resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
 import { brandLabel, chainIconId, parserIconId } from '@/components/connections/brandIcons';
@@ -181,6 +181,7 @@ export function priceAt(points: PricePoint[], ts: number): number | null {
 // ---------------------------------------------------------------------------
 
 export interface ValuedHolding extends PortfolioHolding {
+  safetyState?: SafetyState;
   /** Reconciliation provenance (round 4) — flows through from ReconciledHolding. */
   qtySource?: 'on-chain' | 'exchange-api' | 'tx-history';
   /** Pre-reconciliation tx-derived qty, when reconciliation ran. */
@@ -204,6 +205,7 @@ export interface ValuedHolding extends PortfolioHolding {
 }
 
 const DAY_MS = 86_400_000;
+export const TRANSACTION_PRICE_MAX_CIVIL_DAY_AGE = 1;
 
 export function valueHoldings(holdings: PortfolioHolding[], index: PriceIndex): ValuedHolding[] {
   return holdings.map((h) => {
@@ -547,9 +549,64 @@ function directReportingValue(t: Transaction, asset: string, amount: number): nu
     : null;
 }
 
-function transactionValue(t: Transaction): number | null {
+function transactionValue(t: Transaction, priceIndex?: PriceIndex): number | null {
   if (t.fiatValue != null && Number.isFinite(t.fiatValue)) return Math.abs(t.fiatValue);
-  return directReportingValue(t, t.asset, t.amount);
+  const direct = directReportingValue(t, t.asset, t.amount);
+  if (direct != null) return direct;
+  if (!priceIndex) return null;
+  const price = transactionDatePrice(t, priceIndex);
+  return price == null ? null : Math.abs(t.amount) * price;
+}
+
+/**
+ * Historical flow valuation is deliberately stricter than chart interpolation:
+ * use an exact-contract series first, permit ticker fallback only under the
+ * transaction's current exact-asset safety policy, and reject closes older than
+ * the preceding civil day.
+ */
+export function transactionDatePrice(
+  transaction: Pick<Transaction, 'asset' | 'chain' | 'contractAddress' | 'safetyState' | 'isSpam' | 'timestamp'>,
+  index: PriceIndex
+): number | null {
+  const freshPrice = (points: PricePoint[] | undefined): number | null => {
+    if (!points?.length) return null;
+    const point = pricePointAt(points, transaction.timestamp);
+    if (!point) return null;
+    const transactionDay = Math.floor(transaction.timestamp / DAY_MS);
+    const priceDay = Math.floor(point.dateMs / DAY_MS);
+    return transactionDay - priceDay <= TRANSACTION_PRICE_MAX_CIVIL_DAY_AGE ? point.price : null;
+  };
+
+  if (transaction.contractAddress && transaction.chain) {
+    const platform = COINGECKO_PLATFORM[transaction.chain as ChainId];
+    const exact = platform
+      ? freshPrice(index.byContract.get(`${platform}:${transaction.contractAddress.toLowerCase()}`))
+      : null;
+    if (exact != null) return exact;
+  }
+
+  const safetyState = resolvedTransactionSafetyState(transaction);
+  if (!canUseSymbolPrice(transaction.contractAddress, safetyState)) return null;
+  const symbol = resolvePriceAsset(
+    transaction.asset, transaction.contractAddress, transaction.chain, safetyState
+  ).toUpperCase();
+  return freshPrice(index.bySymbol.get(symbol));
+}
+
+function pricePointAt(points: PricePoint[], ts: number): PricePoint | null {
+  let lo = 0;
+  let hi = points.length - 1;
+  let ans = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (points[mid].dateMs <= ts) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return ans >= 0 ? points[ans] : null;
 }
 
 function feeValue(candidate: FeeCandidate, priceIndex?: PriceIndex): number | null {
@@ -619,17 +676,17 @@ export function moneyStrip(
     switch (t.type) {
       case 'transfer_in':
         if (!t.isInternalTransfer && t.internalTransferDecision !== 'confirmed') {
-          addValuation(moneyIn, transactionValue(t));
+          addValuation(moneyIn, transactionValue(t, priceIndex));
         }
         break;
       case 'transfer_out':
         if (!t.isInternalTransfer && t.internalTransferDecision !== 'confirmed') {
-          addValuation(moneyOut, transactionValue(t));
+          addValuation(moneyOut, transactionValue(t, priceIndex));
         }
         break;
       case 'income':
       case 'gift_received':
-        addValuation(income, transactionValue(t));
+        addValuation(income, transactionValue(t, priceIndex));
         break;
       case 'fee':
         feeCandidates.push({

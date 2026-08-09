@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { ValuedHolding } from '@/lib/dashboard/dashboardModel';
+import type { SafetyState } from '@/lib/safety/types';
 import { groupDashboardHoldings, holdingPnlPresentation } from './dashboardEconomicRows';
 
-function holding(over: Partial<ValuedHolding>): ValuedHolding {
+function holding(over: Partial<ValuedHolding & { safetyState?: SafetyState }>): ValuedHolding & { safetyState?: SafetyState } {
   return {
     asset: 'TOK', amount: 1, costBasis: 0, avgCost: 0,
     priceNow: null, priceAsOf: null, dayChangePct: null, valueNow: null,
@@ -22,18 +23,39 @@ describe('dashboard holdings presentation', () => {
       holding({ asset: 'ZERO_QTY', amount: 0, valueNow: 100 })
     ]);
 
-    expect(groups.visible.map((row) => row.asset)).toEqual(['HIGH', 'BASIS', 'LOW', 'UNKNOWN']);
-    expect(groups.other.map((row) => row.asset)).toEqual(['DUST']);
+    expect(groups.visible.map((row) => row.asset)).toEqual(['HIGH', 'BASIS', 'LOW']);
+    expect(groups.other.map((row) => row.asset)).toEqual(['DUST', 'UNKNOWN']);
   });
 
-  it('never classifies a positive holding as dust without a known current value', () => {
+  it('groups by current value or cost basis so unpriced zero-basis junk stays reversible', () => {
     const groups = groupDashboardHoldings([
       holding({ asset: 'UNKNOWN_LOW_BASIS', amount: 1, valueNow: null, costBasis: 0.001 }),
+      holding({ asset: 'UNKNOWN_MATERIAL_BASIS', amount: 1, valueNow: null, costBasis: 10 }),
       holding({ asset: 'KNOWN_DUST', amount: 1, valueNow: 0.001, costBasis: 100 })
     ]);
 
-    expect(groups.visible.map((row) => row.asset)).toEqual(['UNKNOWN_LOW_BASIS']);
-    expect(groups.other.map((row) => row.asset)).toEqual(['KNOWN_DUST']);
+    expect(groups.visible.map((row) => row.asset)).toEqual(['UNKNOWN_MATERIAL_BASIS']);
+    expect(groups.other.map((row) => row.asset)).toEqual(['UNKNOWN_LOW_BASIS', 'KNOWN_DUST']);
+  });
+
+  it('keeps trusted and user-visible positive holdings visible without price or basis', () => {
+    const groups = groupDashboardHoldings([
+      holding({ asset: 'AWBTC', safetyState: 'trusted' }),
+      holding({ asset: 'AUSDC', safetyState: 'trusted' }),
+      holding({ asset: 'ZRO', safetyState: 'trusted' }),
+      holding({ asset: 'BUSD', safetyState: 'trusted' }),
+      holding({ asset: 'RESTORED', safetyState: 'user_visible' }),
+      holding({ asset: 'JUNK', safetyState: 'unverified' }),
+      holding({ asset: 'SPAM', safetyState: 'high_confidence_spam' }),
+      holding({ asset: 'HIDDEN', safetyState: 'user_hidden' })
+    ]);
+
+    expect(groups.visible.map((row) => row.asset)).toEqual([
+      'AWBTC', 'AUSDC', 'ZRO', 'BUSD', 'RESTORED'
+    ]);
+    expect(groups.other.map((row) => row.asset)).toEqual(['JUNK']);
+    expect([...groups.visible, ...groups.other].map((row) => row.asset))
+      .not.toEqual(expect.arrayContaining(['SPAM', 'HIDDEN']));
   });
 
   it('formats material gains and losses honestly without fabricated or rounded-zero percentages', () => {

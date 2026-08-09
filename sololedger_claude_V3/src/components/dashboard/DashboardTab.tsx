@@ -40,8 +40,8 @@ import { useTabNav } from '@/lib/tabNav';
 import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
 import { DataHealthWorkspace, type DataHealthViewState } from './DataHealthWorkspace';
-import { groupDashboardHoldings, holdingPnlPresentation, reaggregateUnreplacedCustody } from './dashboardEconomicRows';
-import { buildDashboardValueMetrics, economicExposureDisclosure } from './dashboardValueMetrics';
+import { groupDashboardHoldings, holdingPnlPresentation } from './dashboardEconomicRows';
+import { buildDashboardValueMetrics, economicExposureDisclosure, knownEconomicSubtotal } from './dashboardValueMetrics';
 import { calculateDashboardDisposals } from './dashboardDisposals';
 import { buildCoherentDataHealthShadow, buildDataHealthModel, buildLocalDataHealthDiagnostics } from './dataHealthModel';
 import { buildCards } from '@/components/connections/connectionModel';
@@ -790,12 +790,11 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     ? defiNetWorthShadow.projection
     : projectLegacyWalletNetWorth(defiNetWorthInput.custody),
   [defiNetWorthInput.custody, defiNetWorthShadow.projection, walletDefiNetWorthEnabled]);
-  const replacedCustodyIds = new Set([...economicExposure.assets, ...economicExposure.liabilities]
-    .flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : []));
-  const displayedValued = reaggregateUnreplacedCustody(valued, holdings, replacedCustodyIds);
   const protocolHoldingCount = [...economicExposure.assets, ...economicExposure.liabilities]
     .filter((row) => row.kind !== 'liquid' && row.protocolId).length;
-  const holdingGroups = useMemo(() => groupDashboardHoldings(displayedValued), [displayedValued]);
+  // Receipt/debt replacement belongs to economic net worth and allocation.
+  // Keep the ordinary custody table faithful to what the account holds.
+  const holdingGroups = useMemo(() => groupDashboardHoldings(valued), [valued]);
   const renderedHoldings = showAllHoldings
     ? [...holdingGroups.visible, ...holdingGroups.other]
     : holdingGroups.visible;
@@ -804,9 +803,21 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const totalCost = valueMetrics.historicalCostBasis;
   const unpriced = valued.filter((h) => h.valueNow == null);
   const marketMode = valued.some((h) => h.valueNow != null);
-  const adjustedNetWorth = economicExposure.netWorth;
   const exposureDisclosure = economicExposureDisclosure(economicExposure);
-  const netWorth = adjustedNetWorth ?? 0;
+  const custodyCostFallbackById = useMemo(() => {
+    const fallback = new Map<string, number>();
+    for (const holding of holdings) {
+      const slices = holding.sourceVerification.length > 0
+        ? holding.sourceVerification
+        : [{ scopeId: 'unscoped', quantity: holding.amount }];
+      for (const slice of slices) {
+        const ratio = holding.amount > 1e-9 ? slice.quantity / holding.amount : 0;
+        fallback.set(`${slice.scopeId}:${holding.assetKey}`, holding.costBasis * ratio);
+      }
+    }
+    return fallback;
+  }, [holdings]);
+  const netWorth = knownEconomicSubtotal(economicExposure, custodyCostFallbackById);
   const unrealizedTotal = valueMetrics.historicalUnrealized;
   const pricesAsOf = valued.reduce<number | null>(
     (acc, h) => (h.priceAsOf != null && (acc == null || h.priceAsOf > acc) ? h.priceAsOf : acc),
@@ -1207,7 +1218,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         data-testid="dashboard-holdings-generation"
         data-transaction-count={ledgerRevision.transactionCount}
         data-projection-revision={`${ledgerRevision.transactionCount}:${projection.postings.length}`}
-        data-net-worth={adjustedNetWorth ?? 'incomplete'}
+        data-net-worth={netWorth}
         data-btc-quantity={btcQuantity}
       >
         Holdings projection revision {ledgerRevision.transactionCount}
@@ -1278,7 +1289,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               data-defi-feature-enabled={walletDefiNetWorthEnabled ? 'true' : 'false'}
               data-defi-shadow-status={defiNetWorthShadow.projection.status}
             >
-              {hideBalances ? '••••' : adjustedNetWorth == null ? 'Incomplete' : compactMoney(netWorth)}
+              {compactMoney(netWorth)}
             </p>
             {exposureDisclosure && <p className="mt-1.5 text-xs text-warn" data-testid={economicExposure.hasUnpricedLiabilities ? 'defi-net-worth-incomplete' : 'economic-exposure-honesty'} role="status">{exposureDisclosure}</p>}
             {!economicExposure.hasUnpricedLiabilities && unpriced.length > 0 && (
@@ -1383,12 +1394,14 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
 
         <div className="flex snap-x snap-mandatory overflow-x-auto border-t border-hi/10 sm:grid sm:grid-cols-5 sm:overflow-visible" data-testid="money-strip">
           {([
-            ['Money in', strip.moneyIn], ['Money out', strip.moneyOut], ['Income', strip.income],
-            ['Trading fees', strip.fees], ['Realized gains', strip.realizedGains]
-          ] as const).map(([label, metric]) => <div key={label} className="min-w-[9rem] snap-start border-r border-hi/10 px-4 py-4 last:border-r-0 sm:min-w-0">
+            ['Money in', strip.moneyIn, true], ['Money out', strip.moneyOut, true], ['Income', strip.income, true],
+            ['Trading fees', strip.fees, false], ['Realized gains', strip.realizedGains, false]
+          ] as const).map(([label, metric, numericFallback]) => <div key={label} className="min-w-[9rem] snap-start border-r border-hi/10 px-4 py-4 last:border-r-0 sm:min-w-0">
             <p className={eyebrowClass}>{label}</p>
-            <p className={cn('mt-1.5 text-base font-bold tabular-figures', metric.amount != null && metric.amount < 0 ? 'text-loss' : 'text-hi')}>{compactMoney(metric.amount)}</p>
-            {metric.status !== 'complete' && <p className="mt-1 text-[0.625rem] text-low">{metric.status === 'partial' ? 'Partial total' : 'No valued data'}</p>}
+            <p className={cn('mt-1.5 text-base font-bold tabular-figures', metric.amount != null && metric.amount < 0 ? 'text-loss' : 'text-hi')}>{compactMoney(numericFallback ? metric.amount ?? 0 : metric.amount)}</p>
+            {metric.status !== 'complete' && <p className="mt-1 text-[0.625rem] text-low">{numericFallback
+              ? `${metric.missingValuationCount} excluded · unpriced`
+              : metric.status === 'partial' ? 'Partial total' : 'No valued data'}</p>}
           </div>)}
         </div>
 

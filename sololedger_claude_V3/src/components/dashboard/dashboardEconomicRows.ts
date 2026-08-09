@@ -1,23 +1,29 @@
 import type { ValuedHolding } from '@/lib/dashboard/dashboardModel';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
+import type { SafetyState } from '@/lib/safety/types';
 
 const DISPLAY_ROUNDING_UNIT = 0.005;
 
 export interface DashboardHoldingGroups {
-  visible: ValuedHolding[];
-  other: ValuedHolding[];
+  visible: DashboardValuedHolding[];
+  other: DashboardValuedHolding[];
 }
 
+type DashboardValuedHolding = ValuedHolding & { safetyState?: SafetyState };
+
 /** Keep positive dust reversible while the default table stays economically meaningful. */
-export function groupDashboardHoldings(holdings: readonly ValuedHolding[]): DashboardHoldingGroups {
-  const economicValue = (holding: ValuedHolding) => holding.valueNow ?? holding.costBasis;
-  const sorted = holdings.filter((holding) => holding.amount > 1e-9).sort((left, right) =>
+export function groupDashboardHoldings(holdings: readonly DashboardValuedHolding[]): DashboardHoldingGroups {
+  const economicValue = (holding: DashboardValuedHolding) => holding.valueNow ?? holding.costBasis;
+  const userVisible = (holding: DashboardValuedHolding) =>
+    holding.safetyState === 'trusted' || holding.safetyState === 'user_visible';
+  const sorted = holdings.filter((holding) =>
+    holding.amount > 1e-9 &&
+    holding.safetyState !== 'high_confidence_spam' && holding.safetyState !== 'user_hidden'
+  ).sort((left, right) =>
     economicValue(right) - economicValue(left) || Math.abs(right.amount) - Math.abs(left.amount));
   return {
-    // Missing market value is not evidence of dust. Keep every positive
-    // unknown visible; only a known current value may place a row in Other.
-    visible: sorted.filter((holding) => holding.valueNow == null || holding.valueNow >= DISPLAY_ROUNDING_UNIT),
-    other: sorted.filter((holding) => holding.valueNow != null && holding.valueNow < DISPLAY_ROUNDING_UNIT)
+    visible: sorted.filter((holding) => userVisible(holding) || economicValue(holding) >= DISPLAY_ROUNDING_UNIT),
+    other: sorted.filter((holding) => !userVisible(holding) && economicValue(holding) < DISPLAY_ROUNDING_UNIT)
   };
 }
 

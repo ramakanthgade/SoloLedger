@@ -9,7 +9,11 @@ const ETHEREUM_TRUSTED_CONTRACTS = new Set([
   '0xdac17f958d2ee523a2206206994597c13d831ec7', // USDT
   '0x6b175474e89094c44da98b954eedeac495271d0f', // DAI
   '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599', // WBTC
-  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2' // WETH
+  '0xc02aaa39b223fe8d0a0e5c4f27ead9083c756cc2', // WETH
+  '0x5ee5bf7ae06d1be5997a1a72006fe6c607ec6de8', // Aave WBTC receipt (AWBTC)
+  '0xbcca60bb61934080951369a648fb03df4f96263c', // Aave USDC receipt (AUSDC)
+  '0x6985884c4392d348587b19cb9eaaf157f13271cd', // LayerZero (ZRO)
+  '0x4fabb145d64652a948d72533023f6e7a623c7c53' // Binance USD (BUSD)
 ]);
 
 export function canonicalSafetyChain(chain: string): string {

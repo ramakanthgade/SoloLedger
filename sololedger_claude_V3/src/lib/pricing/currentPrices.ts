@@ -23,7 +23,7 @@ export async function refreshCurrentHoldingPrices(
   ).map((h) =>
     resolvePriceAsset(h.asset, h.contractAddress, h.chain, h.safetyState).toUpperCase()
   ))];
-  const contractRequests = [...new Map(holdings.flatMap((holding) => {
+  const contractCandidates = holdings.flatMap((holding, index) => {
     if (
       !holding.contractAddress || !holding.chain ||
       !['trusted', 'unverified', 'user_visible'].includes(holding.safetyState ?? '')
@@ -31,8 +31,15 @@ export async function refreshCurrentHoldingPrices(
     const platform = COINGECKO_PLATFORM[holding.chain as ChainId];
     if (!platform) return [];
     const contractAddress = holding.contractAddress.trim().toLowerCase();
-    return [[`${platform}:${contractAddress}`, { platform, contractAddress }] as const];
-  })).values()];
+    const priority = holding.safetyState === 'trusted' ? 0
+      : holding.safetyState === 'user_visible' ? 1
+        : holding.costBasis > 0 ? 2 : 3;
+    return [{ key: `${platform}:${contractAddress}`, platform, contractAddress, priority, index }];
+  }).sort((left, right) => left.priority - right.priority || left.index - right.index);
+  const contractRequests = [...new Map(contractCandidates.map((candidate) => [
+    candidate.key,
+    { platform: candidate.platform, contractAddress: candidate.contractAddress }
+  ])).values()];
   if (assets.length === 0 && contractRequests.length === 0) return;
 
   const now = Date.now();
