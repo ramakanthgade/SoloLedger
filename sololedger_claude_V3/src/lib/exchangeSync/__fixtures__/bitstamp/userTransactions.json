@@ -1,0 +1,24 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored mixed /api/v2/user_transactions/ ledger using pinned CCXT/Bitstamp shapes, including dynamic-currency transfers and real-shape self_trade/self_trade_order_id fields. It intentionally covers positive/negative sub-unit transfers, spot, self-trade fee/no-ownership-change handling, malformed self-trade replay, perpetual, unsupported, malformed, future, pending, terminal, ambiguous, unknown-market, and overlapping-kind IDs.",
+  "response": [
+    { "id": 100, "type": "2", "datetime": "2025-06-01 12:00:00.000000", "order_id": 5001, "fee": "5.00", "btc_usd": "50000.00", "btc": "0.10000000", "usd": "-5000.00" },
+    { "id": 101, "type": "2", "datetime": "2025-06-02 12:00:00.000000", "order_id": 5002, "fee": "0.00005", "eth_btc": "0.05000000", "eth": "-1.00000000", "btc": "0.05000000" },
+    { "id": 102, "type": "0", "datetime": "2025-06-03 12:00:00", "fee": "0.00000000", "btc_usd": "0.00", "usd": 0, "eur": 0, "btc": "0.25000000" },
+    { "id": 103, "type": "1", "datetime": "2025-06-04 12:00:00", "fee": "0.00100000", "btc": 0, "usd": 0, "eth": "-0.50000000" },
+    { "id": 104, "type": "2", "datetime": "2025-06-05 12:00:00.000000", "order_id": 5003, "fee": "1.00", "btc_usd-perp": "50000.00", "btc": "0.01000000", "usd": "-500.00" },
+    { "id": 105, "type": "14", "datetime": "2025-06-06 12:00:00", "fee": "0", "btc": "0.01000000" },
+    { "id": 106, "type": "0", "datetime": "not-a-date", "fee": "0", "btc": "0.01000000" },
+    { "id": 107, "type": "2", "datetime": "2030-01-01 00:00:00.000000", "order_id": 5004, "fee": "1.00", "btc_usd": "50000.00", "btc": "0.01000000", "usd": "-500.00" },
+    { "id": 108, "type": "2", "datetime": "2025-06-07 12:00:00.000000", "order_id": 5005, "fee": "1.00", "foo_bar": "2.00", "foo": "1.00", "bar": "-2.00" },
+    { "id": 109, "type": "0", "datetime": "2025-06-08 12:00:00", "fee": "0", "btc": "0.03000000" },
+    { "id": 109, "type": "2", "datetime": "2025-06-08 13:00:00.000000", "order_id": 5006, "fee": "1.00", "btc_usd": "50000.00", "btc": "0.02000000", "usd": "-1000.00" },
+    { "id": 110, "type": "0", "datetime": "2025-06-09 12:00:00", "status": "0", "fee": "0", "btc": "0.04000000" },
+    { "id": 111, "type": "1", "datetime": "2025-06-09 13:00:00", "status": "3", "fee": "0", "xrp": "-0.12500000" },
+    { "id": 112, "type": "0", "datetime": "2025-06-09 14:00:00", "status": "4", "fee": "0", "eth": "0.75000000" },
+    { "id": 113, "type": "0", "datetime": "2025-06-09 15:00:00", "fee": "0", "btc": "0.10000000", "eth": "0.20000000" },
+    { "id": 114, "type": "2", "datetime": "2025-06-09 16:00:00.000000", "order_id": 5007, "self_trade": true, "self_trade_order_id": 5008, "fee": "0.50", "btc_usd": "50000.00", "btc": "0.01000000", "usd": "-500.00" },
+    { "id": 115, "type": "2", "datetime": "2025-06-09 17:00:00.000000", "order_id": 5009, "self_trade": true, "self_trade_order_id": 5010, "fee": "not-a-decimal", "btc_usd": "50000.00", "btc": "-0.01000000", "usd": "500.00" },
+    { "id": 116, "type": "2", "datetime": "2025-06-09 18:00:00.000000", "order_id": 5011, "self_trade": true, "self_trade_order_id": 5012, "fee": "0.00", "btc_usd": "50000.00", "btc": "0.01000000", "usd": "-500.00" }
+  ]
+}

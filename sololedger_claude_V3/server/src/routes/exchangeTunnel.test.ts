@@ -212,7 +212,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['bitfinex', 'api.bitfinex.com', '/v2/platform/status'],
     ['btcmarkets', 'api.btcmarkets.net', '/v3/time'],
     ['mexc', 'api.mexc.com', '/api/v3/time'],
-    ['bitvavo', 'api.bitvavo.com', '/v2/time']
+    ['bitvavo', 'api.bitvavo.com', '/v2/time'],
+    ['bitstamp', 'www.bitstamp.net', '/api/v2/markets/']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -503,6 +504,36 @@ describe('3. header allowlist', () => {
       'bitvavo-access-window': '10000'
     });
   });
+
+  it('bitstamp: forwards all X-Auth v2 headers and the signed form body byte-exact', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    const body = 'limit=1000&since_id=123456789&sort=asc';
+    await rawRequest({
+      method: 'POST', path: '/bitstamp/api/v2/user_transactions/', body,
+      headers: {
+        ...AUTH,
+        'content-type': 'application/x-www-form-urlencoded',
+        'x-exchange-x-auth': 'BITSTAMP API_KEY',
+        'x-exchange-x-auth-signature': 'signature',
+        'x-exchange-x-auth-nonce': 'nonce',
+        'x-exchange-x-auth-timestamp': '1785888000000',
+        'x-exchange-x-auth-version': 'v2',
+        'x-exchange-cookie': 'never-forward'
+      }
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe('https://www.bitstamp.net/api/v2/user_transactions/');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toEqual({
+      'content-type': 'application/x-www-form-urlencoded',
+      'x-auth': 'BITSTAMP API_KEY',
+      'x-auth-signature': 'signature',
+      'x-auth-nonce': 'nonce',
+      'x-auth-timestamp': '1785888000000',
+      'x-auth-version': 'v2'
+    });
+    expect(Buffer.from(init.body as Buffer).toString()).toBe(body);
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -785,6 +816,33 @@ describe('4. exchangeId and path validation', () => {
       expect(upstreamMock).not.toHaveBeenCalled();
     });
   });
+
+  it('Bitstamp allows only exact read-only paths and methods, including trailing slashes', async () => {
+    upstreamMock.mockImplementation(async () => upstreamJson('[]'));
+    for (const [path, method] of [
+      ['/bitstamp/api/v2/markets/', 'GET'],
+      ['/bitstamp/api/v2/account_balances/', 'POST'],
+      ['/bitstamp/api/v2/user_transactions/', 'POST']
+    ] as const) {
+      const res = await client(path, { method, headers: AUTH });
+      expect(res.status).toBe(200);
+    }
+    upstreamMock.mockClear();
+    for (const [path, method] of [
+      ['/bitstamp/api/v2/markets', 'GET'],
+      ['/bitstamp/api/v2/markets/', 'POST'],
+      ['/bitstamp/api/v2/account_balances/', 'GET'],
+      ['/bitstamp/api/v2/user_transactions/', 'GET'],
+      ['/bitstamp/api/v2/buy/btcusd/', 'POST'],
+      ['/bitstamp/api/v2/withdrawal-requests/', 'POST'],
+      ['/bitstamp/api/v2/open_orders/all/', 'POST']
+    ] as const) {
+      const res = await client(path, { method, headers: AUTH });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -813,6 +871,16 @@ describe('5. native error passthrough', () => {
     expect(res.status).toBe(403);
     expect(responseText).toBe(body);
     expect(JSON.parse(responseText)).toEqual({ errorCode: 305, error: 'No active API key found.' });
+  });
+
+  it('passes Bitstamp API0001 through byte-identical and unstamped', async () => {
+    const body = '{"status":"error","reason":"API key not found","code":"API0001"}';
+    upstreamMock.mockResolvedValue(upstreamJson(body, 403));
+    const res = await client('/bitstamp/api/v2/account_balances/', {
+      method: 'POST', headers: { ...AUTH, 'content-type': 'application/x-www-form-urlencoded' }, body: 'foo=bar'
+    });
+    expect(res.status).toBe(403);
+    expect(await res.text()).toBe(body);
     expect(res.headers.get('x-sololedger-error')).toBeNull();
   });
 });

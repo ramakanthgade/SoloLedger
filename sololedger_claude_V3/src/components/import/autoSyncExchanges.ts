@@ -244,6 +244,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['Bitvavo', 'Settings', 'API', 'Add new API key'],
     docsUrl: 'https://support.bitvavo.com/hc/en-us/articles/4405059841809-What-are-API-keys-and-how-do-I-create-them'
+  },
+  {
+    id: 'bitstamp',
+    label: 'Bitstamp',
+    monogram: 'BS',
+    needsPassphrase: false,
+    formatHint: 'API key + secret',
+    keyInstructions: [
+      'Log in to Bitstamp on the web and open Settings → API access.',
+      'Create a read-only key with only account balance and transaction-history permissions. Never enable trading or withdrawals.',
+      'Copy the 32-character API Key and Secret and paste them here. Bitstamp does not require a passphrase.',
+      'SoloLedger uses Bitstamp’s native since_id continuation instead of the 200,000 offset-limited export path. The API publishes no account-lifetime retention guarantee; endpoint exhaustion proves only the history Bitstamp returned.',
+      'Auto-sync imports active spot trades and settled deposits/withdrawals. Staking, rewards, sub-account, conversion, simple-buy and other mixed-ledger activity remains explicitly partial and requires a Bitstamp CSV export or manual records.'
+    ],
+    path: ['Bitstamp', 'Settings', 'API access', 'New API key'],
+    docsUrl: 'https://www.bitstamp.net/account/security/api/'
   }
 ];
 

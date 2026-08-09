@@ -26,7 +26,8 @@ import {
   getSettings,
   exchangeBalanceId,
   type ExchangeConnectionRow,
-  type BtcMarketsPaginationCheckpoint
+  type BtcMarketsPaginationCheckpoint,
+  type BitstampPaginationCheckpoint
 } from '@/lib/storage/db';
 import { binanceSpotEndpointProof, bitfinexSpotEndpointProof, type AuthorityAssetRow, type AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import {
@@ -34,7 +35,7 @@ import {
   type EndpointCoverageOutcome,
   type SourceCoverageRow
 } from '@/lib/reconcile/sourceCoverage';
-import { normalizeFiatMagnitude } from '@/lib/parsers/types';
+import { makeId, normalizeFiatMagnitude } from '@/lib/parsers/types';
 import { quoteToFiatCurrency } from '@/lib/parsers/pairUtils';
 import { convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
@@ -213,8 +214,30 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   // launch month is a conservative scan floor, not an API-retention claim.
   btcmarkets: Date.UTC(2013, 8, 1),
   mexc: Date.UTC(2018, 3, 1),
-  bitvavo: Date.UTC(2018, 9, 1)
+  bitvavo: Date.UTC(2018, 9, 1),
+  bitstamp: Date.UTC(2011, 7, 1)
 };
+
+export interface BitstampSpotTradeClassification {
+  accepted: UnifiedTrade[];
+  derivativeExcluded: UnifiedTrade[];
+  unresolved: UnifiedTrade[];
+}
+
+/** Classify from CCXT's authoritative mixed market catalog; unknown fails closed. */
+export function classifyBitstampSpotTrades(
+  markets: Record<string, UnifiedMarket> | undefined,
+  rows: UnifiedTrade[]
+): BitstampSpotTradeClassification {
+  const result: BitstampSpotTradeClassification = { accepted: [], derivativeExcluded: [], unresolved: [] };
+  for (const trade of rows) {
+    const market = resolveMarket(markets ?? {}, trade.symbol);
+    if (market?.spot === true) result.accepted.push(trade);
+    else if (market?.spot === false) result.derivativeExcluded.push(trade);
+    else result.unresolved.push(trade);
+  }
+  return result;
+}
 
 /** Retryable classifications — everything else aborts immediately. */
 const RETRYABLE_KINDS: ReadonlySet<SyncErrorKind> = new Set(['rate_limit', 'network']);
@@ -244,6 +267,8 @@ export interface SyncEngineDeps {
   bitvavoMaxHistoryRequests?: number;
   bitvavoMaxTradeRequests?: number;
   bitvavoMaxTransferRequests?: number;
+  /** Test seam; includes retry attempts and unresolved-id replay requests. */
+  bitstampMaxRequests?: number;
 }
 
 export interface SyncHooks {
@@ -474,6 +499,11 @@ export function historyContinuationWarnings(
     (outcome.termination != null && RETRYABLE_HISTORY_TERMINATIONS.has(outcome.termination)) ||
     (exchange !== 'bitfinex' && outcome.termination === 'nonadvancing'));
   if (retryable) warnings.push('History continues — sync again to fetch more.');
+  if (exchange === 'bitstamp' && outcomes.some((outcome) => outcome.termination === 'retention_unverified')) {
+    warnings.push(
+      'Bitstamp API retention is undocumented. SoloLedger exhausted the currently exposed native-ID history, but cannot verify account-lifetime coverage; use a Bitstamp CSV export for older or unsupported activity.'
+    );
+  }
   return warnings;
 }
 
@@ -1166,6 +1196,417 @@ interface FetchPlanOutcome<T extends PageRow> {
   /** Durable continuation for an unfinished BTC Markets native page walk. */
   btcmarketsPagination?: BtcMarketsPaginationCheckpoint;
   bitvavoProgress?: BitvavoRangeProgress;
+}
+
+interface BitstampLedgerOutcome {
+  trades: FetchPlanOutcome<UnifiedTrade>;
+  transfers: FetchPlanOutcome<UnifiedTransfer>;
+  nativeCursor?: string;
+  checkpoint?: BitstampPaginationCheckpoint;
+  unresolvedIds: string[];
+  unresolvedCountByKind: { trades: number; deposits: number; withdrawals: number };
+  unsupportedCount: number;
+  derivativeExcluded: number;
+  selfTradeFees: Transaction[];
+  selfTradeExcluded: number;
+}
+
+const BITSTAMP_HISTORY_LIMIT = 1000;
+const BITSTAMP_MAX_REQUESTS_PER_PHASE = 8000;
+const BITSTAMP_MAX_UNRESOLVED_IDS = 100;
+const BITSTAMP_SUPPORTED_TYPES = new Set(['0', '1', '2']);
+
+function bitstampRawRecord(row: unknown): Record<string, unknown> | undefined {
+  return typeof row === 'object' && row != null && !Array.isArray(row)
+    ? row as Record<string, unknown>
+    : undefined;
+}
+
+function bitstampNativeId(row: unknown): string | undefined {
+  const id = bitstampRawRecord(row)?.id;
+  const value = id == null ? undefined : String(id);
+  return value && /^(0|[1-9]\d*)$/.test(value) ? value : undefined;
+}
+
+function bitstampRawMarket(
+  markets: Record<string, UnifiedMarket>,
+  row: Record<string, unknown>
+): UnifiedMarket | undefined {
+  const marketByCompactId = new Map(Object.values(markets).flatMap((market) => market.id
+    ? [[market.id.toLowerCase().replace(/[^a-z0-9]/g, ''), market] as const]
+    : []));
+  for (const key of Object.keys(row)) {
+    if (!key.includes('_') || key === 'order_id') continue;
+    const market = marketByCompactId.get(key.toLowerCase().replace(/[^a-z0-9]/g, ''));
+    if (market) return market;
+  }
+  return undefined;
+}
+
+function compareBitstampIds(a: string, b: string): number {
+  const aa = BigInt(a);
+  const bb = BigInt(b);
+  return aa < bb ? -1 : aa > bb ? 1 : 0;
+}
+
+function nextBitstampId(id: string): string {
+  return (BigInt(id) + 1n).toString();
+}
+
+function validBitstampConnectionState(args: {
+  nativeCursor?: string;
+  checkpoint?: BitstampPaginationCheckpoint;
+  unresolvedIds?: string[];
+}): boolean {
+  const idPattern = /^(0|[1-9]\d*)$/;
+  if (args.nativeCursor != null && !idPattern.test(args.nativeCursor)) return false;
+  if (args.unresolvedIds != null && (
+    args.unresolvedIds.length > BITSTAMP_MAX_UNRESOLVED_IDS ||
+    new Set(args.unresolvedIds).size !== args.unresolvedIds.length ||
+    args.unresolvedIds.some((id) => !idPattern.test(id))
+  )) return false;
+  const checkpoint = args.checkpoint;
+  if (!checkpoint) return true;
+  if (!/^[1-9]\d*$/.test(checkpoint.sinceId) || !idPattern.test(checkpoint.newest) ||
+    checkpoint.sinceId !== checkpoint.newest || !Array.isArray(checkpoint.consumed) ||
+    checkpoint.consumed.length === 0 || checkpoint.consumed.length > BITSTAMP_MAX_UNRESOLVED_IDS ||
+    checkpoint.consumed.some((pair) => !pair || pair.id !== checkpoint.sinceId ||
+      !/^(?:\?|\d+)$/.test(pair.type)) ||
+    new Set(checkpoint.consumed.map((pair) => `${pair.type}:${pair.id}`)).size !== checkpoint.consumed.length) return false;
+  if (args.nativeCursor != null && BigInt(checkpoint.newest) < BigInt(args.nativeCursor)) return false;
+  return Object.entries(checkpoint.highWater).every(([kind, value]) =>
+    (kind === 'trades' || kind === 'deposits' || kind === 'withdrawals') &&
+    Number.isSafeInteger(value) && value! >= 0);
+}
+
+const BITSTAMP_TRANSFER_METADATA = new Set([
+  'id', 'type', 'datetime', 'fee', 'status', 'order_id', 'transaction_id',
+  'currency', 'amount', 'address', 'account_id'
+]);
+const BITSTAMP_DECIMAL_RE = /^-?(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+function bitstampDecimal(value: unknown): number | undefined {
+  if (typeof value !== 'string' || !BITSTAMP_DECIMAL_RE.test(value)) return undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function bitstampTimestamp(value: unknown): number | undefined {
+  if (typeof value !== 'string') return undefined;
+  const match = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,6}))?$/.exec(value);
+  if (!match) return undefined;
+  const [, year, month, day, hour, minute, second, fraction = ''] = match;
+  const timestamp = Date.UTC(
+    Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second),
+    Number(fraction.padEnd(3, '0').slice(0, 3))
+  );
+  const date = new Date(timestamp);
+  return date.getUTCFullYear() === Number(year) && date.getUTCMonth() === Number(month) - 1 &&
+    date.getUTCDate() === Number(day) && date.getUTCHours() === Number(hour) &&
+    date.getUTCMinutes() === Number(minute) && date.getUTCSeconds() === Number(second)
+    ? timestamp : undefined;
+}
+
+function bitstampTransferStatus(value: unknown): UnifiedTransfer['status'] | undefined {
+  if (value == null) return 'ok';
+  const statuses: Record<string, string> = {
+    '0': 'pending', '1': 'pending', '2': 'ok', '3': 'canceled', '4': 'failed'
+  };
+  return statuses[String(value)];
+}
+
+type BitstampSelfTradeDisposition =
+  | { kind: 'ordinary' }
+  | { kind: 'unsafe' }
+  | { kind: 'self_trade'; fee?: Transaction };
+
+function bitstampSelfTradeDisposition(
+  raw: Record<string, unknown>,
+  markets: Record<string, UnifiedMarket>,
+  now: number
+): BitstampSelfTradeDisposition {
+  if (!Object.prototype.hasOwnProperty.call(raw, 'self_trade') || raw.self_trade === false) return { kind: 'ordinary' };
+  if (raw.self_trade !== true) return { kind: 'unsafe' };
+  const id = bitstampNativeId(raw);
+  const timestamp = bitstampTimestamp(raw.datetime);
+  const market = bitstampRawMarket(markets, raw);
+  const linkedOrderId = raw.self_trade_order_id == null ? undefined : String(raw.self_trade_order_id);
+  const fee = bitstampDecimal(raw.fee);
+  if (!id || timestamp == null || timestamp > now || !market || market.spot !== true || market.active === false ||
+    !linkedOrderId || !/^[1-9]\d*$/.test(linkedOrderId) || fee == null || fee < 0) {
+    return { kind: 'unsafe' };
+  }
+  if (fee === 0) return { kind: 'self_trade' };
+  const feeAsset = market.quote.toUpperCase();
+  const fiatCurrency = quoteToFiatCurrency(feeAsset) ?? 'USD';
+  return {
+    kind: 'self_trade',
+    fee: {
+      id: makeId('exbsfee'), timestamp, type: 'fee', asset: feeAsset, amount: fee,
+      fiatCurrency,
+      fiatValue: quoteToFiatCurrency(feeAsset) != null ? fee : undefined,
+      source: 'bitstamp_api', sourceRef: id,
+      notes: 'Bitstamp self-trade fee; no beneficial ownership change',
+      flags: [], isInternalTransfer: false,
+      raw: {
+        exchangeSyncKind: 'trade', tradeId: id,
+        orderId: raw.order_id == null ? undefined : String(raw.order_id),
+        selfTradeOrderId: linkedOrderId,
+        selfTrade: true
+      }
+    }
+  };
+}
+
+/**
+ * Parse a type 0/1 row from Bitstamp's raw mixed ledger. The documented shape
+ * stores economics in one dynamic currency key (for example `btc: "0.25"`),
+ * not synthetic `currency`/`amount` fields. Pinned CCXT attempts to discover
+ * that key with integer-safe accessors and can truncate sub-unit values, so the
+ * connector validates the raw decimal and direction itself.
+ */
+export function parseBitstampRawTransfer(raw: unknown): UnifiedTransfer | undefined {
+  const record = bitstampRawRecord(raw);
+  const id = bitstampNativeId(raw);
+  const type = String(record?.type ?? '');
+  const timestamp = bitstampTimestamp(record?.datetime);
+  const status = bitstampTransferStatus(record?.status);
+  if (!record || !id || (type !== '0' && type !== '1') || timestamp == null || !status) return undefined;
+  const transferType = type === '0' ? 'deposit' : 'withdrawal';
+  const terminal = status === 'failed' || status === 'canceled';
+  if (terminal) return { id, timestamp, status, type: transferType, info: record };
+
+  const candidates = Object.entries(record).flatMap(([key, value]) => {
+    if (BITSTAMP_TRANSFER_METADATA.has(key) || !/^[a-z][a-z0-9]*$/.test(key)) return [];
+    const amount = bitstampDecimal(value);
+    return amount == null || amount === 0 ? [] : [{ currency: key.toUpperCase(), amount }];
+  });
+  if (candidates.length !== 1) return undefined;
+  const [{ currency, amount }] = candidates;
+  if ((type === '0' && amount <= 0) || (type === '1' && amount >= 0)) return undefined;
+  const rawFee = record.fee == null ? 0 : bitstampDecimal(record.fee);
+  if (rawFee == null || rawFee < 0) return undefined;
+  const txid = typeof record.transaction_id === 'string' ? record.transaction_id : undefined;
+  const address = typeof record.address === 'string' ? record.address : undefined;
+  return {
+    id, txid, timestamp, currency, amount: Math.abs(amount), status, type: transferType,
+    address, addressTo: address,
+    fee: rawFee > 0 ? { cost: rawFee, currency } : undefined,
+    info: record
+  };
+}
+
+function bitstampTransferUnsafe(transfer: UnifiedTransfer, now: number): boolean {
+  if (transfer.timestamp == null || !Number.isFinite(transfer.timestamp) || transfer.timestamp > now) return true;
+  if (transfer.status === 'pending' || transfer.status == null) return true;
+  if (transfer.status === 'failed' || transfer.status === 'canceled') return false;
+  return normalizeTransfer('bitstamp', transfer) == null;
+}
+
+/**
+ * Exhaustive oldest-to-newest traversal of Bitstamp's one mixed account
+ * ledger. Native docs explicitly provide `since_id` for history older than
+ * the 200,000 offset ceiling; no offset is ever sent. Page saturation is the
+ * RAW response count because CCXT filters trades out of the unified transfer
+ * result. A bounded continuation and unresolved-id replay set are committed
+ * atomically with imported rows.
+ */
+export async function paginateBitstampLedger(args: {
+  client: ExchangeClient;
+  now: number;
+  nativeCursor?: string;
+  checkpoint?: BitstampPaginationCheckpoint;
+  unresolvedIds?: string[];
+  maxRequests?: number;
+  sleep?: (ms: number) => Promise<void>;
+}): Promise<BitstampLedgerOutcome> {
+  if (!args.client.fetchBitstampUserTransactions || !args.client.parseTrade) {
+    throw new Error('Bitstamp shared account-ledger parsing is unavailable in this CCXT build.');
+  }
+  if (!validBitstampConnectionState(args)) {
+    throw new Error('Bitstamp pagination checkpoint is invalid; history cannot be advanced safely.');
+  }
+  const maxRequests = args.maxRequests ?? BITSTAMP_MAX_REQUESTS_PER_PHASE;
+  const sleep = args.sleep ?? (async () => {});
+  const allMarkets = args.client.bitstampAllMarkets ?? args.client.markets ?? {};
+  const unresolved = new Set(args.unresolvedIds ?? []);
+  const trades: UnifiedTrade[] = [];
+  const transfers: UnifiedTransfer[] = [];
+  const seen = new Map<string, { id: string; type: string }>(
+    (args.checkpoint?.consumed ?? []).map((pair) => [`${pair.type}:${pair.id}`, pair])
+  );
+  const assessed = new Set<string>();
+  const initiallyUnresolved = new Set(unresolved);
+  let requests = 0;
+  let unsupportedCount = 0;
+  let derivativeExcluded = 0;
+  const selfTradeFees: Transaction[] = [];
+  let selfTradeExcluded = 0;
+  const unresolvedCountByKind = { trades: 0, deposits: 0, withdrawals: 0 };
+  const highWater = { ...(args.checkpoint?.highWater ?? {}) };
+  let newest = args.checkpoint?.newest ?? args.nativeCursor ?? '0';
+
+  const request = async (sinceId: string): Promise<{ raw: unknown[] }> => {
+    args.client.last_json_response = undefined;
+    const response = await withRetries(async () => {
+      if (requests >= maxRequests) throw new Error('Bitstamp request budget exhausted.');
+      requests += 1;
+      return args.client.fetchBitstampUserTransactions!({
+        limit: BITSTAMP_HISTORY_LIMIT,
+        since_id: sinceId,
+        sort: 'asc'
+      });
+    }, sleep);
+    const raw = Array.isArray(response) ? response : args.client.last_json_response;
+    if (!Array.isArray(raw)) {
+      throw new Error('Bitstamp raw account-ledger response was not captured; history cannot be proven exhaustive.');
+    }
+    return { raw };
+  };
+
+  const consume = (page: { raw: unknown[] }, onlyId?: string): { pageMax?: string; newPairs: number } => {
+    const unsafeById = new Map<string, boolean>();
+    let pageMax: string | undefined;
+    let newPairs = 0;
+    for (const raw of page.raw) {
+      const id = bitstampNativeId(raw);
+      if (!id) throw new Error('Bitstamp returned an account-ledger row without a safe numeric id; import CSV before syncing.');
+      if (!pageMax || compareBitstampIds(id, pageMax) > 0) pageMax = id;
+      if (onlyId != null && id !== onlyId) continue;
+      const record = bitstampRawRecord(raw)!;
+      const rawType = String(record.type ?? '');
+      const type = /^\d+$/.test(rawType) ? rawType : '?';
+      const kindId = `${type}:${id}`;
+      const alreadyConsumed = seen.has(kindId);
+      if (!alreadyConsumed) {
+        seen.set(kindId, { id, type });
+        newPairs += 1;
+      }
+      if (assessed.has(kindId)) continue;
+      assessed.add(kindId);
+      if (type === '?') {
+        if (!alreadyConsumed) unsupportedCount += 1;
+        unsafeById.set(id, true);
+        continue;
+      }
+      if (!BITSTAMP_SUPPORTED_TYPES.has(type)) {
+        if (!alreadyConsumed) unsupportedCount += 1;
+        continue;
+      }
+      let unsafe = false;
+      if (type === '2') {
+        const selfTrade = bitstampSelfTradeDisposition(record, allMarkets, args.now);
+        if (selfTrade.kind === 'unsafe') {
+          unsafe = true;
+        } else if (selfTrade.kind === 'self_trade') {
+          if (!alreadyConsumed && selfTrade.fee) selfTradeFees.push(selfTrade.fee);
+          if (!alreadyConsumed && !selfTrade.fee) selfTradeExcluded += 1;
+          const timestamp = selfTrade.fee?.timestamp ?? bitstampTimestamp(record.datetime);
+          if (timestamp != null) highWater.trades = Math.max(highWater.trades ?? 0, timestamp);
+        } else {
+          let parsed: UnifiedTrade;
+          try {
+            parsed = args.client.parseTrade!(raw, bitstampRawMarket(allMarkets, record));
+          } catch {
+            parsed = { id, info: record };
+          }
+          const classification = classifyBitstampSpotTrades(allMarkets, [parsed]);
+          if (classification.derivativeExcluded.length > 0) {
+            if (!alreadyConsumed) derivativeExcluded += 1;
+          } else if (classification.unresolved.length > 0 || parsed.timestamp == null ||
+            !Number.isFinite(parsed.timestamp) || parsed.timestamp > args.now ||
+            normalizeTrade('bitstamp', parsed, resolveMarket(allMarkets, parsed.symbol)) == null) {
+            unsafe = true;
+          } else {
+            if (!alreadyConsumed) trades.push(parsed);
+            highWater.trades = Math.max(highWater.trades ?? 0, parsed.timestamp);
+          }
+        }
+      } else {
+        const transfer = parseBitstampRawTransfer(raw);
+        if (!transfer) {
+          unsafe = true;
+        } else if (bitstampTransferUnsafe(transfer, args.now)) {
+          unsafe = transfer.status !== 'failed' && transfer.status !== 'canceled';
+        } else {
+          if (!alreadyConsumed) transfers.push(transfer);
+          const kind = type === '0' ? 'deposits' : 'withdrawals';
+          highWater[kind] = Math.max(highWater[kind] ?? 0, transfer.timestamp!);
+        }
+      }
+      unsafeById.set(id, (unsafeById.get(id) ?? false) || unsafe);
+      if (unsafe) {
+        const kind = type === '2' ? 'trades' : type === '0' ? 'deposits' : 'withdrawals';
+        if (!alreadyConsumed) unresolvedCountByKind[kind] += 1;
+      }
+    }
+    for (const [id, unsafe] of unsafeById) {
+      if (unsafe) unresolved.add(id);
+      else unresolved.delete(id);
+    }
+    if (args.checkpoint && initiallyUnresolved.has(args.checkpoint.sinceId) &&
+      args.checkpoint.consumed.some((pair) => !assessed.has(`${pair.type}:${pair.id}`))) {
+      // A saturated prior page may have split kinds sharing this native ID. Do
+      // not let a newly observed safe kind clear unresolved evidence unless all
+      // checkpointed boundary kinds were visible for reassessment as well.
+      unresolved.add(args.checkpoint.sinceId);
+    }
+    if (unresolved.size > BITSTAMP_MAX_UNRESOLVED_IDS) {
+      throw new Error('Bitstamp has more than 100 unresolved account-ledger records; import a CSV before syncing.');
+    }
+    return { pageMax, newPairs };
+  };
+
+  // Revisit unsafe rows that sit behind the proven native frontier without
+  // replaying all newer history. The inclusive page is consumed only at the
+  // requested id; normal forward traversal handles the rest.
+  const forwardStart = args.checkpoint?.sinceId ?? nextBitstampId(args.nativeCursor ?? '0');
+  for (const id of [...unresolved].sort(compareBitstampIds)) {
+    if (compareBitstampIds(id, forwardStart) >= 0) continue;
+    if (requests >= maxRequests) {
+      return {
+        trades: { rows: trades, maxTs: null, partial: true, termination: 'page_budget' },
+        transfers: { rows: transfers, maxTs: null, partial: true, termination: 'page_budget' },
+        nativeCursor: args.nativeCursor,
+        checkpoint: args.checkpoint,
+        unresolvedIds: [...unresolved].sort(compareBitstampIds), unresolvedCountByKind,
+        unsupportedCount, derivativeExcluded, selfTradeFees, selfTradeExcluded
+      };
+    }
+    consume(await request(id), id);
+  }
+
+  let sinceId = forwardStart;
+  while (requests < maxRequests) {
+    const page = await request(sinceId);
+    const { pageMax, newPairs } = consume(page);
+    if (pageMax && compareBitstampIds(pageMax, newest) > 0) newest = pageMax;
+    if (page.raw.length < BITSTAMP_HISTORY_LIMIT) {
+      return {
+        trades: { rows: trades, maxTs: args.now, partial: true, termination: 'retention_unverified' },
+        transfers: { rows: transfers, maxTs: args.now, partial: true, termination: 'retention_unverified' },
+        nativeCursor: newest,
+        unresolvedIds: [...unresolved].sort(compareBitstampIds), unresolvedCountByKind,
+        unsupportedCount, derivativeExcluded, selfTradeFees, selfTradeExcluded
+      };
+    }
+    if (!pageMax || compareBitstampIds(pageMax, sinceId) < 0 ||
+      (pageMax === sinceId && newPairs === 0)) {
+      throw new Error('Bitstamp since_id pagination did not advance; import a CSV before syncing.');
+    }
+    sinceId = pageMax;
+  }
+  return {
+    trades: { rows: trades, maxTs: null, partial: true, termination: 'page_budget' },
+    transfers: { rows: transfers, maxTs: null, partial: true, termination: 'page_budget' },
+    nativeCursor: args.nativeCursor,
+    checkpoint: {
+      sinceId, newest, highWater,
+      consumed: [...seen.values()].filter((pair) => pair.id === sinceId)
+    },
+    unresolvedIds: [...unresolved].sort(compareBitstampIds), unresolvedCountByKind,
+    unsupportedCount, derivativeExcluded, selfTradeFees, selfTradeExcluded
+  };
 }
 
 export interface GeminiRequestBudget {
@@ -2142,6 +2583,8 @@ async function fetchTradesForSymbol(
       });
     case 'mexc':
       throw new Error('MEXC trades use the recursive closed-window paginator.');
+    case 'bitstamp':
+      throw new Error('Bitstamp trades use the shared account-ledger paginator.');
   }
 }
 
@@ -2180,6 +2623,9 @@ export interface SyncFetchOutcome {
   geminiTradeProgress?: GeminiTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitstampNativeCursor?: string;
+  bitstampPagination?: BitstampPaginationCheckpoint;
+  bitstampUnresolvedIds?: string[];
   btcmarketsNativeCursors?: { trades?: string; transfers?: string };
   btcmarketsPagination?: { trades?: BtcMarketsPaginationCheckpoint; transfers?: BtcMarketsPaginationCheckpoint };
   btcmarketsUnresolvedTransferIds?: string[];
@@ -2499,6 +2945,32 @@ export async function syncConnection(
       transferRequestedStarts.deposits,
       transferRequestedStarts.withdrawals
     );
+    const bitstampLedger = exchange === 'bitstamp'
+      ? await paginateBitstampLedger({
+          client,
+          now: nowMs,
+          nativeCursor: row.bitstampNativeCursor,
+          checkpoint: row.bitstampPagination,
+          unresolvedIds: row.bitstampUnresolvedIds,
+          maxRequests: deps.bitstampMaxRequests,
+          sleep
+        })
+      : undefined;
+    const bitstampNativeCursor = bitstampLedger?.nativeCursor;
+    const bitstampCheckpoint = bitstampLedger?.checkpoint;
+    const bitstampUnresolvedIds = bitstampLedger?.unresolvedIds ?? row.bitstampUnresolvedIds;
+    if (bitstampLedger && (bitstampLedger.unsupportedCount > 0 || bitstampLedger.unresolvedIds.length > 0)) {
+      sharedTransferUnclassified += bitstampLedger.unsupportedCount +
+        bitstampLedger.unresolvedCountByKind.deposits + bitstampLedger.unresolvedCountByKind.withdrawals;
+      warnings.push(
+        `Bitstamp account history contains ${bitstampLedger.unsupportedCount} out-of-scope and ${bitstampLedger.unresolvedIds.length} pending, malformed, unresolved, or future-dated record(s). Coverage remains partial; unresolved native ids will replay and other account activity requires a Bitstamp CSV export.`
+      );
+    }
+    if (bitstampLedger && (bitstampLedger.selfTradeFees.length > 0 || bitstampLedger.selfTradeExcluded > 0)) {
+      warnings.push(
+        `Bitstamp identified ${bitstampLedger.selfTradeFees.length + bitstampLedger.selfTradeExcluded} self-trade record(s). No acquisition or disposal lots were created; ${bitstampLedger.selfTradeFees.length} determinable fee effect(s) were retained.`
+      );
+    }
     let btcmarketsTransferCursor = row.btcmarketsNativeCursors?.transfers;
     let btcmarketsTransferCursorCandidate: string | undefined;
     let btcmarketsTransferCheckpoint = row.btcmarketsPagination?.transfers;
@@ -2536,12 +3008,11 @@ export async function syncConnection(
       if (exchange === 'bitfinex') since = bitfinexRetainedMovement.since;
       const cbAssets = [...new Set([...balanceAssets, ...(row.knownAssets ?? [])])];
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
-      if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets') && kind === 'withdrawals') {
+      if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitstamp') && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
-      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitvavo') {
-        // Gate/HTX/Crypto.com/Bitfinex retry each physical request inside their paginator so
-        // a retry cannot restart pagination or reset the attempt cap.
-        outcome = await fetchTransferKind(
+      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitvavo' || exchange === 'bitstamp') {
+        // Connector-local paginators count retries without restarting pagination or resetting attempt caps.
+        outcome = exchange === 'bitstamp' ? bitstampLedger!.transfers : await fetchTransferKind(
           client, exchange, kind, since, exchange === 'bitvavo' ? bitvavoTransferEnd : nowMs, cbAssets, warnings, sleep,
           deps.cryptocomMaxRequests, deps.bitfinexMaxRequests, deps.geminiMaxTransferRequests,
           btcmarketsTransferCheckpoint
@@ -2554,7 +3025,24 @@ export async function syncConnection(
           deps.bitvavoMaxTransferRequests,
           row.bitvavoProgress?.transfers?.[kind]
         );
-        if (cryptocomRetentionTruncated) {
+        if (exchange === 'bitstamp') {
+          const partial = outcome.partial || bitstampLedger!.unsupportedCount > 0 || bitstampLedger!.unresolvedIds.length > 0;
+          const shared = (
+            endpointKind: 'deposits' | 'withdrawals',
+            rows: UnifiedTransfer[]
+          ): FetchPlanOutcome<UnifiedTransfer> => ({
+            rows,
+            maxTs: outcome.maxTs,
+            partial,
+            termination: outcome.termination,
+            unclassifiedCount: endpointKind === 'deposits'
+              ? bitstampLedger!.unsupportedCount + bitstampLedger!.unresolvedCountByKind.deposits
+              : bitstampLedger!.unresolvedCountByKind.withdrawals
+          });
+          transferOutcomes.set('deposits', shared('deposits', outcome.rows.filter((item) => item.type === 'deposit')));
+          transferOutcomes.set('withdrawals', shared('withdrawals', outcome.rows.filter((item) => item.type === 'withdrawal')));
+          outcome = transferOutcomes.get(kind)!;
+        } else if (cryptocomRetentionTruncated) {
           outcome.partial = true;
           outcome.retentionFloor = cryptocomRetentionFloor;
         }
@@ -2997,7 +3485,12 @@ export async function syncConnection(
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
     } else {
-      const outcome = exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'btcmarkets'
+      const outcome = exchange === 'bitstamp'
+        ? {
+            ...bitstampLedger!.trades,
+            partial: bitstampLedger!.trades.partial || bitstampLedger!.unsupportedCount > 0 || bitstampLedger!.unresolvedIds.length > 0
+          }
+        : exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'btcmarkets'
         ? await fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs, {
             sleep,
             cryptocomMaxRequests: deps.cryptocomMaxRequests,
@@ -3101,11 +3594,16 @@ export async function syncConnection(
       ? (tradeOutcomes.length > 0
           ? tradeOutcomes.reduce((min, outcome) => Math.min(min, outcome.maxTs ?? tradeSince), nowMs)
           : nowMs)
-      : exchange === 'bybit' || exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex'
+      : exchange === 'bybit' || exchange === 'gateio' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'bitstamp'
       ? tradeOutcomes.reduce((max, outcome) => Math.max(max, outcome.maxTs ?? 0), 0)
       : maxTimestamp(tradeRows) ?? 0;
     const mergedTrades = Math.max(oldCursors.trades ?? 0, tradeCursorCandidate);
     if (mergedTrades > 0) newCursors.trades = mergedTrades;
+    if (exchange === 'bitstamp' && bitstampCheckpoint) {
+      newCursors.trades = oldCursors.trades;
+      newCursors.deposits = oldCursors.deposits;
+      newCursors.withdrawals = oldCursors.withdrawals;
+    }
     const allHistoryOutcomes = [...transferOutcomes.values(), ...tradeOutcomes];
     warnings.push(...historyContinuationWarnings(exchange, allHistoryOutcomes));
     if (exchange === 'btcmarkets') warnings.push(...btcMarketsHistoryWarnings(allHistoryOutcomes));
@@ -3114,8 +3612,13 @@ export async function syncConnection(
     const transactions: Transaction[] = [];
     let tradeNormalizationDrops = 0;
     let cryptocomDerivativeExcluded = 0;
+    const bitstampDerivativeExcluded = bitstampLedger?.derivativeExcluded ?? 0;
     let bitfinexNonSpotExcluded = 0;
     let geminiBrokenTradesExcluded = 0;
+    if (exchange === 'bitstamp') {
+      tradeNormalizationDrops += bitstampLedger!.unresolvedCountByKind.trades;
+      transactions.push(...bitstampLedger!.selfTradeFees);
+    }
     if (exchange === 'kraken') {
       const { transactions: krakenTxs, skipped: krakenSkipped } = normalizeKrakenTradesByOrder(
         tradeRows,
@@ -3180,6 +3683,9 @@ export async function syncConnection(
       if (cryptocomDerivativeExcluded > 0) {
         warnings.push(`Excluded ${cryptocomDerivativeExcluded} Crypto.com Exchange derivative trade(s); auto-sync imports active spot markets only.`);
       }
+      if (bitstampDerivativeExcluded > 0) {
+        warnings.push(`Excluded ${bitstampDerivativeExcluded} confirmed Bitstamp derivative trade(s); auto-sync imports spot markets only.`);
+      }
       if (cryptocomUnresolvedTrades > 0) {
         warnings.push(`Excluded ${cryptocomUnresolvedTrades} Crypto.com Exchange trade(s) whose active spot market could not be resolved.`);
       }
@@ -3214,7 +3720,9 @@ export async function syncConnection(
               ? geminiTransferDisposition(transfer) === 'terminal'
               : exchange === 'btcmarkets'
                 ? btcMarketsTransferDisposition(transfer) === 'terminal'
-                : exchange === 'bitvavo' && bitvavoTransferDisposition(transfer) === 'terminal';
+                : exchange === 'bitvavo'
+                  ? bitvavoTransferDisposition(transfer) === 'terminal'
+                  : exchange === 'bitstamp' && (transfer.status === 'failed' || transfer.status === 'canceled');
         if (terminal) {
           terminalTransfersByKind[kind] += 1;
           continue;
@@ -3342,16 +3850,19 @@ export async function syncConnection(
         partial: tradeOutcomes.some((outcome) => outcome.partial) || skippedSymbols > 0 || tradeNormalizationDrops > 0,
         termination: tradeStructuralFailure?.termination,
         retentionFloor: tradeRetention?.retentionFloor
-      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 || cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 || geminiBrokenTradesExcluded > 0 ? {
+      }, skippedSymbols > 0 || tradeNormalizationDrops > 0 || cryptocomDerivativeExcluded > 0 || bitstampDerivativeExcluded > 0 ||
+        (bitstampLedger?.selfTradeExcluded ?? 0) > 0 || bitfinexNonSpotExcluded > 0 || geminiBrokenTradesExcluded > 0 ? {
         ...(skippedSymbols > 0 || tradeNormalizationDrops > 0
           ? { status: 'partial' as const, paginationExhausted: false }
           : {}),
         skippedCount: skippedSymbols + tradeNormalizationDrops,
-        excludedCount: cryptocomDerivativeExcluded + bitfinexNonSpotExcluded + geminiBrokenTradesExcluded,
+        excludedCount: cryptocomDerivativeExcluded + bitstampDerivativeExcluded + (bitstampLedger?.selfTradeExcluded ?? 0) +
+          bitfinexNonSpotExcluded + geminiBrokenTradesExcluded,
         failedCount: tradeNormalizationDrops,
         exclusionReasons: [
           ...(skippedSymbols > 0 ? ['binance_symbol_unavailable'] : []),
-          ...(cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? ['derivative_out_of_scope'] : []),
+          ...(cryptocomDerivativeExcluded > 0 || bitstampDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? ['derivative_out_of_scope'] : []),
+          ...((bitstampLedger?.selfTradeExcluded ?? 0) > 0 ? ['self_trade_no_ownership_change'] : []),
           ...(geminiBrokenTradesExcluded > 0 ? ['fully_broken_trade'] : []),
           ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
         ],
@@ -3364,8 +3875,13 @@ export async function syncConnection(
     const rawTransferCount = [...transferOutcomes.values()]
       .reduce((count, outcome) => count + outcome.rows.length, 0) + sharedTransferUnclassified;
     const transferNormalizationDrops = skippedUnsettled + sharedTransferUnclassified;
-    const recognizedCount = tradeRows.length + rawTransferCount;
-    const explainedExclusions = cryptocomDerivativeExcluded + bitfinexNonSpotExcluded + geminiBrokenTradesExcluded + terminalTransferExclusions;
+    const recognizedCount = tradeRows.length + rawTransferCount +
+      (exchange === 'bitstamp'
+        ? bitstampDerivativeExcluded + bitstampLedger!.unresolvedCountByKind.trades +
+          bitstampLedger!.selfTradeFees.length + bitstampLedger!.selfTradeExcluded
+        : 0);
+    const explainedExclusions = cryptocomDerivativeExcluded + bitstampDerivativeExcluded +
+      (bitstampLedger?.selfTradeExcluded ?? 0) + bitfinexNonSpotExcluded + geminiBrokenTradesExcluded + terminalTransferExclusions;
     const parsedCount = recognizedCount - tradeNormalizationDrops - transferNormalizationDrops - explainedExclusions;
     const coverage = operationCoverage({
       connectionId,
@@ -3384,10 +3900,11 @@ export async function syncConnection(
       recognizedCount,
       parsedCount,
       failedCount: tradeNormalizationDrops,
-      exclusionReasons: cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 || geminiBrokenTradesExcluded > 0 || terminalTransferExclusions > 0 ||
+      exclusionReasons: cryptocomDerivativeExcluded > 0 || bitstampDerivativeExcluded > 0 || (bitstampLedger?.selfTradeExcluded ?? 0) > 0 || bitfinexNonSpotExcluded > 0 || geminiBrokenTradesExcluded > 0 || terminalTransferExclusions > 0 ||
         tradeNormalizationDrops > 0 ? [
-        ...(cryptocomDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? ['derivative_out_of_scope'] : []),
+        ...(cryptocomDerivativeExcluded > 0 || bitstampDerivativeExcluded > 0 || bitfinexNonSpotExcluded > 0 ? ['derivative_out_of_scope'] : []),
         ...(geminiBrokenTradesExcluded > 0 ? ['fully_broken_trade'] : []),
+        ...((bitstampLedger?.selfTradeExcluded ?? 0) > 0 ? ['self_trade_no_ownership_change'] : []),
         ...(terminalTransferExclusions > 0 ? ['terminal_status_out_of_scope'] : []),
         ...(tradeNormalizationDrops > 0 ? ['trade_normalization_failed'] : [])
       ] : undefined
@@ -3409,6 +3926,9 @@ export async function syncConnection(
       geminiTradeProgress,
       cryptocomPendingTransfers: exchange === 'cryptocom' ? cryptocomPendingTransfers : undefined,
       bitfinexPendingTransfers: exchange === 'bitfinex' ? bitfinexPendingTransfers : undefined,
+      bitstampNativeCursor: exchange === 'bitstamp' ? bitstampNativeCursor : undefined,
+      bitstampPagination: exchange === 'bitstamp' ? bitstampCheckpoint : undefined,
+      bitstampUnresolvedIds: exchange === 'bitstamp' ? bitstampUnresolvedIds : undefined,
       btcmarketsNativeCursors: exchange === 'btcmarkets' ? {
         trades: btcmarketsTradeCursor,
         transfers: btcmarketsTransferCursor
@@ -3458,6 +3978,9 @@ export async function syncConnection(
       geminiTradeProgress,
       cryptocomPendingTransfers: exchange === 'cryptocom' ? cryptocomPendingTransfers : undefined,
       bitfinexPendingTransfers: exchange === 'bitfinex' ? bitfinexPendingTransfers : undefined,
+      bitstampNativeCursor: exchange === 'bitstamp' ? bitstampNativeCursor : undefined,
+      bitstampPagination: exchange === 'bitstamp' ? bitstampCheckpoint : undefined,
+      bitstampUnresolvedIds: exchange === 'bitstamp' ? bitstampUnresolvedIds : undefined,
       btcmarketsNativeCursors: exchange === 'btcmarkets' ? {
         trades: btcmarketsTradeCursor,
         transfers: btcmarketsTransferCursor
@@ -3536,6 +4059,9 @@ export async function persistSyncedRows(args: {
   geminiTradeProgress?: GeminiTradeProgress;
   cryptocomPendingTransfers?: { deposits?: number; withdrawals?: number };
   bitfinexPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitstampNativeCursor?: string;
+  bitstampPagination?: BitstampPaginationCheckpoint;
+  bitstampUnresolvedIds?: string[];
   btcmarketsNativeCursors?: { trades?: string; transfers?: string };
   btcmarketsPagination?: { trades?: BtcMarketsPaginationCheckpoint; transfers?: BtcMarketsPaginationCheckpoint };
   btcmarketsUnresolvedTransferIds?: string[];
@@ -3819,6 +4345,9 @@ export async function persistSyncedRows(args: {
         geminiTradeProgress: args.geminiTradeProgress,
         cryptocomPendingTransfers: args.cryptocomPendingTransfers,
         bitfinexPendingTransfers: args.bitfinexPendingTransfers,
+        bitstampNativeCursor: args.bitstampNativeCursor,
+        bitstampPagination: args.bitstampPagination,
+        bitstampUnresolvedIds: args.bitstampUnresolvedIds,
         btcmarketsNativeCursors: args.btcmarketsNativeCursors,
         btcmarketsPagination: args.btcmarketsPagination,
         btcmarketsUnresolvedTransferIds: args.btcmarketsUnresolvedTransferIds,

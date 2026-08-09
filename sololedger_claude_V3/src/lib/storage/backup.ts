@@ -149,6 +149,14 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
       deposits: row.bitfinexPendingTransfers.deposits,
       withdrawals: row.bitfinexPendingTransfers.withdrawals
     },
+    bitstampNativeCursor: row.bitstampNativeCursor,
+    bitstampPagination: row.bitstampPagination == null ? undefined : {
+      sinceId: row.bitstampPagination.sinceId,
+      newest: row.bitstampPagination.newest,
+      consumed: row.bitstampPagination.consumed.map((pair) => ({ ...pair })),
+      highWater: { ...row.bitstampPagination.highWater }
+    },
+    bitstampUnresolvedIds: row.bitstampUnresolvedIds == null ? undefined : [...row.bitstampUnresolvedIds],
     btcmarketsNativeCursors: row.btcmarketsNativeCursors == null ? undefined : {
       trades: row.btcmarketsNativeCursors.trades,
       transfers: row.btcmarketsNativeCursors.transfers
@@ -490,6 +498,34 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
             !Number.isSafeInteger(item.occurrence) || item.occurrence < 0) ||
           new Set(bitvavoPendingEvidence[kind]!.map((item) => `${item.evidence}|${item.occurrence}`)).size !== bitvavoPendingEvidence[kind]!.length)))) {
       throw new Error('Invalid backup file: Bitvavo pending-transfer evidence is malformed.');
+    }
+    const bitstampCursor = row.bitstampNativeCursor;
+    if (bitstampCursor != null && (typeof bitstampCursor !== 'string' || !/^(0|[1-9]\d*)$/.test(bitstampCursor))) {
+      throw new Error('Invalid backup file: Bitstamp native cursor is malformed.');
+    }
+    const bitstampPagination = row.bitstampPagination;
+    if (bitstampPagination != null && (!isPlainObject(bitstampPagination) ||
+      Object.keys(bitstampPagination).some((key) => !['sinceId', 'newest', 'consumed', 'highWater'].includes(key)) ||
+      typeof bitstampPagination.sinceId !== 'string' || !/^[1-9]\d*$/.test(bitstampPagination.sinceId) ||
+      typeof bitstampPagination.newest !== 'string' || !/^(0|[1-9]\d*)$/.test(bitstampPagination.newest) ||
+      bitstampPagination.sinceId !== bitstampPagination.newest ||
+      !Array.isArray(bitstampPagination.consumed) || bitstampPagination.consumed.length === 0 ||
+      bitstampPagination.consumed.length > 100 || bitstampPagination.consumed.some((pair) =>
+        !isPlainObject(pair) || Object.keys(pair).some((key) => key !== 'id' && key !== 'type') ||
+        pair.id !== bitstampPagination.sinceId || typeof pair.type !== 'string' || !/^(?:\?|\d+)$/.test(pair.type)) ||
+      new Set(bitstampPagination.consumed.map((pair) => `${String(pair.type)}:${String(pair.id)}`)).size !==
+        bitstampPagination.consumed.length ||
+      !isPlainObject(bitstampPagination.highWater) ||
+      Object.keys(bitstampPagination.highWater).some((key) => !['trades', 'deposits', 'withdrawals'].includes(key)) ||
+      Object.values(bitstampPagination.highWater).some((value) => !Number.isSafeInteger(value) || (value as number) < 0) ||
+      (bitstampCursor != null && BigInt(bitstampPagination.newest) < BigInt(bitstampCursor)))) {
+      throw new Error('Invalid backup file: Bitstamp pagination checkpoint is malformed.');
+    }
+    const bitstampUnresolved = row.bitstampUnresolvedIds;
+    if (bitstampUnresolved != null && (!Array.isArray(bitstampUnresolved) || bitstampUnresolved.length > 100 ||
+      bitstampUnresolved.some((id) => typeof id !== 'string' || !/^(0|[1-9]\d*)$/.test(id)) ||
+      new Set(bitstampUnresolved).size !== bitstampUnresolved.length)) {
+      throw new Error('Invalid backup file: Bitstamp unresolved replay evidence is malformed.');
     }
     const progress = row.htxTradeProgress;
     const btcmarketsCursors = row.btcmarketsNativeCursors;

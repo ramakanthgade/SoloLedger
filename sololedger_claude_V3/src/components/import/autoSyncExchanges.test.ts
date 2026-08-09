@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(14);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(15);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -123,5 +123,14 @@ describe('autoSyncExchanges catalog', () => {
     expect(copy).toMatch(/Price Guarantee.*without guessing/i);
     expect(copy).toMatch(/first sync.*delisted before/i);
     expect(copy).toMatch(/never claims account-lifetime.*does not claim API↔CSV deduplication/i);
+  });
+
+  it('documents Bitstamp read-only native-id history and mixed-ledger limitations', () => {
+    const bitstamp = getAutoSyncExchange('bitstamp')!;
+    expect(bitstamp.docsUrl).toBe('https://www.bitstamp.net/account/security/api/');
+    expect(bitstamp.keyInstructions.join(' ')).toMatch(/read-only/i);
+    expect(bitstamp.keyInstructions.join(' ')).toMatch(/since_id/i);
+    expect(bitstamp.keyInstructions.join(' ')).toMatch(/200,000|200000/i);
+    expect(bitstamp.keyInstructions.join(' ')).toMatch(/CSV|manual/i);
   });
 });

@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored from the documented Bitstamp /api/v2/account_balances/ schema.",
+  "response": [
+    { "currency": "btc", "total": "0.35000000", "available": "0.30000000", "reserved": "0.05000000" },
+    { "currency": "usd", "total": "1000.00", "available": "1000.00", "reserved": "0.00" }
+  ]
+}

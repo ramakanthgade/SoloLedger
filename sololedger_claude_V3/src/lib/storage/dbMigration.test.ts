@@ -184,7 +184,7 @@ describe('Dexie v11 → v12 CSV survivor-count migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(17);
+    expect(upgraded.verno).toBe(18);
     expect(await upgraded.table('walletDefiRefreshManifests').count()).toBe(0);
     expect(await upgraded.csvImports.bulkGet(['partial', 'zero'])).toEqual([
       expect.objectContaining({ id: 'partial', txCount: 2 }),
@@ -263,7 +263,7 @@ describe('Dexie v10 → v11 reconciliation evidence migration', () => {
     const upgraded = createDb(name);
     await upgraded.open();
 
-    expect(upgraded.verno).toBe(17);
+    expect(upgraded.verno).toBe(18);
     expect(await upgraded.table('walletDefiRefreshManifests').count()).toBe(0);
     expect(await upgraded.table('transactions').get('untouched')).toEqual(makeTx('untouched'));
     expect(await upgraded.table('exchangeBalances').count()).toBe(4);
@@ -342,6 +342,48 @@ const V16_STORES = {
   accountIdentities: 'id, kind, &canonicalKey, ownershipStatus, [kind+canonicalKey]',
   walletDefiRefreshManifests: 'accountIdentityScope, custodyScopeId, custodySnapshotId, capturedAt'
 };
+
+describe('Dexie v17 → v18 Bitstamp kind backfill', () => {
+  it('backfills immutable mixed-ledger kinds without overwriting existing evidence', async () => {
+    const name = `migration_v18_bitstamp_${Math.random().toString(36).slice(2)}`;
+    const legacy = new Dexie(name);
+    legacy.version(17).stores(V16_STORES);
+    await legacy.open();
+    await legacy.table('transactions').bulkPut([
+      makeTx('trade', {
+        source: 'bitstamp_api', sourceRef: '101', raw: { tradeId: '101', preserved: true }
+      }),
+      makeTx('deposit', { source: 'bitstamp_api', sourceRef: '102', type: 'transfer_in' }),
+      makeTx('withdrawal', { source: 'bitstamp_api', sourceRef: '103', type: 'transfer_out' }),
+      makeTx('unknown', { source: 'bitstamp_api', sourceRef: '104', type: 'income' }),
+      makeTx('existing-kind', {
+        source: 'bitstamp_api', sourceRef: '105', type: 'transfer_in',
+        raw: { exchangeSyncKind: 'withdrawal' }
+      }),
+      makeTx('other-exchange', {
+        source: 'binance_api', sourceRef: '106', type: 'transfer_in', raw: { preserved: true }
+      })
+    ]);
+    legacy.close();
+
+    const { createDb } = await import('@/lib/storage/db');
+    const upgraded = createDb(name);
+    await upgraded.open();
+
+    expect(upgraded.verno).toBe(18);
+    expect((await upgraded.transactions.get('trade'))?.raw).toEqual({
+      tradeId: '101', preserved: true, exchangeSyncKind: 'trade'
+    });
+    expect((await upgraded.transactions.get('deposit'))?.raw?.exchangeSyncKind).toBe('deposit');
+    expect((await upgraded.transactions.get('withdrawal'))?.raw?.exchangeSyncKind).toBe('withdrawal');
+    expect((await upgraded.transactions.get('unknown'))?.raw?.exchangeSyncKind).toBe('unknown');
+    expect((await upgraded.transactions.get('existing-kind'))?.raw?.exchangeSyncKind).toBe('withdrawal');
+    expect((await upgraded.transactions.get('other-exchange'))?.raw).toEqual({ preserved: true });
+
+    upgraded.close();
+    await Dexie.delete(name);
+  });
+});
 
 describe('Dexie v16 → v17 exact asset safety backfill', () => {
   it('hides all rows for the exact provider-flagged contract and is idempotent on reopen', async () => {
@@ -493,7 +535,7 @@ describe('Dexie v15 B1 and v16 wallet DeFi manifest migrations', () => {
     const { createDb } = await import('@/lib/storage/db');
     const upgraded = createDb(name);
     await upgraded.open();
-    expect(upgraded.verno).toBe(17);
+    expect(upgraded.verno).toBe(18);
     expect(await upgraded.walletDefiRefreshManifests.count()).toBe(0);
     expect(await upgraded.transactions.get('typed-alias')).toMatchObject({
       category: 'staking_reward', categoryOrigin: 'legacy', amount: 1.25,

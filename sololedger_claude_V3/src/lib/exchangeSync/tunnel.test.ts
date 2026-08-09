@@ -119,6 +119,35 @@ describe('installTunnelFetch — request rewriting (contract C1)', () => {
     );
   });
 
+  it('preserves Bitstamp X-Auth v2 headers and signed form bytes', async () => {
+    const target = stubTarget();
+    installTunnelFetch(target, 'bitstamp');
+    apiFetchMock.mockResolvedValue(fakeResponse(200, '[]'));
+    const body = 'limit=1000&since_id=123&sort=asc';
+    await target.fetch('https://www.bitstamp.net/api/v2/user_transactions/', 'POST', {
+      'X-Auth': 'BITSTAMP key',
+      'X-Auth-Signature': 'signature',
+      'X-Auth-Nonce': 'nonce',
+      'X-Auth-Timestamp': '1785888000000',
+      'X-Auth-Version': 'v2',
+      'Content-Type': 'application/x-www-form-urlencoded'
+    }, body);
+    expect(apiFetchMock).toHaveBeenCalledWith(
+      `${EXCHANGE_TUNNEL_BASE}/bitstamp/api/v2/user_transactions/`,
+      expect.objectContaining({
+        method: 'POST', body,
+        headers: {
+          'x-exchange-x-auth': 'BITSTAMP key',
+          'x-exchange-x-auth-signature': 'signature',
+          'x-exchange-x-auth-nonce': 'nonce',
+          'x-exchange-x-auth-timestamp': '1785888000000',
+          'x-exchange-x-auth-version': 'v2',
+          'Content-Type': 'application/x-www-form-urlencoded'
+        }
+      })
+    );
+  });
+
   it('hands ccxt a shim exposing the ORIGINAL exchange url and the raw body', async () => {
     const target = stubTarget();
     installTunnelFetch(target, 'binance');
@@ -183,7 +212,7 @@ describe('installTunnelFetch — relay-error rule (HEADER-ONLY)', () => {
 });
 
 describe('installTunnelFetch — exchange errors pass through to ccxt (never misclassified)', () => {
-  async function realClient(exchangeId: 'binance' | 'coinbase' | 'kraken'): Promise<ExchangeClient> {
+  async function realClient(exchangeId: 'binance' | 'coinbase' | 'kraken' | 'bitstamp'): Promise<ExchangeClient> {
     const ccxt = await loadCcxt();
     const Ctor = ccxt[exchangeId] as new (config: Record<string, unknown>) => ExchangeClient;
     const client = new Ctor({ apiKey: 'k', secret: 'c2VjcmV0' });
@@ -250,6 +279,19 @@ describe('installTunnelFetch — exchange errors pass through to ccxt (never mis
     const err = await client
       .fetch('https://api.kraken.com/0/private/Balance', 'POST', { 'API-Key': 'k', 'API-Sign': 's' }, 'nonce=1')
       .catch((e) => e);
+    expect(err).not.toBeInstanceOf(TunnelError);
+    expect((err as Error).name).toBe('AuthenticationError');
+  });
+
+  it('Bitstamp API0001 without a relay header reaches ccxt as an exchange auth error', async () => {
+    const client = await realClient('bitstamp');
+    apiFetchMock.mockResolvedValue(fakeResponse(
+      403, '{"status":"error","reason":"API key not found","code":"API0001"}'
+    ));
+    const err = await client.fetch(
+      'https://www.bitstamp.net/api/v2/account_balances/', 'POST',
+      { 'X-Auth': 'BITSTAMP key' }, 'foo=bar'
+    ).catch((e) => e);
     expect(err).not.toBeInstanceOf(TunnelError);
     expect((err as Error).name).toBe('AuthenticationError');
   });

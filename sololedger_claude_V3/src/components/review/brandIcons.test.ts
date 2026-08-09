@@ -8,6 +8,7 @@ describe('sourceBrandInfo', () => {
     expect(sourceBrandInfo('wazirx_trades')).toEqual({ id: 'wazirx', label: 'WazirX' });
     expect(sourceBrandInfo('coindcx')).toEqual({ id: 'coindcx', label: 'CoinDCX' });
     expect(sourceBrandInfo('kraken_api').id).toBe('kraken');
+    expect(sourceBrandInfo('bitstamp_api')).toEqual({ id: 'bitstamp', label: 'Bitstamp' });
     expect(sourceBrandInfo('coinswitch')).toEqual({ id: 'coinswitch', label: 'CoinSwitch' });
   });
 

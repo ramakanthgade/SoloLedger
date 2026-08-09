@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -207,6 +207,41 @@ a sync discards any staged preview (with a warning).
   and other non-fill buy/sell economics are covered only through account
   history. This connector never claims account-lifetime coverage or API↔CSV
   deduplication.
+
+
+- Bitstamp uses one mixed `/api/v2/user_transactions/` account ledger for
+  trades, deposits, withdrawals, and other activity. The connector walks it
+  oldest-to-newest with native numeric `since_id`, `sort=asc`, and limit 1000;
+  it never uses `offset`, whose documented maximum of 200,000 cannot prove
+  exhaustive history on larger accounts. Saturation is determined from the
+  raw response count. Pinned CCXT's unified transfer parser is deliberately
+  bypassed: documented type 0/1 rows encode economics in one signed, nonzero
+  dynamic currency field (for example `btc: "0.25"`) and do not provide
+  synthetic `currency`/`amount`; the connector validates that raw decimal,
+  direction, native ID, status, fee, and timestamp directly so sub-unit values
+  cannot be truncated. Saturated pages resume inclusively at the maximum ID
+  with durable consumed type/ID pairs, because trade/deposit/withdrawal kinds
+  can share a numeric ID and a page boundary can split those rows. Failed and
+  canceled transfers are terminal exclusions. Type 2 rows are inspected before
+  CCXT trade parsing: only a raw boolean `self_trade: true` is accepted as a
+  self-trade, and it never creates ordinary acquisition/disposal lots. A
+  strictly valid `self_trade_order_id`, spot market, timestamp, and quote-asset
+  fee retain one standalone fee effect; a proven zero fee is an explicit
+  no-beneficial-ownership-change exclusion. Ambiguous flags, linkage, markets,
+  or fees retain unresolved native-ID replay evidence. Complementary rows are
+  never paired by timestamp/amount heuristics; only immutable linkage could
+  support pairing if a future documented shape proves it end to end.
+  Retry-inclusive request budgets
+  persist that exact native continuation atomically with imported rows. Up to
+  100 pending, malformed, future-dated, or unresolved native IDs replay behind
+  the forward frontier; exceeding that bound fails closed with CSV guidance.
+  The public market response is mixed, so connector callers receive active
+  spot markets only while the complete catalog remains available to identify
+  and exclude confirmed perpetual trades. Unknown symbols remain unresolved,
+  and unsupported mixed-ledger types make coverage partial rather than
+  silently complete. Bitstamp documents no account-lifetime retention
+  guarantee, so endpoint exhaustion remains `retention_unverified` partial
+  coverage and proves only the observed API frontier.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -252,6 +287,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | btcmarkets | native trade `id`, connection + immutable `trade` kind scoped | native transfer `id`, connection + immutable direction scoped |
 | mexc | native trade `id`, scoped by connection + exchange + immutable `trade` kind | withdrawal native `id`; deposits use the exact provider evidence tuple (`txId`/`transHash`, network, coin, time, amount, address, memo, index), scoped by immutable direction; no CSV identity promise |
 | bitvavo | native fill UUID, connection + immutable `trade` kind scoped; unmatched account-history `transactionId` uses immutable `account_history` kind | composite provider evidence, connection + immutable deposit/withdrawal kind scoped |
+| bitstamp | native mixed-ledger `id`, connection + immutable `trade` kind scoped | native mixed-ledger `id`, connection + immutable deposit/withdrawal kind scoped |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -351,6 +387,12 @@ MEXC fixtures carry `mexc/provenance.json` with `_recorded: false`, pinned
 CCXT `4.5.68`, and host `api.mexc.com`. They are schema-faithful hand-authored
 spot v3 shapes, not real-account evidence. The connector remains Beta; full
 read-only real-account validation is deferred and no CSV equivalence is claimed.
+
+Bitstamp fixtures carry `bitstamp/provenance.json` and `_recorded: false`.
+They are schema-faithful hand-authored responses based on the current native
+OpenAPI and CCXT 4.5.68 parser examples. Replay drives the real pinned signing,
+transport, mixed-ledger parsing, spot/perpetual classification, normalization,
+and account-plus-kind identity. No CSV identity collision is invented.
 
 ## Known limitations / caveats
 

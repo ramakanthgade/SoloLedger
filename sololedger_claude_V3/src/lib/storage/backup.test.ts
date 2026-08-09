@@ -802,6 +802,14 @@ describe('importFullBackup', () => {
           feesCurrency: 'EUR', feesAmount: 0.1
         }
       }]
+    }, {
+      id: 'bitstamp-source', exchange: 'bitstamp', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', bitstampNativeCursor: '1000',
+      bitstampPagination: {
+        sinceId: '1200', newest: '1200', consumed: [{ id: '1200', type: '2' }],
+        highWater: { trades: 700, deposits: 800, withdrawals: 900 }
+      },
+      bitstampUnresolvedIds: ['1100']
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -855,6 +863,14 @@ describe('importFullBackup', () => {
         transactionId: 'account-1', timestamp: 3, association: 'resolved_market', symbol: 'BTC/EUR', intervalStart: 1, intervalEnd: 5,
         taskIdentities: ['BTC/EUR|1|5']
       }]
+    });
+    expect(await db.exchangeConnections.get('bitstamp-source')).toMatchObject({
+      credentialsState: 'reauthorization_required', bitstampNativeCursor: '1000',
+      bitstampPagination: {
+        sinceId: '1200', newest: '1200', consumed: [{ id: '1200', type: '2' }],
+        highWater: { trades: 700, deposits: 800, withdrawals: 900 }
+      },
+      bitstampUnresolvedIds: ['1100']
     });
   });
 
@@ -948,6 +964,46 @@ describe('importFullBackup', () => {
     mutate(payload.exchangeConnections[0] as unknown as MutableBitvavoBackupRow);
     await expect(importFullBackup(backupFile(payload))).rejects.toThrow(/Bitvavo/);
   });
+  it.each(['', '01', '-1', 'not-an-id'])(
+    'rejects malformed Bitstamp native cursor %s', async (bitstampNativeCursor) => {
+      await db.exchangeConnections.put({
+        id: 'bitstamp-source', exchange: 'bitstamp', createdAt: 1, cursors: {}, status: 'idle'
+      });
+      const payload = await createFullBackupPayload();
+      payload.exchangeConnections[0].bitstampNativeCursor = bitstampNativeCursor;
+      await expect(importFullBackup(backupFile(payload))).rejects.toThrow('Bitstamp native cursor is malformed');
+    }
+  );
+
+  it.each([
+    { sinceId: '2', newest: '1', consumed: [{ id: '2', type: '0' }], highWater: {} },
+    { sinceId: '2', newest: '2', consumed: [], highWater: {} },
+    { sinceId: '2', newest: '2', consumed: [{ id: '1', type: '0' }], highWater: {} },
+    { sinceId: '2', newest: '2', consumed: [{ id: '2', type: '0' }, { id: '2', type: '0' }], highWater: {} },
+    { sinceId: '2', newest: '2', consumed: [{ id: '2', type: 'bad' }], highWater: {} },
+    { sinceId: '2', newest: '2', consumed: [{ id: '2', type: '0' }], highWater: { trades: -1 } },
+    { sinceId: '2', newest: '2', consumed: [{ id: '2', type: '0' }], highWater: { other: 1 } },
+    { sinceId: '02', newest: '02', consumed: [{ id: '02', type: '0' }], highWater: {} }
+  ])('rejects malformed Bitstamp pagination checkpoint %#', async (bitstampPagination) => {
+    await db.exchangeConnections.put({
+      id: 'bitstamp-source', exchange: 'bitstamp', createdAt: 1, cursors: {}, status: 'idle'
+    });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { bitstampPagination: unknown }).bitstampPagination = bitstampPagination;
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow('Bitstamp pagination checkpoint is malformed');
+  });
+
+  it.each([['01'], ['1', '1'], Array.from({ length: 101 }, (_, i) => String(i))])(
+    'rejects malformed Bitstamp unresolved replay evidence %#', async (bitstampUnresolvedIds) => {
+      await db.exchangeConnections.put({
+        id: 'bitstamp-source', exchange: 'bitstamp', createdAt: 1, cursors: {}, status: 'idle'
+      });
+      const payload = await createFullBackupPayload();
+      (payload.exchangeConnections[0] as unknown as { bitstampUnresolvedIds: unknown })
+        .bitstampUnresolvedIds = bitstampUnresolvedIds;
+      await expect(importFullBackup(backupFile(payload))).rejects.toThrow('Bitstamp unresolved replay evidence is malformed');
+    }
+  );
 
   it.each([
     [],
