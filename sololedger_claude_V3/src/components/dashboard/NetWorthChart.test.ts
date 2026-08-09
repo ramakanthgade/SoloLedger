@@ -34,4 +34,26 @@ describe('chartTimelineTicks', () => {
       process.env.TZ = previous;
     }
   });
+
+  it('formats short-range weekly ticks in the local civil calendar', () => {
+    const previous = process.env.TZ;
+    process.env.TZ = 'America/Los_Angeles';
+    try {
+      const ticks = chartTimelineTicks(
+        new Date(2025, 0, 1).getTime(),
+        new Date(2025, 0, 31, 23, 59, 59, 999).getTime(),
+        'US'
+      );
+      for (const tick of ticks) {
+        const instant = new Date(
+          new Date(2025, 0, 1).getTime() + tick.frac * (
+            new Date(2025, 0, 31, 23, 59, 59, 999).getTime() - new Date(2025, 0, 1).getTime()
+          )
+        );
+        expect(tick.label).toBe(`Jan ${instant.getDate()}`);
+      }
+    } finally {
+      process.env.TZ = previous;
+    }
+  });
 });

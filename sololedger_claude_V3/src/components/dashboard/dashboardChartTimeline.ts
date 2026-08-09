@@ -20,10 +20,13 @@ export function chartTimelineTicks(
     const first = Math.ceil(start / step) * step;
     const ticks: ChartTimelineTick[] = [];
     for (let t = first; t < end; t += step) {
-      const date = new Date(t);
+      const india = jurisdiction === 'IN';
+      const date = new Date(india ? t + IST_OFFSET_MS : t);
+      const monthIndex = india ? date.getUTCMonth() : date.getMonth();
+      const day = india ? date.getUTCDate() : date.getDate();
       ticks.push({
         frac: (t - start) / span,
-        label: `${MONTHS_SHORT[date.getUTCMonth()]} ${date.getUTCDate()}`
+        label: `${MONTHS_SHORT[monthIndex]} ${day}`
       });
     }
     return ticks;
