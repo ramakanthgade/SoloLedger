@@ -353,6 +353,35 @@ describe('buildHoldingsProjection', () => {
     expect(hidden.allHoldings[0]).toMatchObject({ asset: 'AWBTC', safetyState: 'user_hidden' });
   });
 
+  it.each([
+    ['aEthUSDC', '0xbcca60bb61934080951369a648fb03df4f96263c'],
+    ['BUSD', '0x4fabb145d64652a948d72533023f6e7a623c7c53']
+  ] as const)('keeps positive exact Ethereum %s custody trusted unless the user hides it', (asset, contract) => {
+    const mixedCaseContract = `0x${contract.slice(2).toUpperCase()}`;
+    const walletTx = tx({
+      source: 'rpc:moralis', chain: 'ethereum', walletAddress: '0xabc', asset,
+      contractAddress: mixedCaseContract, amount: 7
+    });
+    const automaticDecision = {
+      subjectKey: `asset:ethereum:${contract}`, state: 'high_confidence_spam' as const,
+      updatedAt: NOW, origin: 'automatic' as const
+    };
+    const visible = buildHoldingsProjection(input({
+      exchangeConnections: [], transactions: [walletTx], safetyDecisions: [automaticDecision]
+    }));
+    expect(visible.holdings).toEqual([expect.objectContaining({
+      asset, quantity: 7, contractAddress: mixedCaseContract, safetyState: 'trusted'
+    })]);
+
+    const hidden = buildHoldingsProjection(input({
+      exchangeConnections: [], transactions: [walletTx], safetyDecisions: [{
+        ...automaticDecision, state: 'user_hidden', origin: 'user'
+      }]
+    }));
+    expect(hidden.holdings).toEqual([]);
+    expect(hidden.allHoldings[0]).toMatchObject({ asset, quantity: 7, safetyState: 'user_hidden' });
+  });
+
   it('preserves wallet contract identity, Base58 case, and native SOL separation', () => {
     const wallet = 'Base58Wallet';
     const result = buildHoldingsProjection(input({

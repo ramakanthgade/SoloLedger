@@ -323,6 +323,8 @@ export interface CurrentContractPriceRequest {
   platform: string;
 }
 
+const CURRENT_CONTRACT_PRICE_BATCH_SIZE = 30;
+
 /** Current marks keyed by an exact contract address; never resolves by ticker. */
 export async function fetchCurrentContractPrices(
   requests: CurrentContractPriceRequest[],
@@ -330,27 +332,54 @@ export async function fetchCurrentContractPrices(
   coingeckoApiKey?: string
 ): Promise<CurrentPriceResult[]> {
   const currency = fiatCurrency.toLowerCase();
-  const results: CurrentPriceResult[] = [];
-  for (const { contractAddress, platform } of requests) {
-    const address = contractAddress.trim().toLowerCase();
+  const normalized = requests.map(({ contractAddress, platform }) => ({
+    address: contractAddress.trim().toLowerCase(), platform
+  }));
+  const results = new Map<string, CurrentPriceResult>();
+  const byPlatform = new Map<string, Map<string, number>>();
+  normalized.forEach(({ address, platform }, index) => {
+    const addresses = byPlatform.get(platform) ?? new Map<string, number>();
+    if (!addresses.has(address)) addresses.set(address, index);
+    byPlatform.set(platform, addresses);
+  });
+  // CoinGecko's endpoint is natively multi-contract. One request per platform
+  // avoids spending the public/relay rate budget on each held token separately
+  // (which could leave later genuine assets, such as Ethereum ZRO, unpriced).
+  const batches = [...byPlatform].flatMap(([platform, addressIndexes]) => {
+    const entries = [...addressIndexes];
+    return Array.from({ length: Math.ceil(entries.length / CURRENT_CONTRACT_PRICE_BATCH_SIZE) }, (_, index) => ({
+      platform,
+      addresses: entries.slice(
+        index * CURRENT_CONTRACT_PRICE_BATCH_SIZE,
+        (index + 1) * CURRENT_CONTRACT_PRICE_BATCH_SIZE
+      ).map(([address]) => address),
+      firstInputIndex: entries[index * CURRENT_CONTRACT_PRICE_BATCH_SIZE][1]
+    }));
+  }).sort((left, right) => left.firstInputIndex - right.firstInputIndex);
+  for (const { platform, addresses } of batches) {
     try {
       const base = coingeckoBase(coingeckoApiKey);
-      const url = `${base}/simple/token_price/${encodeURIComponent(platform)}?contract_addresses=${encodeURIComponent(address)}&vs_currencies=${encodeURIComponent(currency)}`;
+      const url = `${base}/simple/token_price/${encodeURIComponent(platform)}?contract_addresses=${encodeURIComponent(addresses.join(','))}&vs_currencies=${encodeURIComponent(currency)}`;
       const res = await fetchWithRetry(url, coingeckoHeaders(coingeckoApiKey));
       if (!res.ok) {
-        results.push({ asset: address, platform, price: null, currency: fiatCurrency, error: `Price API returned ${res.status} for contract lookup` });
+        for (const address of addresses) results.set(`${platform}:${address}`, {
+          asset: address, platform, price: null, currency: fiatCurrency,
+          error: `Price API returned ${res.status} for contract lookup`
+        });
         continue;
       }
       const data = await res.json() as Record<string, Record<string, number | undefined> | undefined>;
-      results.push({ asset: address, platform, price: data[address]?.[currency] ?? null, currency: fiatCurrency });
-    } catch (err) {
-      results.push({
-        asset: address, platform, price: null, currency: fiatCurrency,
-        error: err instanceof Error ? err.message : 'Network request failed.'
+      for (const address of addresses) results.set(`${platform}:${address}`, {
+        asset: address, platform, price: data[address]?.[currency] ?? null, currency: fiatCurrency
       });
+    } catch (err) {
+      for (const address of addresses) results.set(`${platform}:${address}`, {
+          asset: address, platform, price: null, currency: fiatCurrency,
+          error: err instanceof Error ? err.message : 'Network request failed.'
+        });
     }
   }
-  return results;
+  return normalized.map(({ address, platform }) => results.get(`${platform}:${address}`)!);
 }
 
 export interface PriceLookupResult {
