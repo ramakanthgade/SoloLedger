@@ -57,6 +57,7 @@ describe('loadCcxt', () => {
     expect(typeof a.mexc).toBe('function');
     expect(typeof a.bitvavo).toBe('function');
     expect(typeof a.bitget).toBe('function');
+    expect(typeof a.bitmart).toBe('function');
   });
 });
 
@@ -88,6 +89,21 @@ describe('createExchangeClient', () => {
       const client = await createExchangeClient(row({ exchange, passphrase: 'phrase' }));
       expect((client as unknown as Record<string, unknown>).password).toBe('phrase');
     }
+  });
+
+  it('maps BitMart Memo → ccxt uid and replaces mixed market loading with the spot method', async () => {
+    const client = await createExchangeClient(row({ exchange: 'bitmart', passphrase: 'api-memo' }));
+    const raw = client as unknown as {
+      uid?: string; password?: string; options: Record<string, unknown>; has: Record<string, unknown>;
+      fetchMarkets: unknown; fetchSpotMarkets: unknown; requiredCredentials: Record<string, boolean>;
+    };
+    expect(raw.uid).toBe('api-memo');
+    expect(raw.password).toBeUndefined();
+    expect(raw.options).toMatchObject({ defaultType: 'spot', fetchCurrencies: false });
+    expect(raw.has.fetchCurrencies).toBe(false);
+    expect(raw.fetchMarkets).not.toBe(Object.getPrototypeOf(client).fetchMarkets);
+    expect(typeof raw.fetchSpotMarkets).toBe('function');
+    expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, uid: true });
   });
 
   it('configures Bybit as spot-only without signed currency discovery', async () => {
@@ -386,6 +402,19 @@ describe('classifySyncError', () => {
     expect(classifySyncError(new ExchangeNotAvailable('boom'))).toBe('network');
   });
 
+  it('maps only BitMart known 30002 and missing X-BM-KEY responses to invalid_key', () => {
+    const actual = new Error(
+      'bitmart GET https://api-cloud.bitmart.com/account/v1/wallet 401 {"code":30002,"message":"Header X-BM-KEY not found"}'
+    );
+    expect(classifySyncError(actual, 'bitmart')).toBe('invalid_key');
+    expect(classifySyncError(new Error('code=30002'), 'bitmart')).toBe('invalid_key');
+    expect(classifySyncError(new Error('Header X-BM-KEY not found'), 'bitmart')).toBe('invalid_key');
+
+    expect(classifySyncError(actual, 'binance')).toBe('unknown');
+    expect(classifySyncError(new Error('HTTP 401 missing authorization header'), 'bitmart')).toBe('unknown');
+    expect(classifySyncError(new Error('code=30003'), 'bitmart')).toBe('unknown');
+  });
+
   it.each([
     'not_hosted',
     'relay_auth',
@@ -412,6 +441,9 @@ describe('syncErrorMessage', () => {
     expect(syncErrorMessage('relay_auth', 'kraken')).toContain('sign in');
     expect(syncErrorMessage('invalid_key', 'gateio')).toContain('Gate.io');
     expect(syncErrorMessage('invalid_key', 'htx')).toContain('HTX');
+    expect(syncErrorMessage('invalid_key', 'bitmart')).toBe(
+      'API key or secret rejected by BitMart — check the key and try again.'
+    );
   });
 
   it('region_blocked copy points users at CSV import', () => {

@@ -207,6 +207,12 @@ const TIER2 = [
     probe: 'GET /api/v2/public/time',
     path: '/api/v2/public/time',
     check: isBitgetPublicTimeResponse
+  },
+  {
+    exchange: 'bitmart',
+    probe: 'GET /system/time',
+    path: '/system/time',
+    check: (r, json) => r.status === 200 && json?.code === 1000 && Number.isFinite(Number(json?.data?.server_time))
   }
 ];
 
@@ -576,6 +582,30 @@ const tier3 = [
       };
     },
     check: isBitgetInvalidAccessKeyResponse
+  },
+  {
+    exchange: 'bitmart',
+    probe: 'POST /spot/v4/query/trades (X-BM-SIGN with API Memo)',
+    build() {
+      const apiKey = 'dummy-bitmart-key';
+      const secret = 'dummy-bitmart-secret';
+      const memo = 'dummy-bitmart-memo';
+      const timestamp = Date.now().toString();
+      const body = JSON.stringify({ limit: 1 });
+      const signature = hmacHex('sha256', secret, `${timestamp}#${memo}#${body}`);
+      return {
+        path: '/spot/v4/query/trades', method: 'POST', body, contentType: 'application/json',
+        exchangeHeaders: {
+          'x-bm-key': apiKey,
+          'x-bm-timestamp': timestamp,
+          'x-bm-sign': signature,
+          'x-bm-broker-id': 'CCXTxBitmart000'
+        }
+      };
+    },
+    // Unknown-key is distinctive and proves the signed POST/auth headers
+    // reached BitMart. Fixture transport tests prove exact body preservation.
+    check: (r) => r.status === 401 && /"code"\s*:\s*30002/.test(r.text) && /X-BM-KEY not found/i.test(r.text)
   }
 ];
 

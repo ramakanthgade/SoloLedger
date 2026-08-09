@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget, bitmart** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -66,6 +66,12 @@ UI → syncJob (single-slot job store)
 rule: only one sync at a time (the slot is claimed **synchronously** before
 any await, so a same-tick second call no-ops with a warning), and starting
 a sync discards any staged preview (with a warning).
+
+The hosted relay accepts only the exchange-specific allowlisted methods and
+paths at `GET/POST /api/proxy/exchange/<id>/<path>` (JWT and active-subscription
+gated). BitMart is limited to its public spot catalog/time endpoints and signed
+read-only spot wallet, fund-history, and trade-history calls; the browser never
+contacts BitMart directly.
 
 ## Cursors, windows, budgets (§B-3)
 
@@ -263,6 +269,21 @@ a sync discards any staged preview (with a warning).
   only 90 days on these API history surfaces: retain spot fill/order and wallet
   exports for older tax records. Export/API native-ID parity is unverified, so
   CSV auto-deduplication is not promised.
+- BitMart spot history is newest-first without a native page token. Trades use
+  `POST /spot/v4/query/trades` at limit 200; deposits and withdrawals use
+  `GET /account/v2/deposit-withdraw/history` at native `N=1000`. Each phase
+  walks backward with an inclusive `endTime`, deduplicates overlap by the
+  provider's native ID, and atomically stores `{start,end,cursor}` when the
+  retry-inclusive 8,000-request budget interrupts the walk. A full page that
+  cannot move to an older millisecond fails closed rather than subtracting a
+  millisecond and hiding same-timestamp rows. Pending, malformed, or
+  future-dated activity retains per-kind timestamp replay evidence until it
+  settles, becomes terminal, or normalizes safely. The connector clamps every
+  scan to the current rolling 90-day (approximately three-month) retention
+  boundary; an unfinished frozen range that ages beyond the boundary is
+  discarded with partial-coverage/export guidance. Older spot trades and fund
+  records require BitMart exports. No verified BitMart CSV identity mapping
+  exists, so export rows are not auto-merged with API rows.
 - The initial (cursorless) scan is floored at each exchange's launch date
   (`EXCHANGE_LAUNCH_MS`) — nothing can predate the exchange itself, and
   6.5-day windows from the unix epoch would need thousands of requests.
@@ -310,6 +331,7 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | bitvavo | native fill UUID, connection + immutable `trade` kind scoped; unmatched account-history `transactionId` uses immutable `account_history` kind | composite provider evidence, connection + immutable deposit/withdrawal kind scoped |
 | bitstamp | native mixed-ledger `id`, connection + immutable `trade` kind scoped | native mixed-ledger `id`, connection + immutable deposit/withdrawal kind scoped |
 | bitget | native `tradeId`, connection + immutable `trade` kind scoped; no promised CSV collision | native `orderId`, connection + immutable deposit/withdrawal kind scoped; no promised CSV collision |
+| bitmart | native `tradeId`, connection + immutable `trade` kind scoped | native `deposit_id` / `withdraw_id`, connection + immutable direction scoped; no CSV collision is manufactured |
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -415,6 +437,14 @@ They are schema-faithful hand-authored responses based on the current native
 OpenAPI and CCXT 4.5.68 parser examples. Replay drives the real pinned signing,
 transport, mixed-ledger parsing, spot/perpetual classification, normalization,
 and account-plus-kind identity. No CSV identity collision is invented.
+BitMart fixtures carry `bitmart/provenance.json` and `_recorded: false`. They
+are schema-faithful sanitized transcriptions of official examples replayed
+through pinned CCXT 4.5.68. They prove Memo signing, request methods/paths,
+spot parser behavior, and the connector's scoped API replay identity; they are
+not live-account recordings and do not establish CSV identity parity. BitMart's
+API Memo is stored in the existing third-credential field and mapped to CCXT
+`uid` (never `password`). Market loading is genuinely spot-only by replacing
+CCXT's mixed `fetchMarkets` with `fetchSpotMarkets` and disabling currencies.
 
 ## Known limitations / caveats
 
@@ -523,6 +553,14 @@ and account-plus-kind identity. No CSV identity collision is invented.
     older records before they age out. SoloLedger currently has no MEXC CSV
     parser and does not promise API/CSV deduplication. Real-account validation
     is deferred; fixtures and dummy-key relay probes do not replace it.
+19. **BitMart is retention-limited and API-only for identity** — only the
+    current approximately three months are requested. Export older spot trades
+    and deposit/withdrawal records before they roll out of the API. Because no
+    BitMart export schema has been verified against native API IDs, imported
+    export rows may coexist with API rows and require review. The Memo is an API
+    credential used as CCXT `uid`, not the BitMart login password. Only active
+    spot markets and settled transfers import; pinned CCXT's unified withdrawal
+    type `withdraw` is recognized only inside the BitMart normalizer.
 
 ## Adding an exchange?
 

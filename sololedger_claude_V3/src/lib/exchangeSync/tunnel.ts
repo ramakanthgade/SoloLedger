@@ -59,6 +59,26 @@ interface RestResponseShim {
   text(): Promise<string>;
 }
 
+/**
+ * BitMart sometimes returns its documented 30002 auth error with `msg` while
+ * pinned CCXT 4.5.68 assumes `message` exists and crashes in handleErrors with
+ * an unclassifiable TypeError. Repair only this known credential-error shape;
+ * all other exchange bodies remain byte-for-byte untouched.
+ */
+function normalizeBitmartInvalidKeyBody(exchangeId: string, text: string): string {
+  if (exchangeId !== 'bitmart') return text;
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown; msg?: unknown; message?: unknown };
+    const code = String(parsed.code ?? '');
+    const msg = typeof parsed.msg === 'string' ? parsed.msg : '';
+    const knownMissingKey = code === '30002' || /header\s+X-BM-KEY\s+not\s+found/i.test(msg);
+    if (!knownMissingKey || typeof parsed.message === 'string') return text;
+    return JSON.stringify({ ...parsed, message: msg || 'Header X-BM-KEY not found' });
+  } catch {
+    return text;
+  }
+}
+
 /** Structural shape of the ccxt exchange instance this module patches. */
 export interface TunnelFetchTarget {
   fetch(url: string, method?: string, headers?: Record<string, string>, body?: string): Promise<unknown>;
@@ -143,11 +163,12 @@ export function installTunnelFetch(exchange: TunnelFetchTarget, exchangeId: stri
       throw new TunnelError('relay_unavailable');
     }
 
+    const text = normalizeBitmartInvalidKeyBody(exchangeId, await res.text());
     const shim: RestResponseShim = {
       status: res.status,
       statusText: res.statusText,
       headers: res.headers,
-      text: () => res.text()
+      text: async () => text
     };
     return exchange.handleRestResponse(shim, url, method, headers, body);
   };

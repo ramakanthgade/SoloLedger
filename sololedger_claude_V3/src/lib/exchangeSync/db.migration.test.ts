@@ -107,6 +107,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'binance_api',
       'bitfinex_api',
       'bitget_api',
+      'bitmart_api',
       'bitstamp_api',
       'bitvavo_api',
       'btcmarkets_api',

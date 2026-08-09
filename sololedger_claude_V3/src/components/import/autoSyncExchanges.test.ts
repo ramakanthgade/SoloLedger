@@ -6,19 +6,21 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  * The auto-sync catalog drives the AddConnectionForm picker — its ids must
  * stay exactly the ccxt exchange ids (contract C3 `SYNC_EXCHANGES`), and
  * `needsPassphrase` follows CCXT requiredCredentials.password.
+ * `needsPassphrase` marks a third credential: OKX/KuCoin password and
+ * BitMart's required API Memo (`uid` in pinned CCXT).
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(16);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(17);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
     expect(AUTO_SYNC_EXCHANGES.map((e) => e.id)).toEqual([...SYNC_EXCHANGES]);
   });
 
-  it('needsPassphrase is true ONLY for okx, kucoin and bitget', () => {
+  it('requires a third credential only for bitget, bitmart, kucoin and okx', () => {
     const withPassphrase = AUTO_SYNC_EXCHANGES.filter((e) => e.needsPassphrase).map((e) => e.id);
-    expect(withPassphrase.sort()).toEqual(['bitget', 'kucoin', 'okx']);
+    expect(withPassphrase.sort()).toEqual(['bitget', 'bitmart', 'kucoin', 'okx']);
   });
 
   it('monograms are two characters', () => {
@@ -54,6 +56,8 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('gemini')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('mexc')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('bitvavo')?.needsPassphrase).toBe(false);
+    expect(getAutoSyncExchange('bitget')?.needsPassphrase).toBe(true);
+    expect(getAutoSyncExchange('bitmart')?.extraCredentialLabel).toBe('Memo');
     expect(getAutoSyncExchange(null)).toBeUndefined();
     expect(getAutoSyncExchange('nope')).toBeUndefined();
   });
@@ -136,5 +140,14 @@ describe('autoSyncExchanges catalog', () => {
     const bitget = getAutoSyncExchange('bitget')!;
     expect(bitget.needsPassphrase).toBe(true);
     expect(bitget.keyInstructions.join(' ')).toMatch(/Passphrase.*Read-only.*Never enable.*90 days.*retain.*exports.*not verified.*scoped.*does not promise CSV auto-deduplication/i);
+  });
+
+  it('documents BitMart Memo, read-only scope and rolling export boundary', () => {
+    const bitmart = getAutoSyncExchange('bitmart')!;
+    expect(bitmart.formatHint).toMatch(/Memo/i);
+    expect(bitmart.keyInstructions.join(' ')).toMatch(/Read-Only.*Never enable.*Spot-Trade.*Withdraw/i);
+    expect(bitmart.keyInstructions.join(' ')).toMatch(/approximately three months.*Export older.*no verified BitMart CSV identity.*not auto-merge/i);
+    expect(bitmart.needsPassphrase).toBe(true);
+    expect(bitmart.extraCredentialLabel).toBe('Memo');
   });
 });

@@ -83,7 +83,7 @@ const savedView: ExchangeConnectionView = {
 };
 
 async function renderForm(
-  exchangeId: 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' = 'binance',
+  exchangeId: 'binance' | 'coinbase' | 'kraken' | 'okx' | 'kucoin' | 'bitmart' = 'binance',
   props: { mode?: 'connect' | 'reauthorize'; existingId?: string } = {}
 ) {
   const onConnected = vi.fn();
@@ -188,6 +188,14 @@ describe('ExchangeConnectStep — credential fields per exchange', () => {
     expect(screen.getByLabelText(/Passphrase/)).toBeInTheDocument();
   });
 
+  it('labels BitMart third credential as Memo and explains its signing use', async () => {
+    await renderForm('bitmart');
+    expect(screen.getByLabelText(/^Memo/)).toBeInTheDocument();
+    expect(screen.getByText(/BitMart calls this the API Memo; CCXT uses it to sign every private request/i))
+      .toBeInTheDocument();
+    expect(screen.queryByLabelText(/Passphrase/)).not.toBeInTheDocument();
+  });
+
   it('orders instructions, docs, label, key, secret and passphrase before actions', async () => {
     await renderForm('okx');
     const ordered = [
@@ -276,6 +284,22 @@ describe('ExchangeConnectStep — test-gated Connect (ported from AddConnectionF
     expect(screen.getByRole('button', { name: /connect securely/i })).toBeDisabled();
     expect(mocks.addConnection).not.toHaveBeenCalled();
     expect(onConnected).not.toHaveBeenCalled();
+  });
+
+  it('shows BitMart invalid-key copy from the connection test', async () => {
+    mocks.testConnection.mockResolvedValue({
+      ok: false,
+      error: 'API key or secret rejected by BitMart — check the key and try again.'
+    });
+    await renderForm('bitmart');
+
+    fillCredentials();
+    fireEvent.change(screen.getByLabelText(/API Memo/), { target: { value: 'memo-789' } });
+    fireEvent.click(screen.getByRole('button', { name: /test connection/i }));
+
+    expect(await screen.findByText(/API key or secret rejected by BitMart/)).toBeInTheDocument();
+    expect(screen.queryByText(/Something went wrong while syncing BitMart/)).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /connect securely/i })).toBeDisabled();
   });
 
   it('passphrase exchanges require the passphrase before Test/Connect unlock', async () => {

@@ -51,7 +51,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   mexc: 'exmx',
   bitvavo: 'exbv',
   bitstamp: 'exbs',
-  bitget: 'exbg'
+  bitget: 'exbg',
+  bitmart: 'exmt'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -143,6 +144,8 @@ function tradeSourceRef(
     case 'bitget':
       // No verified Bitget CSV identity contract. Native tradeId is the only
       // safe fill identity; storage scopes it to the connection and kind.
+      return trade.id;
+    case 'bitmart':
       return trade.id;
   }
 }
@@ -236,7 +239,7 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'bitmart'
         ? { exchangeSyncKind: 'trade' as const }
         : {}),
       ...(exchange === 'bitvavo' ? { bitvavoMarketSymbol: market.symbol } : {})
@@ -687,6 +690,7 @@ function transferSourceRef(
     case 'bitstamp':
       return transfer.id ?? exchangeSourceRef('bitstamp-api', ts, type, asset, amount);
     case 'bitget':
+    case 'bitmart':
       return transfer.id;
   }
 }
@@ -760,7 +764,7 @@ export function cryptocomTransferDisposition(
  * (status !== 'ok' → counted as skippedUnsettled by the engine) or invalid.
  */
 export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfer): Transaction | null {
-  const infoType = transfer.info?.type;
+  const infoType = transfer.info?.type ?? transfer.info?.operation_type;
   const geminiType = exchange === 'gemini' && typeof infoType === 'string' ? infoType.toLowerCase() : undefined;
   let type: TxType | null =
     transfer.type === 'deposit' ? 'transfer_in' : transfer.type === 'withdrawal' ? 'transfer_out' : null;
@@ -776,6 +780,13 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
   if (exchange === 'bitget') {
     if (infoType === 'withdraw') type = 'transfer_out';
     else if (infoType === 'deposit') type = 'transfer_in';
+  }
+  // Pinned CCXT 4.5.68 emits BitMart's raw operation_type as unified
+  // `withdraw`, not the standard `withdrawal`. Keep this compatibility map
+  // strictly connector-scoped so other exchanges remain fail-closed.
+  if (exchange === 'bitmart') {
+    if (infoType === 'deposit') type = 'transfer_in';
+    else if (infoType === 'withdraw' || transfer.type === 'withdraw') type = 'transfer_out';
   }
   const isGeminiAdjustment = geminiType === 'reward' || geminiType === 'admincredit' || geminiType === 'admindebit';
   if ((!type && !isGeminiAdjustment) || !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status)) return null;
@@ -820,6 +831,9 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     };
   }
   if (!type) return null;
+  // BitMart's deposit `arrival_amount` is already net of its reported fee.
+  // Emitting a separate fee posting would subtract that fee a second time.
+  const postFee = !(exchange === 'bitmart' && type === 'transfer_in');
 
   return {
     id: makeId(ID_PREFIX[exchange]),
@@ -827,8 +841,8 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
     type,
     asset,
     amount,
-    feeAmount: feeCost != null && feeCost > 0 ? feeCost : undefined,
-    feeAsset: feeCost != null && feeCost > 0 ? feeAsset : undefined,
+    feeAmount: postFee && feeCost != null && feeCost > 0 ? feeCost : undefined,
+    feeAsset: postFee && feeCost != null && feeCost > 0 ? feeAsset : undefined,
     fiatCurrency: 'USD',
     fiatValue: undefined,
     source: `${exchange}_api`,
@@ -846,7 +860,10 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget' ? {
+      ...(exchange === 'bitmart' && type === 'transfer_in' && feeCost != null && feeCost > 0
+        ? { providerFee: { amount: feeCost, asset: feeAsset, includedInAmount: true } }
+        : {}),
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitget' || exchange === 'bitmart' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

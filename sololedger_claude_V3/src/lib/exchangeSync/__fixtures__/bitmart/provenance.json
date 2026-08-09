@@ -1,0 +1,4 @@
+{
+  "_recorded": false,
+  "_note": "Schema-faithful, sanitized transcriptions of BitMart spot API examples, replayed through pinned CCXT 4.5.68. No live account or export was available; these fixtures prove parser/signing/transport behavior, not CSV identity parity."
+}

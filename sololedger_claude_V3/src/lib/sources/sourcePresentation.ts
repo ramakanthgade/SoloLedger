@@ -38,7 +38,7 @@ export interface SourcePresentationRows {
 const EXACT_PROVIDER_LABELS: Readonly<Record<string, string>> = {
   binance: 'Binance', coinbase: 'Coinbase', kraken: 'Kraken', okx: 'OKX', kucoin: 'KuCoin',
   bitfinex: 'Bitfinex', bybit: 'Bybit', coindcx: 'CoinDCX', coinswitch: 'CoinSwitch',
-  cryptocom: 'Crypto.com', gateio: 'Gate.io', gemini: 'Gemini', htx: 'HTX', btcmarkets: 'BTC Markets', bitvavo: 'Bitvavo', bitget: 'Bitget',
+  cryptocom: 'Crypto.com', gateio: 'Gate.io', gemini: 'Gemini', htx: 'HTX', btcmarkets: 'BTC Markets', bitvavo: 'Bitvavo', bitget: 'Bitget', bitmart: 'BitMart',
   hyperliquid: 'Hyperliquid', mudrex: 'Mudrex', wazirx: 'WazirX', zebpay: 'ZebPay',
   metamask: 'MetaMask', trustwallet: 'Trust Wallet', ledger: 'Ledger', phantom: 'Phantom', trezor: 'Trezor'
 };

@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "GET /account/v2/deposit-withdraw/history?operation_type=withdraw official-example shape. Exercises pinned CCXT unified type 'withdraw'.",
+  "response": {"message":"OK","code":1000,"trace":"fixture-withdrawals","data":{"records":[
+    {"withdraw_id":"bm-transfer-2","deposit_id":"","operation_type":"withdraw","currency":"BTC-BTC","apply_time":1749254401000,"arrival_amount":"0.05","fee":"0.0001","status":3,"address":"bc1qdestination","address_memo":"","tx_id":"fixture-withdraw-hash"},
+    {"withdraw_id":"bm-failed-1","deposit_id":"","operation_type":"withdraw","currency":"ETH-ERC20","apply_time":1749254400000,"arrival_amount":"0.2","fee":"0.001","status":5,"address":"0xdestination","address_memo":"","tx_id":""}
+  ]}}
+}

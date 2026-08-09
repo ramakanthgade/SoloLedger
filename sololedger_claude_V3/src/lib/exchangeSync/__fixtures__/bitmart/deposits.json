@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "GET /account/v2/deposit-withdraw/history?operation_type=deposit official-example shape, newest first.",
+  "response": {"message":"OK","code":1000,"trace":"fixture-deposits","data":{"records":[
+    {"withdraw_id":"","deposit_id":"bm-transfer-1","operation_type":"deposit","currency":"BTC-BTC","apply_time":1749340801000,"arrival_amount":"0.5","fee":"0.001","status":3,"address":"bc1qfixture","address_memo":"","tx_id":"fixture-deposit-hash"},
+    {"withdraw_id":"","deposit_id":"bm-pending-1","operation_type":"deposit","currency":"ETH-ERC20","apply_time":1749340800000,"arrival_amount":"1","fee":"0","status":2,"address":"0xfixture","address_memo":"","tx_id":""}
+  ]}}
+}

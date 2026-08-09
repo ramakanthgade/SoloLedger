@@ -1,0 +1,10 @@
+{
+  "_recorded": false,
+  "_note": "POST /spot/v4/query/trades official-example shape, newest first.",
+  "response": {"code":1000,"message":"success","data":[
+    {"tradeId":"bm-trade-3","orderId":"bm-order-3","clientOrderId":"bm-order-3","symbol":"ETH_BTC","side":"buy","orderMode":"spot","type":"market","price":"0.05","size":"1","notional":"0.05","fee":"0.001","feeCoinName":"ETH","tradeRole":"taker","createTime":1749427203000,"updateTime":1749427203000},
+    {"tradeId":"bm-trade-2","orderId":"bm-order-2","clientOrderId":"bm-order-2","symbol":"BTC_USDT","side":"sell","orderMode":"spot","type":"limit","price":"105000","size":"0.1","notional":"10500","fee":"10.5","feeCoinName":"USDT","tradeRole":"maker","createTime":1749427202000,"updateTime":1749427202000},
+    {"tradeId":"bm-trade-1","orderId":"bm-order-1","clientOrderId":"bm-order-1","symbol":"BTC_USDT","side":"buy","orderMode":"spot","type":"limit","price":"100000","size":"0.25","notional":"25000","fee":"25","feeCoinName":"USDT","tradeRole":"taker","createTime":1749427201000,"updateTime":1749427201000},
+    {"tradeId":"bm-margin-1","orderId":"bm-margin-order-1","clientOrderId":"bm-margin-order-1","symbol":"BTC_USDT","side":"buy","orderMode":"iso_margin","type":"limit","price":"99000","size":"0.1","notional":"9900","fee":"9.9","feeCoinName":"USDT","tradeRole":"taker","createTime":1749427200000,"updateTime":1749427200000}
+  ],"trace":"fixture-trades"}
+}

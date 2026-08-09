@@ -153,7 +153,8 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   mexc: 'MEXC',
   bitvavo: 'Bitvavo',
   bitstamp: 'Bitstamp',
-  bitget: 'Bitget'
+  bitget: 'Bitget',
+  bitmart: 'BitMart'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -186,8 +187,11 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     enableRateLimit: true,
     timeout: 30_000
   };
-  if (row.passphrase) config.password = row.passphrase;
-  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini' || exchangeId === 'btcmarkets' || exchangeId === 'mexc' || exchangeId === 'bitvavo' || exchangeId === 'bitstamp' || exchangeId === 'bitget') {
+  if (row.passphrase) {
+    if (exchangeId === 'bitmart') config.uid = row.passphrase;
+    else config.password = row.passphrase;
+  }
+  if (exchangeId === 'binance' || exchangeId === 'okx' || exchangeId === 'bybit' || exchangeId === 'gateio' || exchangeId === 'htx' || exchangeId === 'cryptocom' || exchangeId === 'bitfinex' || exchangeId === 'gemini' || exchangeId === 'btcmarkets' || exchangeId === 'mexc' || exchangeId === 'bitvavo' || exchangeId === 'bitstamp' || exchangeId === 'bitget' || exchangeId === 'bitmart') {
     // Spot-only scope: defaultType alone is NOT enough — ccxt's loadMarkets
     // otherwise also fetches linear/inverse (binance: fapi/dapi hosts, which
     // the relay's spot-only host map would reject; okx: 4x the instrument
@@ -277,6 +281,8 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
                 // connector intentionally uses classic spot v2 only.
                 uta: false
               }
+            : exchangeId === 'bitmart'
+              ? { defaultType: 'spot', fetchCurrencies: false }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -324,7 +330,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     config.enableLastJsonResponse = true;
     config.enableLastResponseHeaders = true;
   }
-  if (exchangeId === 'mexc' || exchangeId === 'bitstamp' || exchangeId === 'bitget') {
+  if (exchangeId === 'mexc' || exchangeId === 'bitstamp' || exchangeId === 'bitget' || exchangeId === 'bitmart') {
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
   }
@@ -357,6 +363,11 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
       exchange.markets = spots;
       return spots;
     };
+  }
+  if (exchangeId === 'bitmart') {
+    // CCXT 4.5.68's BitMart fetchMarkets() also requests contracts.
+    const raw = exchange as unknown as { fetchMarkets: (params?: Record<string, unknown>) => Promise<unknown>; fetchSpotMarkets: (params?: Record<string, unknown>) => Promise<unknown> };
+    raw.fetchMarkets = raw.fetchSpotMarkets.bind(exchange);
   }
   if (exchangeId === 'bitfinex') {
     // Bitfinex defaults its public v2 URL to api-pub.bitfinex.com. Keep both
@@ -432,7 +443,7 @@ export function hasErrorName(err: unknown, ...names: string[]): boolean {
  * ccxt error classes map to their bucket (subclass-aware, so e.g.
  * AccountSuspended → invalid_key via its AuthenticationError parent).
  */
-export function classifySyncError(err: unknown): SyncErrorKind {
+export function classifySyncError(err: unknown, exchange?: ExchangeId): SyncErrorKind {
   if (err instanceof TunnelError) return err.kind;
   if (hasErrorName(err, 'AccountNotEnabled', 'PermissionDenied')) return 'permission';
   if (hasErrorName(err, 'AuthenticationError')) return 'invalid_key';
@@ -444,6 +455,14 @@ export function classifySyncError(err: unknown): SyncErrorKind {
   const message = err instanceof Error ? err.message : String(err ?? '');
   if (/\b10072\b|api key info invalid/i.test(message)) return 'invalid_key';
   if (/restricted location/i.test(message)) return 'region_blocked';
+  // BitMart can surface a missing/rejected API key as a generic ExchangeError
+  // instead of ccxt AuthenticationError. Keep this exchange-scoped and match
+  // only BitMart's known code or distinctive header response so unrelated
+  // HTTP 401/"missing header" failures do not become credential errors.
+  if (exchange === 'bitmart' && (
+    /(?:["']?code["']?\s*[:=]\s*|\bcode\s+)30002\b/i.test(message) ||
+    /header\s+X-BM-KEY\s+not\s+found/i.test(message)
+  )) return 'invalid_key';
   // A malformed secret can crash signing LOCALLY before any request is sent
   // (e.g. Kraken's base64 HMAC secret decode: "padding: invalid…", or the
   // browser atob variant "not correctly encoded"). That IS a key problem —

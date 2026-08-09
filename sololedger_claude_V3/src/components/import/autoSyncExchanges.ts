@@ -17,6 +17,8 @@ export interface AutoSyncExchange {
   monogram: string;
   /** OKX and KuCoin keys carry an extra user-chosen passphrase. */
   needsPassphrase: boolean;
+  /** Label for the third credential (BitMart calls ccxt `uid` its Memo). */
+  extraCredentialLabel?: string;
   /** Short credential hint shown under the name in the picker. */
   formatHint: string;
   /** Ordered, plain-language steps to create a read-only key. */
@@ -276,6 +278,22 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['Bitget', 'Profile', 'API Management', 'Create API Key'],
     docsUrl: 'https://www.bitget.com/account/api'
+  },
+  {
+    id: 'bitmart',
+    label: 'BitMart',
+    monogram: 'BM',
+    needsPassphrase: true,
+    extraCredentialLabel: 'Memo',
+    formatHint: 'API key + secret + Memo',
+    keyInstructions: [
+      'Log in to BitMart and open Account → API Management, then create an API key.',
+      'Enable only Read-Only access for spot account, trade and deposit/withdrawal history. Never enable Spot-Trade or Withdraw permissions.',
+      'Copy the Access Key, Secret Key and API Memo and paste them here. The Memo is required and is not your login password.',
+      'BitMart currently exposes approximately three months of API history. Export older spot trades and fund records from BitMart before that rolling boundary; SoloLedger has no verified BitMart CSV identity mapping and will not auto-merge exports with API rows.'
+    ],
+    path: ['BitMart', 'Account', 'API Management', 'Create API'],
+    docsUrl: 'https://www.bitmart.com/account/en-US/api'
   }
 ];
 

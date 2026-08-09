@@ -120,7 +120,7 @@ export interface ExchangeConnectionRow {
   label?: string;       // user-assigned friendly name, e.g. "My Binance"
   apiKey?: string;
   secret?: string;
-  passphrase?: string;  // OKX / KuCoin / Bitget (ccxt `password`)
+  passphrase?: string;  // OKX/KuCoin/Bitget: ccxt `password`; BitMart Memo: ccxt `uid`
   /** Legacy rows migrate to ready; redacted restores use reauthorization_required. */
   credentialsState?: 'ready' | 'reauthorization_required';
   /** Monotonic authority/coverage source-operation generation. */
@@ -193,6 +193,14 @@ export interface ExchangeConnectionRow {
   bitvavoPendingAccountCandidates?: import('@/lib/exchangeSync/bitvavo').BitvavoPendingAccountCandidate[];
   /** Bitget's proven newest IDs and unfinished newest-first idLessThan walks. */
   bitgetHistory?: BitgetHistoryState;
+  /** Frozen newest-first walks. `cursor` is the inclusive endTime of the next page. */
+  bitmartPagination?: {
+    trades?: BitmartPaginationCheckpoint;
+    deposits?: BitmartPaginationCheckpoint;
+    withdrawals?: BitmartPaginationCheckpoint;
+  };
+  /** Earliest unsafe row per endpoint, retained until a complete replay resolves it. */
+  bitmartUnsafeReplay?: { trades?: number; deposits?: number; withdrawals?: number };
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
@@ -236,6 +244,12 @@ export interface BitgetHistoryState {
   trades?: Record<string, BitgetEndpointState>;
   /** Frozen fair scan: page-budget resumes cannot restart at the first symbol. */
   tradeProgress?: { requestedAt: number; symbols: string[]; nextSymbolIndex: number };
+}
+
+export interface BitmartPaginationCheckpoint {
+  start: number;
+  end: number;
+  cursor: number;
 }
 
 export interface PriceCacheRow {
@@ -1044,7 +1058,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'mexc_api',
   'bitvavo_api',
   'bitstamp_api',
-  'bitget_api'
+  'bitget_api',
+  'bitmart_api'
 ]);
 
 /**
@@ -1159,6 +1174,14 @@ export function transactionExchangeKey(
   if (t.source === 'bitstamp_api') {
     const rawKind = t.raw?.exchangeSyncKind;
     const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:bitstamp:${kind}:${t.sourceRef}`;
+  }
+  // BitMart native ids are account-local and may overlap between the trade,
+  // deposit and withdrawal services. There is no verified CSV identity twin.
+  if (t.source === 'bitmart_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal'
       ? rawKind
       : t.raw?.tradeId != null
         ? 'trade'
@@ -1167,7 +1190,7 @@ export function transactionExchangeKey(
           : t.raw?.transferType === 'withdrawal'
             ? 'withdrawal'
             : 'unknown';
-    return `ex-api:${t.importBatchId ?? 'unscoped'}:bitstamp:${kind}:${t.sourceRef}`;
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:bitmart:${kind}:${t.sourceRef}`;
   }
   // Bitget native IDs are stable within an account, but fills and wallet
   // records can share numeric namespaces and no vendor-export parity has been

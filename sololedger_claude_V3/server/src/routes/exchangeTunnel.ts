@@ -236,6 +236,24 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/api/v2/spot/wallet/deposit-records',
       '/api/v2/spot/wallet/withdrawal-records'
     ]
+  },
+  bitmart: {
+    host: 'api-cloud.bitmart.com',
+    headers: ['x-bm-key', 'x-bm-timestamp', 'x-bm-sign', 'x-bm-broker-id'],
+    paths: [
+      '/system/time',
+      '/spot/v1/symbols/details',
+      '/spot/v1/wallet',
+      '/account/v2/deposit-withdraw/history',
+      '/spot/v4/query/trades'
+    ],
+    pathMethods: {
+      '/system/time': ['GET'],
+      '/spot/v1/symbols/details': ['GET'],
+      '/spot/v1/wallet': ['GET'],
+      '/account/v2/deposit-withdraw/history': ['GET'],
+      '/spot/v4/query/trades': ['POST']
+    }
   }
 };
 

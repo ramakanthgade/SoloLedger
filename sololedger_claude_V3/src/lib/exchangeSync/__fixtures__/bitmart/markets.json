@@ -1,0 +1,8 @@
+{
+  "_recorded": false,
+  "_note": "GET /spot/v1/symbols/details official-example shape.",
+  "response": {"message":"OK","code":1000,"trace":"fixture-markets","data":{"symbols":[
+    {"symbol":"BTC_USDT","symbol_id":53,"base_currency":"BTC","quote_currency":"USDT","base_min_size":"0.00001","base_max_size":"1000","price_max_precision":2,"min_buy_amount":"5","min_sell_amount":"5","trade_status":"trading"},
+    {"symbol":"ETH_BTC","symbol_id":54,"base_currency":"ETH","quote_currency":"BTC","base_min_size":"0.0001","base_max_size":"10000","price_max_precision":8,"min_buy_amount":"0.0001","min_sell_amount":"0.0001","trade_status":"trading"}
+  ]}}
+}
