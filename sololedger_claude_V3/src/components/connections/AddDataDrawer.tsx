@@ -11,7 +11,7 @@ import { WhichStep, type ApiExchangeStates, type WhichSelection } from './WhichS
 import { ExchangeConnectStep } from './ExchangeConnectStep';
 import { WalletAddressForm } from './WalletAddressForm';
 import { FileImportFlow } from './FileImportFlow';
-import { BrandIcon, chainIconId } from './brandIcons';
+import { BRAND_ICONS, BrandIcon, chainIconId } from './brandIcons';
 import { getAutoSyncExchange } from '@/components/import/autoSyncExchanges';
 
 interface AddDataDrawerProps {
@@ -258,10 +258,24 @@ export function AddDataDrawer({
   /** Brand/lucide icon chip in the Connect-step header. */
   const connectIcon = (() => {
     if (reauthorizing) {
-      return <BrandIcon id={reauthorizing.exchange} fallback={reauthorizationLabel ?? ''} size={36} />;
+      const exchange = getAutoSyncExchange(reauthorizing.exchange);
+      return (
+        <BrandIcon
+          id={reauthorizing.exchange in BRAND_ICONS ? reauthorizing.exchange : null}
+          fallback={exchange?.monogram ?? reauthorizationLabel ?? ''}
+          size={36}
+        />
+      );
     }
     if (flow === 'exchange' && which?.kind === 'exchange-api') {
-      return <BrandIcon id={which.id} fallback={which.label} size={36} />;
+      const exchange = getAutoSyncExchange(which.id);
+      return (
+        <BrandIcon
+          id={which.id in BRAND_ICONS ? which.id : null}
+          fallback={exchange?.monogram ?? which.label}
+          size={36}
+        />
+      );
     }
     if (flow === 'wallet-app' && which?.kind === 'wallet-app') {
       return <BrandIcon id={which.id} fallback={which.label} size={36} />;

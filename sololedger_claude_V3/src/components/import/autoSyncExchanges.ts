@@ -227,6 +227,23 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
     ],
     path: ['MEXC', 'Profile', 'API Management', 'Create API'],
     docsUrl: 'https://www.mexc.com/user/openapi'
+  },
+  {
+    id: 'bitvavo',
+    label: 'Bitvavo',
+    monogram: 'BV',
+    needsPassphrase: false,
+    formatHint: 'API key + secret · permission caveat',
+    keyInstructions: [
+      'Log in to Bitvavo on the web and open Settings → API, then add a new API key.',
+      'Enable View information and Trade digital assets. Bitvavo requires both permissions even to retrieve trade history.',
+      'Never enable Withdraw digital assets. SoloLedger’s relay is GET-only and cannot place/cancel orders or withdraw assets.',
+      'Copy the 64-character API Key and API Secret and paste them here. Bitvavo does not require a passphrase.',
+      'Coverage uses Bitvavo account history as an activity index, then imports native fills and specialized deposit/withdrawal history. Price Guarantee or other buy/sell activity not represented by fills is retained from account history without guessing its product label.',
+      'A first sync cannot discover activity omitted by account history or markets delisted before that sync. SoloLedger never claims account-lifetime completeness, and does not claim API↔CSV deduplication.'
+    ],
+    path: ['Bitvavo', 'Settings', 'API', 'Add new API key'],
+    docsUrl: 'https://support.bitvavo.com/hc/en-us/articles/4405059841809-What-are-API-keys-and-how-do-I-create-them'
   }
 ];
 

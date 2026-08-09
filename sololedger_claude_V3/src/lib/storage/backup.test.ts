@@ -780,6 +780,28 @@ describe('importFullBackup', () => {
         deposits: { requestedStart: 1, requestedEnd: 10, pendingWindows: [{ start: 1, end: 10 }], unsafeEvidence: [] },
         withdrawals: { requestedStart: 1, requestedEnd: 10, pendingWindows: [], unsafeEvidence: [] }
       }
+    }, {
+      id: 'bitvavo-source', exchange: 'bitvavo', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', bitvavoTradeHighWater: { 'BTC/EUR': 1000 },
+      bitvavoPendingTransfers: { withdrawals: 900 },
+      bitvavoProgress: {
+        history: { requestedStart: 1, requestedEnd: 10, tasks: [{ start: 6, end: 10 }] },
+        trades: { requestedEnd: 10, tasks: [{ symbol: 'BTC/EUR', start: 2, end: 4, tradeIdTo: '00000000-0000-4000-8000-000000000001' }] },
+        transfers: { withdrawals: { requestedStart: 1, requestedEnd: 10, tasks: [{ start: 1, end: 4 }] } }
+      },
+      bitvavoMarkets: [{ id: 'BTC-EUR', symbol: 'BTC/EUR', base: 'BTC', quote: 'EUR' }],
+      bitvavoPendingTransferEvidence: { withdrawals: [
+        { evidence: '["withdrawal",900,"BTC",1,"",""]', timestamp: 900, occurrence: 0 },
+        { evidence: '["withdrawal",900,"BTC",1,"",""]', timestamp: 900, occurrence: 1 }
+      ] },
+      bitvavoPendingAccountCandidates: [{
+        transactionId: 'account-1', timestamp: 3, association: 'resolved_market', symbol: 'BTC/EUR', intervalStart: 1, intervalEnd: 5,
+        taskIdentities: ['BTC/EUR|1|5'], economics: {
+          transactionId: 'account-1', executedAt: new Date(3).toISOString(), type: 'buy',
+          sentCurrency: 'EUR', sentAmount: 10, receivedCurrency: 'BTC', receivedAmount: 0.001,
+          feesCurrency: 'EUR', feesAmount: 0.1
+        }
+      }]
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -815,6 +837,25 @@ describe('importFullBackup', () => {
     });
     expect(payload.exchangeConnections.find((row) => row.id === 'mexc-source')).not.toHaveProperty('apiKey');
     expect(payload.exchangeConnections.find((row) => row.id === 'mexc-source')).not.toHaveProperty('secret');
+    expect(await db.exchangeConnections.get('bitvavo-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      bitvavoTradeHighWater: { 'BTC/EUR': 1000 },
+      bitvavoPendingTransfers: { withdrawals: 900 },
+      bitvavoProgress: {
+        history: { requestedStart: 1, requestedEnd: 10, tasks: [{ start: 6, end: 10 }] },
+        trades: { requestedEnd: 10, tasks: [{ symbol: 'BTC/EUR', start: 2, end: 4, tradeIdTo: '00000000-0000-4000-8000-000000000001' }] },
+        transfers: { withdrawals: { requestedStart: 1, requestedEnd: 10, tasks: [{ start: 1, end: 4 }] } }
+      },
+      bitvavoMarkets: [{ id: 'BTC-EUR', symbol: 'BTC/EUR', base: 'BTC', quote: 'EUR' }],
+      bitvavoPendingTransferEvidence: { withdrawals: [
+        { evidence: '["withdrawal",900,"BTC",1,"",""]', timestamp: 900, occurrence: 0 },
+        { evidence: '["withdrawal",900,"BTC",1,"",""]', timestamp: 900, occurrence: 1 }
+      ] },
+      bitvavoPendingAccountCandidates: [{
+        transactionId: 'account-1', timestamp: 3, association: 'resolved_market', symbol: 'BTC/EUR', intervalStart: 1, intervalEnd: 5,
+        taskIdentities: ['BTC/EUR|1|5']
+      }]
+    });
   });
 
   it('rejects malformed MEXC checkpoint before clearing existing data', async () => {
@@ -828,6 +869,84 @@ describe('importFullBackup', () => {
     };
     await expect(importFullBackup(backupFile(payload))).rejects.toThrow('MEXC checkpoint is malformed');
     expect(await db.exchangeConnections.get('mexc-source')).toBeDefined();
+  });
+
+  type MutableBitvavoBackupRow = {
+    exchange: string;
+    cursors: Record<string, number>;
+    bitvavoTradeHighWater?: Record<string, number>;
+    bitvavoProgress: { trades: Record<string, unknown> & { requestedEnd: number; tasks: Array<Record<string, unknown>> } };
+    bitvavoMarkets: Array<Record<string, unknown>>;
+    bitvavoPendingTransferEvidence: { withdrawals: Array<Record<string, unknown> & { evidence: string; timestamp: number; occurrence: number }> };
+    bitvavoPendingAccountCandidates: Array<Record<string, unknown> & {
+      transactionId: string; timestamp: number; association: string; taskIdentities: string[]; economics: Record<string, unknown>
+    }>;
+  };
+  const malformedBitvavoCases: Array<[string, (row: MutableBitvavoBackupRow) => void]> = [
+    ['trade progress extra key', (row) => { row.bitvavoProgress.trades.extra = true; }],
+    ['negative requested end', (row) => { row.bitvavoProgress.trades.requestedEnd = -1; }],
+    ['empty trade tasks', (row) => { row.bitvavoProgress.trades.tasks = []; }],
+    ['task beyond requested end', (row) => { row.bitvavoProgress.trades.tasks[0].end = 11; }],
+    ['bad native UUID', (row) => { row.bitvavoProgress.trades.tasks[0].tradeIdTo = 'not-a-uuid'; }],
+    ['duplicate trade task', (row) => { row.bitvavoProgress.trades.tasks.push({ ...row.bitvavoProgress.trades.tasks[0] }); }],
+    ['descriptor mismatch', (row) => { row.bitvavoMarkets[0].symbol = 'ETH/EUR'; }],
+    ['descriptor extra key', (row) => { row.bitvavoMarkets[0].active = true; }],
+    ['duplicate descriptor', (row) => { row.bitvavoMarkets.push({ ...row.bitvavoMarkets[0] }); }],
+    ['negative pending timestamp', (row) => { row.bitvavoPendingTransferEvidence.withdrawals[0].timestamp = -1; }],
+    ['wrong pending endpoint core', (row) => { row.bitvavoPendingTransferEvidence.withdrawals[0].evidence = 'deposit|900|BTC|1||'; }],
+    ['duplicate pending slot', (row) => { row.bitvavoPendingTransferEvidence.withdrawals.push({ ...row.bitvavoPendingTransferEvidence.withdrawals[0] }); }],
+    ['negative pending occurrence', (row) => { row.bitvavoPendingTransferEvidence.withdrawals[0].occurrence = -1; }],
+    ['gapped pending occurrence', (row) => { row.bitvavoPendingTransferEvidence.withdrawals[0].occurrence = 1; }],
+    ['candidate economics identity mismatch', (row) => { row.bitvavoPendingAccountCandidates[0].economics.transactionId = 'other'; }],
+    ['candidate malformed task identity', (row) => { row.bitvavoPendingAccountCandidates[0].taskIdentities = ['BTC/EUR|bad|5']; }],
+    ['candidate empty resolved association', (row) => { row.bitvavoPendingAccountCandidates[0].taskIdentities = []; }],
+    ['candidate unrelated association range', (row) => { row.bitvavoPendingAccountCandidates[0].taskIdentities = ['BTC/EUR|6|9']; }],
+    ['candidate stale parent without trade progress', (row) => {
+      delete (row.bitvavoProgress as unknown as Record<string, unknown>).trades;
+    }],
+    ['candidate stale parent with non-overlapping BTC progress', (row) => {
+      row.bitvavoProgress.trades.tasks = [{ symbol: 'BTC/EUR', start: 6, end: 9 }];
+    }],
+    ['candidate stale parent with overlapping ETH progress', (row) => {
+      row.bitvavoProgress.trades.tasks = [{ symbol: 'ETH/EUR', start: 1, end: 5 }];
+    }],
+    ['duplicate account candidate', (row) => { row.bitvavoPendingAccountCandidates.push({ ...row.bitvavoPendingAccountCandidates[0] }); }],
+    ['future account candidate', (row) => {
+      row.bitvavoPendingAccountCandidates[0].timestamp = Number.MAX_SAFE_INTEGER;
+      row.bitvavoPendingAccountCandidates[0].economics.executedAt = new Date(8_640_000_000_000_000).toISOString();
+    }],
+    ['future cursor frontier', (row) => { row.cursors.trades = Number.MAX_SAFE_INTEGER; }],
+    ['future symbol high-water', (row) => { row.bitvavoTradeHighWater = { 'BTC/EUR': Number.MAX_SAFE_INTEGER }; }],
+    ['future pending frontier', (row) => {
+      row.bitvavoPendingTransferEvidence.withdrawals[0].timestamp = Number.MAX_SAFE_INTEGER;
+      row.bitvavoPendingTransferEvidence.withdrawals[0].evidence = '["withdrawal",9007199254740991,"BTC",1,"",""]';
+    }],
+    ['future trade progress', (row) => {
+      row.bitvavoProgress.trades.requestedEnd = Number.MAX_SAFE_INTEGER;
+      row.bitvavoProgress.trades.tasks[0].end = Number.MAX_SAFE_INTEGER;
+    }],
+    ['cross-exchange ownership', (row) => { row.exchange = 'gemini'; }]
+  ];
+  it.each(malformedBitvavoCases)('rejects malformed Bitvavo backup metadata: %s', async (_label, mutate) => {
+    await db.exchangeConnections.put({
+      id: 'bitvavo-invalid', exchange: 'bitvavo', createdAt: 1, cursors: {}, status: 'idle',
+      bitvavoProgress: { trades: { requestedEnd: 10, tasks: [{
+        symbol: 'BTC/EUR', start: 1, end: 5, tradeIdTo: '00000000-0000-4000-8000-000000000001'
+      }] } },
+      bitvavoMarkets: [{ id: 'BTC-EUR', symbol: 'BTC/EUR', base: 'BTC', quote: 'EUR' }],
+      bitvavoPendingTransferEvidence: { withdrawals: [{ evidence: '["withdrawal",900,"BTC",1,"",""]', timestamp: 900, occurrence: 0 }] },
+      bitvavoPendingAccountCandidates: [{
+        transactionId: 'account-1', timestamp: 3, association: 'resolved_market', symbol: 'BTC/EUR', intervalStart: 1, intervalEnd: 5,
+        taskIdentities: ['BTC/EUR|1|5'], economics: {
+          transactionId: 'account-1', executedAt: new Date(3).toISOString(), type: 'buy',
+          sentCurrency: 'EUR', sentAmount: 10, receivedCurrency: 'BTC', receivedAmount: 0.001,
+          feesCurrency: 'EUR', feesAmount: 0.1
+        }
+      }]
+    });
+    const payload = await createFullBackupPayload();
+    mutate(payload.exchangeConnections[0] as unknown as MutableBitvavoBackupRow);
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow(/Bitvavo/);
   });
 
   it.each([

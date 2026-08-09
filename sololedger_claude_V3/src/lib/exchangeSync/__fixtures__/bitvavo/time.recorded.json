@@ -1,0 +1,9 @@
+{
+  "_recorded": true,
+  "_recordedAt": "2026-08-09",
+  "_source": "GET https://api.bitvavo.com/v2/time",
+  "response": {
+    "time": 1786235254172,
+    "timeNs": 1786235254172824300
+  }
+}

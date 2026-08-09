@@ -1,0 +1,10 @@
+{
+  "_recorded": true,
+  "_recordedAt": "2026-08-09",
+  "_source": "GET https://api.bitvavo.com/v2/balance with format-valid 64-character dummy key and locally signed HMAC; unknown-key validation precedes real-secret validation",
+  "httpStatus": 403,
+  "response": {
+    "errorCode": 305,
+    "error": "No active API key found."
+  }
+}

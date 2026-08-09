@@ -57,6 +57,12 @@ interface StagedMeta {
   btcmarketsUnresolvedTransferIds?: string[];
   btcmarketsUnsafeTradeIds?: string[];
   mexcCheckpoint?: import('./mexc').MexcCheckpoint;
+  bitvavoTradeHighWater?: Record<string, number>;
+  bitvavoPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitvavoProgress?: import('./engine').SyncFetchOutcome['bitvavoProgress'];
+  bitvavoMarkets?: import('./bitvavo').BitvavoMarketDescriptor[];
+  bitvavoPendingTransferEvidence?: import('./engine').SyncFetchOutcome['bitvavoPendingTransferEvidence'];
+  bitvavoPendingAccountCandidates?: import('./engine').SyncFetchOutcome['bitvavoPendingAccountCandidates'];
   /** Private current-balance authority fetched with the staged rows. */
   balance: UnifiedBalance;
   /** Non-secret source revision/state token captured with operation evidence. */
@@ -299,6 +305,12 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         btcmarketsUnresolvedTransferIds: outcome.btcmarketsUnresolvedTransferIds,
         btcmarketsUnsafeTradeIds: outcome.btcmarketsUnsafeTradeIds,
         mexcCheckpoint: outcome.mexcCheckpoint,
+        bitvavoTradeHighWater: outcome.bitvavoTradeHighWater,
+        bitvavoPendingTransfers: outcome.bitvavoPendingTransfers,
+        bitvavoProgress: outcome.bitvavoProgress,
+        bitvavoMarkets: outcome.bitvavoMarkets,
+        bitvavoPendingTransferEvidence: outcome.bitvavoPendingTransferEvidence,
+        bitvavoPendingAccountCandidates: outcome.bitvavoPendingAccountCandidates,
         // Keep only normalized totals in memory. ccxt's raw `info` can carry
         // account metadata (for example a Binance UID) and is not needed for
         // confirmation.
@@ -354,6 +366,12 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       btcmarketsUnresolvedTransferIds: staged.meta?.btcmarketsUnresolvedTransferIds,
       btcmarketsUnsafeTradeIds: staged.meta?.btcmarketsUnsafeTradeIds,
       mexcCheckpoint: staged.meta?.mexcCheckpoint,
+      bitvavoTradeHighWater: staged.meta?.bitvavoTradeHighWater,
+      bitvavoPendingTransfers: staged.meta?.bitvavoPendingTransfers,
+      bitvavoProgress: staged.meta?.bitvavoProgress,
+      bitvavoMarkets: staged.meta?.bitvavoMarkets,
+      bitvavoPendingTransferEvidence: staged.meta?.bitvavoPendingTransferEvidence,
+      bitvavoPendingAccountCandidates: staged.meta?.bitvavoPendingAccountCandidates,
       balance: staged.meta?.balance,
       operation: staged.meta.operation,
       hooks: hooks(),

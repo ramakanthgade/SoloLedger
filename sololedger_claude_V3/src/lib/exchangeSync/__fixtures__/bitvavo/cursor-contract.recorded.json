@@ -1,0 +1,30 @@
+{
+  "_recorded": true,
+  "_recordedAt": "2026-08-09",
+  "_source": "GET https://api.bitvavo.com/v2/BTC-EUR/trades over one fixed hour; IDs below are public market trades",
+  "initialNewestFirst": [
+    "00000000-0000-0431-0000-00000363f323",
+    "00000000-0000-0431-0000-00000363f322",
+    "00000000-0000-0431-0000-00000363f321"
+  ],
+  "tradeIdToOldestExclusiveReturned": [
+    "00000000-0000-0431-0000-00000363f320",
+    "00000000-0000-0431-0000-00000363f31f",
+    "00000000-0000-0431-0000-00000363f31e"
+  ],
+  "tradeIdFromOldestExclusiveReturned": [
+    "00000000-0000-0431-0000-00000363f323",
+    "00000000-0000-0431-0000-00000363f322"
+  ],
+  "tradeIdToNewestExclusiveReturned": [
+    "00000000-0000-0431-0000-00000363f322",
+    "00000000-0000-0431-0000-00000363f321",
+    "00000000-0000-0431-0000-00000363f320"
+  ],
+  "tradeIdFromNewestExclusiveReturned": [],
+  "conclusion": {
+    "order": "newest_first",
+    "tradeIdTo": "exclusive_older",
+    "tradeIdFrom": "exclusive_newer"
+  }
+}

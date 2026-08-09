@@ -1,0 +1,31 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored private-account fixture from the pinned CCXT 4.5.68 parser comments and current official Bitvavo REST schemas. No real credentials were available; do not describe these account rows as recorded.",
+  "markets": [
+    { "market": "BTC-EUR", "status": "trading", "base": "BTC", "quote": "EUR", "pricePrecision": 5, "minOrderInBaseAsset": "0.0001", "minOrderInQuoteAsset": "5", "orderTypes": ["market", "limit"] }
+  ],
+  "balance": [
+    { "symbol": "BTC", "available": "0.5", "inOrder": "0" },
+    { "symbol": "EUR", "available": "100", "inOrder": "0" }
+  ],
+  "accountHistory": {
+    "items": [
+      { "transactionId": "a1111111-1111-4111-8111-111111111111", "executedAt": "2026-08-08T12:00:00.000Z", "type": "buy", "priceCurrency": "EUR", "priceAmount": "50000", "sentCurrency": "EUR", "sentAmount": "500", "receivedCurrency": "BTC", "receivedAmount": "0.01", "feesCurrency": "EUR", "feesAmount": "1.25" },
+      { "transactionId": "a2222222-2222-4222-8222-222222222222", "executedAt": "2026-08-07T12:00:00.000Z", "type": "buy", "priceCurrency": "EUR", "priceAmount": "49000", "sentCurrency": "EUR", "sentAmount": "98", "receivedCurrency": "BTC", "receivedAmount": "0.002", "feesCurrency": "EUR", "feesAmount": "0.25" }
+    ],
+    "currentPage": 1,
+    "totalPages": 1,
+    "maxItems": 100
+  },
+  "trades": [
+    { "id": "b1111111-1111-4111-8111-111111111111", "orderId": "c1111111-1111-4111-8111-111111111111", "timestamp": 1786190400000, "market": "BTC-EUR", "side": "buy", "amount": "0.006", "price": "50000", "taker": true, "fee": "0.75", "feeCurrency": "EUR", "settled": true },
+    { "id": "b2222222-2222-4222-8222-222222222222", "orderId": "c1111111-1111-4111-8111-111111111111", "timestamp": 1786190401000, "market": "BTC-EUR", "side": "buy", "amount": "0.004", "price": "50000", "taker": false, "fee": "0.5", "feeCurrency": "EUR", "settled": true }
+  ],
+  "deposits": [
+    { "timestamp": 1786100000000, "symbol": "BTC", "amount": "0.1", "fee": "0", "status": "completed", "txId": "deposit-provider-ref" }
+  ],
+  "withdrawals": [
+    { "timestamp": 1786101000000, "symbol": "BTC", "amount": "0.02", "fee": "0.0001", "status": "awaiting_processing", "address": "bc1qfixture", "paymentId": "memo-1", "txId": "withdraw-provider-ref" },
+    { "timestamp": 1786102000000, "symbol": "BTC", "amount": "0.03", "fee": "0.0001", "status": "canceled", "address": "bc1qcanceled", "txId": "canceled-provider-ref" }
+  ]
+}

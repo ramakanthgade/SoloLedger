@@ -1,0 +1,8 @@
+{
+  "exchange": "bitvavo",
+  "ccxtPackage": "4.5.68",
+  "ccxtRuntimeVersionField": "4.5.67 (upstream package metadata mismatch; package.json is pinned 4.5.68)",
+  "recordedPublicAndAuthTransport": true,
+  "privateAccountRowsRecorded": false,
+  "note": "Public time/trade responses, native tradeIdTo/tradeIdFrom direction/exclusivity probes, and the exact dummy signed balance 403/305 response were recorded on 2026-08-09. Private balances/history/fills/transfers are explicitly hand-authored from official schemas and pinned CCXT parser comments because no real credentials were supplied."
+}

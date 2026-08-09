@@ -65,8 +65,33 @@ import {
   normalizeTrade,
   normalizeTransfer,
   cryptocomTransferDisposition,
-  resolveMarket
+  resolveMarket,
+  normalizeBitvavoAccountTrade,
+  immutableBitvavoAccountTrade,
+  reconcileBitvavoAccountTrades,
+  type BitvavoAccountHistoryItem
 } from './normalize';
+import {
+  BITVAVO_MAX_REQUESTS_PER_PHASE,
+  BITVAVO_TRADE_WINDOW_MS,
+  bitvavoTransferDisposition,
+  paginateBitvavoAccountHistory,
+  paginateBitvavoTrades,
+  paginateBitvavoTransfers,
+  mergeBitvavoPendingTransferEvidence,
+  validBitvavoPersistedState,
+  validBitvavoPersistedStateAt,
+  type BitvavoBudget,
+  type BitvavoMarketDescriptor,
+  type BitvavoPendingTransferEvidence,
+  type BitvavoPendingAccountCandidate,
+  bitvavoTradeTaskIdentity,
+  bitvavoCandidateOverlapsTask,
+  bitvavoUncoveredTaskRanges,
+  type BitvavoRangeProgress,
+  type BitvavoTradeProgress,
+  type BitvavoTradeTask
+} from './bitvavo';
 import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols, flattenBalanceTotals } from './binanceSymbols';
 import type {
   ExchangeId,
@@ -187,7 +212,8 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   // BTC Markets launched during 2013; the first day of the best-supported
   // launch month is a conservative scan floor, not an API-retention claim.
   btcmarkets: Date.UTC(2013, 8, 1),
-  mexc: Date.UTC(2018, 3, 1)
+  mexc: Date.UTC(2018, 3, 1),
+  bitvavo: Date.UTC(2018, 9, 1)
 };
 
 /** Retryable classifications — everything else aborts immediately. */
@@ -214,6 +240,10 @@ export interface SyncEngineDeps {
   /** Test seams; MEXC counts every closed-window request against its phase budget. */
   mexcMaxTradeRequests?: number;
   mexcMaxTransferRequests?: number;
+  /** Bitvavo phase-wide physical attempt caps (including retries). */
+  bitvavoMaxHistoryRequests?: number;
+  bitvavoMaxTradeRequests?: number;
+  bitvavoMaxTransferRequests?: number;
 }
 
 export interface SyncHooks {
@@ -1135,6 +1165,7 @@ interface FetchPlanOutcome<T extends PageRow> {
   nativeCursor?: string;
   /** Durable continuation for an unfinished BTC Markets native page walk. */
   btcmarketsPagination?: BtcMarketsPaginationCheckpoint;
+  bitvavoProgress?: BitvavoRangeProgress;
 }
 
 export interface GeminiRequestBudget {
@@ -1709,7 +1740,9 @@ async function fetchTransferKind(
   geminiMaxRequests?: number,
   btcmarketsSavedAfter?: string,
   btcmarketsMaxRequests?: number,
-  btcmarketsCheckpoint?: BtcMarketsPaginationCheckpoint
+  btcmarketsCheckpoint?: BtcMarketsPaginationCheckpoint,
+  bitvavoMaxRequests?: number,
+  bitvavoProgress?: BitvavoRangeProgress
 ): Promise<FetchPlanOutcome<UnifiedTransfer>> {
   const fetchDeposits = kind === 'deposits';
   if (exchange === 'kraken') {
@@ -1897,6 +1930,24 @@ async function fetchTransferKind(
       sleep
     });
   }
+  if (exchange === 'bitvavo') {
+    const outcome = await paginateBitvavoTransfers({
+      client,
+      kind,
+      start: since,
+      end: now,
+      budget: { used: 0, max: bitvavoMaxRequests ?? BITVAVO_MAX_REQUESTS_PER_PHASE },
+      sleep,
+      progress: bitvavoProgress
+    });
+    return {
+      rows: outcome.rows,
+      maxTs: outcome.frontier,
+      partial: outcome.partial,
+      termination: outcome.termination === 'malformed' ? 'nonadvancing' : outcome.termination,
+      bitvavoProgress: outcome.progress
+    };
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -1967,6 +2018,8 @@ async function fetchTradesForSymbol(
   }
 ): Promise<FetchPlanOutcome<UnifiedTrade>> {
   switch (exchange) {
+    case 'bitvavo':
+      throw new Error('Bitvavo trades require an account-history-derived symbol and interval.');
     case 'binance':
       if (opts?.firstSync) {
         return fetchBinanceTradesById(client, symbol as string, since, now);
@@ -2132,6 +2185,19 @@ export interface SyncFetchOutcome {
   btcmarketsUnresolvedTransferIds?: string[];
   btcmarketsUnsafeTradeIds?: string[];
   mexcCheckpoint?: MexcCheckpoint;
+  bitvavoTradeHighWater?: Record<string, number>;
+  bitvavoPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitvavoProgress?: {
+    history?: BitvavoRangeProgress;
+    trades?: BitvavoTradeProgress;
+    transfers?: { deposits?: BitvavoRangeProgress; withdrawals?: BitvavoRangeProgress };
+  };
+  bitvavoMarkets?: BitvavoMarketDescriptor[];
+  bitvavoPendingTransferEvidence?: {
+    deposits?: BitvavoPendingTransferEvidence[];
+    withdrawals?: BitvavoPendingTransferEvidence[];
+  };
+  bitvavoPendingAccountCandidates?: BitvavoPendingAccountCandidate[];
   skippedUnsettled: number;
   /**
    * Balance fetched during validation. Stage mode keeps this in the private
@@ -2193,6 +2259,37 @@ export async function syncConnection(
       ? Object.fromEntries(Object.entries(loadedMarkets).filter(([, market]) =>
           market.spot === true && market.active !== false))
       : loadedMarkets;
+    let bitvavoMarkets: BitvavoMarketDescriptor[] | undefined;
+    if (exchange === 'bitvavo') {
+      if (!validBitvavoPersistedState(row)) {
+        throw new Error('Bitvavo persisted metadata was incoherent; no private history was queried and no checkpoint was advanced.');
+      }
+      const current = Object.values(loadedMarkets).filter((market) => market.spot === true).map((market) => ({
+        id: market.id ?? market.symbol.replace('/', '-'),
+        symbol: market.symbol,
+        base: market.base.toUpperCase(),
+        quote: market.quote.toUpperCase()
+      }));
+      bitvavoMarkets = [...new Map([...(row.bitvavoMarkets ?? []), ...current]
+        .map((market) => [market.id, market])).values()].sort((a, b) => a.id.localeCompare(b.id));
+      for (const descriptor of bitvavoMarkets) {
+        if (!markets[descriptor.symbol]) markets[descriptor.symbol] = { ...descriptor, spot: true, active: false };
+      }
+    }
+    if (exchange === 'bitvavo' && !client.fetchTime) throw new Error('Bitvavo server-time method unavailable.');
+    const bitvavoServerTime = exchange === 'bitvavo'
+      ? await withRetries(() => client.fetchTime!(), sleep)
+      : undefined;
+    if (exchange === 'bitvavo' && (!Number.isSafeInteger(bitvavoServerTime) || bitvavoServerTime! < EXCHANGE_LAUNCH_MS.bitvavo)) {
+      throw new Error('Bitvavo server time was malformed; private history was not queried and no checkpoint was advanced.');
+    }
+    if (exchange === 'bitvavo' && !validBitvavoPersistedStateAt(row, bitvavoServerTime!)) {
+      throw new Error('Bitvavo persisted frontiers were ahead of exchange time; private history was not queried and no checkpoint was advanced.');
+    }
+    if (exchange === 'bitvavo' && client.milliseconds) {
+      const calibratedAt = Date.now();
+      client.milliseconds = () => bitvavoServerTime! + (Date.now() - calibratedAt);
+    }
     const balance = await withRetries(
       () => client.fetchBalance(exchange === 'bitfinex' ? { type: 'exchange' } : undefined),
       sleep
@@ -2331,9 +2428,35 @@ export async function syncConnection(
     // ---- fetching ----
     phase = 'fetching';
     hooks.onPhase?.('fetching');
-    const nowMs = now();
+    // Bitvavo cutoffs and future checks are frozen to exchange time, not a
+    // potentially skewed browser clock. Other connectors retain device time.
+    const nowMs = bitvavoServerTime ?? now();
     const oldCursors = row.cursors ?? {};
     const balanceAssets = assetsFromBalance(balance);
+    let bitvavoHistoryItems: BitvavoAccountHistoryItem[] = [];
+    const bitvavoHistoryStart = row.bitvavoProgress?.history?.requestedStart ?? (oldCursors.trades == null
+      ? EXCHANGE_LAUNCH_MS.bitvavo
+      : Math.max(EXCHANGE_LAUNCH_MS.bitvavo, oldCursors.trades - TRANSFER_OVERLAP_MS));
+    const bitvavoHistoryEnd = row.bitvavoProgress?.history?.requestedEnd ?? nowMs;
+    let bitvavoHistoryProgress = row.bitvavoProgress?.history;
+    let bitvavoHistoryComplete = true;
+    if (exchange === 'bitvavo') {
+      const history = await paginateBitvavoAccountHistory({
+        client,
+        start: bitvavoHistoryStart,
+        end: bitvavoHistoryEnd,
+        budget: { used: 0, max: deps.bitvavoMaxHistoryRequests ?? BITVAVO_MAX_REQUESTS_PER_PHASE },
+        sleep,
+        progress: row.bitvavoProgress?.history
+      });
+      if (history.partial && history.termination !== 'page_budget') {
+        throw new Error(`Bitvavo account-history activity index was unsafe (${history.termination}); no checkpoint was committed.`);
+      }
+      bitvavoHistoryItems = history.rows;
+      bitvavoHistoryProgress = history.progress;
+      bitvavoHistoryComplete = !history.partial;
+      if (history.partial) warnings.push('Bitvavo account-history indexing reached its request budget; verified partitions were imported and durable remaining work will resume next sync.');
+    }
 
     // Transfers first — their currencies feed Binance symbol discovery (§B-4).
     const transferAssets = new Set<string>();
@@ -2352,6 +2475,12 @@ export async function syncConnection(
     };
     const cryptocomPendingTransfers: { deposits?: number; withdrawals?: number } = {};
     const bitfinexPendingTransfers: { deposits?: number; withdrawals?: number } = {};
+    const bitvavoPendingTransfers: { deposits?: number; withdrawals?: number } = {};
+    const bitvavoTransferProgress: { deposits?: BitvavoRangeProgress; withdrawals?: BitvavoRangeProgress } = {};
+    const bitvavoPendingTransferEvidence: {
+      deposits?: BitvavoPendingTransferEvidence[];
+      withdrawals?: BitvavoPendingTransferEvidence[];
+    } = {};
     const coinbaseSharedTransferStart = Math.min(
       transferRequestedStarts.deposits,
       transferRequestedStarts.withdrawals
@@ -2391,6 +2520,13 @@ export async function syncConnection(
       if (exchange === 'cryptocom' && row.cryptocomPendingTransfers?.[kind] != null) {
         since = Math.min(since, row.cryptocomPendingTransfers[kind]!);
       }
+      if (exchange === 'bitvavo' && row.bitvavoPendingTransfers?.[kind] != null) {
+        since = Math.min(since, row.bitvavoPendingTransfers[kind]!);
+      }
+      const bitvavoTransferEnd = row.bitvavoProgress?.transfers?.[kind]?.requestedEnd ?? nowMs;
+      if (exchange === 'bitvavo' && row.bitvavoProgress?.transfers?.[kind]) {
+        since = row.bitvavoProgress.transfers[kind]!.requestedStart;
+      }
       const retainedTransfer = cryptocomRetainedSince(since, nowMs);
       const cryptocomRetentionFloor = retainedTransfer.floor;
       const cryptocomRetentionTruncated = exchange === 'cryptocom' && retainedTransfer.truncated;
@@ -2402,11 +2538,11 @@ export async function syncConnection(
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
       if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets') && kind === 'withdrawals') {
         outcome = transferOutcomes.get('withdrawals')!;
-      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets') {
+      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitvavo') {
         // Gate/HTX/Crypto.com/Bitfinex retry each physical request inside their paginator so
         // a retry cannot restart pagination or reset the attempt cap.
         outcome = await fetchTransferKind(
-          client, exchange, kind, since, nowMs, cbAssets, warnings, sleep,
+          client, exchange, kind, since, exchange === 'bitvavo' ? bitvavoTransferEnd : nowMs, cbAssets, warnings, sleep,
           deps.cryptocomMaxRequests, deps.bitfinexMaxRequests, deps.geminiMaxTransferRequests,
           btcmarketsTransferCheckpoint
             ? row.btcmarketsNativeCursors?.transfers
@@ -2414,7 +2550,9 @@ export async function syncConnection(
             ? btcMarketsReplayAfter(btcmarketsUnresolvedTransferIds)
             : row.btcmarketsNativeCursors?.transfers,
           deps.btcmarketsMaxTransferRequests,
-          btcmarketsTransferCheckpoint
+          btcmarketsTransferCheckpoint,
+          deps.bitvavoMaxTransferRequests,
+          row.bitvavoProgress?.transfers?.[kind]
         );
         if (cryptocomRetentionTruncated) {
           outcome.partial = true;
@@ -2480,6 +2618,33 @@ export async function syncConnection(
             warnings.push(`BTC Markets returned ${unclassified} transfer(s) with unknown direction or status; coverage remains partial and the raw activity requires review.`);
           }
           outcome = transferOutcomes.get(kind)!;
+        } else if (exchange === 'bitvavo') {
+          bitvavoTransferProgress[kind] = outcome.bitvavoProgress;
+          const unsafe = outcome.rows.filter((item) => {
+            const disposition = bitvavoTransferDisposition(item);
+            return disposition === 'pending' || disposition === 'unknown' ||
+              item.timestamp == null || !Number.isSafeInteger(item.timestamp) || item.timestamp > nowMs;
+          });
+          const malformed = unsafe.some((item) => item.timestamp == null || !Number.isSafeInteger(item.timestamp));
+          if (malformed) throw new Error('Bitvavo returned transfer evidence without a replayable timestamp; no cursor was advanced.');
+          if (unsafe.length > 0) {
+            bitvavoPendingTransfers[kind] = Math.min(...unsafe.map((item) => Math.min(item.timestamp!, nowMs)));
+            outcome.maxTs = bitvavoPendingTransfers[kind];
+            outcome.partial = true;
+          }
+          const priorEvidence = row.bitvavoPendingTransferEvidence?.[kind] ?? [];
+          const exact = mergeBitvavoPendingTransferEvidence(priorEvidence, outcome.rows);
+          if (exact.length > 0) {
+            bitvavoPendingTransferEvidence[kind] = exact;
+            bitvavoPendingTransfers[kind] = Math.min(bitvavoPendingTransfers[kind] ?? Number.POSITIVE_INFINITY, ...exact.map((item) => item.timestamp));
+          }
+          // A legacy timestamp has no immutable identity. Never erase it on a
+          // partial scan or by guessing that a nearby row is the same transfer.
+          const legacyPending = row.bitvavoPendingTransfers?.[kind];
+          if (legacyPending != null && priorEvidence.length === 0) {
+            bitvavoPendingTransfers[kind] = Math.min(bitvavoPendingTransfers[kind] ?? Number.POSITIVE_INFINITY, legacyPending);
+          }
+          transferOutcomes.set(kind, outcome);
         } else {
           transferOutcomes.set(kind, outcome);
         }
@@ -2588,6 +2753,12 @@ export async function syncConnection(
     let htxTradeProgress: HtxTradeProgress | undefined = row.htxTradeProgress;
     let geminiTradeProgress: GeminiTradeProgress | undefined = row.geminiTradeProgress;
     let btcmarketsTradeCursor = row.btcmarketsNativeCursors?.trades;
+    const bitvavoTradeHighWater = { ...(row.bitvavoTradeHighWater ?? {}) };
+    let bitvavoTradeProgress: BitvavoTradeProgress | undefined = row.bitvavoProgress?.trades;
+    const bitvavoAccountRows: Transaction[] = [];
+    const bitvavoAccountCandidateInputs: Array<{ row: Transaction; item: BitvavoAccountHistoryItem; symbol?: string; start: number; end: number }> = [];
+    let bitvavoAssociatedTasks: BitvavoTradeTask[] = [];
+    let bitvavoUnresolvedPairs = 0;
     let skippedSymbols = 0;
 
     if (exchange === 'binance') {
@@ -2720,6 +2891,106 @@ export async function syncConnection(
           );
         }
       }
+    } else if (exchange === 'bitvavo') {
+      const currentSymbols = Object.values(loadedMarkets)
+        .filter((market) => market.spot === true && market.base.toUpperCase() !== market.quote.toUpperCase())
+        .map((market) => market.symbol);
+      newKnownSymbols = [...new Set([...(row.knownSymbols ?? []), ...currentSymbols])].sort();
+      discoveryUniverseCount = newKnownSymbols.length;
+      const intervals = new Map<string, Array<{ start: number; end: number }>>();
+      let unresolvedPairs = 0;
+      for (const item of bitvavoHistoryItems) {
+        if (item.type !== 'buy' && item.type !== 'sell') continue;
+        const normalized = normalizeBitvavoAccountTrade(item);
+        if (!normalized || normalized.timestamp > nowMs) {
+          throw new Error('Bitvavo account history returned malformed or future-dated buy/sell economics; no trade cursor was advanced.');
+        }
+        bitvavoAccountRows.push(normalized);
+        const sent = typeof item.sentCurrency === 'string' ? item.sentCurrency.toUpperCase() : '';
+        const received = typeof item.receivedCurrency === 'string' ? item.receivedCurrency.toUpperCase() : '';
+        const market = Object.values(markets).find((candidate) => candidate.spot === true &&
+          ((candidate.base.toUpperCase() === sent && candidate.quote.toUpperCase() === received) ||
+           (candidate.base.toUpperCase() === received && candidate.quote.toUpperCase() === sent)));
+        const timestamp = typeof item.executedAt === 'string' ? Date.parse(item.executedAt) : Number.NaN;
+        if (!market || !Number.isFinite(timestamp) || timestamp > nowMs) {
+          bitvavoAccountCandidateInputs.push({ row: normalized, item, start: normalized.timestamp, end: normalized.timestamp });
+          unresolvedPairs += 1;
+          continue;
+        }
+        const paddedStart = Math.max(EXCHANGE_LAUNCH_MS.bitvavo, timestamp - 5 * 60_000);
+        const paddedEnd = Math.min(nowMs, timestamp + 5 * 60_000);
+        const list = intervals.get(market.symbol) ?? [];
+        list.push({ start: paddedStart, end: paddedEnd });
+        intervals.set(market.symbol, list);
+        bitvavoAccountCandidateInputs.push({ row: normalized, item, symbol: market.symbol, start: paddedStart, end: paddedEnd });
+      }
+      if (unresolvedPairs > 0) warnings.push(
+        `Bitvavo account history contained ${unresolvedPairs} buy/sell activit${unresolvedPairs === 1 ? 'y' : 'ies'} whose current or retained market could not be resolved. Account-history economics were retained, but native-fill coverage remains partial; markets delisted before the first sync may be undiscoverable.`
+      );
+      bitvavoUnresolvedPairs = unresolvedPairs;
+      const tradeRequestedEnd = row.bitvavoProgress?.trades?.requestedEnd ?? bitvavoHistoryEnd;
+      const pendingTasks: BitvavoTradeTask[] = (row.bitvavoProgress?.trades?.tasks ?? [])
+        .map((task) => ({ ...task }));
+      for (const [symbol, rawIntervals] of [...intervals.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        const merged = rawIntervals.sort((a, b) => a.start - b.start).reduce<Array<{ start: number; end: number }>>((out, item) => {
+          const prior = out[out.length - 1];
+          if (prior && item.start <= prior.end + 1) prior.end = Math.max(prior.end, item.end);
+          else out.push({ ...item });
+          return out;
+        }, []);
+        for (const interval of merged) {
+          const requestedStart = Math.max(interval.start, (bitvavoTradeHighWater[symbol] ?? 0) + 1);
+          for (const uncovered of bitvavoUncoveredTaskRanges(symbol, requestedStart, interval.end, pendingTasks)) {
+            for (let start = uncovered.start; start <= uncovered.end;) {
+              const end = Math.min(uncovered.end, start + BITVAVO_TRADE_WINDOW_MS);
+              pendingTasks.push({ symbol, start, end });
+              start = end + 1;
+            }
+          }
+        }
+      }
+      const maxRequests = deps.bitvavoMaxTradeRequests ?? BITVAVO_MAX_REQUESTS_PER_PHASE;
+      bitvavoAssociatedTasks = pendingTasks.map((task) => ({ ...task }));
+      const blocked = new Set<string>();
+      let requests = 0;
+      while (pendingTasks.length > 0 && requests < maxRequests) {
+        const eligibleIndex = pendingTasks.findIndex((task) => !blocked.has(`${task.symbol}|${task.start}|${task.end}`));
+        if (eligibleIndex < 0) break;
+        const [task] = pendingTasks.splice(eligibleIndex, 1);
+        const localBudget: BitvavoBudget = { used: 0, max: 1 };
+        const outcome = await paginateBitvavoTrades({
+          client, symbol: task.symbol, start: task.start, end: task.end, budget: localBudget, sleep,
+          progress: { requestedStart: task.start, requestedEnd: task.end, tasks: [{
+            start: task.start, end: task.end, tradeIdTo: task.tradeIdTo
+          }] }
+        });
+        requests += localBudget.used;
+        tradeRows.push(...outcome.rows);
+        fetchedCount += outcome.rows.length;
+        tradeOutcomes.push({ rows: outcome.rows, maxTs: outcome.frontier, partial: outcome.partial, termination: outcome.termination === 'malformed' ? 'nonadvancing' : outcome.termination });
+        if (!outcome.partial) {
+          bitvavoTradeHighWater[task.symbol] = Math.max(bitvavoTradeHighWater[task.symbol] ?? 0, task.end);
+        } else {
+          const remaining = outcome.progress?.tasks ?? [{ start: task.start, end: task.end, tradeIdTo: task.tradeIdTo }];
+          pendingTasks.push(...remaining.map((work) => ({ symbol: task.symbol, ...work })));
+          if (outcome.termination === 'malformed' || outcome.termination === 'nonadvancing') {
+            blocked.add(`${task.symbol}|${task.start}|${task.end}`);
+            warnings.push(`${task.symbol}: Bitvavo native-fill evidence was unsafe at ${new Date(task.start).toISOString()} (${outcome.termination}); durable work was retained and this symbol's high-water was not advanced.`);
+          }
+        }
+      }
+      bitvavoTradeProgress = pendingTasks.length > 0
+        ? { requestedEnd: tradeRequestedEnd, tasks: pendingTasks }
+        : undefined;
+      if (pendingTasks.length > 0 && blocked.size === 0) warnings.push('Bitvavo native-fill paging reached its fair request budget; unfinished symbol intervals will resume next sync.');
+      discoveredCount = intervals.size;
+      if (!bitvavoHistoryComplete || bitvavoTradeProgress || tradeOutcomes.some((outcome) => outcome.partial && outcome.termination !== 'page_budget') || unresolvedPairs > 0) {
+        // Conservative account-wide cursor: one unsafe symbol prevents the
+        // global frontier from claiming later verified coverage.
+        tradeOutcomes.push({ rows: [], maxTs: oldCursors.trades ?? EXCHANGE_LAUNCH_MS.bitvavo, partial: true });
+      } else {
+        tradeOutcomes.push({ rows: [], maxTs: nowMs, partial: false, termination: 'exhausted' });
+      }
     } else if (exchange === 'kraken') {
       const outcome = await withRetries(() => fetchKrakenTrades(client, tradeSince, nowMs), sleep);
       tradeOutcomes.push(outcome);
@@ -2783,7 +3054,48 @@ export async function syncConnection(
       }
     }
 
-    const tradeCursorCandidate = exchange === 'htx' || exchange === 'gemini' || exchange === 'btcmarkets'
+    const newBitvavoAccountCandidates: BitvavoPendingAccountCandidate[] = bitvavoAccountCandidateInputs.map(({ row: accountRow, item, symbol, start, end }) => ({
+      transactionId: accountRow.sourceRef!,
+      timestamp: accountRow.timestamp,
+      association: symbol ? 'resolved_market' : 'unresolved_market',
+      symbol,
+      intervalStart: start,
+      intervalEnd: end,
+      taskIdentities: symbol ? bitvavoAssociatedTasks
+        .filter((task) => task.symbol === symbol && accountRow.timestamp >= task.start && accountRow.timestamp <= task.end)
+        .map(bitvavoTradeTaskIdentity)
+        .sort() : [],
+      economics: {
+        transactionId: accountRow.sourceRef!,
+        executedAt: String(item.executedAt),
+        type: item.type as 'buy' | 'sell',
+        sentCurrency: String(item.sentCurrency).toUpperCase(),
+        sentAmount: Number(item.sentAmount),
+        receivedCurrency: String(item.receivedCurrency).toUpperCase(),
+        receivedAmount: Number(item.receivedAmount),
+        ...(Number(item.feesAmount ?? 0) > 0 ? { feesCurrency: String(item.feesCurrency).toUpperCase() } : {}),
+        feesAmount: Number(item.feesAmount ?? 0)
+      }
+    }));
+    const priorBitvavoAccountCandidates = new Map((row.bitvavoPendingAccountCandidates ?? [])
+      .map((candidate) => [candidate.transactionId, candidate]));
+    const bitvavoPendingAccountCandidates = exchange === 'bitvavo'
+      ? (() => {
+        const merged = new Map(priorBitvavoAccountCandidates);
+        for (const candidate of newBitvavoAccountCandidates) {
+          const prior = merged.get(candidate.transactionId);
+          // Preserve original parent association evidence across adaptive child
+          // splits. An unresolved candidate may still upgrade if a retained
+          // market becomes resolvable on a later run.
+          if (prior?.association !== 'resolved_market') merged.set(candidate.transactionId, candidate);
+        }
+        return [...merged.values()];
+      })()
+      : undefined;
+
+    const tradeCursorCandidate = exchange === 'bitvavo'
+      ? (tradeOutcomes.some((outcome) => outcome.partial) ? (oldCursors.trades ?? EXCHANGE_LAUNCH_MS.bitvavo) : nowMs)
+      : exchange === 'htx' || exchange === 'gemini' || exchange === 'btcmarkets'
       // Every symbol must have been verified through the same frontier. A
       // max would skip an interrupted symbol; min keeps its window replayable.
       ? (tradeOutcomes.length > 0
@@ -2878,6 +3190,12 @@ export async function syncConnection(
         warnings.push(`Excluded ${geminiBrokenTradesExcluded} fully broken Gemini trade(s); manual breaks remain included as Gemini requires.`);
       }
     }
+    if (exchange === 'bitvavo') {
+      // /account/history buy/sell rows are durable metadata, never transaction
+      // rows, until all associated native work has exhausted. Persistence then
+      // reconciles against prior + incoming fills atomically.
+      if (bitvavoAccountRows.length > 0) warnings.push(`Bitvavo deferred ${bitvavoAccountRows.length} account-history candidate row(s) until native-fill coverage is complete.`);
+    }
     const skippedTransfersByKind: Record<'deposits' | 'withdrawals', number> = {
       deposits: 0,
       withdrawals: 0
@@ -2894,7 +3212,9 @@ export async function syncConnection(
             ? bitfinexMovementDisposition(transfer) === 'terminal'
             : exchange === 'gemini'
               ? geminiTransferDisposition(transfer) === 'terminal'
-              : exchange === 'btcmarkets' && btcMarketsTransferDisposition(transfer) === 'terminal';
+              : exchange === 'btcmarkets'
+                ? btcMarketsTransferDisposition(transfer) === 'terminal'
+                : exchange === 'bitvavo' && bitvavoTransferDisposition(transfer) === 'terminal';
         if (terminal) {
           terminalTransfersByKind[kind] += 1;
           continue;
@@ -2969,6 +3289,21 @@ export async function syncConnection(
       ...(exchange === 'cryptocom'
         ? []
         : [{ endpoint: 'balance', accountClass: 'spot', required: true, status: 'complete' } as EndpointCoverageOutcome]),
+      ...(exchange === 'bitvavo' ? [{
+        endpoint: 'account_history', accountClass: 'spot', required: true,
+        status: bitvavoHistoryComplete ? 'complete' : 'partial',
+        requestedStart: bitvavoHistoryStart, requestedEnd: bitvavoHistoryEnd,
+        ...(() => {
+          const observed = bitvavoHistoryItems
+            .map((item) => typeof item.executedAt === 'string' ? Date.parse(item.executedAt) : Number.NaN)
+            .filter(Number.isFinite);
+          return observed.length > 0
+            ? { observedStart: Math.min(...observed), observedEnd: Math.max(...observed) }
+            : {};
+        })(),
+        paginationExhausted: bitvavoHistoryComplete,
+        warning: bitvavoUnresolvedPairs > 0 ? 'unresolved_market_pair' : undefined
+      } as EndpointCoverageOutcome] : []),
       endpointOutcome('deposits', requestedStarts[0], nowMs, transferOutcomes.get('deposits')!,
         skippedTransfersByKind.deposits > 0 || terminalTransfersByKind.deposits > 0 ||
           (transferOutcomes.get('deposits')?.unclassifiedCount ?? 0) > 0 ? {
@@ -3084,6 +3419,16 @@ export async function syncConnection(
       } : undefined,
       btcmarketsUnresolvedTransferIds: exchange === 'btcmarkets' ? btcmarketsUnresolvedTransferIds : undefined,
       btcmarketsUnsafeTradeIds: exchange === 'btcmarkets' ? btcmarketsUnsafeTradeIds : undefined,
+      bitvavoTradeHighWater: exchange === 'bitvavo' ? bitvavoTradeHighWater : undefined,
+      bitvavoPendingTransfers: exchange === 'bitvavo' ? bitvavoPendingTransfers : undefined,
+      bitvavoProgress: exchange === 'bitvavo' ? {
+        history: bitvavoHistoryProgress,
+        trades: bitvavoTradeProgress,
+        transfers: bitvavoTransferProgress
+      } : undefined,
+      bitvavoMarkets: exchange === 'bitvavo' ? bitvavoMarkets : undefined,
+      bitvavoPendingTransferEvidence: exchange === 'bitvavo' ? bitvavoPendingTransferEvidence : undefined,
+      bitvavoPendingAccountCandidates,
       skippedUnsettled,
       balance,
       operation
@@ -3123,6 +3468,12 @@ export async function syncConnection(
       } : undefined,
       btcmarketsUnresolvedTransferIds: exchange === 'btcmarkets' ? btcmarketsUnresolvedTransferIds : undefined,
       btcmarketsUnsafeTradeIds: exchange === 'btcmarkets' ? btcmarketsUnsafeTradeIds : undefined,
+      bitvavoTradeHighWater: exchange === 'bitvavo' ? bitvavoTradeHighWater : undefined,
+      bitvavoPendingTransfers: exchange === 'bitvavo' ? bitvavoPendingTransfers : undefined,
+      bitvavoProgress: exchange === 'bitvavo' ? fetchOutcome.bitvavoProgress : undefined,
+      bitvavoMarkets: exchange === 'bitvavo' ? bitvavoMarkets : undefined,
+      bitvavoPendingTransferEvidence: exchange === 'bitvavo' ? bitvavoPendingTransferEvidence : undefined,
+      bitvavoPendingAccountCandidates,
       balance,
       operation,
       hooks,
@@ -3190,6 +3541,12 @@ export async function persistSyncedRows(args: {
   btcmarketsUnresolvedTransferIds?: string[];
   btcmarketsUnsafeTradeIds?: string[];
   mexcCheckpoint?: MexcCheckpoint;
+  bitvavoTradeHighWater?: Record<string, number>;
+  bitvavoPendingTransfers?: { deposits?: number; withdrawals?: number };
+  bitvavoProgress?: SyncFetchOutcome['bitvavoProgress'];
+  bitvavoMarkets?: BitvavoMarketDescriptor[];
+  bitvavoPendingTransferEvidence?: SyncFetchOutcome['bitvavoPendingTransferEvidence'];
+  bitvavoPendingAccountCandidates?: BitvavoPendingAccountCandidate[];
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
   /** Reserved generation and source revision/state captured by this operation. */
@@ -3203,17 +3560,26 @@ export async function persistSyncedRows(args: {
   const settings = await getSettings();
   const { priceApiEnabled } = await getEffectiveSettings();
 
-  const scopedRows = args.rows.map((t) => ({ ...t, importBatchId: args.connectionId }));
+  const materializedAccountCandidates = (args.bitvavoPendingAccountCandidates ?? []).map((candidate) => {
+    const row = normalizeBitvavoAccountTrade(candidate.economics);
+    if (!row) throw new Error('Bitvavo deferred account-history economics were malformed.');
+    return { ...row, importBatchId: args.connectionId };
+  });
+  const deferredIds = new Set(materializedAccountCandidates.map((row) => row.id));
+  const scopedRows = [...args.rows.map((t) => ({ ...t, importBatchId: args.connectionId })), ...materializedAccountCandidates];
   const stamped = scopedRows.map((t) => ({
     ...t,
     fiatValue: normalizeFiatMagnitude(t.fiatValue),
     feeAmount: t.feeAmount != null ? Math.abs(t.feeAmount) : undefined
   }));
-  const { transactions: converted } = await convertOrNormalizeForImport(
+  const { transactions: convertedAll } = await convertOrNormalizeForImport(
     stamped,
     settings,
     priceApiEnabled
   );
+  const convertedDeferredByRef = new Map(convertedAll.filter((row) => deferredIds.has(row.id))
+    .map((row) => [row.sourceRef!, row]));
+  const converted = convertedAll.filter((row) => !deferredIds.has(row.id));
   const flat = args.balance ? flattenBalanceTotals(args.balance) : [];
   let committedIds: string[] = [];
   let dupsRemoved = 0;
@@ -3223,7 +3589,7 @@ export async function persistSyncedRows(args: {
     await db.transaction(
       'rw',
       [db.transactions, db.csvImports, db.exchangeConnections, db.exchangeBalances, db.authoritySnapshots,
-        db.authorityAssets, db.sourceCoverage],
+        db.authorityAssets, db.sourceCoverage, db.specIdHints, db.lots, db.disposals],
       async () => {
       const connection = await db.exchangeConnections.get(args.connectionId);
       if (!connection || !hasRequiredCredentials(connection) ||
@@ -3284,12 +3650,97 @@ export async function persistSyncedRows(args: {
         candidates.push(incoming);
       }
 
+      const retainedAccountCandidates: BitvavoPendingAccountCandidate[] = [];
+      if (connection.exchange === 'bitvavo') {
+        const persistedBitvavo = (await db.transactions.where('source').equals('bitvavo_api').toArray())
+          .filter((row) => row.importBatchId === args.connectionId);
+        const priorFallbacks = persistedBitvavo.filter((row) => row.raw?.exchangeSyncKind === 'account_history');
+        const incomingFills = candidates.filter((row) =>
+          row.source === 'bitvavo_api' && row.importBatchId === args.connectionId && row.raw?.exchangeSyncKind === 'trade');
+        const fillsByRef = new Map<string, Transaction>();
+        for (const fill of [...persistedBitvavo.filter((row) => row.raw?.exchangeSyncKind === 'trade'), ...incomingFills]) {
+          fillsByRef.set(fill.sourceRef ?? fill.id, fill);
+        }
+        const allFills = [...fillsByRef.values()];
+        const pendingTasks = args.bitvavoProgress?.trades?.tasks ?? [];
+
+        // Deferred candidates are metadata, not ledger rows. They become a
+        // fallback only after every associated native task has exhausted.
+        for (const candidate of args.bitvavoPendingAccountCandidates ?? []) {
+          if (pendingTasks.some((task) => bitvavoCandidateOverlapsTask(candidate, task))) {
+            retainedAccountCandidates.push(candidate);
+            continue;
+          }
+          const fallback = convertedDeferredByRef.get(candidate.transactionId);
+          if (!fallback) throw new Error('Bitvavo deferred account-history candidate could not be materialized.');
+          const resolution = reconcileBitvavoAccountTrades([fallback], allFills);
+          if (resolution.ambiguous > 0) {
+            throw new Error('Bitvavo deferred account-history candidate matched ambiguous native orders; pending work and cursor were retained.');
+          }
+          if (resolution.matched === 0) candidates.push(fallback);
+          // Exact match: discard only metadata and retain every native fill
+          // byte-for-byte. No fill is rewritten, aggregated, or deleted.
+        }
+
+        // Defensive migration for unshipped legacy fallback rows. Deletion is
+        // allowed only for a demonstrably untouched default row with no ID-
+        // linked state. Unsafe state aborts the whole transaction, so incoming
+        // fills and cursor movement are rolled back together.
+        const immutableRows = priorFallbacks.flatMap((row) => {
+          const immutable = immutableBitvavoAccountTrade(row);
+          return immutable ? [{ ...immutable, id: row.id }] : [];
+        });
+        const fallbackById = new Map(priorFallbacks.map((row) => [row.id, row]));
+        const late = reconcileBitvavoAccountTrades(immutableRows, [...fillsByRef.values()]);
+        if (late.ambiguous > 0) {
+          throw new Error('A legacy Bitvavo account-history fallback matched ambiguous native orders; no rows or cursor were changed.');
+        }
+        for (const match of late.matches) {
+          const fallback = fallbackById.get(match.history.id);
+          if (!fallback) continue;
+          const stillPending = match.fills.some((fill) => {
+            const symbol = typeof fill.raw?.bitvavoMarketSymbol === 'string' ? fill.raw.bitvavoMarketSymbol : undefined;
+            return args.bitvavoProgress?.trades?.tasks.some((task) =>
+              task.symbol === symbol && fallback.timestamp >= task.start && fallback.timestamp <= task.end);
+          });
+          if (stillPending) {
+            throw new Error('A legacy Bitvavo account-history fallback matched fills before native pagination exhausted; no rows or cursor were changed.');
+          }
+          const expected = immutableBitvavoAccountTrade(fallback);
+          const defaultRow = expected != null && fallback.type === expected.type && fallback.timestamp === expected.timestamp &&
+            fallback.asset === expected.asset && fallback.amount === expected.amount && fallback.counterAsset === expected.counterAsset &&
+            fallback.counterAmount === expected.counterAmount && fallback.feeAsset === expected.feeAsset &&
+            fallback.feeAmount === expected.feeAmount && fallback.fiatCurrency === expected.fiatCurrency &&
+            fallback.fiatValue === expected.fiatValue && fallback.notes === expected.notes &&
+            JSON.stringify(fallback.flags) === JSON.stringify(expected.flags) && fallback.isInternalTransfer === false &&
+            fallback.isSpam == null && fallback.safetyState == null && fallback.category == null &&
+            fallback.categoryOrigin == null && fallback.categoryLocked == null && fallback.categoryUpdatedAt == null &&
+            fallback.classificationEvidence == null && fallback.internalTransferPairId == null && fallback.linkedTransferId == null &&
+            fallback.internalTransferDecision == null && fallback.internalTransferMatchMethod == null &&
+            fallback.dedupMatchedApiId == null && fallback.dedupMatchedApiRow == null && fallback.deletedSourceEvidence == null;
+          const linkedTransaction = (await db.transactions.toArray()).some((row) =>
+            row.id !== fallback.id && (row.linkedTransferId === fallback.id || row.dedupMatchedApiId === fallback.id));
+          const counterpart = fallback.linkedTransferId ? await db.transactions.get(fallback.linkedTransferId) : undefined;
+          const reciprocalPair = counterpart != null && counterpart.linkedTransferId === fallback.id &&
+            counterpart.internalTransferPairId === fallback.internalTransferPairId;
+          const pairState = fallback.linkedTransferId != null || fallback.internalTransferPairId != null || reciprocalPair;
+          const idLinked = Boolean(await db.specIdHints.get(fallback.id)) || linkedTransaction || pairState ||
+            (await db.lots.toArray()).some((lot) => lot.sourceTxId === fallback.id) ||
+            (await db.disposals.toArray()).some((disposal) => disposal.sourceTxId === fallback.id);
+          if (!defaultRow || idLinked) {
+            throw new Error('A legacy Bitvavo account-history fallback has user-owned or ID-linked state; no rows or cursor were changed.');
+          }
+          await db.transactions.delete(fallback.id);
+        }
+      }
+
       const fresh = await filterAlreadyImported(candidates);
-      alreadyImported = converted.length - fresh.length;
+      const freshFetched = fresh.filter((row) => !deferredIds.has(row.id));
+      alreadyImported = converted.length - freshFetched.length;
       if (fresh.length > 0) await db.transactions.bulkPut(fresh);
       dupsRemoved = await deduplicateTransactions();
       committedIds = fresh.map((row) => row.id);
-      operationDupsRemoved = (await db.transactions.bulkGet(committedIds)).filter((row) => row == null).length;
+      operationDupsRemoved = (await db.transactions.bulkGet(freshFetched.map((row) => row.id))).filter((row) => row == null).length;
 
       const asOf = args.operation.asOf;
       let authorityBalances: Array<{ asset: string; amount: number }> = [];
@@ -3359,6 +3810,8 @@ export async function persistSyncedRows(args: {
       assertValidSourceCoverageRow(coverage);
       await db.sourceCoverage.add(coverage);
       await db.exchangeConnections.update(args.connectionId, {
+        // Pending native tasks already pin the conservative trade cursor.
+        // Ambiguous/blocked resolutions throw and roll this update back.
         cursors: args.cursors,
         knownAssets: args.knownAssets,
         knownSymbols: args.knownSymbols,
@@ -3371,6 +3824,12 @@ export async function persistSyncedRows(args: {
         btcmarketsUnresolvedTransferIds: args.btcmarketsUnresolvedTransferIds,
         btcmarketsUnsafeTradeIds: args.btcmarketsUnsafeTradeIds,
         mexcCheckpoint: args.mexcCheckpoint,
+        bitvavoTradeHighWater: args.bitvavoTradeHighWater,
+        bitvavoPendingTransfers: args.bitvavoPendingTransfers,
+        bitvavoProgress: args.bitvavoProgress,
+        bitvavoMarkets: args.bitvavoMarkets,
+        bitvavoPendingTransferEvidence: args.bitvavoPendingTransferEvidence,
+        bitvavoPendingAccountCandidates: retainedAccountCandidates.length > 0 ? retainedAccountCandidates : undefined,
         lastSyncAt: asOf,
         status: 'ok',
         lastError: undefined,

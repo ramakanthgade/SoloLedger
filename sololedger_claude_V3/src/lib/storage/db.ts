@@ -163,6 +163,28 @@ export interface ExchangeConnectionRow {
   btcmarketsUnsafeTradeIds?: string[];
   /** Frozen MEXC recursive closed-window work and fail-closed evidence. */
   mexcCheckpoint?: import('@/lib/exchangeSync/mexc').MexcCheckpoint;
+  /** Per-market verified Bitvavo native-fill frontier; includes inactive known markets. */
+  bitvavoTradeHighWater?: Record<string, number>;
+  /** Oldest unresolved specialized transfer timestamp, replayed until terminal. */
+  bitvavoPendingTransfers?: { deposits?: number; withdrawals?: number };
+  /** Resumable fixed-range work; committed atomically with imported rows. */
+  bitvavoProgress?: {
+    history?: import('@/lib/exchangeSync/bitvavo').BitvavoRangeProgress;
+    trades?: import('@/lib/exchangeSync/bitvavo').BitvavoTradeProgress;
+    transfers?: {
+      deposits?: import('@/lib/exchangeSync/bitvavo').BitvavoRangeProgress;
+      withdrawals?: import('@/lib/exchangeSync/bitvavo').BitvavoRangeProgress;
+    };
+  };
+  /** Retained native market identity used after a market leaves /v2/markets. */
+  bitvavoMarkets?: import('@/lib/exchangeSync/bitvavo').BitvavoMarketDescriptor[];
+  /** Exact unresolved transfer identities; timestamps alone cannot prove resolution. */
+  bitvavoPendingTransferEvidence?: {
+    deposits?: import('@/lib/exchangeSync/bitvavo').BitvavoPendingTransferEvidence[];
+    withdrawals?: import('@/lib/exchangeSync/bitvavo').BitvavoPendingTransferEvidence[];
+  };
+  /** Deferred /account/history economics awaiting complete native task coverage. */
+  bitvavoPendingAccountCandidates?: import('@/lib/exchangeSync/bitvavo').BitvavoPendingAccountCandidate[];
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
@@ -949,7 +971,8 @@ export const EXCHANGE_API_SOURCES = new Set([
   'bitfinex_api',
   'gemini_api',
   'btcmarkets_api',
-  'mexc_api'
+  'mexc_api',
+  'bitvavo_api'
 ]);
 
 /**
@@ -1054,6 +1077,12 @@ export function transactionExchangeKey(
     const rawKind = t.raw?.exchangeSyncKind;
     const kind = rawKind === 'trade' || rawKind === 'deposit' || rawKind === 'withdrawal' ? rawKind : 'unknown';
     return `ex-api:${t.importBatchId ?? 'unscoped'}:mexc:${kind}:${t.sourceRef}`;
+  }
+  if (t.source === 'bitvavo_api') {
+    const rawKind = t.raw?.exchangeSyncKind;
+    const kind = rawKind === 'trade' || rawKind === 'account_history' || rawKind === 'deposit' || rawKind === 'withdrawal'
+      ? rawKind : 'unknown';
+    return `ex-api:${t.importBatchId ?? 'unscoped'}:bitvavo:${kind}:${t.sourceRef}`;
   }
   if (isStableRefSource(t.source)) {
     return `ex:${t.sourceRef}`;

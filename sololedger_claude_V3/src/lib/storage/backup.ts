@@ -16,6 +16,7 @@ import {
 } from '@/lib/ledger/chainNamespace';
 import { assetKey as canonicalAssetKey } from '@/lib/ledger/assetKey';
 import { binanceApiIdentity } from './binanceEconomicDedup';
+import { validBitvavoPersistedState, validBitvavoPersistedStateAt } from '@/lib/exchangeSync/bitvavo';
 import { isExcludedSafetyState, type ProviderEvidenceRow, type SafetyDecisionRow, type SafetyState } from '@/lib/safety/types';
 import { safetySubjectKind } from '@/lib/safety/canonicalAssets';
 import { qualifiesForAutomaticSpam } from '@/lib/safety/assetSafety';
@@ -161,6 +162,19 @@ function redactedExchangeSource(row: ExchangeConnectionRow): RedactedExchangeIde
     btcmarketsUnsafeTradeIds: row.btcmarketsUnsafeTradeIds == null
       ? undefined : [...row.btcmarketsUnsafeTradeIds],
     mexcCheckpoint: row.mexcCheckpoint == null ? undefined : structuredClone(row.mexcCheckpoint),
+    bitvavoTradeHighWater: row.bitvavoTradeHighWater == null ? undefined : { ...row.bitvavoTradeHighWater },
+    bitvavoPendingTransfers: row.bitvavoPendingTransfers == null ? undefined : {
+      deposits: row.bitvavoPendingTransfers.deposits,
+      withdrawals: row.bitvavoPendingTransfers.withdrawals
+    },
+    bitvavoProgress: row.bitvavoProgress == null ? undefined : structuredClone(row.bitvavoProgress),
+    bitvavoMarkets: row.bitvavoMarkets == null ? undefined : row.bitvavoMarkets.map((market) => ({ ...market })),
+    bitvavoPendingTransferEvidence: row.bitvavoPendingTransferEvidence == null ? undefined : {
+      deposits: row.bitvavoPendingTransferEvidence.deposits?.map((item) => ({ ...item })),
+      withdrawals: row.bitvavoPendingTransferEvidence.withdrawals?.map((item) => ({ ...item }))
+    },
+    bitvavoPendingAccountCandidates: row.bitvavoPendingAccountCandidates == null ? undefined :
+      structuredClone(row.bitvavoPendingAccountCandidates),
     lastSyncAt: row.lastSyncAt, status: row.status,
     lastError: typeof row.lastError === 'string' ? row.lastError : undefined,
     accountIdentityId: row.accountIdentityId
@@ -392,6 +406,14 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
     if (!row.exchange.trim() || !Number.isFinite(row.createdAt) || typeof row.cursors !== 'object' || row.cursors == null) {
       throw new Error('Invalid backup file: exchange source shape is malformed.');
     }
+    const ownsBitvavoState = row.bitvavoTradeHighWater != null || row.bitvavoPendingTransfers != null ||
+      row.bitvavoProgress != null || row.bitvavoMarkets != null || row.bitvavoPendingTransferEvidence != null ||
+      row.bitvavoPendingAccountCandidates != null;
+    const backupAsOf = Date.parse(payload.exportedAt);
+    if ((row.exchange !== 'bitvavo' && ownsBitvavoState) || !validBitvavoPersistedState(row) ||
+      (row.exchange === 'bitvavo' && (!Number.isSafeInteger(backupAsOf) || !validBitvavoPersistedStateAt(row, backupAsOf)))) {
+      throw new Error('Invalid backup file: Bitvavo resumable progress is malformed.');
+    }
     const pending = row.cryptocomPendingTransfers;
     if (pending != null && (!isPlainObject(pending) ||
       Object.keys(pending).some((key) => key !== 'deposits' && key !== 'withdrawals') ||
@@ -407,6 +429,67 @@ function validateV3(payload: BackupFileV3 | BackupFileV4 | BackupFileV5 | Backup
         Object.prototype.hasOwnProperty.call(bitfinexPending, kind) &&
         (!Number.isSafeInteger(bitfinexPending[kind]) || bitfinexPending[kind]! < 0)))) {
       throw new Error('Invalid backup file: Bitfinex pending-movement checkpoint is malformed.');
+    }
+    const bitvavoPending = row.bitvavoPendingTransfers;
+    if (bitvavoPending != null && (!isPlainObject(bitvavoPending) ||
+      Object.keys(bitvavoPending).some((key) => key !== 'deposits' && key !== 'withdrawals') ||
+      (['deposits', 'withdrawals'] as const).some((kind) =>
+        Object.prototype.hasOwnProperty.call(bitvavoPending, kind) &&
+        (!Number.isSafeInteger(bitvavoPending[kind]) || bitvavoPending[kind]! < 0)))) {
+      throw new Error('Invalid backup file: Bitvavo pending-transfer checkpoint is malformed.');
+    }
+    const bitvavoHighWater = row.bitvavoTradeHighWater;
+    if (bitvavoHighWater != null && (!isPlainObject(bitvavoHighWater) ||
+      Object.entries(bitvavoHighWater).some(([symbol, frontier]) =>
+        !symbol.trim() || !Number.isSafeInteger(frontier) || (frontier as number) < 0))) {
+      throw new Error('Invalid backup file: Bitvavo trade high-water is malformed.');
+    }
+    const validRangeProgress = (value: unknown): boolean => {
+      if (!isPlainObject(value) || !Number.isSafeInteger(value.requestedStart) || !Number.isSafeInteger(value.requestedEnd) ||
+        (value.requestedStart as number) > (value.requestedEnd as number) || !Array.isArray(value.tasks) || value.tasks.length > 10_000) return false;
+      return value.tasks.every((task) => isPlainObject(task) && Number.isSafeInteger(task.start) &&
+        Number.isSafeInteger(task.end) && (task.start as number) <= (task.end as number) &&
+        (task.start as number) >= (value.requestedStart as number) && (task.end as number) <= (value.requestedEnd as number) &&
+        (task.tradeIdTo == null || (typeof task.tradeIdTo === 'string' && /^[0-9a-f-]{36}$/i.test(task.tradeIdTo))));
+    };
+    const bitvavoProgress = row.bitvavoProgress;
+    if (bitvavoProgress != null && (!isPlainObject(bitvavoProgress) ||
+      Object.keys(bitvavoProgress).some((key) => !['history', 'trades', 'transfers'].includes(key)) ||
+      (bitvavoProgress.history != null && !validRangeProgress(bitvavoProgress.history)) ||
+      (bitvavoProgress.trades != null && (!isPlainObject(bitvavoProgress.trades) ||
+        Object.keys(bitvavoProgress.trades).some((key) => key !== 'requestedEnd' && key !== 'tasks') ||
+        !Number.isSafeInteger(bitvavoProgress.trades.requestedEnd) || bitvavoProgress.trades.requestedEnd < 0 ||
+        !Array.isArray(bitvavoProgress.trades.tasks) || bitvavoProgress.trades.tasks.length === 0 ||
+        bitvavoProgress.trades.tasks.length > 10_000 || bitvavoProgress.trades.tasks.some((task) =>
+          !isPlainObject(task) || typeof task.symbol !== 'string' || !task.symbol.trim() ||
+          Object.keys(task).some((key) => !['symbol', 'start', 'end', 'tradeIdTo'].includes(key)) ||
+          !Number.isSafeInteger(task.start) || (task.start as number) < 0 ||
+          !Number.isSafeInteger(task.end) || (task.end as number) < 0 ||
+          (task.start as number) > (task.end as number) ||
+          (task.end as number) > (bitvavoProgress.trades!.requestedEnd as number) ||
+          (task.tradeIdTo != null && (typeof task.tradeIdTo !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(task.tradeIdTo)))))) ||
+      (bitvavoProgress.transfers != null && (!isPlainObject(bitvavoProgress.transfers) ||
+        (['deposits', 'withdrawals'] as const).some((kind) =>
+          (bitvavoProgress.transfers as Record<string, unknown>)[kind] != null &&
+          !validRangeProgress((bitvavoProgress.transfers as Record<string, unknown>)[kind])))))) {
+      throw new Error('Invalid backup file: Bitvavo resumable progress is malformed.');
+    }
+    const bitvavoMarkets = row.bitvavoMarkets;
+    if (bitvavoMarkets != null && (!Array.isArray(bitvavoMarkets) || bitvavoMarkets.length > 10_000 ||
+      bitvavoMarkets.some((market) => !isPlainObject(market) ||
+        ['id', 'symbol', 'base', 'quote'].some((key) => typeof market[key] !== 'string' || !(market[key] as string).trim())) ||
+      new Set(bitvavoMarkets.map((market) => market.id)).size !== bitvavoMarkets.length)) {
+      throw new Error('Invalid backup file: Bitvavo retained markets are malformed.');
+    }
+    const bitvavoPendingEvidence = row.bitvavoPendingTransferEvidence;
+    if (bitvavoPendingEvidence != null && (!isPlainObject(bitvavoPendingEvidence) ||
+      (['deposits', 'withdrawals'] as const).some((kind) => bitvavoPendingEvidence[kind] != null &&
+        (!Array.isArray(bitvavoPendingEvidence[kind]) || bitvavoPendingEvidence[kind]!.length > 1_000 ||
+          bitvavoPendingEvidence[kind]!.some((item) => !isPlainObject(item) ||
+            typeof item.evidence !== 'string' || !item.evidence || !Number.isSafeInteger(item.timestamp) || item.timestamp < 0 ||
+            !Number.isSafeInteger(item.occurrence) || item.occurrence < 0) ||
+          new Set(bitvavoPendingEvidence[kind]!.map((item) => `${item.evidence}|${item.occurrence}`)).size !== bitvavoPendingEvidence[kind]!.length)))) {
+      throw new Error('Invalid backup file: Bitvavo pending-transfer evidence is malformed.');
     }
     const progress = row.htxTradeProgress;
     const btcmarketsCursors = row.btcmarketsNativeCursors;
