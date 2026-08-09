@@ -165,6 +165,12 @@ const TIER2 = [
     probe: 'GET /v3/time',
     path: '/v3/time',
     check: (r, json) => r.status === 200 && typeof json?.timestamp === 'string' && Number.isFinite(Date.parse(json.timestamp))
+  },
+  {
+    exchange: 'mexc',
+    probe: 'GET /api/v3/time',
+    path: '/api/v3/time',
+    check: (r, json) => r.status === 200 && typeof json?.serverTime === 'number'
   }
 ];
 
@@ -433,6 +439,23 @@ const tier3 = [
       };
     },
     check: (r) => r.status === 401 && r.text.includes('"code":"InvalidAPIKey"') && /invalid api key/i.test(r.text)
+  },
+  {
+    exchange: 'mexc',
+    probe: 'GET /api/v3/account (dummy-key HMAC-SHA256 route/auth-boundary probe)',
+    build() {
+      const apiKey = 'D'.repeat(32);
+      const secret = 'E'.repeat(32);
+      const query = `timestamp=${Date.now()}&recvWindow=5000`;
+      const signature = hmacHex('sha256', secret, query);
+      return {
+        path: `/api/v3/account?${query}&signature=${signature}`,
+        exchangeHeaders: { 'x-mexc-apikey': apiKey, source: 'CCXT' }
+      };
+    },
+    // Unknown keys may be checked before signatures. This proves only the
+    // exact relay route and auth boundary, not signature validation.
+    check: (r) => r.status === 400 && /"code"\s*:\s*10072/.test(r.text) && /Api key info invalid/i.test(r.text)
   }
 ];
 

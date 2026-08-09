@@ -200,7 +200,8 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['htx', 'api.huobi.pro', '/v1/common/timestamp'],
     ['cryptocom', 'api.crypto.com', '/exchange/v1/public/get-instruments'],
     ['bitfinex', 'api.bitfinex.com', '/v2/platform/status'],
-    ['btcmarkets', 'api.btcmarkets.net', '/v3/time']
+    ['btcmarkets', 'api.btcmarkets.net', '/v3/time'],
+    ['mexc', 'api.mexc.com', '/api/v3/time']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -448,6 +449,25 @@ describe('3. header allowlist', () => {
       'bm-auth-signature': 'signature'
     });
   });
+
+  it('mexc: preserves signed query bytes and forwards only X-MEXC-APIKEY/source', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"code":10072,"msg":"Api key info invalid"}', 400));
+    const query = 'symbol=BTCUSDT&timestamp=1&signature=Ab%2B%2F%3D';
+    await rawRequest({
+      path: `/mexc/api/v3/myTrades?${query}`,
+      headers: {
+        ...AUTH,
+        'x-exchange-x-mexc-apikey': 'MEXC_KEY',
+        'x-exchange-source': 'CCXT',
+        'x-exchange-cookie': 'never-forward',
+        origin: 'https://evil.example'
+      }
+    });
+    const [url, init] = lastUpstreamCall();
+    expect(url).toBe(`https://api.mexc.com/api/v3/myTrades?${query}`);
+    expect(init.method).toBe('GET');
+    expect(init.headers).toEqual({ 'x-mexc-apikey': 'MEXC_KEY', source: 'CCXT' });
+  });
 });
 
 /* ------------------------------------------------------------------ *
@@ -500,6 +520,19 @@ describe('4. exchangeId and path validation', () => {
     await exchangeTunnelHandler({ method: 'GET', url, headers: {} } as unknown as Request, res);
     expect(state.statusCode).toBe(400);
     expect(res.locals.tunnelErrorKind).toBe('bad_path');
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['/mexc/api/v3/order', 'GET'],
+    ['/mexc/api/v3/capital/withdraw/apply', 'GET'],
+    ['/mexc/api/v1/contract/detail', 'GET'],
+    ['/mexc/api/v3/account', 'POST'],
+    ['/btcmarkets/api/v3/symbol/offline', 'GET']
+  ])('contains MEXC to exact read-only paths: %s %s', async (path, method) => {
+    const res = await client(path, { method, headers: AUTH });
+    expect(res.status).toBe(400);
+    expect(res.headers.get('x-sololedger-error')).toBe('bad_path');
     expect(upstreamMock).not.toHaveBeenCalled();
   });
 

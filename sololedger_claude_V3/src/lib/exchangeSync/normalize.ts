@@ -18,6 +18,7 @@
  */
 import type { Transaction, TxType } from '@/types/transaction';
 import { exchangeSourceRef, makeId } from '@/lib/parsers/types';
+import { mexcDepositSourceRef } from './mexcIdentity';
 import { quoteToFiatCurrency } from '@/lib/parsers/pairUtils';
 import { isRealTxHash, isValidTxHashForChain, normalizeChain } from '@/lib/parsers/explorer';
 import type { ExchangeId } from './types';
@@ -46,7 +47,8 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   cryptocom: 'excx',
   bitfinex: 'exbf',
   gemini: 'exgm',
-  btcmarkets: 'exbm'
+  btcmarkets: 'exbm',
+  mexc: 'exmx'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -124,6 +126,10 @@ function tradeSourceRef(
     case 'btcmarkets':
       // No BTC Markets CSV parser exists. Keep the provider's account-local
       // fill id for API replay without manufacturing an API↔CSV collision.
+      return trade.id;
+    case 'mexc':
+      // Native fill id. MEXC has no SoloLedger CSV parser, so do not invent
+      // API/CSV parity; storage additionally scopes this by connection/kind.
       return trade.id;
   }
 }
@@ -217,7 +223,7 @@ export function normalizeTrade(
     raw: {
       tradeId: trade.id,
       orderId: trade.order,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets'
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc'
         ? { exchangeSyncKind: 'trade' as const }
         : {})
     }
@@ -651,6 +657,10 @@ function transferSourceRef(
       return transfer.id ? `${type === 'transfer_in' ? 'deposit' : 'withdrawal'}:${transfer.id}` : undefined;
     case 'btcmarkets':
       return transfer.id;
+    case 'mexc': {
+      if (type === 'transfer_out') return transfer.id;
+      return mexcDepositSourceRef(transfer);
+    }
   }
 }
 
@@ -685,6 +695,10 @@ function isSettledTransfer(
       : status === '5' || rawStatus === '5';
   }
   if (exchange === 'bitfinex') return status === 'ok';
+  if (exchange === 'mexc') {
+    const raw = String(rawStatus ?? status ?? '');
+    return type === 'transfer_in' ? raw === '5' || raw === '12' : raw === '7';
+  }
   return false;
 }
 
@@ -799,7 +813,7 @@ export function normalizeTransfer(exchange: ExchangeId, transfer: UnifiedTransfe
       txIndex: transfer.info?.txIndex,
       refid: typeof transfer.info?.refid === 'string' ? transfer.info.refid : undefined,
       transferId: transfer.id,
-      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' ? {
+      ...(exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'mexc' ? {
         exchangeSyncKind: type === 'transfer_in' ? 'deposit' as const : 'withdrawal' as const,
         // Immutable provider evidence helps legacy/future migrations recover
         // endpoint kind without consulting the user-editable transaction type.

@@ -1,0 +1,8 @@
+{
+  "timezone": "UTC",
+  "serverTime": 1786233600000,
+  "symbols": [
+    {"symbol":"BTCUSDT","status":"1","baseAsset":"BTC","baseAssetPrecision":8,"quoteAsset":"USDT","quoteAssetPrecision":8,"isSpotTradingAllowed":true,"isMarginTradingAllowed":false,"filters":[]},
+    {"symbol":"OLDUSDT","status":"0","baseAsset":"OLD","baseAssetPrecision":8,"quoteAsset":"USDT","quoteAssetPrecision":8,"isSpotTradingAllowed":false,"isMarginTradingAllowed":false,"filters":[]}
+  ]
+}

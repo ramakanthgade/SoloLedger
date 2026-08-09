@@ -56,6 +56,7 @@ interface StagedMeta {
   btcmarketsPagination?: { trades?: BtcMarketsPaginationCheckpoint; transfers?: BtcMarketsPaginationCheckpoint };
   btcmarketsUnresolvedTransferIds?: string[];
   btcmarketsUnsafeTradeIds?: string[];
+  mexcCheckpoint?: import('./mexc').MexcCheckpoint;
   /** Private current-balance authority fetched with the staged rows. */
   balance: UnifiedBalance;
   /** Non-secret source revision/state token captured with operation evidence. */
@@ -297,6 +298,7 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         btcmarketsPagination: outcome.btcmarketsPagination,
         btcmarketsUnresolvedTransferIds: outcome.btcmarketsUnresolvedTransferIds,
         btcmarketsUnsafeTradeIds: outcome.btcmarketsUnsafeTradeIds,
+        mexcCheckpoint: outcome.mexcCheckpoint,
         // Keep only normalized totals in memory. ccxt's raw `info` can carry
         // account metadata (for example a Binance UID) and is not needed for
         // confirmation.
@@ -351,6 +353,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       btcmarketsPagination: staged.meta?.btcmarketsPagination,
       btcmarketsUnresolvedTransferIds: staged.meta?.btcmarketsUnresolvedTransferIds,
       btcmarketsUnsafeTradeIds: staged.meta?.btcmarketsUnsafeTradeIds,
+      mexcCheckpoint: staged.meta?.mexcCheckpoint,
       balance: staged.meta?.balance,
       operation: staged.meta.operation,
       hooks: hooks(),

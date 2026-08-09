@@ -772,6 +772,14 @@ describe('importFullBackup', () => {
       cursors: {}, status: 'ok', btcmarketsNativeCursors: { trades: '910003', transfers: '920002' },
       btcmarketsPagination: { trades: { mode: 'incremental', cursor: '910010', newest: '910010' } },
       btcmarketsUnresolvedTransferIds: ['920003'], btcmarketsUnsafeTradeIds: ['910009']
+    }, {
+      id: 'mexc-source', exchange: 'mexc', apiKey: 'key', secret: 'secret', createdAt: 1,
+      cursors: {}, status: 'ok', mexcCheckpoint: {
+        version: 1,
+        trade: { requestedStart: 1, requestedEnd: 10, symbols: ['BTC/USDT'], pendingWindows: [{ symbol: 'BTC/USDT', start: 1, end: 10 }], completedSymbols: [], nextSymbolIndex: 0, unsafeEvidence: [] },
+        deposits: { requestedStart: 1, requestedEnd: 10, pendingWindows: [{ start: 1, end: 10 }], unsafeEvidence: [] },
+        withdrawals: { requestedStart: 1, requestedEnd: 10, pendingWindows: [], unsafeEvidence: [] }
+      }
     }]);
     const payload = await createFullBackupPayload();
     await importFullBackup(backupFile(payload));
@@ -801,6 +809,25 @@ describe('importFullBackup', () => {
       btcmarketsPagination: { trades: { mode: 'incremental', cursor: '910010', newest: '910010' } },
       btcmarketsUnresolvedTransferIds: ['920003'], btcmarketsUnsafeTradeIds: ['910009']
     });
+    expect(await db.exchangeConnections.get('mexc-source')).toMatchObject({
+      credentialsState: 'reauthorization_required',
+      mexcCheckpoint: { version: 1, trade: { symbols: ['BTC/USDT'], nextSymbolIndex: 0 } }
+    });
+    expect(payload.exchangeConnections.find((row) => row.id === 'mexc-source')).not.toHaveProperty('apiKey');
+    expect(payload.exchangeConnections.find((row) => row.id === 'mexc-source')).not.toHaveProperty('secret');
+  });
+
+  it('rejects malformed MEXC checkpoint before clearing existing data', async () => {
+    await db.exchangeConnections.put({ id: 'mexc-source', exchange: 'mexc', createdAt: 1, cursors: {}, status: 'idle' });
+    const payload = await createFullBackupPayload();
+    (payload.exchangeConnections[0] as unknown as { mexcCheckpoint: unknown }).mexcCheckpoint = {
+      version: 1,
+      trade: { requestedStart: 1, requestedEnd: 2, symbols: ['BTC/USDT'], pendingWindows: [{ symbol: 'BTC/USDT', start: 1, end: 3 }], completedSymbols: [], nextSymbolIndex: 0, unsafeEvidence: [] },
+      deposits: { requestedStart: 1, requestedEnd: 2, pendingWindows: [], unsafeEvidence: [] },
+      withdrawals: { requestedStart: 1, requestedEnd: 2, pendingWindows: [], unsafeEvidence: [] }
+    };
+    await expect(importFullBackup(backupFile(payload))).rejects.toThrow('MEXC checkpoint is malformed');
+    expect(await db.exchangeConnections.get('mexc-source')).toBeDefined();
   });
 
   it.each([

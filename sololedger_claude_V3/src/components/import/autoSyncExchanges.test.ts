@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(12);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(13);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -54,6 +54,7 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('cryptocom')?.label).toBe('Crypto.com Exchange');
     expect(getAutoSyncExchange('bitfinex')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange('gemini')?.needsPassphrase).toBe(false);
+    expect(getAutoSyncExchange('mexc')?.needsPassphrase).toBe(false);
     expect(getAutoSyncExchange(null)).toBeUndefined();
     expect(getAutoSyncExchange('nope')).toBeUndefined();
   });
