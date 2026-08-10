@@ -16,6 +16,11 @@ const reservesResult = () => {
 };
 
 describe('same-block Aave-compatible direct reads', () => {
+  it('uses the two-address reserve-data selector rather than Pool user-account data', () => {
+    expect(AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData).toBe('0x28dd2d01');
+    expect(AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData).not.toBe('0xbf92857c');
+  });
+
   it('reads supply once with collateral metadata and both positive debt modes at one block', async () => {
     const entry = PROTOCOL_REGISTRY['aave-v3-ethereum'];
     const calls: Array<{ to?: string; data?: string; block?: unknown }> = [];

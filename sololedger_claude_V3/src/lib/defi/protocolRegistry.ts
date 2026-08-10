@@ -3,7 +3,9 @@ import type { ProtocolId } from './types';
 export const ETHEREUM_CHAIN_ID = 1 as const;
 export const AAVE_DATA_PROVIDER_SELECTORS = Object.freeze({
   getAllReservesTokens: '0xb316ff89',
-  getUserReserveData: '0xbf92857c',
+  // getUserReserveData(address asset,address user). Do not confuse this with
+  // Pool.getUserAccountData(address), whose selector is 0xbf92857c.
+  getUserReserveData: '0x28dd2d01',
   getReserveTokensAddresses: '0xcd3daf9b',
   decimals: '0x313ce567',
   symbol: '0x95d89b41'
