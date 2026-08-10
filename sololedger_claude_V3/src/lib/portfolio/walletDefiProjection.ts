@@ -20,19 +20,23 @@ export interface WalletDefiCustodyHolding {
   sourceVerification: readonly { scopeId: string; quantity: number }[];
 }
 
+function custodyHoldingIdentity(holding: Pick<WalletDefiCustodyHolding, 'asset' | 'chain' | 'contractAddress'>): string {
+  return `${holding.chain?.trim().toLowerCase() ?? 'unchained'}:${portfolioHoldingKey(holding)}`;
+}
+
 /** Build canonical wallet custody slices identically for Dashboard and Data Health. */
 export function walletDefiCustodyFromHoldings(
   holdings: readonly WalletDefiCustodyHolding[],
   valued: readonly ValuedHolding[]
 ): CustodyExposure[] {
-  const valueByKey = new Map(valued.map((row) => [portfolioHoldingKey(row), row]));
+  const valueByKey = new Map(valued.map((row) => [custodyHoldingIdentity(row), row]));
   const custody: CustodyExposure[] = [];
   for (const holding of holdings) {
-    const valuedHolding = valueByKey.get(portfolioHoldingKey(holding));
+    const valuedHolding = valueByKey.get(custodyHoldingIdentity(holding));
     // Cost basis is historical evidence, not a current market mark. Preserve
     // an unknown current valuation instead of turning it into a numeric zero.
-    const unitValue = holding.quantity > 1e-9 && valuedHolding?.valueNow != null
-      ? valuedHolding.valueNow / holding.quantity
+    const unitValue = valuedHolding && valuedHolding.amount > 1e-9 && valuedHolding.valueNow != null
+      ? valuedHolding.valueNow / valuedHolding.amount
       : null;
     const slices = holding.sourceVerification.length > 0
       ? holding.sourceVerification

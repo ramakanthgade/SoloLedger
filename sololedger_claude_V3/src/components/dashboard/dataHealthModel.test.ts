@@ -104,6 +104,44 @@ describe('buildDataHealthModel', () => {
     ]);
     expect(shadow.projection.netWorth).toBe(-7_470);
   });
+  it('does not price an Ethereum DeFi underlying from same-address Polygon custody', () => {
+    const address = `0x${'1'.repeat(40)}`;
+    const reserve = `0x${'2'.repeat(40)}`;
+    const positionSnapshot = {
+      snapshotId: 'chain-collision-position', generation: 1,
+      accountIdentityScope: `wallet:evm:${address}`,
+      protocolId: 'aave-v3-ethereum' as const, chainId: 1, status: 'complete' as const,
+      capturedAt: 1, evidence: []
+    };
+    const shadow = buildCoherentDataHealthShadow({
+      transactions: [{
+        id: 'polygon-custody', timestamp: 1, type: 'transfer_in', asset: 'POLY', amount: 10,
+        fiatCurrency: 'INR', source: 'rpc:polygon', chain: 'polygon', contractAddress: reserve,
+        walletAddress: address, flags: [], isInternalTransfer: false
+      }],
+      wallets: [], csvImports: [], exchangeConnections: [], authoritySnapshots: [],
+      authorityAssets: [], sourceCoverage: [], openingBalances: [],
+      defiPositionSnapshots: [positionSnapshot],
+      defiPositionRows: [{
+        id: 'ethereum-debt', snapshotId: positionSnapshot.snapshotId,
+        protocolId: positionSnapshot.protocolId, reserveKey: reserve, role: 'debt',
+        underlying: { chainId: 1, contractAddress: reserve, symbol: 'ETHRESERVE', decimals: 6 },
+        protocolToken: {
+          chainId: 1, contractAddress: `0x${'3'.repeat(40)}`,
+          symbol: 'variableDebtETHRESERVE', decimals: 6
+        },
+        quantity: 2, rawQuantity: '2000000', debtRateMode: 'variable'
+      }],
+      priceCache: [{
+        key: `spot:ctr:polygon-pos:${reserve}:INR`, price: 100, fetchedAt: Date.now()
+      }]
+    }, 'INR', Date.now(), true);
+
+    expect(shadow.projection.liabilities).toEqual([
+      expect.objectContaining({ contribution: null })
+    ]);
+    expect(shadow.projection.status).toBe('partial');
+  });
   it('counts all independent axes in a cross-product without collapsing them', () => {
     const model = buildDataHealthModel([{
       id: 'x', title: 'X', target: { kind: 'exchange', connectionId: 'x' },

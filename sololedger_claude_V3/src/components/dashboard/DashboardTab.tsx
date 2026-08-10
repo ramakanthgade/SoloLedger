@@ -776,11 +776,11 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   const walletDefiNetWorthEnabled = isWalletDefiNetWorthV1Enabled();
   const defiNetWorthInput = useMemo(() => {
     const custody = walletDefiCustodyFromHoldings(holdings, valued);
-    const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
-      ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
-    for (const [contract, price] of defiUnderlyingPriceMap(
+    // Protocol rows are Ethereum-only in v1. Build their marks from exact
+    // Ethereum underlying identities instead of a chain-blind custody map.
+    const prices = defiUnderlyingPriceMap(
       acceptedSnapshot?.defiPositionRows ?? [], priceIndex
-    )) prices.set(contract, price);
+    );
     return {
       custody, snapshots: acceptedSnapshot?.defiPositionSnapshots ?? [],
       rows: acceptedSnapshot?.defiPositionRows ?? [], prices, reportingCurrency: currency,
@@ -918,14 +918,17 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
 
   const biggestLoss = useMemo(() => {
     let worst: { asset: string; amountInr: number; pct: number } | null = null;
-    for (const h of valued) {
+    // Insights must describe the same economic custody shown to the user.
+    // Complete protocol authority replaces receipt-token custody, so hidden
+    // receipts must not continue surfacing stale historical P&L warnings.
+    for (const h of displayedCustody) {
       if (h.unrealized == null || h.unrealized >= 0) continue;
       if (!worst || h.unrealized < worst.amountInr) {
         worst = { asset: h.asset, amountInr: h.unrealized, pct: h.unrealizedPct ?? 0 };
       }
     }
     return worst;
-  }, [valued]);
+  }, [displayedCustody]);
 
   const insights = useMemo(() => {
     const all = buildInsights({
