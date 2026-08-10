@@ -23,6 +23,10 @@ export function reconcilePositionEvidence(moralis: DefiPositionResult | undefine
     return { status: 'partial', chainId: 1, protocolId, blockNumber: rpc.blockNumber, rows: debtRows, evidence: [...(moralis?.status === 'unsupported' ? [] : moralis?.evidence ?? []), ...rpc.evidence], warnings: [...(moralis?.warnings ?? []), ...rpc.warnings, 'Incomplete position evidence cannot replace complete authority; partial debt is retained conservatively.'] };
   }
   if (!moralis || moralis.status === 'unsupported' || moralis.evidence.every((item) => item.status === 'unavailable')) return rpc;
+  // Exhaustive same-block RPC is independently authoritative. A malformed
+  // secondary provider response with no position claims cannot contradict it
+  // or veto publication of verified supplies and debts.
+  if (moralis.status === 'partial' && moralis.rows.length === 0) return rpc;
   const moralisIsComplete = moralis.status === 'complete' && moralis.evidence.length > 0 &&
     moralis.evidence.every((item) => item.status === 'complete');
   if (!moralisIsComplete) {
