@@ -64,11 +64,16 @@ describe('loadCcxt', () => {
     expect(typeof a.woo).toBe('function');
     expect(typeof a.hitbtc).toBe('function');
     expect(typeof a.bingx).toBe('function');
+    expect(typeof a.binanceus).toBe('function');
+    expect(typeof a.backpack).toBe('function');
+    expect(typeof a.whitebit).toBe('function');
+    expect(typeof a.bitflyer).toBe('function');
+    expect(typeof a.coincheck).toBe('function');
   });
 });
 
 describe('createExchangeClient', () => {
-  it.each(['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx'] as const)(
+  it.each(['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx', 'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck'] as const)(
     'configures %s with API key/secret, spot scope and raw-response capture',
     async (exchange) => {
       const client = await createExchangeClient(row({ exchange }));
@@ -81,6 +86,16 @@ describe('createExchangeClient', () => {
       expect(raw.enableLastJsonResponse).toBe(true);
     }
   );
+
+  it('pinned Backpack serializes the connector spot scope as scalar marketType=SPOT', async () => {
+    const ccxt = await loadCcxt();
+    const Backpack = ccxt.backpack as new (config: Record<string, unknown>) => {
+      sign(path: string, api: string, method: string, params: Record<string, unknown>): { url: string };
+    };
+    const client = new Backpack({ apiKey: 'key', secret: btoa('\0'.repeat(32)) });
+    const signed = client.sign('wapi/v1/history/fills', 'private', 'GET', { marketType: 'SPOT' });
+    expect(signed.url).toContain('/wapi/v1/history/fills?marketType=SPOT');
+  });
   it('pins Poloniex loadMarkets to the spot transport only', async () => {
     const client = await createExchangeClient(row({ exchange: 'poloniex' }));
     const emitted: string[] = [];

@@ -121,7 +121,7 @@ beforeEach(() => {
 
 /** Walk the wizard forward to the upload step, then drop one file to reach preview. */
 async function driveToPreview() {
-  fireEvent.click(await screen.findByRole('button', { name: /binance/i }));
+  fireEvent.click((await screen.findByText(/^Binance$/)).closest('button')!);
   fireEvent.click(await screen.findByRole('button', { name: /i've got my file/i }));
   const dropzone = (await screen.findByText(/Drag & drop your Binance file/)).closest('div')!;
   fireEvent.drop(dropzone, { dataTransfer: { files: [makeFile('a.csv', 'aaa')] } });
@@ -138,7 +138,7 @@ describe('ConnectionWizard — skip link (Item 1)', () => {
     expect(screen.getByRole('button', { name: SKIP_LINK })).toBeInTheDocument();
 
     // Step 2 — export instructions.
-    fireEvent.click(await screen.findByRole('button', { name: /binance/i }));
+    fireEvent.click((await screen.findByText(/^Binance$/)).closest('button')!);
     await screen.findByText(/Export from Binance/);
     expect(screen.getByRole('button', { name: SKIP_LINK })).toBeInTheDocument();
 

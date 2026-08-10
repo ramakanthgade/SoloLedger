@@ -1064,7 +1064,12 @@ export const EXCHANGE_API_SOURCES = new Set([
   'poloniex_api',
   'woo_api',
   'hitbtc_api',
-  'bingx_api'
+  'bingx_api',
+  'binanceus_api',
+  'backpack_api',
+  'whitebit_api',
+  'bitflyer_api',
+  'coincheck_api'
 ]);
 
 /**
@@ -1207,7 +1212,8 @@ export function transactionExchangeKey(
     return `ex-api:${t.importBatchId ?? 'unscoped'}:bitget:${kind}:${t.sourceRef}`;
   }
   const fiveExchange = t.source.endsWith('_api')
-    ? ['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx'].find((exchange) => t.source === `${exchange}_api`)
+    ? ['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx', 'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck']
+      .find((exchange) => t.source === `${exchange}_api`)
     : undefined;
   if (fiveExchange) {
     const rawKind = t.raw?.exchangeSyncKind;

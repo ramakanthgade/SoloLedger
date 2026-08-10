@@ -64,6 +64,20 @@ Smoke test after deploy: open `https://YOUR-APP.up.railway.app/health` — shoul
 
 `ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (supported exchange connectors, including Bitfinex, Gemini, BTC Markets and Bitvavo — spot/read-only paths only).
 
+Round five adds exact host/header/path allowlists for Binance.US, Backpack,
+WhiteBIT, bitFlyer and Coincheck. They are GET-only except WhiteBIT's signed
+POST balance, executed-spot-history and deposit/withdrawal-history reads. No
+order, transfer or withdrawal mutation path is reachable. The live verifier
+includes tier-2 public shape and tier-3 dummy-auth probes; no real keys are
+required.
+
+Backpack fills must carry exactly one `marketType=SPOT` scope (the pinned
+client emits the scalar form; the relay also recognizes its array-key form
+without reserializing signed bytes). bitFlyer executions require one explicitly
+allowlisted active spot `product_code`; derivative and absent codes fail closed.
+Coincheck exposes GET `/api/send_money` for cryptocurrency sending history and
+does not expose `/api/withdraws`, which is JPY bank-withdrawal history.
+
 For exchange auto-sync, ccxt runs **in the subscriber's browser** and signs each request locally — the exchange API secret never leaves the user's device. This route receives the fully-signed request and replays it **byte-verbatim** to the exchange:
 
 - Mounted before `express.json()` with `express.raw()` (like the Stripe webhook); the upstream URL is taken from the raw `req.url` so `%2B`/`%2F` in signatures are never corrupted by decoding.
@@ -89,7 +103,7 @@ SL_EMAIL=you@example.com SL_PASSWORD=secret node scripts/live-verify-exchange-tu
 SL_TOKEN=<jwt> node scripts/live-verify-exchange-tunnel.mjs
 ```
 
-Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and asserts distinctive exchange-origin auth errors. Gemini's dummy-key result proves only that the request reached Gemini's authenticated endpoint; it does not validate a real account key, secret, role, signature, or historical-data access. MEXC's expected HTTP 400/code `10072` probe likewise proves only its exact relay route/auth boundary: MEXC may reject an unknown key before validating the signature. Bitvavo's format-valid 64-character dummy signed balance request is expected to return exact HTTP 403 / errorCode 305; unknown-key validation precedes real-secret validation, so it proves only route/header reachability. Byte-exact signed header/body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.
+Probes every supported connector through the tunnel — tier 2 checks public endpoint reachability and response shape; tier 3 sends browser-shaped dummy-key auth requests and accepts exchange-origin auth-shaped rejections. Several predicates are deliberately broad and prove authenticated-endpoint reachability only, not a distinctive exact response, valid signing, permissions, or history access. Gemini has the same limitation. MEXC's expected HTTP 400/code `10072` probe proves only its exact relay route/auth boundary because MEXC may reject an unknown key before validating the signature. Bitvavo's format-valid 64-character dummy signed balance request is expected to return exact HTTP 403 / errorCode 305; unknown-key validation precedes real-secret validation, so it proves only route/header reachability. Byte-exact signed header/body forwarding is covered by `src/routes/exchangeTunnel.test.ts`. Exits non-zero on any failure.
 
 ### Five GET-only spot connectors
 

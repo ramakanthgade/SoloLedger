@@ -130,7 +130,7 @@ function makeFile(name: string, content: string): File {
 /** Drive the wizard to the upload step and drop the given files. */
 async function dropFiles(files: File[]) {
   render(<ConnectionWizard onComplete={mocks.onComplete} />);
-  fireEvent.click(await screen.findByRole('button', { name: /binance/i }));
+  fireEvent.click((await screen.findByText(/^Binance$/)).closest('button')!);
   fireEvent.click(await screen.findByRole('button', { name: /i've got my file/i }));
   const dropzone = (await screen.findByText(/Drag & drop your Binance file/)).closest('div')!;
   fireEvent.drop(dropzone, { dataTransfer: { files } });

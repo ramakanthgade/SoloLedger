@@ -288,6 +288,11 @@ export const IMPORT_SOURCES: ImportSource[] = [
   flexibleMappedFileSource({ id: 'woo', label: 'WOO X', monogram: 'WX' }),
   flexibleMappedFileSource({ id: 'hitbtc', label: 'HitBTC', monogram: 'HB' }),
   flexibleMappedFileSource({ id: 'bingx', label: 'BingX', monogram: 'BX' }),
+  flexibleMappedFileSource({ id: 'binanceus', label: 'Binance.US', monogram: 'BU' }),
+  flexibleMappedFileSource({ id: 'backpack', label: 'Backpack', monogram: 'BP' }),
+  flexibleMappedFileSource({ id: 'whitebit', label: 'WhiteBIT', monogram: 'WB' }),
+  flexibleMappedFileSource({ id: 'bitflyer', label: 'bitFlyer', monogram: 'BF' }),
+  flexibleMappedFileSource({ id: 'coincheck', label: 'Coincheck', monogram: 'CC' }),
   {
     id: 'hyperliquid',
     label: 'Hyperliquid',

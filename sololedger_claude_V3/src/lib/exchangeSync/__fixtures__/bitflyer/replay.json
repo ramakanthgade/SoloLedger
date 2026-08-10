@@ -1,0 +1,1 @@
+{"_recorded":false,"_note":"Hand-authored from pinned CCXT 4.5.68 parser examples; FX_BTC_JPY and futures are intentionally absent.","markets":[{"product_code":"BTC_JPY","market_type":"Spot"}],"trades":[{"id":37233,"side":"BUY","price":33470,"size":0.01,"exec_date":"2015-07-07T09:57:40.397","child_order_id":"J1","commission":0}],"deposits":[],"withdrawals":[]}

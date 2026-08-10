@@ -36,7 +36,12 @@ const FLEXIBLE_MAPPED_EXCHANGES = [
   'poloniex',
   'woo',
   'hitbtc',
-  'bingx'
+  'bingx',
+  'binanceus',
+  'backpack',
+  'whitebit',
+  'bitflyer',
+  'coincheck'
 ] as const;
 
 describe('IMPORT_SOURCES — "Other / any exchange" catalog entry', () => {

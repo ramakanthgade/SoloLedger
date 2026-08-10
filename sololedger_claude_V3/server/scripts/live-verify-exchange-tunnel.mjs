@@ -12,9 +12,9 @@
  * Tiers (validation tiers 2+3 from the exchange auto-sync plan):
  *   2 — public probes (no exchange auth) through the tunnel: HTTP 200 + shape.
  *   3 — auth-path probes with DUMMY keys: computes browser-shaped HMACs and
- *       asserts each exchange's distinctive auth response. What this proves
- *       is exchange-dependent because some exchanges reject unknown keys
- *       before validating signatures. In particular, Bitfinex 10100
+ *       asserts an exchange-origin auth-shaped rejection. Several predicates
+ *       are intentionally broad and prove reachability only; they do not
+ *       claim one distinctive exact response. In particular, Bitfinex 10100
  *       "digest invalid" proves bfx auth-header/key reachability only; it does
  *       NOT prove signature or body-byte integrity. Byte-exact relay
  *       integration tests cover Bitfinex signed-body forwarding.
@@ -233,6 +233,26 @@ const TIER2 = [
   {
     exchange: 'bingx', probe: 'GET /openApi/spot/v1/server/time', path: '/openApi/spot/v1/server/time',
     check: (r, json) => r.status === 200 && json?.code === 0 && Number.isFinite(Number(json?.serverTime ?? json?.data?.serverTime))
+  },
+  {
+    exchange: 'binanceus', probe: 'GET /api/v3/time', path: '/api/v3/time',
+    check: (r, json) => r.status === 200 && typeof json?.serverTime === 'number'
+  },
+  {
+    exchange: 'backpack', probe: 'GET /api/v1/time', path: '/api/v1/time',
+    check: (r, json) => r.status === 200 && Number.isFinite(Number(json))
+  },
+  {
+    exchange: 'whitebit', probe: 'GET /api/v4/public/time', path: '/api/v4/public/time',
+    check: (r, json) => r.status === 200 && Number.isFinite(Number(json?.time))
+  },
+  {
+    exchange: 'bitflyer', probe: 'GET /v1/getmarkets', path: '/v1/getmarkets',
+    check: (r, json) => r.status === 200 && Array.isArray(json) && json.some((market) => market?.market_type === 'Spot')
+  },
+  {
+    exchange: 'coincheck', probe: 'GET /api/ticker', path: '/api/ticker',
+    check: (r, json) => r.status === 200 && Number.isFinite(Number(json?.timestamp))
   }
 ];
 
@@ -682,6 +702,53 @@ const tier3 = [
       };
     },
     check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth/i.test(r.text)
+  },
+  {
+    exchange: 'binanceus', probe: 'GET /api/v3/account (dummy HMAC query)',
+    build() {
+      const query = `timestamp=${Date.now()}`;
+      return { path: `/api/v3/account?${query}&signature=${hmacHex('sha256', 'dummy-secret', query)}`,
+        exchangeHeaders: { 'x-mbx-apikey': 'D'.repeat(64) } };
+    },
+    check: (r) => r.relayError === null && r.status === 401 && r.text.includes('"code":-2015')
+  },
+  {
+    exchange: 'backpack', probe: 'GET /api/v1/capital (dummy signed headers)',
+    build() { return { path: '/api/v1/capital', exchangeHeaders: {
+      'x-api-key': 'dummy', 'x-signature': '00', 'x-timestamp': '1', 'x-window': '5000', 'x-broker-id': '1400'
+    } }; },
+    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth|unauthorized/i.test(r.text)
+  },
+  {
+    exchange: 'whitebit', probe: 'POST /api/v4/trade-account/balance (dummy signed payload)',
+    build() {
+      const body = JSON.stringify({ request: '/api/v4/trade-account/balance', nonce: Date.now() });
+      const payload = Buffer.from(body).toString('base64');
+      return { path: '/api/v4/trade-account/balance', method: 'POST', body, contentType: 'application/json', exchangeHeaders: {
+        'x-txc-apikey': 'dummy', 'x-txc-payload': payload, 'x-txc-signature': hmacHex('sha512', 'dummy-secret', payload)
+      } };
+    },
+    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth|unauthorized/i.test(r.text)
+  },
+  {
+    exchange: 'bitflyer', probe: 'GET /v1/me/getbalance (dummy ACCESS signature)',
+    build() {
+      const timestamp = Date.now().toString();
+      const path = '/v1/me/getbalance';
+      return { path, exchangeHeaders: { 'access-key': 'dummy', 'access-timestamp': timestamp,
+        'access-sign': hmacHex('sha256', 'dummy-secret', timestamp + 'GET' + path) } };
+    },
+    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth|permission/i.test(r.text)
+  },
+  {
+    exchange: 'coincheck', probe: 'GET /api/accounts/balance (dummy ACCESS signature)',
+    build() {
+      const nonce = Date.now().toString();
+      const path = '/api/accounts/balance';
+      return { path, exchangeHeaders: { 'access-key': 'dummy', 'access-nonce': nonce,
+        'access-signature': hmacHex('sha256', 'dummy-secret', nonce + `https://coincheck.com${path}`) } };
+    },
+    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth|nonce/i.test(r.text)
   }
 ];
 
