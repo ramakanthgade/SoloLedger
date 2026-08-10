@@ -30,7 +30,7 @@ describe('same-block Aave-compatible direct reads', () => {
       calls.push({ to, data, block });
       if (to.toLowerCase() === entry.dataProviderAddress.toLowerCase() && data === AAVE_DATA_PROVIDER_SELECTORS.getAllReservesTokens) return reservesResult();
       if (data.startsWith(AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData)) return `0x${uint(10_000_000)}${uint(2_000_000)}${uint(3_000_000)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(1)}`;
-      if (data.startsWith(AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses)) return `0x${addrWord(address('2'))}${addrWord(address('3'))}${addrWord(address('4'))}`;
+      if (data.startsWith('0xd2493b6c')) return `0x${addrWord(address('2'))}${addrWord(address('3'))}${addrWord(address('4'))}`;
       if (data === AAVE_DATA_PROVIDER_SELECTORS.decimals) return `0x${uint(6)}`;
       if (data === AAVE_DATA_PROVIDER_SELECTORS.symbol) return stringResult(to === address('1') ? 'USDC' : to === address('2') ? 'aUSDC' : to === address('3') ? 'stableDebtUSDC' : 'variableDebtUSDC');
       throw new Error('unexpected call');
@@ -52,7 +52,7 @@ describe('same-block Aave-compatible direct reads', () => {
       const [{ to, data }] = params as [{ to: string; data: string }, string];
       if (to.toLowerCase() === entry.dataProviderAddress.toLowerCase() && data === AAVE_DATA_PROVIDER_SELECTORS.getAllReservesTokens) return reservesResult();
       if (data.startsWith(AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData)) return `0x${uint(10_000_000)}${uint(0)}${uint(3_000_000)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(1)}`;
-      if (data.startsWith(AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses)) return `0x${addrWord(address('2'))}${addrWord(zero)}${addrWord(address('4'))}`;
+      if (data.startsWith('0xd2493b6c')) return `0x${addrWord(address('2'))}${addrWord(zero)}${addrWord(address('4'))}`;
       if (to === zero) throw new Error('zero-address metadata must not be requested');
       if (data === AAVE_DATA_PROVIDER_SELECTORS.decimals) return `0x${uint(6)}`;
       if (data === AAVE_DATA_PROVIDER_SELECTORS.symbol) return stringResult(to === address('1') ? 'USDC' : to === address('2') ? 'aUSDC' : 'variableDebtUSDC');
@@ -63,5 +63,26 @@ describe('same-block Aave-compatible direct reads', () => {
       expect.objectContaining({ role: 'supply', quantity: 10 }),
       expect.objectContaining({ role: 'debt', quantity: 3, debtRateMode: 'variable' })
     ] });
+  });
+
+  it('does not query reserve-token addresses or metadata for an unused reserve', async () => {
+    const entry = PROTOCOL_REGISTRY['aave-v3-ethereum'];
+    const unusedReserve = address('1');
+    const rpc: EthereumRpcCall = async (method, params) => {
+      if (method === 'eth_blockNumber') return '0x1234';
+      const [{ to, data }] = params as [{ to: string; data: string }, string];
+      if (to.toLowerCase() === entry.dataProviderAddress.toLowerCase() && data === AAVE_DATA_PROVIDER_SELECTORS.getAllReservesTokens) {
+        return reservesResult();
+      }
+      if (data.startsWith(AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData)) {
+        return `0x${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}`;
+      }
+      if (to === unusedReserve || data.startsWith(AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses)) {
+        throw new Error('unused reserve metadata must not be requested');
+      }
+      throw new Error('unexpected call');
+    };
+    await expect(fetchAaveCompatibleRpcPositions(address('9'), 'aave-v3-ethereum', rpc))
+      .resolves.toMatchObject({ status: 'complete', rows: [] });
   });
 });
