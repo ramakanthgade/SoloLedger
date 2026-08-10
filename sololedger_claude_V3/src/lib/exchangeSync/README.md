@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget, bitmart, coinex, poloniex, woo, hitbtc, bingx** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget, bitmart, coinex, poloniex, woo, hitbtc, bingx, binanceus, backpack, whitebit, bitflyer, coincheck** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -333,6 +333,21 @@ dedup key is `ex:${sourceRef}`, source-independent. The pinned mappings:
 | bitget | native `tradeId`, connection + immutable `trade` kind scoped; no promised CSV collision | native `orderId`, connection + immutable deposit/withdrawal kind scoped; no promised CSV collision |
 | bitmart | native `tradeId`, connection + immutable `trade` kind scoped | native `deposit_id` / `withdraw_id`, connection + immutable direction scoped; no CSV collision is manufactured |
 | coinex / poloniex / woo / hitbtc / bingx | required native fill id, scoped by connection + exchange + immutable `trade` kind | required native wallet id, scoped by connection + exchange + requested immutable deposit/withdrawal endpoint kind; no CSV collision is manufactured |
+| binanceus | native fill id scoped by symbol, connection and `trade` kind; no Binance CSV parity claim | native wallet id scoped by connection and endpoint kind |
+| backpack / whitebit / bitflyer / coincheck | required native fill id scoped by connection and `trade` kind | required native wallet id scoped by connection and endpoint kind; Coincheck additionally requires pagination metadata plus an empty terminal page before advancing |
+
+Round-five coverage is deliberately conservative: Backpack makes one
+account-wide request with `marketType=SPOT`, includes every returned system
+category, and treats unknown categories or unresolved products as partial.
+WhiteBIT has an explicit six-month retention floor and recursively bisects
+frozen UNIX-second ranges before its 10,000 offset ceiling. Market-keyed trade
+history exhausts only on a short raw page; transfer history separately validates
+its native limit/offset/total metadata. bitFlyer filters the mixed
+catalog to spot, excludes Lightning FX/futures, and restores documented
+base-asset execution commission. Coincheck reads cryptocurrency sends only
+from GET `/api/send_money`—the JPY bank `/api/withdraws` route is not exposed—and
+cannot advance a cursor without valid pagination metadata. Hand-authored replay
+fixtures are marked `_recorded:false`.
 
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
@@ -370,8 +385,9 @@ current vendor export populates its beta `ID` column with the same native ids.
 1. **Fixture tests (CI)** — everything under `src/lib/exchangeSync/*.test.ts`.
 2. **Public-endpoint tunnel probes (live)** — relay repo
    `server/scripts/live-verify-exchange-tunnel.mjs` tier 2.
-3. **Auth-path probes (live, dummy keys)** — same script tier 3; assert each
-   exchange's distinctive auth response. Evidence is exchange-specific:
+3. **Auth-path probes (live, dummy keys)** — same script tier 3; assert an
+   exchange-origin auth-shaped rejection. Broad predicates prove endpoint
+   reachability only and do not claim a distinctive exact response. Evidence is exchange-specific:
    Bitfinex `10100` / `digest invalid` proves bfx auth-header/key reachability,
    not signature/body integrity. Byte-exact Bitfinex signed-body forwarding is
    covered by `server/src/routes/exchangeTunnel.test.ts`.

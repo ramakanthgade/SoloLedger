@@ -117,6 +117,19 @@ describe('five-exchange native identity isolation', () => {
       'exact', 'other-account', 'other-exchange', 'other-kind'
     ]);
   });
+
+  it('keeps Binance.US symbol-scoped fill ids distinct while deduping exact replays', async () => {
+    const basis: Transaction = {
+      id: 'btc', timestamp: 1, type: 'buy', asset: 'BTC', amount: 1, fiatCurrency: 'USD',
+      source: 'binanceus_api', sourceRef: 'BTC/USD:7', importBatchId: 'account-a', flags: [],
+      isInternalTransfer: false, raw: { exchangeSyncKind: 'trade' }
+    };
+    await db.transactions.bulkPut([
+      basis, { ...basis, id: 'btc-replay' }, { ...basis, id: 'eth', asset: 'ETH', sourceRef: 'ETH/USD:7' }
+    ]);
+    expect(await deduplicateTransactions()).toBe(1);
+    expect((await db.transactions.toArray()).map((row) => row.id).sort()).toEqual(['btc', 'eth']);
+  });
 });
 
 /** API rows normalized from the recorded myTrades fixture (all 4 fills). */
@@ -169,7 +182,7 @@ function csvTransferRows(): Transaction[] {
 }
 
 describe('dedup contract — API sources are stable-ref sources', () => {
-  it.each(['binance_api', 'coinbase_api', 'kraken_api', 'okx_api', 'kucoin_api', 'bybit_api', 'gateio_api', 'htx_api', 'cryptocom_api', 'bitfinex_api', 'gemini_api', 'btcmarkets_api', 'mexc_api', 'bitstamp_api', 'bitget_api', 'bitmart_api'])(
+  it.each(['binance_api', 'coinbase_api', 'kraken_api', 'okx_api', 'kucoin_api', 'bybit_api', 'gateio_api', 'htx_api', 'cryptocom_api', 'bitfinex_api', 'gemini_api', 'btcmarkets_api', 'mexc_api', 'bitstamp_api', 'bitget_api', 'bitmart_api', 'binanceus_api', 'backpack_api', 'whitebit_api', 'bitflyer_api', 'coincheck_api'])(
     'isStableRefSource(%s) === true',
     (source) => {
       expect(isStableRefSource(source)).toBe(true);

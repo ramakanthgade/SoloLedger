@@ -350,6 +350,61 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
       'BingX trade history is scanned per spot symbol with recursively bisected closed windows. SoloLedger persists the known market universe so delisted symbols are not silently forgotten.'
     ],
     path: ['BingX', 'Profile', 'API Management'], docsUrl: 'https://bingx.com/account/api/'
+  },
+  {
+    id: 'binanceus', label: 'Binance.US', monogram: 'BU', needsPassphrase: false,
+    formatHint: 'API key + secret · spot only',
+    keyInstructions: [
+      'Log in to Binance.US and open Profile → API Management.',
+      'Create an API key with read access for spot balances, spot fills, deposits and withdrawals only. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here. Binance.US does not require a passphrase.',
+      'Binance.US fill IDs are symbol-scoped. SoloLedger scopes replay identity by spot symbol and does not claim Binance CSV parity.'
+    ],
+    path: ['Binance.US', 'Profile', 'API Management'], docsUrl: 'https://www.binance.us/settings/api-management'
+  },
+  {
+    id: 'backpack', label: 'Backpack', monogram: 'BP', needsPassphrase: false,
+    formatHint: 'API key + secret · spot only',
+    keyInstructions: [
+      'Log in to Backpack Exchange and open Settings → API Keys.',
+      'Create a read-only key for balances, spot fill history and deposit/withdrawal history. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here. Backpack does not require a passphrase.',
+      'SoloLedger requests all spot fills account-wide in one explicitly spot-scoped pass, including system conversions and liquidations. Unknown categories or unresolved products keep coverage partial.'
+    ],
+    path: ['Backpack', 'Settings', 'API Keys'], docsUrl: 'https://backpack.exchange/settings/api-keys'
+  },
+  {
+    id: 'whitebit', label: 'WhiteBIT', monogram: 'WB', needsPassphrase: false,
+    formatHint: 'API key + secret · six-month API retention',
+    keyInstructions: [
+      'Log in to WhiteBIT and open Account → API.',
+      'Create a read-only key for main/spot balances, executed spot history and deposit/withdrawal history. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here. WhiteBIT does not require a passphrase.',
+      'WhiteBIT documents a six-month history boundary. SoloLedger freezes and bisects dense date ranges to respect WhiteBIT’s 10,000 offset ceiling; retain exports for older tax records.'
+    ],
+    path: ['WhiteBIT', 'Account', 'API'], docsUrl: 'https://whitebit.com/api-keys'
+  },
+  {
+    id: 'bitflyer', label: 'bitFlyer', monogram: 'BF', needsPassphrase: false,
+    formatHint: 'API key + secret · spot only',
+    keyInstructions: [
+      'Log in to bitFlyer Lightning and open API, then create a read-only key.',
+      'Enable only balance, execution and coin-in/coin-out history permissions. Never enable trading, Send Crypto Assets or withdrawals.',
+      'Copy the API Key and API Secret and paste them here. bitFlyer does not require a passphrase.',
+      'SoloLedger imports spot markets only and explicitly excludes Lightning FX, futures and other derivative product codes.'
+    ],
+    path: ['bitFlyer Lightning', 'API', 'Create API Key'], docsUrl: 'https://lightning.bitflyer.com/developer'
+  },
+  {
+    id: 'coincheck', label: 'Coincheck', monogram: 'CC', needsPassphrase: false,
+    formatHint: 'API key + secret · fail-closed pagination',
+    keyInstructions: [
+      'Log in to Coincheck and open Settings → API Key.',
+      'Create a read-only key for balances, transaction history, deposits and cryptocurrency sending history. Never enable orders, sending, or JPY bank withdrawals.',
+      'Copy the Access Key and Secret Key and paste them here. Coincheck does not require a passphrase.',
+      'SoloLedger reads cryptocurrency sends from GET /api/send_money; Coincheck’s /api/withdraws JPY bank history is not exposed. Missing or contradictory pagination metadata keeps the prior cursor.'
+    ],
+    path: ['Coincheck', 'Settings', 'API Key'], docsUrl: 'https://coincheck.com/api_settings'
   }
 ];
 

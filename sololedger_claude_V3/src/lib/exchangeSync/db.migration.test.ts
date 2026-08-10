@@ -104,9 +104,12 @@ describe('Dexie v8 — exchangeConnections', () => {
 describe('EXCHANGE_API_SOURCES', () => {
   it('registers every <exchange>_api source', () => {
     expect([...EXCHANGE_API_SOURCES].sort()).toEqual([
+      'backpack_api',
       'binance_api',
+      'binanceus_api',
       'bingx_api',
       'bitfinex_api',
+      'bitflyer_api',
       'bitget_api',
       'bitmart_api',
       'bitstamp_api',
@@ -114,6 +117,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'btcmarkets_api',
       'bybit_api',
       'coinbase_api',
+      'coincheck_api',
       'coinex_api',
       'cryptocom_api',
       'gateio_api',
@@ -125,6 +129,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'mexc_api',
       'okx_api',
       'poloniex_api',
+      'whitebit_api',
       'woo_api'
     ]);
   });

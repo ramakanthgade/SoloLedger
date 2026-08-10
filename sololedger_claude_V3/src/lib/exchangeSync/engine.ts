@@ -125,12 +125,28 @@ import {
   poloniexWalletWindowParams,
   poloniexWalletShapeKnown
 } from './fiveExchanges';
+import {
+  backpackFillTypesKnown,
+  fetchBackpackSpotFills,
+  fetchCoincheckSendMoneyPage,
+  fetchWhitebitTransferPage,
+  paginateWhitebitTradeRanges,
+  paginateWhitebitFrozenRanges,
+  recoverBitflyerCommission,
+  whitebitTransferId,
+  paginateCoincheck,
+  paginateNativeBefore
+} from './roundFiveExchanges';
 
 // ---- Pinned constants (§B-3) ----
 
 export const TRADE_OVERLAP_MS = 5 * 60_000;
 export const TRANSFER_OVERLAP_MS = 7 * 86_400_000;
 export const MAX_PAGES_PER_PHASE = 200;
+const FAIL_CLOSED_NATIVE_EXCHANGES = new Set<ExchangeId>([
+  'coinex', 'poloniex', 'woo', 'hitbtc', 'bingx',
+  'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck'
+]);
 /**
  * Empty-window probes do NOT consume the data-page budget — an initial sync
  * must be able to skip across silent years without going partial. They are
@@ -247,7 +263,12 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   poloniex: Date.UTC(2014, 0, 1),
   woo: Date.UTC(2019, 9, 1),
   hitbtc: Date.UTC(2014, 1, 1),
-  bingx: Date.UTC(2018, 4, 1)
+  bingx: Date.UTC(2018, 4, 1),
+  binanceus: Date.UTC(2019, 8, 24),
+  backpack: Date.UTC(2023, 10, 20),
+  whitebit: Date.UTC(2018, 10, 1),
+  bitflyer: Date.UTC(2014, 0, 9),
+  coincheck: Date.UTC(2014, 7, 1)
 };
 
 export interface BitstampSpotTradeClassification {
@@ -2635,7 +2656,7 @@ function isCoinbaseChainTransfer(row: UnifiedTransfer): boolean {
   return t === 'send' || t === 'receive';
 }
 
-async function fetchTransferKind(
+export async function fetchTransferKind(
   client: ExchangeClient,
   exchange: ExchangeId,
   kind: 'deposits' | 'withdrawals',
@@ -2707,7 +2728,7 @@ async function fetchTransferKind(
       unclassifiedCount
     };
   }
-  if (exchange === 'binance') {
+  if (exchange === 'binance' || exchange === 'binanceus') {
     // ccxt auto-caps endTime at since+90d; the engine drives 89d windows
     // explicitly via `until`. Binance returns every row in the window (no
     // page limit) → fullPage is Infinity.
@@ -2928,6 +2949,52 @@ async function fetchTransferKind(
     return { rows: missingNativeId ? [] : rows, maxTs: missingNativeId ? null : maxTimestamp(rows), partial: missingNativeId || rows.length >= 1000,
       termination: missingNativeId ? 'nonadvancing' : rows.length >= 1000 ? 'full_page_truncated' : 'exhausted' };
   }
+  if (exchange === 'backpack') {
+    // Pinned CCXT 4.5.68 documents a 1000-row deposit cap but only 200 rows
+    // for withdrawals. Bisection must use the endpoint-specific full-page cap.
+    const limit = fetchDeposits ? 1000 : 200;
+    return bisectClosedWindows({
+      start: since, end: now, limit,
+      fetchWindow: (start, end) => fetchDeposits
+        ? client.fetchDeposits(undefined, start, limit, { until: end })
+        : client.fetchWithdrawals(undefined, start, limit, { until: end })
+    });
+  }
+  if (exchange === 'whitebit') {
+    return paginateWhitebitFrozenRanges({
+      startSecond: Math.floor(since / 1000),
+      endSecond: Math.floor(now / 1000),
+      fetchPage: (startSecond, endSecond, offset, limit) => fetchWhitebitTransferPage({
+        client, kind, startSecond, endSecond, offset, limit
+      }),
+      identity: whitebitTransferId
+    });
+  }
+  if (exchange === 'bitflyer') {
+    return paginateNativeBefore({
+      limit: 100,
+      fetchPage: (before) => fetchDeposits
+        ? client.fetchDeposits(undefined, since, 100, before ? { before } : {})
+        : client.fetchWithdrawals(undefined, since, 100, before ? { before } : {})
+    });
+  }
+  if (exchange === 'coincheck') {
+    let sendMoneyShapeKnown = true;
+    return paginateCoincheck({
+      client, limit: 100,
+      fetchPage: async (endingBefore) => {
+        if (fetchDeposits) {
+          return client.fetchDeposits(undefined, since, 100, {
+            order: 'desc', ...(endingBefore ? { ending_before: endingBefore } : {})
+          });
+        }
+        const page = await fetchCoincheckSendMoneyPage({ client, limit: 100, endingBefore });
+        sendMoneyShapeKnown = sendMoneyShapeKnown && page.shapeKnown;
+        return page.rows;
+      },
+      pageShapeKnown: () => sendMoneyShapeKnown
+    });
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -2980,7 +3047,7 @@ async function fetchBinanceTradesById(
   return { ...outcome, rows, maxTs: maxTimestamp(rows) };
 }
 
-async function fetchTradesForSymbol(
+export async function fetchTradesForSymbol(
   client: ExchangeClient,
   exchange: Exclude<ExchangeId, 'kraken'>,
   symbol: string | undefined,
@@ -3003,6 +3070,7 @@ async function fetchTradesForSymbol(
     case 'bitvavo':
       throw new Error('Bitvavo trades require an account-history-derived symbol and interval.');
     case 'binance':
+    case 'binanceus':
       if (opts?.firstSync) {
         return fetchBinanceTradesById(client, symbol as string, since, now);
       }
@@ -3166,6 +3234,50 @@ async function fetchTradesForSymbol(
       return bisectClosedWindows({
         start: since, end: now, limit: 1000,
         fetchWindow: (start, end) => client.fetchMyTrades(symbol, start, 1000, { until: end, type: 'spot' })
+      });
+    case 'backpack': {
+      let coverageKnown = true;
+      const outcome = await bisectClosedWindows({
+        start: since, end: now, limit: 1000,
+        fetchWindow: async (start, end) => {
+          const page = await fetchBackpackSpotFills({ client, start, end, limit: 1000 });
+          coverageKnown = coverageKnown && page.coverageKnown;
+          return page.rows;
+        }
+      });
+      const unsafe = !coverageKnown || !backpackFillTypesKnown(outcome.rows);
+      return {
+        ...outcome,
+        partial: outcome.partial || unsafe,
+        termination: unsafe ? 'nonadvancing' : outcome.termination
+      };
+    }
+    case 'whitebit':
+      return paginateWhitebitTradeRanges({
+        client,
+        startSecond: Math.floor(since / 1000),
+        endSecond: Math.floor(now / 1000)
+      });
+    case 'bitflyer': {
+      let commissionKnown = true;
+      const market = symbol ? client.markets?.[symbol] : undefined;
+      const outcome = await paginateNativeBefore({
+        limit: 100,
+        fetchPage: async (before) => {
+          const page = await client.fetchMyTrades(symbol, since, 100, before ? { before } : {});
+          const recovered = recoverBitflyerCommission(page, market);
+          commissionKnown = commissionKnown && recovered.coverageKnown;
+          return recovered.rows;
+        }
+      });
+      return commissionKnown ? outcome : { ...outcome, partial: true, termination: 'nonadvancing' };
+    }
+    case 'coincheck':
+      return paginateCoincheck({
+        client, limit: 100,
+        fetchPage: (endingBefore) => client.fetchMyTrades(symbol, since, 100, {
+          order: 'desc', ...(endingBefore ? { ending_before: endingBefore } : {})
+        })
       });
   }
 }
@@ -3628,6 +3740,9 @@ export async function syncConnection(
         since = Math.max(since, bitmartRetentionFloor);
       }
       const bitmartCheckpointBacked = exchange === 'bitmart' && bitmartPagination[kind] != null;
+      const whitebitRetentionFloor = nowMs - 183 * 86_400_000;
+      const whitebitRetentionTruncated = exchange === 'whitebit' && since < whitebitRetentionFloor;
+      if (exchange === 'whitebit') since = Math.max(since, whitebitRetentionFloor);
       const cbAssets = [...new Set([...balanceAssets, ...(row.knownAssets ?? [])])];
       let outcome: FetchPlanOutcome<UnifiedTransfer>;
       if ((exchange === 'coinbase' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitstamp') && kind === 'withdrawals') {
@@ -3657,7 +3772,7 @@ export async function syncConnection(
           verifiedAt: verified ? nowMs : prior?.verifiedAt
         };
         transferOutcomes.set(kind, outcome);
-      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitmart') {
+      } else if (exchange === 'gateio' || exchange === 'htx' || exchange === 'cryptocom' || exchange === 'bitfinex' || exchange === 'gemini' || exchange === 'btcmarkets' || exchange === 'bitvavo' || exchange === 'bitstamp' || exchange === 'bitmart' || FAIL_CLOSED_NATIVE_EXCHANGES.has(exchange)) {
         // Connector-local paginators count retries without restarting pagination or resetting attempt caps.
         outcome = exchange === 'bitstamp' ? bitstampLedger!.transfers : await fetchTransferKind(
           client, exchange, kind, since, exchange === 'bitvavo' ? bitvavoTransferEnd : nowMs, cbAssets, warnings, sleep,
@@ -3699,6 +3814,10 @@ export async function syncConnection(
           outcome.partial = outcome.partial || bitmartRetentionTruncated;
           if (bitmartRetentionTruncated) outcome.retentionFloor = bitmartRetentionFloor;
           bitmartPagination[kind] = outcome.bitmartPagination;
+        }
+        if (whitebitRetentionTruncated) {
+          outcome.partial = true;
+          outcome.retentionFloor = whitebitRetentionFloor;
         }
         if (exchange === 'bitfinex') {
           const shared = (rows: UnifiedTransfer[]): FetchPlanOutcome<UnifiedTransfer> => ({
@@ -3853,7 +3972,7 @@ export async function syncConnection(
       for (const t of outcome.rows) {
         if (t.currency) transferAssets.add(t.currency.toUpperCase());
       }
-      const failClosedFive = exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx';
+      const failClosedFive = FAIL_CLOSED_NATIVE_EXCHANGES.has(exchange);
       if (failClosedFive) {
         const requestedKind = kind === 'deposits' ? 'deposit' as const : 'withdrawal' as const;
         const needsReplay = outcome.rows.some((transfer) => {
@@ -3881,6 +4000,9 @@ export async function syncConnection(
         warnings.push(
           'Bitfinex keeps approximately 90 days of Movements API history. The existing beta CSV supports Trades only and cannot backfill deposits or withdrawals.'
         );
+      }
+      if (whitebitRetentionTruncated && kind === 'deposits') {
+        warnings.push('WhiteBIT exposes only six months of API history. Retain WhiteBIT exports for older trades, deposits and withdrawals.');
       }
       if (exchange === 'bitmart') {
         const unsafe = outcome.rows.filter((transfer) => {
@@ -3936,6 +4058,9 @@ export async function syncConnection(
       );
       tradeSince = Math.max(tradeSince, bitmartTradeRetentionFloor);
     }
+    const whitebitTradeRetentionFloor = nowMs - 183 * 86_400_000;
+    const whitebitTradeRetentionTruncated = exchange === 'whitebit' && tradeSince < whitebitTradeRetentionFloor;
+    if (exchange === 'whitebit') tradeSince = Math.max(tradeSince, whitebitTradeRetentionFloor);
     const bitmartTradeCheckpointBacked = exchange === 'bitmart' && bitmartPagination.trades != null;
     const tradeRows: UnifiedTrade[] = [];
     const tradeOutcomes: FetchPlanOutcome<UnifiedTrade>[] = [];
@@ -3951,7 +4076,7 @@ export async function syncConnection(
     let bitvavoUnresolvedPairs = 0;
     let skippedSymbols = 0;
 
-    if (exchange === 'coinex' || exchange === 'bingx') {
+    if (exchange === 'coinex' || exchange === 'bingx' || exchange === 'bitflyer') {
       // Both APIs require a symbol. Freeze the complete current active-spot
       // universe together with every previously known symbol; this is
       // especially important for BingX, where a delisting must not erase the
@@ -3977,7 +4102,7 @@ export async function syncConnection(
         hooks.onProgress?.({ done, total: symbols.length });
       }
       discoveredCount = done;
-    } else if (exchange === 'binance') {
+    } else if (exchange === 'binance' || exchange === 'binanceus') {
       // §B-4 symbol discovery.
       //
       // INITIAL (cursorless) sync: probe EVERY live spot symbol. Binance's
@@ -4011,7 +4136,7 @@ export async function syncConnection(
         try {
           outcome = await withRetries(
             () =>
-              fetchTradesForSymbol(client, 'binance', symbol, tradeSince, nowMs, {
+              fetchTradesForSymbol(client, exchange, symbol, tradeSince, nowMs, {
                 // Cursorless (initial) scans can't time-window — Binance
                 // caps the span at 24h — so they paginate by fromId.
                 firstSync: oldCursors.trades == null
@@ -4041,6 +4166,21 @@ export async function syncConnection(
         ...new Set([...(row.knownSymbols ?? []).filter((s) => symbols.includes(s)), ...symbolHits])
       ].sort();
       discoveredCount = done;
+    } else if (exchange === 'coincheck') {
+      // Coincheck's private transaction endpoint is account-wide but CCXT
+      // requires a market argument for parsing. A single active spot market
+      // seeds parsing; each raw row's own pair remains authoritative.
+      const symbol = allSpotSymbols(markets)[0];
+      if (!symbol) {
+        tradeOutcomes.push({ rows: [], maxTs: oldCursors.trades ?? launchFloor, partial: true, termination: 'nonadvancing' });
+      } else {
+        const outcome = await fetchTradesForSymbol(client, exchange, symbol, tradeSince, nowMs);
+        tradeOutcomes.push(outcome);
+        tradeRows.push(...outcome.rows);
+        fetchedCount += outcome.rows.length;
+      }
+      discoveryUniverseCount = symbol ? 1 : 0;
+      discoveredCount = symbol ? 1 : 0;
     } else if (exchange === 'bitget') {
       const priorProgress = bitgetHistory.tradeProgress;
       const scanAt = priorProgress?.requestedAt ?? nowMs;
@@ -4327,6 +4467,11 @@ export async function syncConnection(
         if (bitmartTradeRetentionTruncated) outcome.retentionFloor = bitmartTradeRetentionFloor;
         bitmartPagination.trades = outcome.bitmartPagination;
       }
+      if (whitebitTradeRetentionTruncated) {
+        outcome.partial = true;
+        outcome.retentionFloor = whitebitTradeRetentionFloor;
+        warnings.push('WhiteBIT trade API history is limited to six months. Older spot fills require retained WhiteBIT exports.');
+      }
       tradeOutcomes.push(outcome);
       tradeRows.push(...outcome.rows);
       fetchedCount += outcome.rows.length;
@@ -4391,11 +4536,11 @@ export async function syncConnection(
       })()
       : undefined;
 
-    const failClosedFiveTrades = exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx';
+    const failClosedFiveTrades = FAIL_CLOSED_NATIVE_EXCHANGES.has(exchange);
     if (failClosedFiveTrades) {
       const unsafeTradeCount = tradeRows.reduce((count, trade) => {
         const market = resolveMarket(markets, trade.symbol);
-        return count + (!market || normalizeTradeRows(exchange, trade, market).length === 0 ? 1 : 0);
+        return count + (!market || normalizeTradeRows(exchange as Exclude<ExchangeId, 'kraken'>, trade, market).length === 0 ? 1 : 0);
       }, 0);
       if (unsafeTradeCount > 0) {
         // Cursor safety must include semantic normalization, not only transport
@@ -4411,7 +4556,7 @@ export async function syncConnection(
       }
     }
 
-    const tradeCursorCandidate = exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx'
+    const tradeCursorCandidate = FAIL_CLOSED_NATIVE_EXCHANGES.has(exchange)
       ? safeFiveExchangeCursor(tradeOutcomes, oldCursors.trades, nowMs)
       : exchange === 'bitvavo'
       ? (tradeOutcomes.some((outcome) => outcome.partial) ? (oldCursors.trades ?? EXCHANGE_LAUNCH_MS.bitvavo) : nowMs)
@@ -4581,7 +4726,7 @@ export async function syncConnection(
           terminalTransfersByKind[kind] += 1;
           continue;
         }
-        const requestedKind = exchange === 'coinex' || exchange === 'poloniex' || exchange === 'woo' || exchange === 'hitbtc' || exchange === 'bingx'
+        const requestedKind = FAIL_CLOSED_NATIVE_EXCHANGES.has(exchange)
           ? (kind === 'deposits' ? 'deposit' as const : 'withdrawal' as const)
           : undefined;
         const tx = normalizeTransfer(exchange, transfer, requestedKind);

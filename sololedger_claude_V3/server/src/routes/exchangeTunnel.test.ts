@@ -220,7 +220,12 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['poloniex', 'api.poloniex.com', '/markets'],
     ['woo', 'api.woox.io', '/v3/systemInfo'],
     ['hitbtc', 'api.hitbtc.com', '/api/3/public/symbol'],
-    ['bingx', 'open-api.bingx.com', '/openApi/spot/v1/server/time']
+    ['bingx', 'open-api.bingx.com', '/openApi/spot/v1/server/time'],
+    ['binanceus', 'api.binance.us', '/api/v3/time'],
+    ['backpack', 'api.backpack.exchange', '/api/v1/time'],
+    ['whitebit', 'whitebit.com', '/api/v4/public/time'],
+    ['bitflyer', 'api.bitflyer.com', '/v1/getmarkets'],
+    ['coincheck', 'coincheck.com', '/api/ticker']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -818,6 +823,105 @@ describe('4. exchangeId and path validation', () => {
     const post = await client('/htx/v1/order/matchresults', { method: 'POST', headers: AUTH });
     expect(post.status).toBe(400);
     expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['binanceus', '/api/v3/myTrades'],
+    ['backpack', '/wapi/v1/history/fills?marketType=SPOT'],
+    ['bitflyer', '/v1/me/getexecutions?product_code=BTC_JPY'],
+    ['coincheck', '/api/exchange/orders/transactions_pagination']
+  ] as const)('%s contains history to exact GET-only paths', async (exchange, path) => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    expect((await client(`/${exchange}${path}`, { headers: AUTH })).status).toBe(200);
+    expect((await client(`/${exchange}${path}`, { method: 'POST', headers: AUTH })).status).toBe(400);
+    expect((await client(`/${exchange}${path}/extra`, { headers: AUTH })).status).toBe(400);
+  });
+
+  it('WhiteBIT allows signed POST only on the exact read-only private history paths', async () => {
+    upstreamMock.mockImplementation(async () => upstreamJson('{}'));
+    for (const path of ['/api/v4/trade-account/balance', '/api/v4/trade-account/executed-history', '/api/v4/main-account/history']) {
+      expect((await client(`/whitebit${path}`, {
+        method: 'POST', headers: { ...AUTH, 'content-type': 'application/json' }, body: '{}'
+      })).status).toBe(200);
+      expect((await client(`/whitebit${path}`, { headers: AUTH })).status).toBe(400);
+    }
+    expect((await client('/whitebit/api/v4/trade-account/order/new', {
+      method: 'POST', headers: AUTH
+    })).status).toBe(400);
+  });
+
+  it('Backpack forwards exactly the pinned CCXT signing headers', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    const res = await client('/backpack/wapi/v1/history/fills?marketType=SPOT', { headers: {
+      ...AUTH,
+      'x-exchange-x-api-key': 'key',
+      'x-exchange-x-signature': 'sig',
+      'x-exchange-x-timestamp': '123',
+      'x-exchange-x-window': '5000',
+      'x-exchange-x-broker-id': '1400',
+      'x-exchange-surprise': 'blocked'
+    }});
+    expect(res.status).toBe(200);
+    const [, init] = lastUpstreamCall();
+    expect(init.headers).toEqual({
+      'x-api-key': 'key', 'x-signature': 'sig', 'x-timestamp': '123',
+      'x-window': '5000', 'x-broker-id': '1400'
+    });
+  });
+
+  it('contains Backpack fills to one explicit SPOT scope and preserves signed query bytes', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    for (const query of ['', '?marketType=PERP', '?marketType=spot', '?marketType=SPOT&marketType=PERP']) {
+      expect((await client(`/backpack/wapi/v1/history/fills${query}`, { headers: AUTH })).status).toBe(400);
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+
+    const raw = 'from=1&limit=1000&marketType%5B%5D=SPOT&to=2&signature=Ab%2B%2F%3D';
+    expect((await client(`/backpack/wapi/v1/history/fills?${raw}`, { headers: AUTH })).status).toBe(200);
+    expect(lastUpstreamCall()[0]).toBe(`https://api.backpack.exchange/wapi/v1/history/fills?${raw}`);
+  });
+
+  it('allows Coincheck crypto sending history but blocks JPY bank withdrawals', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{"success":true,"sends":[]}'));
+    expect((await client('/coincheck/api/send_money?limit=100&order=desc', { headers: AUTH })).status).toBe(200);
+    expect(lastUpstreamCall()[0]).toBe('https://coincheck.com/api/send_money?limit=100&order=desc');
+    upstreamMock.mockClear();
+    expect((await client('/coincheck/api/withdraws', { headers: AUTH })).status).toBe(400);
+    expect(upstreamMock).not.toHaveBeenCalled();
+  });
+
+  it('positively permits bitFlyer spot executions and rejects derivative or absent product codes', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('[]'));
+    for (const query of ['', '?product_code=FX_BTC_JPY', '?product_code=BTCJPY_MAT1WK', '?product_code=BTC_JPY&product_code=FX_BTC_JPY']) {
+      expect((await client(`/bitflyer/v1/me/getexecutions${query}`, { headers: AUTH })).status).toBe(400);
+    }
+    expect(upstreamMock).not.toHaveBeenCalled();
+
+    const raw = 'product_code=BTC_JPY&count=100&before=123&sig=Ab%2B%2F%3D';
+    expect((await client(`/bitflyer/v1/me/getexecutions?${raw}`, { headers: AUTH })).status).toBe(200);
+    expect(lastUpstreamCall()[0]).toBe(`https://api.bitflyer.com/v1/me/getexecutions?${raw}`);
+  });
+
+  it('forwards WhiteBIT noncanonical signed JSON and signing headers byte-exact', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    const body = Buffer.from('{ "nonce" : 7, "request":"/api/v4/trade-account/executed-history", "nonceWindow":true }');
+    const headers = {
+      ...AUTH,
+      'content-type': 'application/json',
+      'x-exchange-x-txc-apikey': 'key',
+      'x-exchange-x-txc-payload': 'ZXhhY3Q=',
+      'x-exchange-x-txc-signature': 'aabbcc'
+    };
+    const res = await rawRequest({ method: 'POST', path: '/whitebit/api/v4/trade-account/executed-history', headers, body });
+    expect(res.status).toBe(200);
+    const [, init] = lastUpstreamCall();
+    expect(Buffer.compare(init.body as Buffer, body)).toBe(0);
+    expect(init.headers).toEqual({
+      'content-type': 'application/json',
+      'x-txc-apikey': 'key',
+      'x-txc-payload': 'ZXhhY3Q=',
+      'x-txc-signature': 'aabbcc'
+    });
   });
 
   it('Crypto.com enforces exact read-only paths with per-path GET/POST methods', async () => {

@@ -99,6 +99,13 @@ export interface ExchangeClient {
   bitstampAllMarkets?: Record<string, UnifiedMarket>;
   /** Connector-local raw Bitstamp mixed-ledger request; bypasses CCXT's lossy transfer parser. */
   fetchBitstampUserTransactions?(params: Record<string, unknown>): Promise<unknown>;
+  /** Backpack's pinned implicit fills endpoint, used to avoid CCXT's default fillType=User. */
+  fetchBackpackSpotFills?(params: Record<string, unknown>): Promise<unknown>;
+  /** Coincheck crypto sending history; /api/withdraws is JPY bank history. */
+  fetchCoincheckSendMoney?(params: Record<string, unknown>): Promise<unknown>;
+  /** WhiteBIT raw history methods retained for trustworthy native pagination metadata. */
+  fetchWhitebitExecutedHistory?(params: Record<string, unknown>): Promise<unknown>;
+  fetchWhitebitMainHistory?(params: Record<string, unknown>): Promise<unknown>;
   loadMarkets(reload?: boolean): Promise<Record<string, UnifiedMarket>>;
   fetchTime?(params?: Record<string, unknown>): Promise<number>;
   /** CCXT signing clock; Bitvavo is calibrated from its public server time. */
@@ -132,6 +139,7 @@ export interface ExchangeClient {
     params?: Record<string, unknown>
   ): Promise<UnifiedTransfer[]>;
   parseTrade?(trade: unknown, market?: UnifiedMarket): UnifiedTrade;
+  parseTransaction?(transaction: unknown): UnifiedTransfer;
   handleRestResponse(...args: unknown[]): unknown;
   fetch(url: string, method?: string, headers?: Record<string, string>, body?: string): Promise<unknown>;
 }
@@ -159,7 +167,12 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   poloniex: 'Poloniex',
   woo: 'WOO X',
   hitbtc: 'HitBTC',
-  bingx: 'BingX'
+  bingx: 'BingX',
+  binanceus: 'Binance.US',
+  backpack: 'Backpack',
+  whitebit: 'WhiteBIT',
+  bitflyer: 'bitFlyer',
+  coincheck: 'Coincheck'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -292,6 +305,12 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
               ? { defaultType: 'spot', fetchMarkets: { types: ['spot'] }, fetchCurrencies: false }
             : exchangeId === 'coinex' || exchangeId === 'poloniex' || exchangeId === 'hitbtc'
               ? { defaultType: 'spot', fetchCurrencies: false }
+            : exchangeId === 'binanceus'
+              ? { defaultType: 'spot', fetchMarkets: { types: ['spot'] }, fetchCurrencies: false, fetchMargins: false }
+            : exchangeId === 'backpack' || exchangeId === 'whitebit'
+              ? { defaultType: 'spot', fetchCurrencies: false }
+            : exchangeId === 'bitflyer' || exchangeId === 'coincheck'
+              ? { defaultType: 'spot', fetchCurrencies: false }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -343,6 +362,10 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
   }
+  if (exchangeId === 'binanceus' || exchangeId === 'backpack' || exchangeId === 'whitebit' || exchangeId === 'bitflyer' || exchangeId === 'coincheck') {
+    config.has = { fetchCurrencies: false };
+    config.enableLastJsonResponse = true;
+  }
   const exchange = new Ctor(config) as ExchangeClient;
   if (exchangeId === 'mexc') {
     // CCXT 4.5.68's generic fetchMarkets always runs spot and swap in
@@ -372,6 +395,28 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
       exchange.markets = spots;
       return spots;
     };
+  }
+  if (exchangeId === 'backpack') {
+    const native = exchange as unknown as {
+      privateGetWapiV1HistoryFills(params: Record<string, unknown>): Promise<unknown>;
+    };
+    // Pinned CCXT 4.5.68 injects fillType=User when fetchMyTrades omits it.
+    exchange.fetchBackpackSpotFills = (params) => native.privateGetWapiV1HistoryFills(params);
+  }
+  if (exchangeId === 'coincheck') {
+    const native = exchange as unknown as {
+      privateGetSendMoney(params: Record<string, unknown>): Promise<unknown>;
+    };
+    // Pinned CCXT fetchWithdrawals targets JPY bank history at /api/withdraws.
+    exchange.fetchCoincheckSendMoney = (params) => native.privateGetSendMoney(params);
+  }
+  if (exchangeId === 'whitebit') {
+    const native = exchange as unknown as {
+      v4PrivatePostTradeAccountExecutedHistory(params: Record<string, unknown>): Promise<unknown>;
+      v4PrivatePostMainAccountHistory(params: Record<string, unknown>): Promise<unknown>;
+    };
+    exchange.fetchWhitebitExecutedHistory = (params) => native.v4PrivatePostTradeAccountExecutedHistory(params);
+    exchange.fetchWhitebitMainHistory = (params) => native.v4PrivatePostMainAccountHistory(params);
   }
   if (exchangeId === 'bitmart') {
     // CCXT 4.5.68's BitMart fetchMarkets() also requests contracts.
@@ -409,6 +454,19 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // margin route is transported and only /v2/spot/public/symbols is fetched.
     (exchange as unknown as { publicMarginGetV2MarginCurrencies: () => Promise<unknown> })
       .publicMarginGetV2MarginCurrencies = async () => ({ code: '00000', msg: 'success', data: [] });
+  }
+  if (exchangeId === 'backpack' || exchangeId === 'whitebit' || exchangeId === 'bitflyer') {
+    // Their public catalogs are mixed (Backpack/WhiteBIT include perps and
+    // bitFlyer includes Lightning FX). Preserve CCXT's private market map but
+    // expose only active spot products to the history engine.
+    const originalLoadMarkets = exchange.loadMarkets.bind(exchange);
+    exchange.loadMarkets = async (reload?: boolean) => {
+      const mixed = await originalLoadMarkets(reload);
+      const spots = Object.fromEntries(Object.entries(mixed).filter(([, market]) =>
+        market.spot === true && market.active !== false));
+      exchange.markets = spots;
+      return spots;
+    };
   }
   installTunnelFetch(exchange, exchangeId);
   return exchange;

@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(22);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(27);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -149,5 +149,13 @@ describe('autoSyncExchanges catalog', () => {
     expect(bitmart.keyInstructions.join(' ')).toMatch(/approximately three months.*Export older.*no verified BitMart CSV identity.*not auto-merge/i);
     expect(bitmart.needsPassphrase).toBe(true);
     expect(bitmart.extraCredentialLabel).toBe('Memo');
+  });
+
+  it('documents the round-five containment and coverage caveats', () => {
+    expect(getAutoSyncExchange('binanceus')?.keyInstructions.join(' ')).toMatch(/symbol-scoped.*does not claim Binance CSV parity/i);
+    expect(getAutoSyncExchange('backpack')?.keyInstructions.join(' ')).toMatch(/account-wide.*system.*unknown categories.*partial/i);
+    expect(getAutoSyncExchange('whitebit')?.keyInstructions.join(' ')).toMatch(/six-month.*10,000 offset.*older tax records/i);
+    expect(getAutoSyncExchange('bitflyer')?.keyInstructions.join(' ')).toMatch(/spot.*excludes Lightning FX.*derivative/i);
+    expect(getAutoSyncExchange('coincheck')?.keyInstructions.join(' ')).toMatch(/send_money.*JPY bank.*pagination metadata.*prior cursor/i);
   });
 });

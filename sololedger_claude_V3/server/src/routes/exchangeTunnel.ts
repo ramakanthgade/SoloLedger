@@ -274,6 +274,33 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
   bingx: {
     host: 'open-api.bingx.com', headers: ['x-bx-apikey'], methods: ['GET'],
     paths: ['/openApi/spot/v1/server/time', '/openApi/spot/v1/common/symbols', '/openApi/spot/v1/account/balance', '/openApi/spot/v1/trade/myTrades', '/openApi/api/v3/capital/deposit/hisrec', '/openApi/api/v3/capital/withdraw/history']
+  },
+  binanceus: {
+    host: 'api.binance.us', headers: ['x-mbx-apikey'], methods: ['GET'],
+    paths: ['/api/v3/time', '/api/v3/exchangeInfo', '/api/v3/account', '/api/v3/myTrades', '/sapi/v1/capital/deposit/hisrec', '/sapi/v1/capital/withdraw/history']
+  },
+  backpack: {
+    host: 'api.backpack.exchange', headers: ['x-api-key', 'x-signature', 'x-timestamp', 'x-window', 'x-broker-id'], methods: ['GET'],
+    paths: ['/api/v1/time', '/api/v1/markets', '/api/v1/capital', '/wapi/v1/history/fills', '/wapi/v1/capital/deposits', '/wapi/v1/capital/withdrawals']
+  },
+  whitebit: {
+    host: 'whitebit.com', headers: ['x-txc-apikey', 'x-txc-payload', 'x-txc-signature'],
+    paths: ['/api/v4/public/time', '/api/v4/public/markets', '/api/v4/trade-account/balance', '/api/v4/trade-account/executed-history', '/api/v4/main-account/history'],
+    pathMethods: {
+      '/api/v4/public/time': ['GET'],
+      '/api/v4/public/markets': ['GET'],
+      '/api/v4/trade-account/balance': ['POST'],
+      '/api/v4/trade-account/executed-history': ['POST'],
+      '/api/v4/main-account/history': ['POST']
+    }
+  },
+  bitflyer: {
+    host: 'api.bitflyer.com', headers: ['access-key', 'access-timestamp', 'access-sign'], methods: ['GET'],
+    paths: ['/v1/getmarkets', '/v1/getmarkets/usa', '/v1/getmarkets/eu', '/v1/me/getbalance', '/v1/me/getexecutions', '/v1/me/getcoinins', '/v1/me/getcoinouts']
+  },
+  coincheck: {
+    host: 'coincheck.com', headers: ['access-key', 'access-nonce', 'access-signature'], methods: ['GET'],
+    paths: ['/api/ticker', '/api/accounts/balance', '/api/exchange/orders/transactions_pagination', '/api/deposit_money', '/api/send_money']
   }
 };
 
@@ -301,6 +328,48 @@ function pathAllowed(path: string, allowed: string): boolean {
   if (!path.startsWith(prefix) || !path.endsWith(suffix)) return false;
   const accountId = path.slice(prefix.length, path.length - suffix.length);
   return /^[0-9]+$/.test(accountId);
+}
+
+function rawQueryPairs(rawQuery: string): Array<[string, string]> | null {
+  if (!rawQuery) return [];
+  try {
+    return rawQuery.split('&').map((part) => {
+      const equals = part.indexOf('=');
+      const rawName = equals < 0 ? part : part.slice(0, equals);
+      const rawValue = equals < 0 ? '' : part.slice(equals + 1);
+      return [
+        decodeURIComponent(rawName.replace(/\+/g, ' ')),
+        decodeURIComponent(rawValue.replace(/\+/g, ' '))
+      ];
+    });
+  } catch {
+    return null;
+  }
+}
+
+// Positive snapshot of the active spot products returned by the three public
+// catalogs on 2026-08-10. Do not replace this with a pattern: FX/futures share
+// the same endpoint and must remain impossible to forward.
+const BITFLYER_SPOT_PRODUCT_CODES = new Set([
+  'BTC_JPY', 'XRP_JPY', 'ETH_JPY', 'XLM_JPY', 'MONA_JPY', 'ELF_JPY',
+  'ETH_BTC', 'BCH_BTC', 'BTC_USD', 'ETH_USD', 'BTC_EUR', 'ETH_EUR'
+]);
+
+/** Validate containment without rebuilding or reserializing the signed query. */
+function queryAllowed(exchangeId: string, path: string, rawQuery: string): boolean {
+  if (exchangeId === 'backpack' && path === '/wapi/v1/history/fills') {
+    const pairs = rawQueryPairs(rawQuery);
+    if (!pairs) return false;
+    const scopes = pairs.filter(([name]) => name === 'marketType' || name === 'marketType[]');
+    return scopes.length === 1 && scopes[0][1] === 'SPOT';
+  }
+  if (exchangeId === 'bitflyer' && path === '/v1/me/getexecutions') {
+    const pairs = rawQueryPairs(rawQuery);
+    if (!pairs) return false;
+    const products = pairs.filter(([name]) => name === 'product_code');
+    return products.length === 1 && BITFLYER_SPOT_PRODUCT_CODES.has(products[0][1]);
+  }
+  return true;
 }
 
 /** Set the error kind for this failure site, then send the JSON error. */
@@ -410,6 +479,10 @@ export async function exchangeTunnelHandler(req: Request, res: Response): Promis
   const allowedPathMethods = spec.pathMethods?.[upstreamPath];
   if (spec.pathMethods && (!allowedPathMethods || !allowedPathMethods.includes(method))) {
     fail(res, 'bad_path', 400, 'Upstream method is not allowed for this exchange path');
+    return;
+  }
+  if (!queryAllowed(exchangeId, upstreamPath, rawQuery)) {
+    fail(res, 'bad_path', 400, 'Upstream query is not allowed for this exchange path');
     return;
   }
 
