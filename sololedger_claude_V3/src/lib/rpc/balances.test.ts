@@ -14,6 +14,7 @@ import {
 } from '@/lib/rpc/balances';
 import type { TaxSettings } from '@/types/transaction';
 import type { Transaction } from '@/types/transaction';
+import { isCanonicalTrustedAsset } from '@/lib/safety/canonicalAssets';
 
 const SETTINGS = {
   jurisdiction: 'IN',
@@ -30,6 +31,8 @@ const WBTC_CONTRACT = '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599';
 const AUSDC_CONTRACT = '0xbcca60bb61934080951369a648fb03df4f96263c';
 const ZRO_CONTRACT = '0x6985884c4392d348587b19cb9eaaf157f13271cd';
 const BUSD_CONTRACT = '0x4fabb145d64652a948d72533023f6e7a623c7c53';
+const POLYGON_NATIVE_USDC = '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359';
+const BSC_BUSD = '0xe9e7cea3dedca5984780bafc599bd69add087d56';
 const SOL_ADDR = 'AbCdEfGhijkLmnoPqrstUvWxYz123456789ABCDE';
 const SOL_MINT = 'MintCaseSensitive1111111111111111111111111';
 const TOKEN_2022_PROGRAM = 'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb';
@@ -110,6 +113,93 @@ describe('fetchAddressBalances — bitcoin', () => {
 });
 
 describe('fetchAddressBalances — EVM (alchemy)', () => {
+  it('discovers Polygon native USDC with an exact balanceOf probe when enumeration omits it', async () => {
+    const calls: unknown[][] = [];
+    stubFetch((_url, method, params) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [] } };
+      if (method === 'eth_call') {
+        calls.push(params ?? []);
+        return { result: `0x${49_280_052n.toString(16)}` };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const rows = await fetchAddressBalances(
+      CHAINS.find((chain) => chain.id === 'polygon')!, ETH_ADDR, SETTINGS
+    );
+    expect(rows).toEqual(expect.arrayContaining([{
+      asset: 'USDC', contractAddress: POLYGON_NATIVE_USDC, amount: 49.280052
+    }]));
+    expect(calls).toEqual([[{
+      to: POLYGON_NATIVE_USDC,
+      data: `0x70a08231${ETH_ADDR.toLowerCase().slice(2).padStart(64, '0')}`
+    }, 'latest']]);
+    expect(isCanonicalTrustedAsset('polygon', POLYGON_NATIVE_USDC)).toBe(false);
+  });
+
+  it('discovers the wallet BNB Chain BUSD balance when enumeration omits it', async () => {
+    const rawBalance = 359_577_807_000_000_000_000n;
+    stubFetch((_url, method, params) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [] } };
+      if (method === 'eth_call') {
+        expect(params).toEqual([{
+          to: BSC_BUSD,
+          data: `0x70a08231${ETH_ADDR.toLowerCase().slice(2).padStart(64, '0')}`
+        }, 'latest']);
+        return { result: `0x${rawBalance.toString(16)}` };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const rows = await fetchAddressBalances(
+      CHAINS.find((chain) => chain.id === 'bsc')!, ETH_ADDR, SETTINGS
+    );
+    expect(rows).toEqual(expect.arrayContaining([{
+      asset: 'BUSD', contractAddress: BSC_BUSD, amount: 359.577807
+    }]));
+    // Balance identity must not silently broaden transaction tax-safety trust.
+    expect(isCanonicalTrustedAsset('bsc', BSC_BUSD)).toBe(false);
+  });
+
+  it('does not duplicate Polygon native USDC when Alchemy enumeration includes it', async () => {
+    let probeCalls = 0;
+    stubFetch((_url, method) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [{
+        contractAddress: POLYGON_NATIVE_USDC,
+        tokenBalance: `0x${49_280_052n.toString(16)}`
+      }] } };
+      if (method === 'eth_call') {
+        probeCalls++;
+        return { result: '0x0' };
+      }
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    const rows = await fetchAddressBalances(
+      CHAINS.find((chain) => chain.id === 'polygon')!, ETH_ADDR, SETTINGS
+    );
+    expect(rows.filter((row) => row.contractAddress === POLYGON_NATIVE_USDC)).toEqual([{
+      asset: 'USDC', contractAddress: POLYGON_NATIVE_USDC, amount: 49.280052
+    }]);
+    expect(probeCalls).toBe(0);
+  });
+
+  it('fails closed when the required Polygon native USDC probe fails', async () => {
+    stubFetch((_url, method) => {
+      if (method === 'eth_getBalance') return { result: '0x0' };
+      if (method === 'alchemy_getTokenBalances') return { result: { tokenBalances: [] } };
+      if (method === 'eth_call') return { error: { code: -32000, message: 'probe unavailable' } };
+      throw new Error(`unexpected method ${method}`);
+    });
+
+    await expect(fetchAddressBalances(
+      CHAINS.find((chain) => chain.id === 'polygon')!, ETH_ADDR, SETTINGS
+    )).rejects.toThrow(/probe unavailable/);
+  });
+
   it('resolves exact trusted balances without spending the provider metadata budget', async () => {
     const metadataCalls: string[] = [];
     stubFetch((_url, method, params) => {

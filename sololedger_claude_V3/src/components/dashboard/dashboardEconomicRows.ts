@@ -52,9 +52,11 @@ export function reaggregateUnreplacedCustody(
   projectedHoldings: readonly { assetKey: string; asset: string; chain?: string; contractAddress?: string; sourceVerification: readonly { scopeId: string; quantity: number }[] }[],
   replacedCustodyIds: ReadonlySet<string>
 ): ValuedHolding[] {
-  const projectedByKey = new Map(projectedHoldings.map((holding) => [portfolioHoldingKey(holding), holding]));
+  const displayIdentity = (holding: { asset: string; chain?: string; contractAddress?: string }) =>
+    `${holding.chain?.trim().toLowerCase() ?? 'unchained'}:${portfolioHoldingKey(holding)}`;
+  const projectedByKey = new Map(projectedHoldings.map((holding) => [displayIdentity(holding), holding]));
   return valued.flatMap((holding) => {
-    const projected = projectedByKey.get(portfolioHoldingKey(holding));
+    const projected = projectedByKey.get(displayIdentity(holding));
     const assetKey = projected?.assetKey ?? portfolioHoldingKey(holding);
     const sources = projected?.sourceVerification ?? holding.sourceVerification ?? [];
     if (sources.length === 0) return replacedCustodyIds.has(`unscoped:${assetKey}`) ? [] : [holding];

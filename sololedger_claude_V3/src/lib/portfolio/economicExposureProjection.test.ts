@@ -494,6 +494,28 @@ describe('economic exposure projection', () => {
     expect([...projection.assets, ...projection.liabilities]).toHaveLength(4);
     expect(projection.netWorth).toBe(60); // other receipt 50 + supplied 100 - debt 90
   });
+  it('does not replace a same-address contract holding on another chain', () => {
+    const scope = `wallet:evm:1:0x${'1'.repeat(40)}`;
+    const source = (scopeId: string, quantity: number) => ({
+      scopeId, quantity, accountClass: 'wallet' as const, postingQuantity: quantity,
+      verificationStatus: 'verified_authority' as const, authorityStatus: 'current' as const,
+      coverageStatus: 'complete' as const, scopeStatus: 'resolved' as const
+    });
+    const valued = (chain: string, amount: number) => ({
+      asset: 'aUSDC', chain, contractAddress: A, amount, costBasis: amount,
+      priceNow: 1, priceAsOf: 1, dayChangePct: null, avgCost: 1, valueNow: amount,
+      unrealized: 0, unrealizedPct: 0, sourceVerification: [source(scope, amount)]
+    });
+    const displayed = reaggregateUnreplacedCustody(
+      [valued('ethereum', 100), valued('polygon', 25)],
+      [
+        { assetKey: 'ethereum-receipt', asset: 'aUSDC', chain: 'ethereum', contractAddress: A, sourceVerification: [source(scope, 100)] },
+        { assetKey: 'polygon-lookalike', asset: 'aUSDC', chain: 'polygon', contractAddress: A, sourceVerification: [source(scope, 25)] }
+      ],
+      new Set([`${scope}:ethereum-receipt`])
+    );
+    expect(displayed).toEqual([expect.objectContaining({ chain: 'polygon', amount: 25, valueNow: 25 })]);
+  });
   it('reconciles the diagnosed wallet fixture at one block without lookalikes or receipt duplication', () => {
     const scope = diagnosedWallet.accountIdentityScope;
     const snapshots = [...new Set(diagnosedWallet.protocolClaims.map((claim) => claim.protocolId))].map((protocolId, index) => ({

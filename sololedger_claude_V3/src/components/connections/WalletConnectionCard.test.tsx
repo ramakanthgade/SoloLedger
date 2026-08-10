@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { ConnectionCardData } from './connectionModel';
 import { WalletConnectionCard } from './WalletConnectionCard';
@@ -29,5 +29,62 @@ describe('WalletConnectionCard coverage copy', () => {
     expect(screen.getByText('RPC rate limit')).toBeInTheDocument();
     expect(screen.getByText('Try syncing again')).toBeInTheDocument();
     vi.useRealTimers();
+  });
+
+  it('portals every wallet action outside the clipped card and preserves keyboard navigation', () => {
+    const sync = vi.fn();
+    const rename = vi.fn();
+    const remove = vi.fn();
+    render(<WalletConnectionCard
+      card={card}
+      expanded={false}
+      onExpandedChange={() => undefined}
+      onOpenDetail={() => undefined}
+      onOpenChainDetail={() => undefined}
+      menuItems={[
+        { label: 'Sync', onSelect: sync },
+        { label: 'Rename', onSelect: rename },
+        { label: 'Remove', onSelect: remove, danger: true }
+      ]}
+    />);
+
+    fireEvent.click(screen.getByRole('button', { name: `${card.title} actions` }));
+    const menu = screen.getByRole('menu', { name: `${card.title} actions` });
+    const cardElement = screen.getByTestId(`connection-card-${card.id}`);
+    expect(cardElement.contains(menu)).toBe(false);
+    expect(screen.getAllByRole('menuitem').map((item) => item.textContent)).toEqual([
+      'Sync', 'Rename', 'Remove'
+    ]);
+    expect(screen.getByRole('menuitem', { name: 'Sync' })).toHaveFocus();
+    fireEvent.keyDown(menu, { key: 'ArrowDown' });
+    expect(screen.getByRole('menuitem', { name: 'Rename' })).toHaveFocus();
+    fireEvent.keyDown(menu, { key: 'End' });
+    expect(screen.getByRole('menuitem', { name: 'Remove' })).toHaveFocus();
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Remove' }));
+    expect(remove).toHaveBeenCalledOnce();
+    expect(sync).not.toHaveBeenCalled();
+    expect(rename).not.toHaveBeenCalled();
+  });
+
+  it('keeps an open portaled menu attached when the trigger reflows', async () => {
+    render(<WalletConnectionCard
+      card={card}
+      expanded={false}
+      onExpandedChange={() => undefined}
+      onOpenDetail={() => undefined}
+      onOpenChainDetail={() => undefined}
+      menuItems={[{ label: 'Sync', onSelect: () => undefined }]}
+    />);
+    const trigger = screen.getByRole('button', { name: `${card.title} actions` });
+    let top = 100;
+    vi.spyOn(trigger, 'getBoundingClientRect').mockImplementation(() => ({
+      x: 200, y: top, top, bottom: top + 44, left: 200, right: 244,
+      width: 44, height: 44, toJSON: () => ({})
+    }));
+    fireEvent.click(trigger);
+    const menu = screen.getByRole('menu');
+    await waitFor(() => expect(menu).toHaveStyle({ top: '148px' }));
+    top = 300;
+    await waitFor(() => expect(menu).toHaveStyle({ top: '348px' }));
   });
 });

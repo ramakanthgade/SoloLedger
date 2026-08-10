@@ -26,7 +26,11 @@ export function HoldingsList({ projection, formatMoney }: {
           {signedTotal != null && <span className="ml-auto text-xs font-bold tabular-figures text-mid">Net {formatMoney(signedTotal)}</span>}
         </div>
         {(projection.status === 'partial' || projection.status === 'stale' || projection.status === 'unsupported') && <p className="bg-warn/10 px-5 py-2 text-xs text-warn" role="status">{projection.status === 'stale' ? 'Showing the last complete position snapshot; newer evidence is incomplete or restored.' : projection.status === 'unsupported' ? 'Look-through unsupported; raw custody assets are retained.' : projection.hasUnpricedValues ? 'Position values are incomplete. Known liabilities remain included; unpriced rows are shown explicitly.' : 'Position evidence is partial. Known liabilities are retained; supplies do not replace custody.'}</p>}
-        {displayRows.length > 0 && <ul>{displayRows.map((row) => <li key={row.id} className="flex items-center gap-3 border-t border-hi/10 px-5 py-3">
+        {displayRows.length > 0 && <ul>{displayRows.map((row) => <li
+          key={row.id}
+          className="flex items-center gap-3 border-t border-hi/10 px-5 py-3"
+          data-economic-value={row.contribution ?? undefined}
+        >
           <AssetIcon symbol={row.symbol} size={30} />
           <div className="min-w-0 flex-1"><p className="text-sm font-bold text-hi">{row.symbol}</p><p className="text-xs text-low">{row.kind === 'supply' ? `Supplied${row.isCollateral ? ' · Collateral' : ' · Not collateral'}` : `Liability · ${row.debtRateMode}`}</p></div>
           <div className="text-right"><p className="text-sm font-semibold tabular-figures text-hi">{row.kind === 'liability' ? 'Owed ' : ''}{formatCompactAmount(row.quantity)}</p><p className="text-xs tabular-figures text-low">{row.value != null ? `${row.kind === 'liability' ? '−' : ''}${formatMoney(row.value)}` : 'Unpriced'}</p></div>

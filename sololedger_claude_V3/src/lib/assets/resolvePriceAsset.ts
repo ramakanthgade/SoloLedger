@@ -17,13 +17,25 @@ const EVM_STABLE_CONTRACTS: Record<string, string> = {
   '0xfd086bc7cd5c481dcc9d9fea85d58749d6198636': 'USDT' // Arbitrum
 };
 
+const CHAIN_SCOPED_EVM_STABLE_CONTRACTS: Record<string, Record<string, string>> = {
+  polygon: {
+    // Circle-issued native Polygon USDC. Never trust this address on another chain.
+    '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359': 'USDC'
+  },
+  bsc: {
+    '0xe9e7cea3dedca5984780bafc599bd69add087d56': 'BUSD'
+  }
+};
+
 /** Normalize asset ticker for price lookup (stable mints, cached symbols, etc.). */
 export function resolvePriceAsset(asset: string, contractAddress?: string, chain?: string, safetyState?: SafetyState): string {
   // An unverified contract must never inherit a ticker price. Returning its
   // exact normalized identity makes accidental symbol requests fail closed.
   if (safetyState === 'unverified' && contractAddress) return contractAddress.trim().toLowerCase();
   if (contractAddress) {
-    const evm = EVM_STABLE_CONTRACTS[contractAddress.toLowerCase()];
+    const normalizedContract = contractAddress.toLowerCase();
+    const evm = (chain ? CHAIN_SCOPED_EVM_STABLE_CONTRACTS[chain]?.[normalizedContract] : undefined)
+      ?? EVM_STABLE_CONTRACTS[normalizedContract];
     if (evm) return evm;
     if (chain === 'solana') {
       const known = resolveSolanaMintSymbol(contractAddress);
