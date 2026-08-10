@@ -622,7 +622,7 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     });
     SEED.txs.splice(0, SEED.txs.length, {
       id: 'awbtc-custody', timestamp: now, type: 'transfer_in', asset: 'AWBTC', amount: 1,
-      fiatCurrency: 'INR', source: 'rpc:moralis', chain: 'ethereum', contractAddress: awbtc,
+      fiatValue: 70_000_000, fiatCurrency: 'INR', source: 'rpc:moralis', chain: 'ethereum', contractAddress: awbtc,
       walletAddress: address, flags: [], isInternalTransfer: false
     });
     SEED.safetyDecisions.push({
@@ -684,6 +684,7 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       const custody = screen.getByTestId('dashboard-holdings');
       expect(within(custody).queryByText('AWBTC')).not.toBeInTheDocument();
       expect(within(custody).getByText('WBTC')).toBeInTheDocument();
+      expect(screen.queryByText(/AWBTC: .*unrealized loss/i)).not.toBeInTheDocument();
       expect(within(custody).getAllByText('₹50,00,000.00')).toHaveLength(1);
       expect(JSON.parse(localStorage.getItem('sololedger_wallet_defi_net_worth_shadow_v1') ?? '{}')).toMatchObject({
         legacyNetWorth: 5_000_000, defiNetWorth: 5_000_000, difference: 0, status: 'complete'

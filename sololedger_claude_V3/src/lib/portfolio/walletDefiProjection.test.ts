@@ -58,6 +58,32 @@ describe('manifest-selected wallet DeFi projection', () => {
     ]);
   });
 
+  it('keeps same-contract custody marks isolated by chain', () => {
+    const holdings = [{
+      assetKey: 'ethereum:token', asset: 'TOK', chain: 'ethereum', contractAddress: USDC,
+      quantity: 10, costBasis: 0, sourceVerification: [{ scopeId: SCOPE, quantity: 10 }]
+    }, {
+      assetKey: 'polygon:token', asset: 'TOK', chain: 'polygon', contractAddress: USDC,
+      quantity: 5, costBasis: 0, sourceVerification: [{ scopeId: EMPTY_SCOPE, quantity: 5 }]
+    }];
+    const valued = [{
+      asset: 'TOK', chain: 'ethereum', contractAddress: USDC,
+      amount: 10, costBasis: 0, avgCost: 0, priceNow: 100, priceAsOf: 1,
+      dayChangePct: null, valueNow: 1_000, unrealized: 1_000, unrealizedPct: null
+    }, {
+      asset: 'TOK', chain: 'polygon', contractAddress: USDC,
+      amount: 5, costBasis: 0, avgCost: 0, priceNow: 10, priceAsOf: 1,
+      dayChangePct: null, valueNow: 50, unrealized: 50, unrealizedPct: null
+    }];
+
+    const custody = walletDefiCustodyFromHoldings(holdings, valued);
+    expect(custody).toEqual([
+      expect.objectContaining({ id: `${SCOPE}:ethereum:token`, value: 1_000 }),
+      expect.objectContaining({ id: `${EMPTY_SCOPE}:polygon:token`, value: 50 })
+    ]);
+    expect(custody.reduce((sum, row) => sum + (row.value ?? 0), 0)).toBe(1_050);
+  });
+
   it('uses the same scoped result for aggregate Dashboard/Data Health and filtered Connections inputs', () => {
     const allSnapshots = [...snapshots(SCOPE), ...snapshots(EMPTY_SCOPE)];
     const v3 = `${SCOPE}:aave-v3-ethereum:1`;

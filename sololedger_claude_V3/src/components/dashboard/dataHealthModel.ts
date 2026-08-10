@@ -40,11 +40,7 @@ export function buildCoherentDataHealthShadow(
   const priceIndex = buildPriceIndex(snapshot.priceCache ?? [], currency);
   const valued = valueHoldings(projection.holdings, priceIndex);
   const custody = walletDefiCustodyFromHoldings(projection.holdings, valued);
-  const prices = new Map(valued.flatMap((row) => row.contractAddress && row.priceNow != null
-    ? [[row.contractAddress.toLowerCase(), row.priceNow] as const] : []));
-  for (const [contract, price] of defiUnderlyingPriceMap(
-    snapshot.defiPositionRows ?? [], priceIndex
-  )) prices.set(contract, price);
+  const prices = defiUnderlyingPriceMap(snapshot.defiPositionRows ?? [], priceIndex);
   return projectManifestSelectedWalletDefi({
     custody,
     snapshots: snapshot.defiPositionSnapshots ?? [],
