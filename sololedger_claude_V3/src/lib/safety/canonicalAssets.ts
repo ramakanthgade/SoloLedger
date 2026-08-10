@@ -108,3 +108,15 @@ export function canonicalBalanceProbeTokenMetadata(
     ? [...entries].map(([contractAddress, metadata]) => ({ contractAddress, ...metadata }))
     : [];
 }
+
+/**
+ * Exact balance-probe contracts whose positive RPC authority may override an
+ * automatic asset-level spam inheritance for custody display only. This does
+ * not grant transaction safety trust; `isCanonicalTrustedAsset` remains the
+ * only canonical transaction-policy allowlist.
+ */
+export function isCanonicalBalanceDisplayAsset(chain: string, contractAddress?: string): boolean {
+  if (!contractAddress) return false;
+  return BALANCE_PROBE_TOKEN_METADATA_BY_CHAIN.get(canonicalSafetyChain(chain))
+    ?.has(contractAddress.trim().toLowerCase()) ?? false;
+}

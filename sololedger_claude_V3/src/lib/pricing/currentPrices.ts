@@ -1,4 +1,4 @@
-import { resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
+import { canonicalCustodyPriceAsset, resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
 import type { PortfolioHolding } from '@/lib/portfolio/portfolioCompute';
 import { isNativeSolHolding } from '@/lib/portfolio/solBalance';
 import { buildCurrentContractPriceCacheKey, buildCurrentPriceCacheKey, db } from '@/lib/storage/db';
@@ -18,14 +18,19 @@ export async function refreshCurrentHoldingPrices(
   currency: string,
   coingeckoApiKey?: string
 ): Promise<void> {
-  const assets = [...new Set(holdings.filter((h) =>
-    (!h.contractAddress || isNativeSolHolding(h)) && h.safetyState !== 'high_confidence_spam' && h.safetyState !== 'user_hidden'
-  ).map((h) =>
-    resolvePriceAsset(h.asset, h.contractAddress, h.chain, h.safetyState).toUpperCase()
-  ))];
+  const assets = [...new Set(holdings.flatMap((holding) => {
+    if (holding.safetyState === 'high_confidence_spam' || holding.safetyState === 'user_hidden') return [];
+    const controlledIdentity = canonicalCustodyPriceAsset(holding.chain, holding.contractAddress);
+    if (controlledIdentity) return [controlledIdentity.toUpperCase()];
+    if (holding.contractAddress && !isNativeSolHolding(holding)) return [];
+    return [resolvePriceAsset(
+      holding.asset, holding.contractAddress, holding.chain, holding.safetyState
+    ).toUpperCase()];
+  }))];
   const contractCandidates = holdings.flatMap((holding, index) => {
     if (
       !holding.contractAddress || !holding.chain ||
+      canonicalCustodyPriceAsset(holding.chain, holding.contractAddress) ||
       !['trusted', 'unverified', 'user_visible'].includes(holding.safetyState ?? '')
     ) return [];
     const platform = COINGECKO_PLATFORM[holding.chain as ChainId];

@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { canUseSymbolPrice, resolvePriceAsset } from './resolvePriceAsset';
+import {
+  canUseSymbolPrice,
+  canonicalCustodyPriceAsset,
+  resolvePriceAsset
+} from './resolvePriceAsset';
 
 describe('safety-aware price identity', () => {
   it('forbids symbol pricing for an unverified same-symbol contract', () => {
@@ -27,5 +31,18 @@ describe('safety-aware price identity', () => {
     const contract = '0xe9e7cea3dedca5984780bafc599bd69add087d56';
     expect(resolvePriceAsset('Binance USD', contract, 'bsc', 'trusted')).toBe('BUSD');
     expect(resolvePriceAsset('LOOKALIKE', contract, 'ethereum', 'trusted')).toBe('LOOKALIKE');
+  });
+  it.each([
+    ['0x5ee5bf7ae06d1be5997a1a72006fe6c607ec6de8', 'WBTC'],
+    ['0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c', 'USDC'],
+    ['0x4d5F47FA6A74757f35C14fD3a6Ef8E3C9BC514E8', 'ETH'],
+    ['0x4197ba364ae6698015ae5c1468f54087602715b2', 'WBTC'],
+    ['0xe7df13b8e3d6740fe17cbe928c7334243d86c92f', 'USDT'],
+    ['0x59cD1C87501baa753d0B5B5Ab5D8416A45cD71DB', 'ETH']
+  ])('maps Ethereum receipt %s to %s for custody pricing', (contract, underlying) => {
+    expect(canonicalCustodyPriceAsset('0x1', contract)).toBe(underlying);
+    expect(canonicalCustodyPriceAsset(
+      'polygon', contract
+    )).toBeUndefined();
   });
 });

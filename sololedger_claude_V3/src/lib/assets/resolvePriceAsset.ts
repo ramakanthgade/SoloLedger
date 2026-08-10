@@ -1,6 +1,7 @@
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
 import { resolveSolanaMintSymbol } from '@/lib/assets/solanaMints';
 import { getCachedTokenSymbol } from '@/lib/assets/tokenSymbols';
+import { canonicalSafetyChain } from '@/lib/safety/canonicalAssets';
 import type { SafetyState } from '@/lib/safety/types';
 
 /** Common ERC-20 stablecoin contracts (lowercase) → ticker. */
@@ -26,6 +27,30 @@ const CHAIN_SCOPED_EVM_STABLE_CONTRACTS: Record<string, Record<string, string>> 
     '0xe9e7cea3dedca5984780bafc599bd69add087d56': 'BUSD'
   }
 };
+
+const ETHEREUM_PROTOCOL_RECEIPT_UNDERLYINGS: Record<string, string> = {
+  '0x5ee5bf7ae06d1be5997a1a72006fe6c607ec6de8': 'WBTC',
+  '0x98c23e9d8f34fefb1b7bd6a91b7ff122f4e16f5c': 'USDC',
+  '0x4d5f47fa6a74757f35c14fd3a6ef8e3c9bc514e8': 'ETH',
+  '0x4197ba364ae6698015ae5c1468f54087602715b2': 'WBTC',
+  '0xe7df13b8e3d6740fe17cbe928c7334243d86c92f': 'USDT',
+  '0x59cd1c87501baa753d0b5b5ab5d8416a45cd71db': 'ETH'
+};
+
+const CANONICAL_CUSTODY_PRICE_ASSETS_BY_CHAIN: Record<string, Record<string, string>> = {
+  ethereum: ETHEREUM_PROTOCOL_RECEIPT_UNDERLYINGS,
+  ...CHAIN_SCOPED_EVM_STABLE_CONTRACTS
+};
+
+/** Exact canonical identity that must control current custody valuation. */
+export function canonicalCustodyPriceAsset(
+  chain: string | undefined,
+  contractAddress: string | undefined
+): string | undefined {
+  if (!chain || !contractAddress) return undefined;
+  return CANONICAL_CUSTODY_PRICE_ASSETS_BY_CHAIN[canonicalSafetyChain(chain)]
+    ?.[contractAddress.trim().toLowerCase()];
+}
 
 /** Normalize asset ticker for price lookup (stable mints, cached symbols, etc.). */
 export function resolvePriceAsset(asset: string, contractAddress?: string, chain?: string, safetyState?: SafetyState): string {

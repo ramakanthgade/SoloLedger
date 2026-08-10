@@ -407,6 +407,75 @@ describe('buildHoldingsProjection', () => {
     expect(hidden.allHoldings[0]).toMatchObject({ asset, quantity: 7, safetyState: 'user_hidden' });
   });
 
+  it.each([
+    ['bsc', 56, 'BUSD', '0xe9e7cea3dedca5984780bafc599bd69add087d56', 359.577807],
+    ['polygon', 137, 'USDC', '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359', 49.280052]
+  ] as const)('shows verified positive %s %s custody despite automatic spam inheritance',
+    (chain, chainId, asset, contract, quantity) => {
+      const scopeId = `wallet:evm:${chainId}:0xabc`;
+      const snapshotId = `${chain}-snapshot`;
+      const automaticDecision = {
+        subjectKey: `asset:${chain}:${contract}`, state: 'high_confidence_spam' as const,
+        updatedAt: NOW, origin: 'automatic' as const
+      };
+      const walletSnapshot = snapshot({
+        snapshotId, scopeId, authorityKind: 'rpc', authorityClass: 'wallet_balance',
+        accountClass: 'wallet', coveredAccountClasses: ['wallet'], sourceIdentityId: `${chain}:0xabc`,
+        endpointProof: proof({ authorityKind: 'rpc', provider: 'alchemy', parametersClass: 'wallet',
+          requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'] })
+      });
+      const authority = authorityAsset({
+        id: `${chain}-asset`, snapshotId, scopeId, accountClass: 'wallet',
+        assetKey: `evm:${chainId}:${contract}`, asset, quantity
+      });
+      const walletCoverage = coverage({
+        id: `${chain}-coverage`, scopeId, sourceIdentityId: `${chain}:0xabc`, kind: 'rpc',
+        accountClasses: ['wallet'], authoritySnapshotId: snapshotId
+      });
+      const visible = buildHoldingsProjection(input({
+        snapshots: [walletSnapshot], assets: [authority], coverage: [walletCoverage],
+        safetyDecisions: [automaticDecision]
+      }));
+      expect(visible.holdings).toEqual([expect.objectContaining({
+        asset, chain, contractAddress: contract, quantity, safetyState: 'trusted',
+        verificationStatus: 'verified_authority'
+      })]);
+
+      const fallbackTx = tx({
+        id: `${chain}-fallback`, source: 'rpc:moralis', chain, walletAddress: '0xdef', asset,
+        contractAddress: contract, amount: 1_000
+      });
+      const mixedInput = input({
+        exchangeConnections: [], transactions: [fallbackTx], snapshots: [walletSnapshot],
+        assets: [authority], coverage: [walletCoverage], safetyDecisions: [automaticDecision]
+      });
+      const mixed = buildHoldingsProjection(mixedInput);
+      expect(mixed.holdings).toEqual([expect.objectContaining({
+        quantity, safetyState: 'trusted', verificationStatus: 'verified_authority',
+        sourceVerification: [expect.objectContaining({ scopeId })]
+      })]);
+      expect(appendHoldingsProjection(visible, mixedInput, fallbackTx)).toEqual(mixed);
+
+      const hidden = buildHoldingsProjection(input({
+        snapshots: [walletSnapshot], assets: [authority], coverage: [walletCoverage], safetyDecisions: [{
+          ...automaticDecision, state: 'user_hidden', origin: 'user'
+        }]
+      }));
+      expect(hidden.holdings).toEqual([]);
+      expect(hidden.allHoldings[0]).toMatchObject({ safetyState: 'user_hidden' });
+
+      const postingOnly = buildHoldingsProjection(input({
+        exchangeConnections: [], transactions: [tx({
+          source: 'rpc:moralis', chain, walletAddress: '0xabc', asset,
+          contractAddress: contract, amount: quantity
+        })], safetyDecisions: [automaticDecision]
+      }));
+      expect(postingOnly.holdings).toEqual([]);
+      expect(postingOnly.allHoldings[0]).toMatchObject({
+        safetyState: 'high_confidence_spam', verificationStatus: 'posting_fallback'
+      });
+    });
+
   it('preserves wallet contract identity, Base58 case, and native SOL separation', () => {
     const wallet = 'Base58Wallet';
     const result = buildHoldingsProjection(input({

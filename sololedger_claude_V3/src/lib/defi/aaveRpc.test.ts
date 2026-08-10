@@ -43,4 +43,25 @@ describe('same-block Aave-compatible direct reads', () => {
     ] });
     expect(calls.every((call) => call.block === '0x1234')).toBe(true);
   });
+
+  it('does not query metadata for unused zero-address stable debt tokens', async () => {
+    const entry = PROTOCOL_REGISTRY['aave-v3-ethereum'];
+    const zero = `0x${'0'.repeat(40)}`;
+    const rpc: EthereumRpcCall = async (method, params) => {
+      if (method === 'eth_blockNumber') return '0x1234';
+      const [{ to, data }] = params as [{ to: string; data: string }, string];
+      if (to.toLowerCase() === entry.dataProviderAddress.toLowerCase() && data === AAVE_DATA_PROVIDER_SELECTORS.getAllReservesTokens) return reservesResult();
+      if (data.startsWith(AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData)) return `0x${uint(10_000_000)}${uint(0)}${uint(3_000_000)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(0)}${uint(1)}`;
+      if (data.startsWith(AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses)) return `0x${addrWord(address('2'))}${addrWord(zero)}${addrWord(address('4'))}`;
+      if (to === zero) throw new Error('zero-address metadata must not be requested');
+      if (data === AAVE_DATA_PROVIDER_SELECTORS.decimals) return `0x${uint(6)}`;
+      if (data === AAVE_DATA_PROVIDER_SELECTORS.symbol) return stringResult(to === address('1') ? 'USDC' : to === address('2') ? 'aUSDC' : 'variableDebtUSDC');
+      throw new Error('unexpected call');
+    };
+    const result = await fetchAaveCompatibleRpcPositions(address('9'), 'aave-v3-ethereum', rpc);
+    expect(result).toMatchObject({ status: 'complete', rows: [
+      expect.objectContaining({ role: 'supply', quantity: 10 }),
+      expect.objectContaining({ role: 'debt', quantity: 3, debtRateMode: 'variable' })
+    ] });
+  });
 });

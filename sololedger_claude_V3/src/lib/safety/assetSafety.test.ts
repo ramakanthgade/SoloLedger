@@ -8,7 +8,11 @@ import {
   resolveTransactionSafetyPolicy,
   transactionsUnderCurrentSafetyPolicy
 } from './assetSafety';
-import { assetSubjectKey } from './canonicalAssets';
+import {
+  assetSubjectKey,
+  isCanonicalBalanceDisplayAsset,
+  isCanonicalTrustedAsset
+} from './canonicalAssets';
 import type { ProviderEvidenceRow, SafetyDecisionRow } from './types';
 import type { Transaction } from '@/types/transaction';
 
@@ -79,6 +83,24 @@ describe('five-state asset safety', () => {
       }).state).toBe('unverified');
     }
     expect(contracts.map(([symbol]) => symbol)).toEqual(['AWBTC', 'AUSDC', 'ZRO', 'BUSD']);
+  });
+
+  it('does not grant transaction-policy trust to balance-display-only stablecoin probes', () => {
+    const contracts = [
+      ['bsc', '0xe9e7cea3dedca5984780bafc599bd69add087d56'],
+      ['polygon', '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359']
+    ] as const;
+    for (const [chain, contractAddress] of contracts) {
+      const exactSubject = assetSubjectKey(chain, contractAddress);
+      expect(isCanonicalBalanceDisplayAsset(chain, contractAddress)).toBe(true);
+      expect(isCanonicalTrustedAsset(chain, contractAddress)).toBe(false);
+      expect(resolveAssetSafety({
+        subjectKey: exactSubject,
+        chain,
+        contractAddress,
+        evidence: [evidence({ subjectKey: exactSubject })]
+      }).state).toBe('high_confidence_spam');
+    }
   });
 });
 
