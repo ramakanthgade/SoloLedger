@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { MoreVertical } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
@@ -24,6 +25,7 @@ interface CardMenuProps {
  */
 export function CardMenu({ label, items }: CardMenuProps) {
   const [open, setOpen] = useState(false);
+  const [position, setPosition] = useState({ left: 0, top: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -31,7 +33,8 @@ export function CardMenu({ label, items }: CardMenuProps) {
   useEffect(() => {
     if (!open) return;
     const onDocMouseDown = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+      const target = e.target as Node;
+      if (!rootRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
     };
     document.addEventListener('mousedown', onDocMouseDown);
     // Focus the first enabled item.
@@ -39,6 +42,43 @@ export function CardMenu({ label, items }: CardMenuProps) {
     first?.focus();
     return () => document.removeEventListener('mousedown', onDocMouseDown);
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    let frame = 0;
+    const placeMenu = () => {
+      const trigger = triggerRef.current;
+      if (!trigger) return;
+      const rect = trigger.getBoundingClientRect();
+      const width = menuRef.current?.offsetWidth || 190;
+      const height = menuRef.current?.offsetHeight || items.length * 44 + 8;
+      const gap = 4;
+      const edge = 8;
+      const left = Math.min(
+        Math.max(edge, rect.right - width),
+        Math.max(edge, window.innerWidth - width - edge)
+      );
+      const fitsBelow = rect.bottom + gap + height <= window.innerHeight - edge;
+      const top = fitsBelow
+        ? rect.bottom + gap
+        : Math.max(edge, rect.top - height - gap);
+      setPosition((current) => current.left === left && current.top === top
+        ? current
+        : { left, top });
+    };
+    const followLayout = () => {
+      placeMenu();
+      frame = requestAnimationFrame(followLayout);
+    };
+    followLayout();
+    window.addEventListener('resize', placeMenu);
+    window.addEventListener('scroll', placeMenu, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener('resize', placeMenu);
+      window.removeEventListener('scroll', placeMenu, true);
+    };
+  }, [items.length, open]);
 
   const close = (refocus = true) => {
     setOpen(false);
@@ -88,13 +128,14 @@ export function CardMenu({ label, items }: CardMenuProps) {
       >
         <MoreVertical className="h-[18px] w-[18px]" aria-hidden="true" />
       </button>
-      {open && (
+      {open && createPortal(
         <div
           ref={menuRef}
           role="menu"
           aria-label={label}
           onKeyDown={onMenuKeyDown}
-          className="absolute right-0 top-full z-50 mt-1 min-w-[190px] rounded-xl border border-hi/10 bg-elev-1 py-1 shadow-pop"
+          className="fixed z-[100] min-w-[190px] rounded-xl border border-hi/10 bg-elev-1 py-1 shadow-pop"
+          style={position}
         >
           {items.map((item) => (
             <button
@@ -116,7 +157,8 @@ export function CardMenu({ label, items }: CardMenuProps) {
               {item.label}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

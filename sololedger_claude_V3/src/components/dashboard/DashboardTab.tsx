@@ -38,7 +38,11 @@ import { useTabNav } from '@/lib/tabNav';
 import { NetWorthChart } from './NetWorthChart';
 import { DataHealthRecon } from './DataHealthRecon';
 import { DataHealthWorkspace, type DataHealthViewState } from './DataHealthWorkspace';
-import { groupDashboardHoldings, holdingPnlPresentation } from './dashboardEconomicRows';
+import {
+  groupDashboardHoldings,
+  holdingPnlPresentation,
+  reaggregateUnreplacedCustody
+} from './dashboardEconomicRows';
 import { buildDashboardValueMetrics, economicExposureDisclosure, knownEconomicSubtotal } from './dashboardValueMetrics';
 import { calculateDashboardDisposals } from './dashboardDisposals';
 import { buildCoherentDataHealthShadow, buildDataHealthModel, buildLocalDataHealthDiagnostics } from './dataHealthModel';
@@ -800,9 +804,17 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
   [defiNetWorthInput.custody, defiNetWorthShadow.projection, walletDefiNetWorthEnabled]);
   const protocolHoldingCount = [...economicExposure.assets, ...economicExposure.liabilities]
     .filter((row) => row.kind !== 'liquid' && row.protocolId).length;
-  // Receipt/debt replacement belongs to economic net worth and allocation.
-  // Keep the ordinary custody table faithful to what the account holds.
-  const holdingGroups = useMemo(() => groupDashboardHoldings(valued), [valued]);
+  const replacedCustodyIds = useMemo(() => new Set(
+    [...economicExposure.assets, ...economicExposure.liabilities]
+      .flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : [])
+  ), [economicExposure]);
+  // The primary table is an economic view: exact custody slices replaced by
+  // complete protocol authority are shown through the protocol rows below,
+  // not duplicated as receipt/debt-token custody peers.
+  const displayedCustody = useMemo(() => reaggregateUnreplacedCustody(
+    valued, projection.holdings, replacedCustodyIds
+  ), [projection.holdings, replacedCustodyIds, valued]);
+  const holdingGroups = useMemo(() => groupDashboardHoldings(displayedCustody), [displayedCustody]);
   const renderedHoldings = showAllHoldings
     ? [...holdingGroups.visible, ...holdingGroups.other]
     : holdingGroups.visible;
@@ -1136,6 +1148,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         <div
           className="hidden items-center gap-2 px-5 py-3.5 sm:grid sm:grid-cols-[minmax(0,1.3fr)_minmax(0,.9fr)_minmax(0,.75fr)_minmax(0,.85fr)_minmax(7.5rem,1.3fr)_3.25rem]"
           data-layout="dashboard-holdings-desktop-row"
+          data-economic-value={value}
         >
           <div className="min-w-0">{assetCell}</div>
           <div className="text-right">
@@ -1172,7 +1185,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         </div>
 
         {/* mobile card */}
-        <div className="px-4 py-3.5 sm:hidden">
+        <div className="px-4 py-3.5 sm:hidden" data-economic-value={value}>
           {assetCell}
           <div className="mt-3 flex items-end justify-between gap-3 pl-11">
             <div className="min-w-0">

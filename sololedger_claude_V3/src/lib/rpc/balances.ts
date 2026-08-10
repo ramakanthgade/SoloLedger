@@ -42,7 +42,10 @@ import type { TaxSettings } from '@/types/transaction';
 import type { EndpointCoverageOutcome } from '@/lib/reconcile/sourceCoverage';
 import { assetKey as canonicalAssetKey } from '@/lib/ledger/assetKey';
 import { canonicalWalletAddress } from '@/lib/ledger/chainNamespace';
-import { canonicalTrustedTokenMetadata } from '@/lib/safety/canonicalAssets';
+import {
+  canonicalBalanceProbeTokenMetadata,
+  canonicalTrustedTokenMetadata
+} from '@/lib/safety/canonicalAssets';
 
 export interface FetchedBalance {
   asset: string;
@@ -172,6 +175,12 @@ function hexToAmount(hex: unknown, decimals: number): number {
   const amount = Number(BigInt(hex)) / 10 ** decimals;
   if (!Number.isFinite(amount) || amount < 0) throw new Error('Provider returned a non-finite balance.');
   return amount;
+}
+
+function erc20BalanceOfCallData(address: string): string {
+  const normalized = address.trim().toLowerCase();
+  if (!/^0x[0-9a-f]{40}$/.test(normalized)) throw new Error('Wallet address is malformed.');
+  return `0x70a08231${normalized.slice(2).padStart(64, '0')}`;
 }
 
 /** contract → display symbol, from the app's own imported tx history. */
@@ -373,6 +382,33 @@ async function fetchBalanceOperation(
         failedCount: values.size
       });
     }
+    for (const token of canonicalBalanceProbeTokenMetadata(chain.id)) {
+      const contract = token.contractAddress.toLowerCase();
+      if (rawByContract.has(contract) || conflictingContracts.has(contract)) continue;
+      const identity = canonicalAssetKey({ asset: token.symbol, chain: chain.id, contractAddress: contract });
+      const endpoint = walletEndpoint(chain.id, identity, 'eth_call:balanceOf');
+      try {
+        // Alchemy enumeration occasionally omits canonical contracts. An exact
+        // balanceOf probe discovers only allow-listed chain+contract identities.
+        // eslint-disable-next-line no-await-in-loop
+        const rawHex = await alchemyCall(url, headers, 'eth_call', [{
+          to: contract,
+          data: erc20BalanceOfCallData(address)
+        }, 'latest']);
+        if (typeof rawHex !== 'string' || !/^0x[0-9a-f]+$/i.test(rawHex)) {
+          throw new Error('ERC-20 balanceOf returned a malformed result.');
+        }
+        rawByContract.set(contract, BigInt(rawHex));
+        outcomes.push(requestOutcome(endpoint, 'complete'));
+      } catch (error) {
+        outcomes.push({
+          ...requestOutcome(endpoint, 'failed',
+            error instanceof Error ? error.message : 'ERC-20 balanceOf failed'),
+          observedContractAddress: contract,
+          quantityResolved: false
+        });
+      }
+    }
     const held = [...rawByContract].filter(([, raw]) => raw > 0n);
     const historySymbols = await txHistorySymbolMap(chain.id, address);
     const enrich = async ([contract, raw]: [string, bigint]): Promise<{
@@ -444,7 +480,14 @@ async function fetchBalanceOperation(
       error instanceof Error ? error.message : 'token balance processing failed'));
   }
   return {
-    ...providerResult(balances, outcomes, provider, 'eth_getBalance+alchemy_getTokenBalances+alchemy_getTokenMetadata'),
+    ...providerResult(
+      balances,
+      outcomes,
+      provider,
+      `eth_getBalance+alchemy_getTokenBalances+alchemy_getTokenMetadata${
+        canonicalBalanceProbeTokenMetadata(chain.id).length > 0 ? '+canonical-balanceOf' : ''
+      }`
+    ),
     unresolvedContractAddresses: outcomes.flatMap((outcome) =>
       outcome.quantityResolved === false && outcome.observedContractAddress
         ? [outcome.observedContractAddress] : [])

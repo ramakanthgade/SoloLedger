@@ -28,6 +28,21 @@ const ETHEREUM_TRUSTED_TOKEN_METADATA = new Map<string, { symbol: string; decima
   ['0x4fabb145d64652a948d72533023f6e7a623c7c53', { symbol: 'BUSD', decimals: 18 }]
 ]);
 
+const POLYGON_TRUSTED_TOKEN_METADATA = new Map<string, { symbol: string; decimals: number }>([
+  // Circle-issued native USDC. The older bridged USDC.e contract is a distinct asset.
+  ['0x3c499c542cef5e3811e1192ce70d8cc03d5c3359', { symbol: 'USDC', decimals: 6 }]
+]);
+
+const TRUSTED_TOKEN_METADATA_BY_CHAIN = new Map([
+  ['ethereum', ETHEREUM_TRUSTED_TOKEN_METADATA],
+  ['polygon', POLYGON_TRUSTED_TOKEN_METADATA]
+]);
+
+/** Exact contracts that are probed when provider token enumeration omits them. */
+const BALANCE_PROBE_TOKEN_METADATA_BY_CHAIN = new Map([
+  ['polygon', POLYGON_TRUSTED_TOKEN_METADATA]
+]);
+
 export function canonicalSafetyChain(chain: string): string {
   const normalized = chain.trim().toLowerCase();
   return ETHEREUM_CHAIN_ALIASES.has(normalized) ? 'ethereum' : normalized;
@@ -58,13 +73,14 @@ export function safetySubjectKind(subjectKey: string): SafetySubjectKind | undef
 }
 
 export function isCanonicalTrustedAsset(chain: string, contractAddress?: string): boolean {
-  if (canonicalSafetyChain(chain) !== 'ethereum') return false;
-  if (!contractAddress) return true;
-  return ETHEREUM_TRUSTED_CONTRACTS.has(contractAddress.trim().toLowerCase());
+  const canonicalChain = canonicalSafetyChain(chain);
+  if (!contractAddress) return canonicalChain === 'ethereum';
+  return canonicalChain === 'ethereum' &&
+    ETHEREUM_TRUSTED_CONTRACTS.has(contractAddress.trim().toLowerCase());
 }
 
 /**
- * Immutable ERC-20 identity data for the exact Ethereum contracts SoloLedger
+ * Immutable ERC-20 identity data for the exact contracts SoloLedger
  * canonically trusts. This keeps genuine balances resolvable even when a
  * token-heavy wallet exhausts a provider's metadata rate budget. The chain
  * and contract must both match; ticker text is never trusted by itself.
@@ -73,6 +89,15 @@ export function canonicalTrustedTokenMetadata(
   chain: string,
   contractAddress: string
 ): { symbol: string; decimals: number } | undefined {
-  if (canonicalSafetyChain(chain) !== 'ethereum') return undefined;
-  return ETHEREUM_TRUSTED_TOKEN_METADATA.get(contractAddress.trim().toLowerCase());
+  return TRUSTED_TOKEN_METADATA_BY_CHAIN.get(canonicalSafetyChain(chain))
+    ?.get(contractAddress.trim().toLowerCase());
+}
+
+export function canonicalBalanceProbeTokenMetadata(
+  chain: string
+): ReadonlyArray<{ contractAddress: string; symbol: string; decimals: number }> {
+  const entries = BALANCE_PROBE_TOKEN_METADATA_BY_CHAIN.get(canonicalSafetyChain(chain));
+  return entries
+    ? [...entries].map(([contractAddress, metadata]) => ({ contractAddress, ...metadata }))
+    : [];
 }

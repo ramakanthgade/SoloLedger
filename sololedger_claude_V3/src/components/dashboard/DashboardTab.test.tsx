@@ -609,7 +609,7 @@ describe('DashboardTab — hero honesty', () => {
 });
 
 describe('DashboardTab — header, money strip and tax rail', () => {
-  it('shows exact Aave receipt custody while net worth and allocation count its underlying once', async () => {
+  it('replaces exact Aave receipt custody so displayed holdings and net worth count underlying once', async () => {
     const txBackup = [...SEED.txs];
     const address = `0x${'1'.repeat(40)}`;
     const scope = `wallet:evm:${address}`;
@@ -681,11 +681,21 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     try {
       await renderTab();
       const custody = screen.getByTestId('dashboard-holdings');
-      expect(within(custody).getAllByText('AWBTC').length).toBeGreaterThan(0);
+      expect(within(custody).queryByText('AWBTC')).not.toBeInTheDocument();
+      expect(within(custody).getByText('WBTC')).toBeInTheDocument();
+      expect(within(custody).getAllByText('₹50,00,000.00')).toHaveLength(1);
       expect(JSON.parse(localStorage.getItem('sololedger_wallet_defi_net_worth_shadow_v1') ?? '{}')).toMatchObject({
         legacyNetWorth: 5_000_000, defiNetWorth: 5_000_000, difference: 0, status: 'complete'
       });
       expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', '5000000');
+      const displayedEconomicTotal = [...custody.querySelectorAll<HTMLElement>('[data-economic-value]')]
+        // Ordinary rows have desktop/mobile responsive renderings of the same value.
+        .filter((row) => row.dataset.layout !== undefined || row.closest('[data-testid="protocol-holdings-list"]'))
+        .reduce((sum, row) => sum + Number(row.dataset.economicValue), 0);
+      expect(displayedEconomicTotal).toBe(5_000_000);
+      expect(displayedEconomicTotal).toBe(Number(
+        screen.getByTestId('dashboard-holdings-generation').getAttribute('data-net-worth')
+      ));
       const allocation = screen.getByTestId('allocation-section');
       expect(within(allocation).getByText('WBTC')).toBeInTheDocument();
       expect(within(allocation).queryByText('AWBTC')).not.toBeInTheDocument();
