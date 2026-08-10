@@ -6,7 +6,7 @@ export const AAVE_DATA_PROVIDER_SELECTORS = Object.freeze({
   // getUserReserveData(address asset,address user). Do not confuse this with
   // Pool.getUserAccountData(address), whose selector is 0xbf92857c.
   getUserReserveData: '0x28dd2d01',
-  getReserveTokensAddresses: '0xcd3daf9b',
+  getReserveTokensAddresses: '0xd2493b6c',
   decimals: '0x313ce567',
   symbol: '0x95d89b41'
 });

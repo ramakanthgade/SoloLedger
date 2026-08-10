@@ -11,7 +11,7 @@ describe('Ethereum protocol registry', () => {
     // Independent ABI-signature literals: do not mirror implementation aliases.
     expect(AAVE_DATA_PROVIDER_SELECTORS.getAllReservesTokens).toBe('0xb316ff89'); // getAllReservesTokens()
     expect(AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData).toBe('0x28dd2d01'); // getUserReserveData(address,address)
-    expect(AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses).toBe('0xcd3daf9b'); // getReserveTokensAddresses(address)
+    expect(AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses).toBe('0xd2493b6c'); // getReserveTokensAddresses(address)
   });
   it.each([137, 42161, 8453])('rejects chain %s before registry resolution', (chainId) => {
     expect(resolveProtocol(chainId, 'aave-v3-ethereum')).toBeUndefined();

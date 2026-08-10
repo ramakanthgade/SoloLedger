@@ -44,14 +44,23 @@ export async function fetchAaveCompatibleRpcPositions(address: string, protocolI
     const rows: DefiPositionRow[] = [];
     for (const reserve of reserves) {
       const reserveArg = encodeAddress(reserve.address);
-      const [userData, tokenData, underlying] = await Promise.all([
-        ethCall(rpc, entry.dataProviderAddress, `${AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData}${reserveArg}${encodeAddress(address)}`, block),
-        ethCall(rpc, entry.dataProviderAddress, `${AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses}${reserveArg}`, block),
-        tokenIdentity(rpc, reserve.address, reserve.symbol, block)
-      ]);
+      const userData = await ethCall(
+        rpc,
+        entry.dataProviderAddress,
+        `${AAVE_DATA_PROVIDER_SELECTORS.getUserReserveData}${reserveArg}${encodeAddress(address)}`,
+        block
+      );
       const currentSupply = uintWord(userData, 0);
       const stableDebt = uintWord(userData, 1);
       const variableDebt = uintWord(userData, 2);
+      // Complete reserve enumeration can contain legacy or non-ERC-20
+      // underlyings whose metadata calls revert. They are irrelevant when the
+      // watched account has no position, so do not query them at all.
+      if (currentSupply === 0n && stableDebt === 0n && variableDebt === 0n) continue;
+      const [tokenData, underlying] = await Promise.all([
+        ethCall(rpc, entry.dataProviderAddress, `${AAVE_DATA_PROVIDER_SELECTORS.getReserveTokensAddresses}${reserveArg}`, block),
+        tokenIdentity(rpc, reserve.address, reserve.symbol, block)
+      ]);
       const isCollateral = boolWord(userData, 8);
       const aTokenAddress = addressWord(tokenData, 0);
       const stableTokenAddress = addressWord(tokenData, 1);
