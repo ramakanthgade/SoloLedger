@@ -21,6 +21,9 @@ const CHAIN_SCOPED_EVM_STABLE_CONTRACTS: Record<string, Record<string, string>> 
   polygon: {
     // Circle-issued native Polygon USDC. Never trust this address on another chain.
     '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359': 'USDC'
+  },
+  bsc: {
+    '0xe9e7cea3dedca5984780bafc599bd69add087d56': 'BUSD'
   }
 };
 

@@ -33,14 +33,21 @@ const POLYGON_TRUSTED_TOKEN_METADATA = new Map<string, { symbol: string; decimal
   ['0x3c499c542cef5e3811e1192ce70d8cc03d5c3359', { symbol: 'USDC', decimals: 6 }]
 ]);
 
+const BSC_TRUSTED_TOKEN_METADATA = new Map<string, { symbol: string; decimals: number }>([
+  // Paxos-issued Binance-Peg BUSD on BNB Smart Chain.
+  ['0xe9e7cea3dedca5984780bafc599bd69add087d56', { symbol: 'BUSD', decimals: 18 }]
+]);
+
 const TRUSTED_TOKEN_METADATA_BY_CHAIN = new Map([
   ['ethereum', ETHEREUM_TRUSTED_TOKEN_METADATA],
-  ['polygon', POLYGON_TRUSTED_TOKEN_METADATA]
+  ['polygon', POLYGON_TRUSTED_TOKEN_METADATA],
+  ['bsc', BSC_TRUSTED_TOKEN_METADATA]
 ]);
 
 /** Exact contracts that are probed when provider token enumeration omits them. */
 const BALANCE_PROBE_TOKEN_METADATA_BY_CHAIN = new Map([
-  ['polygon', POLYGON_TRUSTED_TOKEN_METADATA]
+  ['polygon', POLYGON_TRUSTED_TOKEN_METADATA],
+  ['bsc', BSC_TRUSTED_TOKEN_METADATA]
 ]);
 
 export function canonicalSafetyChain(chain: string): string {

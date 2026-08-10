@@ -23,4 +23,9 @@ describe('safety-aware price identity', () => {
     const contract = '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359';
     expect(resolvePriceAsset('LOOKALIKE', contract, 'ethereum', 'trusted')).toBe('LOOKALIKE');
   });
+  it('prices BNB Chain BUSD only on its exact chain and contract', () => {
+    const contract = '0xe9e7cea3dedca5984780bafc599bd69add087d56';
+    expect(resolvePriceAsset('Binance USD', contract, 'bsc', 'trusted')).toBe('BUSD');
+    expect(resolvePriceAsset('LOOKALIKE', contract, 'ethereum', 'trusted')).toBe('LOOKALIKE');
+  });
 });
