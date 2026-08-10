@@ -113,6 +113,27 @@ describe('buildPriceIndex', () => {
       asset: 'USDC', chain: 'ethereum', contractAddress: '0xunknown'
     }, index)).toBeNull();
   });
+
+  it('uses exact custody identities before malformed receipt quotes and for probed stablecoins', () => {
+    const aWeth = '0x4d5f47fa6a74757f35c14fd3a6ef8e3c9bc514e8';
+    const polygonUsdc = '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359';
+    const bscBusd = '0xe9e7cea3dedca5984780bafc599bd69add087d56';
+    const index = buildPriceIndex([
+      priceRow(`spot:ctr:ethereum:${aWeth}:INR`, 281_426_277),
+      priceRow('spot:sym:ETH:INR', 179_198),
+      priceRow('spot:sym:USDC:INR', 95.37),
+      priceRow('spot:sym:BUSD:INR', 95.37)
+    ], 'INR');
+    expect(currentPriceFor({ asset: 'aEthWETH', chain: 'ethereum', contractAddress: aWeth, safetyState: 'unverified' }, index)?.price).toBe(179_198);
+    expect(currentPriceFor({ asset: 'USDC', chain: 'polygon', contractAddress: polygonUsdc, safetyState: 'trusted' }, index)?.price).toBe(95.37);
+    expect(currentPriceFor({ asset: 'BUSD', chain: 'bsc', contractAddress: bscBusd, safetyState: 'trusted' }, index)?.price).toBe(95.37);
+    const contractOnly = buildPriceIndex([
+      priceRow(`spot:ctr:ethereum:${aWeth}:INR`, 281_426_277)
+    ], 'INR');
+    expect(currentPriceFor({
+      asset: 'aEthWETH', chain: 'ethereum', contractAddress: aWeth, safetyState: 'unverified'
+    }, contractOnly)).toBeNull();
+  });
 });
 
 describe('priceAt', () => {

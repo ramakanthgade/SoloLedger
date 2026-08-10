@@ -53,13 +53,26 @@ export async function fetchAaveCompatibleRpcPositions(address: string, protocolI
       const stableDebt = uintWord(userData, 1);
       const variableDebt = uintWord(userData, 2);
       const isCollateral = boolWord(userData, 8);
-      const aToken = await tokenIdentity(rpc, addressWord(tokenData, 0), `a${underlying.symbol}`, block);
-      const stableToken = await tokenIdentity(rpc, addressWord(tokenData, 1), `stableDebt${underlying.symbol}`, block);
-      const variableToken = await tokenIdentity(rpc, addressWord(tokenData, 2), `variableDebt${underlying.symbol}`, block);
+      const aTokenAddress = addressWord(tokenData, 0);
+      const stableTokenAddress = addressWord(tokenData, 1);
+      const variableTokenAddress = addressWord(tokenData, 2);
+      // Aave V3 disabled stable-rate borrowing and now returns address(0) for
+      // many stable debt tokens. Never call metadata on an unused zero token.
+      const [supplyToken, stableToken, variableToken] = await Promise.all([
+        currentSupply > 0n
+          ? tokenIdentity(rpc, aTokenAddress, `a${underlying.symbol}`, block)
+          : undefined,
+        stableDebt > 0n
+          ? tokenIdentity(rpc, stableTokenAddress, `stableDebt${underlying.symbol}`, block)
+          : undefined,
+        variableDebt > 0n
+          ? tokenIdentity(rpc, variableTokenAddress, `variableDebt${underlying.symbol}`, block)
+          : undefined
+      ]);
       const reserveKey = reserve.address.toLowerCase();
-      if (currentSupply > 0n) rows.push({ id: `rpc:${protocolId}:${reserveKey}:supply`, snapshotId: '', protocolId, reserveKey, role: 'supply', underlying, protocolToken: aToken, quantity: quantity(currentSupply, underlying.decimals), rawQuantity: currentSupply.toString(), isCollateral });
-      if (stableDebt > 0n) rows.push({ id: `rpc:${protocolId}:${reserveKey}:debt:stable`, snapshotId: '', protocolId, reserveKey, role: 'debt', underlying, protocolToken: stableToken, quantity: quantity(stableDebt, underlying.decimals), rawQuantity: stableDebt.toString(), debtRateMode: 'stable' });
-      if (variableDebt > 0n) rows.push({ id: `rpc:${protocolId}:${reserveKey}:debt:variable`, snapshotId: '', protocolId, reserveKey, role: 'debt', underlying, protocolToken: variableToken, quantity: quantity(variableDebt, underlying.decimals), rawQuantity: variableDebt.toString(), debtRateMode: 'variable' });
+      if (supplyToken) rows.push({ id: `rpc:${protocolId}:${reserveKey}:supply`, snapshotId: '', protocolId, reserveKey, role: 'supply', underlying, protocolToken: supplyToken, quantity: quantity(currentSupply, underlying.decimals), rawQuantity: currentSupply.toString(), isCollateral });
+      if (stableToken) rows.push({ id: `rpc:${protocolId}:${reserveKey}:debt:stable`, snapshotId: '', protocolId, reserveKey, role: 'debt', underlying, protocolToken: stableToken, quantity: quantity(stableDebt, underlying.decimals), rawQuantity: stableDebt.toString(), debtRateMode: 'stable' });
+      if (variableToken) rows.push({ id: `rpc:${protocolId}:${reserveKey}:debt:variable`, snapshotId: '', protocolId, reserveKey, role: 'debt', underlying, protocolToken: variableToken, quantity: quantity(variableDebt, underlying.decimals), rawQuantity: variableDebt.toString(), debtRateMode: 'variable' });
     }
     return { status: 'complete', chainId: 1, protocolId, blockNumber, rows, evidence: [{ provider: 'ethereum-rpc', status: 'complete', blockNumber, detail: `All ${reserves.length} reserves and debt modes read at block ${blockNumber}.` }], warnings: [] };
   } catch (error) {

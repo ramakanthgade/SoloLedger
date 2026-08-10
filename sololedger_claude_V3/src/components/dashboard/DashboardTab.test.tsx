@@ -654,6 +654,7 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       }]
     });
     SEED.priceRows.push(
+      { key: 'spot:sym:WBTC:INR', price: 5_000_000, fetchedAt: now },
       { key: `spot:ctr:ethereum:${awbtc}:INR`, price: 5_000_000, fetchedAt: now },
       { key: `spot:ctr:ethereum:${wbtc}:INR`, price: 5_000_000, fetchedAt: now }
     );

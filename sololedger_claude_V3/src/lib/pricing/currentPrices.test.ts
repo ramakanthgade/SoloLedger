@@ -106,6 +106,32 @@ describe('refreshCurrentHoldingPrices', () => {
     expect(mocks.rows.get('spot:ctr:ethereum:0xusdc:USD')?.price).toBe(1);
   });
 
+  it('fetches controlled receipt and canonical stablecoin symbols instead of contract quotes', async () => {
+    mocks.fetchCurrentPrices.mockResolvedValue([
+      { asset: 'ETH', price: 2_000, currency: 'USD' },
+      { asset: 'USDC', price: 1, currency: 'USD' },
+      { asset: 'BUSD', price: 1, currency: 'USD' }
+    ]);
+    await refreshCurrentHoldingPrices([
+      {
+        asset: 'aEthWETH', amount: 2.5, costBasis: 0, chain: 'ethereum',
+        contractAddress: '0x4d5f47fa6a74757f35c14fd3a6ef8e3c9bc514e8', safetyState: 'unverified'
+      },
+      {
+        asset: 'USDC', amount: 49, costBasis: 0, chain: 'polygon',
+        contractAddress: '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359', safetyState: 'trusted'
+      },
+      {
+        asset: 'BUSD', amount: 359, costBasis: 0, chain: 'bsc',
+        contractAddress: '0xe9e7cea3dedca5984780bafc599bd69add087d56', safetyState: 'trusted'
+      }
+    ], 'USD');
+
+    expect(mocks.fetchCurrentPrices).toHaveBeenCalledWith(['ETH', 'USDC', 'BUSD'], 'USD', undefined);
+    expect(mocks.fetchCurrentContractPrices).not.toHaveBeenCalled();
+    expect(mocks.rows.get('spot:sym:ETH:USD')?.price).toBe(2_000);
+  });
+
   it('isolates the same contract address on different platforms', async () => {
     mocks.fetchCurrentPrices.mockResolvedValue([]);
     mocks.fetchCurrentContractPrices.mockResolvedValue([

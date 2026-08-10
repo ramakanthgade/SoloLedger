@@ -31,7 +31,11 @@ import {
   type PortfolioHolding
 } from '@/lib/portfolio/portfolioCompute';
 import { isNativeSolAsset, isNativeSolHolding } from '@/lib/portfolio/solBalance';
-import { canUseSymbolPrice, resolvePriceAsset } from '@/lib/assets/resolvePriceAsset';
+import {
+  canUseSymbolPrice,
+  canonicalCustodyPriceAsset,
+  resolvePriceAsset
+} from '@/lib/assets/resolvePriceAsset';
 import { resolveAssetLabel } from '@/lib/assets/solanaMints';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
 import { brandLabel, chainIconId, parserIconId } from '@/components/connections/brandIcons';
@@ -151,6 +155,12 @@ export function currentPriceFor(
       !['trusted', 'unverified', 'user_visible'].includes(holding.safetyState ?? '')
     ) return null;
     const platform = COINGECKO_PLATFORM[holding.chain as ChainId];
+    const controlledIdentity = canonicalCustodyPriceAsset(holding.chain, holding.contractAddress);
+    if (controlledIdentity) {
+      // Known receipt and canonical stablecoin contracts must never fall back
+      // to a malformed or missing direct contract quote.
+      return index.currentBySymbol.get(controlledIdentity) ?? null;
+    }
     return platform
       ? index.currentByContract.get(`${platform}:${holding.contractAddress.toLowerCase()}`) ?? null
       : null;
