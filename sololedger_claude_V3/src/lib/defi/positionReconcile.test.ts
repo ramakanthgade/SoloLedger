@@ -32,6 +32,13 @@ describe('position evidence reconciliation', () => {
     ]);
   });
   it('never upgrades partial RPC evidence from Moralis supply', () => expect(reconcilePositionEvidence(result([row(10)]), result([], 'partial'))).toMatchObject({ status: 'partial', rows: [] }));
+
+  it('does not let empty malformed Moralis evidence veto exhaustive same-block RPC', () => {
+    const rpc = result([row(10)]);
+    const malformed = result([], 'partial');
+    malformed.evidence = [{ provider: 'moralis', status: 'partial', detail: 'Malformed detailed-position response.' }];
+    expect(reconcilePositionEvidence(malformed, rpc)).toEqual(rpc);
+  });
   it('merges corroborating Moralis valuation into exact same-quantity RPC authority', () => {
     const moralisRow = { ...row(10), valueEvidence: { currency: 'USD' as const, value: 10, observedAt: 5, provider: 'moralis' } };
     expect(reconcilePositionEvidence(moralisResult([moralisRow]), result([row(10)]))).toMatchObject({
