@@ -359,8 +359,13 @@ describe('ConnectionOverview', () => {
       assetKey: 'evm:137:native', asset: 'POL', quantity: 0
     }] as ConnectionWorkspaceSnapshot['overview']['slices'];
 
-    render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([], 'INR')}
+    const { container } = render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([], 'INR')}
       reportingCurrency="INR" formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()} />);
+    const chainLogos = [...container.querySelectorAll<HTMLImageElement>('[data-testid="detail-address-group"] header img')];
+    expect(chainLogos.map((logo) => logo.src)).toEqual(expect.arrayContaining([
+      expect.stringContaining('/assets/brand-icons/ethereum.svg'),
+      expect.stringContaining('/assets/brand-icons/chain-polygon.png')
+    ]));
     expect(screen.queryByText('ETH')).not.toBeInTheDocument();
     expect(screen.queryByText('POL')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Show all Ethereum assets' }));

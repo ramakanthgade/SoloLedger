@@ -18,6 +18,7 @@ import { defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
 import { isWalletDefiNetWorthV1Enabled } from '@/lib/features';
 import type { AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { WalletDefiRefreshManifest } from '@/lib/defi/types';
+import { BrandIcon, chainIconId } from './brandIcons';
 
 function chainLabel(chainId: string): string {
   return CHAINS.find((chain) => chain.id === chainId)?.label ?? chainId;
@@ -350,7 +351,7 @@ function WalletChainSection({ group, expanded, onExpandedChange, formatMoney }: 
   const assets = expanded ? [...group.visibleAssets, ...group.hiddenAssets] : group.visibleAssets;
   return <section className="border-b-[10px] border-canvas last:border-b-0" data-testid="detail-address-group" data-chain={group.chain}>
     <header className="flex items-center justify-between gap-3 border-b border-hi/10 bg-elev-1/60 px-5 py-3">
-      <div><h3 className="text-sm font-extrabold text-hi">{label}</h3><p className="mt-0.5 text-[0.6875rem] text-low">{plural(group.visibleAssets.length + group.hiddenAssets.length, 'asset')}</p></div>
+      <div className="flex min-w-0 items-center gap-2.5"><BrandIcon id={chainIconId(group.chain)} fallback={label} size={30} /><div className="min-w-0"><h3 className="truncate text-sm font-extrabold text-hi">{label}</h3><p className="mt-0.5 text-[0.6875rem] text-low">{plural(group.visibleAssets.length + group.hiddenAssets.length, 'asset')}</p></div></div>
       <div className="text-right"><p className="text-[0.625rem] font-bold uppercase tracking-[0.08em] text-faint">Chain subtotal</p><p className="mt-0.5 text-base font-extrabold tabular-figures text-hi" data-testid="detail-chain-total">{formatMoney(group.total)}</p></div>
     </header>
     {assets.length > 0 && <ul>{assets.map((asset) => <WalletAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul>}
