@@ -35,7 +35,8 @@ const GEMINI_FIAT_QUOTES = new Map([
 const KRAKEN_FIAT_ASSETS = new Set(['USD', 'EUR', 'CAD', 'GBP', 'JPY', 'AUD']);
 const API_NATIVE_ID_EXCHANGES = new Set<ExchangeId>([
   'coinex', 'poloniex', 'woo', 'hitbtc', 'bingx',
-  'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck'
+  'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck',
+  'bitrue', 'xt', 'phemex', 'lbank'
 ]);
 
 /** makeId prefixes per exchange. */
@@ -66,7 +67,12 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   backpack: 'exbp',
   whitebit: 'exwb',
   bitflyer: 'exfl',
-  coincheck: 'excc'
+  coincheck: 'excc',
+  bitrue: 'exbr',
+  xt: 'exxt',
+  coinspot: 'excs',
+  phemex: 'exph',
+  lbank: 'exlb'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -176,6 +182,17 @@ function tradeSourceRef(
     case 'whitebit':
     case 'bitflyer':
     case 'coincheck':
+      return trade.id;
+    case 'bitrue':
+      // Bitrue trade ids are symbol-scoped, as on its Binance-derived API.
+      return trade.id && trade.symbol ? `${trade.symbol}:${trade.id}` : undefined;
+    case 'xt':
+    case 'phemex':
+    case 'lbank':
+      return trade.id;
+    case 'coinspot':
+      // The full-response adapter assigns an economics-complete deterministic
+      // occurrence id so equal fills retain multiplicity across replay.
       return trade.id;
   }
 }
@@ -795,6 +812,17 @@ function transferSourceRef(
     case 'bitflyer':
     case 'coincheck':
       return transfer.id;
+    case 'bitrue':
+    case 'xt':
+    case 'coinspot':
+    case 'phemex':
+      return transfer.id;
+    case 'lbank':
+      // Deposits have no native `id` in pinned CCXT. Direction-scope txid so
+      // it cannot collide with a withdrawal; withdrawals retain native `id`.
+      return type === 'transfer_in'
+        ? (transfer.txid ? `deposit:${transfer.txid}` : undefined)
+        : transfer.id;
     case 'whitebit':
       return transfer.id ?? transfer.txid ?? (typeof transfer.info?.transactionId === 'string'
         ? transfer.info.transactionId
@@ -836,6 +864,10 @@ function isSettledTransfer(
   if (exchange === 'mexc') {
     const raw = String(rawStatus ?? status ?? '');
     return type === 'transfer_in' ? raw === '5' || raw === '12' : raw === '7';
+  }
+  if (exchange === 'lbank') {
+    const raw = String(rawStatus ?? status ?? '');
+    return type === 'transfer_in' ? raw === '2' : raw === '4';
   }
   return false;
 }
@@ -907,6 +939,8 @@ export function normalizeTransfer(
     (API_NATIVE_ID_EXCHANGES.has(exchange) &&
       (exchange === 'whitebit'
         ? ![transfer.id, transfer.txid, transfer.info?.transactionId].some((value) => value != null && String(value).trim() !== '')
+        : exchange === 'lbank' && type === 'transfer_in'
+          ? transfer.txid == null || String(transfer.txid).trim() === ''
         : transfer.id == null || String(transfer.id).trim() === '')) ||
     !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status)) return null;
   const ts = transfer.timestamp;

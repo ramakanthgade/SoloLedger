@@ -89,6 +89,7 @@ export interface UnifiedBalance {
 export interface ExchangeClient {
   id: string;
   markets?: Record<string, UnifiedMarket>;
+  currencies?: Record<string, { code?: string; active?: boolean }>;
   /** Enabled for HTX so pagination can use the raw response's final item before CCXT sorts parsed rows. */
   last_json_response?: unknown;
   /** BTC Markets exposes its native pagination cursors only in response headers. */
@@ -103,6 +104,9 @@ export interface ExchangeClient {
   fetchBackpackSpotFills?(params: Record<string, unknown>): Promise<unknown>;
   /** Coincheck crypto sending history; /api/withdraws is JPY bank history. */
   fetchCoincheckSendMoney?(params: Record<string, unknown>): Promise<unknown>;
+  /** CoinSpot has read-only transfer routes but no unified CCXT methods. */
+  fetchCoinspotDeposits?(): Promise<unknown>;
+  fetchCoinspotWithdrawals?(): Promise<unknown>;
   /** WhiteBIT raw history methods retained for trustworthy native pagination metadata. */
   fetchWhitebitExecutedHistory?(params: Record<string, unknown>): Promise<unknown>;
   fetchWhitebitMainHistory?(params: Record<string, unknown>): Promise<unknown>;
@@ -172,7 +176,12 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   backpack: 'Backpack',
   whitebit: 'WhiteBIT',
   bitflyer: 'bitFlyer',
-  coincheck: 'Coincheck'
+  coincheck: 'Coincheck',
+  bitrue: 'Bitrue',
+  xt: 'XT.COM',
+  coinspot: 'CoinSpot',
+  phemex: 'Phemex',
+  lbank: 'LBank'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -311,6 +320,14 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
               ? { defaultType: 'spot', fetchCurrencies: false }
             : exchangeId === 'bitflyer' || exchangeId === 'coincheck'
               ? { defaultType: 'spot', fetchCurrencies: false }
+            : exchangeId === 'bitrue'
+              ? { defaultType: 'spot', fetchMarkets: { types: ['spot'] }, fetchCurrencies: false, fetchMargins: false }
+            : exchangeId === 'xt' || exchangeId === 'lbank'
+              ? { defaultType: 'spot', fetchCurrencies: false }
+            : exchangeId === 'coinspot'
+              ? { defaultType: 'spot', fetchBalance: 'private_post_ro_my_balances' }
+            : exchangeId === 'phemex'
+              ? { defaultType: 'spot', fetchCurrencies: false }
         : { defaultType: 'spot', fetchMarkets: ['spot'] };
   }
   if (exchangeId === 'binance') {
@@ -366,6 +383,10 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
   }
+  if (exchangeId === 'bitrue' || exchangeId === 'xt' || exchangeId === 'phemex' || exchangeId === 'lbank') {
+    config.has = { fetchCurrencies: false };
+    config.enableLastJsonResponse = true;
+  }
   const exchange = new Ctor(config) as ExchangeClient;
   if (exchangeId === 'mexc') {
     // CCXT 4.5.68's generic fetchMarkets always runs spot and swap in
@@ -410,6 +431,14 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // Pinned CCXT fetchWithdrawals targets JPY bank history at /api/withdraws.
     exchange.fetchCoincheckSendMoney = (params) => native.privateGetSendMoney(params);
   }
+  if (exchangeId === 'coinspot') {
+    const native = exchange as unknown as {
+      privatePostRoMyDeposits(params?: Record<string, unknown>): Promise<unknown>;
+      privatePostRoMyWithdrawals(params?: Record<string, unknown>): Promise<unknown>;
+    };
+    exchange.fetchCoinspotDeposits = () => native.privatePostRoMyDeposits({});
+    exchange.fetchCoinspotWithdrawals = () => native.privatePostRoMyWithdrawals({});
+  }
   if (exchangeId === 'whitebit') {
     const native = exchange as unknown as {
       v4PrivatePostTradeAccountExecutedHistory(params: Record<string, unknown>): Promise<unknown>;
@@ -427,6 +456,13 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // These pinned classes unconditionally join derivatives catalogs in their
     // generic fetchMarkets implementation. Replace it before loadMarkets so
     // the GET-only relay never needs a futures/swap path.
+    const raw = exchange as unknown as {
+      fetchMarkets: (params?: Record<string, unknown>) => Promise<unknown>;
+      fetchSpotMarkets: (params?: Record<string, unknown>) => Promise<unknown>;
+    };
+    raw.fetchMarkets = raw.fetchSpotMarkets.bind(exchange);
+  }
+  if (exchangeId === 'xt' || exchangeId === 'lbank') {
     const raw = exchange as unknown as {
       fetchMarkets: (params?: Record<string, unknown>) => Promise<unknown>;
       fetchSpotMarkets: (params?: Record<string, unknown>) => Promise<unknown>;
@@ -459,6 +495,16 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // Their public catalogs are mixed (Backpack/WhiteBIT include perps and
     // bitFlyer includes Lightning FX). Preserve CCXT's private market map but
     // expose only active spot products to the history engine.
+    const originalLoadMarkets = exchange.loadMarkets.bind(exchange);
+    exchange.loadMarkets = async (reload?: boolean) => {
+      const mixed = await originalLoadMarkets(reload);
+      const spots = Object.fromEntries(Object.entries(mixed).filter(([, market]) =>
+        market.spot === true && market.active !== false));
+      exchange.markets = spots;
+      return spots;
+    };
+  }
+  if (exchangeId === 'phemex') {
     const originalLoadMarkets = exchange.loadMarkets.bind(exchange);
     exchange.loadMarkets = async (reload?: boolean) => {
       const mixed = await originalLoadMarkets(reload);
@@ -531,6 +577,11 @@ export function classifySyncError(err: unknown, exchange?: ExchangeId): SyncErro
   // copy, so check for it before the generic network mapping.
   const message = err instanceof Error ? err.message : String(err ?? '');
   if (/\b10072\b|api key info invalid/i.test(message)) return 'invalid_key';
+  if (exchange === 'bitrue' && /(?:"code"\s*:\s*|\bcode\s*)-1022\b|signature.*not valid/i.test(message)) return 'invalid_key';
+  if (exchange === 'xt' && /AUTH_101/i.test(message)) return 'invalid_key';
+  if (exchange === 'coinspot' && /invalid (?:api )?key|invalid secret/i.test(message)) return 'invalid_key';
+  if (exchange === 'phemex' && /Failed to load API KEY/i.test(message)) return 'invalid_key';
+  if (exchange === 'lbank' && /Secret key does not exist|\b10005\b/i.test(message)) return 'invalid_key';
   if (/restricted location/i.test(message)) return 'region_blocked';
   // BitMart can surface a missing/rejected API key as a generic ExchangeError
   // instead of ccxt AuthenticationError. Keep this exchange-scoped and match

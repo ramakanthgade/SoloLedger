@@ -27,6 +27,14 @@ describe('Dexie v8 — exchangeConnections', () => {
     await db.exchangeConnections.clear();
   });
 
+  it('round-trips optional next-five continuation metadata without a schema bump', async () => {
+    const row = { ...makeRow('next-five'), exchange: 'phemex', nextFiveProgress: {
+      trades: { start: 10, end: 20, offset: 200, lastId: 'fill-200' }
+    } } satisfies ExchangeConnectionRow;
+    await db.exchangeConnections.put(row);
+    expect((await db.exchangeConnections.get(row.id))?.nextFiveProgress).toEqual(row.nextFiveProgress);
+  });
+
   it('opens at the current version with the exchangeConnections table', async () => {
     // v9 added walletBalances; v10 added exchangeBalances; v11 added coherent
     // reconciliation evidence, v12 finalized CSV survivor counts, v13 added
@@ -112,6 +120,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'bitflyer_api',
       'bitget_api',
       'bitmart_api',
+      'bitrue_api',
       'bitstamp_api',
       'bitvavo_api',
       'btcmarkets_api',
@@ -119,6 +128,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'coinbase_api',
       'coincheck_api',
       'coinex_api',
+      'coinspot_api',
       'cryptocom_api',
       'gateio_api',
       'gemini_api',
@@ -126,11 +136,14 @@ describe('EXCHANGE_API_SOURCES', () => {
       'htx_api',
       'kraken_api',
       'kucoin_api',
+      'lbank_api',
       'mexc_api',
       'okx_api',
+      'phemex_api',
       'poloniex_api',
       'whitebit_api',
-      'woo_api'
+      'woo_api',
+      'xt_api'
     ]);
   });
 

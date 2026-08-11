@@ -41,7 +41,11 @@ const FLEXIBLE_MAPPED_EXCHANGES = [
   'backpack',
   'whitebit',
   'bitflyer',
-  'coincheck'
+  'coincheck',
+  'bitrue',
+  'xt',
+  'phemex',
+  'lbank'
 ] as const;
 
 describe('IMPORT_SOURCES — "Other / any exchange" catalog entry', () => {

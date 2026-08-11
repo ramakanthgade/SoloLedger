@@ -69,10 +69,80 @@ describe('loadCcxt', () => {
     expect(typeof a.whitebit).toBe('function');
     expect(typeof a.bitflyer).toBe('function');
     expect(typeof a.coincheck).toBe('function');
+    expect(typeof a.bitrue).toBe('function');
+    expect(typeof a.xt).toBe('function');
+    expect(typeof a.coinspot).toBe('function');
+    expect(typeof a.phemex).toBe('function');
+    expect(typeof a.lbank).toBe('function');
   });
 });
 
 describe('createExchangeClient', () => {
+  it.each(['bitrue', 'xt', 'coinspot', 'phemex', 'lbank'] as const)(
+    'configures %s with API key/secret, no passphrase, and spot defaults',
+    async (exchange) => {
+      const client = await createExchangeClient(row({ exchange }));
+      const raw = client as unknown as {
+        options: Record<string, unknown>; requiredCredentials: Record<string, boolean>; password?: string;
+      };
+      expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true });
+      expect(raw.requiredCredentials.password ?? false).toBe(false);
+      expect(raw.options.defaultType).toBe('spot');
+      expect(raw.password).toBeUndefined();
+    }
+  );
+
+  it('pins XT.COM and LBank generic market loading to spot only', async () => {
+    for (const exchange of ['xt', 'lbank'] as const) {
+      const client = await createExchangeClient(row({ exchange }));
+      const raw = client as unknown as { fetchMarkets: unknown; fetchSpotMarkets: unknown; has: Record<string, unknown> };
+      expect(typeof raw.fetchSpotMarkets).toBe('function');
+      expect(raw.fetchMarkets).not.toBe(Object.getPrototypeOf(client).fetchMarkets);
+      expect(raw.has.fetchCurrencies).toBe(false);
+    }
+  });
+
+  it('installs CoinSpot read-only transfer adapters', async () => {
+    const client = await createExchangeClient(row({ exchange: 'coinspot' }));
+    expect(typeof client.fetchCoinspotDeposits).toBe('function');
+    expect(typeof client.fetchCoinspotWithdrawals).toBe('function');
+  });
+
+  it('pinned LBank fetchMyTrades emits POST /v2/transaction_history.do', async () => {
+    const client = await createExchangeClient(row({ exchange: 'lbank' }));
+    const market = { id: 'btc_usdt', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', spot: true };
+    client.markets = { 'BTC/USDT': market };
+    (client as unknown as { markets_by_id: Record<string, unknown[]> }).markets_by_id = { btc_usdt: [market] };
+    const emitted: Array<{ path: string; method?: string }> = [];
+    client.fetch = async (url, method) => {
+      emitted.push({ path: new URL(url).pathname, method });
+      return { result: true, data: [], error_code: 0 };
+    };
+    await client.fetchMyTrades('BTC/USDT', Date.UTC(2024, 0, 1), 100, {
+      start_date: '2024-01-01', end_date: '2024-01-01', from: 0, size: 100
+    });
+    expect(emitted).toEqual([{ path: '/v2/transaction_history.do', method: 'POST' }]);
+  });
+
+  it.each([
+    ['bitrue', '/api/v1/account', { balances: [] }],
+    ['xt', '/v4/balances', { rc: 0, mc: 'SUCCESS', result: { assets: [] } }],
+    ['coinspot', '/api/ro/my/balances', { status: 'ok', balances: [] }],
+    ['phemex', '/spot/wallets', { code: 0, msg: 'OK', data: [] }],
+    ['lbank', '/v2/supplement/user_info.do', { result: true, info: { asset: {} }, error_code: 0 }]
+  ] as const)('%s balance validation emits only its exact read-only route', async (exchange, expectedPath, response) => {
+    const client = await createExchangeClient(row({ exchange }));
+    client.markets = {};
+    const emitted: Array<{ path: string; method?: string; headers?: Record<string, string> }> = [];
+    client.fetch = async (url, method, headers) => {
+      emitted.push({ path: new URL(url).pathname, method, headers });
+      return response;
+    };
+    await client.fetchBalance({ type: 'spot' });
+    expect(emitted).toHaveLength(1);
+    expect(emitted[0].path).toBe(expectedPath);
+    expect(emitted[0].method).toBe(exchange === 'coinspot' || exchange === 'lbank' ? 'POST' : 'GET');
+  });
   it.each(['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx', 'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck'] as const)(
     'configures %s with API key/secret, spot scope and raw-response capture',
     async (exchange) => {
@@ -437,6 +507,16 @@ describe('classifySyncError', () => {
   it('recognizes native MEXC 10072 as a credential error', () => {
     expect(classifySyncError(new Error('mexc {"code":10072,"msg":"Api key info invalid"}'))).toBe('invalid_key');
     expect(syncErrorMessage('invalid_key', 'mexc')).toContain('API key or secret rejected by MEXC');
+  });
+
+  it.each([
+    ['bitrue', 'bitrue {"code":-1022,"msg":"Signature for this request is not valid."}'],
+    ['xt', 'xt AUTH_101 invalid access key'],
+    ['coinspot', 'coinspot invalid API key'],
+    ['phemex', 'phemex 401 Failed to load API KEY.'],
+    ['lbank', 'lbank Secret key does not exist (10005)']
+  ] as const)('classifies %s distinctive dummy-key rejection', (exchange, message) => {
+    expect(classifySyncError(new Error(message), exchange)).toBe('invalid_key');
   });
 
   it('still classifies when class binding names are minified (BUG-1 regression)', async () => {

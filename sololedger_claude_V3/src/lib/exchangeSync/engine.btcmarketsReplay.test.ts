@@ -64,7 +64,7 @@ describe('BTC Markets real-CCXT replay and native pagination', () => {
     const coverage = (await db.sourceCoverage.where('scopeId').equals(`exchange:${view.id}`).last())!;
     expect(coverage.status).toBe('partial');
     expect(coverage.endpointOutcomes.find((endpoint) => endpoint.endpoint === 'trades'))
-      .toMatchObject({ paginationExhausted: false, warning: 'retention_unverified' });
+      .toMatchObject({ paginationExhausted: true, warning: 'retention_unverified' });
 
     await syncConnection(view.id, { mode: 'commit' }, {}, btcMarketsReplayDeps(BTCMARKETS_REPLAY_NOW + 1_000));
     expect(await db.transactions.where('source').equals('btcmarkets_api').count()).toBe(5);

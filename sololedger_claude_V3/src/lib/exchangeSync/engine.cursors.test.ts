@@ -534,7 +534,7 @@ describe('syncConnection — cursor safety with a fake client', () => {
     expect(coverage.status).toBe('partial');
     expect(coverage.retentionFloors?.trades).toBe(NOW - 90 * DAY);
     expect(coverage.endpointOutcomes.find((outcome) => outcome.endpoint === 'trades')).toMatchObject({
-      status: 'partial', paginationExhausted: false,
+      status: 'partial', paginationExhausted: true,
       retentionFloor: NOW - 90 * DAY, warning: 'retention_truncated'
     });
   });

@@ -301,6 +301,40 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
   coincheck: {
     host: 'coincheck.com', headers: ['access-key', 'access-nonce', 'access-signature'], methods: ['GET'],
     paths: ['/api/ticker', '/api/accounts/balance', '/api/exchange/orders/transactions_pagination', '/api/deposit_money', '/api/send_money']
+  },
+  bitrue: {
+    host: 'www.bitrue.com', headers: ['x-mbx-apikey'], methods: ['GET'],
+    paths: ['/api/v1/ping', '/api/v1/exchangeInfo', '/api/v1/account', '/api/v2/myTrades', '/api/v1/deposit/history', '/api/v1/withdraw/history']
+  },
+  xt: {
+    host: 'sapi.xt.com',
+    headers: ['xt-validate-appkey', 'xt-validate-timestamp', 'xt-validate-signature', 'xt-validate-recvwindow', 'xt-validate-algorithms'],
+    methods: ['GET'],
+    paths: ['/v4/public/time', '/v4/public/symbol', '/v4/public/currencies', '/v4/balances', '/v4/trade', '/v4/deposit/history', '/v4/withdraw/history']
+  },
+  coinspot: {
+    host: 'www.coinspot.com.au', headers: ['key', 'sign'],
+    paths: ['/pubapi/latest', '/api/ro/my/balances', '/api/ro/my/transactions', '/api/ro/my/deposits', '/api/ro/my/withdrawals'],
+    pathMethods: {
+      '/pubapi/latest': ['GET'],
+      '/api/ro/my/balances': ['POST'],
+      '/api/ro/my/transactions': ['POST'],
+      '/api/ro/my/deposits': ['POST'],
+      '/api/ro/my/withdrawals': ['POST']
+    }
+  },
+  phemex: {
+    host: 'api.phemex.com', headers: ['x-phemex-access-token', 'x-phemex-request-expiry', 'x-phemex-request-signature'], methods: ['GET'],
+    paths: ['/public/products', '/exchange/public/products', '/spot/wallets', '/exchange/spot/order/trades', '/exchange/wallets/depositList', '/exchange/wallets/withdrawList']
+  },
+  lbank: {
+    host: 'api.lbank.info', headers: ['timestamp', 'signature_method', 'echostr', 'content-type'],
+    paths: ['/v2/timestamp.do', '/v2/currencyPairs.do', '/v2/accuracy.do', '/v2/supplement/user_info.do', '/v2/transaction_history.do', '/v2/supplement/deposit_history.do', '/v2/supplement/withdraws.do'],
+    pathMethods: {
+      '/v2/timestamp.do': ['GET'], '/v2/currencyPairs.do': ['GET'], '/v2/accuracy.do': ['GET'],
+      '/v2/supplement/user_info.do': ['POST'], '/v2/transaction_history.do': ['POST'],
+      '/v2/supplement/deposit_history.do': ['POST'], '/v2/supplement/withdraws.do': ['POST']
+    }
   }
 };
 

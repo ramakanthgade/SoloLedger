@@ -405,6 +405,61 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
       'SoloLedger reads cryptocurrency sends from GET /api/send_money; Coincheck’s /api/withdraws JPY bank history is not exposed. Missing or contradictory pagination metadata keeps the prior cursor.'
     ],
     path: ['Coincheck', 'Settings', 'API Key'], docsUrl: 'https://coincheck.com/api_settings'
+  },
+  {
+    id: 'bitrue', label: 'Bitrue', monogram: 'BR', needsPassphrase: false,
+    formatHint: 'API key + secret · high geo risk',
+    keyInstructions: [
+      'Log in to Bitrue and open Account → API Management, then create an API key.',
+      'Enable read-only access for spot balances, spot trade history and deposit/withdrawal history. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here. Bitrue does not require a passphrase.',
+      'Bitrue is frequently unavailable from hosted regions. If its API blocks SoloLedger’s relay, use retained exports instead. API retention is unverified and endpoint exhaustion does not prove account-lifetime coverage.'
+    ],
+    path: ['Bitrue', 'Account', 'API Management'], docsUrl: 'https://www.bitrue.com/account/api'
+  },
+  {
+    id: 'xt', label: 'XT.COM', monogram: 'XT', needsPassphrase: false,
+    formatHint: 'API key + secret · high geo risk',
+    keyInstructions: [
+      'Log in to XT.COM and open Account → API Management.',
+      'Create a read-only key for spot account balances, fills and deposit/withdrawal history. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here. XT.COM does not require a passphrase.',
+      'XT.COM has high geographic-access risk and publishes no account-lifetime retention guarantee. Keep exports for periods the API no longer returns.'
+    ],
+    path: ['XT.COM', 'Account', 'API Management'], docsUrl: 'https://www.xt.com/en/accounts/api'
+  },
+  {
+    id: 'coinspot', label: 'CoinSpot', monogram: 'CS', needsPassphrase: false,
+    formatHint: 'Read-only API key + secret · Australia only',
+    keyInstructions: [
+      'CoinSpot is available to Australian customers only. Log in and open Account → API.',
+      'Create a read-only API key for balances, transactions, deposits and withdrawals. Never enable send, trade or withdrawal permissions.',
+      'Copy the API Key and Secret and paste them here. CoinSpot does not require a passphrase.',
+      'CoinSpot API rows use provider evidence for replay. The existing CSV has no native IDs, so SoloLedger does not claim API↔CSV auto-deduplication; keep the CSV as the authoritative older-history backfill.'
+    ],
+    path: ['CoinSpot', 'Account', 'API', 'Read Only API'], docsUrl: 'https://www.coinspot.com.au/api'
+  },
+  {
+    id: 'phemex', label: 'Phemex', monogram: 'PH', needsPassphrase: false,
+    formatHint: 'API key + secret · high geo risk',
+    keyInstructions: [
+      'Log in to Phemex and open Account → API Management.',
+      'Create a read-only key with Spot wallet, spot trade history and deposit/withdrawal history access. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here. Phemex does not require a passphrase.',
+      'Phemex has high geographic-access risk. Its wallet-history retention is unverified; keep exports for older records and use CSV/manual import if the hosted relay is blocked.'
+    ],
+    path: ['Phemex', 'Account', 'API Management'], docsUrl: 'https://phemex.com/user/api-management'
+  },
+  {
+    id: 'lbank', label: 'LBank', monogram: 'LB', needsPassphrase: false,
+    formatHint: 'API key + secret · retention unverified',
+    keyInstructions: [
+      'Log in to LBank and open Profile → API Management.',
+      'Create a read-only key for spot balances, transaction history and deposit/withdrawal history. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret Key and paste them here. LBank does not require a passphrase.',
+      'LBank region availability and account-lifetime retention are unverified. Trade queries are limited to two-day date windows; retain exports for history the API omits.'
+    ],
+    path: ['LBank', 'Profile', 'API Management'], docsUrl: 'https://www.lbank.com/en-US/user/api'
   }
 ];
 

@@ -69,6 +69,7 @@ interface StagedMeta {
   bitgetHistory?: BitgetHistoryState;
   bitmartPagination?: import('./engine').SyncFetchOutcome['bitmartPagination'];
   bitmartUnsafeReplay?: import('./engine').SyncFetchOutcome['bitmartUnsafeReplay'];
+  nextFiveProgress?: import('./nextFiveExchanges').NextFiveProgress;
   /** Private current-balance authority fetched with the staged rows. */
   balance: UnifiedBalance;
   /** Non-secret source revision/state token captured with operation evidence. */
@@ -323,6 +324,7 @@ export async function runInitialSync(id: string, deps: SyncEngineDeps = {}): Pro
         bitgetHistory: outcome.bitgetHistory,
   bitmartPagination: outcome.bitmartPagination,
   bitmartUnsafeReplay: outcome.bitmartUnsafeReplay,
+  nextFiveProgress: outcome.nextFiveProgress,
         // Keep only normalized totals in memory. ccxt's raw `info` can carry
         // account metadata (for example a Binance UID) and is not needed for
         // confirmation.
@@ -390,6 +392,7 @@ export async function commitInitialSync(id: string, deps: SyncEngineDeps = {}): 
       bitgetHistory: staged.meta?.bitgetHistory,
   bitmartPagination: staged.meta?.bitmartPagination,
   bitmartUnsafeReplay: staged.meta?.bitmartUnsafeReplay,
+  nextFiveProgress: staged.meta?.nextFiveProgress,
       balance: staged.meta?.balance,
       operation: staged.meta.operation,
       hooks: hooks(),

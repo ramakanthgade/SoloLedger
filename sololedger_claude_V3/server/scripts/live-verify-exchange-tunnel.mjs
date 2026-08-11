@@ -253,6 +253,26 @@ const TIER2 = [
   {
     exchange: 'coincheck', probe: 'GET /api/ticker', path: '/api/ticker',
     check: (r, json) => r.status === 200 && Number.isFinite(Number(json?.timestamp))
+  },
+  {
+    exchange: 'bitrue', probe: 'GET /api/v1/ping', path: '/api/v1/ping',
+    check: (r, json) => r.status === 200 && json != null && typeof json === 'object'
+  },
+  {
+    exchange: 'xt', probe: 'GET /v4/public/time', path: '/v4/public/time',
+    check: (r, json) => r.status === 200 && json?.rc === 0 && Number.isFinite(Number(json?.result?.serverTime))
+  },
+  {
+    exchange: 'coinspot', probe: 'GET /pubapi/latest', path: '/pubapi/latest',
+    check: (r, json) => r.status === 200 && json?.status === 'ok' && json?.prices != null
+  },
+  {
+    exchange: 'phemex', probe: 'GET /public/products', path: '/public/products',
+    check: (r, json) => r.status === 200 && json?.code === 0 && Array.isArray(json?.data?.products)
+  },
+  {
+    exchange: 'lbank', probe: 'GET /v2/timestamp.do', path: '/v2/timestamp.do',
+    check: (r, json) => r.status === 200 && Number.isFinite(Number(json?.data ?? json?.ts))
   }
 ];
 
@@ -749,6 +769,54 @@ const tier3 = [
         'access-signature': hmacHex('sha256', 'dummy-secret', nonce + `https://coincheck.com${path}`) } };
     },
     check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth|nonce/i.test(r.text)
+  },
+  {
+    exchange: 'bitrue', probe: 'GET /api/v1/account (dummy HMAC query)',
+    build() {
+      const query = `timestamp=${Date.now()}`;
+      return { path: `/api/v1/account?${query}&signature=${hmacHex('sha256', 'dummy-secret', query)}`,
+        exchangeHeaders: { 'x-mbx-apikey': 'D'.repeat(64) } };
+    },
+    check: (r) => r.relayError === null && r.text.includes('"code":-1022')
+  },
+  {
+    exchange: 'xt', probe: 'GET /v4/balances (dummy XT validation headers)',
+    build() { return { path: '/v4/balances', exchangeHeaders: {
+      'xt-validate-appkey': 'dummy', 'xt-validate-timestamp': Date.now().toString(),
+      'xt-validate-signature': '00', 'xt-validate-recvwindow': '5000',
+      'xt-validate-algorithms': 'HmacSHA256'
+    } }; },
+    check: (r) => r.relayError === null && /AUTH_101/i.test(r.text)
+  },
+  {
+    exchange: 'coinspot', probe: 'POST /api/ro/my/balances (dummy key/sign)',
+    build() {
+      const body = JSON.stringify({ nonce: Date.now() });
+      return { path: '/api/ro/my/balances', method: 'POST', body, contentType: 'application/json',
+        exchangeHeaders: { key: 'dummy', sign: hmacHex('sha512', 'dummy-secret', body) } };
+    },
+    check: (r) => r.relayError === null && /invalid (?:api )?key|invalid secret/i.test(r.text)
+  },
+  {
+    exchange: 'phemex', probe: 'GET /spot/wallets (dummy Phemex signature)',
+    build() {
+      const expiry = (Math.floor(Date.now() / 1000) + 60).toString();
+      const path = '/spot/wallets';
+      return { path, exchangeHeaders: { 'x-phemex-access-token': 'dummy', 'x-phemex-request-expiry': expiry,
+        'x-phemex-request-signature': hmacHex('sha256', 'dummy-secret', path + expiry) } };
+    },
+    check: (r) => r.relayError === null && r.status === 401 && /Failed to load API KEY/i.test(r.text)
+  },
+  {
+    exchange: 'lbank', probe: 'POST /v2/supplement/user_info.do (dummy LBank signature)',
+    build() {
+      const body = 'api_key=dummy&sign=00';
+      return { path: '/v2/supplement/user_info.do', method: 'POST', body,
+        contentType: 'application/x-www-form-urlencoded', exchangeHeaders: {
+          timestamp: Date.now().toString(), signature_method: 'HmacSHA256', echostr: 'D'.repeat(32)
+        } };
+    },
+    check: (r) => r.relayError === null && /Secret key does not exist|"error_code"\s*:\s*10005/i.test(r.text)
   }
 ];
 

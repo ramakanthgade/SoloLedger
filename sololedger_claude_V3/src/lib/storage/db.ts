@@ -201,6 +201,8 @@ export interface ExchangeConnectionRow {
   };
   /** Earliest unsafe row per endpoint, retained until a complete replay resolves it. */
   bitmartUnsafeReplay?: { trades?: number; deposits?: number; withdrawals?: number };
+  /** Frozen bounded work for Bitrue, XT.COM, Phemex and LBank. No secrets. */
+  nextFiveProgress?: import('@/lib/exchangeSync/nextFiveExchanges').NextFiveProgress;
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;
@@ -1069,7 +1071,12 @@ export const EXCHANGE_API_SOURCES = new Set([
   'backpack_api',
   'whitebit_api',
   'bitflyer_api',
-  'coincheck_api'
+  'coincheck_api',
+  'bitrue_api',
+  'xt_api',
+  'coinspot_api',
+  'phemex_api',
+  'lbank_api'
 ]);
 
 /**
@@ -1212,7 +1219,7 @@ export function transactionExchangeKey(
     return `ex-api:${t.importBatchId ?? 'unscoped'}:bitget:${kind}:${t.sourceRef}`;
   }
   const fiveExchange = t.source.endsWith('_api')
-    ? ['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx', 'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck']
+    ? ['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx', 'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck', 'bitrue', 'xt', 'coinspot', 'phemex', 'lbank']
       .find((exchange) => t.source === `${exchange}_api`)
     : undefined;
   if (fiveExchange) {

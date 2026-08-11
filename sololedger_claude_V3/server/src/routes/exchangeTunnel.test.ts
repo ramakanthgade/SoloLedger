@@ -225,7 +225,12 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['backpack', 'api.backpack.exchange', '/api/v1/time'],
     ['whitebit', 'whitebit.com', '/api/v4/public/time'],
     ['bitflyer', 'api.bitflyer.com', '/v1/getmarkets'],
-    ['coincheck', 'coincheck.com', '/api/ticker']
+    ['coincheck', 'coincheck.com', '/api/ticker'],
+    ['bitrue', 'www.bitrue.com', '/api/v1/ping'],
+    ['xt', 'sapi.xt.com', '/v4/public/time'],
+    ['coinspot', 'www.coinspot.com.au', '/pubapi/latest'],
+    ['phemex', 'api.phemex.com', '/public/products'],
+    ['lbank', 'api.lbank.info', '/v2/timestamp.do']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -835,6 +840,54 @@ describe('4. exchangeId and path validation', () => {
     expect((await client(`/${exchange}${path}`, { headers: AUTH })).status).toBe(200);
     expect((await client(`/${exchange}${path}`, { method: 'POST', headers: AUTH })).status).toBe(400);
     expect((await client(`/${exchange}${path}/extra`, { headers: AUTH })).status).toBe(400);
+  });
+
+  it.each([
+    ['bitrue', '/api/v2/myTrades', '/api/v1/order'],
+    ['xt', '/v4/trade', '/v4/order'],
+    ['phemex', '/exchange/spot/order/trades', '/orders'],
+    ['lbank', '/v2/timestamp.do', '/v2/create_order.do']
+  ] as const)('%s exposes only the pinned read path and method', async (exchange, allowed, blocked) => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    expect((await client(`/${exchange}${allowed}`, { headers: AUTH })).status).toBe(200);
+    expect((await client(`/${exchange}${allowed}`, { method: 'PUT', headers: AUTH })).status).toBe(400);
+    expect((await client(`/${exchange}${blocked}`, { headers: AUTH })).status).toBe(400);
+  });
+
+  it('CoinSpot permits only public GET and exact read-only POST routes', async () => {
+    upstreamMock.mockImplementation(async () => upstreamJson('{}'));
+    expect((await client('/coinspot/pubapi/latest', { headers: AUTH })).status).toBe(200);
+    expect((await client('/coinspot/pubapi/latest', { method: 'POST', headers: AUTH })).status).toBe(400);
+    for (const path of ['/api/ro/my/balances', '/api/ro/my/transactions', '/api/ro/my/deposits', '/api/ro/my/withdrawals']) {
+      expect((await client(`/coinspot${path}`, { method: 'POST', headers: AUTH, body: '{}' })).status).toBe(200);
+      expect((await client(`/coinspot${path}`, { headers: AUTH })).status).toBe(400);
+    }
+    expect((await client('/coinspot/api/my/coin/send', { method: 'POST', headers: AUTH })).status).toBe(400);
+  });
+
+  it('XT.COM forwards the algorithms signing header byte-for-byte', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    const res = await client('/xt/v4/balances', { headers: {
+      ...AUTH,
+      'x-exchange-xt-validate-appkey': 'key',
+      'x-exchange-xt-validate-timestamp': '123',
+      'x-exchange-xt-validate-signature': 'aBc+/=',
+      'x-exchange-xt-validate-recvwindow': '5000',
+      'x-exchange-xt-validate-algorithms': 'HmacSHA256'
+    }});
+    expect(res.status).toBe(200);
+    const [, init] = lastUpstreamCall();
+    expect(init.headers).toEqual({
+      'xt-validate-appkey': 'key', 'xt-validate-timestamp': '123',
+      'xt-validate-signature': 'aBc+/=', 'xt-validate-recvwindow': '5000',
+      'xt-validate-algorithms': 'HmacSHA256'
+    });
+  });
+
+  it('LBank permits pinned CCXT trade history route and rejects the unused supplement variant', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    expect((await client('/lbank/v2/transaction_history.do', { method: 'POST', headers: AUTH })).status).toBe(200);
+    expect((await client('/lbank/v2/supplement/transaction_history.do', { method: 'POST', headers: AUTH })).status).toBe(400);
   });
 
   it('WhiteBIT allows signed POST only on the exact read-only private history paths', async () => {
