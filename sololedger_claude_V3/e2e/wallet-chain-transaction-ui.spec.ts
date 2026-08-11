@@ -87,13 +87,17 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
     await expect(sentSide.getByText('−2', { exact: true })).toBeVisible();
     await expect(sentSide.getByText('ETH', { exact: true })).toBeVisible();
     await expect(sentSide).toContainText('cost ₹4,00,000');
-    await expect(sentSide).toContainText('≈ ₹6,00,000');
+    await expect(sentSide).not.toContainText('≈ ₹6,00,000');
     await expect(receivedSide).toContainText('Diagnosed wallet · Ethereum');
     await expect(receivedSide.getByText('+6,000', { exact: true })).toBeVisible();
     await expect(receivedSide.getByText('USDC', { exact: true })).toBeVisible();
     await expect(receivedSide).toContainText('≈ ₹6,00,000');
     await expect(receivedSide).toContainText('+₹2,00,000');
     const swapActions = twoSidedSwap.getByTestId('tx-row-actions');
+    const swapClassification = twoSidedSwap.getByTestId('tx-type-category');
+    await expect(swapClassification.getByRole('button', { name: 'Swap' })).toBeVisible();
+    await expect(swapClassification.getByRole('combobox', { name: 'Semantic category' })).toHaveValue('swap');
+    await expect(swapActions.getByRole('button', { name: 'Swap' })).toHaveCount(0);
     await expect(swapActions).toContainText('0xcccc…cccc');
     await expect(swapActions.getByLabel('Copy transaction hash')).toBeVisible();
     await expect(swapActions.getByLabel('Open transaction in explorer')).toHaveAttribute(
@@ -126,7 +130,7 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
         expect(actions).not.toBeNull();
         expect(source!.x).toBeLessThan(flow!.x);
         expect(flow!.x).toBeLessThan(actions!.x);
-        expect(flow!.width).toBeGreaterThan(source!.width);
+        expect(flow!.width).toBeGreaterThan(150);
       }
       if (width === 390) await transaction.scrollIntoViewIfNeeded();
       if (width === 390) {
