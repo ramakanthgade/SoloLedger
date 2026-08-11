@@ -33,7 +33,9 @@ const mocks = vi.hoisted(() => ({
   })),
   deleteLookupAddressAndTransactions: vi.fn(async () => {}),
   runWalletImport: vi.fn(async (_addresses: string[], _chain: { id: string }, _settings?: unknown, _config?: unknown, _isSync?: boolean) => {}),
-  getEffectiveSettings: vi.fn(async () => ({ rpcLookupEnabled: true, priceApiEnabled: false })),
+  getEffectiveSettings: vi.fn(async () => ({ rpcLookupEnabled: true, priceApiEnabled: false, coingeckoApiKey: undefined as string | undefined })),
+  refreshCurrentHoldingPrices: vi.fn(async () => {}),
+  defiRows: { current: [] as Array<Record<string, unknown>> },
   connections: { current: [] as ExchangeConnectionView[] },
   csvImports: { current: [] as unknown[] },
   wallets: { current: [] as unknown[] },
@@ -73,7 +75,9 @@ vi.mock('dexie-react-hooks', () => ({
     if (s.includes('getCsvImports')) return mocks.csvImports.current;
     if (s.includes('getLookupAddresses')) return mocks.wallets.current;
     if (s.includes('manual')) return mocks.manualCount.current;
-    if (s.includes('prepareWalletChainCollectionEvidence')) return { currency: 'INR', preparedAt: Date.now() };
+    if (s.includes('prepareWalletChainCollectionEvidence')) return {
+      currency: 'INR', preparedAt: Date.now(), defiPositionRows: mocks.defiRows.current
+    };
     return undefined;
   }
 }));
@@ -128,6 +132,10 @@ vi.mock('@/lib/importJob', async (importOriginal) => {
 
 vi.mock('@/lib/saas/effectiveSettings', () => ({
   getEffectiveSettings: mocks.getEffectiveSettings
+}));
+
+vi.mock('@/lib/pricing/currentPrices', () => ({
+  refreshCurrentHoldingPrices: mocks.refreshCurrentHoldingPrices
 }));
 
 vi.mock('@/lib/saas/lookupConfig', () => ({
@@ -302,12 +310,43 @@ beforeEach(() => {
   mocks.csvImports.current = [];
   mocks.wallets.current = [];
   mocks.manualCount.current = 0;
+  mocks.defiRows.current = [];
+  mocks.getEffectiveSettings.mockResolvedValue({ rpcLookupEnabled: true, priceApiEnabled: false, coingeckoApiKey: undefined });
+  mocks.refreshCurrentHoldingPrices.mockResolvedValue(undefined);
   mocks.exchangeJob.current = { ...IDLE_JOB };
   mocks.walletJob.current = { ...IDLE_WALLET_JOB };
   importJob.reset();
 });
 
 describe('ConnectionsHome — header & pills', () => {
+  it('refreshes exact DeFi underlying marks used by wallet card liabilities', async () => {
+    mocks.getEffectiveSettings.mockResolvedValue({
+      rpcLookupEnabled: true, priceApiEnabled: true, coingeckoApiKey: 'configured'
+    });
+    mocks.defiRows.current = [{
+      underlying: {
+        symbol: 'USDS',
+        contractAddress: '0xdc035d45d973e3ec169d2276ddab16f1e407384f'
+      },
+      quantity: 45_035.63
+    }];
+
+    render(<ConnectionsHome />);
+
+    await waitFor(() => expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledWith([
+      expect.objectContaining({
+        asset: 'USDS',
+        chain: 'ethereum',
+        contractAddress: '0xdc035d45d973e3ec169d2276ddab16f1e407384f',
+        safetyState: 'trusted'
+      })
+    ], 'INR', 'configured'));
+
+    mocks.refreshCurrentHoldingPrices.mockClear();
+    fireEvent.focus(window);
+    await waitFor(() => expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledTimes(1));
+  });
+
   it('renders the title, subtitle and the Add data button', () => {
     render(<ConnectionsHome />);
     expect(screen.getByRole('heading', { name: 'Connections' })).toBeInTheDocument();
