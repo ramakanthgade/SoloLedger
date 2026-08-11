@@ -16,6 +16,7 @@ describe('Review typed navigation', () => {
     expect(hasDurableNavigationScope({ needsReview: true })).toBe(false);
     expect(hasDurableNavigationScope({ scopeId: 'exchange:binance:spot' })).toBe(true);
     expect(hasDurableNavigationScope({ sourceTarget: { kind: 'exchange', connectionId: 'binance' } })).toBe(true);
+    expect(hasDurableNavigationScope({ transactionIds: ['income-1'] })).toBe(true);
   });
 
   it('resolves an exact transaction and returns missing for a deleted id', () => {
@@ -60,5 +61,27 @@ describe('Review typed navigation', () => {
     expect(rows.every((row) => transactionMatchesNavigationScope(
       row, { needsReview: true }, context, index.byTaxEventId
     ))).toBe(true);
+  });
+
+  it('reproduces the exact Dashboard contributor ids inside its selected cutoff', () => {
+    const rows = [
+      tx({ id: 'income-1', timestamp: 200, type: 'income', category: 'staking_reward' }),
+      tx({ id: 'other', timestamp: 200 })
+    ];
+    const context = { exchangeConnections: [], openingBalances: [] };
+    const postings = derivePostings(rows, context);
+    const index = buildTransactionPostingIndex(postings, preparePostingAggregation(postings, true));
+    const filter = {
+      nominalStart: 100, effectiveEnd: 300, category: 'income' as const,
+      transactionIds: ['income-1']
+    };
+    expect(transactionMatchesNavigationScope(rows[0], filter, context, index.byTaxEventId)).toBe(true);
+    expect(transactionMatchesNavigationScope(rows[1], filter, context, index.byTaxEventId)).toBe(false);
+    expect(transactionMatchesNavigationScope(
+      tx({ id: 'income-1', timestamp: 200, type: 'other', category: 'cost' }), filter, context, index.byTaxEventId
+    )).toBe(false);
+    expect(transactionMatchesNavigationScope(
+      tx({ id: 'income-1', timestamp: 301 }), filter, context, index.byTaxEventId
+    )).toBe(false);
   });
 });

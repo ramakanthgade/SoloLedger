@@ -181,6 +181,8 @@ export interface Transaction {
 export interface Lot {
   id: string;
   asset: string;
+  /** Canonical contract/mint/native identity used for inventory isolation. */
+  assetKey?: string;
   acquiredAt: number;
   amountRemaining: number;
   amountOriginal: number;
@@ -193,6 +195,8 @@ export interface Lot {
 export interface Disposal {
   id: string;
   asset: string;
+  /** Canonical contract/mint/native identity consumed by this disposal. */
+  assetKey?: string;
   disposedAt: number;
   amount: number;
   proceeds: number;             // fiat value received

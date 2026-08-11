@@ -36,7 +36,7 @@ describe('live wallet DeFi verifier', () => {
       { name: 'connections', sha256: '2'.repeat(64) },
       { name: 'allocation', sha256: '3'.repeat(64) }
     ],
-    selectors: ['[data-testid="detail-holdings-total"]', '[data-testid="net-worth-value"]']
+    selectors: ['[data-testid="detail-holdings-total"]', '[data-testid="dashboard-total-net-worth"]']
   }, provenance);
 
   it('recomputes the signed attestation and binds target origin, build SHA, and authenticated run', () => {

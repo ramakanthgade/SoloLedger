@@ -1,6 +1,5 @@
 import { useId, useMemo, useRef, useState } from 'react';
 import type { ChartPoint } from '@/lib/dashboard/dashboardModel';
-import { shortDateLabel } from '@/lib/dashboard/dashboardModel';
 import { formatCurrency } from '@/lib/utils';
 import type { Jurisdiction } from '@/types/transaction';
 import { chartTimelineTicks } from './dashboardChartTimeline';
@@ -108,8 +107,14 @@ export function NetWorthChart({ points, mode, currency, jurisdiction, mask = fal
 
   const money = (v: number) => (mask ? '••••' : formatCurrency(v, currency));
   const dateLabel = (t: number) => {
-    const d = new Date(t);
-    return `${shortDateLabel(t)} ${d.getUTCFullYear()}`;
+    const india = jurisdiction === 'IN';
+    const date = new Date(india ? t + 5.5 * 60 * 60_000 : t);
+    const year = india ? date.getUTCFullYear() : date.getFullYear();
+    const month = india ? date.getUTCMonth() : date.getMonth();
+    const day = india ? date.getUTCDate() : date.getDate();
+    return new Intl.DateTimeFormat('en', {
+      month: 'short', day: 'numeric', year: 'numeric', timeZone: 'UTC'
+    }).format(new Date(Date.UTC(year, month, day)));
   };
 
   const onMove = (e: React.MouseEvent) => {
@@ -135,13 +140,9 @@ export function NetWorthChart({ points, mode, currency, jurisdiction, mask = fal
   const hoverValue = hoverPoint ? (mode === 'market' ? (hoverPoint.market ?? hoverPoint.cost) : hoverPoint.cost) : 0;
   const hoverYFrac = hoverPoint ? 1 - (hoverValue - minV) / Math.max(1e-9, maxV - minV) : 0;
 
-  const first = points[0];
-  const last = points[points.length - 1];
-  const ariaSummary =
-    points.length > 1
-      ? `Net worth chart, ${mode === 'market' ? 'market value' : 'cost basis'}, ${dateLabel(first.t)} to ${dateLabel(last.t)}: ${money(
-          mode === 'market' ? (first.market ?? first.cost) : first.cost
-        )} to ${money(mode === 'market' ? (last.market ?? last.cost) : last.cost)}. Dashed line: cost basis.`
+  const ariaSummary = mask ? 'Net worth history chart hidden for privacy.'
+    : points.length > 1
+      ? `Net worth history chart with ${points.length} points. Market value and cost basis are available by point.`
       : 'Net worth chart — not enough history yet.';
 
   return (
@@ -185,8 +186,8 @@ export function NetWorthChart({ points, mode, currency, jurisdiction, mask = fal
           })}
 
           {/* solid area + line */}
-          {areaPath && <path d={areaPath} fill={`url(#${gradientId})`} />}
-          {solidPath && (
+          {!mask && areaPath && <path d={areaPath} fill={`url(#${gradientId})`} />}
+          {!mask && solidPath && (
             <path
               d={solidPath}
               fill="none"
@@ -198,7 +199,7 @@ export function NetWorthChart({ points, mode, currency, jurisdiction, mask = fal
           )}
 
           {/* dashed cost-basis line */}
-          {mode === 'market' && costPath && (
+          {!mask && mode === 'market' && costPath && (
             <path
               d={costPath}
               fill="none"
@@ -211,7 +212,7 @@ export function NetWorthChart({ points, mode, currency, jurisdiction, mask = fal
           )}
 
           {/* hover guide + dot */}
-          {hoverPoint && (
+          {!mask && hoverPoint && (
             <>
               <line
                 x1={xOf(hoverPoint.t, start, end)}
@@ -253,7 +254,7 @@ export function NetWorthChart({ points, mode, currency, jurisdiction, mask = fal
         </svg>
 
         {/* HTML tooltip (values, not distorted by preserveAspectRatio) */}
-        {hoverPoint && (
+        {!mask && hoverPoint && (
           <div
             className="pointer-events-none absolute z-10 min-w-[9.5rem] -translate-x-1/2 rounded-xl border border-hi/10 bg-hi px-3 py-2 text-canvas shadow-pop"
             style={{

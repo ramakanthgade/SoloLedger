@@ -63,6 +63,14 @@ import { normalizeSourceTarget, resolveSourceTarget, type SourceNavigationIntent
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { defiUnderlyingPriceHoldings } from '@/lib/portfolio/defiUnderlyingPrices';
 import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
+import { DataHealthWorkspace, type DataHealthViewState } from './dataHealth/DataHealthWorkspace';
+import { buildDataHealthModel } from './dataHealth/dataHealthModel';
+import {
+  buildConnectionDataHealthDiagnostics,
+  buildConnectionDataHealthModel
+} from './dataHealth/connectionDataHealthLoader';
+import { useCoherentDataHealthSnapshot } from './dataHealth/useCoherentDataHealthSnapshot';
+import type { NavigationIntent } from '@/lib/navigationIntent';
 
 /** Locked pill order (mockup `cv2-filter-pills`): Manual entry before + New. */
 const PILLS: Array<{ id: PillFilter; label: string }> = [
@@ -119,10 +127,22 @@ function detailOpenerKey(selection: DetailSelection): string {
  * preview surface, and the exchange/wallet job banners ported from
  * AutoSyncPanel. All add-flows open in the right-side AddDataDrawer.
  */
-export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledged, onNavigationBack }: {
+const EMPTY_DATA_HEALTH_MODEL = buildDataHealthModel([]);
+
+export function ConnectionsHome({
+  navigationIntent,
+  onNavigationIntentAcknowledged,
+  onNavigationBack,
+  onDataHealthNavigation,
+  restoredDataHealthState,
+  openDataHealthOnMount = false
+}: {
   navigationIntent?: SourceNavigationIntent;
   onNavigationIntentAcknowledged?: (id: string) => void;
   onNavigationBack?: () => void;
+  onDataHealthNavigation?: (intent: NavigationIntent, state: DataHealthViewState) => void;
+  restoredDataHealthState?: DataHealthViewState;
+  openDataHealthOnMount?: boolean;
 } = {}) {
   const liveConnections = useLiveQuery(() => listConnections(), []);
   const liveCsvImports = useLiveQuery(() => getCsvImports(), []);
@@ -157,6 +177,8 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
   const acknowledgedIntent = useRef<string | null>(null);
   const missingDetailTargetIntent = useRef<string | null>(null);
   const [externalDetailIntentId, setExternalDetailIntentId] = useState<string | null>(null);
+  const [dataHealthOpen, setDataHealthOpen] = useState(openDataHealthOnMount);
+  const [dataHealthNow, setDataHealthNow] = useState(Date.now);
 
   const liveWalletEvidence = useLiveQuery(async () => {
     const evidence = await db.transaction('r', [
@@ -185,6 +207,31 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
       liveWalletRows: walletRows,
     });
   }, [walletRows]);
+  const dataHealthInvalidationSignal = useMemo(() => [
+    liveConnections, liveCsvImports, liveWalletRows, liveManualCount, liveWalletEvidence
+  ] as const, [liveConnections, liveCsvImports, liveWalletRows, liveManualCount, liveWalletEvidence]);
+  const { snapshot: dataHealthSnapshot, updating: dataHealthUpdating } =
+    useCoherentDataHealthSnapshot(dataHealthInvalidationSignal, dataHealthOpen, {
+      closedReadReady: false
+    });
+  const dataHealthModel = useMemo(() => dataHealthSnapshot
+    ? buildConnectionDataHealthModel(dataHealthSnapshot, dataHealthNow)
+    : EMPTY_DATA_HEALTH_MODEL, [dataHealthNow, dataHealthSnapshot]);
+  const dataHealthDiagnostics = useMemo(() => dataHealthSnapshot
+    ? buildConnectionDataHealthDiagnostics(
+        dataHealthSnapshot,
+        liveWalletEvidence?.currency ?? 'INR',
+        dataHealthNow
+      )
+    : undefined, [dataHealthNow, dataHealthSnapshot, liveWalletEvidence?.currency]);
+
+  useEffect(() => {
+    if (!openDataHealthOnMount) return;
+    setDetailSelection(null);
+    setExternalDetailIntentId(null);
+    setDataHealthNow(Date.now());
+    setDataHealthOpen(true);
+  }, [openDataHealthOnMount, restoredDataHealthState]);
 
   useEffect(() => {
     const refresh = () => setPriceRefreshTick((tick) => tick + 1);
@@ -551,6 +598,21 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
 
   const previewStaged = exchangeJob.preview !== null;
 
+  if (dataHealthOpen) {
+    return <DataHealthWorkspace
+      model={dataHealthModel}
+      loading={!dataHealthSnapshot}
+      updating={dataHealthUpdating}
+      localDiagnostics={dataHealthDiagnostics}
+      onClose={() => setDataHealthOpen(false)}
+      initialState={restoredDataHealthState}
+      onNavigate={(intent, state) => {
+        setDataHealthOpen(false);
+        onDataHealthNavigation?.(intent, state);
+      }}
+    />;
+  }
+
   return (
     <div className="space-y-5" data-testid="connections-home">
       {detailLoading ? (
@@ -622,6 +684,25 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
           </Button>
         </div>
       </div>
+
+      <section aria-label="Data Health entry" className="rounded-2xl border border-hi/10 bg-elev-2 p-4 shadow-card sm:flex sm:items-center sm:justify-between sm:gap-4">
+        <div>
+          <h2 className="text-sm font-extrabold text-hi">Data Health</h2>
+          <p className="mt-1 text-xs leading-relaxed text-low">
+            {dataHealthSnapshot
+              ? dataHealthModel.summary.actionSourceCount > 0
+                ? `${dataHealthModel.summary.actionSourceCount} source${dataHealthModel.summary.actionSourceCount === 1 ? '' : 's'} need attention · ${dataHealthModel.summary.reconciled} balances matched`
+                : `${dataHealthModel.summary.reconciled} balances matched · no source actions pending`
+              : `${cards.length} source${cards.length === 1 ? '' : 's'} ready for balance and history checks`}
+          </p>
+        </div>
+        <Button variant="secondary" className="mt-3 w-full sm:mt-0 sm:w-auto" onClick={() => {
+          setDataHealthNow(Date.now());
+          setDataHealthOpen(true);
+        }}>
+          Review Data Health →
+        </Button>
+      </section>
 
       {/* Filter pills (radiogroup, roving tabindex) + + New chip */}
       <div role="radiogroup" aria-label="Filter connections" className="flex flex-wrap items-center gap-2">

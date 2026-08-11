@@ -2,12 +2,14 @@ import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { resolveAccountScope, type DerivedPosting } from '@/lib/ledger/derivedPostings';
 import { normalizeSourceTarget, type TransactionNavigationIntent, type TransactionScopeFilter } from '@/lib/navigationIntent';
 import type { Transaction } from '@/types/transaction';
+import { transactionMatchesDashboardCategory } from '@/lib/dashboard/dashboardCategoryAggregation';
 
 export function hasDurableNavigationScope(filter: TransactionScopeFilter | undefined): boolean {
   return filter?.scopeId != null
     || filter?.accountClass != null
     || filter?.sourceTarget != null
-    || filter?.assetKey != null;
+    || filter?.assetKey != null
+    || filter?.transactionIds != null;
 }
 
 export function resolveReviewTransactionTarget(intent: TransactionNavigationIntent, transactions: readonly Transaction[]): Transaction | undefined {
@@ -20,6 +22,11 @@ export function transactionMatchesNavigationScope(
   context: Parameters<typeof resolveAccountScope>[1],
   postingsByTaxEventId: ReadonlyMap<string, readonly DerivedPosting[]>
 ): boolean {
+  if (filter.nominalStart != null && transaction.timestamp < filter.nominalStart) return false;
+  if (filter.effectiveEnd != null && transaction.timestamp > filter.effectiveEnd) return false;
+  if (filter.transactionIds && !filter.transactionIds.includes(transaction.id)) return false;
+  if (filter.category && filter.category !== 'realizedCapitalGains' &&
+      !transactionMatchesDashboardCategory(transaction, filter.category)) return false;
   const resolved = resolveAccountScope(transaction, context);
   if (filter.scopeId && resolved.accountScopeId !== filter.scopeId) return false;
   if (filter.accountClass && resolved.accountClass !== filter.accountClass) return false;

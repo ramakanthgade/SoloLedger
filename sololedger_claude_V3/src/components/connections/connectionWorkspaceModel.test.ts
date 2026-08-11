@@ -3,7 +3,7 @@ import type { AccountClass, OpeningBalanceRow } from '@/lib/ledger/derivedPostin
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
-import { buildDataHealthModel } from '@/components/dashboard/dataHealthModel';
+import { buildDataHealthModel } from '@/components/connections/dataHealth/dataHealthModel';
 import type { ConnectionCardData } from './connectionModel';
 import {
   buildPreparedConnectionWorkspace,

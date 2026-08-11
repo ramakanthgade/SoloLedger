@@ -15,7 +15,7 @@ const capture = (extra: Record<string, unknown> = {}) => ({
     { name: 'connections', sha256: '2'.repeat(64) },
     { name: 'allocation', sha256: '3'.repeat(64) }
   ],
-  selectors: ['[data-testid="net-worth-value"]', '[data-testid="detail-holdings-total"]'],
+  selectors: ['[data-testid="dashboard-total-net-worth"]', '[data-testid="detail-holdings-total"]'],
   ...extra
 });
 

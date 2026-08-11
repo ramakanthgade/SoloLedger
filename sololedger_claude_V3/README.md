@@ -26,16 +26,27 @@ badge in the top-right of the app at all times.
     free or paid, sees the address you query — there's no way around that
     for any hosted lookup service; the only true alternative is running
     your own full node. See the in-app warning and Settings for specifics.
-- **Cost basis engine**: FIFO and Specific Identification, chosen per report
-  run. Trade (asset-for-asset swap) transactions are split into a linked
+- **Dashboard**: one coherent, cutoff-aware financial snapshot powers Total Net
+  Worth, remaining Cost Basis, Unrealized P&L, chart, allocation, holdings,
+  selected-period activity, and India tax/TDS. FY and Custom selections retain
+  their nominal filing range while values clamp to the coherent local read
+  time. Historical values replay the local ledger and opening balances; known
+  unpriced quantities remain partial contributors rather than fabricated zeroes.
+  The Dashboard publishes period and values atomically and contains no sync,
+  reconciliation, or Data Health operations.
+- **Connections**: owns sources, sync/history, opening balances, reconciliation,
+  and Data Health. Dashboard activity cards deep-link to Transactions with the
+  exact selected period, category, and contributor set.
+- **Cost basis engine**: FIFO, LIFO, HIFO, and Specific Identification. Trade
+  (asset-for-asset swap) transactions are split into a linked
   disposal + acquisition pair so both legs get proper cost basis treatment.
-  The Review tab's "match lots" picker lets you choose which lots a Specific
+  The Transactions tab's "match lots" picker lets you choose which lots a Specific
   ID disposal draws from; anything you don't explicitly order falls back to
   oldest-lots-first for the remainder.
-- **Pricing**: optional historical price backfill via CoinGecko's public API
+- **Price backfill**: optional historical lookup via CoinGecko's public API
   (Settings → "Live price lookup"). Only an asset symbol and a date are sent —
   never wallet addresses, amounts, or anything else. A "Fetch missing prices"
-  button appears in Review whenever transactions are missing a fiat value.
+  button appears in Transactions whenever rows are missing a fiat value.
 - **Jurisdictions**: India (default), US, Canada, UAE — each a small pure-
   function rules module layered on the same disposal data, so adding a new
   country doesn't touch the calculation core.
@@ -43,10 +54,11 @@ badge in the top-right of the app at all times.
   de-identification toggle that locally SHA-256-pseudonymizes wallet
   addresses/tx references (or you can extend it to summary-only) before
   anything is written to disk.
-- **Review**: search/filter, bulk "mark as internal transfer," missing-price
+- **Transactions**: search/filter, bulk "mark as internal transfer," missing-price
   banner with one-click backfill, and the Specific ID lot picker.
-- **Portfolio**: holdings and cost basis computed live from local transaction
-  history.
+- **Pricing**: strict legacy and canonical-v2 historical cache identities,
+  exact-contract precedence, safe symbol fallback, historical closes no older
+  than 48 hours, and current spot marks no older than 15 minutes.
 - **Feature flagging**: `src/lib/features.ts` — a minimal tier system so
   advanced features can later be gated behind a license key without
   restructuring the app. Everything currently ships unlocked.
@@ -98,13 +110,14 @@ npm run preview
 
 ## Testing with real data
 
-1. Import tab → CSV upload (auto-detected for Coinbase/Binance, or map
-   columns manually for anything else), Manual entry, or Wallet lookup.
-2. Review tab → categorize flagged transactions, mark internal transfers,
+1. Connections → add/import a source (auto-detected Coinbase/Binance CSV,
+   manual mapping, exchange connection, or wallet lookup).
+2. Transactions → categorize flagged transactions, mark internal transfers,
    backfill missing prices, and (if using Specific ID) match lots for
    disposals.
-3. Portfolio tab → sanity-check holdings match what you expect.
-4. Reports tab → pick jurisdiction, year, and method, then export PDF/CSV/JSON.
+3. Dashboard → select This/Last/prior tax year or a Custom range and review the
+   coherent cutoff values, activity, holdings, and limitations disclosure.
+4. Capital Gains / Reports → review disposals and export PDF/CSV/JSON.
 5. Settings → export a full backup once you're happy with the data.
 
 Your data stays in this browser's IndexedDB. Clearing browser storage for
