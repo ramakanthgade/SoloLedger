@@ -349,6 +349,29 @@ from GET `/api/send_money`—the JPY bank `/api/withdraws` route is not exposed�
 cannot advance a cursor without valid pagination metadata. Hand-authored replay
 fixtures are marked `_recorded:false`.
 
+The next-five connectors follow the same fail-closed contract. Bitrue and
+LBank scan the complete frozen active-spot symbol universe because their trade
+routes require a symbol; XT.COM advances only when `result.hasNext` and the
+last immutable native id agree; LBank requires stable `total`, `current_page`
+and `page_length` metadata; Phemex filters its mixed products catalog to active
+spot markets; and CoinSpot uses dedicated raw adapters for read-only deposits
+and withdrawals because pinned CCXT has no unified methods for them.
+CoinSpot's existing CSV contains no provider id and cannot distinguish exact
+same-value twins, so API replay is stable but API↔CSV collision is deliberately
+not claimed. Fixtures are hand-authored and marked `_recorded:false`.
+
+Retention and region claims remain conservative: CoinSpot is Australia-only;
+Bitrue, XT.COM and Phemex have high hosted-region risk; LBank region support is
+unverified. None of these five publishes a verified account-lifetime history
+guarantee, so endpoint exhaustion proves only the returned API surface and
+users should retain exports for older records. All five use API key + secret
+only—none requires or accepts a passphrase.
+
+All exchange traffic rides the hosted relay route
+`GET/POST /api/proxy/exchange/<id>/<path>` (JWT and active-subscription gated,
+with an exact per-exchange host/method/path/header allowlist). The browser
+never talks directly to an exchange host.
+
 Crypto.com normalized rows persist `raw.exchangeSyncKind` as immutable source
 provenance, so later user reclassification of `Transaction.type` cannot change
 dedup identity. For rows written before that field existed, key migration first

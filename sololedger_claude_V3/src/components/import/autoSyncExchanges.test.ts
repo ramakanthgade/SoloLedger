@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(27);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(32);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -157,5 +157,18 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('whitebit')?.keyInstructions.join(' ')).toMatch(/six-month.*10,000 offset.*older tax records/i);
     expect(getAutoSyncExchange('bitflyer')?.keyInstructions.join(' ')).toMatch(/spot.*excludes Lightning FX.*derivative/i);
     expect(getAutoSyncExchange('coincheck')?.keyInstructions.join(' ')).toMatch(/send_money.*JPY bank.*pagination metadata.*prior cursor/i);
+  });
+
+  it('documents next-five region, retention and no-passphrase caveats', () => {
+    for (const id of ['bitrue', 'xt', 'coinspot', 'phemex', 'lbank'] as const) {
+      const exchange = getAutoSyncExchange(id)!;
+      expect(exchange.needsPassphrase).toBe(false);
+      expect(exchange.keyInstructions.join(' ')).toMatch(/does not require a passphrase/i);
+    }
+    expect(getAutoSyncExchange('coinspot')?.keyInstructions.join(' ')).toMatch(/Australian customers only.*does not claim API↔CSV auto-deduplication/i);
+    expect(getAutoSyncExchange('bitrue')?.keyInstructions.join(' ')).toMatch(/hosted regions.*retention is unverified/i);
+    expect(getAutoSyncExchange('xt')?.keyInstructions.join(' ')).toMatch(/geographic-access risk.*no account-lifetime retention guarantee/i);
+    expect(getAutoSyncExchange('phemex')?.keyInstructions.join(' ')).toMatch(/geographic-access risk.*retention is unverified/i);
+    expect(getAutoSyncExchange('lbank')?.keyInstructions.join(' ')).toMatch(/region availability.*retention are unverified/i);
   });
 });

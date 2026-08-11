@@ -135,8 +135,10 @@ import {
   recoverBitflyerCommission,
   whitebitTransferId,
   paginateCoincheck,
-  paginateNativeBefore
+  paginateNativeBefore,
+  paginateNativeOffsets
 } from './roundFiveExchanges';
+import { paginateLbankPages, paginateXtNative, parseCoinspotTransferEnvelope } from './nextFiveExchanges';
 
 // ---- Pinned constants (§B-3) ----
 
@@ -145,7 +147,8 @@ export const TRANSFER_OVERLAP_MS = 7 * 86_400_000;
 export const MAX_PAGES_PER_PHASE = 200;
 const FAIL_CLOSED_NATIVE_EXCHANGES = new Set<ExchangeId>([
   'coinex', 'poloniex', 'woo', 'hitbtc', 'bingx',
-  'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck'
+  'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck',
+  'bitrue', 'xt', 'coinspot', 'phemex', 'lbank'
 ]);
 /**
  * Empty-window probes do NOT consume the data-page budget — an initial sync
@@ -268,7 +271,12 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   backpack: Date.UTC(2023, 10, 20),
   whitebit: Date.UTC(2018, 10, 1),
   bitflyer: Date.UTC(2014, 0, 9),
-  coincheck: Date.UTC(2014, 7, 1)
+  coincheck: Date.UTC(2014, 7, 1),
+  bitrue: Date.UTC(2018, 6, 26),
+  xt: Date.UTC(2018, 6, 2),
+  coinspot: Date.UTC(2013, 0, 1),
+  phemex: Date.UTC(2019, 10, 25),
+  lbank: Date.UTC(2015, 0, 1)
 };
 
 export interface BitstampSpotTradeClassification {
@@ -2995,6 +3003,60 @@ export async function fetchTransferKind(
       pageShapeKnown: () => sendMoneyShapeKnown
     });
   }
+  if (exchange === 'bitrue') {
+    const rows: UnifiedTransfer[] = [];
+    let partial = false;
+    const currencyUniverse = [...new Set([
+      ...coinbaseCurrencies,
+      ...Object.values(client.currencies ?? {}).filter((currency) => currency.active !== false)
+        .map((currency) => currency.code).filter((code): code is string => !!code)
+    ])].sort();
+    if (currencyUniverse.length === 0) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing' };
+    for (const code of currencyUniverse) {
+      const outcome = await paginateNativeOffsets({
+        limit: 1000,
+        fetchPage: (offset) => fetchDeposits
+          ? client.fetchDeposits(code, since, 1000, { endTime: now, offset })
+          : client.fetchWithdrawals(code, since, 1000, { endTime: now, offset })
+      });
+      rows.push(...outcome.rows);
+      partial = partial || outcome.partial;
+    }
+    return { rows, maxTs: maxTimestamp(rows), partial: true, termination: partial ? 'nonadvancing' : 'exhausted' };
+  }
+  if (exchange === 'xt') {
+    const outcome = await paginateXtNative({
+      client,
+      fetchPage: (id) => fetchDeposits
+        ? client.fetchDeposits(undefined, since, 200, { endTime: now, direction: 'NEXT', ...(id ? { id } : {}) })
+        : client.fetchWithdrawals(undefined, since, 200, { endTime: now, direction: 'NEXT', ...(id ? { id } : {}) })
+    });
+    return { ...outcome, partial: true };
+  }
+  if (exchange === 'coinspot') {
+    const fetchRaw = fetchDeposits ? client.fetchCoinspotDeposits : client.fetchCoinspotWithdrawals;
+    if (!fetchRaw) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing' };
+    const parsed = parseCoinspotTransferEnvelope(await fetchRaw(), fetchDeposits ? 'deposit' : 'withdrawal');
+    const rows = parsed.rows.filter((item) => (item.timestamp ?? 0) >= since && (item.timestamp ?? now + 1) <= now);
+    return { rows, maxTs: maxTimestamp(rows), partial: true, termination: parsed.shapeKnown ? 'exhausted' : 'nonadvancing' };
+  }
+  if (exchange === 'phemex') {
+    const rows = fetchDeposits
+      ? await client.fetchDeposits(undefined, since, undefined)
+      : await client.fetchWithdrawals(undefined, since, undefined);
+    const unsafe = rows.some((item) => !item.id || item.timestamp == null);
+    return { rows: unsafe ? [] : rows, maxTs: unsafe ? null : maxTimestamp(rows), partial: true,
+      termination: unsafe ? 'nonadvancing' : 'exhausted' };
+  }
+  if (exchange === 'lbank') {
+    const outcome = await paginateLbankPages({
+      client,
+      fetchPage: (page) => fetchDeposits
+        ? client.fetchDeposits(undefined, since, 100, { endTime: now, current_page: page })
+        : client.fetchWithdrawals(undefined, since, 100, { endTime: now, current_page: page })
+    });
+    return { ...outcome, partial: true };
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -3279,6 +3341,39 @@ export async function fetchTradesForSymbol(
           order: 'desc', ...(endingBefore ? { ending_before: endingBefore } : {})
         })
       });
+    case 'bitrue':
+      return { ...await paginateNativeOffsets({
+        limit: 1000,
+        fetchPage: (offset) => client.fetchMyTrades(symbol, since, 1000, { endTime: now, offset })
+      }), partial: true };
+    case 'xt':
+      return { ...await paginateXtNative({
+        client,
+        fetchPage: (id) => client.fetchMyTrades(undefined, since, 200, {
+          endTime: now, type: 'spot', direction: 'NEXT', ...(id ? { id } : {})
+        })
+      }), partial: true };
+    case 'coinspot': {
+      const rows = await client.fetchMyTrades(undefined, since, undefined);
+      const future = rows.some((item) => item.timestamp == null || item.timestamp > now);
+      return { rows: future ? [] : rows, maxTs: future ? null : maxTimestamp(rows), partial: true,
+        termination: future ? 'nonadvancing' : 'exhausted' };
+    }
+    case 'phemex':
+      return { ...await paginateNativeOffsets({
+        limit: 200,
+        fetchPage: (offset) => client.fetchMyTrades(undefined, since, 200, { end: now, type: 'spot', offset })
+      }), partial: true };
+    case 'lbank':
+      return { ...await paginatePhase({
+        fetchPage: (_page, start, end) => client.fetchMyTrades(symbol, start, 100, {
+          end_date: new Date(end).toISOString().slice(0, 10), direct: 'next', type: 'spot'
+        }),
+        since,
+        windowMs: 47 * 3_600_000,
+        fullPage: 100,
+        now
+      }), partial: true };
   }
 }
 
@@ -4076,7 +4171,7 @@ export async function syncConnection(
     let bitvavoUnresolvedPairs = 0;
     let skippedSymbols = 0;
 
-    if (exchange === 'coinex' || exchange === 'bingx' || exchange === 'bitflyer') {
+    if (exchange === 'coinex' || exchange === 'bingx' || exchange === 'bitflyer' || exchange === 'bitrue' || exchange === 'lbank') {
       // Both APIs require a symbol. Freeze the complete current active-spot
       // universe together with every previously known symbol; this is
       // especially important for BingX, where a delisting must not erase the

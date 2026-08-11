@@ -112,6 +112,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'bitflyer_api',
       'bitget_api',
       'bitmart_api',
+      'bitrue_api',
       'bitstamp_api',
       'bitvavo_api',
       'btcmarkets_api',
@@ -119,6 +120,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'coinbase_api',
       'coincheck_api',
       'coinex_api',
+      'coinspot_api',
       'cryptocom_api',
       'gateio_api',
       'gemini_api',
@@ -126,11 +128,14 @@ describe('EXCHANGE_API_SOURCES', () => {
       'htx_api',
       'kraken_api',
       'kucoin_api',
+      'lbank_api',
       'mexc_api',
       'okx_api',
+      'phemex_api',
       'poloniex_api',
       'whitebit_api',
-      'woo_api'
+      'woo_api',
+      'xt_api'
     ]);
   });
 

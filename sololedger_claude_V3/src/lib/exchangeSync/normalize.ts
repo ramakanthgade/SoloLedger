@@ -35,7 +35,8 @@ const GEMINI_FIAT_QUOTES = new Map([
 const KRAKEN_FIAT_ASSETS = new Set(['USD', 'EUR', 'CAD', 'GBP', 'JPY', 'AUD']);
 const API_NATIVE_ID_EXCHANGES = new Set<ExchangeId>([
   'coinex', 'poloniex', 'woo', 'hitbtc', 'bingx',
-  'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck'
+  'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck',
+  'bitrue', 'xt', 'phemex', 'lbank'
 ]);
 
 /** makeId prefixes per exchange. */
@@ -66,7 +67,12 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   backpack: 'exbp',
   whitebit: 'exwb',
   bitflyer: 'exfl',
-  coincheck: 'excc'
+  coincheck: 'excc',
+  bitrue: 'exbr',
+  xt: 'exxt',
+  coinspot: 'excs',
+  phemex: 'exph',
+  lbank: 'exlb'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -177,6 +183,18 @@ function tradeSourceRef(
     case 'bitflyer':
     case 'coincheck':
       return trade.id;
+    case 'bitrue':
+      // Bitrue trade ids are symbol-scoped, as on its Binance-derived API.
+      return trade.id && trade.symbol ? `${trade.symbol}:${trade.id}` : undefined;
+    case 'xt':
+    case 'phemex':
+    case 'lbank':
+      return trade.id;
+    case 'coinspot':
+      // CoinSpot API trades expose no native id. Keep replay stable without
+      // claiming a CSV collision: the CSV's timestamp granularity/provenance
+      // cannot distinguish deterministic same-value twins.
+      return exchangeSourceRef('coinspot-api', ts, side, base, amount);
   }
 }
 
@@ -795,6 +813,12 @@ function transferSourceRef(
     case 'bitflyer':
     case 'coincheck':
       return transfer.id;
+    case 'bitrue':
+    case 'xt':
+    case 'coinspot':
+    case 'phemex':
+    case 'lbank':
+      return transfer.id;
     case 'whitebit':
       return transfer.id ?? transfer.txid ?? (typeof transfer.info?.transactionId === 'string'
         ? transfer.info.transactionId
@@ -836,6 +860,10 @@ function isSettledTransfer(
   if (exchange === 'mexc') {
     const raw = String(rawStatus ?? status ?? '');
     return type === 'transfer_in' ? raw === '5' || raw === '12' : raw === '7';
+  }
+  if (exchange === 'lbank') {
+    const raw = String(rawStatus ?? status ?? '');
+    return type === 'transfer_in' ? raw === '2' : raw === '4';
   }
   return false;
 }

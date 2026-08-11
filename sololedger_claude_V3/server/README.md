@@ -64,6 +64,12 @@ Smoke test after deploy: open `https://YOUR-APP.up.railway.app/health` — shoul
 
 `ALL /api/proxy/exchange/<exchangeId>/<upstream-path>?<raw-query>` (supported exchange connectors, including Bitfinex, Gemini, BTC Markets and Bitvavo — spot/read-only paths only).
 
+Bitrue, XT.COM, CoinSpot, Phemex and LBank are likewise restricted to the exact
+read-only spot hosts, methods, paths and signing headers emitted by pinned CCXT
+4.5.68. Futures, margin, order mutation and withdrawal mutation routes are not
+exposed. CoinSpot is Australia-only, Bitrue/XT.COM/Phemex carry high geo-block
+risk, and LBank region and lifetime-retention coverage remain unverified.
+
 Round five adds exact host/header/path allowlists for Binance.US, Backpack,
 WhiteBIT, bitFlyer and Coincheck. They are GET-only except WhiteBIT's signed
 POST balance, executed-spot-history and deposit/withdrawal-history reads. No
