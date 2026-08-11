@@ -1519,15 +1519,14 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   const renderLeg = (
     leg: RowLeg,
     spam: boolean,
-    assetIdentity?: Pick<Transaction, 'chain' | 'contractAddress' | 'safetyState'>,
-    extraValue?: string
+    assetIdentity?: Pick<Transaction, 'chain' | 'contractAddress' | 'safetyState'>
   ) => {
     // The sub-line: cost basis under the sent side of a disposal; fiat value
-    // and the gain/loss together under the received side.
+    // and the gain/loss together under the received side. Do not repeat the
+    // transaction market value beside outgoing cost basis.
     const subRow = (
       <span className="mt-1 flex min-h-4 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] tabular-figures">
         {leg.subline && <span className="whitespace-nowrap text-low">{leg.subline}</span>}
-        {extraValue && leg.subline !== extraValue && <span className="whitespace-nowrap text-low">{extraValue}</span>}
         {leg.gain && (
           <span
             className={cn(
@@ -1755,9 +1754,6 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
     const renderEconomicSide = (leg: RowLeg | null, side: 'sent' | 'received') => {
       const identity = leg ? sideIdentity(leg) : src.label;
-      const value = side === 'sent' && t.fiatValue != null
-        ? `≈ ${formatLedgerCurrency(t.fiatValue, t.fiatCurrency)}`
-        : undefined;
       return (
         <div
           className={cn(
@@ -1772,7 +1768,7 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               {identity}{chainLabel ? ` · ${chainLabel}` : ''}
             </span>
           </p>
-          {leg ? renderLeg(leg, spam, principalAssetIdentityForLeg(leg, t), value) : (
+          {leg ? renderLeg(leg, spam, principalAssetIdentityForLeg(leg, t)) : (
             <span className="text-xs font-semibold text-faint">No recorded leg</span>
           )}
         </div>
@@ -1785,10 +1781,10 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
           className={cn(
             'grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-3 px-4 py-4 transition-colors hover:bg-elev-3/40 sm:px-5',
-            // Desktop: select · wallet logo · outgoing · arrow · incoming ·
+            // Desktop: select · wallet/type/category · outgoing · arrow · incoming ·
             // hash/review utilities · disclosure. The flow remains the visual
             // center while exact source identity anchors the far-left edge.
-            'lg:grid-cols-[auto_3.25rem_minmax(10rem,1fr)_auto_minmax(10rem,1fr)_minmax(11rem,14rem)_auto] lg:items-center lg:gap-x-3 xl:grid-cols-[auto_3.5rem_minmax(12rem,1fr)_auto_minmax(12rem,1fr)_minmax(12rem,15rem)_auto] xl:gap-x-4',
+            'lg:grid-cols-[auto_minmax(10rem,11rem)_minmax(10rem,1fr)_auto_minmax(10rem,1fr)_minmax(11rem,14rem)_auto] lg:items-center lg:gap-x-3 xl:grid-cols-[auto_minmax(11rem,12rem)_minmax(12rem,1fr)_auto_minmax(12rem,1fr)_minmax(12rem,15rem)_auto] xl:gap-x-4',
             isSelected && 'bg-primary/[0.05] hover:bg-primary/[0.08]',
             spam && 'opacity-60'
           )}
@@ -1807,18 +1803,24 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             />
           </label>
 
-          {/* Wallet/source mark with a native-chain badge. */}
+          {/* Wallet/source mark plus editable classification at the left edge. */}
           <div
-            className="relative flex h-12 w-12 items-center justify-center self-start lg:self-center"
+            className="flex min-w-0 items-center gap-2 self-start lg:self-center"
             data-testid="tx-source-account"
             title={`${src.label} · ${sourcePresentation.subtitle}`}
           >
-            <SourceIcon iconId={sourcePresentation.iconId} label={sourcePresentation.primaryLabel} size={40} />
-            {t.chain && chainIconId(t.chain) && (
-              <span className="absolute bottom-0 right-0 grid h-[18px] w-[18px] place-items-center rounded-full border-2 border-elev-2 bg-elev-1 shadow-xs" title={chainLabel ?? t.chain}>
-                <SourceIcon iconId={chainIconId(t.chain)} label={chainLabel ?? t.chain} size={14} className="rounded-full" />
-              </span>
-            )}
+            <span className="relative flex h-12 w-12 shrink-0 items-center justify-center">
+              <SourceIcon iconId={sourcePresentation.iconId} label={sourcePresentation.primaryLabel} size={40} />
+              {t.chain && chainIconId(t.chain) && (
+                <span className="absolute bottom-0 right-0 grid h-[18px] w-[18px] place-items-center rounded-full border-2 border-elev-2 bg-elev-1 shadow-xs" title={chainLabel ?? t.chain}>
+                  <SourceIcon iconId={chainIconId(t.chain)} label={chainLabel ?? t.chain} size={14} className="rounded-full" />
+                </span>
+              )}
+            </span>
+            <span className={cn('min-w-0', spam && 'line-through')} data-testid="tx-type-category">
+              <TypeSelector tx={t} />
+              <CategorySelector tx={t} />
+            </span>
             <span className="sr-only">{src.label} · {sourcePresentation.subtitle}</span>
           </div>
 
@@ -1865,10 +1867,6 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               )}
             </div>
             <div className="mt-1 flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 lg:block">
-              <span className={cn('inline-flex min-w-0 flex-wrap items-center', spam && 'line-through')}>
-                <TypeSelector tx={t} />
-                <CategorySelector tx={t} />
-              </span>
               <p className="whitespace-nowrap text-[10px] text-low lg:mt-0.5">
                 {timeUtc}{chainLabel ? ` · ${chainLabel}` : ''}
               </p>

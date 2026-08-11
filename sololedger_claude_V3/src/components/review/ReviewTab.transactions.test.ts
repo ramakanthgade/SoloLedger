@@ -126,17 +126,30 @@ describe('ReviewTab — item 10: richer rows + click-anywhere details', () => {
 });
 
 describe('ReviewTab — Koinly-inspired SoloLedger economic rows', () => {
-  it('lays the row on seven aligned tracks with source identity at the left and utilities at the right', () => {
-    // select · source mark · outgoing · arrow · incoming · utilities · disclosure.
-    expect(source).toContain('lg:grid-cols-[auto_3.25rem_minmax(10rem,1fr)_auto_minmax(10rem,1fr)_minmax(11rem,14rem)_auto]');
+  it('lays the row on seven aligned tracks with source classification at the left and utilities at the right', () => {
+    // select · source/type/category · outgoing · arrow · incoming · utilities · disclosure.
+    expect(source).toContain('lg:grid-cols-[auto_minmax(10rem,11rem)_minmax(10rem,1fr)_auto_minmax(10rem,1fr)_minmax(11rem,14rem)_auto]');
     expect(source).toContain('data-testid="tx-source-account"');
+    expect(source).toContain('data-testid="tx-type-category"');
     expect(source).toContain('data-testid="tx-row-actions"');
   });
 
   it('shows wallet and chain identity above both economic legs', () => {
     expect(source).toContain("data-testid={side === 'sent' ? 'tx-sent-side' : 'tx-received-side'}");
     expect(source).toContain("{identity}{chainLabel ? ` · ${chainLabel}` : ''}");
-    expect(source).toContain("side === 'sent' && t.fiatValue != null");
+    expect(source).not.toContain("side === 'sent' && t.fiatValue != null");
+    expect(source).not.toContain('extraValue');
+  });
+
+  it('keeps type and category beside the source logo while right utilities retain transaction metadata', () => {
+    const sourceBlock = source.slice(source.indexOf('data-testid="tx-source-account"'), source.indexOf('data-testid="tx-flow"'));
+    const actionsBlock = source.slice(source.indexOf('data-testid="tx-row-actions"'), source.indexOf('data-testid="tx-disclosure"'));
+    expect(sourceBlock).toContain('<TypeSelector tx={t} />');
+    expect(sourceBlock).toContain('<CategorySelector tx={t} />');
+    expect(actionsBlock).not.toContain('<TypeSelector tx={t} />');
+    expect(actionsBlock).not.toContain('<CategorySelector tx={t} />');
+    expect(actionsBlock).toContain('fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}');
+    expect(actionsBlock).toContain('<FlagSelector tx={t} derivedFlags={derivedFlags} />');
   });
 
   it('puts hash copy and safe explorer conveniences on the row face', () => {
