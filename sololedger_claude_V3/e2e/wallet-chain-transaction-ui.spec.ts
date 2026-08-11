@@ -79,6 +79,34 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
     }
 
     await page.getByRole('tab', { name: 'Transactions', exact: true }).first().click();
+    const twoSidedSwap = page.locator('[data-transaction-id="b6-two-sided-swap"]');
+    await expect(twoSidedSwap).toBeVisible();
+    const sentSide = twoSidedSwap.getByTestId('tx-sent-side');
+    const receivedSide = twoSidedSwap.getByTestId('tx-received-side');
+    await expect(sentSide).toContainText('Diagnosed wallet · Ethereum');
+    await expect(sentSide.getByText('−2', { exact: true })).toBeVisible();
+    await expect(sentSide.getByText('ETH', { exact: true })).toBeVisible();
+    await expect(sentSide).toContainText('cost ₹4,00,000');
+    await expect(sentSide).toContainText('≈ ₹6,00,000');
+    await expect(receivedSide).toContainText('Diagnosed wallet · Ethereum');
+    await expect(receivedSide.getByText('+6,000', { exact: true })).toBeVisible();
+    await expect(receivedSide.getByText('USDC', { exact: true })).toBeVisible();
+    await expect(receivedSide).toContainText('≈ ₹6,00,000');
+    await expect(receivedSide).toContainText('+₹2,00,000');
+    const swapActions = twoSidedSwap.getByTestId('tx-row-actions');
+    await expect(swapActions).toContainText('0xcccc…cccc');
+    await expect(swapActions.getByLabel('Copy transaction hash')).toBeVisible();
+    await expect(swapActions.getByLabel('Open transaction in explorer')).toHaveAttribute(
+      'href', `https://etherscan.io/tx/0x${'c'.repeat(64)}`
+    );
+    await expect(twoSidedSwap.getByLabel('Edit transaction flags')).toBeVisible();
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await twoSidedSwap.scrollIntoViewIfNeeded();
+    await twoSidedSwap.screenshot({
+      path: `${ARTIFACTS}/transactions-two-sided-swap-1440-${colorScheme}.png`
+    });
+
     const transaction = page.locator('[data-transaction-id="b6-classified"]');
     for (const width of WIDTHS) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
