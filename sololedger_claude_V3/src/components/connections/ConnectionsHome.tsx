@@ -61,6 +61,8 @@ import type { ApiExchangeState, ApiExchangeStates } from './WhichStep';
 import type { FlowKind } from './WhatStep';
 import { normalizeSourceTarget, resolveSourceTarget, type SourceNavigationIntent } from '@/lib/navigationIntent';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
+import { defiUnderlyingPriceHoldings } from '@/lib/portfolio/defiUnderlyingPrices';
+import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 
 /** Locked pill order (mockup `cv2-filter-pills`): Manual entry before + New. */
 const PILLS: Array<{ id: PillFilter; label: string }> = [
@@ -151,6 +153,7 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
   const toastId = useRef(0);
   const [syncAllActive, setSyncAllActive] = useState(false);
   const [navigationError, setNavigationError] = useState<string | null>(null);
+  const [priceRefreshTick, setPriceRefreshTick] = useState(0);
   const acknowledgedIntent = useRef<string | null>(null);
   const missingDetailTargetIntent = useRef<string | null>(null);
   const [externalDetailIntentId, setExternalDetailIntentId] = useState<string | null>(null);
@@ -182,6 +185,36 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
       liveWalletRows: walletRows,
     });
   }, [walletRows]);
+
+  useEffect(() => {
+    const refresh = () => setPriceRefreshTick((tick) => tick + 1);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') refresh();
+    };
+    const timer = window.setInterval(refresh, 5 * 60 * 1_000);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, []);
+
+  useEffect(() => {
+    const rows = liveWalletEvidence?.defiPositionRows ?? [];
+    if (rows.length === 0) return;
+    let cancelled = false;
+    getEffectiveSettings().then((effective) => {
+      if (cancelled || !effective.priceApiEnabled) return;
+      void refreshCurrentHoldingPrices(
+        defiUnderlyingPriceHoldings(rows),
+        liveWalletEvidence!.currency,
+        effective.coingeckoApiKey
+      ).catch(() => undefined);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [liveWalletEvidence, priceRefreshTick]);
 
   const [removeExchange, setRemoveExchange] = useState<ExchangeConnectionView | null>(null);
   const [removeFile, setRemoveFile] = useState<CsvImportRow | null>(null);
