@@ -468,8 +468,9 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
         onCancel={() => setEditingOwnership(null)}
       />
       <Button variant="secondary" onClick={onBack} className="min-h-[44px]" data-testid="detail-back"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Connections</Button>
-      <header className="flex flex-wrap items-start justify-between gap-4 rounded-2xl border border-hi/10 bg-elev-2 p-5">
-        <div className="flex min-w-0 items-start gap-4"><BrandIcon id={card.iconId} fallback={card.iconFallback} size={48} /><div className="min-w-0"><h1 className="truncate text-xl font-bold tracking-tight text-hi">{card.title}</h1><p className="mt-0.5 truncate font-mono text-xs text-low">{card.subtitle}</p><div className="mt-2.5 space-y-1 text-xs text-low">
+      <div className={`grid grid-cols-1 gap-3 ${account ? 'lg:grid-cols-[minmax(0,1.55fr)_minmax(20rem,1fr)]' : ''}`} data-testid="wallet-identity-ownership-row">
+      <header className="flex min-h-[94px] flex-wrap items-center justify-between gap-4 rounded-2xl border border-hi/10 bg-elev-2 px-4 py-3.5">
+        <div className="flex min-w-0 items-center gap-3.5"><BrandIcon id={card.iconId} fallback={card.iconFallback} size={46} /><div className="min-w-0"><h1 className="truncate text-xl font-bold tracking-tight text-hi">{card.title}</h1><p className="mt-0.5 truncate font-mono text-xs text-low">{card.subtitle}</p><div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[0.6875rem] text-low">
           {addedAt != null && <p data-testid="detail-added-line">Added {new Date(addedAt).toLocaleDateString()}</p>}
           {card.kind !== 'file' && <p data-testid="detail-autosync-line">{autoSyncStatusLine(user)}</p>}
           {card.kind !== 'file' && <p data-testid="detail-lastsync-line">{lastSyncAt != null && lastSyncAt > 0 ? `Last synced ${relativeTime(lastSyncAt)}` : 'Not synced yet'}</p>}
@@ -480,9 +481,8 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
           {canSync && <Button onClick={() => void handleSync()} disabled={syncDisabled} className="min-h-[44px]" data-testid="detail-sync-now">{syncing ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : <RefreshCw className="h-4 w-4" aria-hidden="true" />} Sync now</Button>}
         </div>
       </header>
-      {ownershipConflict && <p role="alert" className="rounded-lg border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">{ownershipConflict}</p>}
       {account && (
-        <section className="rounded-2xl border border-hi/10 bg-elev-2 p-4" data-testid="account-ownership">
+        <section className="min-h-[94px] rounded-2xl border border-hi/10 bg-elev-2 px-4 py-3.5" data-testid="account-ownership">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-wide text-low">Account ownership</p>
@@ -492,11 +492,13 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
               Edit ownership
             </Button>
           </div>
-          <ul className="mt-3 space-y-1 text-xs text-low" aria-label="Account members">
-            {accountMembers.map((member) => <li key={member}>{member}</li>)}
+          <ul className="mt-2 flex flex-nowrap gap-1 overflow-x-auto whitespace-nowrap text-[0.625rem] text-low" aria-label="Account members">
+            {accountMembers.map((member) => <li className="shrink-0 rounded-full border border-hi/10 bg-elev-3 px-2 py-1" key={member}>{member}</li>)}
           </ul>
         </section>
       )}
+      </div>
+      {ownershipConflict && <p role="alert" className="rounded-lg border border-warn/30 bg-warn/10 px-4 py-3 text-sm text-warn">{ownershipConflict}</p>}
       <div className="flex flex-wrap gap-1.5" data-testid="detail-count-chips">{chips.map((chip) => <Badge key={chip} tone="neutral">{chip}</Badge>)}</div>
       <div className="max-w-full overflow-x-auto border-b border-hi/10" role="tablist" aria-label="Connection workspace"><div className="flex min-w-max gap-1">
         {TABS.map((tab, index) => <button key={tab.id} ref={(element) => { tabRefs.current[index] = element; }} id={`connection-tab-${tab.id}`} type="button" role="tab" aria-selected={activeTab === tab.id} aria-controls={`connection-panel-${tab.id}`} tabIndex={activeTab === tab.id ? 0 : -1} onClick={() => selectWorkspaceTab(tab.id)} onKeyDown={(event) => onTabKeyDown(event, index)} className={`min-h-[44px] rounded-t-lg border-b-2 px-4 text-sm font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 ${activeTab === tab.id ? 'border-primary text-primary' : 'border-transparent text-low hover:text-hi'}`}>{tab.label}</button>)}

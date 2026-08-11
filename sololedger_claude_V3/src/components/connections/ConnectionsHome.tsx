@@ -156,23 +156,30 @@ export function ConnectionsHome({ navigationIntent, onNavigationIntentAcknowledg
   const [externalDetailIntentId, setExternalDetailIntentId] = useState<string | null>(null);
 
   const liveWalletEvidence = useLiveQuery(async () => {
-    const [transactions, exchangeConnections, openingBalances, snapshots, assets, sourceCoverage,
-      safetyDecisions, priceRows, settings] = await Promise.all([
-      db.transactions.toArray(), db.exchangeConnections.toArray(), db.openingBalances.toArray(),
-      db.authoritySnapshots.toArray(), db.authorityAssets.toArray(), db.sourceCoverage.toArray(),
-      db.safetyDecisions.toArray(), db.priceCache.toArray(), db.settings.get('singleton')
-    ]);
+    const evidence = await db.transaction('r', [
+      db.transactions, db.exchangeConnections, db.openingBalances, db.authoritySnapshots,
+      db.authorityAssets, db.sourceCoverage, db.safetyDecisions, db.priceCache, db.settings,
+      db.defiPositionSnapshots, db.defiPositionRows, db.walletDefiRefreshManifests
+    ], async () => {
+      const [transactions, exchangeConnections, openingBalances, snapshots, assets, sourceCoverage,
+        safetyDecisions, priceRows, settings, defiPositionSnapshots, defiPositionRows,
+        walletDefiRefreshManifests] = await Promise.all([
+        db.transactions.toArray(), db.exchangeConnections.toArray(), db.openingBalances.toArray(),
+        db.authoritySnapshots.toArray(), db.authorityAssets.toArray(), db.sourceCoverage.toArray(),
+        db.safetyDecisions.toArray(), db.priceCache.toArray(), db.settings.get('singleton'),
+        db.defiPositionSnapshots.toArray(), db.defiPositionRows.toArray(),
+        db.walletDefiRefreshManifests.toArray()
+      ]);
+      return {
+        transactions, exchangeConnections, openingBalances, snapshots, assets, sourceCoverage,
+        safetyDecisions, priceRows, settings, defiPositionSnapshots, defiPositionRows,
+        walletDefiRefreshManifests
+      };
+    });
     return prepareWalletChainCollectionEvidence({
-      transactions,
-      exchangeConnections: exchangeConnections.map(({ id, exchange }) => ({ id, exchange })),
-      openingBalances,
-      snapshots,
-      assets,
-      sourceCoverage,
-      safetyDecisions,
-      priceRows,
+      ...evidence,
+      exchangeConnections: evidence.exchangeConnections.map(({ id, exchange }) => ({ id, exchange })),
       liveWalletRows: walletRows,
-      settings
     });
   }, [walletRows]);
 

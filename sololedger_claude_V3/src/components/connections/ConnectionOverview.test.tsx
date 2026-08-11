@@ -6,6 +6,7 @@ import { ConnectionOverview } from './ConnectionOverview';
 import { ConnectionOpeningBalances } from './ConnectionOpeningBalances';
 import type { ConnectionWorkspaceSnapshot } from './connectionWorkspaceModel';
 import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
+import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 
 const card: ConnectionCardData = {
   id: 'file:file-1',
@@ -81,6 +82,8 @@ describe('ConnectionOverview', () => {
     );
     expect(screen.getByLabelText('History coverage status')).toHaveTextContent('1 need review');
     expect(screen.getByLabelText('History coverage status')).toHaveTextContent('1 not checked');
+    expect(screen.queryByText(/Current DeFi look-through is incomplete/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/quantity authority issues? retained for review/)).not.toBeInTheDocument();
   });
 
   it('counts canonical wallet assets once across repeated address slices', () => {
@@ -236,6 +239,7 @@ describe('ConnectionOverview', () => {
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹0');
     expect(screen.getByTestId('detail-holdings-total')).toHaveAttribute('data-defi-shadow-status', 'complete');
     expect(screen.queryByTestId('detail-defi-net-worth-fallback')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('quantity-authority-summary')).not.toBeInTheDocument();
   });
 
   it('filters DeFi evidence to the exact wallet and replaces mapped custody once in rows and total', () => {
@@ -288,7 +292,7 @@ describe('ConnectionOverview', () => {
     expect(screen.queryByRole('region', { name: 'Aave v3 positions' })).not.toBeInTheDocument();
     legacy.unmount();
 
-    render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={exactUnderlyingPrices} reportingCurrency="INR"
+    const enabled = render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={exactUnderlyingPrices} reportingCurrency="INR"
       formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
       defiPositionSnapshots={[...snapshots, ...['aave-v2-ethereum', 'spark-v1-ethereum'].map((protocolId, index) => ({
         ...snapshots[0], snapshotId: `required-${index}`, protocolId: protocolId as DefiPositionSnapshot['protocolId']
@@ -307,5 +311,131 @@ describe('ConnectionOverview', () => {
     expect(screen.getByText('Owed 90.0000')).toBeInTheDocument();
     expect(screen.queryByText('1,000.0000')).not.toBeInTheDocument();
     expect(screen.getAllByRole('region', { name: 'Aave v3 positions' })).toHaveLength(1);
+    enabled.unmount();
+
+    render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([], 'INR')} reportingCurrency="INR"
+      formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()}
+      defiPositionSnapshots={[...snapshots, ...['aave-v2-ethereum', 'spark-v1-ethereum'].map((protocolId, index) => ({
+        ...snapshots[0], snapshotId: `required-${index}`, protocolId: protocolId as DefiPositionSnapshot['protocolId']
+      }))]} defiPositionRows={rows} defiNetWorthEnabled now={1}
+      custodyAuthoritySnapshots={[{
+        snapshotId: 'custody', generation: 1, scopeId: authorityScope, authorityKind: 'rpc', authorityClass: 'wallet_balance', accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+        asOf: 1, capturedAt: 1, sourceIdentityId: 'wallet', status: 'complete', endpointProof: { authorityKind: 'rpc', provider: 'fixture', operation: 'fixture', parametersClass: 'fixture', requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true }
+      }]}
+      walletDefiRefreshManifests={[{
+        accountIdentityScope: scope, custodyScopeId: authorityScope, custodySnapshotId: 'custody', custodyGeneration: 1,
+        custodyAsOf: 1, capturedAt: 1, blockNumber: 1,
+        protocolSnapshotIds: { 'aave-v2-ethereum': 'required-0', 'aave-v3-ethereum': 'snapshot-0', 'spark-v1-ethereum': 'required-1' }
+      }]} />);
+    expect(screen.getByTestId('detail-liability-subtotal-label')).toHaveTextContent('Known subtotal · liability unpriced');
+    expect(screen.getByTestId('detail-defi-net-worth-incomplete')).toBeInTheDocument();
+  });
+
+  it('keeps zero-value disclosure independently expandable for each chain', () => {
+    const ethereumAddress = `0x${'1'.repeat(40)}`;
+    const polygonAddress = `0x${'2'.repeat(40)}`;
+    const walletCard: ConnectionCardData = {
+      ...card, id: 'wallet:multi', kind: 'wallet', lane: 'wallets',
+      walletRows: [
+        { id: 'eth', chain: 'ethereum', address: ethereumAddress, lastSyncedAt: 1, txCount: 0 },
+        { id: 'polygon', chain: 'polygon', address: polygonAddress, lastSyncedAt: 1, txCount: 0 }
+      ]
+    };
+    const walletSnapshot = snapshot();
+    walletSnapshot.id = walletCard.id;
+    walletSnapshot.kind = 'wallet';
+    walletSnapshot.overview.holdings = [{
+      assetKey: 'evm:1:native', asset: 'ETH', chain: 'ethereum', quantity: 0, amount: 0,
+      costBasis: 0, verificationStatus: 'verified_authority'
+    }, {
+      assetKey: 'evm:137:native', asset: 'POL', chain: 'polygon', quantity: 0, amount: 0,
+      costBasis: 0, verificationStatus: 'verified_authority'
+    }] as unknown as ConnectionWorkspaceSnapshot['overview']['holdings'];
+    walletSnapshot.overview.slices = [{
+      scopeId: `wallet:${canonicalWalletIdentity('ethereum', ethereumAddress)}`, accountClass: 'wallet',
+      assetKey: 'evm:1:native', asset: 'ETH', quantity: 0
+    }, {
+      scopeId: `wallet:${canonicalWalletIdentity('polygon', polygonAddress)}`, accountClass: 'wallet',
+      assetKey: 'evm:137:native', asset: 'POL', quantity: 0
+    }] as ConnectionWorkspaceSnapshot['overview']['slices'];
+
+    const { container } = render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([], 'INR')}
+      reportingCurrency="INR" formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()} />);
+    const chainLogos = [...container.querySelectorAll<HTMLImageElement>('[data-testid="detail-address-group"] header img')];
+    expect(chainLogos.map((logo) => logo.src)).toEqual(expect.arrayContaining([
+      expect.stringContaining('/assets/brand-icons/ethereum.svg'),
+      expect.stringContaining('/assets/brand-icons/chain-polygon.png')
+    ]));
+    expect(screen.queryByText('ETH')).not.toBeInTheDocument();
+    expect(screen.queryByText('POL')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show all Ethereum assets' }));
+    expect(screen.getByText('ETH')).toBeInTheDocument();
+    expect(screen.queryByText('POL')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Show less Ethereum assets' })).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Show all Polygon assets' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('uses a labelled Holdings heading and keeps positive unpriced liquid custody visible', () => {
+    const address = `0x${'7'.repeat(40)}`;
+    const walletCard: ConnectionCardData = {
+      ...card, id: 'wallet:unpriced', kind: 'wallet', lane: 'wallets',
+      walletRows: [{ id: 'eth', chain: 'ethereum', address, lastSyncedAt: 1, txCount: 0 }]
+    };
+    const walletSnapshot = snapshot();
+    walletSnapshot.id = walletCard.id;
+    walletSnapshot.kind = 'wallet';
+    walletSnapshot.overview.holdings = [{
+      assetKey: 'evm:1:0xunknown', asset: 'UNKNOWN', chain: 'ethereum', contractAddress: '0xunknown',
+      quantity: 5, amount: 5, costBasis: 0, verificationStatus: 'verified_authority'
+    }] as unknown as ConnectionWorkspaceSnapshot['overview']['holdings'];
+    walletSnapshot.overview.slices = [{
+      scopeId: `wallet:${canonicalWalletIdentity('ethereum', address)}`, accountClass: 'wallet',
+      assetKey: 'evm:1:0xunknown', asset: 'UNKNOWN', quantity: 5
+    }] as ConnectionWorkspaceSnapshot['overview']['slices'];
+
+    render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([], 'INR')}
+      reportingCurrency="INR" formatMoney={(value) => `₹${value}`} syncing={false} syncDisabled={false} onSync={vi.fn()} />);
+
+    const holdings = screen.getByTestId('detail-holdings');
+    expect(within(holdings).getByRole('heading', { level: 2, name: 'Holdings' })).toBeInTheDocument();
+    expect(holdings).toHaveAttribute('aria-labelledby', 'detail-holdings-title');
+    expect(screen.getByText('UNKNOWN').closest('li')).toHaveTextContent('—');
+    expect(screen.queryByRole('button', { name: 'Show all Ethereum assets' })).not.toBeInTheDocument();
+  });
+
+  it('labels fully priced current custody as a known subtotal when enabled DeFi evidence is incomplete', () => {
+    const address = `0x${'8'.repeat(40)}`;
+    const authorityScope = `wallet:${canonicalWalletIdentity('ethereum', address)}`;
+    const walletCard: ConnectionCardData = {
+      ...card, id: 'wallet:partial-defi', kind: 'wallet', lane: 'wallets',
+      walletRows: [{ id: 'eth', chain: 'ethereum', address, lastSyncedAt: 1, txCount: 0 }]
+    };
+    const walletSnapshot = snapshot();
+    walletSnapshot.id = walletCard.id;
+    walletSnapshot.kind = 'wallet';
+    walletSnapshot.overview.holdings = [{
+      assetKey: 'evm:1:native', asset: 'ETH', chain: 'ethereum', quantity: 2, amount: 2,
+      costBasis: 100, verificationStatus: 'verified_authority'
+    }] as unknown as ConnectionWorkspaceSnapshot['overview']['holdings'];
+    walletSnapshot.overview.slices = [{
+      scopeId: authorityScope, accountClass: 'wallet', assetKey: 'evm:1:native', asset: 'ETH', quantity: 2,
+      verificationStatus: 'verified_authority', authorityStatus: 'current', authorityAsOf: 1
+    }] as ConnectionWorkspaceSnapshot['overview']['slices'];
+
+    render(<ConnectionOverview card={walletCard} snapshot={walletSnapshot} priceIndex={buildPriceIndex([{
+      key: 'spot:sym:ETH:INR', price: 250, fetchedAt: Date.now()
+    }], 'INR')} reportingCurrency="INR" formatMoney={(value) => `₹${value}`} syncing={false}
+      syncDisabled={false} onSync={vi.fn()} defiNetWorthEnabled now={1}
+      custodyAuthoritySnapshots={[{
+        snapshotId: 'custody', generation: 1, scopeId: authorityScope, authorityKind: 'rpc',
+        authorityClass: 'wallet_balance', accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+        asOf: 1, capturedAt: 1, sourceIdentityId: 'wallet', status: 'complete',
+        endpointProof: { authorityKind: 'rpc', provider: 'fixture', operation: 'balances', parametersClass: 'wallet', requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true }
+      }]} />);
+
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹500');
+    expect(screen.getByTestId('detail-defi-subtotal-label')).toHaveTextContent('Known subtotal · DeFi evidence incomplete');
+    expect(screen.queryByTestId('detail-liability-subtotal-label')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Current DeFi look-through is incomplete/)).not.toBeInTheDocument();
   });
 });

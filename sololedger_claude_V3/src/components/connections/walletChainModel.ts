@@ -1,4 +1,6 @@
-import { buildPriceIndex, currentPriceFor, type PriceIndex } from '@/lib/dashboard/dashboardModel';
+import { buildPriceIndex, currentPriceFor, valueHoldings, type PriceIndex } from '@/lib/dashboard/dashboardModel';
+import type { DefiPositionRow, DefiPositionSnapshot, WalletDefiRefreshManifest } from '@/lib/defi/types';
+import { isWalletDefiNetWorthV1Enabled } from '@/lib/features';
 import type { ExchangeSourceIdentity, OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
@@ -11,6 +13,9 @@ import {
 import type { SafetyDecisionRow } from '@/lib/safety/types';
 import type { LookupAddressRow, PriceCacheRow } from '@/lib/storage/db';
 import type { TaxSettings, Transaction } from '@/types/transaction';
+import { defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
+import { presentWalletEconomicExposure } from '@/lib/portfolio/walletDefiProjection';
+import type { EconomicExposureProjection } from '@/lib/portfolio/economicExposureProjection';
 import type { ConnectionCardData } from './connectionModel';
 import {
   buildConnectionWorkspaceFromCard,
@@ -30,6 +35,9 @@ export interface WalletChainSummary {
   /** Provider-supplied partial/failure detail when persisted. */
   coverageReason?: string;
   currentValue: number | null;
+  economicStatus: EconomicExposureProjection['status'];
+  economicEnabled: boolean;
+  hasUnpricedLiabilities: boolean;
   pricedAssetCount: number;
   unpricedAssetCount: number;
 }
@@ -44,6 +52,10 @@ export interface WalletChainCollectionInput {
   safetyDecisions: readonly SafetyDecisionRow[];
   priceRows: readonly PriceCacheRow[];
   liveWalletRows: readonly LookupAddressRow[];
+  defiPositionSnapshots?: readonly DefiPositionSnapshot[];
+  defiPositionRows?: readonly DefiPositionRow[];
+  walletDefiRefreshManifests?: readonly WalletDefiRefreshManifest[];
+  defiNetWorthEnabled?: boolean;
   settings?: Pick<TaxSettings, 'reportingCurrency'>;
   metrics?: ConnectionWorkspaceMetrics;
 }
@@ -58,30 +70,46 @@ export interface WalletChainCollectionEvidence extends Omit<WalletChainCollectio
 
 function currentChainValue(
   snapshot: ReturnType<typeof buildConnectionWorkspaceFromCard>,
-  priceIndex: PriceIndex
-): Pick<WalletChainSummary, 'currentValue' | 'pricedAssetCount' | 'unpricedAssetCount'> {
+  evidence: WalletChainCollectionEvidence,
+  scopeFilter: ReadonlySet<string>,
+  now: number
+): Pick<WalletChainSummary, 'currentValue' | 'economicStatus' | 'economicEnabled' | 'hasUnpricedLiabilities' | 'pricedAssetCount' | 'unpricedAssetCount'> {
   const hasCurrentExhaustiveAuthority = snapshot.scopes.some((scope) =>
     scope.accountClass === 'wallet' &&
     scope.authority.status === 'current' &&
     scope.authority.selectedSnapshot?.endpointProof.exhaustiveBalances === true
   );
-  let currentValue = 0;
   let pricedAssetCount = 0;
   let unpricedAssetCount = 0;
   for (const holding of snapshot.overview.holdings) {
     if (holding.quantity <= 1e-9) continue;
-    const mark = currentPriceFor(holding, priceIndex);
+    const mark = currentPriceFor(holding, evidence.priceIndex);
     if (!mark) {
       unpricedAssetCount += 1;
       continue;
     }
     pricedAssetCount += 1;
-    currentValue += holding.quantity * mark.price;
   }
+  const valued = valueHoldings([...snapshot.overview.holdings], evidence.priceIndex);
+  const economicEnabled = evidence.defiNetWorthEnabled ?? isWalletDefiNetWorthV1Enabled();
+  const economic = presentWalletEconomicExposure({
+    holdings: snapshot.overview.holdings,
+    valued,
+    snapshots: evidence.defiPositionSnapshots ?? [],
+    rows: evidence.defiPositionRows ?? [],
+    custodyAuthoritySnapshots: evidence.snapshots,
+    refreshManifests: evidence.walletDefiRefreshManifests ?? [],
+    prices: defiUnderlyingPriceMap(evidence.defiPositionRows ?? [], evidence.priceIndex),
+    reportingCurrency: evidence.currency,
+    enabled: economicEnabled,
+    scopeFilter,
+    now
+  });
   return {
-    currentValue: hasCurrentExhaustiveAuthority && (pricedAssetCount > 0 || unpricedAssetCount === 0)
-      ? currentValue
-      : null,
+    currentValue: hasCurrentExhaustiveAuthority ? economic.knownSubtotal : null,
+    economicStatus: economic.projection.status,
+    economicEnabled,
+    hasUnpricedLiabilities: economic.projection.hasUnpricedLiabilities,
     pricedAssetCount,
     unpricedAssetCount
   };
@@ -100,6 +128,10 @@ export function prepareWalletChainCollectionEvidence(
     sourceCoverage: input.sourceCoverage,
     safetyDecisions: input.safetyDecisions,
     liveWalletRows: input.liveWalletRows,
+    defiPositionSnapshots: input.defiPositionSnapshots,
+    defiPositionRows: input.defiPositionRows,
+    walletDefiRefreshManifests: input.walletDefiRefreshManifests,
+    defiNetWorthEnabled: input.defiNetWorthEnabled,
     collectionIndex: prepareConnectionWorkspaceCollectionIndex({
       transactions: input.transactions,
       exchangeConnections: input.exchangeConnections,
@@ -123,6 +155,23 @@ export function aggregateWalletCurrentValue(summaries: readonly WalletChainSumma
   return summaries.reduce((sum, summary) => sum + summary.currentValue!, 0);
 }
 
+export function aggregateWalletEconomicEvidence(summaries: readonly WalletChainSummary[]): {
+  currentValue: number | null;
+  status: EconomicExposureProjection['status'];
+  enabled: boolean;
+  hasUnpricedLiabilities: boolean;
+} {
+  const statuses = new Set(summaries.map((summary) => summary.economicStatus));
+  return {
+    currentValue: aggregateWalletCurrentValue(summaries),
+    status: statuses.has('partial') ? 'partial'
+      : statuses.has('stale') ? 'stale'
+        : statuses.has('unsupported') ? 'unsupported' : 'complete',
+    enabled: summaries.some((summary) => summary.economicEnabled),
+    hasUnpricedLiabilities: summaries.some((summary) => summary.hasUnpricedLiabilities)
+  };
+}
+
 export function aggregateWalletTransactionCount(summaries: readonly WalletChainSummary[]): number {
   return summaries.reduce((sum, summary) => sum + summary.transactionCount, 0);
 }
@@ -136,8 +185,9 @@ function coverageReason(coverage: SourceCoverageRow | undefined): string | undef
 
 /**
  * Build all selected chain rows from the same one-pass collection index and
- * wallet authority projection used by the connection workspace. Current
- * value never substitutes historical cost: missing spot marks stay unpriced.
+ * wallet authority projection used by the connection workspace. The displayed
+ * value follows Dashboard's conservative known-subtotal rule: missing spot
+ * marks stay disclosed while their own liquid custody cost may be retained.
  */
 export function buildWalletChainSummaries(
   card: ConnectionCardData,
@@ -183,7 +233,9 @@ export function buildWalletChainSummaries(
       coverageAt: coverage ? sourceCoverageOperationTime(coverage) : undefined,
       syncAt: coverage ? sourceCoverageOperationTime(coverage) : row.lastSyncedAt || undefined,
       coverageReason: coverageReason(coverage),
-      ...currentChainValue(snapshot, evidence.priceIndex)
+      ...currentChainValue(snapshot, evidence, new Set([
+        `wallet:${canonicalWalletIdentity(row.chain, row.address)}`
+      ]), now)
     };
   });
 }
