@@ -51,13 +51,14 @@ import { displayFlags } from '@/lib/review/displayFlags';
 import { activeTransactionSurface, filterRows, paginate, visibleAssetOptions } from '@/lib/review/reviewTableView';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { AssetIcon, SourceIcon } from './brandIcons';
+import { chainIconId } from '@/components/connections/brandIcons';
 import {
   groupRowsByDate, formatGroupDateLabel, pageNumberList, reviewTransactionHash
 } from './reviewListUtils';
 import { buildTxSummary, reviewTypeLabel, txFlow, truncateAddress, OWN_ACCOUNT_SIDE, type RowLeg } from './rowAnatomy';
 import {
   Check, X, Pencil, AlertTriangle, ArrowUpDown, Trash2, ListChecks, Tags, Flag, Sparkles,
-  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, ArrowLeft, Search, Link2, Wallet, Banknote
+  ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Copy, ArrowRight, ArrowLeft, Search, Link2, Wallet, Banknote, ExternalLink
 } from 'lucide-react';
 import { EmptyState } from '@/components/ui/EmptyState';
 import { useTabNav } from '@/lib/tabNav';
@@ -305,7 +306,7 @@ export function FlagSelector({ tx, derivedFlags = [] }: { tx: Transaction; deriv
         {saving && <span className="h-2 w-2 animate-pulse rounded-full bg-primary" />}
       </button>
       {open && (
-        <div id={menuId} role="group" aria-labelledby={`${menuId}-label`} className="absolute left-0 top-9 z-30 min-w-[15rem] rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop">
+        <div id={menuId} role="group" aria-labelledby={`${menuId}-label`} className="absolute right-0 top-9 z-30 min-w-[15rem] rounded-xl border border-hi/10 bg-elev-2 py-1 shadow-pop lg:left-0 lg:right-auto">
           <p id={`${menuId}-label`} className="px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-low">Flag transaction</p>
           {ALL_FLAGS.map((flag) => {
             const on = storedFlags.has(flag);
@@ -545,7 +546,9 @@ function CopyButton({ text, label }: { text: string; label: string }) {
       type="button"
       aria-label={label}
       title={label}
-      onClick={() => {
+      onClick={(e) => {
+        e.stopPropagation();
+        // Copy is a row utility, not a request to open Details.
         void navigator.clipboard?.writeText(text).then(() => {
           setCopied(true);
           setTimeout(() => setCopied(false), 1200);
@@ -1510,16 +1513,21 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   // ---------- Row rendering (date-grouped ledger, mockup frame 06) ----------
 
   /** One leg of the row-face flow (sent or received): asset / fiat / endpoint.
-   *  Every leg is the same two-line skeleton — a fixed-height main line over a
-   *  fixed-height sub-line (rendered even when empty) — so amounts and
-   *  sub-lines baseline-align across legs and across rows. Amounts never
-   *  truncate — they wrap under the row on narrow screens. */
-  const renderLeg = (leg: RowLeg, spam: boolean, assetIdentity?: Pick<Transaction, 'chain' | 'contractAddress' | 'safetyState'>) => {
+   *  Every leg uses the same main line over a minimum-height wrapping sub-line
+   *  so amounts and supporting values align while remaining readable on narrow
+   *  screens. Amounts never truncate. */
+  const renderLeg = (
+    leg: RowLeg,
+    spam: boolean,
+    assetIdentity?: Pick<Transaction, 'chain' | 'contractAddress' | 'safetyState'>,
+    extraValue?: string
+  ) => {
     // The sub-line: cost basis under the sent side of a disposal; fiat value
     // and the gain/loss together under the received side.
     const subRow = (
-      <span className="mt-0.5 flex h-3.5 items-center gap-1.5 text-[11px] tabular-figures">
+      <span className="mt-1 flex min-h-4 flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] tabular-figures">
         {leg.subline && <span className="whitespace-nowrap text-low">{leg.subline}</span>}
+        {extraValue && leg.subline !== extraValue && <span className="whitespace-nowrap text-low">{extraValue}</span>}
         {leg.gain && (
           <span
             className={cn(
@@ -1533,9 +1541,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
         )}
       </span>
     );
+    let mainLine: ReactNode;
     if (leg.kind === 'endpoint') {
-      return (
-        <span className="flex min-w-0 max-w-[15rem] flex-col">
+      mainLine = (
           <span className="flex h-6 items-center gap-1.5">
             <span
               className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-hi/10 bg-elev-3 text-low"
@@ -1550,13 +1558,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               {leg.label}
             </span>
           </span>
-          {subRow}
-        </span>
       );
-    }
-    if (leg.kind === 'fiat') {
-      return (
-        <span className="flex min-w-0 max-w-[15rem] flex-col">
+    } else if (leg.kind === 'fiat') {
+      mainLine = (
           <span className="flex h-6 items-center gap-1.5">
             <span
               className="grid h-[22px] w-[22px] shrink-0 place-items-center rounded-full bg-elev-3 text-[10px] font-extrabold text-low"
@@ -1568,12 +1572,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               {leg.amount != null && leg.currency ? formatLedgerCurrency(leg.amount, leg.currency) : '—'}
             </span>
           </span>
-          {subRow}
-        </span>
       );
-    }
-    return (
-      <span className="flex min-w-0 max-w-[15rem] flex-col">
+    } else {
+      mainLine = (
         <span className="flex h-6 items-center gap-1.5">
           <AssetIcon
             symbol={leg.symbol}
@@ -1594,6 +1595,11 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           </span>
           <span className="truncate text-xs font-semibold text-mid">{leg.symbol}</span>
         </span>
+      );
+    }
+    return (
+      <span className="flex min-w-0 flex-1 flex-col">
+        {mainLine}
         {subRow}
       </span>
     );
@@ -1601,7 +1607,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
 
   const renderRow = (t: Transaction, idx: number) => {
     const { fromAddr, toAddr } = txFromToAddresses(t);
-    const chainLabel = t.chain ? CHAINS.find((c) => c.id === t.chain)?.label ?? t.chain : null;
+    const chainDef = t.chain ? CHAINS.find((c) => c.id === t.chain) : undefined;
+    const chainLabel = t.chain ? chainDef?.label ?? t.chain : null;
     const assetLabel = resolveAssetLabel(t.asset, t.contractAddress, t.chain);
     const counterLabel = t.counterAsset ? resolveAssetLabel(t.counterAsset, undefined, t.chain) : null;
     const sourcePresentation = sourcePresentations.get(t.id)!;
@@ -1738,16 +1745,50 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
       }
       return '—';
     };
+
+    const sideIdentity = (leg: RowLeg) => {
+      if (leg.kind === 'endpoint' && leg.label) return leg.label;
+      // Asset and fiat legs are economic movements in the connected account.
+      // OWN_ACCOUNT_SIDE describes endpoint orientation, not leg ownership.
+      return src.label;
+    };
+
+    const renderEconomicSide = (leg: RowLeg | null, side: 'sent' | 'received') => {
+      const identity = leg ? sideIdentity(leg) : src.label;
+      const value = side === 'sent' && t.fiatValue != null
+        ? `≈ ${formatLedgerCurrency(t.fiatValue, t.fiatCurrency)}`
+        : undefined;
+      return (
+        <div
+          className={cn(
+            'min-w-0 rounded-xl border border-hi/[0.08] bg-elev-1/45 px-3 py-2.5',
+            side === 'sent' ? 'lg:rounded-r-md' : 'lg:rounded-l-md'
+          )}
+          data-testid={side === 'sent' ? 'tx-sent-side' : 'tx-received-side'}
+        >
+          <p className="mb-1.5 flex min-w-0 items-center gap-1.5 text-[10px] font-semibold text-low">
+            <Wallet className="h-3 w-3 shrink-0" aria-hidden="true" />
+            <span className="truncate" title={`${identity}${chainLabel ? ` · ${chainLabel}` : ''}`}>
+              {identity}{chainLabel ? ` · ${chainLabel}` : ''}
+            </span>
+          </p>
+          {leg ? renderLeg(leg, spam, principalAssetIdentityForLeg(leg, t), value) : (
+            <span className="text-xs font-semibold text-faint">No recorded leg</span>
+          )}
+        </div>
+      );
+    };
+
     return (
       <div key={t.id} className={cn(idx > 0 && 'border-t border-hi/10')} data-transaction-id={t.id} tabIndex={-1}>
         <div
           onClick={() => setExpandedId((cur) => (cur === t.id ? null : t.id))}
           className={cn(
-            'flex cursor-pointer flex-wrap items-center gap-x-3 gap-y-2 px-4 py-3.5 transition-colors hover:bg-elev-3/40 sm:px-5',
-            // Desktop: select · type · economic center · bounded source/account
-            // · disclosure. Source identity can no longer consume the flow
-            // track, while mobile keeps the established wrapped reading order.
-            'lg:grid lg:grid-cols-[auto_9rem_minmax(22rem,1fr)_minmax(12rem,15rem)_auto] lg:gap-x-5 xl:gap-x-7',
+            'grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-start gap-x-3 gap-y-3 px-4 py-4 transition-colors hover:bg-elev-3/40 sm:px-5',
+            // Desktop: select · wallet logo · outgoing · arrow · incoming ·
+            // hash/review utilities · disclosure. The flow remains the visual
+            // center while exact source identity anchors the far-left edge.
+            'lg:grid-cols-[auto_3.25rem_minmax(10rem,1fr)_auto_minmax(10rem,1fr)_minmax(11rem,14rem)_auto] lg:items-center lg:gap-x-3 xl:grid-cols-[auto_3.5rem_minmax(12rem,1fr)_auto_minmax(12rem,1fr)_minmax(12rem,15rem)_auto] xl:gap-x-4',
             isSelected && 'bg-primary/[0.05] hover:bg-primary/[0.08]',
             spam && 'opacity-60'
           )}
@@ -1766,64 +1807,80 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             />
           </label>
 
-          {/* Type label + time + chain — fixed track, so every row's flow
-              column starts at the same x (single-leg rows don't jump). */}
-          <div className="min-w-0">
-            <span className={cn(spam && 'line-through')}>
-              <TypeSelector tx={t} />
-              <CategorySelector tx={t} />
-            </span>
-            <p className="mt-0.5 whitespace-nowrap pl-1 text-[11px] text-low">
-              {timeUtc}
-              {chainLabel ? ` · ${chainLabel}` : ''}
-            </p>
-          </div>
-
-          {/* The flow — sent leg → received leg. Content-sized, never
-              stretched: legs cap at 15rem each (full-width row on mobile). */}
+          {/* Wallet/source mark with a native-chain badge. */}
           <div
-            className="order-4 flex w-full min-w-0 flex-wrap items-center gap-x-3 gap-y-1.5 lg:order-none lg:w-full lg:flex-nowrap lg:justify-center"
-            data-testid="tx-flow"
+            className="relative flex h-12 w-12 items-center justify-center self-start lg:self-center"
+            data-testid="tx-source-account"
+            title={`${src.label} · ${sourcePresentation.subtitle}`}
           >
-            {flow.sent && renderLeg(flow.sent, spam, principalAssetIdentityForLeg(flow.sent, t))}
-            {flow.sent && flow.received && (
-              <ArrowRight className="h-4 w-4 shrink-0 text-faint" aria-hidden="true" />
+            <SourceIcon iconId={sourcePresentation.iconId} label={sourcePresentation.primaryLabel} size={40} />
+            {t.chain && chainIconId(t.chain) && (
+              <span className="absolute bottom-0 right-0 grid h-[18px] w-[18px] place-items-center rounded-full border-2 border-elev-2 bg-elev-1 shadow-xs" title={chainLabel ?? t.chain}>
+                <SourceIcon iconId={chainIconId(t.chain)} label={chainLabel ?? t.chain} size={14} className="rounded-full" />
+              </span>
             )}
-            {flow.received && renderLeg(flow.received, spam, principalAssetIdentityForLeg(flow.received, t))}
+            <span className="sr-only">{src.label} · {sourcePresentation.subtitle}</span>
           </div>
 
-          {/* Source/account occupies its own bounded right track. */}
-          <div className="order-3 ml-auto flex min-w-0 shrink-0 flex-wrap items-center justify-end gap-x-2.5 gap-y-1 lg:order-none lg:ml-0 lg:w-full lg:shrink" data-testid="tx-source-account">
-              <SourceIcon iconId={sourcePresentation.iconId} label={sourcePresentation.primaryLabel} size={30} />
-              <div className="min-w-0 lg:text-right">
-                <p className="max-w-[7rem] truncate text-xs font-bold text-hi sm:max-w-[9rem]" title={src.label}>
-                  {src.label}
-                </p>
-                <p className="max-w-[9rem] truncate text-[10px] text-low" title={sourcePresentation.subtitle}>
-                  {sourcePresentation.subtitle}
-                </p>
-                {(sourcePresentation.status !== 'resolved' || t.category || t.internalTransferDecision) && (
-                  <p className="max-w-[11rem] truncate text-[10px] font-semibold text-low" title={[
-                    sourcePresentation.status !== 'resolved' ? `${sourcePresentation.status} source` : null,
-                    t.category ? `Classification: ${t.category.replace(/_/g, ' ')}` : null,
-                    t.internalTransferDecision ? `Internal transfer ${t.internalTransferDecision}` : null
-                  ].filter(Boolean).join(' · ')}>
-                    {[
-                      sourcePresentation.status !== 'resolved' ? sourcePresentation.status : null,
-                      t.category?.replace(/_/g, ' '),
-                      t.internalTransferDecision ? `internal ${t.internalTransferDecision}` : null
-                    ].filter(Boolean).join(' · ')}
-                  </p>
-                )}
-                {t.feeAmount != null && t.feeAsset && (
-                  <span className="mt-0.5 hidden max-w-full items-center rounded-full border border-hi/10 bg-elev-3/50 px-2 py-px text-[10px] font-bold tabular-figures text-low sm:inline-flex">
-                    fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}
+          <div className="col-span-2 col-start-2 min-w-0 lg:col-span-1 lg:col-start-auto" data-testid="tx-flow">
+            {renderEconomicSide(flow.sent, 'sent')}
+          </div>
+
+          <div className="col-start-1 row-start-3 grid h-9 w-9 place-items-center self-center rounded-full border border-hi/10 bg-elev-2 text-primary lg:col-start-auto lg:row-start-auto">
+            <ArrowRight className="h-4 w-4" aria-hidden="true" />
+          </div>
+
+          <div className="col-span-2 col-start-2 min-w-0 lg:col-span-1 lg:col-start-auto" data-testid="tx-received-flow">
+            {renderEconomicSide(flow.received, 'received')}
+          </div>
+
+          {/* Convenience utilities mirror Details without replacing it. */}
+          <div
+            className="col-span-3 flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 border-t border-hi/10 pt-3 lg:col-span-1 lg:block lg:border-l lg:border-t-0 lg:pl-3 lg:pt-0"
+            data-testid="tx-row-actions"
+          >
+            <div className="flex min-w-0 items-center gap-1">
+              {hash ? (
+                <>
+                  <span className="min-w-0 truncate rounded-md border border-hi/10 bg-elev-3/60 px-2 py-1 font-mono text-[10px] text-mid" title={hash}>
+                    {truncateAddress(hash)}
                   </span>
-                )}
-              </div>
-              <div className="hidden lg:block">
-                <FlagSelector tx={t} derivedFlags={derivedFlags} />
-              </div>
+                  <CopyButton text={hash} label={`Copy ${hashFactLabel === 'Tx hash' ? 'transaction hash' : 'order id'}`} />
+                  {hashUrl && (
+                    <a
+                      href={hashUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label="Open transaction in explorer"
+                      title="Open transaction in explorer"
+                      className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-primary transition-colors hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
+                    >
+                      <ExternalLink className="h-3.5 w-3.5" />
+                    </a>
+                  )}
+                </>
+              ) : (
+                <span className="text-[10px] text-faint">No transaction reference</span>
+              )}
+            </div>
+            <div className="mt-1 flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 lg:block">
+              <span className={cn('inline-flex min-w-0 flex-wrap items-center', spam && 'line-through')}>
+                <TypeSelector tx={t} />
+                <CategorySelector tx={t} />
+              </span>
+              <p className="whitespace-nowrap text-[10px] text-low lg:mt-0.5">
+                {timeUtc}{chainLabel ? ` · ${chainLabel}` : ''}
+              </p>
+              {t.feeAmount != null && t.feeAsset && (
+                <span className="mt-1 inline-flex rounded-full border border-hi/10 bg-elev-3/50 px-2 py-px text-[10px] font-bold tabular-figures text-low">
+                  fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}
+                </span>
+              )}
+            </div>
+            <div className="ml-auto lg:ml-0 lg:mt-1">
+              <FlagSelector tx={t} derivedFlags={derivedFlags} />
+            </div>
           </div>
           <button
               type="button"
@@ -1835,17 +1892,13 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               aria-label={expanded ? 'Collapse transaction details' : 'Expand transaction details'}
               data-testid="tx-disclosure"
               className={cn(
-                'order-3 grid h-11 w-11 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 lg:order-none',
+                'col-start-3 row-start-1 grid h-11 w-11 shrink-0 place-items-center rounded-lg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 lg:col-start-auto lg:row-start-auto',
                 expanded ? 'bg-elev-3 text-primary' : 'text-low hover:bg-elev-3 hover:text-hi'
               )}
             >
               {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
           </button>
 
-          {/* Flags (narrow screens — under the flow, full width) */}
-          <div className="order-5 w-full pl-10 lg:hidden">
-            <FlagSelector tx={t} derivedFlags={derivedFlags} />
-          </div>
         </div>
 
         {/* Inline warning strip — missing market price (mockup frame 06) */}

@@ -18,7 +18,7 @@ import type { DefiPositionSnapshot } from '@/lib/defi/types';
 import diagnosedWallet from '@/lib/defi/__fixtures__/diagnosed-wallet.sanitized.json';
 import {
   B6_EVM_ADDRESS, B6_NOW, B6_SECOND_EVM_ADDRESS, B6_USDC,
-  b6ClassificationEvidence, b6Transaction, b6TransferTransactions
+  b6ClassificationEvidence, b6Transaction, b6TransferTransactions, b6TwoSidedSwapTransactions
 } from './fixtures/b6Integrated';
 
 export const B6_BROWSER_EXPECTED_NET_WORTH = 17_238_558.1435;
@@ -74,7 +74,10 @@ export async function seedB6BrowserFixture(): Promise<void> {
     topLevelSender: `0x${'f'.repeat(40)}`, initiatorAddress: `0x${'f'.repeat(40)}`
   }) };
   const transfers = Object.values(b6TransferTransactions).map((row) => ({ ...row, source: 'rpc:ethereum' }));
-  const primaryEthereumRows = [...transfers, spoofed, classified, ...safety.transactions];
+  const primaryEthereumRows = [
+    ...transfers, spoofed, classified, ...safety.transactions,
+    b6TwoSidedSwapTransactions.acquisition, b6TwoSidedSwapTransactions.swap
+  ];
   const existingEthereumCount = new Set(primaryEthereumRows.map((row) => row.id)).size;
   // Two transfer fixture rows are intentionally excluded from collection activity
   // attribution; compensate so the indexed wallet evidence totals exactly 909.

@@ -79,6 +79,34 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
     }
 
     await page.getByRole('tab', { name: 'Transactions', exact: true }).first().click();
+    const twoSidedSwap = page.locator('[data-transaction-id="b6-two-sided-swap"]');
+    await expect(twoSidedSwap).toBeVisible();
+    const sentSide = twoSidedSwap.getByTestId('tx-sent-side');
+    const receivedSide = twoSidedSwap.getByTestId('tx-received-side');
+    await expect(sentSide).toContainText('Diagnosed wallet · Ethereum');
+    await expect(sentSide.getByText('−2', { exact: true })).toBeVisible();
+    await expect(sentSide.getByText('ETH', { exact: true })).toBeVisible();
+    await expect(sentSide).toContainText('cost ₹4,00,000');
+    await expect(sentSide).toContainText('≈ ₹6,00,000');
+    await expect(receivedSide).toContainText('Diagnosed wallet · Ethereum');
+    await expect(receivedSide.getByText('+6,000', { exact: true })).toBeVisible();
+    await expect(receivedSide.getByText('USDC', { exact: true })).toBeVisible();
+    await expect(receivedSide).toContainText('≈ ₹6,00,000');
+    await expect(receivedSide).toContainText('+₹2,00,000');
+    const swapActions = twoSidedSwap.getByTestId('tx-row-actions');
+    await expect(swapActions).toContainText('0xcccc…cccc');
+    await expect(swapActions.getByLabel('Copy transaction hash')).toBeVisible();
+    await expect(swapActions.getByLabel('Open transaction in explorer')).toHaveAttribute(
+      'href', `https://etherscan.io/tx/0x${'c'.repeat(64)}`
+    );
+    await expect(twoSidedSwap.getByLabel('Edit transaction flags')).toBeVisible();
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await twoSidedSwap.scrollIntoViewIfNeeded();
+    await twoSidedSwap.screenshot({
+      path: `${ARTIFACTS}/transactions-two-sided-swap-1440-${colorScheme}.png`
+    });
+
     const transaction = page.locator('[data-transaction-id="b6-classified"]');
     for (const width of WIDTHS) {
       await page.setViewportSize({ width, height: width === 390 ? 844 : 900 });
@@ -89,10 +117,16 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
           display: getComputedStyle(row).display,
           columns: getComputedStyle(row).gridTemplateColumns.split(' ').length
         }));
-        expect(layout).toEqual({ display: 'grid', columns: 5 });
+        expect(layout).toEqual({ display: 'grid', columns: 7 });
         const flow = await transaction.getByTestId('tx-flow').boundingBox();
         const source = await transaction.getByTestId('tx-source-account').boundingBox();
-        expect(flow && source && flow.x < source.x && flow.width > source.width).toBeTruthy();
+        const actions = await transaction.getByTestId('tx-row-actions').boundingBox();
+        expect(source).not.toBeNull();
+        expect(flow).not.toBeNull();
+        expect(actions).not.toBeNull();
+        expect(source!.x).toBeLessThan(flow!.x);
+        expect(flow!.x).toBeLessThan(actions!.x);
+        expect(flow!.width).toBeGreaterThan(source!.width);
       }
       if (width === 390) await transaction.scrollIntoViewIfNeeded();
       if (width === 390) {
@@ -135,6 +169,17 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
         fullPage: width !== 390
       });
     }
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await transaction.scrollIntoViewIfNeeded();
+    await transaction.getByLabel('Edit transaction flags').click();
+    const flagMenu = transaction.locator('[role="group"][aria-labelledby]').first();
+    await expect(flagMenu).toBeVisible();
+    const menuBox = await flagMenu.boundingBox();
+    expect(menuBox).not.toBeNull();
+    expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(768);
+    await page.keyboard.press('Escape');
   }
 });
 

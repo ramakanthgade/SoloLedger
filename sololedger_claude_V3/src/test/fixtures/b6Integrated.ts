@@ -12,6 +12,7 @@ export const B6_DEBT_USDC = '0x72e95b8931767c79ba4ee721e2dfd084399483da';
 export const B6_WBTC = '0x2260fac5e5542a773aa44fbcfedf7c193bc2c599';
 export const B6_AAVE_WBTC = '0x5ee5bf7ae06d1be5997a1a72006fe6c607eC6DE8'.toLowerCase();
 export const B6_SPARK_WBTC = '0x4197ba364ae6698015ae5c1468f54087602715b2';
+export const B6_TWO_SIDED_SWAP_HASH = `0x${'c'.repeat(64)}`;
 
 export function b6Transaction(id: string, overrides: Partial<Transaction> = {}): Transaction {
   return {
@@ -77,6 +78,27 @@ export const b6TransferTransactions = {
   spoofedOut: b6Transaction('spoofed-out', {
     type: 'transfer_out', timestamp: B6_NOW + 300, chain: 'ethereum', contractAddress: B6_USDC,
     walletAddress: B6_EVM_ADDRESS, outboundInitiation: 'spoofed_outbound_log'
+  })
+};
+
+/** Production-shaped row fixture: a priced swap backed by an earlier acquisition lot. */
+export const b6TwoSidedSwapTransactions = {
+  acquisition: b6Transaction('b6-two-sided-acquisition', {
+    timestamp: B6_NOW - 365 * 86_400_000,
+    type: 'buy', asset: 'ETH', amount: 2,
+    fiatCurrency: 'INR', fiatValue: 400_000,
+    source: 'rpc:ethereum', chain: 'ethereum', walletAddress: B6_EVM_ADDRESS,
+    txHash: `0x${'b'.repeat(64)}`
+  }),
+  swap: b6Transaction('b6-two-sided-swap', {
+    timestamp: B6_NOW + 60_000,
+    type: 'trade', category: 'swap', asset: 'ETH', amount: 2,
+    counterAsset: 'USDC', counterAmount: 6_000,
+    fiatCurrency: 'INR', fiatValue: 600_000,
+    source: 'rpc:ethereum', chain: 'ethereum', walletAddress: B6_EVM_ADDRESS,
+    txHash: B6_TWO_SIDED_SWAP_HASH,
+    feeAsset: 'ETH', feeAmount: 0.001,
+    flags: ['needs_review']
   })
 };
 

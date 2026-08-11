@@ -125,17 +125,31 @@ describe('ReviewTab — item 10: richer rows + click-anywhere details', () => {
   });
 });
 
-describe('ReviewTab — round 4: compact aligned rows (no middle desert)', () => {
-  it('lays the row on aligned tracks with a flexible flow column', () => {
-    // select · type · economic center · bounded source/account · disclosure.
-    expect(source).toContain('lg:grid-cols-[auto_9rem_minmax(22rem,1fr)_minmax(12rem,15rem)_auto]');
-    expect(source).not.toContain('lg:justify-start');
-    expect(source).toContain('lg:w-full lg:shrink');
+describe('ReviewTab — Koinly-inspired SoloLedger economic rows', () => {
+  it('lays the row on seven aligned tracks with source identity at the left and utilities at the right', () => {
+    // select · source mark · outgoing · arrow · incoming · utilities · disclosure.
+    expect(source).toContain('lg:grid-cols-[auto_3.25rem_minmax(10rem,1fr)_auto_minmax(10rem,1fr)_minmax(11rem,14rem)_auto]');
+    expect(source).toContain('data-testid="tx-source-account"');
+    expect(source).toContain('data-testid="tx-row-actions"');
   });
 
-  it('the flow fills and centers within its flexible economic track', () => {
-    expect(source).not.toContain('lg:flex-1');
-    expect(source).toContain('lg:w-full lg:flex-nowrap lg:justify-center');
+  it('shows wallet and chain identity above both economic legs', () => {
+    expect(source).toContain("data-testid={side === 'sent' ? 'tx-sent-side' : 'tx-received-side'}");
+    expect(source).toContain("{identity}{chainLabel ? ` · ${chainLabel}` : ''}");
+    expect(source).toContain("side === 'sent' && t.fiatValue != null");
+  });
+
+  it('puts hash copy and safe explorer conveniences on the row face', () => {
+    expect(source).toContain('truncateAddress(hash)');
+    expect(source).toContain('<CopyButton text={hash}');
+    expect(source).toContain('aria-label="Open transaction in explorer"');
+    expect(source).toContain('<ExternalLink className="h-3.5 w-3.5" />');
+  });
+
+  it('badges the source logo with the distinct chain brand', () => {
+    expect(source).toContain("import { chainIconId } from '@/components/connections/brandIcons'");
+    expect(source).toContain('<SourceIcon iconId={chainIconId(t.chain)}');
+    expect(source).not.toContain('<AssetIcon symbol={chainDef.asset}');
   });
 
   it('uses matched-row missing status rather than treating every zero basis as missing', () => {
@@ -237,7 +251,7 @@ describe('ReviewTab — B2 exact presentation wiring', () => {
   });
 
   it('uses accessible 44px expansion and counterpart targets', () => {
-    expect(source).toContain("'order-3 grid h-11 w-11 shrink-0 place-items-center");
+    expect(source).toContain("'col-start-3 row-start-1 grid h-11 w-11 shrink-0 place-items-center");
     expect(source).toContain('className="inline-flex min-h-[44px] items-center');
   });
 
@@ -247,8 +261,7 @@ describe('ReviewTab — B2 exact presentation wiring', () => {
   });
 
   it('passes transaction logo identity only to explicitly principal asset legs', () => {
-    expect(source).toContain('principalAssetIdentityForLeg(flow.sent, t)');
-    expect(source).toContain('principalAssetIdentityForLeg(flow.received, t)');
+    expect(source).toContain('principalAssetIdentityForLeg(leg, t)');
     expect(source).not.toContain('flow.sent.symbol === assetLabel');
     expect(source).not.toContain('flow.received.symbol === assetLabel');
   });
