@@ -43,7 +43,7 @@ describe('formatLedgerAmount', () => {
 
 describe('formatCompactCurrency', () => {
   it('uses crore suffix for large INR amounts', () => {
-    expect(formatCompactCurrency(15000000, 'INR')).toBe('₹1.50Cr');
+    expect(formatCompactCurrency(15000000, 'INR')).toBe('₹1.50 cr');
   });
 
   it('uses lakh suffix for mid-range INR amounts', () => {
@@ -51,20 +51,25 @@ describe('formatCompactCurrency', () => {
   });
 
   it('preserves the sign for negative INR amounts', () => {
-    expect(formatCompactCurrency(-15000000, 'INR')).toBe('-₹1.50Cr');
+    expect(formatCompactCurrency(-15000000, 'INR')).toBe('-₹1.50 cr');
   });
 
   it('uses exact INR lakh/crore thresholds', () => {
-    expect(formatCompactCurrency(99_999, 'INR')).toBe('₹99,999.00');
+    expect(formatCompactCurrency(999, 'INR')).toBe('₹999.00');
+    expect(formatCompactCurrency(1_000, 'INR')).toBe('₹1.00k');
+    expect(formatCompactCurrency(99_994, 'INR')).toBe('₹99.99k');
+    expect(formatCompactCurrency(99_995, 'INR')).toBe('₹1.00L');
     expect(formatCompactCurrency(100_000, 'INR')).toBe('₹1.00L');
-    expect(formatCompactCurrency(10_000_000, 'INR')).toBe('₹1.00Cr');
+    expect(formatCompactCurrency(99_99_500, 'INR')).toBe('₹1.00 cr');
+    expect(formatCompactCurrency(10_000_000, 'INR')).toBe('₹1.00 cr');
   });
 
   it('uses k/m/b thresholds and preserves sign for non-INR currencies', () => {
     expect(formatCompactCurrency(999, 'USD')).toBe('$999.00');
-    expect(formatCompactCurrency(1_000, 'USD')).toBe('$1.00k');
-    expect(formatCompactCurrency(-1_000_000, 'USD')).toBe('-$1.00m');
-    expect(formatCompactCurrency(1_000_000_000, 'USD')).toBe('$1.00b');
+    expect(formatCompactCurrency(1_000, 'USD')).toBe('$1.00K');
+    expect(formatCompactCurrency(999_995, 'USD')).toBe('$1.00M');
+    expect(formatCompactCurrency(-1_000_000, 'USD')).toBe('-$1.00M');
+    expect(formatCompactCurrency(1_000_000_000, 'USD')).toBe('$1.00B');
   });
 });
 

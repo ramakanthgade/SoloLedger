@@ -24,11 +24,20 @@ describe('shared protocol holdings list', () => {
     expect(screen.getByText('−$90')).toBeInTheDocument();
     expect(screen.getByText('Net $10')).toBeInTheDocument();
   });
-  it('warns and displays debt only for a partial snapshot', () => {
+  it('displays conservatively retained priced debt without a misleading global partial label', () => {
     const projection = projectEconomicExposure({ snapshot: { ...snapshot, status: 'partial' }, rows: [], latestPartialRows: rows, custody: [], prices: new Map([[reserve, 1]]), reportingCurrency: 'USD' });
     render(<HoldingsList projection={projection} formatMoney={String} />);
-    expect(screen.getByRole('status')).toHaveTextContent('Known liabilities are retained');
+    expect(screen.queryByRole('status')).not.toBeInTheDocument();
+    expect(screen.queryByText('partial', { exact: false })).not.toBeInTheDocument();
     expect(screen.queryByText('Supplied · Collateral')).not.toBeInTheDocument();
     expect(screen.getByText('Liability · variable')).toBeInTheDocument();
+  });
+  it('retains an honest stale-authority warning', () => {
+    const projection = projectEconomicExposure({
+      snapshot: { ...snapshot, restoredAt: 2 }, rows, custody: [],
+      prices: new Map([[reserve, 1]]), reportingCurrency: 'USD'
+    });
+    render(<HoldingsList projection={projection} formatMoney={String} />);
+    expect(screen.getByRole('status')).toHaveTextContent('Protocol authority is stale');
   });
 });

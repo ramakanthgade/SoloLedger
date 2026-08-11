@@ -14,6 +14,7 @@ import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { TaxSettings, Transaction } from '@/types/transaction';
 import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 import { estimateIndiaVDA } from '@/lib/tax/estimate';
+import { buildMatchedGainRows } from '@/lib/costBasis/matchedGains';
 import { aggregateTds } from '@/lib/tax/tds';
 import { countNeedsReview } from '@/lib/rpc/rewardSuggestions';
 import { portfolioHoldingKey } from '@/lib/portfolio/portfolioCompute';
@@ -28,6 +29,7 @@ import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import { defiUnderlyingPriceHoldings, defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
+import { useImportJob } from '@/lib/importJob';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
 import { HoldingsList } from '@/components/holdings/HoldingsList';
 import { BrandIcon } from '@/components/connections/brandIcons';
@@ -44,7 +46,7 @@ import {
   reaggregateUnreplacedCustody
 } from './dashboardEconomicRows';
 import { buildDashboardValueMetrics, economicExposureDisclosure, knownEconomicSubtotal } from './dashboardValueMetrics';
-import { calculateDashboardDisposals } from './dashboardDisposals';
+import { calculateDashboardCostBasis } from './dashboardDisposals';
 import { buildCoherentDataHealthShadow, buildDataHealthModel, buildLocalDataHealthDiagnostics } from './dataHealthModel';
 import { buildCards } from '@/components/connections/connectionModel';
 import { buildConnectionWorkspaceFromCard, buildConnectionWorkspaceSnapshot, prepareConnectionWorkspaceCollectionIndex } from '@/components/connections/connectionWorkspaceModel';
@@ -65,9 +67,10 @@ import {
   formatCompactAmount,
   formatCompactCurrency,
   getCurrentFy,
+  getFyBoundaries,
+  getFyForTimestamp,
   getFyLabel,
   inclusiveCivilDateRangeThroughNow,
-  isInFy
 } from '@/lib/utils';
 import {
   allocationSlices,
@@ -465,6 +468,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     }));
   };
   const [transactionSubscription] = useState(createDashboardTransactionsSubscription);
+  const importState = useImportJob();
   // Registration belongs to effect lifetime. This effect intentionally comes
   // before useLiveQuery so its setup activates mutation tracking before the
   // query hook's initial subscription/read effect runs, including StrictMode's
@@ -736,7 +740,6 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
           historicalPricingRef.current = fetchMissingPricesForAllTransactions(effective)
             .catch(() => undefined);
         }
-        if (historicalPricingRef.current) await historicalPricingRef.current;
         if (!cancelled) {
           void refreshCurrentHoldingPrices(
             priceHoldings, currency, effective.coingeckoApiKey
@@ -837,18 +840,31 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     return fallback;
   }, [holdings]);
   const netWorth = knownEconomicSubtotal(economicExposure, custodyCostFallbackById);
+  // During the custody/position phases, a newly fetched receipt-token balance
+  // can be numerically valued before the coherent Aave/Spark manifest exists.
+  // Keep the headline pending until protocol authority has finished so raw
+  // receipt custody is never briefly published as economic net worth.
+  const currentAuthorityPending = importState.active && importState.phase !== 'pricing';
+  const currentNetWorthPending = currentAuthorityPending || (importState.active &&
+    economicExposure.netWorth == null &&
+    economicExposure.assets.some((row) => row.kind === 'liquid' && row.contribution == null));
   const unrealizedTotal = valueMetrics.historicalUnrealized;
   const pricesAsOf = valued.reduce<number | null>(
     (acc, h) => (h.priceAsOf != null && (acc == null || h.priceAsOf > acc) ? h.priceAsOf : acc),
     null
   );
 
-  const disposals = useMemo(
-    () => settings ? calculateDashboardDisposals(
+  const dashboardCostBasis = useMemo(
+    () => settings ? calculateDashboardCostBasis(
       deferredTransactions, settings, specIdHints, snapshotSafetyDecisions
-    ) : [],
+    ) : null,
     [deferredTransactions, settings, snapshotSafetyDecisions, specIdHints]
   );
+  const disposals = dashboardCostBasis?.disposals ?? [];
+  const matchedGainRows = useMemo(() => dashboardCostBasis
+    ? buildMatchedGainRows(dashboardCostBasis.disposals, dashboardCostBasis.lots, deferredTransactions)
+    : [],
+  [dashboardCostBasis, deferredTransactions]);
 
   const firstTxMs = useMemo(() => {
     if (deferredTransactions.length === 0) return null;
@@ -892,14 +908,26 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     .filter((holding) => holding.asset.toUpperCase() === 'BTC')
     .reduce((sum, holding) => sum + holding.amount, 0);
   const currentFy = getCurrentFy(jurisdiction);
-  const realizedFyGain = useMemo(
-    () =>
-      disposals
-        .filter((d) => isInFy(d.disposedAt, currentFy, jurisdiction))
-        .reduce((s, d) => s + d.gain, 0),
-    [disposals, currentFy, jurisdiction]
-  );
-  const taxEstimate = useMemo(() => estimateIndiaVDA(realizedFyGain), [realizedFyGain]);
+  const rangeDisposals = useMemo(() => disposals.filter((disposal) =>
+    disposal.disposedAt >= range.start && disposal.disposedAt <= range.end
+  ), [disposals, range.end, range.start]);
+  const rangeMatchedGains = useMemo(() => matchedGainRows.filter((row) =>
+    row.sellDate >= range.start && row.sellDate <= range.end
+  ), [matchedGainRows, range.end, range.start]);
+  const realizedRangeGain = useMemo(() =>
+    rangeDisposals.reduce((sum, disposal) => sum + disposal.gain, 0), [rangeDisposals]);
+  const taxableRangeGain = useMemo(() => jurisdiction === 'IN'
+    ? rangeMatchedGains.reduce((sum, row) => sum + Math.max(0, row.gain), 0)
+    : realizedRangeGain,
+  [jurisdiction, rangeMatchedGains, realizedRangeGain]);
+  const disallowedRangeLoss = useMemo(() => jurisdiction === 'IN'
+    ? rangeMatchedGains.reduce((sum, row) => sum + Math.max(0, -row.gain), 0)
+    : 0,
+  [jurisdiction, rangeMatchedGains]);
+  const taxEstimate = useMemo(() => jurisdiction === 'IN'
+    ? estimateIndiaVDA(taxableRangeGain)
+    : null,
+  [jurisdiction, taxableRangeGain]);
 
   // Internal custody movements do not need historical tax cost basis.
   const needsPriceCount = useMemo(
@@ -1066,7 +1094,10 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
     return <DashboardEmpty onAddSource={goToImport} />;
   }
 
-  const fyLabel = getFyLabel(currentFy, jurisdiction);
+  const rangeFy = getFyForTimestamp(range.start, jurisdiction);
+  const rangeFyBoundaries = getFyBoundaries(rangeFy, jurisdiction);
+  const rangeIsExactFy = range.start === rangeFyBoundaries.start && range.end === rangeFyBoundaries.end;
+  const taxPeriodLabel = rangeIsExactFy ? getFyLabel(rangeFy, jurisdiction) : selectedRangeLabel;
 
   const holdingRow = (h: ValuedHolding) => {
     // Chain-scope the expansion key: portfolioHoldingKey is chain-blind, so
@@ -1222,7 +1253,7 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
         data-testid="dashboard-holdings-generation"
         data-transaction-count={ledgerRevision.transactionCount}
         data-projection-revision={`${ledgerRevision.transactionCount}:${projection.postings.length}`}
-        data-net-worth={netWorth}
+        data-net-worth={currentNetWorthPending ? undefined : netWorth}
         data-btc-quantity={btcQuantity}
       >
         Holdings projection revision {ledgerRevision.transactionCount}
@@ -1292,9 +1323,13 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
               data-testid="net-worth-value"
               data-defi-feature-enabled={walletDefiNetWorthEnabled ? 'true' : 'false'}
               data-defi-shadow-status={defiNetWorthShadow.projection.status}
+              role="status"
+              aria-live="polite"
+              aria-atomic="true"
             >
-              {compactMoney(netWorth)}
+              {currentNetWorthPending ? 'Calculating…' : compactMoney(netWorth)}
             </p>
+            {currentNetWorthPending && <p className="mt-1.5 text-xs text-mid">Refreshing current balances, protocol positions, and prices.</p>}
             {exposureDisclosure && <p className="mt-1.5 text-xs text-warn" data-testid={economicExposure.hasUnpricedLiabilities ? 'defi-net-worth-incomplete' : 'economic-exposure-honesty'} role="status">{exposureDisclosure}</p>}
             {marketMode && pricesAsOf != null && (
               <p className="mt-1 text-[0.6875rem] text-faint">
@@ -1525,39 +1560,49 @@ export function DashboardTab({ instrumentation, onNavigationIntent, onDashboardN
             data-testid="tax-estimate-card"
           >
             <div className="flex items-center justify-between gap-2">
-              <p className={eyebrowClass}>Estimated tax · {fyLabel}</p>
+              <p className={eyebrowClass}>Estimated tax · {taxPeriodLabel}</p>
               {jurisdiction === 'IN' && <Badge tone="primary">Sec 115BBH</Badge>}
             </div>
             <p className="mt-2 text-3xl font-extrabold tabular-figures tracking-tight text-hi">
-              {fm(taxEstimate.total)}
+              {taxEstimate ? fm(taxEstimate.total) : 'Not calculated'}
             </p>
-            <p className="mt-0.5 text-xs text-low">accrued so far this FY · updates live</p>
+            <p className="mt-0.5 text-xs text-low">{rangeIsExactFy ? 'Selected financial year' : 'Selected-range estimate · not a filing-year total'}</p>
             <dl className="mt-4 space-y-2 text-xs">
               <div className="flex items-center justify-between">
                 <dt className="font-semibold text-mid">
                   {jurisdiction === 'IN' ? 'Realized VDA gains' : 'Realized gains'}
                 </dt>
-                <dd className="font-bold tabular-figures text-hi">{fm(realizedFyGain)}</dd>
+                <dd className="font-bold tabular-figures text-hi">{fm(realizedRangeGain)}</dd>
               </div>
-              <div className="flex items-center justify-between">
+              {jurisdiction === 'IN' && <div className="flex items-center justify-between">
+                <dt className="font-semibold text-mid">Taxable positive gains</dt>
+                <dd className="font-bold tabular-figures text-hi">{fm(taxableRangeGain)}</dd>
+              </div>}
+              {jurisdiction === 'IN' && disallowedRangeLoss > 0 && <div className="flex items-center justify-between">
+                <dt className="font-semibold text-mid">Losses not set off</dt>
+                <dd className="font-bold tabular-figures text-hi">{fm(disallowedRangeLoss)}</dd>
+              </div>}
+              {taxEstimate && <div className="flex items-center justify-between">
                 <dt className="font-semibold text-mid">Tax @ 30%</dt>
                 <dd className="font-bold tabular-figures text-hi">{fm(taxEstimate.tax)}</dd>
-              </div>
-              <div className="flex items-center justify-between">
+              </div>}
+              {taxEstimate && <div className="flex items-center justify-between">
                 <dt className="font-semibold text-mid">Health &amp; edu. cess @ 4%</dt>
                 <dd className="font-bold tabular-figures text-hi">{fm(taxEstimate.cess)}</dd>
-              </div>
-              <div className="border-t border-hi/10 pt-2">
+              </div>}
+              {taxEstimate && <div className="border-t border-hi/10 pt-2">
                 <div className="flex items-center justify-between">
                   <dt className="font-bold text-hi">Total estimated</dt>
                   <dd className="font-extrabold tabular-figures text-hi">
                     {fm(taxEstimate.total)}
                   </dd>
                 </div>
-              </div>
+              </div>}
             </dl>
             <p className="mt-3 text-[0.6875rem] leading-relaxed text-low">
-              VDA losses can't offset gains · Estimate, not tax advice — consult your CA.
+              {jurisdiction === 'IN'
+                ? "VDA losses can't offset gains · Estimate, not tax advice — consult your CA."
+                : 'Jurisdiction-specific tax calculation is not available here · Consult a qualified tax professional.'}
             </p>
             <Button
               variant="secondary"

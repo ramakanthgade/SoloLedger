@@ -196,6 +196,7 @@ import type {
 } from '@/lib/portfolio/holdingsProjection';
 import type { Transaction } from '@/types/transaction';
 import { fetchMissingPricesForAllTransactions } from '@/lib/pricing/autoFetch';
+import { importJob } from '@/lib/importJob';
 
 async function renderTab(
   nav?: { goToImport: () => void; goTo: (id: string) => void },
@@ -568,7 +569,7 @@ describe('DashboardTab — hero honesty', () => {
     expect(within(hero).getByText('Total net worth')).toBeInTheDocument();
     expect(screen.getByTestId('net-worth-value')).toHaveTextContent(/₹/);
     expect(screen.queryByTestId('historical-holdings-performance')).not.toBeInTheDocument();
-    expect(within(hero).getByText('₹27,000.00')).toBeInTheDocument();
+    expect(within(hero).getByText('₹27.00k')).toBeInTheDocument();
     expect(within(hero).getByText('Unrealized P&L').parentElement)
       .toHaveTextContent('vs cost basis');
     expect(within(hero).queryByText('Historical display cost basis')).not.toBeInTheDocument();
@@ -609,6 +610,42 @@ describe('DashboardTab — hero honesty', () => {
 });
 
 describe('DashboardTab — header, money strip and tax rail', () => {
+  it('shows Calculating instead of historical cost basis during first-import current valuation, then publishes exact current value', async () => {
+    const token = importJob._beginBatch();
+    try {
+      const view = await renderTab();
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Calculating…');
+      expect(screen.getByTestId('net-worth-value')).toHaveAttribute('aria-live', 'polite');
+      expect(screen.getByTestId('dashboard-holdings-generation')).not.toHaveAttribute('data-net-worth');
+      expect(screen.getByTestId('net-worth-value')).not.toHaveTextContent('₹27.00k');
+      expect(screen.getByText(/Refreshing current balances/)).toBeInTheDocument();
+
+      const now = Date.now();
+      SEED.priceRows = [...SEED.priceRows,
+        { key: 'spot:sym:BTC:INR', price: 100_000, fetchedAt: now },
+        { key: 'spot:sym:ETH:INR', price: 6_000, fetchedAt: now },
+        { key: 'spot:sym:DOGE:INR', price: 1, fetchedAt: now }
+      ];
+      await act(async () => importJob._setPhase('positions'));
+      await act(async () => {
+        view.rerender(<TabNavProvider value={{ goToImport: () => {}, goTo: () => {} }}><DashboardTab /></TabNavProvider>);
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('Calculating…');
+      expect(screen.getByTestId('dashboard-holdings-generation')).not.toHaveAttribute('data-net-worth');
+
+      await act(async () => importJob._setPhase('pricing'));
+      await act(async () => {
+        view.rerender(<TabNavProvider value={{ goToImport: () => {}, goTo: () => {} }}><DashboardTab /></TabNavProvider>);
+        await Promise.resolve();
+      });
+      expect(screen.getByTestId('net-worth-value')).toHaveTextContent('₹62.50k');
+      expect(screen.getByTestId('net-worth-value')).toHaveAttribute('aria-live', 'polite');
+      expect(screen.getByTestId('dashboard-holdings-generation')).toHaveAttribute('data-net-worth', '62500');
+    } finally {
+      await act(async () => importJob._endBatch(token));
+    }
+  });
   it('replaces exact Aave receipt custody so displayed holdings and net worth count underlying once', async () => {
     const txBackup = [...SEED.txs];
     const address = `0x${'1'.repeat(40)}`;
@@ -730,7 +767,7 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     );
   });
 
-  it('starts historical pricing after the trusted batch without waiting for lower-priority holdings', async () => {
+  it('starts current holding pricing after the trusted batch without waiting for historical pricing', async () => {
     EFFECTIVE_SETTINGS.priceApiEnabled = true;
     let releaseTrusted!: () => void;
     let releaseHistorical!: () => void;
@@ -753,13 +790,13 @@ describe('DashboardTab — header, money strip and tax rail', () => {
       await Promise.resolve();
     });
     expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
-    expect(refreshCalls.some(([requested]) => requested.length > trustedCount)).toBe(false);
+    expect(refreshCalls.some(([requested]) => requested.length > trustedCount)).toBe(true);
     await act(async () => {
       window.dispatchEvent(new Event('focus'));
       await Promise.resolve();
     });
     expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
-    expect(refreshCalls.some(([requested]) => requested.length > trustedCount)).toBe(false);
+    expect(refreshCalls.some(([requested]) => requested.length > trustedCount)).toBe(true);
     await act(async () => {
       releaseHistorical();
       await historical;
@@ -875,21 +912,86 @@ describe('DashboardTab — header, money strip and tax rail', () => {
     await renderTab();
 
     const strip = screen.getByTestId('money-strip');
-    expect(within(strip).getByText('Money in').parentElement).toHaveTextContent('₹4,000.00');
+    expect(within(strip).getByText('Money in').parentElement).toHaveTextContent('₹4.00k');
     expect(within(strip).getByText('Money out').parentElement).toHaveTextContent('₹0.00');
     expect(within(strip).getByText('Money out').parentElement).toHaveTextContent('1 excluded · unpriced');
     expect(within(strip).getByText('Income').parentElement).toHaveTextContent('₹75.00');
     expect(strip).not.toHaveTextContent('Unavailable');
   });
 
-  it('estimates FY tax at 30% + 4% cess with the not-advice caveat', async () => {
+  it('uses the same completed FY as the chart for the default tax estimate', async () => {
     await renderTab();
     const card = screen.getByTestId('tax-estimate-card');
-    // Realized FY gain 2,000 → tax 600, cess 24, total 624.
-    expect(within(card).getAllByText('₹624.00').length).toBeGreaterThanOrEqual(1);
-    expect(within(card).getByText('₹600.00')).toBeInTheDocument();
-    expect(within(card).getByText('₹24.00')).toBeInTheDocument();
-    expect(within(card).getByText(/Estimate, not tax advice/)).toBeInTheDocument();
+    expect(card).toHaveTextContent('Estimated tax · FY 2025-26');
+    expect(card).toHaveTextContent('Selected financial year');
+    expect(within(card).getAllByText('₹0.00').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('updates the tax estimate with a custom chart range and preserves India loss treatment', async () => {
+    SEED.txs.push({
+      id: 't-eth-loss', timestamp: Date.UTC(2026, 6, 1, 12), type: 'sell', asset: 'ETH', amount: 1,
+      fiatCurrency: 'INR', fiatValue: 3000, source: 'wazirx', flags: [], isInternalTransfer: false
+    });
+    try {
+      await renderTab();
+      fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2026-04-01' } });
+      fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-08-11' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+      const card = screen.getByTestId('tax-estimate-card');
+      // +2,000 BTC and −2,000 ETH: signed net is zero, but India taxes the
+      // positive disposal and reports the disallowed loss separately.
+      expect(card).toHaveTextContent('Estimated tax · Apr 1, 2026 — Aug 11, 2026');
+      expect(card).toHaveTextContent('Selected-range estimate · not a filing-year total');
+      expect(within(screen.getByTestId('money-strip')).getByText('Realized gains').parentElement).toHaveTextContent('₹0.00');
+      expect(within(card).getByText('Realized VDA gains').parentElement).toHaveTextContent('₹0.00');
+      expect(within(card).getByText('Taxable positive gains').parentElement).toHaveTextContent('₹2,000.00');
+      expect(within(card).getByText('Losses not set off').parentElement).toHaveTextContent('₹2,000.00');
+      expect(within(card).getAllByText('₹624.00').length).toBeGreaterThanOrEqual(1);
+      expect(within(card).getByText('₹600.00')).toBeInTheDocument();
+      expect(within(card).getByText('₹24.00')).toBeInTheDocument();
+      expect(within(card).getByText(/Estimate, not tax advice/)).toBeInTheDocument();
+    } finally {
+      SEED.txs.length = 4;
+    }
+  });
+
+  it('does not present the India 30% and cess formula for another jurisdiction', async () => {
+    (TAX_SETTINGS as { jurisdiction: 'IN' | 'US' }).jurisdiction = 'US';
+    try {
+      await renderTab();
+      const card = screen.getByTestId('tax-estimate-card');
+      expect(card).toHaveTextContent('Not calculated');
+      expect(card).not.toHaveTextContent('Tax @ 30%');
+      expect(card).not.toHaveTextContent('cess @ 4%');
+      expect(card).toHaveTextContent('Jurisdiction-specific tax calculation is not available');
+    } finally {
+      (TAX_SETTINGS as { jurisdiction: 'IN' | 'US' }).jurisdiction = 'IN';
+    }
+  });
+
+  it('applies India no-offset treatment to mixed-gain lots within one disposal', async () => {
+    const backup = [...SEED.txs];
+    SEED.txs.splice(0, SEED.txs.length,
+      { id: 'mixed-cheap', timestamp: Date.UTC(2026, 3, 1, 12), type: 'buy', asset: 'BTC', amount: 1,
+        fiatCurrency: 'INR', fiatValue: 100, source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'mixed-expensive', timestamp: Date.UTC(2026, 3, 2, 12), type: 'buy', asset: 'BTC', amount: 1,
+        fiatCurrency: 'INR', fiatValue: 300, source: 'manual', flags: [], isInternalTransfer: false },
+      { id: 'mixed-sale', timestamp: Date.UTC(2026, 3, 3, 12), type: 'sell', asset: 'BTC', amount: 2,
+        fiatCurrency: 'INR', fiatValue: 400, source: 'manual', flags: [], isInternalTransfer: false }
+    );
+    try {
+      await renderTab();
+      fireEvent.change(screen.getByLabelText('Custom start date'), { target: { value: '2026-04-01' } });
+      fireEvent.change(screen.getByLabelText('Custom end date'), { target: { value: '2026-08-11' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Apply' }));
+      const card = screen.getByTestId('tax-estimate-card');
+      expect(within(card).getByText('Realized VDA gains').parentElement).toHaveTextContent('₹0.00');
+      expect(within(card).getByText('Taxable positive gains').parentElement).toHaveTextContent('₹100.00');
+      expect(within(card).getByText('Losses not set off').parentElement).toHaveTextContent('₹100.00');
+      expect(within(card).getAllByText('₹31.20').length).toBeGreaterThanOrEqual(1);
+    } finally {
+      SEED.txs.splice(0, SEED.txs.length, ...backup);
+    }
   });
 });
 

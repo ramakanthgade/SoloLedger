@@ -92,6 +92,14 @@ const fetchMissingPricesForAllTransactions = vi.fn(async (..._args: unknown[]) =
   failed: 0,
   total: 3
 }));
+
+const refreshEthereumPositionAuthority = vi.fn(async (
+  _address?: string, _settings?: TaxSettings, _options?: unknown
+) => ({ warnings: [] as string[] }));
+vi.mock('@/lib/defi/positionAuthority', () => ({
+  refreshEthereumPositionAuthority: (...args: unknown[]) =>
+    refreshEthereumPositionAuthority(...(args as [string, TaxSettings, unknown]))
+}));
 vi.mock('@/lib/pricing/autoFetch', () => ({
   fetchMissingPricesForAllTransactions: (...args: unknown[]) =>
     fetchMissingPricesForAllTransactions(...args)
@@ -209,6 +217,14 @@ beforeEach(() => {
   coverageRows = [];
   providerEvidenceStore.clear();
   safetyDecisionStore.clear();
+  refreshWalletBalancesForAddresses.mockReset().mockResolvedValue({
+    updated: 1, skipped: [], failed: [], completed: []
+  });
+  refreshEthereumPositionAuthority.mockReset().mockResolvedValue({ warnings: [] });
+  fetchMissingPricesForAllTransactions.mockReset().mockResolvedValue({
+    updated: 3, failed: 0, total: 3
+  });
+  importJob.reset();
 });
 
 function settings(overrides: Partial<TaxSettings> = {}): TaxSettings {
@@ -228,6 +244,7 @@ describe('runWalletImport auto-pricing gate', () => {
     lookupRows = [];
     vi.mocked(isAbsorbedTradeLeg).mockReturnValue(false);
     fetchMissingPricesForAllTransactions.mockClear();
+    refreshEthereumPositionAuthority.mockClear();
     applyDefiLlamaRewardSuggestions.mockClear();
     importJob.reset();
   });
@@ -242,6 +259,30 @@ describe('runWalletImport auto-pricing gate', () => {
     await runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
     expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
     expect(importJob.get().result?.pricesUpdated).toBe(3);
+  });
+
+  it('establishes current custody and DeFi authority before rate-limited historical pricing completes', async () => {
+    refreshWalletBalancesForAddresses.mockResolvedValueOnce({
+      updated: 1, skipped: [], failed: [],
+      completed: [{ chain: 'ethereum', address: '0xabc', custodySnapshotId: 'custody-1' }]
+    });
+    let releaseHistorical!: () => void;
+    fetchMissingPricesForAllTransactions.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseHistorical = () => resolve({ updated: 0, failed: 0, total: 0 });
+    }));
+
+    const importPromise = runWalletImport(['0xabc'], CHAIN, settings({ priceApiEnabled: true }), CONFIG);
+    try {
+      await vi.waitFor(() => {
+        expect(refreshWalletBalancesForAddresses).toHaveBeenCalledTimes(1);
+        expect(refreshEthereumPositionAuthority).toHaveBeenCalledTimes(1);
+        expect(fetchMissingPricesForAllTransactions).toHaveBeenCalledTimes(1);
+      });
+      expect(importJob.get().phase).toBe('pricing');
+    } finally {
+      releaseHistorical?.();
+      await importPromise;
+    }
   });
 });
 

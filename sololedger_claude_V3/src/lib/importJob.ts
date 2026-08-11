@@ -36,7 +36,7 @@ import { applyClassificationEvidence } from '@/lib/taxonomy/classification';
 
 // ---- State shape ----
 
-export type ImportPhase = 'idle' | 'importing' | 'classifying' | 'pricing';
+export type ImportPhase = 'idle' | 'importing' | 'classifying' | 'balances' | 'positions' | 'pricing';
 
 export interface ImportJobState {
   active: boolean;
@@ -529,28 +529,6 @@ importJob._setPhase('classifying');
     importJob._setProgress(null);
   }
 
-  // --- Phase 3: Auto price fetch ---
-  // Only runs when the EFFECTIVE priceApiEnabled flag is on. `settings` here is
-  // already the effective settings (WalletLookupPanel passes getEffectiveSettings()),
-  // so in hosted mode this stays true; in local/BYOK it defaults to false and we
-  // skip all network price/FX egress — unpriced rows surface as "price unavailable"
-  // in ReviewTab.
-  importJob._setPhase('pricing');
-  let pricesUpdated = 0;
-  if (settings.priceApiEnabled && txsToStore.length > 0) {
-    const priceResult = await fetchMissingPricesForAllTransactions(
-      settings,
-      (done, total) => importJob._setProgress({ done, total })
-    );
-    pricesUpdated = priceResult.updated;
-    if (priceResult.updated > 0) {
-      apiWarnings.unshift(
-        `Fetched prices for ${priceResult.updated} transaction${priceResult.updated === 1 ? '' : 's'}.` +
-          (priceResult.failed > 0 ? ` ${priceResult.failed} could not be priced.` : '')
-      );
-    }
-  }
-
   // Dedup after every import in case wallet was synced before
   const dupsRemoved = await deduplicateTransactions();
   if (dupsRemoved > 0) {
@@ -581,6 +559,7 @@ importJob._setPhase('classifying');
   // A balance-fetch failure must NEVER fail the sync — warn and keep the
   // previously stored balances.
   if (succeeded.length > 0) {
+    importJob._setPhase('balances');
     let completedCustody = new Map<string, string>();
     try {
       const balanceOutcome = await refreshWalletBalancesForAddresses(
@@ -605,6 +584,7 @@ importJob._setPhase('classifying');
       );
     }
     if (chain.id === 'ethereum') {
+      importJob._setPhase('positions');
       for (const address of succeeded) {
         try {
           const outcome = await refreshEthereumPositionAuthority(address, settings, {
@@ -615,6 +595,27 @@ importJob._setPhase('classifying');
           apiWarnings.push(`${address.slice(0, 8)}…${address.slice(-4)}: protocol position refresh failed (${err instanceof Error ? err.message : 'network error'}) — prior complete positions kept.`);
         }
       }
+    }
+  }
+
+  // --- Phase 5: Historical tax-price enrichment ---
+  // Current custody and protocol authority deliberately complete first so the
+  // Dashboard can establish current net worth without waiting behind hundreds
+  // of rate-limited historical asset/date lookups. Historical prices still
+  // finish before the import job closes and retain their existing CAS safety.
+  importJob._setPhase('pricing');
+  let pricesUpdated = 0;
+  if (settings.priceApiEnabled && txsToStore.length > 0) {
+    const priceResult = await fetchMissingPricesForAllTransactions(
+      settings,
+      (done, total) => importJob._setProgress({ done, total })
+    );
+    pricesUpdated = priceResult.updated;
+    if (priceResult.updated > 0) {
+      apiWarnings.unshift(
+        `Fetched prices for ${priceResult.updated} transaction${priceResult.updated === 1 ? '' : 's'}.` +
+          (priceResult.failed > 0 ? ` ${priceResult.failed} could not be priced.` : '')
+      );
     }
   }
 
