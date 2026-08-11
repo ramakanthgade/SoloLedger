@@ -3,6 +3,7 @@
  * numbered pagination. Kept separate from ReviewTab.tsx so they are unit
  * testable without rendering the tab (which never settles under jsdom).
  */
+import { isValidTxHashForChain } from '@/lib/parsers/explorer';
 
 export interface RowGroup<T> {
   /** UTC day key `YYYY-MM-DD`, or 'all' when grouping is disabled. */
@@ -10,11 +11,19 @@ export interface RowGroup<T> {
   rows: T[];
 }
 
-/** Real chain hash when available; legacy on-chain rows retain sourceRef fallback. */
+/**
+ * Real chain hash when available. Legacy on-chain rows retain sourceRef only
+ * when it passes the chain-aware explorer validator; internal provider event
+ * ids (for example `moralis:event:…`) must never be presented as tx hashes.
+ * Off-chain rows may still expose their sourceRef as an exchange order id.
+ */
 export function reviewTransactionHash(
-  transaction: Readonly<{ txHash?: string; sourceRef?: string }>
+  transaction: Readonly<{ txHash?: string; sourceRef?: string; chain?: string }>
 ): string | undefined {
-  return transaction.txHash ?? transaction.sourceRef;
+  if (transaction.txHash) return transaction.txHash;
+  if (!transaction.sourceRef) return undefined;
+  if (!transaction.chain) return transaction.sourceRef;
+  return isValidTxHashForChain(transaction.chain, transaction.sourceRef) ? transaction.sourceRef : undefined;
 }
 
 /**

@@ -46,13 +46,12 @@ describe('ReviewTab — round 2 UI fixes (Task 1)', () => {
     expect(source).toContain('<option value="internal">Internal</option>');
   });
 
-  it('left-anchors the per-row Flags popover so it opens into the row (Issue 1, Ember & Slate layout)', () => {
-    // The redesigned date-grouped row places the FlagSelector in the MIDDLE
-    // column (lg) or under the type block (mobile) — no longer the last
-    // table column — so the popover left-anchors and opens into the row.
-    // Right-anchoring here would clip it against the row's left edge.
-    expect(source).toContain('absolute left-0 top-9 z-30 min-w-[15rem]');
-    expect(source).not.toContain('absolute right-0 top-7 z-30 min-w-[14rem]');
+  it('keeps the Flags popover inside the viewport from mobile through tablet widths', () => {
+    // The redesigned utility zone sits at the far right until the seven-track
+    // desktop layout begins, so the popover right-anchors below lg and only
+    // switches to a left anchor once the desktop track has room.
+    expect(source).toContain('absolute right-0 top-9 z-30 min-w-[15rem]');
+    expect(source).toContain('lg:left-0 lg:right-auto');
   });
 
   it('renders the shared pagination bar both above and below the list (Issue 2)', () => {

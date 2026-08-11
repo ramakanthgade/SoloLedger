@@ -89,10 +89,16 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
           display: getComputedStyle(row).display,
           columns: getComputedStyle(row).gridTemplateColumns.split(' ').length
         }));
-        expect(layout).toEqual({ display: 'grid', columns: 5 });
+        expect(layout).toEqual({ display: 'grid', columns: 7 });
         const flow = await transaction.getByTestId('tx-flow').boundingBox();
         const source = await transaction.getByTestId('tx-source-account').boundingBox();
-        expect(flow && source && flow.x < source.x && flow.width > source.width).toBeTruthy();
+        const actions = await transaction.getByTestId('tx-row-actions').boundingBox();
+        expect(source).not.toBeNull();
+        expect(flow).not.toBeNull();
+        expect(actions).not.toBeNull();
+        expect(source!.x).toBeLessThan(flow!.x);
+        expect(flow!.x).toBeLessThan(actions!.x);
+        expect(flow!.width).toBeGreaterThan(source!.width);
       }
       if (width === 390) await transaction.scrollIntoViewIfNeeded();
       if (width === 390) {
@@ -135,6 +141,17 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
         fullPage: width !== 390
       });
     }
+
+    await page.setViewportSize({ width: 768, height: 900 });
+    await transaction.scrollIntoViewIfNeeded();
+    await transaction.getByLabel('Edit transaction flags').click();
+    const flagMenu = transaction.locator('[role="group"][aria-labelledby]').first();
+    await expect(flagMenu).toBeVisible();
+    const menuBox = await flagMenu.boundingBox();
+    expect(menuBox).not.toBeNull();
+    expect(menuBox!.x).toBeGreaterThanOrEqual(0);
+    expect(menuBox!.x + menuBox!.width).toBeLessThanOrEqual(768);
+    await page.keyboard.press('Escape');
   }
 });
 

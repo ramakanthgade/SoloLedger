@@ -6,10 +6,20 @@ import {
 const day = (iso: string, h = 12) => new Date(`${iso}T${String(h).padStart(2, '0')}:00:00Z`).getTime();
 
 describe('reviewTransactionHash', () => {
-  it('prefers txHash but supports BTC, Solana, and legacy sourceRef rows', () => {
+  it('prefers txHash and keeps off-chain source refs as order IDs', () => {
     expect(reviewTransactionHash({ txHash: 'real-hash', sourceRef: 'synthetic-event' })).toBe('real-hash');
     expect(reviewTransactionHash({ sourceRef: 'legacy-chain-hash' })).toBe('legacy-chain-hash');
     expect(reviewTransactionHash({})).toBeUndefined();
+  });
+
+  it('keeps only chain-valid legacy source refs and rejects provider event ids', () => {
+    const evmHash = `0x${'a'.repeat(64)}`;
+    const btcHash = 'b'.repeat(64);
+    const cardanoHash = 'c'.repeat(64);
+    expect(reviewTransactionHash({ chain: 'ethereum', sourceRef: evmHash })).toBe(evmHash);
+    expect(reviewTransactionHash({ chain: 'bitcoin', sourceRef: btcHash })).toBe(btcHash);
+    expect(reviewTransactionHash({ chain: 'cardano', sourceRef: cardanoHash })).toBe(cardanoHash);
+    expect(reviewTransactionHash({ chain: 'ethereum', sourceRef: 'moralis:event:ethereum:erc20:17' })).toBeUndefined();
   });
 });
 
