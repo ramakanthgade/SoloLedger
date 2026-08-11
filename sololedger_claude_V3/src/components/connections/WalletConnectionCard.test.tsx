@@ -19,9 +19,9 @@ describe('WalletConnectionCard coverage copy', () => {
     vi.setSystemTime(NOW);
     render(<WalletConnectionCard card={card} expanded onExpandedChange={() => undefined} onOpenDetail={() => undefined} onOpenChainDetail={() => undefined} evidence={{
       currency: 'INR', summaries: [
-        { row: card.walletRows![0], transactionCount: 1, coverageStatus: 'complete', syncAt: NOW - 2 * 60 * 60_000, currentValue: 0, pricedAssetCount: 0, unpricedAssetCount: 0 },
-        { row: card.walletRows![1], transactionCount: 0, coverageStatus: 'partial', syncAt: NOW - 2 * 60 * 60_000, coverageReason: 'RPC rate limit', currentValue: null, pricedAssetCount: 0, unpricedAssetCount: 0 },
-        { row: card.walletRows![2], transactionCount: 0, coverageStatus: 'failed', syncAt: NOW - 2 * 60 * 60_000, currentValue: null, pricedAssetCount: 0, unpricedAssetCount: 0 }
+        { row: card.walletRows![0], transactionCount: 1, coverageStatus: 'complete', syncAt: NOW - 2 * 60 * 60_000, currentValue: 0, economicStatus: 'complete', economicEnabled: false, hasUnpricedLiabilities: false, pricedAssetCount: 0, unpricedAssetCount: 0 },
+        { row: card.walletRows![1], transactionCount: 0, coverageStatus: 'partial', syncAt: NOW - 2 * 60 * 60_000, coverageReason: 'RPC rate limit', currentValue: null, economicStatus: 'partial', economicEnabled: false, hasUnpricedLiabilities: false, pricedAssetCount: 0, unpricedAssetCount: 0 },
+        { row: card.walletRows![2], transactionCount: 0, coverageStatus: 'failed', syncAt: NOW - 2 * 60 * 60_000, currentValue: null, economicStatus: 'partial', economicEnabled: false, hasUnpricedLiabilities: false, pricedAssetCount: 0, unpricedAssetCount: 0 }
       ]
     }} />);
     expect(screen.getByText('Synced 2h ago')).toBeInTheDocument();
@@ -29,6 +29,31 @@ describe('WalletConnectionCard coverage copy', () => {
     expect(screen.getByText('RPC rate limit')).toBeInTheDocument();
     expect(screen.getByText('Try syncing again')).toBeInTheDocument();
     vi.useRealTimers();
+  });
+
+  it('labels an unpriced liability as a known subtotal instead of current wallet value', () => {
+    render(<WalletConnectionCard card={{ ...card, walletRows: [card.walletRows![0]] }} expanded={false}
+      onExpandedChange={() => undefined} onOpenDetail={() => undefined} onOpenChainDetail={() => undefined}
+      evidence={{ currency: 'INR', summaries: [{
+        row: card.walletRows![0], transactionCount: 1, currentValue: 25, economicStatus: 'partial', economicEnabled: true,
+        hasUnpricedLiabilities: true, pricedAssetCount: 1, unpricedAssetCount: 0
+      }] }} />);
+
+    expect(screen.getByText('Known subtotal · liability unpriced')).toBeInTheDocument();
+    expect(screen.queryByText('Current wallet value')).not.toBeInTheDocument();
+  });
+
+  it('labels fully priced numeric card and chain values as known subtotals when enabled DeFi evidence is partial', () => {
+    render(<WalletConnectionCard card={{ ...card, walletRows: [card.walletRows![0]] }} expanded
+      onExpandedChange={() => undefined} onOpenDetail={() => undefined} onOpenChainDetail={() => undefined}
+      evidence={{ currency: 'INR', summaries: [{
+        row: card.walletRows![0], transactionCount: 1, currentValue: 25, economicStatus: 'partial',
+        economicEnabled: true, hasUnpricedLiabilities: false, pricedAssetCount: 1, unpricedAssetCount: 0
+      }] }} />);
+
+    expect(screen.getAllByText('Known subtotal · DeFi evidence incomplete')).toHaveLength(2);
+    expect(screen.queryByText('Current wallet value')).not.toBeInTheDocument();
+    expect(screen.queryByText('Current chain value')).not.toBeInTheDocument();
   });
 
   it('portals every wallet action outside the clipped card and preserves keyboard navigation', () => {

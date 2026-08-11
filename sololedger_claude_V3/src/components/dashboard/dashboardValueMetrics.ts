@@ -1,5 +1,6 @@
 import type { ValuedHolding } from '@/lib/dashboard/dashboardModel';
 import type { EconomicExposureProjection } from '@/lib/portfolio/economicExposureProjection';
+import { knownWalletEconomicSubtotal } from '@/lib/portfolio/walletDefiProjection';
 
 /** Concise disclosure for conservative, stale, or incompletely valued projections. */
 export function economicExposureDisclosure(
@@ -32,18 +33,7 @@ export function knownEconomicSubtotal(
   projection: Pick<EconomicExposureProjection, 'assets' | 'liabilities' | 'netWorth'>,
   custodyCostFallbackById: ReadonlyMap<string, number>
 ): number {
-  if (projection.netWorth != null) return projection.netWorth;
-  const replacedCustodyIds = new Set([...projection.assets, ...projection.liabilities]
-    .flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : []));
-  const assets = projection.assets.reduce((sum, row) => {
-    if (row.kind === 'liquid' && replacedCustodyIds.has(row.id)) return sum;
-    if (row.contribution != null) return sum + row.contribution;
-    return row.kind === 'liquid' ? sum + (custodyCostFallbackById.get(row.id) ?? 0) : sum;
-  }, 0);
-  const liabilities = projection.liabilities.reduce(
-    (sum, row) => sum + (row.contribution ?? 0), 0
-  );
-  return assets + liabilities;
+  return knownWalletEconomicSubtotal(projection, custodyCostFallbackById);
 }
 
 /** Current DeFi economics are deliberately separate from historical lot/chart performance. */

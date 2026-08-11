@@ -521,6 +521,13 @@ describe('ConnectionDetail — wallet kind', () => {
     });
 
     render(<ConnectionDetail card={card} onBack={() => {}} />);
+    const identityRow = screen.getByTestId('wallet-identity-ownership-row');
+    expect(within(identityRow).getByRole('heading', { name: 'Second wallet' })).toBeInTheDocument();
+    const ownership = within(identityRow).getByTestId('account-ownership');
+    expect(ownership).toBeInTheDocument();
+    const memberList = within(ownership).getByRole('list', { name: 'Account members' });
+    expect(memberList).toHaveClass('flex', 'flex-nowrap', 'overflow-x-auto', 'whitespace-nowrap');
+    expect(memberList).not.toHaveClass('flex-wrap', 'max-h-14');
     fireEvent.click(screen.getByRole('button', { name: 'Edit ownership' }));
     fireEvent.click(screen.getByRole('button', { name: 'No, this is not mine' }));
     await waitFor(() => expect(mocks.updateAccountOwnership).toHaveBeenCalledWith(
@@ -668,34 +675,30 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(within(chips).getByText('3 transfers')).toBeInTheDocument();
     expect(within(chips).getByText('1 trade')).toBeInTheDocument();
 
-    // Positive custody is shown by default; the confirmed-zero address remains
-    // reachable through this component's local visibility control.
+    // Priced custody is shown by default; zero-valued and unpriced rows remain
+    // reachable through this chain's local visibility control.
     const groups = screen.getAllByTestId('detail-address-group');
     expect(groups).toHaveLength(1);
 
-    // Group 1 (bc1qaaa): BTC 0.5 × 9,000,000 = ₹45,00,000; DOGE at cost
-    // (per-unit ₹10 from t4); XYZ unpriced → '—' + disclosure.
+    // All positive liquid custody remains visible; only the confirmed zero is hidden.
     const g1 = groups[0];
     const btcRow = within(g1).getByText('BTC').closest('li')!;
     expect(btcRow).toHaveTextContent('0.5');
     expect(btcRow).toHaveTextContent('₹45,00,000.00');
     const dogeRow = within(g1).getByText('DOGE').closest('li')!;
     expect(dogeRow).toHaveTextContent('₹1,000.00 · at cost');
-    const xyzRow = within(g1).getByText('XYZ').closest('li')!;
-    expect(xyzRow).toHaveTextContent('—');
+    expect(within(g1).getByText('XYZ').closest('li')).toHaveTextContent('—');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show all Bitcoin assets' }));
     const expandedGroups = screen.getAllByTestId('detail-address-group');
-    expect(expandedGroups).toHaveLength(2);
-    expect(within(expandedGroups[0]).getByText('bc1qaa…1111')).toBeInTheDocument();
-    expect(within(expandedGroups[1]).getByText('bc1qbb…2222')).toBeInTheDocument();
-    const zeroRow = within(expandedGroups[1]).getByText('BTC').closest('li')!;
+    expect(expandedGroups).toHaveLength(1);
+    const zeroRow = within(expandedGroups[0]).getAllByText('BTC')[1].closest('li')!;
     expect(zeroRow).toHaveTextContent('0');
     expect(zeroRow).toHaveTextContent('₹0.00');
 
-    // An unpriced positive holding makes the aggregate unavailable; no partial
-    // numeric total is presented as complete.
-    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('—');
+    // The combined heading uses Dashboard's safe known subtotal, including the
+    // liquid custody cost fallback while leaving XYZ excluded.
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹45,01,000.00');
     expect(screen.getByTestId('detail-wallet-authority-status')).toHaveTextContent(
       'on-chain balances as of'
     );
@@ -752,7 +755,7 @@ describe('ConnectionDetail — wallet kind', () => {
     expect(screen.queryByText('No on-chain balances yet')).not.toBeInTheDocument();
     expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('₹0.00');
     expect(screen.queryByText('BTC')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Show all Bitcoin assets' }));
     expect(screen.getByText('BTC').closest('li')).toHaveTextContent('0');
     expect(screen.getByTestId('detail-wallet-authority-status')).toHaveTextContent('on-chain balances as of');
     expect(screen.queryByText(/estimated from ledger postings/i)).not.toBeInTheDocument();

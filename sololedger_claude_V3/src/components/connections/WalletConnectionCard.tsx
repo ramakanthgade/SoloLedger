@@ -4,7 +4,7 @@ import { CHAINS } from '@/lib/rpc/providers';
 import { BrandIcon, chainIconId } from './brandIcons';
 import { CardMenu, type CardMenuItem } from './CardMenu';
 import { relativeTime, shortAddress, type ConnectionCardData } from './connectionModel';
-import { aggregateWalletCurrentValue, aggregateWalletTransactionCount, type WalletChainSummary } from './walletChainModel';
+import { aggregateWalletEconomicEvidence, aggregateWalletTransactionCount, type WalletChainSummary } from './walletChainModel';
 
 export interface WalletConnectionCardEvidence {
   currency: string;
@@ -51,8 +51,10 @@ export function WalletConnectionCard({
   chainDetailButtonRef, menuItems, renaming, evidence
 }: WalletConnectionCardProps) {
   const currency = evidence?.currency ?? 'INR';
-  const total = evidence ? aggregateWalletCurrentValue(evidence.summaries) : null;
+  const economic = evidence ? aggregateWalletEconomicEvidence(evidence.summaries) : null;
+  const total = economic?.currentValue ?? null;
   const unpriced = evidence?.summaries.reduce((sum, chain) => sum + chain.unpricedAssetCount, 0) ?? 0;
+  const hasUnpricedLiabilities = economic?.hasUnpricedLiabilities ?? false;
   const transactionCount = evidence ? aggregateWalletTransactionCount(evidence.summaries) : undefined;
   const regionId = `wallet-chains-${card.id.replace(/[^a-zA-Z0-9_-]/g, '-')}`;
 
@@ -94,7 +96,13 @@ export function WalletConnectionCard({
             <strong className="block text-base tabular-figures text-hi">
               {evidence ? (total == null ? '—' : formatLedgerCurrency(total, currency)) : card.txLine}
             </strong>
-            {evidence ? (unpriced > 0 ? `${unpriced} unpriced · excluded` : 'Current wallet value') : 'Across all chains'}
+            {evidence ? hasUnpricedLiabilities
+              ? 'Known subtotal · liability unpriced'
+              : economic?.enabled && economic.status !== 'complete' && total != null
+                ? 'Known subtotal · DeFi evidence incomplete'
+              : total == null
+                ? 'Current wallet value unknown'
+                : unpriced > 0 ? `${unpriced} unpriced · known subtotal` : 'Current wallet value' : 'Across all chains'}
           </span>
         </button>
         <span className="flex items-start justify-end">
@@ -163,12 +171,14 @@ export function WalletConnectionCard({
                     {chain.currentValue == null ? '—' : formatLedgerCurrency(chain.currentValue, currency)}
                   </strong>
                   <small className="block text-[10px] text-low">
-                    {chain.currentValue == null
-                      ? chain.unpricedAssetCount > 0
-                        ? `${chain.unpricedAssetCount} unpriced · excluded`
-                        : 'Current value unknown'
+                    {chain.hasUnpricedLiabilities
+                      ? 'Known subtotal · liability unpriced'
+                      : chain.economicEnabled && chain.economicStatus !== 'complete' && chain.currentValue != null
+                        ? 'Known subtotal · DeFi evidence incomplete'
+                      : chain.currentValue == null
+                      ? 'Current value unknown'
                       : chain.unpricedAssetCount > 0
-                        ? `${chain.unpricedAssetCount} unpriced · excluded`
+                        ? `${chain.unpricedAssetCount} unpriced · known subtotal`
                         : 'Current chain value'}
                   </small>
                 </div>

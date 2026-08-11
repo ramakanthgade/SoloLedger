@@ -3,11 +3,13 @@ import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import type { AuthorityAssetRow, AuthoritySnapshotRow } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
 import type { Transaction } from '@/types/transaction';
+import type { DefiPositionRow, DefiPositionSnapshot } from '@/lib/defi/types';
 import type { ConnectionCardData } from './connectionModel';
 import type { ConnectionWorkspaceMetrics } from './connectionWorkspaceModel';
 import {
   aggregateWalletTransactionCount,
   aggregateWalletCurrentValue,
+  aggregateWalletEconomicEvidence,
   buildWalletChainSummaries,
   prepareWalletChainCollectionEvidence
 } from './walletChainModel';
@@ -133,34 +135,57 @@ describe('wallet chain summaries', () => {
   it.each([
     ['never synced', { lastSyncedAt: 0 }],
     ['synced but missing current balance evidence', { lastSyncedAt: 1_800_000 }]
-  ])('shows unknown for %s instead of manufacturing zero', (_label, row) => {
+  ])('keeps current value unknown for %s', (_label, row) => {
     const target = card(ADDRESS, ['polygon']);
     target.walletRows = [{ ...target.walletRows![0], ...row }];
     const [summary] = buildWalletChainSummaries(target, evidence({ card: target }), NOW);
     expect(summary).toMatchObject({ currentValue: null, pricedAssetCount: 0, unpricedAssetCount: 0 });
   });
 
-  it('shows unknown when exhaustive current holdings are wholly unpriced', () => {
+  it('shows a safe known subtotal when exhaustive current holdings are wholly unpriced', () => {
     const target = card(ADDRESS, ['ethereum']);
     const current = authority('ethereum', ADDRESS, [{ asset: 'UNKNOWN', quantity: 2 }]);
     const [summary] = buildWalletChainSummaries(target, evidence({
       card: target, authorities: [current], transactions: [transaction({ asset: 'UNKNOWN' })]
     }), NOW);
-    expect(summary).toMatchObject({ currentValue: null, pricedAssetCount: 0, unpricedAssetCount: 1 });
+    expect(summary).toMatchObject({ currentValue: 0, pricedAssetCount: 0, unpricedAssetCount: 1 });
+  });
+
+  it('does not present a stale exhaustive snapshot or posting fallback as current value', () => {
+    const target = card(ADDRESS, ['ethereum']);
+    const stale = authority('ethereum', ADDRESS, [{ asset: 'ETH', quantity: 9 }]);
+    stale.snapshot.asOf = NOW - 24 * 60 * 60_000 - 1;
+    stale.snapshot.capturedAt = stale.snapshot.asOf;
+    const [summary] = buildWalletChainSummaries(target, evidence({
+      card: target,
+      authorities: [stale],
+      transactions: [transaction({ amount: 2 })],
+      priceRows: [{ key: 'spot:sym:ETH:INR', price: 250_000, fetchedAt: NOW }]
+    }), NOW);
+
+    expect(summary.currentValue).toBeNull();
   });
 
   it('preserves unknown in the wallet aggregate instead of coercing it to zero', () => {
     expect(aggregateWalletCurrentValue([
-      { row: card().walletRows![0], transactionCount: 1, currentValue: 25, pricedAssetCount: 1, unpricedAssetCount: 0 },
-      { row: card().walletRows![1], transactionCount: 0, currentValue: null, pricedAssetCount: 0, unpricedAssetCount: 0 }
+      { row: card().walletRows![0], transactionCount: 1, currentValue: 25, economicStatus: 'complete', economicEnabled: false, hasUnpricedLiabilities: false, pricedAssetCount: 1, unpricedAssetCount: 0 },
+      { row: card().walletRows![1], transactionCount: 0, currentValue: null, economicStatus: 'partial', economicEnabled: false, hasUnpricedLiabilities: false, pricedAssetCount: 0, unpricedAssetCount: 0 }
     ])).toBeNull();
+  });
+
+  it('aggregates economic status and unpriced-liability honesty for the wallet card', () => {
+    const rows = card().walletRows!;
+    expect(aggregateWalletEconomicEvidence([
+      { row: rows[0], transactionCount: 1, currentValue: 25, economicStatus: 'complete', economicEnabled: false, hasUnpricedLiabilities: false, pricedAssetCount: 1, unpricedAssetCount: 0 },
+      { row: rows[1], transactionCount: 0, currentValue: 10, economicStatus: 'partial', economicEnabled: false, hasUnpricedLiabilities: true, pricedAssetCount: 1, unpricedAssetCount: 0 }
+    ])).toEqual({ currentValue: 35, status: 'partial', enabled: false, hasUnpricedLiabilities: true });
   });
 
   it('derives the collapsed wallet count from the same per-chain evidence as the expanded rows', () => {
     const rows = card().walletRows!;
     expect(aggregateWalletTransactionCount([
-      { row: rows[0], transactionCount: 702, currentValue: 0, pricedAssetCount: 0, unpricedAssetCount: 0 },
-      { row: rows[1], transactionCount: 207, currentValue: 0, pricedAssetCount: 0, unpricedAssetCount: 0 }
+      { row: rows[0], transactionCount: 702, currentValue: 0, economicStatus: 'complete', economicEnabled: false, hasUnpricedLiabilities: false, pricedAssetCount: 0, unpricedAssetCount: 0 },
+      { row: rows[1], transactionCount: 207, currentValue: 0, economicStatus: 'complete', economicEnabled: false, hasUnpricedLiabilities: false, pricedAssetCount: 0, unpricedAssetCount: 0 }
     ])).toBe(909);
   });
 
@@ -180,5 +205,54 @@ describe('wallet chain summaries', () => {
     buildWalletChainSummaries(second, shared, NOW);
     expect(counter.attributionResolutionVisits).toBe(2);
     expect(shared.collectionIndex.transactionIdsByWallet.size).toBe(2);
+  });
+
+  it('matches the detail/Dashboard complete-manifest economic total on a wallet card', () => {
+    vi.setSystemTime(NOW);
+    const target = card(ADDRESS, ['ethereum']);
+    const authorityScope = `wallet:${canonicalWalletIdentity('ethereum', ADDRESS)}`;
+    const accountScope = `wallet:evm:${ADDRESS}`;
+    const usdc = `0x${'2'.repeat(40)}`;
+    const receipt = `0x${'3'.repeat(40)}`;
+    const custody = authority('ethereum', ADDRESS, [{ asset: 'USDC', quantity: 50 }]);
+    const snapshot = (snapshotId: string, protocolId: DefiPositionSnapshot['protocolId']): DefiPositionSnapshot => ({
+      snapshotId, generation: 1, accountIdentityScope: accountScope, protocolId, chainId: 1,
+      status: 'complete', capturedAt: NOW, blockNumber: 1,
+      evidence: [{ provider: 'ethereum-rpc', status: 'complete', blockNumber: 1, detail: 'fixture' }]
+    });
+    const token = (contractAddress: string, symbol: string) => ({ chainId: 1 as const, contractAddress, symbol, decimals: 6 });
+    const rows: DefiPositionRow[] = [{
+      id: 'supply', snapshotId: 'aave-v3', protocolId: 'aave-v3-ethereum', reserveKey: usdc,
+      role: 'supply', underlying: token(usdc, 'USDC'), protocolToken: token(receipt, 'aUSDC'),
+      quantity: 100, rawQuantity: '100000000', isCollateral: true
+    }, {
+      id: 'debt', snapshotId: 'aave-v3', protocolId: 'aave-v3-ethereum', reserveKey: usdc,
+      role: 'debt', underlying: token(usdc, 'USDC'), protocolToken: token(`0x${'4'.repeat(40)}`, 'variableDebtUSDC'),
+      quantity: 90, rawQuantity: '90000000', debtRateMode: 'variable'
+    }];
+    const shared = evidence({
+      card: target,
+      authorities: [custody],
+      transactions: [transaction({ asset: 'USDC', amount: 50, contractAddress: usdc })],
+      priceRows: [
+        { key: 'spot:sym:USDC:INR', price: 83, fetchedAt: NOW },
+        { key: `spot:ctr:ethereum:${usdc}:INR`, price: 83, fetchedAt: NOW }
+      ]
+    });
+    shared.defiNetWorthEnabled = true;
+    shared.defiPositionSnapshots = [
+      snapshot('aave-v2', 'aave-v2-ethereum'), snapshot('aave-v3', 'aave-v3-ethereum'),
+      snapshot('spark', 'spark-v1-ethereum')
+    ];
+    shared.defiPositionRows = rows;
+    shared.walletDefiRefreshManifests = [{
+      accountIdentityScope: accountScope, custodyScopeId: authorityScope,
+      custodySnapshotId: custody.snapshot.snapshotId, custodyGeneration: 1, custodyAsOf: custody.snapshot.asOf!,
+      capturedAt: NOW, blockNumber: 1,
+      protocolSnapshotIds: { 'aave-v2-ethereum': 'aave-v2', 'aave-v3-ethereum': 'aave-v3', 'spark-v1-ethereum': 'spark' }
+    }];
+
+    expect(buildWalletChainSummaries(target, shared, NOW)[0].currentValue).toBe(4_980);
+    vi.useRealTimers();
   });
 });
