@@ -44,6 +44,17 @@ describe('next-five engine plans', () => {
     expect(resumed.nextFiveCheckpoint).toBeUndefined();
   });
 
+  it('Bitrue emits valid continuation at a currency boundary and retains only valid state on failure', async () => {
+    const client = baseClient({ fetchDeposits: vi.fn(async () => []) });
+    const boundary = await fetchTransferKind(client, 'bitrue', 'deposits', 1, 20, ['BTC', 'ETH'], [], NO_SLEEP,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 1);
+    expect(boundary.nextFiveCheckpoint).toMatchObject({ items: ['BTC', 'ETH'], itemIndex: 1, offset: 0 });
+    expect(boundary.nextFiveCheckpoint?.lastId).toBeUndefined();
+    client.fetchDeposits = vi.fn(async () => [{ timestamp: 10 }]) as ExchangeClient['fetchDeposits'];
+    const failed = await fetchTransferKind(client, 'bitrue', 'deposits', 1, 20, ['BTC'], [], NO_SLEEP);
+    expect(failed.nextFiveCheckpoint).toBeUndefined();
+  });
+
   it('CoinSpot uses only the read-only raw deposit adapter and filters the requested time range', async () => {
     const client = baseClient({
       fetchCoinspotDeposits: vi.fn(async () => ({ status: 'ok', deposits: [
@@ -87,24 +98,28 @@ describe('next-five engine plans', () => {
   });
 
   it('LBank trades split history into windows below the documented two-day cap', async () => {
-    const windows: Array<[string | undefined, string | undefined, number | undefined]> = [];
+    const windows: Array<[number | undefined, string | undefined, number | undefined]> = [];
     const client = baseClient({
-      fetchMyTrades: vi.fn(async (_symbol, _since, _limit, params) => {
-        windows.push([params?.start_date as string, params?.end_date as string, params?.from as number]);
+      fetchMyTrades: vi.fn(async (_symbol, since, _limit, params) => {
+        windows.push([since, params?.end_date as string, params?.from as number]);
+        client.last_json_response = { data: [] };
         return [] as UnifiedTrade[];
       })
     });
     const start = Date.UTC(2024, 0, 1);
     const outcome = await fetchTradesForSymbol(client, 'lbank', 'BTC/USDT', start, start + 4 * 86_400_000);
     expect(windows.length).toBeGreaterThan(2);
-    expect(windows.every(([startDate, endDate]) => startDate === endDate)).toBe(true);
-    expect(windows.map(([startDate]) => startDate)).toEqual([...new Set(windows.map(([startDate]) => startDate))]);
+    expect(windows.every(([dayStart, endDate]) => new Date(dayStart!).toISOString().slice(0, 10) === endDate)).toBe(true);
+    expect(windows.map(([dayStart]) => dayStart)).toEqual([...new Set(windows.map(([dayStart]) => dayStart))]);
     expect(outcome).toMatchObject({ partial: true, termination: 'retention_unverified' });
   });
 
   it('Phemex transfer history rejects rows without immutable ids', async () => {
     const client = baseClient({
-      fetchWithdrawals: vi.fn(async () => [{ timestamp: 10, currency: 'BTC', amount: 1 }] as UnifiedTransfer[])
+      fetchWithdrawals: vi.fn(async () => {
+        client.last_json_response = { data: [{ txHash: 'raw-1' }] };
+        return [{ timestamp: 10, currency: 'BTC', amount: 1 }] as UnifiedTransfer[];
+      })
     });
     const outcome = await fetchTransferKind(client, 'phemex', 'withdrawals', 1, 20, [], [], NO_SLEEP);
     expect(outcome).toMatchObject({ rows: [], partial: true, termination: 'nonadvancing' });
@@ -112,11 +127,71 @@ describe('next-five engine plans', () => {
 
   it.each([
     ['future', { id: '1', timestamp: 21, currency: 'BTC', amount: 1 }],
-    ['before frozen range', { id: '1', timestamp: 0, currency: 'BTC', amount: 1 }],
-    ['malformed', { id: '1', timestamp: 1.5, currency: 'BTC', amount: 1 }]
-  ])('Phemex transfers fail closed on %s timestamps', async (_label, row) => {
-    const client = baseClient({ fetchDeposits: vi.fn(async () => [row] as UnifiedTransfer[]) });
+    ['before frozen range', { id: '1', timestamp: 0, currency: 'BTC', amount: 1 }]
+  ])('Phemex transfers ignore legitimate rows %s', async (_label, row) => {
+    const client = baseClient({ fetchDeposits: vi.fn(async () => {
+      client.last_json_response = { data: [{ id: '1' }] };
+      return [row] as UnifiedTransfer[];
+    }) });
+    expect(await fetchTransferKind(client, 'phemex', 'deposits', 1, 20, [], [], NO_SLEEP))
+      .toMatchObject({ rows: [], partial: true, termination: 'retention_unverified' });
+  });
+
+  it('Phemex transfers fail closed on malformed timestamps', async () => {
+    const client = baseClient({ fetchDeposits: vi.fn(async () => {
+      client.last_json_response = { data: [{ id: '1' }] };
+      return [{ id: '1', timestamp: 1.5 }] as UnifiedTransfer[];
+    }) });
     expect(await fetchTransferKind(client, 'phemex', 'deposits', 1, 20, [], [], NO_SLEEP))
       .toMatchObject({ rows: [], partial: true, termination: 'nonadvancing' });
+  });
+
+  it('Phemex puts the page limit in signed params and checkpoints an immutable raw id', async () => {
+    const client = baseClient({ fetchDeposits: vi.fn(async (_code, _since, _limit, params) => {
+      expect(params).toMatchObject({ limit: 200, offset: 0 });
+      client.last_json_response = { data: Array.from({ length: 200 }, (_, i) => ({ id: String(i) })) };
+      return [{ id: '0', timestamp: 10 }] as UnifiedTransfer[];
+    }) });
+    const outcome = await fetchTransferKind(client, 'phemex', 'deposits', 1, 20, [], [], NO_SLEEP,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 1);
+    expect(outcome).toMatchObject({ termination: 'page_budget', nextFiveCheckpoint: { lastId: '199' } });
+    expect(outcome.nextFiveCheckpoint).not.toHaveProperty('offset');
+  });
+
+  it('Phemex replays from zero to an immutable anchor and retains late in-range rows', async () => {
+    const offsets: number[] = [];
+    const client = baseClient({ fetchDeposits: vi.fn(async (_code, _since, _limit, params) => {
+      const offset = Number(params?.offset ?? 0);
+      offsets.push(offset);
+      const ids = offset === 0
+        ? Array.from({ length: 200 }, (_, i) => `new-${i}`)
+        : ['anchor', ...Array.from({ length: 199 }, (_, i) => `continued-${i}`)];
+      client.last_json_response = { data: ids.map((id) => ({ id })) };
+      return ids.map((id) => ({ id, timestamp: 10 })) as UnifiedTransfer[];
+    }) });
+    const outcome = await fetchTransferKind(client, 'phemex', 'deposits', 1, 20, [], [], NO_SLEEP,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      { start: 1, end: 20, lastId: 'anchor' }, 1);
+    expect(offsets).toEqual([0, 200]);
+    expect(outcome.rows.map((row) => row.id)).toEqual([
+      ...Array.from({ length: 200 }, (_, i) => `new-${i}`),
+      'anchor', ...Array.from({ length: 199 }, (_, i) => `continued-${i}`)
+    ]);
+    expect(outcome.nextFiveCheckpoint?.lastId).toBe('continued-198');
+  });
+
+  it('Phemex retains the immutable checkpoint when the anchor disappears', async () => {
+    const client = baseClient({ fetchDeposits: vi.fn(async (_code, _since, _limit, params) => {
+      const offset = Number(params?.offset ?? 0);
+      const ids = offset === 0 ? Array.from({ length: 200 }, (_, i) => `other-${i}`) : [];
+      client.last_json_response = { data: ids.map((id) => ({ id })) };
+      return ids.map((id) => ({ id, timestamp: 10 })) as UnifiedTransfer[];
+    }) });
+    const checkpoint = { start: 1, end: 20, lastId: 'missing-anchor' };
+    const outcome = await fetchTransferKind(client, 'phemex', 'deposits', 1, 20, [], [], NO_SLEEP,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      checkpoint, 1);
+    expect(outcome).toMatchObject({ termination: 'nonadvancing', nextFiveCheckpoint: checkpoint });
+    expect(outcome.rows).toHaveLength(200);
   });
 });

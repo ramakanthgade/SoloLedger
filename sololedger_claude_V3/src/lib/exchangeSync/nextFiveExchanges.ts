@@ -1,5 +1,6 @@
 import type { ExchangeClient, UnifiedTrade, UnifiedTransfer } from './ccxtLoader';
 import type { SafeHistoryOutcome } from './fiveExchanges';
+import type { ExchangeId } from './types';
 
 function object(value: unknown): Record<string, unknown> | null {
   return value != null && typeof value === 'object' && !Array.isArray(value)
@@ -60,16 +61,52 @@ export interface NextFiveProgress {
   withdrawals?: NextFivePageCheckpoint;
 }
 
-export function validNextFiveProgress(value: NextFiveProgress | undefined): boolean {
+export function validNextFiveProgress(exchange: ExchangeId, value: NextFiveProgress | undefined): boolean {
   if (value == null) return true;
-  return Object.values(value).every((checkpoint) => checkpoint == null || (
+  if (Object.keys(value).some((endpoint) => !['trades', 'deposits', 'withdrawals'].includes(endpoint))) return false;
+  return Object.entries(value).every(([endpoint, checkpoint]) => checkpoint == null || (
     Number.isSafeInteger(checkpoint.start) && Number.isSafeInteger(checkpoint.end) && checkpoint.start <= checkpoint.end &&
-    (checkpoint.items == null || (Array.isArray(checkpoint.items) && checkpoint.items.every((item: unknown) => typeof item === 'string'))) &&
+    (checkpoint.items == null || (Array.isArray(checkpoint.items) && checkpoint.items.length > 0 &&
+      checkpoint.items.every((item: unknown) => typeof item === 'string' && item.length > 0) &&
+      new Set(checkpoint.items).size === checkpoint.items.length)) &&
     [checkpoint.itemIndex, checkpoint.offset, checkpoint.page, checkpoint.expectedTotal, checkpoint.dayStart, checkpoint.from]
       .every((item) => item == null || (Number.isSafeInteger(item) && item >= 0)) &&
     (checkpoint.nativeCursor == null || typeof checkpoint.nativeCursor === 'string') &&
-    (checkpoint.lastId == null || typeof checkpoint.lastId === 'string')
+    (checkpoint.lastId == null || typeof checkpoint.lastId === 'string') &&
+    validCheckpointFor(exchange, endpoint as keyof NextFiveProgress, checkpoint)
   ));
+}
+
+function validCheckpointFor(exchange: ExchangeId, endpoint: keyof NextFiveProgress, checkpoint: NextFivePageCheckpoint): boolean {
+  const keys = new Set(Object.entries(checkpoint).filter(([, value]) => value != null).map(([key]) => key));
+  const only = (...allowed: Array<keyof NextFivePageCheckpoint>) =>
+    [...keys].every((key) => allowed.includes(key as keyof NextFivePageCheckpoint));
+  if (exchange === 'bitrue') {
+    return !!checkpoint.items && checkpoint.itemIndex != null && checkpoint.itemIndex < checkpoint.items.length &&
+      checkpoint.offset != null && checkpoint.offset % 1000 === 0 &&
+      ((checkpoint.offset === 0 && checkpoint.lastId == null) || (checkpoint.offset >= 1000 && !!checkpoint.lastId)) &&
+      only('start', 'end', 'items', 'itemIndex', 'offset', 'lastId');
+  }
+  if (exchange === 'xt') return !!checkpoint.nativeCursor && only('start', 'end', 'nativeCursor');
+  if (exchange === 'phemex') {
+    return endpoint === 'trades'
+      ? checkpoint.offset != null && checkpoint.offset >= 200 && checkpoint.offset % 200 === 0 &&
+        !!checkpoint.lastId && only('start', 'end', 'offset', 'lastId')
+      : !!checkpoint.lastId && only('start', 'end', 'lastId');
+  }
+  if (exchange === 'lbank' && endpoint === 'trades') {
+    return !!checkpoint.items && checkpoint.itemIndex != null && checkpoint.itemIndex < checkpoint.items.length &&
+      checkpoint.dayStart != null && checkpoint.dayStart % DAY_MS === 0 &&
+      checkpoint.dayStart >= utcDay(checkpoint.start) && checkpoint.dayStart <= utcDay(checkpoint.end) &&
+      (checkpoint.from ?? 0) % 100 === 0 &&
+      ((checkpoint.from ?? 0) === 0 || !!checkpoint.lastId) &&
+      only('start', 'end', 'items', 'itemIndex', 'dayStart', 'from', 'lastId');
+  }
+  if (exchange === 'lbank') {
+    return checkpoint.page != null && checkpoint.page >= 2 && checkpoint.expectedTotal != null && checkpoint.expectedTotal > 0 &&
+      only('start', 'end', 'page', 'expectedTotal');
+  }
+  return false;
 }
 
 function stableEconomicKey(parts: unknown[]): string {
@@ -89,6 +126,16 @@ export function assignCoinspotTradeIds(rows: UnifiedTrade[]): UnifiedTrade[] {
     occurrences.set(key, ordinal);
     return { ...row, id: `coinspot-trade:${key}:${ordinal}` };
   });
+}
+
+/** Phemex wallet endpoints paginate by raw response rows, not parsed rows. */
+export function phemexTransferPageEvidence(response: unknown): { known: boolean; count: number; ids: string[] } {
+  const envelope = object(response);
+  const data = envelope?.data;
+  const rawRows = list(data) ?? list(object(data)?.rows);
+  if (!rawRows) return { known: false, count: 0, ids: [] };
+  const ids = rawRows.map((row) => text(row.id, row.withdrawalId, row.depositId, row.txHash) ?? '');
+  return { known: ids.every(Boolean) && new Set(ids).size === ids.length, count: rawRows.length, ids };
 }
 
 /**
@@ -209,6 +256,9 @@ export async function paginateLbankPages<T extends { id?: string; txid?: string;
       return { rows, maxTs: maxTs(rows), partial: true, termination: 'nonadvancing' };
     }
     expectedTotal ??= total;
+    if (expectedTotal === 0 && page === 1 && batch.length === 0) {
+      return { rows: [], maxTs: null, partial: false, termination: 'exhausted' };
+    }
     for (const row of batch) {
       const id = text(row.id, row.txid);
       if (!id || seen.has(id)) return { rows, maxTs: maxTs(rows), partial: true, termination: 'nonadvancing' };
@@ -248,31 +298,40 @@ export async function paginateLbankTrades(args: {
   if (args.lastId) seen.add(args.lastId);
   let dayStart = args.dayStart ?? utcDay(args.start);
   let from = args.from ?? 0;
+  let lastRawId = args.lastId;
   let requests = 0;
   const budget = args.budget ?? 500;
   while (dayStart <= utcDay(args.end) && requests < budget) {
-    const batch = await args.client.fetchMyTrades(args.symbol, undefined, 100, {
-      start_date: ymd(dayStart), end_date: ymd(dayStart), from, direct: 'next', size: 100
+    const batch = await args.client.fetchMyTrades(args.symbol, dayStart, 100, {
+      end_date: ymd(dayStart), from, direct: 'next', size: 100
     });
     requests += 1;
+    const envelope = object(args.client.last_json_response);
+    const rawRows = list(envelope?.data);
+    if (!rawRows) return { rows, maxTs: maxTs(rows), partial: true, termination: 'nonadvancing' };
+    const rawIds = rawRows.map((row) => text(row.txUuid, row.tradeId, row.id) ?? '');
+    if (rawIds.some((id) => !id || seen.has(id)) || new Set(rawIds).size !== rawIds.length) {
+      return { rows, maxTs: maxTs(rows), partial: true, termination: 'nonadvancing' };
+    }
+    rawIds.forEach((id) => seen.add(id));
+    lastRawId = rawIds[rawIds.length - 1] ?? lastRawId;
     for (const row of batch) {
       const id = text(row.id);
-      if (!id || seen.has(id) || row.timestamp == null || row.timestamp < args.start || row.timestamp > args.end) {
+      if (!id || !rawIds.includes(id) || row.timestamp == null) {
         return { rows, maxTs: maxTs(rows), partial: true, termination: 'nonadvancing' };
       }
-      seen.add(id);
-      rows.push(row);
+      if (row.timestamp >= args.start && row.timestamp <= args.end) rows.push(row);
     }
-    if (batch.length < 100) {
+    if (rawRows.length < 100) {
       dayStart += DAY_MS;
       from = 0;
     } else {
-      from += batch.length;
+      from += rawRows.length;
     }
   }
   if (dayStart <= utcDay(args.end)) {
     return { rows, maxTs: maxTs(rows), partial: true, termination: 'page_budget',
-      checkpoint: { dayStart, from, lastId: rows[rows.length - 1]?.id } };
+      checkpoint: { dayStart, from, lastId: lastRawId } };
   }
   return { rows, maxTs: maxTs(rows), partial: false, termination: 'exhausted' };
 }

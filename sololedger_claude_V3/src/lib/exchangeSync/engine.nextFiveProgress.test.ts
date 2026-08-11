@@ -21,15 +21,21 @@ function phemexClient(offsets: number[]): ExchangeClient {
     ? Array.from({ length: 200 }, (_, i) => ({ id: `${kind}-${i}`, timestamp: START + i,
         currency: 'BTC', amount: 1, type: kind, status: 'ok', info: { status: 'ok' } }))
     : [];
-  return {
+  const client = {
     id: 'phemex', markets: { 'BTC/USDT': market },
     loadMarkets: vi.fn(async () => ({ 'BTC/USDT': market })),
     fetchBalance: vi.fn(async () => ({ total: { BTC: 1 } })),
     fetchDeposits: vi.fn(async (_code, _since, _limit, params) => {
-      const offset = Number(params?.offset ?? 0); offsets.push(offset); return transfers('deposit', offset);
+      const offset = Number(params?.offset ?? 0); offsets.push(offset);
+      const rows = transfers('deposit', offset);
+      client.last_json_response = { data: rows.map((row) => ({ id: row.id })) };
+      return rows;
     }),
     fetchWithdrawals: vi.fn(async (_code, _since, _limit, params) => {
-      const offset = Number(params?.offset ?? 0); offsets.push(offset); return transfers('withdrawal', offset);
+      const offset = Number(params?.offset ?? 0); offsets.push(offset);
+      const rows = transfers('withdrawal', offset);
+      client.last_json_response = { data: rows.map((row) => ({ id: row.id })) };
+      return rows;
     }),
     fetchMyTrades: vi.fn(async (_symbol, _since, _limit, params) => {
       const offset = Number(params?.offset ?? 0); offsets.push(offset);
@@ -39,6 +45,7 @@ function phemexClient(offsets: number[]): ExchangeClient {
     }),
     fetch: vi.fn(), handleRestResponse: vi.fn()
   } as ExchangeClient;
+  return client;
 }
 
 describe('next-five durable continuation', () => {
@@ -56,8 +63,8 @@ describe('next-five durable continuation', () => {
     });
     expect(firstOffsets).toEqual([0, 0, 0]);
     expect((await db.exchangeConnections.get(view.id))?.nextFiveProgress).toEqual({
-      deposits: { start: START - 7 * 86_400_000, end: NOW, offset: 200, lastId: 'deposit-199' },
-      withdrawals: { start: START - 7 * 86_400_000, end: NOW, offset: 200, lastId: 'withdrawal-199' },
+      deposits: { start: START - 7 * 86_400_000, end: NOW, lastId: 'deposit-199' },
+      withdrawals: { start: START - 7 * 86_400_000, end: NOW, lastId: 'withdrawal-199' },
       trades: { start: START - 300_000, end: NOW, offset: 200, lastId: 'trade-199' }
     });
 
@@ -65,7 +72,7 @@ describe('next-five durable continuation', () => {
     await syncConnection(view.id, { mode: 'commit' }, {}, {
       now: () => NOW, sleep: async () => {}, createClient: async () => phemexClient(resumedOffsets), nextFiveMaxRequests: 1
     });
-    expect(resumedOffsets).toEqual([200, 200, 200]);
+    expect(resumedOffsets).toEqual([0, 200, 0, 200, 200]);
     const saved = await db.exchangeConnections.get(view.id);
     expect(saved?.nextFiveProgress).toEqual({ deposits: undefined, withdrawals: undefined, trades: undefined });
     expect(saved?.cursors).toEqual({ trades: NOW, deposits: NOW, withdrawals: NOW });

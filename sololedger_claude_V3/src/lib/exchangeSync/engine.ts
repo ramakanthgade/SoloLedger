@@ -139,7 +139,7 @@ import {
 } from './roundFiveExchanges';
 import {
   assignCoinspotTradeIds, paginateLbankPages, paginateLbankTrades, paginateXtNative,
-  parseCoinspotTransferEnvelope, validNextFiveProgress, type NextFiveProgress
+  parseCoinspotTransferEnvelope, phemexTransferPageEvidence, validNextFiveProgress, type NextFiveProgress
 } from './nextFiveExchanges';
 
 // ---- Pinned constants (§B-3) ----
@@ -3037,8 +3037,7 @@ export async function fetchTransferKind(
       if (ids.some((id) => !id) || new Set(ids).size !== ids.length ||
         (lastId && ids.includes(lastId))) {
         return { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'nonadvancing',
-          nextFiveCheckpoint: { start: frozenStart, end: frozenEnd, items: currencyUniverse, itemIndex, offset,
-            lastId } };
+          nextFiveCheckpoint };
       }
       rows.push(...page);
       if (page.length < 1000) { itemIndex += 1; offset = 0; lastId = undefined; }
@@ -3074,21 +3073,43 @@ export async function fetchTransferKind(
   if (exchange === 'phemex') {
     const frozenStart = nextFiveCheckpoint?.start ?? since;
     const frozenEnd = nextFiveCheckpoint?.end ?? now;
-    const offset = nextFiveCheckpoint?.offset ?? 0;
-    const rows = fetchDeposits
-      ? await client.fetchDeposits(undefined, frozenStart, 200, { end: frozenEnd, offset })
-      : await client.fetchWithdrawals(undefined, frozenStart, 200, { end: frozenEnd, offset });
-    const unsafe = rows.some((item) => !item.id || item.timestamp == null || !Number.isSafeInteger(item.timestamp) ||
-      item.timestamp < frozenStart || item.timestamp > frozenEnd);
-    const ids = rows.map((item) => String(item.id ?? ''));
-    const nonadvancing = unsafe || new Set(ids).size !== ids.length ||
-      (!!nextFiveCheckpoint?.lastId && ids.includes(nextFiveCheckpoint.lastId));
-    if (!nonadvancing && rows.length === 200) return { rows, maxTs: maxTimestamp(rows), partial: true,
-      termination: 'page_budget', nextFiveCheckpoint: { start: frozenStart, end: frozenEnd, offset: offset + rows.length,
-        lastId: rows[rows.length - 1]?.id } };
-    return { rows: nonadvancing ? [] : rows, maxTs: nonadvancing ? null : maxTimestamp(rows), partial: true,
-      termination: nonadvancing ? 'nonadvancing' : 'retention_unverified',
-      nextFiveCheckpoint: nonadvancing ? { start: frozenStart, end: frozenEnd, offset, lastId: nextFiveCheckpoint?.lastId } : undefined };
+    const rows: UnifiedTransfer[] = [];
+    const seenRawIds = new Set<string>();
+    const anchor = nextFiveCheckpoint?.lastId;
+    let foundAnchor = anchor == null;
+    let offset = 0;
+    let forwardRequests = 0;
+    for (let request = 0; request < 500 + nextFiveMaxRequests; request += 1) {
+      const foundBeforePage = foundAnchor;
+      const page = fetchDeposits
+        ? await client.fetchDeposits(undefined, frozenStart, 200, { offset, limit: 200 })
+        : await client.fetchWithdrawals(undefined, frozenStart, 200, { offset, limit: 200 });
+      const rawPage = phemexTransferPageEvidence(client.last_json_response);
+      const pageIds = page.map((item) => String(item.id ?? ''));
+      const malformed = !rawPage.known || rawPage.ids.some((id) => seenRawIds.has(id)) ||
+        page.some((item) => !item.id || item.timestamp == null || !Number.isSafeInteger(item.timestamp)) ||
+        new Set(pageIds).size !== pageIds.length || pageIds.some((id) => !rawPage.ids.includes(id));
+      if (malformed) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing',
+        nextFiveCheckpoint };
+      rawPage.ids.forEach((id) => seenRawIds.add(id));
+      const anchorIndex = foundAnchor ? -1 : rawPage.ids.indexOf(anchor!);
+      if (anchorIndex >= 0) foundAnchor = true;
+      rows.push(...page.filter((item) =>
+        item.timestamp! >= frozenStart && item.timestamp! <= frozenEnd));
+      const progressedPastAnchor = foundBeforePage || (anchorIndex >= 0 && anchorIndex < rawPage.count - 1);
+      if (progressedPastAnchor) forwardRequests += 1;
+      if (rawPage.count < 200) {
+        if (!foundAnchor) return { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'nonadvancing',
+          nextFiveCheckpoint };
+        return { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'retention_unverified' };
+      }
+      offset += rawPage.count;
+      if (foundAnchor && forwardRequests >= nextFiveMaxRequests) {
+        return { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'page_budget',
+          nextFiveCheckpoint: { start: frozenStart, end: frozenEnd, lastId: rawPage.ids[rawPage.ids.length - 1] } };
+      }
+    }
+    return { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'page_budget', nextFiveCheckpoint };
   }
   if (exchange === 'lbank') {
     const frozenStart = nextFiveCheckpoint?.start ?? since;
@@ -3401,7 +3422,7 @@ export async function fetchTradesForSymbol(
       const unsafe = ids.some((id) => !id) || new Set(ids).size !== ids.length ||
         (!!opts?.nextFiveCheckpoint?.lastId && ids.includes(opts.nextFiveCheckpoint.lastId));
       if (unsafe) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing',
-        nextFiveCheckpoint: { start, end, offset, lastId: opts?.nextFiveCheckpoint?.lastId } };
+        nextFiveCheckpoint: opts?.nextFiveCheckpoint };
       return rows.length === 1000
         ? { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'page_budget',
             nextFiveCheckpoint: { start, end, offset: offset + rows.length, lastId: rows[rows.length - 1]?.id } }
@@ -3436,7 +3457,7 @@ export async function fetchTradesForSymbol(
       const unsafe = rows.some((row) => !row.id || row.timestamp == null || row.timestamp < start || row.timestamp > end) ||
         new Set(ids).size !== ids.length || (!!opts?.nextFiveCheckpoint?.lastId && ids.includes(opts.nextFiveCheckpoint.lastId));
       if (unsafe) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing',
-        nextFiveCheckpoint: { start, end, offset, lastId: opts?.nextFiveCheckpoint?.lastId } };
+        nextFiveCheckpoint: opts?.nextFiveCheckpoint };
       return rows.length === 200
         ? { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'page_budget',
             nextFiveCheckpoint: { start, end, offset: offset + rows.length, lastId: rows[rows.length - 1]?.id } }
@@ -3580,7 +3601,7 @@ export async function syncConnection(
     if (exchange === 'bitmart' && !validBitmartConnectionState(row)) {
       throw new Error('BitMart pagination or replay checkpoint is malformed.');
     }
-    if (['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange) && !validNextFiveProgress(row.nextFiveProgress)) {
+    if (['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange) && !validNextFiveProgress(exchange, row.nextFiveProgress)) {
       throw new Error(`${exchangeLabel(exchange)} continuation checkpoint is malformed.`);
     }
     const client = await createClient(row);
@@ -3974,7 +3995,7 @@ export async function syncConnection(
         if (['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange)) {
           nextFiveProgress[kind] = outcome.nextFiveCheckpoint ??
             (outcome.termination === 'nonadvancing'
-              ? nextFiveProgress[kind] ?? { start: since, end: nowMs }
+              ? nextFiveProgress[kind]
               : undefined);
         }
         if (exchange === 'bitstamp') {
@@ -4295,10 +4316,10 @@ export async function syncConnection(
           tradeRows.push(...outcome.rows);
           fetchedCount += outcome.rows.length;
           if (resumable && (outcome.termination === 'page_budget' || outcome.termination === 'nonadvancing')) {
-            nextFiveProgress.trades = {
-              ...(outcome.nextFiveCheckpoint ?? innerCheckpoint ?? { start: tradeSince, end: nowMs }),
-              items: symbols, itemIndex: symbolIndex
-            };
+            const checkpoint = outcome.nextFiveCheckpoint ?? innerCheckpoint;
+            nextFiveProgress.trades = checkpoint
+              ? { ...checkpoint, items: symbols, itemIndex: symbolIndex }
+              : undefined;
             hooks.onProgress?.({ done: symbolIndex, total: symbols.length });
             break;
           }
@@ -4647,7 +4668,7 @@ export async function syncConnection(
       if (exchange === 'xt' || exchange === 'phemex') {
         nextFiveProgress.trades = outcome.nextFiveCheckpoint ??
           (outcome.termination === 'nonadvancing'
-            ? nextFiveProgress.trades ?? { start: tradeSince, end: nowMs }
+            ? nextFiveProgress.trades
             : undefined);
       }
       if (exchange === 'okx' && oldCursors.trades == null) {

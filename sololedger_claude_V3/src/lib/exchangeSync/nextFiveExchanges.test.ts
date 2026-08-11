@@ -83,6 +83,18 @@ describe('XT native pagination', () => {
 });
 
 describe('LBank metadata pagination', () => {
+  it('treats a stable zero-total response as exhausted', async () => {
+    const c = client();
+    const outcome = await paginateLbankPages<UnifiedTransfer>({
+      client: c,
+      fetchPage: async (page) => {
+        c.last_json_response = { data: { total: 0, current_page: page, page_length: 20 } };
+        return [];
+      }
+    });
+    expect(outcome).toMatchObject({ rows: [], partial: false, termination: 'exhausted' });
+  });
+
   it('requires stable total/current_page/page_length metadata', async () => {
     const c = client();
     const outcome = await paginateLbankPages<UnifiedTransfer>({
@@ -140,41 +152,83 @@ describe('LBank metadata pagination', () => {
 });
 
 describe('LBank calendar/native trade pagination', () => {
+  it('passes numeric unified since and ignores valid rows outside the exact boundary interval', async () => {
+    const c = client();
+    const starts: unknown[] = [];
+    c.fetchMyTrades = async (_symbol, since) => {
+      starts.push(since);
+      c.last_json_response = { data: [{ txUuid: 'before' }, { txUuid: 'inside' }] };
+      return [
+        { id: 'before', timestamp: Date.UTC(2024, 0, 1, 1) },
+        { id: 'inside', timestamp: Date.UTC(2024, 0, 1, 12) }
+      ];
+    };
+    const outcome = await paginateLbankTrades({ client: c, symbol: 'BTC/USDT',
+      start: Date.UTC(2024, 0, 1, 6), end: Date.UTC(2024, 0, 1, 18) });
+    expect(starts).toEqual([Date.UTC(2024, 0, 1)]);
+    expect(outcome.rows.map((row) => row.id)).toEqual(['inside']);
+    expect(outcome.termination).toBe('exhausted');
+  });
+
   it('chains full pages by from, preserves equal timestamps, and advances at UTC midnight', async () => {
     const c = client();
     const calls: Array<Record<string, unknown>> = [];
-    c.fetchMyTrades = async (_symbol, _since, _limit, params) => {
+    c.fetchMyTrades = async (_symbol, since, _limit, params) => {
       calls.push(params ?? {});
-      const day = String(params?.start_date);
+      const day = new Date(Number(since)).toISOString().slice(0, 10);
       const from = Number(params?.from);
-      if (day === '2024-01-01' && from === 0) return Array.from({ length: 100 }, (_, i) =>
-        ({ id: `a${i}`, timestamp: Date.UTC(2024, 0, 1, 12) }));
-      if (day === '2024-01-01') return [{ id: 'a100', timestamp: Date.UTC(2024, 0, 1, 12) }];
+      if (day === '2024-01-01' && from === 0) {
+        const rows = Array.from({ length: 100 }, (_, i) => ({ id: `a${i}`, timestamp: Date.UTC(2024, 0, 1, 12) }));
+        c.last_json_response = { data: rows.map((row) => ({ txUuid: row.id })) };
+        return rows;
+      }
+      if (day === '2024-01-01') {
+        c.last_json_response = { data: [{ txUuid: 'a100' }] };
+        return [{ id: 'a100', timestamp: Date.UTC(2024, 0, 1, 12) }];
+      }
+      c.last_json_response = { data: [] };
       return [];
     };
     const outcome = await paginateLbankTrades({ client: c, symbol: 'BTC/USDT',
       start: Date.UTC(2024, 0, 1, 6), end: Date.UTC(2024, 0, 2, 6) });
     expect(outcome.rows).toHaveLength(101);
-    expect(calls.map((call) => [call.start_date, call.end_date, call.from])).toEqual([
-      ['2024-01-01', '2024-01-01', 0], ['2024-01-01', '2024-01-01', 100],
-      ['2024-01-02', '2024-01-02', 0]
+    expect(calls.map((call) => [call.end_date, call.from])).toEqual([
+      ['2024-01-01', 0], ['2024-01-01', 100], ['2024-01-02', 0]
     ]);
   });
 
   it('fails closed on repeated native ids and retains a bounded checkpoint', async () => {
     const c = client();
-    c.fetchMyTrades = async () => Array.from({ length: 100 }, () => ({ id: 'same', timestamp: 10 }));
+    c.fetchMyTrades = async () => {
+      c.last_json_response = { data: Array.from({ length: 100 }, () => ({ txUuid: 'same' })) };
+      return Array.from({ length: 100 }, () => ({ id: 'same', timestamp: 10 }));
+    };
     expect(await paginateLbankTrades({ client: c, symbol: 'BTC/USDT', start: 1, end: 20 }))
       .toMatchObject({ partial: true, termination: 'nonadvancing' });
-    c.fetchMyTrades = async () => [];
+    c.fetchMyTrades = async () => { c.last_json_response = { data: [] }; return []; };
     expect(await paginateLbankTrades({ client: c, symbol: 'BTC/USDT', start: 1, end: 2 * 86_400_000, budget: 1 }))
       .toMatchObject({ partial: true, termination: 'page_budget', checkpoint: { dayStart: 86_400_000, from: 0 } });
   });
 });
 
 describe('durable next-five checkpoint validation', () => {
-  it('accepts frozen connector state and rejects inverted ranges', () => {
-    expect(validNextFiveProgress({ trades: { start: 1, end: 2, items: ['BTC/USDT'], itemIndex: 0, offset: 100 } })).toBe(true);
-    expect(validNextFiveProgress({ deposits: { start: 2, end: 1 } })).toBe(false);
+  it('accepts valid frozen connector state and rejects semantic skip states', () => {
+    expect(validNextFiveProgress('bitrue', { trades: {
+      start: 1, end: 2, items: ['BTC/USDT'], itemIndex: 0, offset: 1000, lastId: '1000'
+    } })).toBe(true);
+    expect(validNextFiveProgress('bitrue', { trades: {
+      start: 1, end: 2, items: ['BTC/USDT'], itemIndex: 1, offset: 0
+    } })).toBe(false);
+    expect(validNextFiveProgress('bitrue', { trades: {
+      start: 1, end: 2, items: ['BTC/USDT', 'BTC/USDT'], itemIndex: 0, offset: 0
+    } })).toBe(false);
+    expect(validNextFiveProgress('lbank', { deposits: { start: 1, end: 2, page: 0, expectedTotal: 1 } })).toBe(false);
+    expect(validNextFiveProgress('phemex', { deposits: { start: 1, end: 2, offset: 1 } })).toBe(false);
+    expect(validNextFiveProgress('phemex', { deposits: { start: 1, end: 2, lastId: 'anchor' } })).toBe(true);
+    expect(validNextFiveProgress('xt', { trades: { start: 1, end: 2, offset: 200 } })).toBe(false);
+    expect(validNextFiveProgress('lbank', { trades: {
+      start: Date.UTC(2024, 0, 1), end: Date.UTC(2024, 0, 2), items: ['BTC/USDT'], itemIndex: 0,
+      dayStart: Date.UTC(2024, 0, 3), from: 0
+    } })).toBe(false);
   });
 });
