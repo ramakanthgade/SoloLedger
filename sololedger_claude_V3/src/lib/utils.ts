@@ -76,22 +76,25 @@ export function formatCompactAmount(amount: number): string {
   return amount.toPrecision(4);
 }
 
-/** Dashboard-friendly compact currency label: INR uses L/Cr; others use k/m/b. */
+/** Dashboard-friendly compact currency label: INR uses k/L/cr; others use K/M/B. */
 export function formatCompactCurrency(amount: number, currency: string): string {
   const normalizedCurrency = currency.toUpperCase();
   const abs = Math.abs(amount);
   const sign = amount < 0 ? '-' : '';
   if (normalizedCurrency === 'INR') {
-    if (abs >= 1_00_00_000) return `${sign}₹${(abs / 1_00_00_000).toFixed(2)}Cr`;
-    if (abs >= 1_00_000) return `${sign}₹${(abs / 1_00_000).toFixed(2)}L`;
+    // Promote values that round to the next tier instead of emitting 100.00k
+    // or 100.00L at an Indian magnitude boundary.
+    if (abs >= 99_99_500) return `${sign}₹${(abs / 1_00_00_000).toFixed(2)} cr`;
+    if (abs >= 99_995) return `${sign}₹${(abs / 1_00_000).toFixed(2)}L`;
+    if (abs >= 1_000) return `${sign}₹${(abs / 1_000).toFixed(2)}k`;
     return formatCurrency(amount, currency);
   }
-  const tier = abs >= 1_000_000_000
-    ? { divisor: 1_000_000_000, suffix: 'b' }
-    : abs >= 1_000_000
-      ? { divisor: 1_000_000, suffix: 'm' }
+  const tier = abs >= 999_995_000
+    ? { divisor: 1_000_000_000, suffix: 'B' }
+    : abs >= 999_995
+      ? { divisor: 1_000_000, suffix: 'M' }
       : abs >= 1_000
-        ? { divisor: 1_000, suffix: 'k' }
+        ? { divisor: 1_000, suffix: 'K' }
         : null;
   if (tier) {
     let symbol = currency;

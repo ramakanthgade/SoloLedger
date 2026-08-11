@@ -3,7 +3,7 @@ import type { SafetyDecisionRow } from '@/lib/safety/types';
 import type { TaxSettings, Transaction } from '@/types/transaction';
 
 /** Canonical Dashboard disposal projection using the user's configured method. */
-export function calculateDashboardDisposals(
+export function calculateDashboardCostBasis(
   transactions: Transaction[],
   settings: TaxSettings,
   specIdHints: Record<string, string[]>,
@@ -15,5 +15,11 @@ export function calculateDashboardDisposals(
     specIdHints,
     settings,
     safetyDecisions
-  }).disposals;
+  });
+}
+
+export function calculateDashboardDisposals(
+  ...args: Parameters<typeof calculateDashboardCostBasis>
+) {
+  return calculateDashboardCostBasis(...args).disposals;
 }

@@ -79,7 +79,7 @@ async function persistedTransactionSafety(page: import('@playwright/test').Page,
 
 async function assertCoreRenderedState(page: import('@playwright/test').Page) {
   await page.getByRole('tab', { name: 'Dashboard', exact: true }).first().click();
-  await expect(page.getByTestId('net-worth-value')).toContainText('₹1.72Cr');
+  await expect(page.getByTestId('net-worth-value')).toContainText('₹1.72 cr');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Aave');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Spark');
   await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
@@ -122,7 +122,7 @@ test('manifest, service worker, duplicate ids, and explicit persisted theme cont
 test('seeded v16 state drives rendered Dashboard, Connections, Transactions, attestation, and durable offline reload', async ({ page, context }) => {
   await seedWorkspace(page);
   const dashboardTotal = page.getByTestId('net-worth-value');
-  await expect(dashboardTotal).toContainText('₹1.72Cr');
+  await expect(dashboardTotal).toContainText('₹1.72 cr');
   await expect(dashboardTotal).toHaveAttribute('data-defi-feature-enabled', 'true');
   await expect(dashboardTotal).toHaveAttribute('data-defi-shadow-status', 'complete');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('Aave');

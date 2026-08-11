@@ -54,6 +54,8 @@ type TabId = (typeof BASE_TABS)[number]['id'] | typeof ADMIN_TAB.id;
 const PHASE_LABEL: Record<string, string> = {
   importing: 'Importing transactions',
   classifying: 'Classifying swaps (Noves)',
+  balances: 'Refreshing current balances',
+  positions: 'Refreshing DeFi positions',
   pricing: 'Fetching prices'
 };
 
