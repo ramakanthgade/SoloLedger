@@ -97,7 +97,9 @@ test('wallet disclosure and economic transaction tracks remain responsive at tar
     const swapClassification = twoSidedSwap.getByTestId('tx-type-category');
     await expect(swapClassification.getByRole('button', { name: 'Swap' })).toBeVisible();
     await expect(swapClassification.getByRole('combobox', { name: 'Semantic category' })).toHaveValue('swap');
+    await expect(swapClassification.getByTestId('tx-time-chain')).toHaveText('16:01 · Ethereum');
     await expect(swapActions.getByRole('button', { name: 'Swap' })).toHaveCount(0);
+    await expect(swapActions).not.toContainText('16:01 · Ethereum');
     await expect(swapActions).toContainText('0xcccc…cccc');
     await expect(swapActions.getByLabel('Copy transaction hash')).toBeVisible();
     await expect(swapActions.getByLabel('Open transaction in explorer')).toHaveAttribute(

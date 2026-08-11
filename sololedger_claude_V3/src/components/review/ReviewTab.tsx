@@ -1820,6 +1820,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
             <span className={cn('min-w-0', spam && 'line-through')} data-testid="tx-type-category">
               <TypeSelector tx={t} />
               <CategorySelector tx={t} />
+              <span className="mt-1 block whitespace-nowrap text-[10px] font-normal text-low" data-testid="tx-time-chain">
+                {timeUtc}{chainLabel ? ` · ${chainLabel}` : ''}
+              </span>
             </span>
             <span className="sr-only">{src.label} · {sourcePresentation.subtitle}</span>
           </div>
@@ -1867,9 +1870,6 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               )}
             </div>
             <div className="mt-1 flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1 lg:block">
-              <p className="whitespace-nowrap text-[10px] text-low lg:mt-0.5">
-                {timeUtc}{chainLabel ? ` · ${chainLabel}` : ''}
-              </p>
               {t.feeAmount != null && t.feeAsset && (
                 <span className="mt-1 inline-flex rounded-full border border-hi/10 bg-elev-3/50 px-2 py-px text-[10px] font-bold tabular-figures text-low">
                   fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}
