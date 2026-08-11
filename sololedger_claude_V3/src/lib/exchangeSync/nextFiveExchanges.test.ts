@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { ExchangeClient, UnifiedTransfer } from './ccxtLoader';
-import { paginateLbankPages, paginateXtNative, parseCoinspotTransferEnvelope } from './nextFiveExchanges';
+import {
+  assignCoinspotTradeIds, paginateLbankPages, paginateLbankTrades, paginateXtNative,
+  parseCoinspotTransferEnvelope, validNextFiveProgress
+} from './nextFiveExchanges';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -35,6 +38,18 @@ describe('CoinSpot raw read-only transfer adapters', () => {
     }] }, 'withdrawal');
     expect(withdrawal.shapeKnown).toBe(true);
     expect(withdrawal.rows[0]).toMatchObject({ currency: 'ETH', type: 'withdrawal', fee: { cost: 0.01, currency: 'ETH' } });
+  });
+
+  it('preserves identical full-response trades and transfers with stable ordinal ids', () => {
+    const trades = assignCoinspotTradeIds([0, 1].map(() => ({ timestamp: 10, side: 'buy', symbol: 'BTC/AUD',
+      amount: 1, price: 20, cost: 20, fee: { cost: 1, currency: 'AUD' }, info: { market: 'BTC/AUD' } })));
+    expect(new Set(trades.map((row) => row.id)).size).toBe(2);
+    expect(assignCoinspotTradeIds(trades.map(({ id: _id, ...row }) => row)).map((row) => row.id))
+      .toEqual(trades.map((row) => row.id));
+    const raw = { status: 'ok', deposits: [0, 1].map(() => ({ coin: 'btc', amount: 1, timestamp: 10, txid: 'same' })) };
+    const first = parseCoinspotTransferEnvelope(raw, 'deposit').rows.map((row) => row.id);
+    expect(new Set(first).size).toBe(2);
+    expect(parseCoinspotTransferEnvelope(raw, 'deposit').rows.map((row) => row.id)).toEqual(first);
   });
 
   it('fails closed on unknown envelopes and malformed economics', () => {
@@ -92,5 +107,74 @@ describe('LBank metadata pagination', () => {
       }
     });
     expect(outcome).toMatchObject({ partial: true, termination: 'nonadvancing' });
+  });
+
+  it('resumes a bounded scan at the next page and exhausts against the frozen total', async () => {
+    const c = client();
+    const first = await paginateLbankPages<UnifiedTransfer>({
+      client: c,
+      budget: 1,
+      fetchPage: async (page) => {
+        const rows = [{ id: String(page), timestamp: page }];
+        c.last_json_response = { data: { total: 2, current_page: page, page_length: 1 } };
+        return rows;
+      }
+    });
+    expect(first).toMatchObject({ termination: 'page_budget', checkpoint: { page: 2, expectedTotal: 2 } });
+
+    const resumedPages: number[] = [];
+    const resumed = await paginateLbankPages<UnifiedTransfer>({
+      client: c,
+      page: first.checkpoint?.page,
+      expectedTotal: first.checkpoint?.expectedTotal,
+      fetchPage: async (page) => {
+        resumedPages.push(page);
+        const rows = [{ id: String(page), timestamp: page }];
+        c.last_json_response = { data: { total: 2, current_page: page, page_length: 1 } };
+        return rows;
+      }
+    });
+    expect(resumedPages).toEqual([2]);
+    expect(resumed).toMatchObject({ partial: false, termination: 'exhausted', maxTs: 2 });
+  });
+});
+
+describe('LBank calendar/native trade pagination', () => {
+  it('chains full pages by from, preserves equal timestamps, and advances at UTC midnight', async () => {
+    const c = client();
+    const calls: Array<Record<string, unknown>> = [];
+    c.fetchMyTrades = async (_symbol, _since, _limit, params) => {
+      calls.push(params ?? {});
+      const day = String(params?.start_date);
+      const from = Number(params?.from);
+      if (day === '2024-01-01' && from === 0) return Array.from({ length: 100 }, (_, i) =>
+        ({ id: `a${i}`, timestamp: Date.UTC(2024, 0, 1, 12) }));
+      if (day === '2024-01-01') return [{ id: 'a100', timestamp: Date.UTC(2024, 0, 1, 12) }];
+      return [];
+    };
+    const outcome = await paginateLbankTrades({ client: c, symbol: 'BTC/USDT',
+      start: Date.UTC(2024, 0, 1, 6), end: Date.UTC(2024, 0, 2, 6) });
+    expect(outcome.rows).toHaveLength(101);
+    expect(calls.map((call) => [call.start_date, call.end_date, call.from])).toEqual([
+      ['2024-01-01', '2024-01-01', 0], ['2024-01-01', '2024-01-01', 100],
+      ['2024-01-02', '2024-01-02', 0]
+    ]);
+  });
+
+  it('fails closed on repeated native ids and retains a bounded checkpoint', async () => {
+    const c = client();
+    c.fetchMyTrades = async () => Array.from({ length: 100 }, () => ({ id: 'same', timestamp: 10 }));
+    expect(await paginateLbankTrades({ client: c, symbol: 'BTC/USDT', start: 1, end: 20 }))
+      .toMatchObject({ partial: true, termination: 'nonadvancing' });
+    c.fetchMyTrades = async () => [];
+    expect(await paginateLbankTrades({ client: c, symbol: 'BTC/USDT', start: 1, end: 2 * 86_400_000, budget: 1 }))
+      .toMatchObject({ partial: true, termination: 'page_budget', checkpoint: { dayStart: 86_400_000, from: 0 } });
+  });
+});
+
+describe('durable next-five checkpoint validation', () => {
+  it('accepts frozen connector state and rejects inverted ranges', () => {
+    expect(validNextFiveProgress({ trades: { start: 1, end: 2, items: ['BTC/USDT'], itemIndex: 0, offset: 100 } })).toBe(true);
+    expect(validNextFiveProgress({ deposits: { start: 2, end: 1 } })).toBe(false);
   });
 });

@@ -27,6 +27,14 @@ describe('Dexie v8 — exchangeConnections', () => {
     await db.exchangeConnections.clear();
   });
 
+  it('round-trips optional next-five continuation metadata without a schema bump', async () => {
+    const row = { ...makeRow('next-five'), exchange: 'phemex', nextFiveProgress: {
+      trades: { start: 10, end: 20, offset: 200, lastId: 'fill-200' }
+    } } satisfies ExchangeConnectionRow;
+    await db.exchangeConnections.put(row);
+    expect((await db.exchangeConnections.get(row.id))?.nextFiveProgress).toEqual(row.nextFiveProgress);
+  });
+
   it('opens at the current version with the exchangeConnections table', async () => {
     // v9 added walletBalances; v10 added exchangeBalances; v11 added coherent
     // reconciliation evidence, v12 finalized CSV survivor counts, v13 added

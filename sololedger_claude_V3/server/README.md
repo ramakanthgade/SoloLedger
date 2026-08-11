@@ -69,6 +69,8 @@ read-only spot hosts, methods, paths and signing headers emitted by pinned CCXT
 4.5.68. Futures, margin, order mutation and withdrawal mutation routes are not
 exposed. CoinSpot is Australia-only, Bitrue/XT.COM/Phemex carry high geo-block
 risk, and LBank region and lifetime-retention coverage remain unverified.
+LBank spot fills use pinned CCXT's exact `POST /v2/transaction_history.do` route;
+the similarly named supplement transaction-history path is not exposed.
 
 Round five adds exact host/header/path allowlists for Binance.US, Backpack,
 WhiteBIT, bitFlyer and Coincheck. They are GET-only except WhiteBIT's signed

@@ -9,11 +9,12 @@ export interface SafeHistoryOutcome<T> {
 
 /** One unsafe row/page keeps the previously committed account-wide frontier. */
 export function safeFiveExchangeCursor(
-  outcomes: ReadonlyArray<{ partial: boolean }>,
+  outcomes: ReadonlyArray<{ partial: boolean; termination?: string }>,
   previous: number | undefined,
   frozenNow: number
 ): number {
-  return outcomes.some((outcome) => outcome.partial) ? (previous ?? 0) : frozenNow;
+  return outcomes.some((outcome) => outcome.partial && outcome.termination !== 'retention_unverified')
+    ? (previous ?? 0) : frozenNow;
 }
 
 type HistoryRow = UnifiedTrade | UnifiedTransfer;

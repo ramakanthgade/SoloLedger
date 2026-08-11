@@ -783,7 +783,8 @@ const tier3 = [
     exchange: 'xt', probe: 'GET /v4/balances (dummy XT validation headers)',
     build() { return { path: '/v4/balances', exchangeHeaders: {
       'xt-validate-appkey': 'dummy', 'xt-validate-timestamp': Date.now().toString(),
-      'xt-validate-signature': '00', 'xt-validate-recvwindow': '5000'
+      'xt-validate-signature': '00', 'xt-validate-recvwindow': '5000',
+      'xt-validate-algorithms': 'HmacSHA256'
     } }; },
     check: (r) => r.relayError === null && /AUTH_101/i.test(r.text)
   },

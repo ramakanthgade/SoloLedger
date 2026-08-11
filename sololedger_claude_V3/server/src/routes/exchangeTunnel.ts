@@ -308,7 +308,7 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
   },
   xt: {
     host: 'sapi.xt.com',
-    headers: ['xt-validate-appkey', 'xt-validate-timestamp', 'xt-validate-signature', 'xt-validate-recvwindow'],
+    headers: ['xt-validate-appkey', 'xt-validate-timestamp', 'xt-validate-signature', 'xt-validate-recvwindow', 'xt-validate-algorithms'],
     methods: ['GET'],
     paths: ['/v4/public/time', '/v4/public/symbol', '/v4/public/currencies', '/v4/balances', '/v4/trade', '/v4/deposit/history', '/v4/withdraw/history']
   },
@@ -329,10 +329,10 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
   },
   lbank: {
     host: 'api.lbank.info', headers: ['timestamp', 'signature_method', 'echostr', 'content-type'],
-    paths: ['/v2/timestamp.do', '/v2/currencyPairs.do', '/v2/accuracy.do', '/v2/supplement/user_info.do', '/v2/supplement/transaction_history.do', '/v2/supplement/deposit_history.do', '/v2/supplement/withdraws.do'],
+    paths: ['/v2/timestamp.do', '/v2/currencyPairs.do', '/v2/accuracy.do', '/v2/supplement/user_info.do', '/v2/transaction_history.do', '/v2/supplement/deposit_history.do', '/v2/supplement/withdraws.do'],
     pathMethods: {
       '/v2/timestamp.do': ['GET'], '/v2/currencyPairs.do': ['GET'], '/v2/accuracy.do': ['GET'],
-      '/v2/supplement/user_info.do': ['POST'], '/v2/supplement/transaction_history.do': ['POST'],
+      '/v2/supplement/user_info.do': ['POST'], '/v2/transaction_history.do': ['POST'],
       '/v2/supplement/deposit_history.do': ['POST'], '/v2/supplement/withdraws.do': ['POST']
     }
   }

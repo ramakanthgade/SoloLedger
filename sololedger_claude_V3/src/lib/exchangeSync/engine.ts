@@ -135,10 +135,12 @@ import {
   recoverBitflyerCommission,
   whitebitTransferId,
   paginateCoincheck,
-  paginateNativeBefore,
-  paginateNativeOffsets
+  paginateNativeBefore
 } from './roundFiveExchanges';
-import { paginateLbankPages, paginateXtNative, parseCoinspotTransferEnvelope } from './nextFiveExchanges';
+import {
+  assignCoinspotTradeIds, paginateLbankPages, paginateLbankTrades, paginateXtNative,
+  parseCoinspotTransferEnvelope, validNextFiveProgress, type NextFiveProgress
+} from './nextFiveExchanges';
 
 // ---- Pinned constants (§B-3) ----
 
@@ -336,6 +338,8 @@ export interface SyncEngineDeps {
   /** Test seams; BitMart budgets include retries and successful requests. */
   bitmartMaxTradeRequests?: number;
   bitmartMaxTransferRequests?: number;
+  /** Shared bounded request seam for resumable Bitrue/XT/Phemex/LBank work. */
+  nextFiveMaxRequests?: number;
 }
 
 export interface SyncHooks {
@@ -709,6 +713,8 @@ function endpointOutcome(
     (outcome.retentionFloor != null ? 'retention_truncated' : undefined) ??
     extras.warning;
   const partial = outcome.partial || !!structuralWarning || outcome.retentionFloor != null;
+  const structurallyExhausted = outcome.termination == null || outcome.termination === 'exhausted' ||
+    outcome.termination === 'retention_unverified';
   return {
     endpoint,
     accountClass: 'spot',
@@ -718,7 +724,7 @@ function endpointOutcome(
     requestedEnd,
     ...observedBounds(outcome.rows),
     paginationRequired: true,
-    paginationExhausted: !partial && (outcome.termination == null || outcome.termination === 'exhausted'),
+    paginationExhausted: structurallyExhausted,
     retentionFloor: outcome.retentionFloor,
     ...extras,
     ...(warning ? { warning } : {})
@@ -1302,6 +1308,8 @@ interface FetchPlanOutcome<T extends PageRow> {
   bitvavoProgress?: BitvavoRangeProgress;
   /** Durable continuation for BitMart's bounded newest-first timestamp walk. */
   bitmartPagination?: BitmartPaginationCheckpoint;
+  /** Connector-local continuation retained only while structural work remains. */
+  nextFiveCheckpoint?: import('./nextFiveExchanges').NextFivePageCheckpoint;
 }
 
 interface BitstampLedgerOutcome {
@@ -2682,7 +2690,9 @@ export async function fetchTransferKind(
   bitvavoMaxRequests?: number,
   bitvavoProgress?: BitvavoRangeProgress,
   bitmartMaxRequests?: number,
-  bitmartCheckpoint?: BitmartPaginationCheckpoint
+  bitmartCheckpoint?: BitmartPaginationCheckpoint,
+  nextFiveCheckpoint?: import('./nextFiveExchanges').NextFivePageCheckpoint,
+  nextFiveMaxRequests = 500
 ): Promise<FetchPlanOutcome<UnifiedTransfer>> {
   const fetchDeposits = kind === 'deposits';
   if (exchange === 'kraken') {
@@ -3005,57 +3015,96 @@ export async function fetchTransferKind(
   }
   if (exchange === 'bitrue') {
     const rows: UnifiedTransfer[] = [];
-    let partial = false;
-    const currencyUniverse = [...new Set([
+    const currencyUniverse = nextFiveCheckpoint?.items ?? [...new Set([
       ...coinbaseCurrencies,
       ...Object.values(client.currencies ?? {}).filter((currency) => currency.active !== false)
         .map((currency) => currency.code).filter((code): code is string => !!code)
     ])].sort();
     if (currencyUniverse.length === 0) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing' };
-    for (const code of currencyUniverse) {
-      const outcome = await paginateNativeOffsets({
-        limit: 1000,
-        fetchPage: (offset) => fetchDeposits
-          ? client.fetchDeposits(code, since, 1000, { endTime: now, offset })
-          : client.fetchWithdrawals(code, since, 1000, { endTime: now, offset })
-      });
-      rows.push(...outcome.rows);
-      partial = partial || outcome.partial;
+    const frozenStart = nextFiveCheckpoint?.start ?? since;
+    const frozenEnd = nextFiveCheckpoint?.end ?? now;
+    let itemIndex = nextFiveCheckpoint?.itemIndex ?? 0;
+    let offset = nextFiveCheckpoint?.offset ?? 0;
+    let lastId = nextFiveCheckpoint?.lastId;
+    let requests = 0;
+    while (itemIndex < currencyUniverse.length && requests < nextFiveMaxRequests) {
+      const code = currencyUniverse[itemIndex]!;
+      const page = fetchDeposits
+        ? await client.fetchDeposits(code, frozenStart, 1000, { endTime: frozenEnd, offset })
+        : await client.fetchWithdrawals(code, frozenStart, 1000, { endTime: frozenEnd, offset });
+      requests += 1;
+      const ids = page.map((row) => row.id == null ? '' : String(row.id));
+      if (ids.some((id) => !id) || new Set(ids).size !== ids.length ||
+        (lastId && ids.includes(lastId))) {
+        return { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'nonadvancing',
+          nextFiveCheckpoint: { start: frozenStart, end: frozenEnd, items: currencyUniverse, itemIndex, offset,
+            lastId } };
+      }
+      rows.push(...page);
+      if (page.length < 1000) { itemIndex += 1; offset = 0; lastId = undefined; }
+      else { offset += page.length; lastId = ids[ids.length - 1]; }
     }
-    return { rows, maxTs: maxTimestamp(rows), partial: true, termination: partial ? 'nonadvancing' : 'exhausted' };
+    if (itemIndex < currencyUniverse.length) return { rows, maxTs: maxTimestamp(rows), partial: true,
+      termination: 'page_budget', nextFiveCheckpoint: { start: frozenStart, end: frozenEnd, items: currencyUniverse, itemIndex, offset,
+        lastId } };
+    return { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'retention_unverified' };
   }
   if (exchange === 'xt') {
+    const frozenStart = nextFiveCheckpoint?.start ?? since;
+    const frozenEnd = nextFiveCheckpoint?.end ?? now;
     const outcome = await paginateXtNative({
-      client,
+      client, budget: nextFiveMaxRequests, cursor: nextFiveCheckpoint?.nativeCursor,
       fetchPage: (id) => fetchDeposits
-        ? client.fetchDeposits(undefined, since, 200, { endTime: now, direction: 'NEXT', ...(id ? { id } : {}) })
-        : client.fetchWithdrawals(undefined, since, 200, { endTime: now, direction: 'NEXT', ...(id ? { id } : {}) })
+        ? client.fetchDeposits(undefined, frozenStart, 200, { endTime: frozenEnd, direction: 'NEXT', ...(id ? { id } : {}) })
+        : client.fetchWithdrawals(undefined, frozenStart, 200, { endTime: frozenEnd, direction: 'NEXT', ...(id ? { id } : {}) })
     });
-    return { ...outcome, partial: true };
+    return { ...outcome, partial: true,
+      termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+      nextFiveCheckpoint: outcome.termination === 'page_budget'
+        ? { start: frozenStart, end: frozenEnd, nativeCursor: outcome.checkpoint } : undefined };
   }
   if (exchange === 'coinspot') {
     const fetchRaw = fetchDeposits ? client.fetchCoinspotDeposits : client.fetchCoinspotWithdrawals;
     if (!fetchRaw) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing' };
     const parsed = parseCoinspotTransferEnvelope(await fetchRaw(), fetchDeposits ? 'deposit' : 'withdrawal');
     const rows = parsed.rows.filter((item) => (item.timestamp ?? 0) >= since && (item.timestamp ?? now + 1) <= now);
-    return { rows, maxTs: maxTimestamp(rows), partial: true, termination: parsed.shapeKnown ? 'exhausted' : 'nonadvancing' };
+    return { rows, maxTs: maxTimestamp(rows), partial: true,
+      termination: parsed.shapeKnown ? 'retention_unverified' : 'nonadvancing' };
   }
   if (exchange === 'phemex') {
+    const frozenStart = nextFiveCheckpoint?.start ?? since;
+    const frozenEnd = nextFiveCheckpoint?.end ?? now;
+    const offset = nextFiveCheckpoint?.offset ?? 0;
     const rows = fetchDeposits
-      ? await client.fetchDeposits(undefined, since, undefined)
-      : await client.fetchWithdrawals(undefined, since, undefined);
-    const unsafe = rows.some((item) => !item.id || item.timestamp == null);
-    return { rows: unsafe ? [] : rows, maxTs: unsafe ? null : maxTimestamp(rows), partial: true,
-      termination: unsafe ? 'nonadvancing' : 'exhausted' };
+      ? await client.fetchDeposits(undefined, frozenStart, 200, { end: frozenEnd, offset })
+      : await client.fetchWithdrawals(undefined, frozenStart, 200, { end: frozenEnd, offset });
+    const unsafe = rows.some((item) => !item.id || item.timestamp == null || !Number.isSafeInteger(item.timestamp) ||
+      item.timestamp < frozenStart || item.timestamp > frozenEnd);
+    const ids = rows.map((item) => String(item.id ?? ''));
+    const nonadvancing = unsafe || new Set(ids).size !== ids.length ||
+      (!!nextFiveCheckpoint?.lastId && ids.includes(nextFiveCheckpoint.lastId));
+    if (!nonadvancing && rows.length === 200) return { rows, maxTs: maxTimestamp(rows), partial: true,
+      termination: 'page_budget', nextFiveCheckpoint: { start: frozenStart, end: frozenEnd, offset: offset + rows.length,
+        lastId: rows[rows.length - 1]?.id } };
+    return { rows: nonadvancing ? [] : rows, maxTs: nonadvancing ? null : maxTimestamp(rows), partial: true,
+      termination: nonadvancing ? 'nonadvancing' : 'retention_unverified',
+      nextFiveCheckpoint: nonadvancing ? { start: frozenStart, end: frozenEnd, offset, lastId: nextFiveCheckpoint?.lastId } : undefined };
   }
   if (exchange === 'lbank') {
+    const frozenStart = nextFiveCheckpoint?.start ?? since;
+    const frozenEnd = nextFiveCheckpoint?.end ?? now;
     const outcome = await paginateLbankPages({
-      client,
+      client, budget: nextFiveMaxRequests, page: nextFiveCheckpoint?.page,
+      expectedTotal: nextFiveCheckpoint?.expectedTotal,
       fetchPage: (page) => fetchDeposits
-        ? client.fetchDeposits(undefined, since, 100, { endTime: now, current_page: page })
-        : client.fetchWithdrawals(undefined, since, 100, { endTime: now, current_page: page })
+        ? client.fetchDeposits(undefined, frozenStart, 100, { endTime: frozenEnd, current_page: page })
+        : client.fetchWithdrawals(undefined, frozenStart, 100, { endTime: frozenEnd, current_page: page })
     });
-    return { ...outcome, partial: true };
+    return { ...outcome, partial: true,
+      termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+      nextFiveCheckpoint: outcome.termination === 'page_budget'
+        ? { start: frozenStart, end: frozenEnd, page: outcome.checkpoint?.page,
+            expectedTotal: outcome.checkpoint?.expectedTotal } : undefined };
   }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
@@ -3126,6 +3175,8 @@ export async function fetchTradesForSymbol(
     btcmarketsCheckpoint?: BtcMarketsPaginationCheckpoint;
     bitmartMaxRequests?: number;
     bitmartCheckpoint?: BitmartPaginationCheckpoint;
+    nextFiveCheckpoint?: import('./nextFiveExchanges').NextFivePageCheckpoint;
+    nextFiveMaxRequests?: number;
   }
 ): Promise<FetchPlanOutcome<UnifiedTrade>> {
   switch (exchange) {
@@ -3341,39 +3392,67 @@ export async function fetchTradesForSymbol(
           order: 'desc', ...(endingBefore ? { ending_before: endingBefore } : {})
         })
       });
-    case 'bitrue':
-      return { ...await paginateNativeOffsets({
-        limit: 1000,
-        fetchPage: (offset) => client.fetchMyTrades(symbol, since, 1000, { endTime: now, offset })
-      }), partial: true };
-    case 'xt':
-      return { ...await paginateXtNative({
-        client,
-        fetchPage: (id) => client.fetchMyTrades(undefined, since, 200, {
-          endTime: now, type: 'spot', direction: 'NEXT', ...(id ? { id } : {})
+    case 'bitrue': {
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const offset = opts?.nextFiveCheckpoint?.offset ?? 0;
+      const rows = await client.fetchMyTrades(symbol, start, 1000, { endTime: end, offset });
+      const ids = rows.map((row) => String(row.id ?? ''));
+      const unsafe = ids.some((id) => !id) || new Set(ids).size !== ids.length ||
+        (!!opts?.nextFiveCheckpoint?.lastId && ids.includes(opts.nextFiveCheckpoint.lastId));
+      if (unsafe) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing',
+        nextFiveCheckpoint: { start, end, offset, lastId: opts?.nextFiveCheckpoint?.lastId } };
+      return rows.length === 1000
+        ? { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'page_budget',
+            nextFiveCheckpoint: { start, end, offset: offset + rows.length, lastId: rows[rows.length - 1]?.id } }
+        : { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'retention_unverified' };
+    }
+    case 'xt': {
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const outcome = await paginateXtNative({
+        client, cursor: opts?.nextFiveCheckpoint?.nativeCursor, budget: opts?.nextFiveMaxRequests,
+        fetchPage: (id) => client.fetchMyTrades(undefined, start, 200, {
+          endTime: end, type: 'spot', direction: 'NEXT', ...(id ? { id } : {})
         })
-      }), partial: true };
+      });
+      return { ...outcome, partial: true,
+        termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+        nextFiveCheckpoint: outcome.termination === 'page_budget'
+          ? { start, end, nativeCursor: outcome.checkpoint } : undefined };
+    }
     case 'coinspot': {
-      const rows = await client.fetchMyTrades(undefined, since, undefined);
+      const rows = assignCoinspotTradeIds(await client.fetchMyTrades(undefined, since, undefined));
       const future = rows.some((item) => item.timestamp == null || item.timestamp > now);
       return { rows: future ? [] : rows, maxTs: future ? null : maxTimestamp(rows), partial: true,
-        termination: future ? 'nonadvancing' : 'exhausted' };
+        termination: future ? 'nonadvancing' : 'retention_unverified' };
     }
-    case 'phemex':
-      return { ...await paginateNativeOffsets({
-        limit: 200,
-        fetchPage: (offset) => client.fetchMyTrades(undefined, since, 200, { end: now, type: 'spot', offset })
-      }), partial: true };
-    case 'lbank':
-      return { ...await paginatePhase({
-        fetchPage: (_page, start, end) => client.fetchMyTrades(symbol, start, 100, {
-          end_date: new Date(end).toISOString().slice(0, 10), direct: 'next', type: 'spot'
-        }),
-        since,
-        windowMs: 47 * 3_600_000,
-        fullPage: 100,
-        now
-      }), partial: true };
+    case 'phemex': {
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const offset = opts?.nextFiveCheckpoint?.offset ?? 0;
+      const rows = await client.fetchMyTrades(undefined, start, 200, { end, type: 'spot', offset });
+      const ids = rows.map((row) => String(row.id ?? ''));
+      const unsafe = rows.some((row) => !row.id || row.timestamp == null || row.timestamp < start || row.timestamp > end) ||
+        new Set(ids).size !== ids.length || (!!opts?.nextFiveCheckpoint?.lastId && ids.includes(opts.nextFiveCheckpoint.lastId));
+      if (unsafe) return { rows: [], maxTs: null, partial: true, termination: 'nonadvancing',
+        nextFiveCheckpoint: { start, end, offset, lastId: opts?.nextFiveCheckpoint?.lastId } };
+      return rows.length === 200
+        ? { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'page_budget',
+            nextFiveCheckpoint: { start, end, offset: offset + rows.length, lastId: rows[rows.length - 1]?.id } }
+        : { rows, maxTs: maxTimestamp(rows), partial: true, termination: 'retention_unverified' };
+    }
+    case 'lbank': {
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const outcome = await paginateLbankTrades({ client, symbol: symbol!, start, end,
+        dayStart: opts?.nextFiveCheckpoint?.dayStart, from: opts?.nextFiveCheckpoint?.from,
+        lastId: opts?.nextFiveCheckpoint?.lastId,
+        budget: opts?.nextFiveMaxRequests });
+      return { ...outcome, partial: true,
+        termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+        nextFiveCheckpoint: outcome.checkpoint ? { start, end, ...outcome.checkpoint } : undefined };
+    }
   }
 }
 
@@ -3440,6 +3519,7 @@ export interface SyncFetchOutcome {
     withdrawals?: BitmartPaginationCheckpoint;
   };
   bitmartUnsafeReplay?: { trades?: number; deposits?: number; withdrawals?: number };
+  nextFiveProgress?: NextFiveProgress;
   skippedUnsettled: number;
   /**
    * Balance fetched during validation. Stage mode keeps this in the private
@@ -3497,9 +3577,12 @@ export async function syncConnection(
       throw new Error('Bitget pagination checkpoint is malformed; history frontiers were not changed.');
     }
   if (exchange === 'mexc' && row.mexcCheckpoint != null) assertValidMexcCheckpoint(row.mexcCheckpoint);
-  if (exchange === 'bitmart' && !validBitmartConnectionState(row)) {
-    throw new Error('BitMart pagination or replay checkpoint is malformed.');
-  }
+    if (exchange === 'bitmart' && !validBitmartConnectionState(row)) {
+      throw new Error('BitMart pagination or replay checkpoint is malformed.');
+    }
+    if (['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange) && !validNextFiveProgress(row.nextFiveProgress)) {
+      throw new Error(`${exchangeLabel(exchange)} continuation checkpoint is malformed.`);
+    }
     const client = await createClient(row);
     const loadedMarkets = (await client.loadMarkets()) as Record<string, UnifiedMarket>;
     // Crypto.com and Bitfinex public catalogs are mixed. Keep a
@@ -3795,6 +3878,7 @@ export async function syncConnection(
     };
     const bitmartPagination = { ...(row.bitmartPagination ?? {}) };
     const bitmartUnsafeReplay = { ...(row.bitmartUnsafeReplay ?? {}) };
+    const nextFiveProgress: NextFiveProgress = { ...(row.nextFiveProgress ?? {}) };
 
     for (const kind of ['deposits', 'withdrawals'] as const) {
       let since = exchange === 'coinbase'
@@ -3816,6 +3900,7 @@ export async function syncConnection(
       if (exchange === 'bitvavo' && row.bitvavoProgress?.transfers?.[kind]) {
         since = row.bitvavoProgress.transfers[kind]!.requestedStart;
       }
+      if (nextFiveProgress[kind]) since = nextFiveProgress[kind]!.start;
       const retainedTransfer = cryptocomRetainedSince(since, nowMs);
       const cryptocomRetentionFloor = retainedTransfer.floor;
       const cryptocomRetentionTruncated = exchange === 'cryptocom' && retainedTransfer.truncated;
@@ -3882,8 +3967,16 @@ export async function syncConnection(
           deps.bitvavoMaxTransferRequests,
           row.bitvavoProgress?.transfers?.[kind],
           deps.bitmartMaxTransferRequests,
-          bitmartPagination[kind]
+          bitmartPagination[kind],
+          nextFiveProgress[kind],
+          deps.nextFiveMaxRequests
         );
+        if (['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange)) {
+          nextFiveProgress[kind] = outcome.nextFiveCheckpoint ??
+            (outcome.termination === 'nonadvancing'
+              ? nextFiveProgress[kind] ?? { start: since, end: nowMs }
+              : undefined);
+        }
         if (exchange === 'bitstamp') {
           const partial = outcome.partial || bitstampLedger!.unsupportedCount > 0 || bitstampLedger!.unresolvedIds.length > 0;
           const shared = (
@@ -4176,26 +4269,44 @@ export async function syncConnection(
       // universe together with every previously known symbol; this is
       // especially important for BingX, where a delisting must not erase the
       // only discoverable evidence that a market was once in scope.
-      const symbols = [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])].sort();
+      const resumable = exchange === 'bitrue' || exchange === 'lbank';
+      const priorTradeProgress = resumable ? nextFiveProgress.trades : undefined;
+      const symbols = priorTradeProgress?.items ?? [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])].sort();
       discoveryUniverseCount = symbols.length;
       newKnownSymbols = symbols;
-      let done = 0;
+      let done = priorTradeProgress?.itemIndex ?? 0;
       hooks.onProgress?.({ done, total: symbols.length });
-      for (const symbol of symbols) {
+      for (let symbolIndex = done; symbolIndex < symbols.length; symbolIndex += 1) {
+        const symbol = symbols[symbolIndex]!;
         const market = markets[symbol];
         if (!market || market.spot !== true) {
           warnings.push(`${symbol}: ${exchangeLabel(exchange)} no longer publishes this known spot market; coverage remains partial and retained exports are required.`);
           skippedSymbols += 1;
           tradeOutcomes.push({ rows: [], maxTs: oldCursors.trades ?? launchFloor, partial: true, termination: 'nonadvancing' });
         } else {
-          const outcome = await fetchTradesForSymbol(client, exchange, symbol, tradeSince, nowMs);
+          const innerCheckpoint = priorTradeProgress && symbolIndex === (priorTradeProgress.itemIndex ?? 0)
+            ? priorTradeProgress : undefined;
+          const outcome = await fetchTradesForSymbol(client, exchange, symbol,
+            innerCheckpoint?.start ?? tradeSince, innerCheckpoint?.end ?? nowMs, {
+              nextFiveCheckpoint: innerCheckpoint,
+              nextFiveMaxRequests: deps.nextFiveMaxRequests
+            });
           tradeOutcomes.push(outcome);
           tradeRows.push(...outcome.rows);
           fetchedCount += outcome.rows.length;
+          if (resumable && (outcome.termination === 'page_budget' || outcome.termination === 'nonadvancing')) {
+            nextFiveProgress.trades = {
+              ...(outcome.nextFiveCheckpoint ?? innerCheckpoint ?? { start: tradeSince, end: nowMs }),
+              items: symbols, itemIndex: symbolIndex
+            };
+            hooks.onProgress?.({ done: symbolIndex, total: symbols.length });
+            break;
+          }
         }
         done += 1;
         hooks.onProgress?.({ done, total: symbols.length });
       }
+      if (resumable && done >= symbols.length) nextFiveProgress.trades = undefined;
       discoveredCount = done;
     } else if (exchange === 'binance' || exchange === 'binanceus') {
       // §B-4 symbol discovery.
@@ -4527,9 +4638,18 @@ export async function syncConnection(
             bitmartCheckpoint: bitmartPagination.trades
           })
         : await withRetries(
-            () => fetchTradesForSymbol(client, exchange, undefined, tradeSince, nowMs),
+            () => fetchTradesForSymbol(client, exchange, undefined,
+              nextFiveProgress.trades?.start ?? tradeSince,
+              nextFiveProgress.trades?.end ?? nowMs,
+              { nextFiveCheckpoint: nextFiveProgress.trades, nextFiveMaxRequests: deps.nextFiveMaxRequests }),
             sleep
           );
+      if (exchange === 'xt' || exchange === 'phemex') {
+        nextFiveProgress.trades = outcome.nextFiveCheckpoint ??
+          (outcome.termination === 'nonadvancing'
+            ? nextFiveProgress.trades ?? { start: tradeSince, end: nowMs }
+            : undefined);
+      }
       if (exchange === 'okx' && oldCursors.trades == null) {
         const retentionFloor = nowMs - 90 * 86_400_000;
         outcome.partial = true;
@@ -5103,6 +5223,7 @@ export async function syncConnection(
       bitgetHistory: exchange === 'bitget' ? bitgetHistory : undefined,
       bitmartPagination: exchange === 'bitmart' ? bitmartPagination : undefined,
       bitmartUnsafeReplay: exchange === 'bitmart' ? bitmartUnsafeReplay : undefined,
+      nextFiveProgress: ['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange) ? nextFiveProgress : undefined,
       skippedUnsettled,
       balance,
       operation
@@ -5154,6 +5275,7 @@ export async function syncConnection(
       bitgetHistory: exchange === 'bitget' ? bitgetHistory : undefined,
       bitmartPagination: exchange === 'bitmart' ? bitmartPagination : undefined,
       bitmartUnsafeReplay: exchange === 'bitmart' ? bitmartUnsafeReplay : undefined,
+      nextFiveProgress: ['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange) ? nextFiveProgress : undefined,
       balance,
       operation,
       hooks,
@@ -5237,6 +5359,7 @@ export async function persistSyncedRows(args: {
     withdrawals?: BitmartPaginationCheckpoint;
   };
   bitmartUnsafeReplay?: { trades?: number; deposits?: number; withdrawals?: number };
+  nextFiveProgress?: NextFiveProgress;
   /** ccxt Balances from fetchBalance — persisted as the exchange truth anchor. */
   balance?: UnifiedBalance;
   /** Reserved generation and source revision/state captured by this operation. */
@@ -5525,7 +5648,8 @@ export async function persistSyncedRows(args: {
         bitvavoPendingAccountCandidates: retainedAccountCandidates.length > 0 ? retainedAccountCandidates : undefined,
         bitgetHistory: args.bitgetHistory,
   bitmartPagination: args.bitmartPagination,
-  bitmartUnsafeReplay: args.bitmartUnsafeReplay,
+        bitmartUnsafeReplay: args.bitmartUnsafeReplay,
+        nextFiveProgress: args.nextFiveProgress,
         lastSyncAt: asOf,
         status: 'ok',
         lastError: undefined,

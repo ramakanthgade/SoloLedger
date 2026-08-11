@@ -108,6 +108,22 @@ describe('createExchangeClient', () => {
     expect(typeof client.fetchCoinspotWithdrawals).toBe('function');
   });
 
+  it('pinned LBank fetchMyTrades emits POST /v2/transaction_history.do', async () => {
+    const client = await createExchangeClient(row({ exchange: 'lbank' }));
+    const market = { id: 'btc_usdt', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', spot: true };
+    client.markets = { 'BTC/USDT': market };
+    (client as unknown as { markets_by_id: Record<string, unknown[]> }).markets_by_id = { btc_usdt: [market] };
+    const emitted: Array<{ path: string; method?: string }> = [];
+    client.fetch = async (url, method) => {
+      emitted.push({ path: new URL(url).pathname, method });
+      return { result: true, data: [], error_code: 0 };
+    };
+    await client.fetchMyTrades('BTC/USDT', Date.UTC(2024, 0, 1), 100, {
+      start_date: '2024-01-01', end_date: '2024-01-01', from: 0, size: 100
+    });
+    expect(emitted).toEqual([{ path: '/v2/transaction_history.do', method: 'POST' }]);
+  });
+
   it.each([
     ['bitrue', '/api/v1/account', { balances: [] }],
     ['xt', '/v4/balances', { rc: 0, mc: 'SUCCESS', result: { assets: [] } }],

@@ -24,8 +24,24 @@ describe('next-five engine plans', () => {
     });
     const outcome = await fetchTransferKind(client, 'bitrue', 'deposits', 1, 20, ['BTC', 'ETH'], [], NO_SLEEP);
     expect(calls).toEqual([['BTC', 0], ['ETH', 0]]);
-    expect(outcome).toMatchObject({ partial: true, termination: 'exhausted' });
+    expect(outcome).toMatchObject({ partial: true, termination: 'retention_unverified' });
     expect(outcome.rows.map((row) => row.id)).toEqual(['BTC-1', 'ETH-1']);
+  });
+
+  it('Bitrue freezes currency/offset continuation and resumes it', async () => {
+    const calls: number[] = [];
+    const client = baseClient({ fetchDeposits: vi.fn(async (_code, _since, _limit, params) => {
+      const offset = Number(params?.offset ?? 0); calls.push(offset);
+      return offset === 0 ? Array.from({ length: 1000 }, (_, i) => ({ id: String(i), timestamp: 10 })) : [];
+    }) });
+    const first = await fetchTransferKind(client, 'bitrue', 'deposits', 1, 20, ['BTC'], [], NO_SLEEP,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 1);
+    expect(first.nextFiveCheckpoint).toMatchObject({ start: 1, end: 20, items: ['BTC'], itemIndex: 0, offset: 1000 });
+    const resumed = await fetchTransferKind(client, 'bitrue', 'deposits', 1, 30, ['BTC'], [], NO_SLEEP,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, first.nextFiveCheckpoint, 1);
+    expect(calls).toEqual([0, 1000]);
+    expect(resumed.termination).toBe('retention_unverified');
+    expect(resumed.nextFiveCheckpoint).toBeUndefined();
   });
 
   it('CoinSpot uses only the read-only raw deposit adapter and filters the requested time range', async () => {
@@ -38,7 +54,7 @@ describe('next-five engine plans', () => {
     });
     const outcome = await fetchTransferKind(client, 'coinspot', 'deposits', 10_000, 20_000, [], [], NO_SLEEP);
     expect(outcome.rows.map((row) => row.id)).toEqual(['kept']);
-    expect(outcome).toMatchObject({ partial: true, termination: 'exhausted' });
+    expect(outcome).toMatchObject({ partial: true, termination: 'retention_unverified' });
     expect(client.fetchCoinspotWithdrawals).not.toHaveBeenCalled();
   });
 
@@ -50,22 +66,40 @@ describe('next-five engine plans', () => {
       })
     });
     const outcome = await fetchTransferKind(client, 'xt', 'deposits', 1, 20, [], [], NO_SLEEP);
-    expect(outcome).toMatchObject({ partial: true, termination: 'exhausted' });
+    expect(outcome).toMatchObject({ partial: true, termination: 'retention_unverified' });
+  });
+
+  it('XT.COM persists and resumes its immutable native cursor', async () => {
+    const cursors: Array<string | undefined> = [];
+    const client = baseClient({ fetchDeposits: vi.fn(async (_code, _since, _limit, params) => {
+      const cursor = params?.id as string | undefined; cursors.push(cursor);
+      const rows = cursor ? [{ id: '2', timestamp: 2 }] : [{ id: '1', timestamp: 1 }];
+      client.last_json_response = { result: { hasNext: !cursor, items: rows } };
+      return rows;
+    }) });
+    const first = await fetchTransferKind(client, 'xt', 'deposits', 1, 20, [], [], NO_SLEEP,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, 1);
+    expect(first.nextFiveCheckpoint).toMatchObject({ nativeCursor: '1', start: 1, end: 20 });
+    const second = await fetchTransferKind(client, 'xt', 'deposits', 1, 30, [], [], NO_SLEEP,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, first.nextFiveCheckpoint, 1);
+    expect(cursors).toEqual([undefined, '1']);
+    expect(second.termination).toBe('retention_unverified');
   });
 
   it('LBank trades split history into windows below the documented two-day cap', async () => {
-    const windows: Array<[number | undefined, string | undefined]> = [];
+    const windows: Array<[string | undefined, string | undefined, number | undefined]> = [];
     const client = baseClient({
-      fetchMyTrades: vi.fn(async (_symbol, since, _limit, params) => {
-        windows.push([since, params?.end_date as string]);
+      fetchMyTrades: vi.fn(async (_symbol, _since, _limit, params) => {
+        windows.push([params?.start_date as string, params?.end_date as string, params?.from as number]);
         return [] as UnifiedTrade[];
       })
     });
     const start = Date.UTC(2024, 0, 1);
     const outcome = await fetchTradesForSymbol(client, 'lbank', 'BTC/USDT', start, start + 4 * 86_400_000);
     expect(windows.length).toBeGreaterThan(2);
-    expect(windows.every((_, index) => index === 0 || windows[index][0]! > windows[index - 1][0]!)).toBe(true);
-    expect(outcome).toMatchObject({ partial: true, termination: 'exhausted' });
+    expect(windows.every(([startDate, endDate]) => startDate === endDate)).toBe(true);
+    expect(windows.map(([startDate]) => startDate)).toEqual([...new Set(windows.map(([startDate]) => startDate))]);
+    expect(outcome).toMatchObject({ partial: true, termination: 'retention_unverified' });
   });
 
   it('Phemex transfer history rejects rows without immutable ids', async () => {
@@ -74,5 +108,15 @@ describe('next-five engine plans', () => {
     });
     const outcome = await fetchTransferKind(client, 'phemex', 'withdrawals', 1, 20, [], [], NO_SLEEP);
     expect(outcome).toMatchObject({ rows: [], partial: true, termination: 'nonadvancing' });
+  });
+
+  it.each([
+    ['future', { id: '1', timestamp: 21, currency: 'BTC', amount: 1 }],
+    ['before frozen range', { id: '1', timestamp: 0, currency: 'BTC', amount: 1 }],
+    ['malformed', { id: '1', timestamp: 1.5, currency: 'BTC', amount: 1 }]
+  ])('Phemex transfers fail closed on %s timestamps', async (_label, row) => {
+    const client = baseClient({ fetchDeposits: vi.fn(async () => [row] as UnifiedTransfer[]) });
+    expect(await fetchTransferKind(client, 'phemex', 'deposits', 1, 20, [], [], NO_SLEEP))
+      .toMatchObject({ rows: [], partial: true, termination: 'nonadvancing' });
   });
 });

@@ -191,10 +191,9 @@ function tradeSourceRef(
     case 'lbank':
       return trade.id;
     case 'coinspot':
-      // CoinSpot API trades expose no native id. Keep replay stable without
-      // claiming a CSV collision: the CSV's timestamp granularity/provenance
-      // cannot distinguish deterministic same-value twins.
-      return exchangeSourceRef('coinspot-api', ts, side, base, amount);
+      // The full-response adapter assigns an economics-complete deterministic
+      // occurrence id so equal fills retain multiplicity across replay.
+      return trade.id;
   }
 }
 
@@ -817,8 +816,13 @@ function transferSourceRef(
     case 'xt':
     case 'coinspot':
     case 'phemex':
-    case 'lbank':
       return transfer.id;
+    case 'lbank':
+      // Deposits have no native `id` in pinned CCXT. Direction-scope txid so
+      // it cannot collide with a withdrawal; withdrawals retain native `id`.
+      return type === 'transfer_in'
+        ? (transfer.txid ? `deposit:${transfer.txid}` : undefined)
+        : transfer.id;
     case 'whitebit':
       return transfer.id ?? transfer.txid ?? (typeof transfer.info?.transactionId === 'string'
         ? transfer.info.transactionId
@@ -935,6 +939,8 @@ export function normalizeTransfer(
     (API_NATIVE_ID_EXCHANGES.has(exchange) &&
       (exchange === 'whitebit'
         ? ![transfer.id, transfer.txid, transfer.info?.transactionId].some((value) => value != null && String(value).trim() !== '')
+        : exchange === 'lbank' && type === 'transfer_in'
+          ? transfer.txid == null || String(transfer.txid).trim() === ''
         : transfer.id == null || String(transfer.id).trim() === '')) ||
     !isSettledTransfer(exchange, type ?? 'transfer_in', transfer.status, transfer.info?.status)) return null;
   const ts = transfer.timestamp;

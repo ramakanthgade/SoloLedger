@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { normalizeTrade, normalizeTransfer } from './normalize';
 import type { ExchangeId } from './types';
+import { assignCoinspotTradeIds } from './nextFiveExchanges';
 
 const market = { id: 'btcusdt', symbol: 'BTC/USDT', base: 'BTC', quote: 'USDT', spot: true };
 
@@ -24,13 +25,13 @@ describe('next-five normalization identity', () => {
   });
 
   it('keeps CoinSpot API replay deterministic without claiming CSV identity', () => {
-    const normalized = normalizeTrade('coinspot', trade(undefined), market);
+    const normalized = normalizeTrade('coinspot', assignCoinspotTradeIds([trade(undefined)])[0], market);
     expect(normalized).toMatchObject({ source: 'coinspot_api', type: 'buy' });
-    expect(normalized?.sourceRef).toContain('coinspot-api');
+    expect(normalized?.sourceRef).toContain('coinspot-trade:');
     expect(normalized?.sourceRef).not.toContain('coinspot:');
   });
 
-  it.each(['bitrue', 'xt', 'coinspot', 'phemex', 'lbank'] as ExchangeId[])(
+  it.each(['bitrue', 'xt', 'coinspot', 'phemex'] as ExchangeId[])(
     '%s transfer identity uses immutable endpoint evidence',
     (exchange) => {
       const normalized = normalizeTransfer(exchange, {
@@ -40,4 +41,12 @@ describe('next-five normalization identity', () => {
       expect(normalized).toMatchObject({ source: `${exchange}_api`, sourceRef: 'wallet-1', type: 'transfer_in' });
     }
   );
+
+  it('LBank scopes deposit txid fallback by direction and keeps withdrawal native id', () => {
+    const common = { timestamp: 1_700_000_000_000, currency: 'BTC', amount: 1, status: 'ok' };
+    expect(normalizeTransfer('lbank', { ...common, txid: 'hash', type: 'deposit', info: { status: '2' } }, 'deposit')?.sourceRef)
+      .toBe('deposit:hash');
+    expect(normalizeTransfer('lbank', { ...common, id: 'wallet-1', txid: 'hash', type: 'withdrawal', info: { status: '4' } }, 'withdrawal')?.sourceRef)
+      .toBe('wallet-1');
+  });
 });

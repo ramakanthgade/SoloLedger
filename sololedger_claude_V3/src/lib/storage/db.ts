@@ -201,6 +201,8 @@ export interface ExchangeConnectionRow {
   };
   /** Earliest unsafe row per endpoint, retained until a complete replay resolves it. */
   bitmartUnsafeReplay?: { trades?: number; deposits?: number; withdrawals?: number };
+  /** Frozen bounded work for Bitrue, XT.COM, Phemex and LBank. No secrets. */
+  nextFiveProgress?: import('@/lib/exchangeSync/nextFiveExchanges').NextFiveProgress;
   lastSyncAt?: number;
   status: 'idle' | 'syncing' | 'ok' | 'error';
   lastError?: string;

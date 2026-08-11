@@ -356,9 +356,17 @@ last immutable native id agree; LBank requires stable `total`, `current_page`
 and `page_length` metadata; Phemex filters its mixed products catalog to active
 spot markets; and CoinSpot uses dedicated raw adapters for read-only deposits
 and withdrawals because pinned CCXT has no unified methods for them.
-CoinSpot's existing CSV contains no provider id and cannot distinguish exact
-same-value twins, so API replay is stable but API↔CSV collision is deliberately
-not claimed. Fixtures are hand-authored and marked `_recorded:false`.
+Bitrue, XT.COM, Phemex and LBank persist a non-secret `nextFiveProgress`
+checkpoint atomically with imported rows. It freezes each range/universe and
+records the next symbol/currency plus offset, native cursor, page, or LBank UTC
+calendar-day `from` position. The next sync resumes it before opening new work
+and clears it only after structural exhaustion. Undocumented retention is
+reported separately as `retention_unverified`, allowing an exhausted endpoint
+to advance its timestamp frontier while coverage remains honestly partial.
+CoinSpot's existing CSV contains no provider id. Its full API responses receive
+deterministic occurrence ordinals over all available market/economic evidence,
+so identical API twins survive replay, but API↔CSV collision is deliberately not
+claimed. Fixtures are hand-authored and marked `_recorded:false`.
 
 Retention and region claims remain conservative: CoinSpot is Australia-only;
 Bitrue, XT.COM and Phemex have high hosted-region risk; LBank region support is

@@ -865,6 +865,31 @@ describe('4. exchangeId and path validation', () => {
     expect((await client('/coinspot/api/my/coin/send', { method: 'POST', headers: AUTH })).status).toBe(400);
   });
 
+  it('XT.COM forwards the algorithms signing header byte-for-byte', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    const res = await client('/xt/v4/balances', { headers: {
+      ...AUTH,
+      'x-exchange-xt-validate-appkey': 'key',
+      'x-exchange-xt-validate-timestamp': '123',
+      'x-exchange-xt-validate-signature': 'aBc+/=',
+      'x-exchange-xt-validate-recvwindow': '5000',
+      'x-exchange-xt-validate-algorithms': 'HmacSHA256'
+    }});
+    expect(res.status).toBe(200);
+    const [, init] = lastUpstreamCall();
+    expect(init.headers).toEqual({
+      'xt-validate-appkey': 'key', 'xt-validate-timestamp': '123',
+      'xt-validate-signature': 'aBc+/=', 'xt-validate-recvwindow': '5000',
+      'xt-validate-algorithms': 'HmacSHA256'
+    });
+  });
+
+  it('LBank permits pinned CCXT trade history route and rejects the unused supplement variant', async () => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    expect((await client('/lbank/v2/transaction_history.do', { method: 'POST', headers: AUTH })).status).toBe(200);
+    expect((await client('/lbank/v2/supplement/transaction_history.do', { method: 'POST', headers: AUTH })).status).toBe(400);
+  });
+
   it('WhiteBIT allows signed POST only on the exact read-only private history paths', async () => {
     upstreamMock.mockImplementation(async () => upstreamJson('{}'));
     for (const path of ['/api/v4/trade-account/balance', '/api/v4/trade-account/executed-history', '/api/v4/main-account/history']) {
