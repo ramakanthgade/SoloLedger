@@ -141,13 +141,16 @@ describe('ReviewTab — Koinly-inspired SoloLedger economic rows', () => {
     expect(source).not.toContain('extraValue');
   });
 
-  it('keeps type and category beside the source logo while right utilities retain transaction metadata', () => {
+  it('keeps type, category, time, and chain beside the source logo while right utilities retain fee and flags', () => {
     const sourceBlock = source.slice(source.indexOf('data-testid="tx-source-account"'), source.indexOf('data-testid="tx-flow"'));
     const actionsBlock = source.slice(source.indexOf('data-testid="tx-row-actions"'), source.indexOf('data-testid="tx-disclosure"'));
     expect(sourceBlock).toContain('<TypeSelector tx={t} />');
     expect(sourceBlock).toContain('<CategorySelector tx={t} />');
+    expect(sourceBlock).toContain('data-testid="tx-time-chain"');
+    expect(sourceBlock).toContain("{timeUtc}{chainLabel ? ` · ${chainLabel}` : ''}");
     expect(actionsBlock).not.toContain('<TypeSelector tx={t} />');
     expect(actionsBlock).not.toContain('<CategorySelector tx={t} />');
+    expect(actionsBlock).not.toContain("{timeUtc}{chainLabel ? ` · ${chainLabel}` : ''}");
     expect(actionsBlock).toContain('fee {formatCompactAmount(t.feeAmount)} {t.feeAsset}');
     expect(actionsBlock).toContain('<FlagSelector tx={t} derivedFlags={derivedFlags} />');
   });
