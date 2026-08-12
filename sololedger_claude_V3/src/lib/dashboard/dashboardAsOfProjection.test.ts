@@ -3,7 +3,8 @@ import type { TaxSettings, Transaction } from '@/types/transaction';
 import type { OpeningBalanceRow } from '@/lib/ledger/derivedPostings';
 import type { AuthorityAssetRow, AuthoritySnapshotRow, EndpointProof } from '@/lib/reconcile/authoritySelection';
 import type { SourceCoverageRow } from '@/lib/reconcile/sourceCoverage';
-import { projectDashboardAsOf } from './dashboardAsOfProjection';
+import { prepareHistoricalLedgerReplay } from '@/lib/portfolio/holdingsProjection';
+import { projectDashboardAsOf, projectLedgerBasisNetWorthAtCutoff } from './dashboardAsOfProjection';
 
 const DAY = 86_400_000;
 const START = Date.UTC(2026, 3, 1);
@@ -228,6 +229,29 @@ describe('dashboard as-of projection', () => {
       ]
     }));
     expect(changed.totalNetWorth.value).toBe(initial.totalNetWorth.value + 10);
+  });
+
+  it('groups many distinct historical scope/asset keys in one posting pass', () => {
+    const transactions = Array.from({ length: 1_000 }, (_, index) => tx(`many-${index}`, {
+      timestamp: START - DAY + index,
+      type: 'transfer_in',
+      asset: `ASSET${index}`,
+      amount: index + 1,
+      fiatValue: index + 1
+    }));
+    const replay = prepareHistoricalLedgerReplay({
+      transactions, exchangeConnections: [], openingBalances: []
+    });
+    const metrics = { groupedPostingVisits: 0 };
+    const result = projectLedgerBasisNetWorthAtCutoff({
+      replay, transactions, priceCache: [], reportingCurrency: 'INR',
+      cutoff: END, metrics
+    });
+
+    expect(replay.postings).toHaveLength(1_000);
+    expect(metrics.groupedPostingVisits).toBe(replay.postings.length);
+    expect(result.contributors).toHaveLength(1_000);
+    expect(result.contributors.find((row) => row.asset === 'ASSET999')?.signedQuantity).toBe(1_000);
   });
 
   it('recomputes cost, gains, and tax for append, backfill, prefix edit, cutoff, method, and SpecID changes', () => {

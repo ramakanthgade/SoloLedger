@@ -14,7 +14,6 @@ import {
   type PreparedHistoricalLedgerReplay,
   type ProjectedPortfolioHolding
 } from '@/lib/portfolio/holdingsProjection';
-import { postingBalances, postingBalanceKey } from '@/lib/ledger/postingBalances';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
 import { EVM_CHAIN_NUMERIC_IDS } from '@/lib/ledger/chainNamespace';
 import { transactionLegAssetKey } from '@/lib/ledger/assetKey';
@@ -82,7 +81,8 @@ interface HistoricalGroupedBalance {
 
 function groupedBalancesAtSamples(
   replay: PreparedHistoricalLedgerReplay,
-  samples: readonly number[]
+  samples: readonly number[],
+  metrics?: { groupedPostingVisits: number }
 ): ReadonlyMap<number, ReadonlyMap<string, HistoricalGroupedBalance>> {
   const ordered = replay.preparedPostings.ordered;
   const byScope = new Map<string, number>();
@@ -92,6 +92,7 @@ function groupedBalancesAtSamples(
   for (const sample of samples) {
     while (postingIndex < ordered.length && ordered[postingIndex].effectiveAt <= sample) {
       const posting = ordered[postingIndex++];
+      if (metrics) metrics.groupedPostingVisits += 1;
       const scopeKey = `${posting.accountScopeId}\u001f${posting.accountClass}\u001f${posting.assetKey}`;
       const previous = byScope.get(scopeKey) ?? 0;
       const next = posting.role === 'opening_balance' ? posting.signedQuantity : previous + posting.signedQuantity;
@@ -268,34 +269,12 @@ export function projectLedgerBasisNetWorthAtCutoff(input: {
   costBasisQuantityByAsset?: ReadonlyMap<string, number>;
   identities?: ReadonlyMap<string, HistoricalIdentity>;
   groupedBalances?: ReadonlyMap<string, HistoricalGroupedBalance>;
+  metrics?: { groupedPostingVisits: number };
 }): { contributors: DashboardLedgerContributor[]; aggregate: DashboardAggregate } {
   const decisions = input.safetyDecisions ?? [];
   const identities = input.identities ?? historicalIdentities(input.replay.postings, input.transactions, decisions);
-  const grouped = input.groupedBalances ? new Map(input.groupedBalances) : new Map<string, HistoricalGroupedBalance>();
-  const balanceRows = input.groupedBalances ? []
-    : [...postingBalances(input.replay.postings, { asOf: input.cutoff }, input.replay.preparedPostings)]
-        .map(([key, balance]) => ({
-          posting: input.replay.preparedPostings.ordered.find((row) => postingBalanceKey(row) === key),
-          balance
-        }));
-  for (const { posting, balance } of balanceRows) {
-    if (!posting || balance === 0) continue;
-    const existing = grouped.get(posting.assetKey) ?? {
-      quantity: 0,
-      scopes: [] as Array<{ scopeId: string; accountClass: DerivedPosting['accountClass'] }>,
-      scopeQuantities: new Map<string, number>(),
-      scopeIds: new Set<string>()
-    };
-    const scopeId = `${posting.accountScopeId}\u001f${posting.accountClass}`;
-    if (!existing.scopeIds!.has(scopeId)) {
-      existing.scopeIds!.add(scopeId);
-      existing.scopes.push({ scopeId: posting.accountScopeId, accountClass: posting.accountClass });
-    }
-    const scopeKey = `${posting.accountScopeId}\u001f${posting.accountClass}\u001f${posting.assetKey}`;
-    existing.scopeQuantities.set(scopeKey, balance);
-    existing.quantity = [...existing.scopeQuantities.values()].reduce((sum, value) => sum + value, 0);
-    grouped.set(posting.assetKey, existing);
-  }
+  const grouped = new Map(input.groupedBalances ??
+    groupedBalancesAtSamples(input.replay, [input.cutoff], input.metrics).get(input.cutoff) ?? []);
 
   const contributors: DashboardLedgerContributor[] = [];
   const positiveQuantityByAsset = new Map<string, number>();
