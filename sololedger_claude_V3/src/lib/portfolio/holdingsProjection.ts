@@ -125,6 +125,27 @@ export interface DisplayIdentity {
   contractAddress?: string;
 }
 
+export interface PreparedHistoricalLedgerReplay {
+  postings: readonly DerivedPosting[];
+  preparedPostings: PreparedPostingAggregation;
+}
+
+/**
+ * Prepare the transaction/opening ledger once for historical cutoff sampling.
+ * This deliberately performs no authority selection: current snapshots are not
+ * historical balances and must never be rewound into earlier points.
+ */
+export function prepareHistoricalLedgerReplay(input: Pick<
+  HoldingsProjectionInput,
+  'transactions' | 'exchangeConnections' | 'openingBalances'
+>): PreparedHistoricalLedgerReplay {
+  const postings = derivePostings(input.transactions, {
+    exchangeConnections: [...input.exchangeConnections],
+    openingBalances: input.openingBalances.filter((row) => row.supersededAt == null)
+  });
+  return { postings, preparedPostings: preparePostingAggregation(postings) };
+}
+
 export function countQuantityAuthorityIssues(
   projection: Pick<HoldingsProjection, 'slices' | 'diagnostics'>
 ): number {

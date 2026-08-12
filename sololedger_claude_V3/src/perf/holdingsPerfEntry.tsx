@@ -29,7 +29,7 @@ async function seedDatabase() {
   );
   if (fixtureEndpointsPresent && (existingCount === 30_000 || existingCount === 30_001)) {
     const liveKeys = (await db.transactions.toCollection().primaryKeys())
-      .filter((key) => String(key).startsWith('holdings-live-'));
+      .filter((key) => /^(?:z-)?holdings-live-/.test(String(key)));
     if (liveKeys.length !== existingCount - 30_000) {
       throw new Error(`Unexpected holdings fixture state: ${existingCount} rows and ${liveKeys.length} live rows`);
     }
@@ -59,9 +59,12 @@ async function appendLiveUpdate(sampleId: number): Promise<void> {
   const lastTransaction = await db.transactions.orderBy('timestamp').last();
   if (!lastTransaction) throw new Error('Cannot append a live update to an empty database');
   const transaction: Transaction = {
-    id: `holdings-live-${sampleId}`,
+    // Sort after the seeded p-* rows so this is a real chronological append.
+    id: `z-holdings-live-${sampleId}`,
     timestamp: lastTransaction.timestamp + 1_000,
-    type: 'transfer_in',
+    // Use an acquisition with explicit basis so the coherent Dashboard chart
+    // endpoint must publish both the quantity and remaining-cost update.
+    type: 'buy',
     asset: 'BTC',
     amount: 1,
     fiatCurrency: 'INR',
@@ -70,8 +73,11 @@ async function appendLiveUpdate(sampleId: number): Promise<void> {
     flags: [],
     isInternalTransfer: false
   };
-  window.__SOLOLEDGER_HOLDINGS_PERF__!.begin('live-update');
   await db.transaction('rw', db.transactions, () => db.transactions.put(transaction));
+  // The coherent Dashboard reacts to the committed revision. Measure from the
+  // commit boundary rather than including IndexedDB write latency in the
+  // projection-and-paint contract.
+  window.__SOLOLEDGER_HOLDINGS_PERF__!.begin('live-update');
 }
 
 async function runDashboard() {

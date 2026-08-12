@@ -1,5 +1,6 @@
 import { ConnectionsHome } from '@/components/connections/ConnectionsHome';
-import type { SourceNavigationIntent } from '@/lib/navigationIntent';
+import type { DataHealthViewState } from '@/components/connections/dataHealth/DataHealthWorkspace';
+import type { NavigationIntent, SourceNavigationIntent } from '@/lib/navigationIntent';
 
 /**
  * ImportTab — the shell's "Connections" tab (tab id stays 'import').
@@ -14,10 +15,27 @@ import type { SourceNavigationIntent } from '@/lib/navigationIntent';
  * - Auto-sync      → What › Exchange account › an API exchange
  *   (ExchangeConnectStep)
  */
-export function ImportTab({ navigationIntent, onNavigationIntentAcknowledged, onNavigationBack }: {
+export function ImportTab({
+  navigationIntent,
+  onNavigationIntentAcknowledged,
+  onNavigationBack,
+  onDataHealthNavigation,
+  restoredDataHealthState,
+  openDataHealthOnMount
+}: {
   navigationIntent?: SourceNavigationIntent;
   onNavigationIntentAcknowledged?: (id: string) => void;
   onNavigationBack?: () => void;
+  onDataHealthNavigation?: (intent: NavigationIntent, state: DataHealthViewState) => void;
+  restoredDataHealthState?: DataHealthViewState;
+  openDataHealthOnMount?: boolean;
 } = {}) {
-  return <ConnectionsHome navigationIntent={navigationIntent} onNavigationIntentAcknowledged={onNavigationIntentAcknowledged} onNavigationBack={onNavigationBack} />;
+  return <ConnectionsHome
+    navigationIntent={navigationIntent}
+    onNavigationIntentAcknowledged={onNavigationIntentAcknowledged}
+    onNavigationBack={onNavigationBack}
+    onDataHealthNavigation={onDataHealthNavigation}
+    restoredDataHealthState={restoredDataHealthState}
+    openDataHealthOnMount={openDataHealthOnMount}
+  />;
 }

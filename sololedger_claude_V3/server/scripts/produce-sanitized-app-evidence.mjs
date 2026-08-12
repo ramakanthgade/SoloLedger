@@ -29,7 +29,7 @@ export function sanitizedAppEvidence(value, provenance = {}) {
     value?.featureEnabled !== true || typeof value?.shadowStatus !== 'string' || !value.shadowStatus ||
     screenshots.length !== requiredScreenshots.length ||
     screenshots.some((item, index) => item.name !== requiredScreenshots[index] || !/^[0-9a-f]{64}$/.test(item.sha256)) ||
-    !Array.isArray(value?.selectors) || !value.selectors.includes('[data-testid="net-worth-value"]') ||
+    !Array.isArray(value?.selectors) || !value.selectors.includes('[data-testid="dashboard-total-net-worth"]') ||
     !value.selectors.includes('[data-testid="detail-holdings-total"]')) {
     throw new Error('invalid browser capture');
   }

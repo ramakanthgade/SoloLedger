@@ -96,6 +96,8 @@ test('real Dashboard holdings stays within the Chromium performance budgets', as
     await expect(page.getByTestId('dashboard-holdings')).toBeVisible();
     await expect(page.getByTestId('net-worth-chart')).toBeVisible();
     const initialChartRevision = await deferredGeneration.getAttribute('data-chart-revision');
+    const initialInputRevision = await holdingsGeneration.getAttribute('data-input-revision');
+    expect(await deferredGeneration.getAttribute('data-input-revision')).toBe(initialInputRevision);
     const initialChartPointCount = await numericAttribute(
       page, 'dashboard-deferred-generation', 'data-chart-point-count'
     );
@@ -125,10 +127,13 @@ test('real Dashboard holdings stays within the Chromium performance budgets', as
     await expect(deferredGeneration).not.toHaveAttribute(
       'data-chart-revision', initialChartRevision!, { timeout: 10_000 }
     );
+    const liveInputRevision = await holdingsGeneration.getAttribute('data-input-revision');
+    expect(liveInputRevision).not.toBe(initialInputRevision);
+    expect(await deferredGeneration.getAttribute('data-input-revision')).toBe(liveInputRevision);
     expect(await numericAttribute(page, 'dashboard-deferred-generation', 'data-chart-point-count'))
       .toBe(initialChartPointCount);
     expect(await numericAttribute(page, 'dashboard-deferred-generation', 'data-chart-end-t'))
-      .toBe(initialChartEnd);
+      .toBeGreaterThanOrEqual(initialChartEnd);
     expect(await numericAttribute(page, 'dashboard-deferred-generation', 'data-chart-end-cost'))
       .toBe(initialChartCost + 5_000_000);
     await expect(page.getByTestId('net-worth-chart')).toBeVisible();

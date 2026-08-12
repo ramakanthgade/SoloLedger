@@ -7,6 +7,9 @@ import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
 import type { TxType, Transaction, TransactionCategory, FlagReason, Jurisdiction, TaxSettings } from '@/types/transaction';
 import { cn, formatAmountForExport, formatCompactAmount, formatCurrency, formatLedgerAmount, formatLedgerCurrency, getFyBoundaries, getFyLabel, getAvailableFys, monetaryColumnLabel, downloadBlob, csvField } from '@/lib/utils';
 import { calculateCostBasis } from '@/lib/costBasis/engine';
+import { currentDashboardFilterSummary } from '@/lib/dashboard/dashboardCategoryAggregation';
+import { dashboardFeeValue, dashboardTransactionValue } from '@/lib/dashboard/dashboardAsOfProjection';
+import { prepareDashboardPriceRows } from '@/lib/dashboard/dashboardHistoricalMarks';
 import { CHAINS } from '@/lib/rpc/providers';
 import { buildWalletLabelMap, walletLabelFor } from './walletLabels';
 import { explorerTxUrl } from '@/lib/parsers/explorer';
@@ -660,6 +663,11 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   const { goToImport } = useTabNav();
   const transactionsLive = useLiveQuery(() => db.transactions.toArray(), []);
   const safetyDecisionsLive = useLiveQuery(() => db.safetyDecisions.toArray(), []);
+  const dashboardPriceRowsLive = useLiveQuery(() => db.priceCache.toArray(), []);
+  const preparedDashboardPriceRows = useMemo(
+    () => prepareDashboardPriceRows(dashboardPriceRowsLive ?? []),
+    [dashboardPriceRowsLive]
+  );
   const transactions = useMemo(() =>
     transactionsLive && safetyDecisionsLive
       ? transactionsUnderCurrentSafetyPolicy(transactionsLive, safetyDecisionsLive)
@@ -1230,13 +1238,47 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     return () => window.cancelAnimationFrame(frame);
   }, [expandedId, filtered, onNavigationIntentAcknowledged, pendingNavigationFocus]);
 
+  const dashboardFilterSummary = useMemo(() => {
+    const category = navigationScopeFilter?.category;
+    if (!category) return undefined;
+    return currentDashboardFilterSummary({
+      transactions: filtered, category,
+      nominalStart: navigationScopeFilter.nominalStart ?? Number.NEGATIVE_INFINITY,
+      effectiveEnd: navigationScopeFilter.effectiveEnd ?? Number.POSITIVE_INFINITY,
+      reportingCurrency: settings?.reportingCurrency ?? navigationScopeFilter.summaryCurrency ?? 'INR',
+      disposals: engineResult?.disposals, lots: engineResult?.lots, jurisdiction,
+      valueForTransaction: (transaction, selectedCategory) => {
+        const valuationInput = {
+          settings: { reportingCurrency: settings?.reportingCurrency ?? navigationScopeFilter.summaryCurrency ?? 'INR' },
+          priceCache: dashboardPriceRowsLive ?? [], preparedPriceRows: preparedDashboardPriceRows
+        };
+        return selectedCategory === 'tradingFees'
+          ? dashboardFeeValue(transaction, valuationInput)
+          : dashboardTransactionValue(transaction, valuationInput);
+      }
+    });
+  }, [dashboardPriceRowsLive, engineResult, filtered, jurisdiction, navigationScopeFilter,
+    preparedDashboardPriceRows, settings?.reportingCurrency]);
+
   // Shared pagination bar — rendered both above and below the list so long
   // ledgers can be paged from either end. Both instances read the same
   // page/safePage/totalPages state, so there is no duplicated pagination state.
   const renderPagination = (wrapperClassName: string, opts?: { utcNote?: boolean }) => {
-    if (filtered.length <= PAGE_SIZE && !opts?.utcNote) return null;
+    const hasDashboardSummary = navigationScopeFilter?.category && dashboardFilterSummary != null;
+    if (filtered.length <= PAGE_SIZE && !opts?.utcNote && !hasDashboardSummary) return null;
     return (
       <div className={`flex flex-wrap items-center gap-x-3 gap-y-2 ${wrapperClassName}`}>
+        {navigationScopeFilter?.category && dashboardFilterSummary != null && (
+          <p className="text-xs font-semibold tabular-figures text-hi" data-testid="dashboard-filter-summary">
+            {navigationScopeFilter.category === 'realizedCapitalGains' ? 'Realized Gains' :
+              navigationScopeFilter.category === 'tradingFees' ? 'Trading Fees' :
+                navigationScopeFilter.category.charAt(0).toUpperCase() + navigationScopeFilter.category.slice(1)}:{' '}
+            {formatCurrency(
+              dashboardFilterSummary,
+              navigationScopeFilter.summaryCurrency ?? settings?.reportingCurrency ?? 'INR'
+            )}
+          </p>
+        )}
         {filtered.length > PAGE_SIZE ? (
           <p className="text-xs tabular-figures text-low">
             Showing {(safePage - 1) * PAGE_SIZE + 1}–

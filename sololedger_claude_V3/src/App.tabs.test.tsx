@@ -7,6 +7,15 @@ import { ModeProvider } from '@/lib/saas/modeContext';
 import { db } from '@/lib/storage/db';
 import type { Transaction } from '@/types/transaction';
 
+const importJobState = vi.hoisted(() => ({
+  active: false,
+  phase: 'fetching' as const,
+  progress: undefined as { done: number; total: number } | undefined,
+  chainLabel: 'Ethereum',
+  addresses: ['0x1234567890']
+}));
+vi.mock('@/lib/importJob', () => ({ useImportJob: () => importJobState }));
+
 /**
  * Tab a11y (Task T2): the primary nav is a WAI-ARIA tablist with roving
  * tabindex and Left/Right/Home/End arrow-key navigation. Everyone now starts on
@@ -22,17 +31,21 @@ import type { Transaction } from '@/types/transaction';
  * them keeps this a focused, deterministic a11y test.
  */
 vi.mock('@/components/dashboard/DashboardTab', () => ({
-  DashboardTab: (props: { onNavigationIntent?: (intent: object, state: object) => void; onDashboardNavigationIntent?: (intent: object) => void; restoredDataHealthState?: { filter: string; scrollTop: number }; openDataHealthOnMount?: boolean }) => <div data-testid="panel-dashboard">
+  DashboardTab: (props: { onDashboardNavigationIntent?: (intent: object) => void }) => <div data-testid="panel-dashboard">
     Dashboard
-    <span data-testid="dashboard-restored">{props.openDataHealthOnMount ? `${props.restoredDataHealthState?.filter}:${props.restoredDataHealthState?.scrollTop}` : 'closed'}</span>
-    <button onClick={() => props.onNavigationIntent?.({ id: 'source-1', destination: 'connections', target: { kind: 'exchange', connectionId: 'exact-1' }, workspaceTab: 'reconciliation', focus: { kind: 'asset', assetKey: 'asset:BTC' } }, { filter: 'stale', scrollTop: 420 })}>Remediate source</button>
-    <button onClick={() => props.onNavigationIntent?.({ id: 'tx-1', destination: 'transactions', transactionId: 'tx-exact', focus: 'detail-panel', detailTab: 'ledger' }, { filter: 'action', scrollTop: 120 })}>Remediate transaction</button>
     <button onClick={() => props.onDashboardNavigationIntent?.({ id: 'dashboard-filter', destination: 'transactions', filter: { needsReview: true }, focus: 'filters' })}>Open Dashboard filter</button>
-    <button onClick={() => { props.onNavigationIntent?.({ id: 'source-first', destination: 'connections', target: { kind: 'csv', importId: 'first' }, workspaceTab: 'overview', focus: { kind: 'none' } }, { filter: 'action', scrollTop: 1 }); props.onNavigationIntent?.({ id: 'tx-second', destination: 'transactions', transactionId: 'second', focus: 'transaction' }, { filter: 'stale', scrollTop: 2 }); }}>Back-to-back</button>
   </div>
 }));
 vi.mock('@/components/import/ImportTab', () => ({
-  ImportTab: (props: { navigationIntent?: { id: string; target: { connectionId?: string } }; onNavigationIntentAcknowledged?: (id: string) => void; onNavigationBack?: () => void }) => <div data-testid="panel-import">Import:{props.navigationIntent?.target.connectionId ?? 'none'}<button onClick={() => props.navigationIntent && props.onNavigationIntentAcknowledged?.(props.navigationIntent.id)}>Acknowledge source</button>{props.onNavigationBack && <button onClick={props.onNavigationBack}>Back to Data Health</button>}</div>
+  ImportTab: (props: { navigationIntent?: { id: string; target: { connectionId?: string } }; onNavigationIntentAcknowledged?: (id: string) => void; onNavigationBack?: () => void; onDataHealthNavigation?: (intent: object, state: object) => void; restoredDataHealthState?: { filter: string; scrollTop: number }; openDataHealthOnMount?: boolean }) => <div data-testid="panel-import">
+    Import:{props.navigationIntent?.target.connectionId ?? 'none'}
+    <span data-testid="connections-restored">{props.openDataHealthOnMount ? `${props.restoredDataHealthState?.filter}:${props.restoredDataHealthState?.scrollTop}` : 'closed'}</span>
+    <button onClick={() => props.onDataHealthNavigation?.({ id: 'source-1', destination: 'connections', target: { kind: 'exchange', connectionId: 'exact-1' }, workspaceTab: 'reconciliation', focus: { kind: 'asset', assetKey: 'asset:BTC' } }, { filter: 'stale', scrollTop: 420 })}>Remediate source</button>
+    <button onClick={() => props.onDataHealthNavigation?.({ id: 'tx-1', destination: 'transactions', transactionId: 'tx-exact', focus: 'detail-panel', detailTab: 'ledger' }, { filter: 'action', scrollTop: 120 })}>Remediate transaction</button>
+    <button onClick={() => { props.onDataHealthNavigation?.({ id: 'source-first', destination: 'connections', target: { kind: 'csv', importId: 'first' }, workspaceTab: 'overview', focus: { kind: 'none' } }, { filter: 'action', scrollTop: 1 }); props.onDataHealthNavigation?.({ id: 'tx-second', destination: 'transactions', transactionId: 'second', focus: 'transaction' }, { filter: 'stale', scrollTop: 2 }); }}>Back-to-back</button>
+    <button onClick={() => props.navigationIntent && props.onNavigationIntentAcknowledged?.(props.navigationIntent.id)}>Acknowledge source</button>
+    {props.onNavigationBack && <button onClick={props.onNavigationBack}>Back to Data Health</button>}
+  </div>
 }));
 vi.mock('@/components/review/ReviewTab', () => ({
   ReviewTab: (props: { navigationIntent?: { id: string; transactionId?: string }; navigationResetToken?: number; onNavigationIntentAcknowledged?: (id: string) => void; onNavigationBack?: () => void }) => <div data-testid="panel-review">Review:{props.navigationIntent?.transactionId ?? 'none'} Reset:{props.navigationResetToken}<button onClick={() => props.navigationIntent && props.onNavigationIntentAcknowledged?.(props.navigationIntent.id)}>Acknowledge transaction</button>{props.onNavigationBack && <button onClick={props.onNavigationBack}>Back to Data Health</button>}</div>
@@ -67,6 +80,7 @@ describe('App tab navigation (a11y)', () => {
   beforeEach(async () => {
     sessionStorage.clear();
     localStorage.clear();
+    importJobState.active = false;
     await db.transactions.clear();
     await db.transactions.put(seedTx);
     // Skip the background dedup effect (it churns the table on every mount);
@@ -97,6 +111,14 @@ describe('App tab navigation (a11y)', () => {
   function mobileNav() {
     return screen.getByRole('navigation', { name: 'Sections (mobile)' });
   }
+
+  it('hides the app-wide import banner on Dashboard but keeps it on other tabs', async () => {
+    importJobState.active = true;
+    await renderApp();
+    expect(screen.queryByText(/Ethereum 0x1234…/)).not.toBeInTheDocument();
+    fireEvent.click(headerTabs()[2]);
+    expect(screen.getByText(/Ethereum 0x1234…/)).toBeVisible();
+  });
 
   it('renders a tablist with tabs and the first tab selected', async () => {
     await renderApp();
@@ -218,6 +240,7 @@ describe('App tab navigation (a11y)', () => {
   it('routes typed source intents, waits for acknowledgment, and restores Data Health state on Back', async () => {
     await renderApp();
     const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    fireEvent.click(headerTabs()[1]);
     fireEvent.click(screen.getByRole('button', { name: 'Remediate source' }));
     expect(screen.getByTestId('panel-import')).toHaveTextContent('Import:exact-1');
     fireEvent.click(screen.getByRole('button', { name: 'Acknowledge source' }));
@@ -227,10 +250,10 @@ describe('App tab navigation (a11y)', () => {
     act(() => window.dispatchEvent(new PopStateEvent('popstate', {
       state: { sololedgerDataHealth: { filter: 'stale', scrollTop: 420 } }
     })));
-    expect(screen.getByTestId('dashboard-restored')).toHaveTextContent('stale:420');
+    expect(screen.getByTestId('connections-restored')).toHaveTextContent('stale:420');
     act(() => window.dispatchEvent(new PopStateEvent('popstate', { state: null })));
-    expect(screen.getByTestId('dashboard-restored')).toHaveTextContent('stale:420');
-    expect(screen.queryByTestId('panel-import')).not.toBeInTheDocument();
+    expect(screen.getByTestId('connections-restored')).toHaveTextContent('stale:420');
+    expect(screen.getByTestId('panel-import')).toBeInTheDocument();
     historyBack.mockRestore();
   });
 
@@ -239,6 +262,7 @@ describe('App tab navigation (a11y)', () => {
     expect(window.history.scrollRestoration).toBe('manual');
     const replaceState = vi.spyOn(window.history, 'replaceState');
     const pushState = vi.spyOn(window.history, 'pushState');
+    fireEvent.click(headerTabs()[1]);
     fireEvent.click(screen.getByRole('button', { name: 'Remediate source' }));
     expect(replaceState).toHaveBeenCalledWith(
       expect.objectContaining({ sololedgerDataHealth: { filter: 'stale', scrollTop: 420 } }),
@@ -249,8 +273,8 @@ describe('App tab navigation (a11y)', () => {
     act(() => window.dispatchEvent(new PopStateEvent('popstate', {
       state: { sololedgerDataHealth: { filter: 'stale', scrollTop: 420 } }
     })));
-    expect(await screen.findByTestId('dashboard-restored')).toHaveTextContent('stale:420');
-    expect(screen.queryByTestId('panel-import')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('connections-restored')).toHaveTextContent('stale:420');
+    expect(screen.getByTestId('panel-import')).toBeInTheDocument();
     replaceState.mockRestore();
     pushState.mockRestore();
   });
@@ -258,6 +282,7 @@ describe('App tab navigation (a11y)', () => {
   it('routes transaction panel intents and lets a newer back-to-back intent win', async () => {
     await renderApp();
     const historyBack = vi.spyOn(window.history, 'back').mockImplementation(() => undefined);
+    fireEvent.click(headerTabs()[1]);
     fireEvent.click(screen.getByRole('button', { name: 'Remediate transaction' }));
     expect(screen.getByTestId('panel-review')).toHaveTextContent('Review:tx-exact');
     fireEvent.click(screen.getByRole('button', { name: 'Back to Data Health' }));

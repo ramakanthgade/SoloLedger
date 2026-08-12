@@ -14,6 +14,7 @@ export default defineConfig({
       'src/lib/ledger/postingBalances.perf.test.ts',
       'src/lib/internalTransfers/matcher.perf.test.ts',
       'src/lib/portfolio/economicExposureProjection.perf.test.ts',
+      'src/lib/dashboard/dashboardAsOfProjection.perf.test.ts',
       'src/components/connections/connectionWorkspaceCollection.perf.test.ts'
     ],
     exclude: [],

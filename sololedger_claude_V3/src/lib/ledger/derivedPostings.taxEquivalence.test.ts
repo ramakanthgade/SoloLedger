@@ -369,6 +369,7 @@ describe('custody projection tax boundary', () => {
             {
               "amount": 1,
               "asset": "BTC",
+              "assetKey": "asset:BTC",
               "costBasis": 100,
               "disposedAt": 1715385600000,
               "gain": 80,
@@ -386,6 +387,7 @@ describe('custody projection tax boundary', () => {
             {
               "amount": 1,
               "asset": "BTC",
+              "assetKey": "asset:BTC",
               "costBasis": 100,
               "disposedAt": 1715472000000,
               "gain": -50,
@@ -403,6 +405,7 @@ describe('custody projection tax boundary', () => {
             {
               "amount": 2,
               "asset": "ETH",
+              "assetKey": "asset:ETH",
               "costBasis": 0,
               "disposedAt": 1715558400000,
               "gain": 60,
@@ -421,6 +424,7 @@ describe('custody projection tax boundary', () => {
               "amountOriginal": 2,
               "amountRemaining": 0,
               "asset": "BTC",
+              "assetKey": "asset:BTC",
               "costBasisPerUnit": 100,
               "costBasisTotal": 200,
               "sourceTxId": "btc-buy",

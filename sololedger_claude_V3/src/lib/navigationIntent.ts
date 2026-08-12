@@ -31,6 +31,13 @@ export interface TransactionScopeFilter {
   assetKey?: string;
   needsPrice?: boolean;
   needsReview?: boolean;
+  /** Exact Dashboard period/category contributor contract. */
+  nominalStart?: number;
+  effectiveEnd?: number;
+  category?: 'in' | 'out' | 'income' | 'expenses' | 'tradingFees' | 'realizedCapitalGains';
+  transactionIds?: readonly string[];
+  summaryValue?: number;
+  summaryCurrency?: string;
 }
 
 export type TransactionNavigationIntent =

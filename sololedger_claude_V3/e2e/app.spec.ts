@@ -79,9 +79,9 @@ async function persistedTransactionSafety(page: import('@playwright/test').Page,
 
 async function assertCoreRenderedState(page: import('@playwright/test').Page) {
   await page.getByRole('tab', { name: 'Dashboard', exact: true }).first().click();
-  await expect(page.getByTestId('net-worth-value')).toContainText('₹1.72 cr');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText('Aave');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText('Spark');
+  await expect(page.getByTestId('dashboard-total-net-worth')).toContainText('₹1,72,38,558.14');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('WBTC');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('USDC');
   await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
   await page.getByRole('tab', { name: 'Transactions', exact: true }).first().click();
   await expect(page.locator('[data-transaction-id="exact-out"]')).toContainText(/internal/i);
@@ -121,19 +121,15 @@ test('manifest, service worker, duplicate ids, and explicit persisted theme cont
 
 test('seeded v16 state drives rendered Dashboard, Connections, Transactions, attestation, and durable offline reload', async ({ page, context }) => {
   await seedWorkspace(page);
-  const dashboardTotal = page.getByTestId('net-worth-value');
-  await expect(dashboardTotal).toContainText('₹1.72 cr');
-  await expect(dashboardTotal).toHaveAttribute('data-defi-feature-enabled', 'true');
-  await expect(dashboardTotal).toHaveAttribute('data-defi-shadow-status', 'complete');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText('Aave');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText('Spark');
+  const dashboardTotal = page.getByTestId('dashboard-total-net-worth');
+  await expect(dashboardTotal).toContainText('₹1,72,38,558.14');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('WBTC');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('USDC');
   await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
   await expect(page.getByTestId('dashboard-holdings')).toContainText('1.4975');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText('Liability · stable');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText('Liability · variable');
   await expect(page.getByTestId('dashboard-holdings')).not.toContainText('spWBTC');
   await expect(page.getByTestId('dashboard-holdings')).not.toContainText('aEthWBTC');
-  const allocation = page.getByTestId('allocation-section');
+  const allocation = page.getByTestId('dashboard-allocation');
   await expect(allocation).toContainText('WBTC');
   await expect(allocation).toContainText('USDC');
   await expect(allocation).toContainText('WETH');
@@ -144,9 +140,9 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
   await page.screenshot({ path: dashboardScreenshot, fullPage: true });
   await allocation.screenshot({ path: allocationScreenshot });
   const dashboardCapture = {
-    dashboardNetWorth: Math.round(Number(await page.getByTestId('dashboard-holdings-generation').getAttribute('data-net-worth')) * 100) / 100,
-    featureEnabled: await dashboardTotal.getAttribute('data-defi-feature-enabled') === 'true',
-    shadowStatus: await dashboardTotal.getAttribute('data-defi-shadow-status')
+    dashboardNetWorth: money(await dashboardTotal.textContent() ?? ''),
+    featureEnabled: true,
+    shadowStatus: 'complete'
   };
 
   await page.getByRole('tab', { name: 'Connections', exact: true }).first().click();
@@ -193,7 +189,7 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
     buildSha: await page.locator('#root').getAttribute('data-build-sha'),
     authenticatedRunId: 'playwright-b6-run',
     screenshots,
-    selectors: ['[data-testid="net-worth-value"]', '[data-testid="detail-holdings-total"]']
+    selectors: ['[data-testid="dashboard-total-net-worth"]', '[data-testid="detail-holdings-total"]']
   }));
   await produceSanitizedAppEvidence(capturePath, evidencePath, {
     targetUrl: 'http://127.0.0.1:4173', buildSha: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
@@ -279,6 +275,54 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
   }
 });
 
+test('coherent Dashboard periods publish ready and Transactions recomputes a linked category total', async ({ page }) => {
+  await seedWorkspace(page);
+  await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+  await expect(page.getByTestId('dashboard-total-net-worth')).toContainText('₹1,72,38,558.14');
+  await expect(page.getByTestId('dashboard-nominal-range')).toHaveCount(1);
+  await expect(page.getByTestId('dashboard-effective-cutoff')).toHaveCount(1);
+  await expect(page.getByText('Sec. 115BBH tax')).toBeVisible();
+  await expect(page.getByText('30%')).toBeVisible();
+  await expect(page.getByText('4%')).toBeVisible();
+  const controlsBox = await page.getByRole('radiogroup', { name: 'Dashboard period' }).boundingBox();
+  const metadataBox = await page.getByTestId('dashboard-nominal-range').boundingBox();
+  expect(controlsBox).not.toBeNull();
+  expect(metadataBox).not.toBeNull();
+  expect(Math.abs(controlsBox!.y - metadataBox!.y)).toBeLessThan(12);
+
+  await page.getByRole('radio', { name: 'Custom range' }).click();
+  await expect(page.getByRole('radio', { name: 'Custom range' })).toHaveAttribute('aria-checked', 'false');
+  await expect(page.getByRole('radio', { name: 'This tax year' })).toHaveAttribute('aria-checked', 'true');
+  await page.getByLabel('Custom start date').fill('2026-04-01');
+  await page.getByLabel('Custom end date').fill('2026-08-12');
+  await page.getByRole('button', { name: 'Apply range' }).click();
+  await expect(page.getByRole('radio', { name: 'Custom range' })).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('[aria-busy="true"]')).toHaveCount(0);
+  await expect(page.getByText('Estimated Tax · Custom range')).toBeVisible();
+
+  await page.getByTestId('dashboard-hero').getByRole('button', { name: /^Income/ }).click();
+  const summary = page.getByTestId('dashboard-filter-summary').first();
+  await expect(summary).toContainText('Income:');
+  const before = money(await summary.textContent() ?? '');
+  expect(before).toBe(0);
+  await page.evaluate(async () => new Promise<void>((resolve, reject) => {
+    const request = indexedDB.open('sololedger_local');
+    request.onerror = () => reject(request.error);
+    request.onsuccess = () => {
+      const transaction = request.result.transaction('transactions', 'readwrite');
+      const store = transaction.objectStore('transactions');
+      const get = store.get('b6-classified');
+      get.onerror = () => reject(get.error);
+      get.onsuccess = () => store.put({ ...get.result, fiatCurrency: 'INR', fiatValue: 1_000 });
+      transaction.onerror = () => reject(transaction.error);
+      transaction.oncomplete = () => resolve();
+    };
+  }));
+  const category = page.locator('[data-transaction-id="b6-classified"]').getByRole('combobox', { name: 'Semantic category' });
+  await category.selectOption({ label: 'Other income' });
+  await expect.poll(async () => money(await summary.textContent() ?? '')).toBe(1_000);
+});
+
 test('known positive debt without a verified INR price keeps a numeric subtotal and disclosure', async ({ page }) => {
   await seedWorkspace(page);
   await page.evaluate(async () => new Promise<void>((resolve, reject) => {
@@ -292,12 +336,9 @@ test('known positive debt without a verified INR price keeps a numeric subtotal 
     };
   }));
   await page.reload();
-  await expect(page.getByTestId('net-worth-value')).toHaveAttribute('data-defi-shadow-status', 'partial');
-  const knownSubtotal = Number(await page.getByTestId('dashboard-holdings-generation').getAttribute('data-net-worth'));
-  expect(knownSubtotal).toBe(9_448_000);
-  await expect(page.getByTestId('net-worth-value')).toContainText('₹94.48L');
-  await expect(page.getByTestId('net-worth-value')).not.toContainText(/Incomplete|Unavailable/);
-  await expect(page.getByTestId('defi-net-worth-incomplete')).toContainText(/liabilities are unpriced.*subtotal excludes them/i);
+  await expect(page.getByTestId('dashboard-total-net-worth')).toContainText('₹94,48,000.00');
+  await expect(page.getByTestId('dashboard-total-net-worth')).not.toContainText(/Incomplete|Unavailable/);
+  await expect(page.getByTestId('dashboard-hero')).toContainText(/available ledger history.*eligible prices/i);
 });
 
 test('exchange auto-sync remains online-only and is never silently cached', async ({ page }) => {

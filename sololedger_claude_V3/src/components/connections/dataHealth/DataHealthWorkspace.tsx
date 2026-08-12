@@ -242,7 +242,7 @@ export function DataHealthWorkspace({ model, loading = false, updating = false, 
   if (loading) return (
     <div ref={rootRef} className="space-y-5" data-testid="data-health-workspace" aria-busy="true">
       <header className="flex flex-col items-start gap-3 sm:flex-row sm:gap-4">
-        <Button variant="secondary" onClick={onClose} className="min-h-[44px]"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Dashboard</Button>
+        <Button variant="secondary" onClick={onClose} className="min-h-[44px]"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Connections</Button>
         <div className="w-full min-w-0 flex-1">
           <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-extrabold tracking-tight text-hi focus:outline-none">Data Health</h1>
           <p className="mt-1 max-w-3xl text-sm leading-relaxed text-mid">Check whether each source’s recorded activity explains its latest balance, then fix the most important gaps first.</p>
@@ -258,7 +258,7 @@ export function DataHealthWorkspace({ model, loading = false, updating = false, 
   return (
     <div ref={rootRef} className="space-y-5" data-testid="data-health-workspace" aria-busy={updating || undefined}>
       <header className="flex flex-col items-start gap-3 sm:flex-row sm:gap-4">
-        <Button variant="secondary" onClick={onClose} className="min-h-[44px]"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Dashboard</Button>
+        <Button variant="secondary" onClick={onClose} className="min-h-[44px]"><ArrowLeft className="h-4 w-4" aria-hidden="true" /> Connections</Button>
         <div className="w-full min-w-0 flex-1">
           <h1 ref={headingRef} tabIndex={-1} className="text-2xl font-extrabold tracking-tight text-hi focus:outline-none">Data Health</h1>
           <p className="mt-1 max-w-3xl text-sm leading-relaxed text-mid">Check whether each source’s recorded activity explains its latest balance, then fix the most important gaps first.</p>

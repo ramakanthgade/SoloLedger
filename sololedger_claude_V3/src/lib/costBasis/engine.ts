@@ -4,12 +4,12 @@ import { fifoStrategy } from './fifo';
 import { lifoStrategy } from './lifo';
 import { hifoStrategy } from './hifo';
 import { specIdStrategy } from './specId';
-import { makeId } from '@/lib/parsers/types';
 import { isDerivativeTransaction } from '@/lib/tax/derivatives';
 import { D, add, sub, mul, div, toNumber, isPositive, isDust } from './decimal';
 import { isTransactionExcluded, transactionsUnderCurrentSafetyPolicy } from '@/lib/safety/assetSafety';
 import type { SafetyDecisionRow } from '@/lib/safety/types';
 import { resolveTaxPolicy } from '@/lib/taxonomy/taxPolicy';
+import { transactionAssetKey, transactionLegAssetKey } from '@/lib/ledger/assetKey';
 
 export type CostBasisMethod = 'FIFO' | 'LIFO' | 'HIFO' | 'SpecID';
 
@@ -71,6 +71,16 @@ interface ExpandResult {
   droppedTradeLegs: { transactionId: string; asset: string; reason: FlagReason }[];
 }
 
+type CostBasisIdentityTransaction = Transaction & { __costBasisAssetKey?: string };
+
+function withCostBasisAssetKey(transaction: Transaction, assetKey: string): Transaction {
+  return Object.assign(transaction, { __costBasisAssetKey: assetKey });
+}
+
+function costBasisAssetKey(transaction: Transaction): string {
+  return (transaction as CostBasisIdentityTransaction).__costBasisAssetKey ?? transactionAssetKey(transaction);
+}
+
 function expandTrades(transactions: Transaction[]): ExpandResult {
   const expanded: Transaction[] = [];
   const droppedTradeLegs: ExpandResult['droppedTradeLegs'] = [];
@@ -81,15 +91,15 @@ function expandTrades(transactions: Transaction[]): ExpandResult {
       continue;
     }
     const fmv = tx.fiatValue == null ? undefined : Math.abs(tx.fiatValue);
-    expanded.push({
+    expanded.push(withCostBasisAssetKey({
       ...tx,
       id: `${tx.id}__disposal`,
       type: 'sell',
       sourceRef: tx.sourceRef ?? tx.id,
       raw: undefined
-    });
+    }, transactionLegAssetKey(tx, 'principal')));
     if (tx.counterAsset && tx.counterAmount && isPositive(Math.abs(tx.counterAmount))) {
-      expanded.push({
+      expanded.push(withCostBasisAssetKey({
         ...tx,
         id: `${tx.id}__acquisition`,
         type: 'buy',
@@ -100,7 +110,7 @@ function expandTrades(transactions: Transaction[]): ExpandResult {
         counterAmount: tx.amount,
         sourceRef: tx.sourceRef ?? tx.id,
         raw: undefined
-      });
+      }, transactionLegAssetKey(tx, 'counter')));
     } else if (tx.counterAsset) {
       // The user swapped into `counterAsset` but we have no (or zero) amount for
       // that leg — we can't open a lot, so record it on the counter asset so a
@@ -239,11 +249,13 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
       (policy.treatment === 'non_taxable' && policy.reasonCode !== 'asset_acquisition')) {
       continue;
     }
-    if (!byAsset.has(tx.asset)) byAsset.set(tx.asset, []);
-    byAsset.get(tx.asset)!.push(tx);
+    const identity = costBasisAssetKey(tx);
+    if (!byAsset.has(identity)) byAsset.set(identity, []);
+    byAsset.get(identity)!.push(tx);
   }
 
-  for (const [asset, assetTxs] of byAsset) {
+  for (const [identity, assetTxs] of byAsset) {
+    const asset = assetTxs[0].asset;
     const sorted = [...assetTxs].sort(
       (a, b) =>
         a.timestamp - b.timestamp ||
@@ -283,8 +295,11 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
           : add(Math.abs(rawFiat!), feeForBasis(tx, feePolicy));
         const amount = D(tx.amount);
         const lot: Lot = {
-          id: makeId('lot'),
+          // Stable across projection runs so persisted SpecID hints continue
+          // to identify the same acquisition lot after refresh/recalculation.
+          id: `lot:${tx.id}`,
           asset,
+          assetKey: identity,
           acquiredAt: tx.timestamp,
           amountRemaining: toNumber(amount),
           amountOriginal: toNumber(amount),
@@ -356,8 +371,9 @@ export function calculateCostBasis(rawTransactions: Transaction[], options: Engi
 
         const proceeds = Math.abs(tx.fiatValue!);
         disposals.push({
-          id: makeId('disp'),
+          id: `disp:${origId}`,
           asset,
+          assetKey: identity,
           disposedAt: tx.timestamp,
           amount: tx.amount,
           proceeds,

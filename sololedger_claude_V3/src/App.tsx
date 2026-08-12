@@ -27,7 +27,7 @@ import { SwitchModeButton } from '@/components/SwitchModeButton';
 import { ThemeToggle } from '@/components/ThemeToggle';
 import { cn } from '@/lib/utils';
 import type { NavigationIntent } from '@/lib/navigationIntent';
-import type { DataHealthViewState } from '@/components/dashboard/DataHealthWorkspace';
+import type { DataHealthViewState } from '@/components/connections/dataHealth/DataHealthWorkspace';
 
 /**
  * Primary nav — Ember & Slate shell (confirmed Variation A top-nav frame).
@@ -135,7 +135,7 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
       if (!restored) return;
       setNavigationIntent(undefined);
       setDataHealthOrigin(restored);
-      setActive('dashboard');
+      setActive('import');
     };
     window.addEventListener('popstate', onPopState);
     return () => {
@@ -255,7 +255,7 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
         </div>
       </header>
 
-      {importState.active && (
+      {importState.active && active !== 'dashboard' && (
         <div className="sticky top-16 z-30 border-b border-primary/20 bg-primary/10 px-6 py-2.5 backdrop-blur-md">
           <div className="mx-auto flex max-w-7xl items-center gap-3">
             <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
@@ -289,21 +289,21 @@ function WorkspaceApp({ initialActive }: { initialActive: TabId }) {
           {deduping ? (
             <div aria-busy="true" className="flex items-center gap-3 text-sm text-low">
               <Loader2 className="h-4 w-4 animate-spin text-primary" />
-              Tidying up your transactions (removing duplicates)…
+              Loading Dashboard…
             </div>
           ) : (
             active === 'dashboard' ? (
               <DashboardTab
-                onNavigationIntent={beginRemediationNavigation}
                 onDashboardNavigationIntent={beginDashboardNavigation}
-                restoredDataHealthState={dataHealthOrigin}
-                openDataHealthOnMount={dataHealthOrigin != null}
               />
             ) : active === 'import' ? (
               <ImportTab
                 navigationIntent={navigationIntent?.destination === 'connections' ? navigationIntent : undefined}
                 onNavigationIntentAcknowledged={acknowledgeNavigationIntent}
                 onNavigationBack={dataHealthOrigin ? returnToDataHealth : undefined}
+                onDataHealthNavigation={beginRemediationNavigation}
+                restoredDataHealthState={dataHealthOrigin}
+                openDataHealthOnMount={dataHealthOrigin != null && navigationIntent == null}
               />
             ) : active === 'review' ? (
               <ReviewTab

@@ -16,9 +16,13 @@ initColorScheme();
 document.getElementById('root')!.dataset.buildSha = import.meta.env.VITE_BUILD_SHA || 'development';
 
 if (import.meta.env.VITE_B6_BROWSER_TEST === 'true') {
-  void import('@/test/b6BrowserSeed').then(({ seedB6BrowserFixture }) => {
-    window.__SOLOLEDGER_B6_SEED__ = seedB6BrowserFixture;
-  });
+  // Publish the deterministic test contract synchronously with the entry
+  // module. The seed implementation may remain code-split, but a delayed or
+  // service-worker-mediated chunk response can no longer make the hook itself
+  // disappear and leave Playwright waiting forever.
+  const seedModule = import('@/test/b6BrowserSeed');
+  window.__SOLOLEDGER_B6_SEED__ = async () =>
+    (await seedModule).seedB6BrowserFixture();
 }
 
 /**

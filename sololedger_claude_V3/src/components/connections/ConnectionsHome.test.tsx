@@ -40,8 +40,30 @@ const mocks = vi.hoisted(() => ({
   csvImports: { current: [] as unknown[] },
   wallets: { current: [] as unknown[] },
   manualCount: { current: 0 },
+  dataHealthSnapshot: { current: undefined as unknown },
   exchangeJob: { current: null as unknown as ExchangeSyncJobState },
   walletJob: { current: null as unknown as ImportJobState }
+}));
+
+vi.mock('./dataHealth/useCoherentDataHealthSnapshot', () => ({
+  useCoherentDataHealthSnapshot: () => ({
+    snapshot: mocks.dataHealthSnapshot.current,
+    updating: false
+  })
+}));
+
+vi.mock('./dataHealth/connectionDataHealthLoader', () => ({
+  buildConnectionDataHealthModel: () => ({
+    summary: {
+      sourceCount: 1, scopeCount: 1, assetCount: 1, actionSourceCount: 0,
+      divergent: 0, stale: 0, missingAuthority: 0, nonComparableAuthority: 0,
+      partialCoverage: 0, failedCoverage: 0, unknownCoverage: 0,
+      openingBalanceRequired: 0, unresolvedScope: 0, deletedScope: 0,
+      negativePostingFallback: 0, reconciled: 1
+    },
+    sources: []
+  }),
+  buildConnectionDataHealthDiagnostics: () => undefined
 }));
 
 const IDLE_JOB: ExchangeSyncJobState = {
@@ -310,6 +332,7 @@ beforeEach(() => {
   mocks.csvImports.current = [];
   mocks.wallets.current = [];
   mocks.manualCount.current = 0;
+  mocks.dataHealthSnapshot.current = undefined;
   mocks.defiRows.current = [];
   mocks.getEffectiveSettings.mockResolvedValue({ rpcLookupEnabled: true, priceApiEnabled: false, coingeckoApiKey: undefined });
   mocks.refreshCurrentHoldingPrices.mockResolvedValue(undefined);
@@ -354,6 +377,16 @@ describe('ConnectionsHome — header & pills', () => {
       screen.getByText('Every place your crypto lives — linked, synced, or added by hand.')
     ).toBeInTheDocument();
     expect(screen.getByTestId('add-data')).toBeInTheDocument();
+  });
+
+  it('opens and closes the Connections-owned Data Health workspace', () => {
+    mocks.dataHealthSnapshot.current = {};
+    render(<ConnectionsHome />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Review Data Health →' }));
+    expect(screen.getByRole('heading', { name: 'Data Health' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Connections/ }));
+    expect(screen.getByRole('heading', { name: 'Connections' })).toBeInTheDocument();
   });
 
   it('shows the pills in the locked order — Manual entry before + New — with counts', () => {
@@ -1189,7 +1222,7 @@ describe('ConnectionsHome — typed Data Health navigation', () => {
     fireEvent.click(screen.getByTestId('detail-target-missing-mock'));
     expect(await screen.findByRole('alert')).toHaveTextContent('That exact asset or opening evidence no longer exists.');
     expect(acknowledged).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: /Data Health/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Data Health' }));
     expect(back).toHaveBeenCalledTimes(1);
   });
 

@@ -192,7 +192,7 @@ const CURRENT_BTT_IDENTITIES = new Set(['tafjulxivgt4qwk6uzwjqwzxtsagaqnvp4']);
  * genuinely ambiguous without token identity; `undefined` delegates to the
  * ordinary canonical/search resolver.
  */
-function historicalCanonicalId(
+export function historicalCanonicalId(
   symbol: string,
   timestampMs: number,
   contractAddress?: string,
@@ -222,6 +222,19 @@ function historicalCanonicalId(
     return day < KNC_AMBIGUITY_START ? 'kyber-network' : 'kyber-network-crystal';
   }
   return undefined;
+}
+
+/** Canonical cache identity at an asset instant, including ordinary symbols. */
+export function historicalCanonicalPriceId(
+  symbol: string,
+  timestampMs: number,
+  contractAddress?: string,
+  source?: string
+): string | null | undefined {
+  const migrationIdentity = historicalCanonicalId(symbol, timestampMs, contractAddress, source);
+  return migrationIdentity === undefined
+    ? SYMBOL_TO_ID[symbol.trim().toUpperCase()]
+    : migrationIdentity;
 }
 
 function loadStoredCoinIds(): Record<string, string> {

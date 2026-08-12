@@ -129,6 +129,68 @@ describe('cost-basis engine', () => {
     expect(lots.length).toBeGreaterThan(0);
   });
 
+  it('uses stable lot identities so persisted SpecID differs from FIFO across projections', () => {
+    const rows = [
+      tx({ id: 'cheap', type: 'buy', amount: 1, fiatValue: 100, timestamp: DAY }),
+      tx({ id: 'expensive', type: 'buy', amount: 1, fiatValue: 300, timestamp: 2 * DAY }),
+      tx({ id: 'sale', type: 'sell', amount: 1, fiatValue: 500, timestamp: 3 * DAY })
+    ];
+    const first = run(rows);
+    const second = run(rows);
+    expect(first.disposalCandidates.sale.map((row) => row.lotId))
+      .toEqual(second.disposalCandidates.sale.map((row) => row.lotId));
+    expect(first.disposalCandidates.sale.map((row) => row.lotId)).toEqual(['lot:cheap', 'lot:expensive']);
+
+    const specId = calculateCostBasis(rows, {
+      method: 'SpecID', specIdHints: { sale: ['lot:expensive'] }, settings: POLICY_SETTINGS
+    });
+    expect(first.disposals[0].costBasis).toBe(100);
+    expect(specId.disposals[0].costBasis).toBe(300);
+  });
+
+  it('isolates same-symbol contract inventory for FIFO and SpecID', () => {
+    const contractA = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const contractB = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const rows = [
+      tx({ id: 'buy-a', type: 'buy', asset: 'TOK', chain: 'ethereum', contractAddress: contractA,
+        amount: 1, fiatValue: 100, timestamp: DAY }),
+      tx({ id: 'buy-b', type: 'buy', asset: 'TOK', chain: 'ethereum', contractAddress: contractB,
+        amount: 1, fiatValue: 300, timestamp: 2 * DAY }),
+      tx({ id: 'sell-b', type: 'sell', asset: 'TOK', chain: 'ethereum', contractAddress: contractB,
+        amount: 1, fiatValue: 500, timestamp: 3 * DAY })
+    ];
+    const fifo = run(rows);
+    expect(fifo.disposals[0]).toMatchObject({ costBasis: 300, assetKey: `evm:1:${contractB}` });
+    expect(fifo.lots.find((lot) => lot.sourceTxId === 'buy-a')).toMatchObject({
+      amountRemaining: 1, assetKey: `evm:1:${contractA}`
+    });
+    expect(fifo.disposalCandidates['sell-b'].map((candidate) => candidate.lotId)).toEqual(['lot:buy-b']);
+
+    const specId = calculateCostBasis(rows, {
+      method: 'SpecID', specIdHints: { 'sell-b': ['lot:buy-a', 'lot:buy-b'] }, settings: POLICY_SETTINGS
+    });
+    expect(specId.disposals[0].lotConsumption.map((row) => row.lotId)).toEqual(['lot:buy-b']);
+    expect(specId.disposals[0].costBasis).toBe(300);
+  });
+
+  it('preserves an exact counter-contract identity when a trade opens a lot', () => {
+    const contractA = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const contractB = '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const result = run([
+      tx({ id: 'swap', type: 'trade', asset: 'TOK', chain: 'ethereum', contractAddress: contractA,
+        amount: 1, counterAsset: 'TOK', counterAmount: 1, fiatValue: 200,
+        raw: { counterContractAddress: contractB }, timestamp: DAY }),
+      tx({ id: 'sell-b', type: 'sell', asset: 'TOK', chain: 'ethereum', contractAddress: contractB,
+        amount: 1, fiatValue: 300, timestamp: 2 * DAY })
+    ]);
+    expect(result.lots.find((lot) => lot.sourceTxId === 'swap')).toMatchObject({
+      assetKey: `evm:1:${contractB}`, costBasisTotal: 200
+    });
+    expect(result.disposals.find((row) => row.sourceTxId === 'sell-b')).toMatchObject({
+      assetKey: `evm:1:${contractB}`, costBasis: 200, gain: 100
+    });
+  });
+
   it('records neutral invalid-row guidance when a trade acquisition leg lacks a counterAmount', () => {
     const { flags } = run([
       tx({
