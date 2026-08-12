@@ -85,8 +85,11 @@ export interface DashboardAsOfInputReadOptions {
 
 let completedReadSequence = 0;
 
-function cloneAndFreeze<T>(value: T): Immutable<T> {
-  const clone = structuredClone(value);
+function cloneAndFreeze<T>(value: T, alreadyDetached = false): Immutable<T> {
+  // Dexie materializes fresh detached row objects for every readonly query.
+  // Test adapters and other callers may return shared references, so only the
+  // real database path can skip a redundant second structured clone.
+  const clone = alreadyDetached ? value : structuredClone(value);
   const seen = new WeakSet<object>();
   const freeze = (candidate: unknown): void => {
     if (typeof candidate !== 'object' || candidate == null || seen.has(candidate)) return;
@@ -160,7 +163,7 @@ export async function readDashboardAsOfInputSnapshot(
         ? { provenAccountClasses: source.provenAccountClasses }
         : {})
     }))
-  });
+  }, database === db);
 }
 
 export interface DashboardAsOfInputObserver {

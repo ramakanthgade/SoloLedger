@@ -40,6 +40,12 @@ const JURISDICTION_LABELS: Record<Jurisdiction, string> = {
 
 export interface DashboardInstrumentation {
   measureChartPreparation?: <T>(callback: () => T) => T;
+  onSnapshotCommit?: (snapshot: {
+    inputRevision: string;
+    transactionCount: number;
+    btcQuantity: number;
+  }) => void;
+  onProjectionStart?: (transactionCount: number) => void;
 }
 
 export interface DashboardTabProps {
@@ -72,7 +78,12 @@ function specIdMap(input: DashboardAsOfInputSnapshot): Record<string, readonly s
 
 type PublishedDashboard = { period: DashboardPeriodSelection; snapshot: DashboardAsOfSnapshot };
 
-function project(input: DashboardAsOfInputSnapshot, period: DashboardPeriodSelection): PublishedDashboard {
+function project(
+  input: DashboardAsOfInputSnapshot,
+  period: DashboardPeriodSelection,
+  measureChartPreparation?: <T>(callback: () => T) => T,
+  holdingsReuse?: NonNullable<Parameters<typeof projectDashboardAsOf>[0]['holdingsReuse']>
+): PublishedDashboard {
   const mutable = input as unknown as {
     transactions: Parameters<typeof projectDashboardAsOf>[0]['transactions'];
     exchangeConnections: Parameters<typeof projectDashboardAsOf>[0]['exchangeConnections'];
@@ -106,8 +117,9 @@ function project(input: DashboardAsOfInputSnapshot, period: DashboardPeriodSelec
       nominalEnd: period.nominalEnd,
       effectiveEnd: period.effectiveEnd,
       nowMs: input.revision.readAt,
-      chartSamples: chartSamples(period.nominalStart, period.effectiveEnd)
-    })
+      chartSamples: chartSamples(period.nominalStart, period.effectiveEnd),
+      holdingsReuse
+    }, measureChartPreparation)
   };
 }
 
@@ -240,7 +252,7 @@ function HoldingTable({ rows, current, mask, money }: {
   </section>;
 }
 
-export function DashboardTab({ onDashboardNavigationIntent }: DashboardTabProps = {}) {
+export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: DashboardTabProps = {}) {
   const { goTo } = useTabNav();
   const [input, setInput] = useState<DashboardAsOfInputSnapshot>();
   const [publication, setPublication] = useState<DashboardAsOfPublicationState<PublishedDashboard>>({ status: 'calculating' });
@@ -256,7 +268,17 @@ export function DashboardTab({ onDashboardNavigationIntent }: DashboardTabProps 
     // React StrictMode deliberately runs setup -> cleanup -> setup in development;
     // reusing a memoized publisher after cleanup would leave the second subscription
     // connected to an already-disposed publisher and the Dashboard calculating forever.
-    const publisher = createDashboardAsOfAtomicPublisher(project, setPublication);
+    const publisher = createDashboardAsOfAtomicPublisher<DashboardPeriodSelection, PublishedDashboard>(
+      // Reuse is private prepared work; every visible field is still published
+      // from one complete coherent snapshot revision.
+      (() => {
+        const holdingsReuse = {};
+        return (nextInput: DashboardAsOfInputSnapshot, nextPeriod: DashboardPeriodSelection) => project(
+          nextInput, nextPeriod, instrumentation?.measureChartPreparation, holdingsReuse
+        );
+      })(),
+      setPublication
+    );
     publisherRef.current = publisher;
     const subscription = subscribeDashboardAsOfInputSnapshots({
       next: (nextInput) => {
@@ -267,6 +289,7 @@ export function DashboardTab({ onDashboardNavigationIntent }: DashboardTabProps 
         previousJurisdiction.current = nextInput.settings.jurisdiction;
         requestedPeriod.current = nextPeriod;
         setInput(nextInput);
+        instrumentation?.onProjectionStart?.(nextInput.transactions.length);
         void publisher.request(nextInput, nextPeriod);
       },
       error: (error) => setPublication({ status: 'error', error })
@@ -276,7 +299,19 @@ export function DashboardTab({ onDashboardNavigationIntent }: DashboardTabProps 
       publisher.dispose();
       if (publisherRef.current === publisher) publisherRef.current = undefined;
     };
-  }, []);
+  }, [instrumentation]);
+
+  useEffect(() => {
+    if (publication.status !== 'ready' || !input) return;
+    const btcQuantity = publication.snapshot.snapshot.contributors
+      .filter((row) => row.kind === 'asset' && row.asset.toUpperCase() === 'BTC')
+      .reduce((sum, row) => sum + row.signedQuantity, 0);
+    instrumentation?.onSnapshotCommit?.({
+      inputRevision: publication.inputRevision.token,
+      transactionCount: input.transactions.length,
+      btcQuantity
+    });
+  }, [input, instrumentation, publication]);
 
   const selectPeriod = (next: DashboardPeriodSelection) => {
     if (!input) return;
@@ -300,6 +335,10 @@ export function DashboardTab({ onDashboardNavigationIntent }: DashboardTabProps 
     t: point.timestamp, cost: point.costBasis, market: point.value,
     unpricedCount: point.missingAssetCount + point.missingLiabilityCount
   }));
+  const chartEndpoint = snapshot.chart[snapshot.chart.length - 1];
+  const btcQuantity = snapshot.contributors
+    .filter((row) => row.kind === 'asset' && row.asset.toUpperCase() === 'BTC')
+    .reduce((sum, row) => sum + row.signedQuantity, 0);
   const partial = snapshot.totalNetWorth.valuationCompleteness === 'partial' ||
     snapshot.costBasis.valuationCompleteness === 'partial' || snapshot.unrealizedPnl.valuationCompleteness === 'partial';
 
@@ -321,6 +360,24 @@ export function DashboardTab({ onDashboardNavigationIntent }: DashboardTabProps 
   });
 
   return <div className="space-y-5">
+    <output
+      className="sr-only"
+      data-testid="dashboard-holdings-generation"
+      data-input-revision={publication.inputRevision.token}
+      data-transaction-count={input.transactions.length}
+      data-btc-quantity={btcQuantity}
+    >Dashboard snapshot revision {publication.inputRevision.token}</output>
+    <output
+      className="sr-only"
+      data-testid="dashboard-deferred-generation"
+      data-input-revision={publication.inputRevision.token}
+      data-transaction-count={input.transactions.length}
+      data-chart-point-count={snapshot.chart.length}
+      data-chart-end-t={chartEndpoint?.timestamp ?? 'none'}
+      data-chart-end-cost={chartEndpoint?.costBasis ?? 'none'}
+      data-chart-end-market={chartEndpoint?.value ?? 'none'}
+      data-chart-revision={`${publication.inputRevision.token}:${snapshot.chart.length}:${chartEndpoint?.timestamp ?? 'none'}:${chartEndpoint?.costBasis ?? 'none'}`}
+    >Dashboard chart revision {publication.inputRevision.token}</output>
     <header><h2 className="page-title">Dashboard</h2><p className="page-subtitle">Your whole crypto position, at a glance.</p></header>
     <section aria-label="Selected-period financial dashboard" data-testid="dashboard-hero" className="rounded-[20px] border border-primary/35 bg-gradient-to-br from-elev-2 to-elev-3 p-5 shadow-card sm:p-7">
       <PeriodControls selection={period} jurisdiction={jurisdiction} nowMs={input.revision.readAt} onSelect={selectPeriod} />

@@ -61,7 +61,9 @@ async function appendLiveUpdate(sampleId: number): Promise<void> {
   const transaction: Transaction = {
     id: `holdings-live-${sampleId}`,
     timestamp: lastTransaction.timestamp + 1_000,
-    type: 'transfer_in',
+    // Use an acquisition with explicit basis so the coherent Dashboard chart
+    // endpoint must publish both the quantity and remaining-cost update.
+    type: 'buy',
     asset: 'BTC',
     amount: 1,
     fiatCurrency: 'INR',
@@ -70,8 +72,11 @@ async function appendLiveUpdate(sampleId: number): Promise<void> {
     flags: [],
     isInternalTransfer: false
   };
-  window.__SOLOLEDGER_HOLDINGS_PERF__!.begin('live-update');
   await db.transaction('rw', db.transactions, () => db.transactions.put(transaction));
+  // The coherent Dashboard reacts to the committed revision. Measure from the
+  // commit boundary rather than including IndexedDB write latency in the
+  // projection-and-paint contract.
+  window.__SOLOLEDGER_HOLDINGS_PERF__!.begin('live-update');
 }
 
 async function runDashboard() {

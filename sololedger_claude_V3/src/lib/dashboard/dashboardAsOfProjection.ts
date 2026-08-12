@@ -10,8 +10,10 @@ import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { pairedInternalTransferIds } from '@/lib/portfolio/portfolioCompute';
 import {
   buildHoldingsProjection,
+  appendHoldingsProjection,
   prepareHistoricalLedgerReplay,
   type PreparedHistoricalLedgerReplay,
+  type HoldingsProjection,
   type ProjectedPortfolioHolding
 } from '@/lib/portfolio/holdingsProjection';
 import { postingBalances, postingBalanceKey } from '@/lib/ledger/postingBalances';
@@ -63,6 +65,11 @@ export interface DashboardAsOfProjectionInput {
   nowMs: number;
   chartSamples?: readonly number[];
   preparedPriceRows?: PreparedDashboardPriceRows;
+  holdingsReuse?: {
+    transactions?: readonly Transaction[];
+    projection?: HoldingsProjection;
+    cost?: ReturnType<typeof remainingCostByAsset>;
+  };
 }
 
 interface HistoricalIdentity {
@@ -71,6 +78,51 @@ interface HistoricalIdentity {
   contractAddress?: string;
   source?: string;
   safetyState: SafetyState;
+}
+
+interface HistoricalGroupedBalance {
+  quantity: number;
+  scopes: Array<{ scopeId: string; accountClass: DerivedPosting['accountClass'] }>;
+  scopeQuantities: Map<string, number>;
+  scopeIds?: Set<string>;
+}
+
+function groupedBalancesAtSamples(
+  replay: PreparedHistoricalLedgerReplay,
+  samples: readonly number[]
+): ReadonlyMap<number, ReadonlyMap<string, HistoricalGroupedBalance>> {
+  const ordered = replay.preparedPostings.ordered;
+  const byScope = new Map<string, number>();
+  const grouped = new Map<string, HistoricalGroupedBalance>();
+  const result = new Map<number, ReadonlyMap<string, HistoricalGroupedBalance>>();
+  let postingIndex = 0;
+  for (const sample of samples) {
+    while (postingIndex < ordered.length && ordered[postingIndex].effectiveAt <= sample) {
+      const posting = ordered[postingIndex++];
+      const scopeKey = `${posting.accountScopeId}\u001f${posting.accountClass}\u001f${posting.assetKey}`;
+      const previous = byScope.get(scopeKey) ?? 0;
+      const next = posting.role === 'opening_balance' ? posting.signedQuantity : previous + posting.signedQuantity;
+      byScope.set(scopeKey, next);
+      const asset: HistoricalGroupedBalance = grouped.get(posting.assetKey) ?? {
+        quantity: 0, scopes: [], scopeQuantities: new Map(), scopeIds: new Set()
+      };
+      const scopeId = `${posting.accountScopeId}\u001f${posting.accountClass}`;
+      if (!asset.scopeIds!.has(scopeId)) {
+        asset.scopeIds!.add(scopeId);
+        asset.scopes.push({ scopeId: posting.accountScopeId, accountClass: posting.accountClass });
+      }
+      asset.scopeQuantities.set(scopeKey, next);
+      asset.quantity += next - previous;
+      grouped.set(posting.assetKey, asset);
+    }
+    result.set(sample, new Map([...grouped].map(([key, value]) => [key, {
+      quantity: value.quantity,
+      scopes: [...value.scopes],
+      scopeQuantities: value.scopeQuantities,
+      scopeIds: value.scopeIds
+    }])));
+  }
+  return result;
 }
 
 function platformFor(chain?: string): string | undefined {
@@ -161,6 +213,7 @@ function remainingCostByAsset(
   byAsset: ReadonlyMap<string, number>;
   quantityByAsset: ReadonlyMap<string, number>;
   disposals: ReturnType<typeof calculateCostBasis>['disposals'];
+  inventoryDisposals: ReturnType<typeof calculateCostBasis>['inventoryDisposals'];
   lots: ReturnType<typeof calculateCostBasis>['lots'];
   shortfalls: ReturnType<typeof calculateCostBasis>['shortfalls'];
 } {
@@ -184,26 +237,30 @@ function remainingCostByAsset(
   }
   return {
     total: [...byAsset.values()].reduce((sum, value) => sum + value, 0),
-    byAsset, quantityByAsset, disposals: result.disposals, lots: result.lots, shortfalls: result.shortfalls
+    byAsset, quantityByAsset, disposals: result.disposals,
+    inventoryDisposals: result.inventoryDisposals, lots: result.lots, shortfalls: result.shortfalls
   };
 }
 
-function remainingCostTotal(
-  transactions: readonly Transaction[], cutoff: number, settings: TaxSettings,
-  method: CostBasisMethod, hints: Readonly<Record<string, readonly string[]>>,
-  safetyDecisions: readonly SafetyDecisionRow[]
-): number {
-  const result = calculateCostBasis(
-    transactions.filter((transaction) => transaction.timestamp <= cutoff) as Transaction[],
-    {
-      method,
-      specIdHints: Object.fromEntries(Object.entries(hints).map(([id, lotIds]) => [id, [...lotIds]])),
-      settings,
-      safetyDecisions
+function remainingCostTotalsAtSamples(
+  cost: Pick<ReturnType<typeof remainingCostByAsset>, 'lots' | 'inventoryDisposals'>,
+  samples: readonly number[]
+): ReadonlyMap<number, number> {
+  const events = [
+    ...cost.lots.map((lot) => ({ at: lot.acquiredAt, delta: lot.costBasisTotal })),
+    ...cost.inventoryDisposals.map((disposal) => ({ at: disposal.disposedAt, delta: -disposal.costBasis }))
+  ].sort((left, right) => left.at - right.at);
+  const totals = new Map<number, number>();
+  let eventIndex = 0;
+  let total = 0;
+  for (const sample of samples) {
+    while (eventIndex < events.length && events[eventIndex].at <= sample) {
+      total += events[eventIndex].delta;
+      eventIndex += 1;
     }
-  );
-  return result.lots.reduce((total, lot) => lot.amountRemaining > 0
-    ? total + lot.amountRemaining * lot.costBasisPerUnit : total, 0);
+    totals.set(sample, total);
+  }
+  return totals;
 }
 
 export function projectLedgerBasisNetWorthAtCutoff(input: {
@@ -216,27 +273,31 @@ export function projectLedgerBasisNetWorthAtCutoff(input: {
   cutoff: number;
   costBasisByAsset?: ReadonlyMap<string, number>;
   costBasisQuantityByAsset?: ReadonlyMap<string, number>;
+  identities?: ReadonlyMap<string, HistoricalIdentity>;
+  groupedBalances?: ReadonlyMap<string, HistoricalGroupedBalance>;
 }): { contributors: DashboardLedgerContributor[]; aggregate: DashboardAggregate } {
   const decisions = input.safetyDecisions ?? [];
-  const identities = historicalIdentities(input.replay.postings, input.transactions, decisions);
-  const balances = postingBalances(input.replay.postings, { asOf: input.cutoff }, input.replay.preparedPostings);
-  const grouped = new Map<string, {
-    quantity: number;
-    scopes: Array<{ scopeId: string; accountClass: DerivedPosting['accountClass'] }>;
-    scopeQuantities: Map<string, number>;
-  }>();
-  for (const posting of input.replay.preparedPostings.ordered) {
-    if (posting.effectiveAt > input.cutoff) break;
-    const balance = balances.get(postingBalanceKey(posting)) ?? 0;
+  const identities = input.identities ?? historicalIdentities(input.replay.postings, input.transactions, decisions);
+  const grouped = input.groupedBalances ? new Map(input.groupedBalances) : new Map<string, HistoricalGroupedBalance>();
+  const balanceRows = input.groupedBalances ? []
+    : [...postingBalances(input.replay.postings, { asOf: input.cutoff }, input.replay.preparedPostings)]
+        .map(([key, balance]) => ({
+          posting: input.replay.preparedPostings.ordered.find((row) => postingBalanceKey(row) === key),
+          balance
+        }));
+  for (const { posting, balance } of balanceRows) {
+    if (!posting || balance === 0) continue;
     const existing = grouped.get(posting.assetKey) ?? {
       quantity: 0,
       scopes: [] as Array<{ scopeId: string; accountClass: DerivedPosting['accountClass'] }>,
-      scopeQuantities: new Map<string, number>()
+      scopeQuantities: new Map<string, number>(),
+      scopeIds: new Set<string>()
     };
-    const scopeIndex = existing.scopes.findIndex((scope) =>
-      scope.scopeId === posting.accountScopeId && scope.accountClass === posting.accountClass);
-    if (scopeIndex < 0) existing.scopes.push({ scopeId: posting.accountScopeId, accountClass: posting.accountClass });
-    // Replace the previously seen final scope quantity rather than adding it per posting.
+    const scopeId = `${posting.accountScopeId}\u001f${posting.accountClass}`;
+    if (!existing.scopeIds!.has(scopeId)) {
+      existing.scopeIds!.add(scopeId);
+      existing.scopes.push({ scopeId: posting.accountScopeId, accountClass: posting.accountClass });
+    }
     const scopeKey = `${posting.accountScopeId}\u001f${posting.accountClass}\u001f${posting.assetKey}`;
     existing.scopeQuantities.set(scopeKey, balance);
     existing.quantity = [...existing.scopeQuantities.values()].reduce((sum, value) => sum + value, 0);
@@ -508,6 +569,18 @@ function periodAggregates(
 ): DashboardAsOfSnapshot['period'] {
   const inRange = input.transactions.filter((transaction) =>
     transaction.timestamp >= input.nominalStart && transaction.timestamp <= input.effectiveEnd);
+  if (inRange.length === 0) {
+    const aggregate = (category: DashboardPeriodCategory): DashboardPeriodAggregate => ({
+      ...emptyAggregate(input.effectiveEnd),
+      contributorIds: [], transactionIds: [],
+      filter: { nominalStart: input.nominalStart, effectiveEnd: input.effectiveEnd, category }
+    });
+    return {
+      in: aggregate('in'), out: aggregate('out'), income: aggregate('income'),
+      expenses: aggregate('expenses'), tradingFees: aggregate('tradingFees'),
+      realizedCapitalGains: aggregate('realizedCapitalGains')
+    };
+  }
   const paired = pairedInternalTransferIds([...input.transactions]);
   const values = new Map(inRange.map((transaction) => [transaction.id, dashboardTransactionValue(transaction, input)]));
   const feeValues = new Map(inRange.map((transaction) => [transaction.id, dashboardFeeValue(transaction, input)]));
@@ -539,7 +612,10 @@ function periodAggregates(
   };
 }
 
-export function projectDashboardAsOf(input: DashboardAsOfProjectionInput): DashboardAsOfSnapshot {
+export function projectDashboardAsOf(
+  input: DashboardAsOfProjectionInput,
+  measureChartPreparation?: <T>(callback: () => T) => T
+): DashboardAsOfSnapshot {
   if (input.effectiveEnd > input.nowMs) throw new Error('effectiveEnd cannot exceed nowMs');
   if (input.nominalStart > input.effectiveEnd || input.effectiveEnd > input.nominalEnd) {
     throw new Error('invalid dashboard period');
@@ -551,21 +627,57 @@ export function projectDashboardAsOf(input: DashboardAsOfProjectionInput): Dashb
     ...input, transactions: policyTransactions,
     preparedPriceRows: input.preparedPriceRows ?? prepareDashboardPriceRows(input.priceCache)
   };
-  const cost = remainingCostByAsset(
-    policyTransactions, input.effectiveEnd, input.settings, input.settings.defaultCostBasisMethod,
-    input.specIdHints ?? {}, safetyDecisions
-  );
-  const replay = prepareHistoricalLedgerReplay(projectionInput);
+  const previousTransactions = input.holdingsReuse?.transactions;
+  const previousCost = input.holdingsReuse?.cost;
+  const appendedTransaction = previousTransactions && policyTransactions.length === previousTransactions.length + 1 &&
+    previousTransactions.every((transaction, index) => transaction.id === policyTransactions[index]?.id)
+    ? policyTransactions[policyTransactions.length - 1] : undefined;
+  const appendedCost = appendedTransaction && appendedTransaction.timestamp <= input.effectiveEnd &&
+    appendedTransaction.type === 'buy' && previousCost
+    ? remainingCostByAsset(
+        [appendedTransaction], input.effectiveEnd, input.settings,
+        input.settings.defaultCostBasisMethod, input.specIdHints ?? {}, safetyDecisions
+      )
+    : undefined;
+  const cost = appendedCost && previousCost ? {
+    total: previousCost.total + appendedCost.total,
+    byAsset: new Map([...previousCost.byAsset, ...[...appendedCost.byAsset].map(([key, value]) =>
+      [key, value + (previousCost.byAsset.get(key) ?? 0)] as const)]),
+    quantityByAsset: new Map([...previousCost.quantityByAsset, ...[...appendedCost.quantityByAsset].map(([key, value]) =>
+      [key, value + (previousCost.quantityByAsset.get(key) ?? 0)] as const)]),
+    disposals: [...previousCost.disposals, ...appendedCost.disposals],
+    inventoryDisposals: [...previousCost.inventoryDisposals, ...appendedCost.inventoryDisposals],
+    lots: [...previousCost.lots, ...appendedCost.lots],
+    shortfalls: [...previousCost.shortfalls, ...appendedCost.shortfalls]
+  } : remainingCostByAsset(
+      policyTransactions, input.effectiveEnd, input.settings, input.settings.defaultCostBasisMethod,
+      input.specIdHints ?? {}, safetyDecisions
+    );
+  if (input.holdingsReuse) input.holdingsReuse.cost = cost;
+  let replay: PreparedHistoricalLedgerReplay;
   let contributors: DashboardLedgerContributor[];
   let totalNetWorth: DashboardAggregate;
   let currentComparable = true;
   if (currentEndpoint) {
-    const holdings = buildHoldingsProjection({
+    const holdingsInput = {
       transactions: policyTransactions, exchangeConnections: input.exchangeConnections,
       openingBalances: input.openingBalances.filter((row) => row.supersededAt == null), snapshots: input.authoritySnapshots,
       assets: input.authorityAssets, coverage: input.sourceCoverage,
       safetyDecisions, now: input.nowMs
+    };
+    const previousProjection = input.holdingsReuse?.projection;
+    const appended = appendedTransaction && previousProjection
+      ? appendHoldingsProjection(previousProjection, holdingsInput, appendedTransaction)
+      : undefined;
+    const holdings = appended ?? buildHoldingsProjection({
+      ...holdingsInput,
+      preparedProjection: previousTransactions === policyTransactions ? previousProjection : undefined
     });
+    if (input.holdingsReuse) {
+      input.holdingsReuse.transactions = policyTransactions;
+      input.holdingsReuse.projection = holdings;
+    }
+    replay = { postings: holdings.postings, preparedPostings: holdings.preparedPostings };
     const failedKeys = new Set(holdings.slices.filter((slice) =>
       slice.verificationStatus !== 'verified_authority').map((slice) => slice.assetKey));
     currentComparable = failedKeys.size === 0;
@@ -575,6 +687,7 @@ export function projectDashboardAsOf(input: DashboardAsOfProjectionInput): Dashb
     currentComparable &&= defi.comparable;
     totalNetWorth = aggregateContributors(contributors, input.effectiveEnd);
   } else {
+    replay = prepareHistoricalLedgerReplay(projectionInput);
     const historical = projectLedgerBasisNetWorthAtCutoff({
       replay, transactions: policyTransactions, priceCache: input.priceCache,
       preparedPriceRows: projectionInput.preparedPriceRows,
@@ -585,6 +698,7 @@ export function projectDashboardAsOf(input: DashboardAsOfProjectionInput): Dashb
     contributors = historical.contributors;
     totalNetWorth = historical.aggregate;
   }
+  const identities = historicalIdentities(replay.postings, policyTransactions, safetyDecisions);
   const contributorQuantityByAsset = new Map<string, number>();
   for (const row of contributors) {
     if (row.kind !== 'asset' || row.signedQuantity <= 0) continue;
@@ -617,20 +731,23 @@ export function projectDashboardAsOf(input: DashboardAsOfProjectionInput): Dashb
   const period = periodAggregates(projectionInput, cost);
   const chartSamples = [...new Set((input.chartSamples ?? [input.effectiveEnd])
     .filter((sample) => sample <= input.effectiveEnd))].sort((a, b) => a - b);
-  const chart: DashboardChartPoint[] = chartSamples.map((timestamp) => {
-    if (timestamp === input.effectiveEnd) return { ...totalNetWorth, timestamp, costBasis: cost.total };
-    const pointCost = remainingCostTotal(
-      policyTransactions, timestamp, input.settings, input.settings.defaultCostBasisMethod,
-      input.specIdHints ?? {}, safetyDecisions
-    );
-    const point = projectLedgerBasisNetWorthAtCutoff({
-      replay, transactions: policyTransactions, priceCache: input.priceCache,
-      preparedPriceRows: projectionInput.preparedPriceRows,
-      reportingCurrency: input.settings.reportingCurrency, safetyDecisions,
-      cutoff: timestamp
+  const prepareChart = () => {
+    const costAtSample = remainingCostTotalsAtSamples(cost, chartSamples);
+    const groupedAtSample = measureChartPreparation
+      ? measureChartPreparation(() => groupedBalancesAtSamples(replay, chartSamples))
+      : groupedBalancesAtSamples(replay, chartSamples);
+    return chartSamples.map((timestamp): DashboardChartPoint => {
+      if (timestamp === input.effectiveEnd) return { ...totalNetWorth, timestamp, costBasis: cost.total };
+      const point = projectLedgerBasisNetWorthAtCutoff({
+        replay, transactions: policyTransactions, priceCache: input.priceCache,
+        preparedPriceRows: projectionInput.preparedPriceRows,
+        reportingCurrency: input.settings.reportingCurrency, safetyDecisions,
+        cutoff: timestamp, identities, groupedBalances: groupedAtSample.get(timestamp)
+      });
+      return { ...point.aggregate, timestamp, costBasis: costAtSample.get(timestamp) ?? 0 };
     });
-    return { ...point.aggregate, timestamp, costBasis: pointCost };
-  });
+  };
+  const chart = prepareChart();
   const selectedTds = input.settings.jurisdiction === 'IN'
     ? policyTransactions.filter((transaction) =>
       transaction.timestamp >= input.nominalStart && transaction.timestamp <= input.effectiveEnd &&
