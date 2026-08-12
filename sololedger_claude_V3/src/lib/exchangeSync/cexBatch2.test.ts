@@ -176,6 +176,17 @@ describe('raw saturation and offset proofs', () => {
     expect(result).toMatchObject({ partial: true, termination: 'page_budget', checkpoint: { start: 4, end: 9 } });
   });
 
+  it('retains later maximum-span chunks when the current chunk is nonadvancing', async () => {
+    const c = client();
+    const result = await bisectRawClosedWindows({ client: c, start: 0, end: 9, limit: 2,
+      maximumSpan: 3, rawKeys: ['list'], fetchWindow: async () => {
+        c.last_json_response = { data: { unexpected: [] } };
+        return [];
+      } });
+    expect(result).toMatchObject({ partial: true, termination: 'nonadvancing',
+      checkpoint: { start: 0, end: 9 } });
+  });
+
   it('EXMO advances by raw offset and accepts only stable advertised count', async () => {
     const c = client();
     const offsets: number[] = [];

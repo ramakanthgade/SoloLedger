@@ -208,10 +208,19 @@ export async function bisectRawClosedWindows<T extends { id?: string; timestamp?
   const output: T[] = [];
   const identities = new Set<string>();
   const budget = args.budget ?? 500;
+  const remaining = (start: number) => ({ start, end: args.end });
   for (let request = 0; pending.length && request < budget; request += 1) {
     const range = pending.shift()!;
     if (args.maximumSpan != null && range.end - range.start > args.maximumSpan) {
-      const chunkEnd = range.start + args.maximumSpan;
+      const targetEnd = range.start + args.maximumSpan;
+      const quantum = args.splitQuantum ?? 1;
+      const chunkEnd = quantum === 1
+        ? targetEnd
+        : Math.floor((targetEnd + 1) / quantum) * quantum - 1;
+      if (chunkEnd < range.start) {
+        return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing',
+          checkpoint: remaining(range.start) };
+      }
       pending.unshift({ start: chunkEnd + 1, end: range.end });
       pending.unshift({ start: range.start, end: chunkEnd });
       request -= 1;
@@ -221,18 +230,21 @@ export async function bisectRawClosedWindows<T extends { id?: string; timestamp?
     const raw = rawList(args.client.last_json_response, args.rawKeys);
     if (!raw || raw.length !== parsed.length || parsed.some((item) => item.timestamp == null ||
       !Number.isSafeInteger(item.timestamp) || item.timestamp < range.start || item.timestamp > range.end)) {
-      return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing', checkpoint: range };
+      return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing',
+        checkpoint: remaining(range.start) };
     }
     if (raw.length >= args.limit) {
       if (range.end - range.start <= (args.minimumSpan ?? 1)) {
-        return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing', checkpoint: range };
+        return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing',
+          checkpoint: remaining(range.start) };
       }
       const quantum = args.splitQuantum ?? 1;
       const midpoint = quantum === 1
         ? Math.floor((range.start + range.end) / 2)
         : Math.floor(((range.start + range.end) / 2) / quantum) * quantum + quantum - 1;
       if (midpoint < range.start || midpoint >= range.end) {
-        return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing', checkpoint: range };
+        return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing',
+          checkpoint: remaining(range.start) };
       }
       pending.unshift({ start: midpoint + 1, end: range.end });
       pending.unshift({ start: range.start, end: midpoint });
@@ -241,7 +253,8 @@ export async function bisectRawClosedWindows<T extends { id?: string; timestamp?
     for (const item of parsed) {
       const id = text(item.id);
       if (!id || identities.has(id)) {
-        return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing', checkpoint: range };
+        return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing',
+          checkpoint: remaining(range.start) };
       }
       identities.add(id); output.push(item);
     }

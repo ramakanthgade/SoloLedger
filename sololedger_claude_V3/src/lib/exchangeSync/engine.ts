@@ -3564,14 +3564,14 @@ export async function fetchTradesForSymbol(
         nextFiveCheckpoint: outcome.checkpoint ? { start, end, ...outcome.checkpoint } : undefined };
     }
     case 'digifinex': {
-      const end = Math.min(now, since + 30 * 86_400_000 - 1);
-      const outcome = await bisectRawClosedWindows({ client, start: since, end, limit: 100,
-        rawKeys: ['list'], budget: opts?.nextFiveMaxRequests, minimumSpan: 999, splitQuantum: 1000,
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const outcome = await bisectRawClosedWindows({ client, start, end, limit: 100,
+        rawKeys: ['list'], budget: opts?.nextFiveMaxRequests, maximumSpan: 30 * 86_400_000 - 1,
+        minimumSpan: 999, splitQuantum: 1000,
         fetchWindow: (start, until) => client.fetchMyTrades(symbol, start, 100,
           { end_time: Math.floor(until / 1000), type: 'spot' }) });
-      return { ...outcome, partial: outcome.partial || end < now,
-        termination: end < now && !outcome.partial ? 'page_budget' : outcome.termination,
-        nextFiveCheckpoint: outcome.checkpoint ?? (end < now ? { start: end + 1, end: now } : undefined) };
+      return { ...outcome, nextFiveCheckpoint: outcome.checkpoint };
     }
     case 'tokocrypto':
       return bisectRawClosedWindows({ client, start: since, end: now, limit: 1000,

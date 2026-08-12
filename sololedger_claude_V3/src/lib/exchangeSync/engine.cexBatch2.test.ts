@@ -53,6 +53,39 @@ describe('batch-two engine integration', () => {
     expect(outcome).toMatchObject({ partial: false, termination: 'exhausted' });
   });
 
+  it('DigiFinex resumes the frozen full range until every 30-day chunk is fetched', async () => {
+    const day30 = 30 * 86_400_000;
+    const frozenEnd = 2 * day30 + 999;
+    const ranges: Array<[number, number]> = [];
+    const c = client({ fetchMyTrades: vi.fn(async (_symbol, start, _limit, params) => {
+      const end = Number(params?.end_time) * 1000 + 999;
+      ranges.push([Number(start), end]);
+      const page = [{ id: `${start}-${end}`, timestamp: Number(start) }];
+      c.last_json_response = { list: page };
+      return page as UnifiedTrade[];
+    }) });
+
+    const first = await fetchTradesForSymbol(c, 'digifinex', 'BTC/USDT', 0, frozenEnd,
+      { nextFiveMaxRequests: 1 });
+    expect(first).toMatchObject({ partial: true, termination: 'page_budget',
+      nextFiveCheckpoint: { start: day30, end: frozenEnd } });
+
+    const second = await fetchTradesForSymbol(c, 'digifinex', 'BTC/USDT', 0, frozenEnd,
+      { nextFiveMaxRequests: 1, nextFiveCheckpoint: first.nextFiveCheckpoint });
+    expect(second).toMatchObject({ partial: true, termination: 'page_budget',
+      nextFiveCheckpoint: { start: 2 * day30, end: frozenEnd } });
+
+    const third = await fetchTradesForSymbol(c, 'digifinex', 'BTC/USDT', 0, frozenEnd,
+      { nextFiveMaxRequests: 1, nextFiveCheckpoint: second.nextFiveCheckpoint });
+    expect(third).toMatchObject({ partial: false, termination: 'exhausted' });
+    expect(third.nextFiveCheckpoint).toBeUndefined();
+    expect(ranges).toEqual([
+      [0, day30 - 1],
+      [day30, 2 * day30 - 1],
+      [2 * day30, frozenEnd]
+    ]);
+  });
+
   it('Tokocrypto recursively bisects a raw saturated trade window', async () => {
     const c = client({ fetchMyTrades: vi.fn(async (_symbol, start, _limit, params) => {
       const end = Number(params?.until);
