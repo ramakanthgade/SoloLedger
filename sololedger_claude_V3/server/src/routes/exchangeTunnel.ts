@@ -335,6 +335,29 @@ const EXCHANGES: Record<string, ExchangeSpec> = {
       '/v2/supplement/user_info.do': ['POST'], '/v2/transaction_history.do': ['POST'],
       '/v2/supplement/deposit_history.do': ['POST'], '/v2/supplement/withdraws.do': ['POST']
     }
+  },
+  digifinex: {
+    host: 'openapi.digifinex.com', headers: ['access-key', 'access-sign', 'access-timestamp'], methods: ['GET'],
+    paths: ['/v3/time', '/v3/markets', '/v3/spot/assets', '/v3/spot/mytrades', '/v3/deposit/history', '/v3/withdraw/history']
+  },
+  bigone: {
+    host: 'big.one', headers: ['authorization'], methods: ['GET'],
+    paths: ['/api/v3/ping', '/api/v3/asset_pairs', '/api/v3/viewer/accounts', '/api/v3/viewer/trades', '/api/v3/viewer/deposits', '/api/v3/viewer/withdrawals']
+  },
+  tokocrypto: {
+    host: 'www.tokocrypto.com', headers: ['x-mbx-apikey'], methods: ['GET'],
+    paths: ['/open/v1/common/time', '/open/v1/common/symbols', '/open/v1/account/spot', '/open/v1/orders/trades', '/open/v1/deposits', '/open/v1/withdraws']
+  },
+  hollaex: {
+    host: 'api.hollaex.com', headers: ['api-key', 'api-expires', 'api-signature'], methods: ['GET'],
+    paths: ['/v2/health', '/v2/constants', '/v2/user/balance', '/v2/user/trades', '/v2/user/deposits', '/v2/user/withdrawals']
+  },
+  exmo: {
+    host: 'api.exmo.com', headers: ['key', 'sign'],
+    paths: ['/v1.1/pair_settings', '/v1.1/user_info', '/v1.1/user_trades', '/v1.1/wallet_operations'],
+    pathMethods: {
+      '/v1.1/pair_settings': ['GET'], '/v1.1/user_info': ['POST'], '/v1.1/user_trades': ['POST'], '/v1.1/wallet_operations': ['POST']
+    }
   }
 };
 

@@ -230,7 +230,12 @@ describe('1. byte-exact forwarding per exchange', () => {
     ['xt', 'sapi.xt.com', '/v4/public/time'],
     ['coinspot', 'www.coinspot.com.au', '/pubapi/latest'],
     ['phemex', 'api.phemex.com', '/public/products'],
-    ['lbank', 'api.lbank.info', '/v2/timestamp.do']
+    ['lbank', 'api.lbank.info', '/v2/timestamp.do'],
+    ['digifinex', 'openapi.digifinex.com', '/v3/time'],
+    ['bigone', 'big.one', '/api/v3/ping'],
+    ['tokocrypto', 'www.tokocrypto.com', '/open/v1/common/time'],
+    ['hollaex', 'api.hollaex.com', '/v2/health'],
+    ['exmo', 'api.exmo.com', '/v1.1/pair_settings']
   ];
   const QUERY = 'pair=BTC%2CETH&sig=Ab%2B%2F%3D';
 
@@ -888,6 +893,20 @@ describe('4. exchangeId and path validation', () => {
     upstreamMock.mockResolvedValue(upstreamJson('{}'));
     expect((await client('/lbank/v2/transaction_history.do', { method: 'POST', headers: AUTH })).status).toBe(200);
     expect((await client('/lbank/v2/supplement/transaction_history.do', { method: 'POST', headers: AUTH })).status).toBe(400);
+  });
+
+  it.each([
+    ['digifinex', '/v3/spot/mytrades', '/swap/v2/trade/history_trades', 'GET'],
+    ['bigone', '/api/v3/viewer/trades', '/api/contract/v2/trades', 'GET'],
+    ['tokocrypto', '/open/v1/orders/trades', '/api/v3/myTrades', 'GET'],
+    ['hollaex', '/v2/user/trades', '/v2/order', 'GET'],
+    ['exmo', '/v1.1/user_trades', '/v1.1/order_create', 'POST']
+  ] as const)('%s contains exact spot history and blocks mutation/foreign hosts', async (exchange, allowed, blocked, method) => {
+    upstreamMock.mockResolvedValue(upstreamJson('{}'));
+    expect((await client(`/${exchange}${allowed}`, { method, headers: AUTH })).status).toBe(200);
+    expect((await client(`/${exchange}${allowed}`, { method: method === 'GET' ? 'POST' : 'GET', headers: AUTH })).status).toBe(400);
+    expect((await client(`/${exchange}${blocked}`, { method, headers: AUTH })).status).toBe(400);
+    expect((await client(`/${exchange}${allowed}/extra`, { method, headers: AUTH })).status).toBe(400);
   });
 
   it('WhiteBIT allows signed POST only on the exact read-only private history paths', async () => {

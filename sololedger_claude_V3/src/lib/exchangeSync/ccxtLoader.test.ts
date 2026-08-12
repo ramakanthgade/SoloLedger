@@ -483,6 +483,47 @@ describe('createExchangeClient', () => {
   });
 });
 
+describe('batch-two pinned CCXT construction', () => {
+  it.each(['digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'] as const)(
+    '%s is spot-only, has no passphrase, captures raw responses, and disables currencies', async (exchange) => {
+      const client = await createExchangeClient(row({ exchange, apiKey: 'dummy', secret: 'dummy-secret' }));
+      const raw = client as unknown as { options: Record<string, unknown>; has: Record<string, unknown>;
+        password?: string; enableLastJsonResponse: boolean; requiredCredentials: Record<string, boolean> };
+      expect(raw.options).toMatchObject({ defaultType: 'spot', fetchCurrencies: false });
+      expect(raw.has.fetchCurrencies).toBe(false);
+      expect(raw.password).toBeUndefined();
+      expect(raw.enableLastJsonResponse).toBe(true);
+      expect(raw.requiredCredentials).toMatchObject({ apiKey: true, secret: true, password: false });
+    }
+  );
+
+  it('pins DigiFinex market loading to its v3 spot-only catalog', async () => {
+    const client = await createExchangeClient(row({ exchange: 'digifinex', apiKey: 'dummy', secret: 'dummy-secret' }));
+    const emitted: string[] = [];
+    client.fetch = async (url) => {
+      emitted.push(new URL(url).pathname);
+      return { code: 0, data: [{ market: 'btc_usdt', volume_precision: 8, price_precision: 2,
+        min_amount: 1, min_volume: 0.0001 }] };
+    };
+    await client.loadMarkets(true);
+    expect(emitted).toEqual(['/v3/markets']);
+    expect(emitted).not.toContain('/swap/v2/public/instruments');
+  });
+
+  it('pins BigONE market loading to the spot catalog without contract transport', async () => {
+    const client = await createExchangeClient(row({ exchange: 'bigone', apiKey: 'dummy', secret: 'dummy-secret' }));
+    const emitted: string[] = [];
+    client.fetch = async (url) => {
+      emitted.push(new URL(url).pathname);
+      return { code: 0, data: [{ id: 'pair', name: 'BTC-USDT', base_scale: 8, quote_scale: 2,
+        min_quote_value: '1', base_asset: { symbol: 'BTC' }, quote_asset: { symbol: 'USDT' } }] };
+    };
+    await client.loadMarkets(true);
+    expect(emitted).toEqual(['/api/v3/asset_pairs']);
+    expect(emitted.every((path) => !path.includes('contract'))).toBe(true);
+  });
+});
+
 describe('classifySyncError', () => {
   async function ccxtError(className: string): Promise<Error> {
     const ccxt = await loadCcxt();

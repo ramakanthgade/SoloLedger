@@ -9,7 +9,7 @@ those refs collide with their CSV parser twins so the existing
 idempotence is proven; its CSV collision is fixture-demonstrated only because
 the existing beta CSV schema has no verified vendor-export provenance.
 
-Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget, bitmart, coinex, poloniex, woo, hitbtc, bingx, binanceus, backpack, whitebit, bitflyer, coincheck** — the
+Supported exchanges: **binance, coinbase, kraken, okx, kucoin, bybit, gateio, htx, cryptocom, bitfinex, gemini, btcmarkets, mexc, bitvavo, bitstamp, bitget, bitmart, coinex, poloniex, woo, hitbtc, bingx, binanceus, backpack, whitebit, bitflyer, coincheck, bitrue, xt, coinspot, phemex, lbank, digifinex, bigone, tokocrypto, hollaex, exmo** — the
 `ExchangeId` union in `types.ts` (one name, no aliases). Binance is the
 original live-validated path; Bybit adds a real-ccxt replay pipeline and an
 order-level CSV-twin dedup contract. Exchange-specific caveats remain below.
@@ -653,3 +653,33 @@ paths are not reachable from the browser.
 
 None of these connectors has a verified SoloLedger vendor CSV parser, so native
 API IDs are stable replay references but API-to-CSV deduplication is not claimed.
+
+## DigiFinex, BigONE, Tokocrypto, HollaEx and EXMO safety contracts
+
+All five are spot-only, connection/exchange/endpoint-kind scoped, and make no
+CSV collision claim. Fixtures are hand-authored against pinned CCXT 4.5.68 and
+carry `_recorded:false`; live account validation remains deferred.
+
+- **DigiFinex** uses only `openapi.digifinex.com` v3 spot paths. Trades use
+  closed windows no wider than 30 days and recursively bisect raw saturated
+  responses. Wallet history follows the native `from`/`direct=next` ID chain.
+- **BigONE** freezes the complete spot-symbol universe for symbol-required
+  trades and follows raw opaque `page_token` on trades, deposits and
+  withdrawals. Unknown deposit `kind` values and `SELF_TRADING` fills are
+  economically ambiguous and fail closed.
+- **Tokocrypto** is restricted to `www.tokocrypto.com`; the Binance fallback
+  host in pinned CCXT is unreachable through the relay. Current, inactive and
+  persisted historical symbols are frozen, and raw saturated closed windows
+  bisect rather than claiming exhaustion from CCXT-filtered rows.
+- **HollaEx** requires stable native `count` across its 1-based page traversal.
+  Since fills have no native ID, a complete provider tuple supplies replay
+  identity only when unique; indistinguishable composite twins fail closed so
+  equal-row multiplicity is never silently collapsed.
+- **EXMO** advances `offset` by raw response rows, requires stable native
+  `count` where supplied, and scans the frozen current plus persisted
+  historical/delisted pair universe. A missing known market keeps the global
+  trade frontier partial instead of claiming complete history.
+
+Endpoint exhaustion for all five proves only the returned API surface because
+none publishes a verified account-lifetime retention guarantee. Users should
+retain official exports for older tax records.

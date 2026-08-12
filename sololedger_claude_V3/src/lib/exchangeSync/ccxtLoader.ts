@@ -181,7 +181,12 @@ const EXCHANGE_LABELS: Record<ExchangeId, string> = {
   xt: 'XT.COM',
   coinspot: 'CoinSpot',
   phemex: 'Phemex',
-  lbank: 'LBank'
+  lbank: 'LBank',
+  digifinex: 'DigiFinex',
+  bigone: 'BigONE',
+  tokocrypto: 'Tokocrypto',
+  hollaex: 'HollaEx',
+  exmo: 'EXMO'
 };
 
 export function exchangeLabel(exchange: ExchangeId): string {
@@ -322,7 +327,9 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
               ? { defaultType: 'spot', fetchCurrencies: false }
             : exchangeId === 'bitrue'
               ? { defaultType: 'spot', fetchMarkets: { types: ['spot'] }, fetchCurrencies: false, fetchMargins: false }
-            : exchangeId === 'xt' || exchangeId === 'lbank'
+            : exchangeId === 'xt' || exchangeId === 'lbank' || exchangeId === 'bigone' || exchangeId === 'hollaex' || exchangeId === 'exmo'
+              ? { defaultType: 'spot', fetchCurrencies: false }
+            : exchangeId === 'digifinex' || exchangeId === 'tokocrypto'
               ? { defaultType: 'spot', fetchCurrencies: false }
             : exchangeId === 'coinspot'
               ? { defaultType: 'spot', fetchBalance: 'private_post_ro_my_balances' }
@@ -383,7 +390,7 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
   }
-  if (exchangeId === 'bitrue' || exchangeId === 'xt' || exchangeId === 'phemex' || exchangeId === 'lbank') {
+  if (exchangeId === 'bitrue' || exchangeId === 'xt' || exchangeId === 'phemex' || exchangeId === 'lbank' || exchangeId === 'digifinex' || exchangeId === 'bigone' || exchangeId === 'tokocrypto' || exchangeId === 'hollaex' || exchangeId === 'exmo') {
     config.has = { fetchCurrencies: false };
     config.enableLastJsonResponse = true;
   }
@@ -468,6 +475,24 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
       fetchSpotMarkets: (params?: Record<string, unknown>) => Promise<unknown>;
     };
     raw.fetchMarkets = raw.fetchSpotMarkets.bind(exchange);
+  }
+  if (exchangeId === 'digifinex') {
+    const raw = exchange as unknown as {
+      fetchMarkets: (params?: Record<string, unknown>) => Promise<unknown>;
+      fetchMarketsV1: (params?: Record<string, unknown>) => Promise<unknown>;
+    };
+    // V2 joins swap instruments. The V1 spot catalog is the complete market
+    // surface required by the connector and cannot emit a derivatives host.
+    raw.fetchMarkets = raw.fetchMarketsV1.bind(exchange);
+  }
+  if (exchangeId === 'bigone') {
+    const raw = exchange as unknown as {
+      contractPublicGetSymbols: (params?: Record<string, unknown>) => Promise<unknown[]>;
+    };
+    // Pinned CCXT joins the spot and contract catalogs unconditionally inside
+    // fetchMarkets(). Preserve its spot parser while making the derivative
+    // half of that join transport-free.
+    raw.contractPublicGetSymbols = async () => [];
   }
   if (exchangeId === 'bitfinex') {
     // Bitfinex defaults its public v2 URL to api-pub.bitfinex.com. Keep both

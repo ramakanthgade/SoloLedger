@@ -106,6 +106,20 @@ function validCheckpointFor(exchange: ExchangeId, endpoint: keyof NextFiveProgre
     return checkpoint.page != null && checkpoint.page >= 2 && checkpoint.expectedTotal != null && checkpoint.expectedTotal > 0 &&
       only('start', 'end', 'page', 'expectedTotal');
   }
+  if (exchange === 'bigone') return !!checkpoint.nativeCursor && only('start', 'end', 'nativeCursor');
+  if (exchange === 'digifinex') return endpoint === 'trades'
+    ? only('start', 'end')
+    : !!checkpoint.nativeCursor && only('start', 'end', 'nativeCursor');
+  if (exchange === 'hollaex') return checkpoint.page != null && checkpoint.page >= 2 &&
+    checkpoint.expectedTotal != null && checkpoint.expectedTotal >= 0 &&
+    only('start', 'end', 'page', 'expectedTotal', 'lastId');
+  if (exchange === 'exmo') return checkpoint.offset != null && checkpoint.offset > 0 &&
+    checkpoint.offset % 100 === 0 && (checkpoint.expectedTotal == null || checkpoint.expectedTotal >= checkpoint.offset) &&
+    only('start', 'end', 'offset', 'expectedTotal', 'lastId');
+  if (exchange === 'tokocrypto') {
+    return !!checkpoint.items && checkpoint.itemIndex != null && checkpoint.itemIndex < checkpoint.items.length &&
+      only('start', 'end', 'items', 'itemIndex');
+  }
   return false;
 }
 

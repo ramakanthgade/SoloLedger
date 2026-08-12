@@ -36,7 +36,8 @@ const KRAKEN_FIAT_ASSETS = new Set(['USD', 'EUR', 'CAD', 'GBP', 'JPY', 'AUD']);
 const API_NATIVE_ID_EXCHANGES = new Set<ExchangeId>([
   'coinex', 'poloniex', 'woo', 'hitbtc', 'bingx',
   'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck',
-  'bitrue', 'xt', 'phemex', 'lbank'
+  'bitrue', 'xt', 'phemex', 'lbank',
+  'digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'
 ]);
 
 /** makeId prefixes per exchange. */
@@ -72,7 +73,12 @@ const ID_PREFIX: Record<ExchangeId, string> = {
   xt: 'exxt',
   coinspot: 'excs',
   phemex: 'exph',
-  lbank: 'exlb'
+  lbank: 'exlb',
+  digifinex: 'exdf',
+  bigone: 'exbo',
+  tokocrypto: 'extk',
+  hollaex: 'exho',
+  exmo: 'exem'
 };
 
 /** Floor an ms timestamp to whole seconds (CSV exports are second-granular). */
@@ -189,6 +195,11 @@ function tradeSourceRef(
     case 'xt':
     case 'phemex':
     case 'lbank':
+    case 'digifinex':
+    case 'bigone':
+    case 'tokocrypto':
+    case 'hollaex':
+    case 'exmo':
       return trade.id;
     case 'coinspot':
       // The full-response adapter assigns an economics-complete deterministic
