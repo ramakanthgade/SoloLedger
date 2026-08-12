@@ -24,6 +24,20 @@ describe('next-five normalization identity', () => {
     expect(normalizeTrade('bitrue', trade('7'), market)?.sourceRef).toBe('BTC/USDT:7');
   });
 
+  it('scopes Tokocrypto symbol-local fill ids by symbol', () => {
+    expect(normalizeTrade('tokocrypto', trade('7'), market)?.sourceRef).toBe('BTC/USDT:7');
+  });
+
+  it('normalizes a recovered Tokocrypto withdrawal asset and fee', () => {
+    expect(normalizeTransfer('tokocrypto', {
+      id: '4245859', timestamp: 1_659_521_314_413, currency: 'BIDR', amount: 10_000,
+      fee: { currency: 'BIDR', cost: 12.5 }, status: 'ok', type: 'withdrawal',
+      info: { asset: 'BIDR', fee: '12.5' }
+    }, 'withdrawal')).toMatchObject({
+      source: 'tokocrypto_api', sourceRef: '4245859', asset: 'BIDR', feeAsset: 'BIDR', feeAmount: 12.5
+    });
+  });
+
   it('keeps CoinSpot API replay deterministic without claiming CSV identity', () => {
     const normalized = normalizeTrade('coinspot', assignCoinspotTradeIds([trade(undefined)])[0], market);
     expect(normalized).toMatchObject({ source: 'coinspot_api', type: 'buy' });

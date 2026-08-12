@@ -1076,7 +1076,12 @@ export const EXCHANGE_API_SOURCES = new Set([
   'xt_api',
   'coinspot_api',
   'phemex_api',
-  'lbank_api'
+  'lbank_api',
+  'digifinex_api',
+  'bigone_api',
+  'tokocrypto_api',
+  'hollaex_api',
+  'exmo_api'
 ]);
 
 /**
@@ -1219,7 +1224,7 @@ export function transactionExchangeKey(
     return `ex-api:${t.importBatchId ?? 'unscoped'}:bitget:${kind}:${t.sourceRef}`;
   }
   const fiveExchange = t.source.endsWith('_api')
-    ? ['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx', 'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck', 'bitrue', 'xt', 'coinspot', 'phemex', 'lbank']
+    ? ['coinex', 'poloniex', 'woo', 'hitbtc', 'bingx', 'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck', 'bitrue', 'xt', 'coinspot', 'phemex', 'lbank', 'digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo']
       .find((exchange) => t.source === `${exchange}_api`)
     : undefined;
   if (fiveExchange) {

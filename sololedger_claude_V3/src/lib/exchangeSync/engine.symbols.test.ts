@@ -3,7 +3,7 @@
  * candidateSpotSymbols purity tests.
  */
 import { describe, expect, it } from 'vitest';
-import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols, QUOTE_CANDIDATES } from './binanceSymbols';
+import { assetsFromBalance, allCataloguedSpotSymbols, allSpotSymbols, candidateSpotSymbols, QUOTE_CANDIDATES } from './binanceSymbols';
 import type { UnifiedBalance, UnifiedMarket } from './ccxtLoader';
 
 function market(
@@ -136,5 +136,11 @@ describe('allSpotSymbols (initial-sync full scan)', () => {
   it('is sorted for determinism', () => {
     const out = allSpotSymbols(markets);
     expect(out).toEqual([...out].sort());
+  });
+
+  it('retains inactive catalogued spots for Tokocrypto frozen discovery', () => {
+    expect(allCataloguedSpotSymbols(markets)).toEqual([
+      'BTC/USDT', 'DOGE/USDT', 'HNT/BUSD', 'HNT/USDT', 'NPXS/USDT'
+    ]);
   });
 });

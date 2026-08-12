@@ -14,7 +14,7 @@ const fill = { id: '7', timestamp: 1_700_000_000_123, symbol: 'BTC/USDT', side: 
 describe('next-five dedup contract', () => {
   beforeEach(async () => db.transactions.clear());
 
-  it.each(['bitrue', 'xt', 'phemex', 'lbank'] as const)(
+  it.each(['bitrue', 'xt', 'phemex', 'lbank', 'digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'] as const)(
     '%s native-id replay is idempotent through the real database deduper',
     async (exchange) => {
       const first = normalizeTrade(exchange, fill, market)!;
@@ -24,6 +24,18 @@ describe('next-five dedup contract', () => {
       const remaining = await db.transactions.toArray();
       expect(remaining).toHaveLength(1);
       expect(remaining[0].sourceRef).toBe(first.sourceRef);
+    }
+  );
+
+  it.each(['digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'] as const)(
+    '%s native identity is isolated by connection and endpoint kind', (exchange) => {
+      const trade = { ...normalizeTrade(exchange, fill, market)!, importBatchId: 'account-a' };
+      const otherAccount = { ...trade, importBatchId: 'account-b' };
+      const transfer = normalizeTransfer(exchange, { id: trade.sourceRef, timestamp: fill.timestamp,
+        currency: 'BTC', amount: 1, status: 'ok', type: 'deposit' }, 'deposit')!;
+      transfer.importBatchId = 'account-a';
+      expect(transactionExchangeKey(trade)).not.toBe(transactionExchangeKey(otherAccount));
+      expect(transactionExchangeKey(trade)).not.toBe(transactionExchangeKey(transfer));
     }
   );
 

@@ -460,6 +460,56 @@ export const AUTO_SYNC_EXCHANGES: AutoSyncExchange[] = [
       'LBank region availability and account-lifetime retention are unverified. Trade queries are limited to two-day date windows; retain exports for history the API omits.'
     ],
     path: ['LBank', 'Profile', 'API Management'], docsUrl: 'https://www.lbank.com/en-US/user/api'
+  },
+  {
+    id: 'digifinex', label: 'DigiFinex', monogram: 'DF', needsPassphrase: false,
+    formatHint: 'API key + secret · rolling-window beta',
+    keyInstructions: [
+      'Open DigiFinex API Management and create a read-only key for spot assets, trades, deposits and withdrawals. Never enable trading or withdrawals.',
+      'Copy the API Key and Secret and paste them here. DigiFinex does not require a passphrase.',
+      'Spot trades are scanned in closed windows no wider than 30 days and dense windows are bisected. API lifetime retention is unverified; retain exports for older records.',
+      'No verified DigiFinex CSV identity twin exists, so SoloLedger does not claim API↔CSV auto-deduplication.'
+    ], path: ['DigiFinex', 'Account', 'API Management'], docsUrl: 'https://www.digifinex.com/en-ww/api'
+  },
+  {
+    id: 'bigone', label: 'BigONE', monogram: 'BO', needsPassphrase: false,
+    formatHint: 'API key + secret · spot only',
+    keyInstructions: [
+      'Open BigONE API settings and create a read-only key for spot accounts, trades, deposits and withdrawals. Never enable trading, transfer or withdrawal permissions.',
+      'Copy the API Key and Secret and paste them here. BigONE does not require a passphrase.',
+      'SoloLedger follows BigONE’s opaque page_token for every history stream. Unknown deposit kinds and SELF_TRADING fills stop cursor advancement for review.',
+      'API lifetime retention and CSV identity parity are unverified; retain official exports.'
+    ], path: ['BigONE', 'Account', 'API'], docsUrl: 'https://big.one/api_console'
+  },
+  {
+    id: 'tokocrypto', label: 'Tokocrypto', monogram: 'TK', needsPassphrase: false,
+    formatHint: 'API key + secret · Indonesia',
+    keyInstructions: [
+      'Open Tokocrypto API Management and create a read-only key for spot balances, trade history and wallet history. Never enable orders or withdrawals.',
+      'Copy the API Key and Secret and paste them here. Tokocrypto does not require a passphrase.',
+      'Only Tokocrypto’s own host is used. The frozen current-and-historical symbol universe is scanned with closed, fail-closed windows; a delisted pair missing from metadata keeps coverage partial.',
+      'API lifetime retention and CSV identity parity are unverified; retain exports.'
+    ], path: ['Tokocrypto', 'Profile', 'API Management'], docsUrl: 'https://www.tokocrypto.com/apidocs/'
+  },
+  {
+    id: 'hollaex', label: 'HollaEx', monogram: 'HX', needsPassphrase: false,
+    formatHint: 'API key + secret · fail-closed count/page',
+    keyInstructions: [
+      'Open HollaEx API settings and create a read-only key for balances and user history. Never enable order or withdrawal permissions.',
+      'Copy the API Key and Secret and paste them here. HollaEx does not require a passphrase.',
+      'History count and page metadata must remain stable. HollaEx provides no native fill ID, so duplicate composite fill identities stop advancement rather than erasing equal rows.',
+      'API lifetime retention and CSV identity parity are unverified; retain exports.'
+    ], path: ['HollaEx', 'Account', 'API Keys'], docsUrl: 'https://apidocs.hollaex.com/'
+  },
+  {
+    id: 'exmo', label: 'EXMO', monogram: 'EX', needsPassphrase: false,
+    formatHint: 'API key + secret · complete pair manifest required',
+    keyInstructions: [
+      'Open EXMO API settings and create a read-only key for user information, trades and wallet operations. Never enable orders or withdrawals.',
+      'Copy the Public Key and Secret Key and paste them here. EXMO does not require a passphrase.',
+      'SoloLedger traverses raw count/offset history and requires the frozen current plus historical/delisted pair set. Missing pair metadata keeps trade coverage partial.',
+      'API lifetime retention and CSV identity parity are unverified; retain official exports.'
+    ], path: ['EXMO', 'Settings', 'API'], docsUrl: 'https://exmo.me/en/api_doc'
   }
 ];
 

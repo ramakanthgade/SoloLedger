@@ -1,0 +1,7 @@
+{
+  "_recorded": false,
+  "_note": "Hand-authored schema-faithful fixture based on pinned CCXT 4.5.68 parser comments; not a live account recording and not evidence of CSV identity parity.",
+  "ccxtVersion": "4.5.68",
+  "exchange": "hollaex",
+  "csvTwin": false
+}

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  isBigoneInvalidJwtResponse,
   isBitgetInvalidAccessKeyResponse,
-  isBitgetPublicTimeResponse
+  isBitgetPublicTimeResponse,
+  isDigifinexInvalidKeyResponse,
+  isExmoInvalidKeyResponse,
+  isHollaexInvalidKeyResponse,
+  isTokocryptoInvalidKeyResponse
 } from '../scripts/live-verify-exchange-tunnel.mjs';
 
 describe('live exchange-tunnel verifier Bitget predicates', () => {
@@ -39,5 +44,27 @@ describe('live exchange-tunnel verifier Bitget predicates', () => {
     expect(isBitgetInvalidAccessKeyResponse({
       status, text: JSON.stringify({ code, msg })
     })).toBe(false);
+  });
+});
+
+describe('live exchange-tunnel verifier batch-two tier-3 predicates', () => {
+  it.each([
+    [isDigifinexInvalidKeyResponse, 200, { code: 10002 }],
+    [isBigoneInvalidJwtResponse, 401, { code: 40004, message: 'invalid jwt' }],
+    [isTokocryptoInvalidKeyResponse, 401, { code: -2014, msg: 'API-key format invalid.' }],
+    [isHollaexInvalidKeyResponse, 401, { message: 'Access denied: Access Denied: Invalid API Key' }],
+    [isExmoInvalidKeyResponse, 200, { result: false, error: 'Error 40017: Wrong api key' }]
+  ])('accepts the distinctive live dummy-key response %#', (predicate, status, body) => {
+    expect(predicate({ status, text: JSON.stringify(body) })).toBe(true);
+  });
+
+  it.each([
+    [isDigifinexInvalidKeyResponse, 401, { code: 10002 }],
+    [isBigoneInvalidJwtResponse, 401, { code: 40004, message: 'unauthorized' }],
+    [isTokocryptoInvalidKeyResponse, 451, { code: -2014, msg: 'API-key format invalid.' }],
+    [isHollaexInvalidKeyResponse, 401, { message: 'Invalid API Key' }],
+    [isExmoInvalidKeyResponse, 400, { result: false, error: 'Error 40017: Wrong api key' }]
+  ])('rejects broad lookalike response %#', (predicate, status, body) => {
+    expect(predicate({ status, text: JSON.stringify(body) })).toBe(false);
   });
 });

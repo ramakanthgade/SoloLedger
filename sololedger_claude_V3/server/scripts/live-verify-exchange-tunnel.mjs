@@ -57,6 +57,29 @@ export function isBitgetInvalidAccessKeyResponse(response) {
     return false;
   }
 }
+function responseJson(response) {
+  try { return JSON.parse(response.text); } catch { return undefined; }
+}
+export function isDigifinexInvalidKeyResponse(response) {
+  return response.status === 200 && responseJson(response)?.code === 10002;
+}
+export function isBigoneInvalidJwtResponse(response) {
+  const json = responseJson(response);
+  return response.status === 401 && json?.code === 40004 && json?.message === 'invalid jwt';
+}
+export function isTokocryptoInvalidKeyResponse(response) {
+  const json = responseJson(response);
+  return [400, 401, 403].includes(response.status) &&
+    [-1002, -1022, -2008, -2014, -2015].includes(json?.code) && typeof json?.msg === 'string';
+}
+export function isHollaexInvalidKeyResponse(response) {
+  const json = responseJson(response);
+  return response.status === 401 && json?.message === 'Access denied: Access Denied: Invalid API Key';
+}
+export function isExmoInvalidKeyResponse(response) {
+  const json = responseJson(response);
+  return response.status === 200 && json?.result === false && json?.error === 'Error 40017: Wrong api key';
+}
 function record(tier, exchange, probe, ok, detail) {
   results.push({ tier, exchange, probe, ok, detail });
 }
@@ -273,6 +296,26 @@ const TIER2 = [
   {
     exchange: 'lbank', probe: 'GET /v2/timestamp.do', path: '/v2/timestamp.do',
     check: (r, json) => r.status === 200 && Number.isFinite(Number(json?.data ?? json?.ts))
+  },
+  {
+    exchange: 'digifinex', probe: 'GET /v3/time', path: '/v3/time',
+    check: (r, json) => r.status === 200 && json?.code === 0 && Number.isFinite(Number(json?.server_time))
+  },
+  {
+    exchange: 'bigone', probe: 'GET /api/v3/ping', path: '/api/v3/ping',
+    check: (r, json) => r.status === 200 && Number.isFinite(Number(json?.data?.timestamp ?? json?.data?.Timestamp))
+  },
+  {
+    exchange: 'tokocrypto', probe: 'GET /open/v1/common/time', path: '/open/v1/common/time',
+    check: (r, json) => r.status === 200 && json?.code === 0 && Number.isFinite(Number(json?.timestamp))
+  },
+  {
+    exchange: 'hollaex', probe: 'GET /v2/health', path: '/v2/health',
+    check: (r, json) => r.status === 200 && json != null && typeof json === 'object'
+  },
+  {
+    exchange: 'exmo', probe: 'GET /v1.1/pair_settings', path: '/v1.1/pair_settings',
+    check: (r, json) => r.status === 200 && json != null && typeof json === 'object' && !Array.isArray(json)
   }
 ];
 
@@ -817,6 +860,50 @@ const tier3 = [
         } };
     },
     check: (r) => r.relayError === null && /Secret key does not exist|"error_code"\s*:\s*10005/i.test(r.text)
+  },
+  {
+    exchange: 'digifinex', probe: 'GET /v3/spot/assets (dummy ACCESS signature)',
+    build() {
+      const nonce = Math.floor(Date.now() / 1000).toString();
+      return { path: '/v3/spot/assets', exchangeHeaders: {
+        'access-key': 'dummy', 'access-timestamp': nonce,
+        'access-sign': hmacHex('sha256', 'dummy-secret', '')
+      } };
+    },
+    check: (r) => r.relayError === null && isDigifinexInvalidKeyResponse(r)
+  },
+  {
+    exchange: 'bigone', probe: 'GET /api/v3/viewer/accounts (dummy bearer)',
+    build() { return { path: '/api/v3/viewer/accounts', exchangeHeaders: { authorization: 'Bearer dummy.jwt.token' } }; },
+    check: (r) => r.relayError === null && isBigoneInvalidJwtResponse(r)
+  },
+  {
+    exchange: 'tokocrypto', probe: 'GET /open/v1/account/spot (dummy HMAC query)',
+    build() {
+      const query = `timestamp=${Date.now()}&recvWindow=5000`;
+      return { path: `/open/v1/account/spot?${query}&signature=${hmacHex('sha256', 'dummy-secret', query)}`,
+        exchangeHeaders: { 'x-mbx-apikey': 'dummy' } };
+    },
+    check: (r) => r.relayError === null && isTokocryptoInvalidKeyResponse(r)
+  },
+  {
+    exchange: 'hollaex', probe: 'GET /v2/user/balance (dummy API signature)',
+    build() {
+      const expires = (Math.floor(Date.now() / 1000) + 30).toString();
+      const path = '/v2/user/balance';
+      return { path, exchangeHeaders: { 'api-key': 'dummy', 'api-expires': expires,
+        'api-signature': hmacHex('sha256', 'dummy-secret', `GET${path}${expires}`) } };
+    },
+    check: (r) => r.relayError === null && isHollaexInvalidKeyResponse(r)
+  },
+  {
+    exchange: 'exmo', probe: 'POST /v1.1/user_info (dummy Key/Sign)',
+    build() {
+      const body = `nonce=${Date.now()}`;
+      return { path: '/v1.1/user_info', method: 'POST', body, contentType: 'application/x-www-form-urlencoded',
+        exchangeHeaders: { key: 'dummy', sign: hmacHex('sha512', 'dummy-secret', body) } };
+    },
+    check: (r) => r.relayError === null && isExmoInvalidKeyResponse(r)
   }
 ];
 

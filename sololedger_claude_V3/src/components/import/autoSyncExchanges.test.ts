@@ -11,7 +11,7 @@ import { AUTO_SYNC_EXCHANGES, getAutoSyncExchange } from './autoSyncExchanges';
  */
 describe('autoSyncExchanges catalog', () => {
   it('lists exactly the supported exchanges', () => {
-    expect(AUTO_SYNC_EXCHANGES).toHaveLength(32);
+    expect(AUTO_SYNC_EXCHANGES).toHaveLength(37);
   });
 
   it('ids match the ccxt exchange ids (SYNC_EXCHANGES), in order', () => {
@@ -170,5 +170,17 @@ describe('autoSyncExchanges catalog', () => {
     expect(getAutoSyncExchange('xt')?.keyInstructions.join(' ')).toMatch(/geographic-access risk.*no account-lifetime retention guarantee/i);
     expect(getAutoSyncExchange('phemex')?.keyInstructions.join(' ')).toMatch(/geographic-access risk.*retention is unverified/i);
     expect(getAutoSyncExchange('lbank')?.keyInstructions.join(' ')).toMatch(/region availability.*retention are unverified/i);
+  });
+
+  it('documents batch-two fail-closed history caveats without CSV promises', () => {
+    for (const id of ['digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'] as const) {
+      const entry = getAutoSyncExchange(id)!;
+      expect(entry.needsPassphrase).toBe(false);
+      expect(entry.keyInstructions.join(' ')).toMatch(/read-only.*does not require a passphrase.*retention.*unverified/i);
+      expect(entry.keyInstructions.join(' ')).toMatch(/CSV.*(?:unverified|does not claim)/i);
+    }
+    expect(getAutoSyncExchange('bigone')?.keyInstructions.join(' ')).toMatch(/page_token.*SELF_TRADING/i);
+    expect(getAutoSyncExchange('hollaex')?.keyInstructions.join(' ')).toMatch(/count and page.*duplicate composite/i);
+    expect(getAutoSyncExchange('exmo')?.keyInstructions.join(' ')).toMatch(/count\/offset.*historical\/delisted/i);
   });
 });

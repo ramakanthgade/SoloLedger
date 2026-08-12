@@ -71,8 +71,8 @@ export function validNextFiveProgress(exchange: ExchangeId, value: NextFiveProgr
       new Set(checkpoint.items).size === checkpoint.items.length)) &&
     [checkpoint.itemIndex, checkpoint.offset, checkpoint.page, checkpoint.expectedTotal, checkpoint.dayStart, checkpoint.from]
       .every((item) => item == null || (Number.isSafeInteger(item) && item >= 0)) &&
-    (checkpoint.nativeCursor == null || typeof checkpoint.nativeCursor === 'string') &&
-    (checkpoint.lastId == null || typeof checkpoint.lastId === 'string') &&
+    (checkpoint.nativeCursor == null || (typeof checkpoint.nativeCursor === 'string' && checkpoint.nativeCursor.trim().length > 0)) &&
+    (checkpoint.lastId == null || (typeof checkpoint.lastId === 'string' && checkpoint.lastId.trim().length > 0)) &&
     validCheckpointFor(exchange, endpoint as keyof NextFiveProgress, checkpoint)
   ));
 }
@@ -105,6 +105,26 @@ function validCheckpointFor(exchange: ExchangeId, endpoint: keyof NextFiveProgre
   if (exchange === 'lbank') {
     return checkpoint.page != null && checkpoint.page >= 2 && checkpoint.expectedTotal != null && checkpoint.expectedTotal > 0 &&
       only('start', 'end', 'page', 'expectedTotal');
+  }
+  if (exchange === 'bigone') return endpoint === 'trades'
+    ? !!checkpoint.items && checkpoint.itemIndex != null && checkpoint.itemIndex < checkpoint.items.length &&
+      !!checkpoint.nativeCursor && only('start', 'end', 'items', 'itemIndex', 'nativeCursor')
+    : !!checkpoint.nativeCursor && only('start', 'end', 'nativeCursor');
+  if (exchange === 'digifinex') return endpoint === 'trades'
+    ? only('start', 'end')
+    : !!checkpoint.nativeCursor && only('start', 'end', 'nativeCursor');
+  if (exchange === 'hollaex') return checkpoint.page != null && checkpoint.page >= 2 &&
+    checkpoint.expectedTotal != null && checkpoint.expectedTotal > 0 && !!checkpoint.lastId &&
+    only('start', 'end', 'page', 'expectedTotal', 'lastId');
+  if (exchange === 'exmo') return checkpoint.offset != null && checkpoint.offset > 0 && !!checkpoint.lastId &&
+    checkpoint.offset % 100 === 0 && (checkpoint.expectedTotal == null || checkpoint.expectedTotal >= checkpoint.offset) &&
+    (endpoint !== 'trades' || (!!checkpoint.items && checkpoint.itemIndex != null && checkpoint.itemIndex < checkpoint.items.length)) &&
+    only('start', 'end', 'items', 'itemIndex', 'offset', 'expectedTotal', 'lastId');
+  if (exchange === 'tokocrypto') {
+    return endpoint === 'trades'
+      ? !!checkpoint.items && checkpoint.itemIndex != null && checkpoint.itemIndex < checkpoint.items.length &&
+        only('start', 'end', 'items', 'itemIndex')
+      : only('start', 'end');
   }
   return false;
 }

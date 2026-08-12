@@ -113,6 +113,7 @@ describe('EXCHANGE_API_SOURCES', () => {
   it('registers every <exchange>_api source', () => {
     expect([...EXCHANGE_API_SOURCES].sort()).toEqual([
       'backpack_api',
+      'bigone_api',
       'binance_api',
       'binanceus_api',
       'bingx_api',
@@ -130,9 +131,12 @@ describe('EXCHANGE_API_SOURCES', () => {
       'coinex_api',
       'coinspot_api',
       'cryptocom_api',
+      'digifinex_api',
+      'exmo_api',
       'gateio_api',
       'gemini_api',
       'hitbtc_api',
+      'hollaex_api',
       'htx_api',
       'kraken_api',
       'kucoin_api',
@@ -141,6 +145,7 @@ describe('EXCHANGE_API_SOURCES', () => {
       'okx_api',
       'phemex_api',
       'poloniex_api',
+      'tokocrypto_api',
       'whitebit_api',
       'woo_api',
       'xt_api'

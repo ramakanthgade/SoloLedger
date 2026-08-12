@@ -48,6 +48,34 @@ function phemexClient(offsets: number[]): ExchangeClient {
   return client;
 }
 
+function digifinexClient(ranges: Array<[number, number]>): ExchangeClient {
+  const client = {
+    id: 'digifinex', markets: { 'BTC/USDT': market },
+    loadMarkets: vi.fn(async () => ({ 'BTC/USDT': market })),
+    fetchBalance: vi.fn(async () => ({ total: { BTC: 1 } })),
+    fetchDeposits: vi.fn(async () => {
+      client.last_json_response = { data: [] };
+      return [];
+    }),
+    fetchWithdrawals: vi.fn(async () => {
+      client.last_json_response = { data: [] };
+      return [];
+    }),
+    fetchMyTrades: vi.fn(async (_symbol, start, _limit, params) => {
+      const end = Number(params?.end_time) * 1000;
+      ranges.push([Number(start), end]);
+      const rows: UnifiedTrade[] = [{
+        id: `${start}-${end}`, timestamp: Number(start), symbol: 'BTC/USDT',
+        side: 'buy', amount: 1, price: 10, cost: 10, fee: { currency: 'USDT', cost: 0 }, info: {}
+      }];
+      client.last_json_response = { list: rows };
+      return rows;
+    }),
+    fetch: vi.fn(), handleRestResponse: vi.fn()
+  } as ExchangeClient;
+  return client;
+}
+
 describe('next-five durable continuation', () => {
   beforeEach(async () => {
     await db.transactions.clear(); await db.exchangeConnections.clear(); await db.exchangeBalances.clear();
@@ -82,5 +110,44 @@ describe('next-five durable continuation', () => {
     expect(coverage.status).toBe('partial');
     expect(coverage.endpointOutcomes.filter((item) => item.endpoint !== 'balance')
       .every((item) => item.paginationExhausted === true && item.warning === 'retention_unverified')).toBe(true);
+  });
+
+  it('advances DigiFinex only through a completed frozen range before querying newer trades', async () => {
+    const day = 86_400_000;
+    const initialCursor = NOW - 61 * day;
+    const frozenEnd = NOW;
+    const laterNow = NOW + 10 * day;
+    const newestNow = laterNow + day;
+    const view = await addConnection({ exchange: 'digifinex', apiKey: 'key', secret: 'secret' });
+    await db.exchangeConnections.update(view.id, {
+      cursors: { trades: initialCursor, deposits: initialCursor, withdrawals: initialCursor }
+    });
+
+    const firstRanges: Array<[number, number]> = [];
+    await syncConnection(view.id, { mode: 'commit' }, {}, {
+      now: () => frozenEnd, sleep: async () => {}, createClient: async () => digifinexClient(firstRanges),
+      nextFiveMaxRequests: 1
+    });
+    const firstSaved = await db.exchangeConnections.get(view.id);
+    expect(firstSaved?.nextFiveProgress?.trades?.end).toBe(frozenEnd);
+    expect(firstSaved?.cursors?.trades).toBe(initialCursor);
+
+    const secondRanges: Array<[number, number]> = [];
+    await syncConnection(view.id, { mode: 'commit' }, {}, {
+      now: () => laterNow, sleep: async () => {}, createClient: async () => digifinexClient(secondRanges),
+      nextFiveMaxRequests: 10
+    });
+    const secondSaved = await db.exchangeConnections.get(view.id);
+    expect(secondSaved?.nextFiveProgress?.trades).toBeUndefined();
+    expect(secondSaved?.cursors?.trades).toBe(frozenEnd);
+    expect(secondRanges.every(([, end]) => end <= frozenEnd)).toBe(true);
+
+    const thirdRanges: Array<[number, number]> = [];
+    await syncConnection(view.id, { mode: 'commit' }, {}, {
+      now: () => newestNow, sleep: async () => {}, createClient: async () => digifinexClient(thirdRanges),
+      nextFiveMaxRequests: 10
+    });
+    expect(thirdRanges).toContainEqual([frozenEnd - 300_000, newestNow]);
+    expect((await db.exchangeConnections.get(view.id))?.cursors?.trades).toBe(newestNow);
   });
 });

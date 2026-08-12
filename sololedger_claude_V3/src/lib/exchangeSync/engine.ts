@@ -98,7 +98,7 @@ import {
   type BitvavoTradeProgress,
   type BitvavoTradeTask
 } from './bitvavo';
-import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols, flattenBalanceTotals } from './binanceSymbols';
+import { assetsFromBalance, allCataloguedSpotSymbols, allSpotSymbols, candidateSpotSymbols, flattenBalanceTotals } from './binanceSymbols';
 import type {
   ExchangeId,
   ExchangeSyncCursors,
@@ -141,6 +141,10 @@ import {
   assignCoinspotTradeIds, paginateLbankPages, paginateLbankTrades, paginateXtNative,
   parseCoinspotTransferEnvelope, phemexTransferPageEvidence, validNextFiveProgress, type NextFiveProgress
 } from './nextFiveExchanges';
+import {
+  assignHollaexTradeIds, bigoneDepositKindKnown, bigoneTradeKnown, bisectRawClosedWindows,
+  paginateBigoneToken, paginateExmoOffset, paginateHollaex, rawList
+} from './cexBatch2';
 
 // ---- Pinned constants (§B-3) ----
 
@@ -150,7 +154,8 @@ export const MAX_PAGES_PER_PHASE = 200;
 const FAIL_CLOSED_NATIVE_EXCHANGES = new Set<ExchangeId>([
   'coinex', 'poloniex', 'woo', 'hitbtc', 'bingx',
   'binanceus', 'backpack', 'whitebit', 'bitflyer', 'coincheck',
-  'bitrue', 'xt', 'coinspot', 'phemex', 'lbank'
+  'bitrue', 'xt', 'coinspot', 'phemex', 'lbank',
+  'digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'
 ]);
 /**
  * Empty-window probes do NOT consume the data-page budget — an initial sync
@@ -278,7 +283,12 @@ const EXCHANGE_LAUNCH_MS: Record<ExchangeId, number> = {
   xt: Date.UTC(2018, 6, 2),
   coinspot: Date.UTC(2013, 0, 1),
   phemex: Date.UTC(2019, 10, 25),
-  lbank: Date.UTC(2015, 0, 1)
+  lbank: Date.UTC(2015, 0, 1),
+  digifinex: Date.UTC(2017, 11, 1),
+  bigone: Date.UTC(2017, 6, 1),
+  tokocrypto: Date.UTC(2018, 8, 1),
+  hollaex: Date.UTC(2020, 0, 1),
+  exmo: Date.UTC(2013, 6, 1)
 };
 
 export interface BitstampSpotTradeClassification {
@@ -3127,6 +3137,85 @@ export async function fetchTransferKind(
         ? { start: frozenStart, end: frozenEnd, page: outcome.checkpoint?.page,
             expectedTotal: outcome.checkpoint?.expectedTotal } : undefined };
   }
+  if (exchange === 'bigone') {
+    const start = nextFiveCheckpoint?.start ?? since;
+    const end = nextFiveCheckpoint?.end ?? now;
+    const outcome = await paginateBigoneToken({
+      client, token: nextFiveCheckpoint?.nativeCursor, budget: nextFiveMaxRequests,
+      rawKeys: fetchDeposits ? ['deposits'] : ['withdrawals'],
+      validateRaw: fetchDeposits ? bigoneDepositKindKnown : undefined,
+      fetchPage: (pageToken) => fetchDeposits
+        ? client.fetchDeposits(undefined, undefined, 50, pageToken ? { page_token: pageToken } : {})
+        : client.fetchWithdrawals(undefined, undefined, 50, pageToken ? { page_token: pageToken } : {})
+    });
+    const filtered = outcome.rows.filter((row) => (row.timestamp ?? 0) >= start && (row.timestamp ?? end + 1) <= end);
+    return { ...outcome, rows: filtered, maxTs: maxTimestamp(filtered), partial: outcome.partial || outcome.termination === 'exhausted',
+      termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+      nextFiveCheckpoint: outcome.checkpoint ? { start, end, nativeCursor: outcome.checkpoint } : undefined };
+  }
+  if (exchange === 'hollaex') {
+    const start = nextFiveCheckpoint?.start ?? since;
+    const end = nextFiveCheckpoint?.end ?? now;
+    const outcome = await paginateHollaex({
+      client, page: nextFiveCheckpoint?.page, expectedCount: nextFiveCheckpoint?.expectedTotal,
+      previousLastId: nextFiveCheckpoint?.lastId,
+      budget: nextFiveMaxRequests, rawKeys: ['data'],
+      fetchPage: (page) => fetchDeposits
+        ? client.fetchDeposits(undefined, start, 100, { page, end_date: new Date(end).toISOString(), order: 'asc' })
+        : client.fetchWithdrawals(undefined, start, 100, { page, end_date: new Date(end).toISOString(), order: 'asc' })
+    });
+    return { ...outcome, partial: outcome.partial || outcome.termination === 'exhausted',
+      termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+      nextFiveCheckpoint: outcome.checkpoint ? { start, end, page: outcome.checkpoint.page,
+        expectedTotal: outcome.checkpoint.expectedCount, lastId: outcome.checkpoint.lastId } : undefined };
+  }
+  if (exchange === 'exmo') {
+    const start = nextFiveCheckpoint?.start ?? since;
+    const end = nextFiveCheckpoint?.end ?? now;
+    const outcome = await paginateExmoOffset({
+      client, offset: nextFiveCheckpoint?.offset, expectedCount: nextFiveCheckpoint?.expectedTotal,
+      previousLastId: nextFiveCheckpoint?.lastId, requireCount: true,
+      budget: nextFiveMaxRequests,
+      rawKeys: ['items'],
+      fetchPage: (offset) => fetchDeposits
+        ? client.fetchDeposits(undefined, undefined, 100, { offset })
+        : client.fetchWithdrawals(undefined, undefined, 100, { offset })
+    });
+    const filtered = outcome.rows.filter((row) => (row.timestamp ?? 0) >= start && (row.timestamp ?? end + 1) <= end);
+    return { ...outcome, rows: filtered, maxTs: maxTimestamp(filtered), partial: outcome.partial || outcome.termination === 'exhausted',
+      termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+      nextFiveCheckpoint: outcome.checkpoint ? { start, end, offset: outcome.checkpoint.offset,
+        expectedTotal: outcome.checkpoint.expectedCount, lastId: outcome.checkpoint.lastId } : undefined };
+  }
+  if (exchange === 'tokocrypto') {
+    const outcome = await bisectRawClosedWindows({ client, start: since, end: now, limit: 1000,
+      rawKeys: ['list'], maximumSpan: 7_776_000_000, budget: nextFiveMaxRequests,
+      fetchWindow: (start, end) => fetchDeposits
+        ? client.fetchDeposits(undefined, start, 1000, { until: end })
+        : client.fetchWithdrawals(undefined, start, 1000, { until: end }) });
+    return { ...outcome, partial: outcome.partial || outcome.termination === 'exhausted',
+      termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+      nextFiveCheckpoint: outcome.checkpoint };
+  }
+  if (exchange === 'digifinex') {
+    const output: UnifiedTransfer[] = [];
+    let from = nextFiveCheckpoint?.nativeCursor;
+    for (let request = 0; request < nextFiveMaxRequests; request += 1) {
+      const page = fetchDeposits
+        ? await client.fetchDeposits(undefined, undefined, 500, { direct: 'next', ...(from ? { from } : {}) })
+        : await client.fetchWithdrawals(undefined, undefined, 500, { direct: 'next', ...(from ? { from } : {}) });
+      const raw = rawList(client.last_json_response, ['data']);
+      const ids = page.map((row) => String(row.id ?? ''));
+      if (!raw || raw.length !== page.length || ids.some((id) => !id) || new Set(ids).size !== ids.length || (from && ids.includes(from))) {
+        return { rows: output, maxTs: maxTimestamp(output), partial: true, termination: 'nonadvancing', nextFiveCheckpoint };
+      }
+      output.push(...page.filter((row) => (row.timestamp ?? 0) >= since && (row.timestamp ?? now + 1) <= now));
+      if (page.length < 500) return { rows: output, maxTs: maxTimestamp(output), partial: true, termination: 'retention_unverified' };
+      from = ids[ids.length - 1];
+    }
+    return { rows: output, maxTs: maxTimestamp(output), partial: true, termination: 'page_budget',
+      nextFiveCheckpoint: from ? { start: since, end: now, nativeCursor: from } : nextFiveCheckpoint };
+  }
   // kucoin: pageSize 500 cap, startAt/endAt window params.
   return paginatePhase<UnifiedTransfer>({
     fetchPage: (_i, s, u) =>
@@ -3474,6 +3563,63 @@ export async function fetchTradesForSymbol(
         termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
         nextFiveCheckpoint: outcome.checkpoint ? { start, end, ...outcome.checkpoint } : undefined };
     }
+    case 'digifinex': {
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const outcome = await bisectRawClosedWindows({ client, start, end, limit: 100,
+        rawKeys: ['list'], budget: opts?.nextFiveMaxRequests, maximumSpan: 30 * 86_400_000 - 1,
+        minimumSpan: 999, splitQuantum: 1000,
+        fetchWindow: (start, until) => client.fetchMyTrades(symbol, start, 100,
+          { end_time: Math.floor(until / 1000), type: 'spot' }) });
+      return { ...outcome, nextFiveCheckpoint: outcome.checkpoint };
+    }
+    case 'tokocrypto':
+      return bisectRawClosedWindows({ client, start: since, end: now, limit: 1000,
+        rawKeys: ['list'], budget: opts?.nextFiveMaxRequests, fetchWindow: (start, end) =>
+          client.fetchMyTrades(symbol, start, 1000, { until: end }) }).then((outcome) => ({
+            ...outcome, nextFiveCheckpoint: outcome.checkpoint
+          }));
+    case 'bigone': {
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const outcome = await paginateBigoneToken({ client, rawKeys: ['trades'],
+        validateRaw: bigoneTradeKnown, token: opts?.nextFiveCheckpoint?.nativeCursor,
+        budget: opts?.nextFiveMaxRequests,
+        fetchPage: (pageToken) => client.fetchMyTrades(symbol, undefined, 200, pageToken ? { page_token: pageToken } : {}) });
+      const filtered = outcome.rows.filter((row) => (row.timestamp ?? 0) >= start && (row.timestamp ?? end + 1) <= end);
+      return { ...outcome, rows: filtered, maxTs: maxTimestamp(filtered), partial: outcome.partial || outcome.termination === 'exhausted',
+        termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+        nextFiveCheckpoint: outcome.checkpoint ? { start, end, nativeCursor: outcome.checkpoint } : undefined };
+    }
+    case 'hollaex': {
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const outcome = await paginateHollaex<UnifiedTrade>({ client, rawKeys: ['data'],
+        page: opts?.nextFiveCheckpoint?.page, expectedCount: opts?.nextFiveCheckpoint?.expectedTotal,
+        previousLastId: opts?.nextFiveCheckpoint?.lastId,
+        budget: opts?.nextFiveMaxRequests, transform: assignHollaexTradeIds,
+        fetchPage: (page) => client.fetchMyTrades(undefined, start, 100, {
+          page, end_date: new Date(end).toISOString(), order: 'asc'
+        }) });
+      return { ...outcome, partial: outcome.partial || outcome.termination === 'exhausted',
+        termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+        nextFiveCheckpoint: outcome.checkpoint ? { start, end, page: outcome.checkpoint.page,
+          expectedTotal: outcome.checkpoint.expectedCount, lastId: outcome.checkpoint.lastId } : undefined };
+    }
+    case 'exmo': {
+      const start = opts?.nextFiveCheckpoint?.start ?? since;
+      const end = opts?.nextFiveCheckpoint?.end ?? now;
+      const outcome = await paginateExmoOffset({ client, rawKeys: [client.markets?.[symbol!]?.id ?? ''],
+        offset: opts?.nextFiveCheckpoint?.offset, expectedCount: opts?.nextFiveCheckpoint?.expectedTotal,
+        previousLastId: opts?.nextFiveCheckpoint?.lastId,
+        budget: opts?.nextFiveMaxRequests,
+        fetchPage: (offset) => client.fetchMyTrades(symbol, undefined, 100, { offset }) });
+      const filtered = outcome.rows.filter((row) => (row.timestamp ?? 0) >= start && (row.timestamp ?? end + 1) <= end);
+      return { ...outcome, rows: filtered, maxTs: maxTimestamp(filtered), partial: outcome.partial || outcome.termination === 'exhausted',
+        termination: outcome.termination === 'exhausted' ? 'retention_unverified' : outcome.termination,
+        nextFiveCheckpoint: outcome.checkpoint ? { start, end, offset: outcome.checkpoint.offset,
+          expectedTotal: outcome.checkpoint.expectedCount, lastId: outcome.checkpoint.lastId } : undefined };
+    }
   }
 }
 
@@ -3601,7 +3747,7 @@ export async function syncConnection(
     if (exchange === 'bitmart' && !validBitmartConnectionState(row)) {
       throw new Error('BitMart pagination or replay checkpoint is malformed.');
     }
-    if (['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange) && !validNextFiveProgress(exchange, row.nextFiveProgress)) {
+    if (['bitrue', 'xt', 'phemex', 'lbank', 'digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'].includes(exchange) && !validNextFiveProgress(exchange, row.nextFiveProgress)) {
       throw new Error(`${exchangeLabel(exchange)} continuation checkpoint is malformed.`);
     }
     const client = await createClient(row);
@@ -3992,7 +4138,7 @@ export async function syncConnection(
           nextFiveProgress[kind],
           deps.nextFiveMaxRequests
         );
-        if (['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange)) {
+        if (['bitrue', 'xt', 'phemex', 'lbank', 'digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'].includes(exchange)) {
           nextFiveProgress[kind] = outcome.nextFiveCheckpoint ??
             (outcome.termination === 'nonadvancing'
               ? nextFiveProgress[kind]
@@ -4279,20 +4425,24 @@ export async function syncConnection(
     let btcmarketsTradeCursor = row.btcmarketsNativeCursors?.trades;
     const bitvavoTradeHighWater = { ...(row.bitvavoTradeHighWater ?? {}) };
     let bitvavoTradeProgress: BitvavoTradeProgress | undefined = row.bitvavoProgress?.trades;
+    const verifiedNextFiveTradeEnd = exchange === 'digifinex'
+      ? (nextFiveProgress.trades?.end ?? nowMs)
+      : nowMs;
     const bitvavoAccountRows: Transaction[] = [];
     const bitvavoAccountCandidateInputs: Array<{ row: Transaction; item: BitvavoAccountHistoryItem; symbol?: string; start: number; end: number }> = [];
     let bitvavoAssociatedTasks: BitvavoTradeTask[] = [];
     let bitvavoUnresolvedPairs = 0;
     let skippedSymbols = 0;
 
-    if (exchange === 'coinex' || exchange === 'bingx' || exchange === 'bitflyer' || exchange === 'bitrue' || exchange === 'lbank') {
+    if (exchange === 'coinex' || exchange === 'bingx' || exchange === 'bitflyer' || exchange === 'bitrue' || exchange === 'lbank' || exchange === 'bigone' || exchange === 'tokocrypto' || exchange === 'exmo') {
       // Both APIs require a symbol. Freeze the complete current active-spot
       // universe together with every previously known symbol; this is
       // especially important for BingX, where a delisting must not erase the
       // only discoverable evidence that a market was once in scope.
-      const resumable = exchange === 'bitrue' || exchange === 'lbank';
+      const resumable = exchange === 'bitrue' || exchange === 'lbank' || exchange === 'bigone' || exchange === 'tokocrypto' || exchange === 'exmo';
       const priorTradeProgress = resumable ? nextFiveProgress.trades : undefined;
-      const symbols = priorTradeProgress?.items ?? [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])].sort();
+      const catalogSymbols = exchange === 'tokocrypto' ? allCataloguedSpotSymbols(markets) : allSpotSymbols(markets);
+      const symbols = priorTradeProgress?.items ?? [...new Set([...catalogSymbols, ...(row.knownSymbols ?? [])])].sort();
       discoveryUniverseCount = symbols.length;
       newKnownSymbols = symbols;
       let done = priorTradeProgress?.itemIndex ?? 0;
@@ -4665,7 +4815,7 @@ export async function syncConnection(
               { nextFiveCheckpoint: nextFiveProgress.trades, nextFiveMaxRequests: deps.nextFiveMaxRequests }),
             sleep
           );
-      if (exchange === 'xt' || exchange === 'phemex') {
+      if (exchange === 'xt' || exchange === 'phemex' || exchange === 'digifinex' || exchange === 'hollaex') {
         nextFiveProgress.trades = outcome.nextFiveCheckpoint ??
           (outcome.termination === 'nonadvancing'
             ? nextFiveProgress.trades
@@ -4793,7 +4943,7 @@ export async function syncConnection(
     }
 
     const tradeCursorCandidate = FAIL_CLOSED_NATIVE_EXCHANGES.has(exchange)
-      ? safeFiveExchangeCursor(tradeOutcomes, oldCursors.trades, nowMs)
+      ? safeFiveExchangeCursor(tradeOutcomes, oldCursors.trades, verifiedNextFiveTradeEnd)
       : exchange === 'bitvavo'
       ? (tradeOutcomes.some((outcome) => outcome.partial) ? (oldCursors.trades ?? EXCHANGE_LAUNCH_MS.bitvavo) : nowMs)
       : exchange === 'bitget'
@@ -5244,7 +5394,7 @@ export async function syncConnection(
       bitgetHistory: exchange === 'bitget' ? bitgetHistory : undefined,
       bitmartPagination: exchange === 'bitmart' ? bitmartPagination : undefined,
       bitmartUnsafeReplay: exchange === 'bitmart' ? bitmartUnsafeReplay : undefined,
-      nextFiveProgress: ['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange) ? nextFiveProgress : undefined,
+      nextFiveProgress: ['bitrue', 'xt', 'phemex', 'lbank', 'digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'].includes(exchange) ? nextFiveProgress : undefined,
       skippedUnsettled,
       balance,
       operation
@@ -5296,7 +5446,7 @@ export async function syncConnection(
       bitgetHistory: exchange === 'bitget' ? bitgetHistory : undefined,
       bitmartPagination: exchange === 'bitmart' ? bitmartPagination : undefined,
       bitmartUnsafeReplay: exchange === 'bitmart' ? bitmartUnsafeReplay : undefined,
-      nextFiveProgress: ['bitrue', 'xt', 'phemex', 'lbank'].includes(exchange) ? nextFiveProgress : undefined,
+      nextFiveProgress: ['bitrue', 'xt', 'phemex', 'lbank', 'digifinex', 'bigone', 'tokocrypto', 'hollaex', 'exmo'].includes(exchange) ? nextFiveProgress : undefined,
       balance,
       operation,
       hooks,
