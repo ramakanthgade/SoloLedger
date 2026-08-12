@@ -110,8 +110,9 @@ describe('WhichStep — exchange modes', () => {
       if (id === 'other') continue;
       if (!(id in BRAND_ICONS)) {
         const source = IMPORT_SOURCES.find((candidate) => candidate.id === id);
+        const apiExchange = AUTO_SYNC_EXCHANGES.find((candidate) => candidate.id === id);
         expect(row.querySelector('img')).toBeNull();
-        expect(row.querySelector('.bg-aurora')).toHaveTextContent(source?.monogram ?? id);
+        expect(row.querySelector('.bg-aurora')).toHaveTextContent(source?.monogram ?? apiExchange?.monogram ?? id);
         continue;
       }
       expect(row.querySelector('img'), id).not.toBeNull();

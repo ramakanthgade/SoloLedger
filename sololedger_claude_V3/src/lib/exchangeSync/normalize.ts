@@ -197,10 +197,12 @@ function tradeSourceRef(
     case 'lbank':
     case 'digifinex':
     case 'bigone':
-    case 'tokocrypto':
     case 'hollaex':
     case 'exmo':
       return trade.id;
+    case 'tokocrypto':
+      // Tokocrypto trade IDs are unique only within a native symbol.
+      return trade.id && trade.symbol ? `${trade.symbol}:${trade.id}` : undefined;
     case 'coinspot':
       // The full-response adapter assigns an economics-complete deterministic
       // occurrence id so equal fills retain multiplicity across replay.
@@ -827,6 +829,11 @@ function transferSourceRef(
     case 'xt':
     case 'coinspot':
     case 'phemex':
+    case 'digifinex':
+    case 'bigone':
+    case 'tokocrypto':
+    case 'hollaex':
+    case 'exmo':
       return transfer.id;
     case 'lbank':
       // Deposits have no native `id` in pinned CCXT. Direction-scope txid so

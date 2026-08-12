@@ -98,7 +98,7 @@ import {
   type BitvavoTradeProgress,
   type BitvavoTradeTask
 } from './bitvavo';
-import { assetsFromBalance, allSpotSymbols, candidateSpotSymbols, flattenBalanceTotals } from './binanceSymbols';
+import { assetsFromBalance, allCataloguedSpotSymbols, allSpotSymbols, candidateSpotSymbols, flattenBalanceTotals } from './binanceSymbols';
 import type {
   ExchangeId,
   ExchangeSyncCursors,
@@ -4438,7 +4438,8 @@ export async function syncConnection(
       // only discoverable evidence that a market was once in scope.
       const resumable = exchange === 'bitrue' || exchange === 'lbank' || exchange === 'bigone' || exchange === 'tokocrypto' || exchange === 'exmo';
       const priorTradeProgress = resumable ? nextFiveProgress.trades : undefined;
-      const symbols = priorTradeProgress?.items ?? [...new Set([...allSpotSymbols(markets), ...(row.knownSymbols ?? [])])].sort();
+      const catalogSymbols = exchange === 'tokocrypto' ? allCataloguedSpotSymbols(markets) : allSpotSymbols(markets);
+      const symbols = priorTradeProgress?.items ?? [...new Set([...catalogSymbols, ...(row.knownSymbols ?? [])])].sort();
       discoveryUniverseCount = symbols.length;
       newKnownSymbols = symbols;
       let done = priorTradeProgress?.itemIndex ?? 0;

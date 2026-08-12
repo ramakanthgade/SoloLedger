@@ -7,7 +7,7 @@ import {
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { normalizeTradeRows, normalizeTransfer } from './normalize';
-import { validNextFiveProgress } from './nextFiveExchanges';
+import { validNextFiveProgress, type NextFiveProgress } from './nextFiveExchanges';
 
 const client = () => ({ last_json_response: undefined }) as ExchangeClient;
 
@@ -29,7 +29,8 @@ describe('batch-two tax normalization and scoped native identity', () => {
       expect(legs.map((row) => [row.type, row.asset, row.amount])).toEqual([
         ['sell', 'ETH', 10], ['buy', 'BTC', 2]
       ]);
-      expect(legs.map((row) => row.sourceRef)).toEqual(['fill-1:sell', 'fill-1:buy']);
+      const sourceRef = exchange === 'tokocrypto' ? 'BTC/ETH:fill-1' : 'fill-1';
+      expect(legs.map((row) => row.sourceRef)).toEqual([`${sourceRef}:sell`, `${sourceRef}:buy`]);
       expect(legs.filter((row) => row.feeAmount != null)).toHaveLength(1);
       expect(legs.every((row) => row.raw?.exchangeSyncKind === 'trade')).toBe(true);
 
@@ -47,11 +48,39 @@ describe('batch-two durable checkpoint validation', () => {
   it('accepts every connector checkpoint shape and rejects cursor confusion', () => {
     expect(validNextFiveProgress('digifinex', { trades: { start: 1, end: 2 } })).toBe(true);
     expect(validNextFiveProgress('digifinex', { deposits: { start: 1, end: 2 } })).toBe(false);
-    expect(validNextFiveProgress('bigone', { trades: { start: 1, end: 2, nativeCursor: 'opaque==' } })).toBe(true);
+    expect(validNextFiveProgress('bigone', { trades: { start: 1, end: 2, items: ['BTC/USDT'], itemIndex: 0,
+      nativeCursor: 'opaque==' } })).toBe(true);
     expect(validNextFiveProgress('tokocrypto', { trades: { start: 1, end: 2, items: ['BTC/USDT'], itemIndex: 0 } })).toBe(true);
+    expect(validNextFiveProgress('tokocrypto', { deposits: { start: 1, end: 2 } })).toBe(true);
     expect(validNextFiveProgress('hollaex', { trades: { start: 1, end: 2, page: 2, expectedTotal: 101,
       lastId: 'composite' } })).toBe(true);
-    expect(validNextFiveProgress('exmo', { trades: { start: 1, end: 2, offset: 100, lastId: 'fill' } })).toBe(true);
+    expect(validNextFiveProgress('exmo', { trades: { start: 1, end: 2, items: ['BTC/USDT'], itemIndex: 0,
+      offset: 100, lastId: 'fill' } })).toBe(true);
+    expect(validNextFiveProgress('exmo', { deposits: { start: 1, end: 2, offset: 100, lastId: 'transfer' } })).toBe(true);
+  });
+
+  it.each([
+    ['bigone', { trades: { start: 1, end: 2, nativeCursor: '   ' } }],
+    ['digifinex', { deposits: { start: 1, end: 2, nativeCursor: '\t' } }],
+    ['hollaex', { trades: { start: 1, end: 2, page: 2, expectedTotal: 101 } }],
+    ['exmo', { trades: { start: 1, end: 2, offset: 100, expectedTotal: 200 } }]
+  ] as const)('%s rejects a resume checkpoint without its native replay anchor', (exchange, progress) => {
+    expect(validNextFiveProgress(exchange, progress)).toBe(false);
+  });
+
+  it.each([
+    ['digifinex', { trades: { start: 10, end: 20 }, deposits: { start: 1, end: 2, nativeCursor: '500' } }],
+    ['bigone', { trades: { start: 1, end: 2, items: ['BTC/USDT'], itemIndex: 0, nativeCursor: 'opaque' },
+      withdrawals: { start: 1, end: 2, nativeCursor: 'wallet-page' } }],
+    ['tokocrypto', { trades: { start: 1, end: 2, items: ['OLD/USDT'], itemIndex: 0 },
+      deposits: { start: 3, end: 4 } }],
+    ['hollaex', { trades: { start: 1, end: 2, page: 2, expectedTotal: 101, lastId: 'trade-tuple' },
+      deposits: { start: 1, end: 2, page: 2, expectedTotal: 101, lastId: 'deposit-id' } }],
+    ['exmo', { trades: { start: 1, end: 2, items: ['BTC_USDT'], itemIndex: 0, offset: 100,
+      expectedTotal: 200, lastId: 'trade-id' }, withdrawals: { start: 1, end: 2, offset: 100,
+      expectedTotal: 200, lastId: 'withdrawal-id' } }]
+  ] as const)('%s accepts its engine-emitted durable checkpoint shapes', (exchange, progress) => {
+    expect(validNextFiveProgress(exchange, progress as unknown as NextFiveProgress)).toBe(true);
   });
 });
 
@@ -168,5 +197,6 @@ describe('raw saturation and offset proofs', () => {
         return [];
       } });
     expect(result).toMatchObject({ partial: true, termination: 'nonadvancing' });
+    expect(result.checkpoint).toBeUndefined();
   });
 });

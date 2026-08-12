@@ -522,6 +522,37 @@ describe('batch-two pinned CCXT construction', () => {
     expect(emitted).toEqual(['/api/v3/asset_pairs']);
     expect(emitted.every((path) => !path.includes('contract'))).toBe(true);
   });
+
+  it('pins EXMO credentialed market loading to public spot pair settings only', async () => {
+    const client = await createExchangeClient(row({ exchange: 'exmo', apiKey: 'dummy', secret: 'dummy-secret' }));
+    const emitted: string[] = [];
+    client.fetch = async (url) => {
+      emitted.push(new URL(url).pathname);
+      return { BTC_USDT: { min_quantity: '0.0001', max_quantity: '100', min_price: '1',
+        max_price: '100000', min_amount: '1', max_amount: '1000000' } };
+    };
+    await client.loadMarkets(true);
+    expect(emitted).toEqual(['/v1.1/pair_settings']);
+    expect(emitted).not.toContain('/v1.1/margin/pair/list');
+  });
+
+  it.each([
+    ['deposit', { id: 5167969, asset: 'BIDR', amount: '15000', status: 1, insertTime: '1659429390000' }],
+    ['withdrawal', { id: 4245859, asset: 'BIDR', amount: '10000', fee: '12.5', status: 10,
+      createTime: 1659521314413 }]
+  ] as const)('recovers Tokocrypto %s asset and native fee from the pinned raw shape', async (kind, info) => {
+    const client = await createExchangeClient(row({ exchange: 'tokocrypto', apiKey: 'dummy', secret: 'dummy-secret' }));
+    const raw = client as unknown as { parseTransaction: (transaction: Record<string, unknown>) => {
+      currency?: string; fee?: { currency?: string; cost?: number }; info?: Record<string, unknown>
+    } };
+    const parsed = raw.parseTransaction(info);
+    expect(parsed.currency).toBe('BIDR');
+    expect(parsed.info).toEqual(info);
+    if (kind === 'withdrawal') expect(parsed.fee).toMatchObject({ currency: 'BIDR', cost: 12.5 });
+    const normalized = normalizeTransfer('tokocrypto', parsed as never, kind);
+    expect(normalized).toMatchObject({ source: 'tokocrypto_api', asset: 'BIDR', sourceRef: String(info.id) });
+    if (kind === 'withdrawal') expect(normalized).toMatchObject({ feeAsset: 'BIDR', feeAmount: 12.5 });
+  });
 });
 
 describe('classifySyncError', () => {

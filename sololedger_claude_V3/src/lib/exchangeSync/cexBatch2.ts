@@ -163,6 +163,7 @@ export async function paginateExmoOffset<T extends { id?: string; timestamp?: nu
   let expectedCount = args.expectedCount;
   const limit = args.limit ?? 100;
   const budget = args.budget ?? 500;
+  const checkpoint = () => offset > 0 && lastId ? { offset, expectedCount, lastId } : undefined;
   for (let attempt = 0; attempt < budget; attempt += 1) {
     const parsed = await args.fetchPage(offset);
     const envelope = record(args.client.last_json_response);
@@ -172,13 +173,13 @@ export async function paginateExmoOffset<T extends { id?: string; timestamp?: nu
       (advertised != null && (!Number.isSafeInteger(advertised) || advertised < offset + raw.length ||
         (expectedCount != null && advertised !== expectedCount)))) {
       return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing',
-        checkpoint: { offset, expectedCount, lastId } };
+        checkpoint: checkpoint() };
     }
     expectedCount ??= advertised;
     for (const item of parsed) {
       const id = text(item.id);
       if (!id || seen.has(id)) return { rows: output, maxTs: maxTs(output), partial: true, termination: 'nonadvancing',
-        checkpoint: { offset, expectedCount, lastId } };
+        checkpoint: checkpoint() };
       seen.add(id); output.push(item); lastId = id;
     }
     offset += raw.length;
@@ -187,7 +188,7 @@ export async function paginateExmoOffset<T extends { id?: string; timestamp?: nu
     }
   }
   return { rows: output, maxTs: maxTs(output), partial: true, termination: 'page_budget',
-    checkpoint: { offset, expectedCount, lastId } };
+    checkpoint: checkpoint() };
 }
 
 /** Closed-window bisection whose saturation signal is the raw native array. */

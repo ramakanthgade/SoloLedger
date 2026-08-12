@@ -139,3 +139,14 @@ export function allSpotSymbols(markets: Record<string, UnifiedMarket>): string[]
   }
   return [...symbols].sort();
 }
+
+/** Every catalogued spot symbol, including inactive/delisted metadata. */
+export function allCataloguedSpotSymbols(markets: Record<string, UnifiedMarket>): string[] {
+  const symbols = new Set<string>();
+  for (const market of Object.values(markets)) {
+    if (market.spot !== true) continue;
+    if (market.base.toUpperCase() === market.quote.toUpperCase()) continue;
+    symbols.add(market.symbol);
+  }
+  return [...symbols].sort();
+}

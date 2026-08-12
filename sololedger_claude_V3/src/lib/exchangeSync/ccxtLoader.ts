@@ -494,6 +494,35 @@ export async function createExchangeClient(row: ExchangeConnectionRow): Promise<
     // half of that join transport-free.
     raw.contractPublicGetSymbols = async () => [];
   }
+  if (exchangeId === 'exmo') {
+    const raw = exchange as unknown as {
+      privatePostMarginPairList: (params?: Record<string, unknown>) => Promise<unknown>;
+    };
+    // Pinned CCXT probes the private margin pair list whenever credentials are
+    // present, even though the public pair_settings response is a complete
+    // spot catalog. Satisfy that optional join locally so market loading can
+    // emit only the relay-allowed public spot route.
+    raw.privatePostMarginPairList = async () => ({ pairs: [] });
+  }
+  if (exchangeId === 'tokocrypto') {
+    const raw = exchange as unknown as {
+      parseTransaction: (transaction: Record<string, unknown>, currency?: unknown) => Record<string, unknown>;
+      safeCurrencyCode: (currencyId?: string, currency?: unknown) => string | undefined;
+    };
+    const originalParseTransaction = raw.parseTransaction.bind(exchange);
+    raw.parseTransaction = (transaction, currency) => {
+      const parsed = originalParseTransaction(transaction, currency);
+      const asset = typeof transaction.asset === 'string' ? transaction.asset : undefined;
+      const code = parsed.currency ?? raw.safeCurrencyCode(asset, currency);
+      const feeCost = typeof transaction.fee === 'number' || typeof transaction.fee === 'string'
+        ? Number(transaction.fee) : undefined;
+      return {
+        ...parsed,
+        currency: code,
+        fee: Number.isFinite(feeCost) ? { currency: code, cost: feeCost, rate: undefined } : parsed.fee
+      };
+    };
+  }
   if (exchangeId === 'bitfinex') {
     // Bitfinex defaults its public v2 URL to api-pub.bitfinex.com. Keep both
     // public and private calls on the relay's one exact spot host.

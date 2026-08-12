@@ -57,6 +57,29 @@ export function isBitgetInvalidAccessKeyResponse(response) {
     return false;
   }
 }
+function responseJson(response) {
+  try { return JSON.parse(response.text); } catch { return undefined; }
+}
+export function isDigifinexInvalidKeyResponse(response) {
+  return response.status === 200 && responseJson(response)?.code === 10002;
+}
+export function isBigoneInvalidJwtResponse(response) {
+  const json = responseJson(response);
+  return response.status === 401 && json?.code === 40004 && json?.message === 'invalid jwt';
+}
+export function isTokocryptoInvalidKeyResponse(response) {
+  const json = responseJson(response);
+  return [400, 401, 403].includes(response.status) &&
+    [-1002, -1022, -2008, -2014, -2015].includes(json?.code) && typeof json?.msg === 'string';
+}
+export function isHollaexInvalidKeyResponse(response) {
+  const json = responseJson(response);
+  return response.status === 401 && json?.message === 'Access denied: Access Denied: Invalid API Key';
+}
+export function isExmoInvalidKeyResponse(response) {
+  const json = responseJson(response);
+  return response.status === 200 && json?.result === false && json?.error === 'Error 40017: Wrong api key';
+}
 function record(tier, exchange, probe, ok, detail) {
   results.push({ tier, exchange, probe, ok, detail });
 }
@@ -847,12 +870,12 @@ const tier3 = [
         'access-sign': hmacHex('sha256', 'dummy-secret', '')
       } };
     },
-    check: (r) => r.relayError === null && r.status >= 400 && /key|sign|auth/i.test(r.text)
+    check: (r) => r.relayError === null && isDigifinexInvalidKeyResponse(r)
   },
   {
     exchange: 'bigone', probe: 'GET /api/v3/viewer/accounts (dummy bearer)',
     build() { return { path: '/api/v3/viewer/accounts', exchangeHeaders: { authorization: 'Bearer dummy.jwt.token' } }; },
-    check: (r) => r.relayError === null && r.status >= 400 && /token|auth|unauthorized|jwt/i.test(r.text)
+    check: (r) => r.relayError === null && isBigoneInvalidJwtResponse(r)
   },
   {
     exchange: 'tokocrypto', probe: 'GET /open/v1/account/spot (dummy HMAC query)',
@@ -861,7 +884,7 @@ const tier3 = [
       return { path: `/open/v1/account/spot?${query}&signature=${hmacHex('sha256', 'dummy-secret', query)}`,
         exchangeHeaders: { 'x-mbx-apikey': 'dummy' } };
     },
-    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth/i.test(r.text)
+    check: (r) => r.relayError === null && isTokocryptoInvalidKeyResponse(r)
   },
   {
     exchange: 'hollaex', probe: 'GET /v2/user/balance (dummy API signature)',
@@ -871,7 +894,7 @@ const tier3 = [
       return { path, exchangeHeaders: { 'api-key': 'dummy', 'api-expires': expires,
         'api-signature': hmacHex('sha256', 'dummy-secret', `GET${path}${expires}`) } };
     },
-    check: (r) => r.relayError === null && r.status >= 400 && /token|key|signature|auth/i.test(r.text)
+    check: (r) => r.relayError === null && isHollaexInvalidKeyResponse(r)
   },
   {
     exchange: 'exmo', probe: 'POST /v1.1/user_info (dummy Key/Sign)',
@@ -880,7 +903,7 @@ const tier3 = [
       return { path: '/v1.1/user_info', method: 'POST', body, contentType: 'application/x-www-form-urlencoded',
         exchangeHeaders: { key: 'dummy', sign: hmacHex('sha512', 'dummy-secret', body) } };
     },
-    check: (r) => r.relayError === null && r.status >= 400 && /key|signature|auth|invalid/i.test(r.text)
+    check: (r) => r.relayError === null && isExmoInvalidKeyResponse(r)
   }
 ];
 
