@@ -4425,6 +4425,9 @@ export async function syncConnection(
     let btcmarketsTradeCursor = row.btcmarketsNativeCursors?.trades;
     const bitvavoTradeHighWater = { ...(row.bitvavoTradeHighWater ?? {}) };
     let bitvavoTradeProgress: BitvavoTradeProgress | undefined = row.bitvavoProgress?.trades;
+    const verifiedNextFiveTradeEnd = exchange === 'digifinex'
+      ? (nextFiveProgress.trades?.end ?? nowMs)
+      : nowMs;
     const bitvavoAccountRows: Transaction[] = [];
     const bitvavoAccountCandidateInputs: Array<{ row: Transaction; item: BitvavoAccountHistoryItem; symbol?: string; start: number; end: number }> = [];
     let bitvavoAssociatedTasks: BitvavoTradeTask[] = [];
@@ -4940,7 +4943,7 @@ export async function syncConnection(
     }
 
     const tradeCursorCandidate = FAIL_CLOSED_NATIVE_EXCHANGES.has(exchange)
-      ? safeFiveExchangeCursor(tradeOutcomes, oldCursors.trades, nowMs)
+      ? safeFiveExchangeCursor(tradeOutcomes, oldCursors.trades, verifiedNextFiveTradeEnd)
       : exchange === 'bitvavo'
       ? (tradeOutcomes.some((outcome) => outcome.partial) ? (oldCursors.trades ?? EXCHANGE_LAUNCH_MS.bitvavo) : nowMs)
       : exchange === 'bitget'
