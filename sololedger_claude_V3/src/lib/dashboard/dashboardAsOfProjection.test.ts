@@ -230,6 +230,92 @@ describe('dashboard as-of projection', () => {
     expect(changed.totalNetWorth.value).toBe(initial.totalNetWorth.value + 10);
   });
 
+  it('recomputes cost, gains, and tax for append, backfill, prefix edit, cutoff, method, and SpecID changes', () => {
+    const cheap = tx('cheap-recalc', {
+      timestamp: START - 2 * DAY, type: 'buy', asset: 'BTC', amount: 1, fiatValue: 100
+    });
+    const expensive = tx('expensive-recalc', {
+      timestamp: START - DAY, type: 'buy', asset: 'BTC', amount: 1, fiatValue: 300
+    });
+    const sale = tx('sale-recalc', {
+      timestamp: START + 1, type: 'sell', asset: 'BTC', amount: 1, fiatValue: 500
+    });
+    const input = (transactions: Transaction[], overrides: Record<string, unknown> = {}) => baseInput({
+      transactions, openingBalances: [], priceCache: [], chartSamples: [END], ...overrides
+    });
+
+    const beforeBackfill = projectDashboardAsOf(input([expensive, sale]));
+    expect(beforeBackfill).toMatchObject({
+      costBasis: { value: 0 },
+      period: { realizedCapitalGains: { value: 200 } },
+      estimatedTax: 62.4
+    });
+
+    const backfilled = projectDashboardAsOf(input([cheap, expensive, sale]));
+    expect(backfilled).toMatchObject({
+      costBasis: { value: 300 },
+      period: { realizedCapitalGains: { value: 400 } },
+      estimatedTax: 124.8
+    });
+
+    const editedPrefix = projectDashboardAsOf(input([
+      cheap, { ...expensive, fiatValue: 700 }, sale
+    ]));
+    expect(editedPrefix.costBasis.value).toBe(700);
+
+    const beforeSale = projectDashboardAsOf(input([cheap, expensive, sale], {
+      nominalStart: START - 3 * DAY, nominalEnd: START, effectiveEnd: START,
+      chartSamples: [START]
+    }));
+    expect(beforeSale.costBasis.value).toBe(400);
+    expect(beforeSale.period.realizedCapitalGains.value).toBe(0);
+
+    const lifo = projectDashboardAsOf(input([cheap, expensive, sale], {
+      settings: { ...settings, defaultCostBasisMethod: 'LIFO' }
+    }));
+    expect(lifo).toMatchObject({
+      costBasis: { value: 100 }, period: { realizedCapitalGains: { value: 200 } }
+    });
+
+    const specId = projectDashboardAsOf(input([cheap, expensive, sale], {
+      settings: { ...settings, defaultCostBasisMethod: 'SpecID' },
+      specIdHints: { [sale.id]: [`lot:${expensive.id}`] }
+    }));
+    expect(specId).toMatchObject({
+      costBasis: { value: 100 }, period: { realizedCapitalGains: { value: 200 } }
+    });
+
+    const appended = projectDashboardAsOf(input([
+      cheap, expensive, sale,
+      tx('chronological-append', {
+        timestamp: START + 2, type: 'buy', asset: 'BTC', amount: 1, fiatValue: 50
+      })
+    ]));
+    expect(appended.costBasis.value).toBe(350);
+  });
+
+  it('recomputes projection when exact-asset safety policy changes', () => {
+    const contract = '0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const tokenBuy = tx('safety-buy', {
+      timestamp: START - DAY, type: 'buy', asset: 'TOK', chain: 'ethereum',
+      contractAddress: contract, amount: 2, fiatValue: 200
+    });
+    const visible = projectDashboardAsOf(baseInput({
+      transactions: [tokenBuy], openingBalances: [], priceCache: []
+    }));
+    expect(visible.costBasis.value).toBe(200);
+
+    const hidden = projectDashboardAsOf(baseInput({
+      transactions: [tokenBuy], openingBalances: [], priceCache: [],
+      safetyDecisions: [{
+        subjectKey: `asset:ethereum:${contract}`, state: 'user_hidden',
+        updatedAt: NOW, origin: 'user'
+      }]
+    }));
+    expect(hidden.costBasis.value).toBe(0);
+    expect(hidden.contributors).toEqual([]);
+  });
+
   it('prices a debt-only DeFi underlying and subtracts the explicit liability', () => {
     const scope = `wallet:evm:0x${'1'.repeat(40)}`;
     const custodySnapshot: AuthoritySnapshotRow = {

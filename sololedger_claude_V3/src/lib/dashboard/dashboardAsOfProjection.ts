@@ -10,10 +10,8 @@ import { estimateIndiaVDA } from '@/lib/tax/estimate';
 import { pairedInternalTransferIds } from '@/lib/portfolio/portfolioCompute';
 import {
   buildHoldingsProjection,
-  appendHoldingsProjection,
   prepareHistoricalLedgerReplay,
   type PreparedHistoricalLedgerReplay,
-  type HoldingsProjection,
   type ProjectedPortfolioHolding
 } from '@/lib/portfolio/holdingsProjection';
 import { postingBalances, postingBalanceKey } from '@/lib/ledger/postingBalances';
@@ -65,11 +63,6 @@ export interface DashboardAsOfProjectionInput {
   nowMs: number;
   chartSamples?: readonly number[];
   preparedPriceRows?: PreparedDashboardPriceRows;
-  holdingsReuse?: {
-    transactions?: readonly Transaction[];
-    projection?: HoldingsProjection;
-    cost?: ReturnType<typeof remainingCostByAsset>;
-  };
 }
 
 interface HistoricalIdentity {
@@ -627,33 +620,10 @@ export function projectDashboardAsOf(
     ...input, transactions: policyTransactions,
     preparedPriceRows: input.preparedPriceRows ?? prepareDashboardPriceRows(input.priceCache)
   };
-  const previousTransactions = input.holdingsReuse?.transactions;
-  const previousCost = input.holdingsReuse?.cost;
-  const appendedTransaction = previousTransactions && policyTransactions.length === previousTransactions.length + 1 &&
-    previousTransactions.every((transaction, index) => transaction.id === policyTransactions[index]?.id)
-    ? policyTransactions[policyTransactions.length - 1] : undefined;
-  const appendedCost = appendedTransaction && appendedTransaction.timestamp <= input.effectiveEnd &&
-    appendedTransaction.type === 'buy' && previousCost
-    ? remainingCostByAsset(
-        [appendedTransaction], input.effectiveEnd, input.settings,
-        input.settings.defaultCostBasisMethod, input.specIdHints ?? {}, safetyDecisions
-      )
-    : undefined;
-  const cost = appendedCost && previousCost ? {
-    total: previousCost.total + appendedCost.total,
-    byAsset: new Map([...previousCost.byAsset, ...[...appendedCost.byAsset].map(([key, value]) =>
-      [key, value + (previousCost.byAsset.get(key) ?? 0)] as const)]),
-    quantityByAsset: new Map([...previousCost.quantityByAsset, ...[...appendedCost.quantityByAsset].map(([key, value]) =>
-      [key, value + (previousCost.quantityByAsset.get(key) ?? 0)] as const)]),
-    disposals: [...previousCost.disposals, ...appendedCost.disposals],
-    inventoryDisposals: [...previousCost.inventoryDisposals, ...appendedCost.inventoryDisposals],
-    lots: [...previousCost.lots, ...appendedCost.lots],
-    shortfalls: [...previousCost.shortfalls, ...appendedCost.shortfalls]
-  } : remainingCostByAsset(
-      policyTransactions, input.effectiveEnd, input.settings, input.settings.defaultCostBasisMethod,
-      input.specIdHints ?? {}, safetyDecisions
-    );
-  if (input.holdingsReuse) input.holdingsReuse.cost = cost;
+  const cost = remainingCostByAsset(
+    policyTransactions, input.effectiveEnd, input.settings, input.settings.defaultCostBasisMethod,
+    input.specIdHints ?? {}, safetyDecisions
+  );
   let replay: PreparedHistoricalLedgerReplay;
   let contributors: DashboardLedgerContributor[];
   let totalNetWorth: DashboardAggregate;
@@ -665,18 +635,7 @@ export function projectDashboardAsOf(
       assets: input.authorityAssets, coverage: input.sourceCoverage,
       safetyDecisions, now: input.nowMs
     };
-    const previousProjection = input.holdingsReuse?.projection;
-    const appended = appendedTransaction && previousProjection
-      ? appendHoldingsProjection(previousProjection, holdingsInput, appendedTransaction)
-      : undefined;
-    const holdings = appended ?? buildHoldingsProjection({
-      ...holdingsInput,
-      preparedProjection: previousTransactions === policyTransactions ? previousProjection : undefined
-    });
-    if (input.holdingsReuse) {
-      input.holdingsReuse.transactions = policyTransactions;
-      input.holdingsReuse.projection = holdings;
-    }
+    const holdings = buildHoldingsProjection(holdingsInput);
     replay = { postings: holdings.postings, preparedPostings: holdings.preparedPostings };
     const failedKeys = new Set(holdings.slices.filter((slice) =>
       slice.verificationStatus !== 'verified_authority').map((slice) => slice.assetKey));

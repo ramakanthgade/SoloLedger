@@ -81,8 +81,7 @@ type PublishedDashboard = { period: DashboardPeriodSelection; snapshot: Dashboar
 function project(
   input: DashboardAsOfInputSnapshot,
   period: DashboardPeriodSelection,
-  measureChartPreparation?: <T>(callback: () => T) => T,
-  holdingsReuse?: NonNullable<Parameters<typeof projectDashboardAsOf>[0]['holdingsReuse']>
+  measureChartPreparation?: <T>(callback: () => T) => T
 ): PublishedDashboard {
   const mutable = input as unknown as {
     transactions: Parameters<typeof projectDashboardAsOf>[0]['transactions'];
@@ -117,8 +116,7 @@ function project(
       nominalEnd: period.nominalEnd,
       effectiveEnd: period.effectiveEnd,
       nowMs: input.revision.readAt,
-      chartSamples: chartSamples(period.nominalStart, period.effectiveEnd),
-      holdingsReuse
+      chartSamples: chartSamples(period.nominalStart, period.effectiveEnd)
     }, measureChartPreparation)
   };
 }
@@ -269,14 +267,9 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
     // reusing a memoized publisher after cleanup would leave the second subscription
     // connected to an already-disposed publisher and the Dashboard calculating forever.
     const publisher = createDashboardAsOfAtomicPublisher<DashboardPeriodSelection, PublishedDashboard>(
-      // Reuse is private prepared work; every visible field is still published
-      // from one complete coherent snapshot revision.
-      (() => {
-        const holdingsReuse = {};
-        return (nextInput: DashboardAsOfInputSnapshot, nextPeriod: DashboardPeriodSelection) => project(
-          nextInput, nextPeriod, instrumentation?.measureChartPreparation, holdingsReuse
-        );
-      })(),
+      (nextInput, nextPeriod) => project(
+        nextInput, nextPeriod, instrumentation?.measureChartPreparation
+      ),
       setPublication
     );
     publisherRef.current = publisher;
