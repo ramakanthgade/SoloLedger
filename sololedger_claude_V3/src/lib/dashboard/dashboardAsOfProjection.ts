@@ -342,6 +342,7 @@ function currentContributors(
     if (mark.reason && !reasons.includes(mark.reason)) reasons.push(mark.reason);
     return {
       assetKey: holding.assetKey, asset: holding.asset, kind: 'asset' as const,
+      positionRole: 'liquid' as const,
       signedQuantity: holding.quantity,
       accountScopes: holding.sourceVerification.map((source) => ({ scopeId: source.scopeId, accountClass: source.accountClass })),
       chain: holding.chain, contractAddress: holding.contractAddress, price: mark.price,
@@ -448,6 +449,10 @@ function applyCurrentDefiAuthority(
       assetKey: kind === 'liability' ? `liability:${row.protocolId ?? 'defi'}:${row.id}` : row.id,
       asset: row.symbol,
       kind,
+      positionRole: row.kind,
+      protocolId: row.protocolId,
+      isCollateral: row.isCollateral,
+      debtRateMode: row.debtRateMode,
       signedQuantity,
       accountScopes: row.scopeId
         ? [{ scopeId: row.scopeId, accountClass: 'wallet' as const }]
@@ -537,7 +542,7 @@ function periodAggregate(
 
 function periodAggregates(
   input: DashboardAsOfProjectionInput,
-  cost: Pick<ReturnType<typeof remainingCostByAsset>, 'disposals' | 'lots'>
+  cost: Pick<ReturnType<typeof remainingCostByAsset>, 'disposals' | 'inventoryDisposals' | 'lots'>
 ): DashboardAsOfSnapshot['period'] {
   const inRange = input.transactions.filter((transaction) =>
     transaction.timestamp >= input.nominalStart && transaction.timestamp <= input.effectiveEnd);
@@ -565,9 +570,18 @@ function periodAggregates(
     effectiveEnd: input.effectiveEnd,
     jurisdiction: input.settings.jurisdiction
   });
+  const missingDisposals = cost.inventoryDisposals.filter((disposal) =>
+    !disposal.finalized && disposal.disposedAt >= input.nominalStart && disposal.disposedAt <= input.effectiveEnd);
+  const missingDisposalIds = [...new Set(missingDisposals.map((disposal) => disposal.sourceTxId))];
+  const realizedTransactionIds = [...new Set([...realized.transactionIds, ...missingDisposalIds])];
   const realizedAggregate: DashboardPeriodAggregate = {
-    ...emptyAggregate(input.effectiveEnd), value: realized.value,
-    contributorIds: realized.transactionIds, transactionIds: realized.transactionIds,
+    ...emptyAggregate(input.effectiveEnd, missingDisposals.length > 0 ? 'unavailable' : 'authoritative'),
+    value: realized.value,
+    contributorIds: realizedTransactionIds, transactionIds: realizedTransactionIds,
+    missingAssetCount: missingDisposals.length,
+    affectedAssetKeys: missingDisposals.map((disposal) => disposal.asset),
+    valuationCompleteness: missingDisposals.length > 0 ? 'partial' : 'complete',
+    reasons: missingDisposals.length > 0 ? ['unpriced'] : [],
     filter: { nominalStart: input.nominalStart, effectiveEnd: input.effectiveEnd, category: 'realizedCapitalGains' }
   };
   return {

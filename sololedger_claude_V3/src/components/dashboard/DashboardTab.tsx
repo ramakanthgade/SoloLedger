@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ChevronDown, Eye, EyeOff } from 'lucide-react';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
 import { Button } from '@/components/ui/button';
@@ -11,6 +11,14 @@ import { useTabNav } from '@/lib/tabNav';
 import { cn, formatCompactAmount, formatCurrency } from '@/lib/utils';
 import type { DashboardAsOfSnapshot, DashboardLedgerContributor, DashboardPeriodCategory } from '@/lib/dashboard/dashboardAsOfModel';
 import { projectDashboardAsOf } from '@/lib/dashboard/dashboardAsOfProjection';
+import { importJob, useImportJob } from '@/lib/importJob';
+import { exchangeSyncJob, useExchangeSyncJob } from '@/lib/exchangeSync/syncJob';
+import { refreshCurrentHoldingPrices, SPOT_TTL_MS } from '@/lib/pricing/currentPrices';
+import { defiUnderlyingPriceHoldings } from '@/lib/portfolio/defiUnderlyingPrices';
+import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
+import { resolveAssetSafety } from '@/lib/safety/assetSafety';
+import { assetSubjectKey } from '@/lib/safety/canonicalAssets';
+import { resolveProtocol } from '@/lib/defi/protocolRegistry';
 import {
   dashboardPeriodControls,
   rederiveDashboardPeriod,
@@ -24,11 +32,14 @@ import {
   subscribeDashboardAsOfInputSnapshots,
   type DashboardAsOfAtomicPublisher,
   type DashboardAsOfInputSnapshot,
+  type DashboardAsOfInputSubscription,
   type DashboardAsOfPublicationState
 } from './dashboardAsOfInputSnapshot';
+import { dashboardAggregatePresentation, dashboardPeriodAggregatePresentation, orderDashboardContributors } from './dashboardPresentation';
 import { NetWorthChart } from './NetWorthChart';
 
 const PRIVACY_KEY = 'sololedger_dashboard_privacy';
+const PRICE_LIFECYCLE_TIMEOUT_MS = 15_000;
 const COLORS = ['#F7931A', '#627EEA', '#50AF95', '#9945FF', '#B45309', '#4F7613'];
 const CATEGORY_LABELS: Record<DashboardPeriodCategory, string> = {
   in: 'In', out: 'Out', income: 'Income', expenses: 'Expenses',
@@ -77,6 +88,29 @@ function specIdMap(input: DashboardAsOfInputSnapshot): Record<string, readonly s
 }
 
 type PublishedDashboard = { period: DashboardPeriodSelection; snapshot: DashboardAsOfSnapshot };
+type ReadyPublication = Extract<DashboardAsOfPublicationState<PublishedDashboard>, { status: 'ready' }>;
+type SettledDashboard = { publication: ReadyPublication; input: DashboardAsOfInputSnapshot };
+
+function withDashboardTimeout<T>(promise: Promise<T>, signal: AbortSignal, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const finish = (callback: () => void) => {
+      window.clearTimeout(timer);
+      signal.removeEventListener('abort', onAbort);
+      callback();
+    };
+    const onAbort = () => finish(() => reject(new Error(`${label} cancelled`)));
+    const timer = window.setTimeout(
+      () => finish(() => reject(new Error(`${label} timed out`))),
+      PRICE_LIFECYCLE_TIMEOUT_MS
+    );
+    signal.addEventListener('abort', onAbort, { once: true });
+    if (signal.aborted) return onAbort();
+    promise.then(
+      (value) => finish(() => resolve(value)),
+      (error) => finish(() => reject(error))
+    );
+  });
+}
 
 function project(
   input: DashboardAsOfInputSnapshot,
@@ -205,6 +239,26 @@ function EmptyDashboard() {
   </section>;
 }
 
+function DashboardLiveStatus({ status }: { status: 'calculating' | 'refreshing' | 'complete' | 'error' }) {
+  return <p role="status" aria-live="polite" className="sr-only" data-testid="dashboard-live-status">
+    {status === 'calculating' ? 'Calculating dashboard…' : status === 'refreshing' ? 'Refreshing dashboard…'
+      : status === 'error' ? 'Dashboard refresh failed; showing previous values.' : 'Dashboard updated.'}
+  </p>;
+}
+
+function contributorPositionLabel(row: DashboardLedgerContributor): string | undefined {
+  const protocol = row.protocolId ? resolveProtocol(1, row.protocolId) : undefined;
+  if (protocol) {
+    const role = row.positionRole === 'supply'
+      ? `Supplied${row.isCollateral === true ? ' · Collateral' : row.isCollateral === false ? ' · Not collateral' : ''}`
+      : row.positionRole === 'liability'
+        ? `Borrowed${row.debtRateMode ? ` · ${row.debtRateMode === 'stable' ? 'Stable' : 'Variable'} rate` : ''}`
+        : 'Liquid';
+    return `${protocol.protocol} ${protocol.version} · ${role}`;
+  }
+  return row.kind === 'liability' ? 'Liability' : undefined;
+}
+
 function HoldingTable({ rows, current, mask, money }: {
   rows: readonly DashboardLedgerContributor[];
   current: boolean;
@@ -237,13 +291,13 @@ function HoldingTable({ rows, current, mask, money }: {
         <tbody>{rows.map((row) => {
           const rowValues = values(row);
           return <tr key={`${row.kind}:${row.assetKey}`} className="border-b border-hi/10 last:border-0">
-            <th scope="row" className="px-4 py-4 text-left"><span className="flex items-center gap-3"><AssetIcon symbol={row.asset} size={32} /><span><span className="block font-semibold text-hi">{row.asset}</span>{row.kind === 'liability' && <small className="text-low">Liability</small>}</span></span></th>
+            <th scope="row" className="px-4 py-4 text-left"><span className="flex items-center gap-3"><AssetIcon symbol={row.asset} size={32} /><span><span className="block font-semibold text-hi">{row.asset}</span>{contributorPositionLabel(row) && <small className="text-low">{contributorPositionLabel(row)}</small>}</span></span></th>
             {rowValues.map((value, index) => <td key={index} className={cn('px-4 py-4 text-right tabular-figures text-mid', !mask && index === 3 && !current && row.roi != null && (row.roi >= 0 ? 'text-gain' : 'text-loss'))}>{value}</td>)}
           </tr>;
         })}</tbody>
       </table></div>
       <div className="divide-y divide-hi/10 md:hidden">{rows.map((row) => <article key={`${row.kind}:${row.assetKey}`} className="p-4">
-        <h4 className="flex items-center gap-3 font-semibold text-hi"><AssetIcon symbol={row.asset} size={32} />{row.asset}{row.kind === 'liability' && <small className="text-low">Liability</small>}</h4>
+        <h4 className="flex items-center gap-3 font-semibold text-hi"><AssetIcon symbol={row.asset} size={32} /><span>{row.asset}{contributorPositionLabel(row) && <small className="block text-low">{contributorPositionLabel(row)}</small>}</span></h4>
         <dl className="mt-3 grid grid-cols-2 gap-3">{headings.slice(1).map((heading, index) => <div key={heading}><dt className="text-[0.6875rem] font-bold uppercase tracking-wider text-low">{heading}</dt><dd className="mt-1 tabular-figures text-mid">{values(row)[index]}</dd></div>)}</dl>
       </article>)}</div>
     </>}
@@ -252,14 +306,45 @@ function HoldingTable({ rows, current, mask, money }: {
 
 export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: DashboardTabProps = {}) {
   const { goTo } = useTabNav();
-  const [input, setInput] = useState<DashboardAsOfInputSnapshot>();
+  const importState = useImportJob();
+  const exchangeState = useExchangeSyncJob();
+  const importActive = importState.active || importState.batchActive === true;
+  const externalRefreshActive = importActive || exchangeState.active;
   const [publication, setPublication] = useState<DashboardAsOfPublicationState<PublishedDashboard>>({ status: 'calculating' });
+  const [settled, setSettled] = useState<SettledDashboard>();
+  const [priceRefreshTick, setPriceRefreshTick] = useState(0);
+  const [priceRefreshing, setPriceRefreshing] = useState(false);
   const requestedPeriod = useRef<DashboardPeriodSelection>();
   const previousJurisdiction = useRef<Jurisdiction>();
   const publisherRef = useRef<DashboardAsOfAtomicPublisher<DashboardPeriodSelection, PublishedDashboard>>();
+  const subscriptionRef = useRef<DashboardAsOfInputSubscription>();
+  const settledRef = useRef<SettledDashboard>();
+  const priceLifecycleActive = useRef(false);
+  const priceLifecycleGeneration = useRef(0);
+  const inputByRevision = useRef(new Map<string, DashboardAsOfInputSnapshot>());
+  const latestInputRevision = useRef<string>();
+  const publicationGate = useRef({ wasActive: false, waitingForRevision: false, boundaryRevision: undefined as string | undefined, eligibleRevision: undefined as string | undefined });
   const [hideBalances, setHideBalances] = useState(() => {
     try { return localStorage.getItem(PRIVACY_KEY) === '1'; } catch { return false; }
   });
+
+  useEffect(() => { settledRef.current = settled; }, [settled]);
+
+  useEffect(() => {
+    if (externalRefreshActive) {
+      if (!publicationGate.current.wasActive) {
+        publicationGate.current.waitingForRevision = true;
+        publicationGate.current.boundaryRevision = latestInputRevision.current;
+        publicationGate.current.eligibleRevision = undefined;
+      }
+      publicationGate.current.wasActive = true;
+    } else if (publicationGate.current.wasActive) {
+      publicationGate.current.wasActive = false;
+      publicationGate.current.waitingForRevision = true;
+      publicationGate.current.boundaryRevision = latestInputRevision.current;
+      publicationGate.current.eligibleRevision = undefined;
+    }
+  }, [externalRefreshActive]);
 
   useEffect(() => {
     // The publisher belongs to this effect setup, just like the subscription.
@@ -270,57 +355,216 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
       (nextInput, nextPeriod) => project(
         nextInput, nextPeriod, instrumentation?.measureChartPreparation
       ),
-      setPublication
+      (nextPublication) => {
+        if (nextPublication.status === 'error') {
+          priceLifecycleActive.current = false;
+          setPriceRefreshing(false);
+        }
+        setPublication(nextPublication);
+      }
     );
     publisherRef.current = publisher;
     const subscription = subscribeDashboardAsOfInputSnapshots({
       next: (nextInput) => {
+        latestInputRevision.current = nextInput.revision.token;
+        inputByRevision.current.set(nextInput.revision.token, nextInput);
+        if (inputByRevision.current.size > 8) inputByRevision.current.delete(inputByRevision.current.keys().next().value!);
+        const jobState = importJob.get();
+        const exchangeJobState = exchangeSyncJob.get();
+        const jobActive = jobState.active || jobState.batchActive === true ||
+          exchangeJobState.active || priceLifecycleActive.current;
+        if (jobActive) {
+          publicationGate.current.waitingForRevision = true;
+          publicationGate.current.boundaryRevision = nextInput.revision.token;
+          publicationGate.current.eligibleRevision = undefined;
+        } else if (publicationGate.current.waitingForRevision &&
+          nextInput.revision.token !== publicationGate.current.boundaryRevision) {
+          publicationGate.current.eligibleRevision = nextInput.revision.token;
+        }
         const nextPeriod = rederiveDashboardPeriod(
           requestedPeriod.current, previousJurisdiction.current,
           nextInput.settings.jurisdiction, nextInput.revision.readAt
         );
         previousJurisdiction.current = nextInput.settings.jurisdiction;
         requestedPeriod.current = nextPeriod;
-        setInput(nextInput);
         instrumentation?.onProjectionStart?.(nextInput.transactions.length);
         void publisher.request(nextInput, nextPeriod);
       },
-      error: (error) => setPublication({ status: 'error', error })
+      error: (error) => {
+        priceLifecycleActive.current = false;
+        setPriceRefreshing(false);
+        setPublication({ status: 'error', error });
+      }
     });
+    subscriptionRef.current = subscription;
     return () => {
       subscription.unsubscribe();
+      if (subscriptionRef.current === subscription) subscriptionRef.current = undefined;
       publisher.dispose();
       if (publisherRef.current === publisher) publisherRef.current = undefined;
     };
-  }, [instrumentation]);
+  }, [externalRefreshActive, instrumentation]);
 
   useEffect(() => {
-    if (publication.status !== 'ready' || !input) return;
-    const btcQuantity = publication.snapshot.snapshot.contributors
+    if (publication.status !== 'ready') return;
+    const publishedInput = inputByRevision.current.get(publication.inputRevision.token);
+    if (!publishedInput) return;
+    const jobState = importJob.get();
+    if (jobState.active || jobState.batchActive === true || exchangeSyncJob.get().active ||
+      priceLifecycleActive.current) return;
+    if (publicationGate.current.waitingForRevision) {
+      if (publicationGate.current.eligibleRevision !== publication.inputRevision.token) return;
+      publicationGate.current.waitingForRevision = false;
+      publicationGate.current.boundaryRevision = undefined;
+      publicationGate.current.eligibleRevision = undefined;
+    }
+    setPriceRefreshing(false);
+    setSettled({ publication, input: publishedInput });
+  }, [publication]);
+
+  useEffect(() => {
+    if (!settled) return;
+    const btcQuantity = settled.publication.snapshot.snapshot.contributors
       .filter((row) => row.kind === 'asset' && row.asset.toUpperCase() === 'BTC')
       .reduce((sum, row) => sum + row.signedQuantity, 0);
     instrumentation?.onSnapshotCommit?.({
-      inputRevision: publication.inputRevision.token,
-      transactionCount: input.transactions.length,
+      inputRevision: settled.publication.inputRevision.token,
+      transactionCount: settled.input.transactions.length,
       btcQuantity
     });
-  }, [input, instrumentation, publication]);
+  }, [instrumentation, settled]);
+
+  useEffect(() => {
+    const refresh = () => setPriceRefreshTick((tick) => tick + 1);
+    const onVisibilityChange = () => { if (document.visibilityState === 'visible') refresh(); };
+    const timer = window.setTimeout(refresh, SPOT_TTL_MS);
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [priceRefreshTick]);
+
+  const priceRefreshKey = useMemo(() => settled ? JSON.stringify({
+    current: settled.publication.snapshot.snapshot.currentEndpoint,
+    currency: settled.publication.snapshot.snapshot.reportingCurrency,
+    custody: settled.publication.snapshot.snapshot.contributors.map((row) => [
+      row.assetKey, row.asset, row.signedQuantity, row.costBasis, row.chain, row.contractAddress
+    ]),
+    defi: settled.input.defiPositionRows.map((row) => [
+      row.protocolId, row.role, row.underlying.contractAddress, row.quantity
+    ])
+  }) : undefined, [settled]);
+
+  useEffect(() => {
+    const refreshSource = settledRef.current;
+    if (!refreshSource || !refreshSource.publication.snapshot.snapshot.currentEndpoint) return;
+    const { input: settledInput } = refreshSource;
+    const { snapshot } = refreshSource.publication.snapshot;
+    const decisions = new Map(settledInput.safetyDecisions.map((row) => [row.subjectKey, row]));
+    const defiCandidates = defiUnderlyingPriceHoldings(settledInput.defiPositionRows);
+    const defiContracts = new Set(defiCandidates.map((row) => row.contractAddress));
+    const custodyCandidates = snapshot.contributors.map((row) => {
+      const subjectKey = row.chain ? assetSubjectKey(row.chain, row.contractAddress) : undefined;
+      const immutableDecision = subjectKey ? decisions.get(subjectKey) : undefined;
+      const safetyState = !row.contractAddress || (row.contractAddress && defiContracts.has(row.contractAddress.toLowerCase()))
+        ? 'trusted' as const
+        : resolveAssetSafety({
+            subjectKey: subjectKey ?? `asset:unknown:${row.assetKey}`,
+            chain: row.chain,
+            contractAddress: row.contractAddress,
+            decision: immutableDecision && {
+              ...immutableDecision,
+              evidenceIds: immutableDecision.evidenceIds ? [...immutableDecision.evidenceIds] : undefined
+            }
+          }).state;
+      return {
+        asset: row.asset, amount: Math.abs(row.signedQuantity), costBasis: Math.abs(row.costBasis ?? 0),
+        chain: row.chain, contractAddress: row.contractAddress, safetyState
+      };
+    });
+    const candidates = [...custodyCandidates, ...defiCandidates];
+    let cancelled = false;
+    const controller = new AbortController();
+    const generation = ++priceLifecycleGeneration.current;
+    priceLifecycleActive.current = true;
+    publicationGate.current.waitingForRevision = true;
+    publicationGate.current.boundaryRevision = latestInputRevision.current;
+    publicationGate.current.eligibleRevision = undefined;
+    setPriceRefreshing(true);
+    void (async () => {
+      try {
+        const effective = await withDashboardTimeout(
+          getEffectiveSettings(), controller.signal, 'Dashboard price settings'
+        );
+        if (cancelled || !effective.priceApiEnabled || candidates.length === 0) return;
+        await withDashboardTimeout(
+          refreshCurrentHoldingPrices(
+            candidates.filter((holding) => holding.safetyState === 'trusted'),
+            snapshot.reportingCurrency,
+            effective.coingeckoApiKey
+          ),
+          controller.signal,
+          'Dashboard trusted price refresh'
+        ).catch(() => undefined);
+        if (!cancelled) await withDashboardTimeout(
+          refreshCurrentHoldingPrices(candidates, snapshot.reportingCurrency, effective.coingeckoApiKey),
+          controller.signal,
+          'Dashboard broad price refresh'
+        ).catch(() => undefined);
+      } catch {
+        // Optional settings and price services cannot make the Dashboard dishonest.
+      } finally {
+        if (!cancelled && generation === priceLifecycleGeneration.current) {
+          priceLifecycleActive.current = false;
+          const subscription = subscriptionRef.current;
+          if (subscription) {
+            try {
+              await withDashboardTimeout(
+                subscription.refresh(), controller.signal, 'Dashboard final input refresh'
+              );
+            } catch (error) {
+              if (!cancelled && generation === priceLifecycleGeneration.current) {
+                setPriceRefreshing(false);
+                setPublication({ status: 'error', error });
+              }
+            }
+          } else setPriceRefreshing(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+      controller.abort();
+      priceLifecycleActive.current = false;
+    };
+  }, [priceRefreshKey, priceRefreshTick]);
 
   const selectPeriod = (next: DashboardPeriodSelection) => {
-    if (!input) return;
+    if (!settled) return;
     requestedPeriod.current = next;
-    void publisherRef.current?.request(input, next);
+    void publisherRef.current?.request(settled.input, next);
   };
-  const published = publication.snapshot;
-  if (publication.status === 'error') return <section role="alert" className="rounded-2xl border border-loss/30 bg-loss/5 p-6 text-sm text-loss">Dashboard calculation could not be completed.</section>;
-  if (!input || publication.status === 'calculating') return <div aria-busy="true" className="space-y-5"><Skeleton className="h-12 w-64" /><Skeleton className="h-[34rem] w-full" /><Skeleton className="h-48 w-full" /></div>;
-  if (input.transactions.length === 0 && input.openingBalances.length === 0) return <EmptyDashboard />;
-  if (!published) return <section role="alert" className="rounded-2xl border border-loss/30 bg-loss/5 p-6 text-sm text-loss">Dashboard calculation could not be completed.</section>;
+  const contributorRows = useMemo(
+    () => settled ? orderDashboardContributors(settled.publication.snapshot.snapshot.contributors) : [],
+    [settled]
+  );
+  const refreshing = externalRefreshActive || publication.status === 'calculating' || priceRefreshing ||
+    (publication.status === 'ready' && settled?.publication.inputRevision.token !== publication.inputRevision.token);
+  const refreshFailed = settled != null && publication.status === 'error';
+  if (!settled && publication.status === 'error') return <><DashboardLiveStatus status="calculating" /><section role="alert" className="rounded-2xl border border-loss/30 bg-loss/5 p-6 text-sm text-loss">Dashboard calculation could not be completed.</section></>;
+  if (!settled) return <><DashboardLiveStatus status="calculating" /><div aria-busy="true" className="space-y-5"><p className="text-sm text-low">Calculating…</p><Skeleton className="h-12 w-64" /><Skeleton className="h-[34rem] w-full" /><Skeleton className="h-48 w-full" /></div></>;
+
+  const { publication: displayedPublication, input: displayedInput } = settled;
+  const published = displayedPublication.snapshot;
+  if (displayedInput.transactions.length === 0 && displayedInput.openingBalances.length === 0) return <><DashboardLiveStatus status={refreshFailed ? 'error' : refreshing ? 'refreshing' : 'complete'} />{refreshFailed && <p role="alert" className="mb-3 rounded-xl border border-loss/30 bg-loss/5 p-4 text-sm text-loss">Dashboard refresh failed; showing previous values.</p>}<div aria-busy={refreshing || undefined}>{refreshing && <p className="mb-3 text-sm text-low">Refreshing dashboard…</p>}<EmptyDashboard /></div></>;
 
   const { period, snapshot } = published;
-  const jurisdiction = input.settings.jurisdiction;
+  const jurisdiction = displayedInput.settings.jurisdiction;
   const money = (value: number | undefined) => hideBalances ? '••••' : value == null ? '—' : formatCurrency(value, snapshot.reportingCurrency);
-  const allocation = snapshot.contributors
+  const allocation = contributorRows
     .filter((row) => row.kind === 'asset' && row.marketValue != null && row.marketValue > 0)
     .sort((a, b) => b.marketValue! - a.marketValue!);
   const allocationTotal = allocation.reduce((sum, row) => sum + row.marketValue!, 0);
@@ -329,11 +573,22 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
     unpricedCount: point.missingAssetCount + point.missingLiabilityCount
   }));
   const chartEndpoint = snapshot.chart[snapshot.chart.length - 1];
-  const btcQuantity = snapshot.contributors
+  const btcQuantity = contributorRows
     .filter((row) => row.kind === 'asset' && row.asset.toUpperCase() === 'BTC')
     .reduce((sum, row) => sum + row.signedQuantity, 0);
   const partial = snapshot.totalNetWorth.valuationCompleteness === 'partial' ||
     snapshot.costBasis.valuationCompleteness === 'partial' || snapshot.unrealizedPnl.valuationCompleteness === 'partial';
+  const aggregateMoney = (aggregate: DashboardAsOfSnapshot['totalNetWorth']) => {
+    const value = dashboardAggregatePresentation(aggregate, refreshing);
+    return value === 'calculating' ? 'Calculating…' : value === 'partial' ? '—' : money(value);
+  };
+  const periodMoney = (aggregate: DashboardAsOfSnapshot['period'][DashboardPeriodCategory]) => {
+    const value = dashboardPeriodAggregatePresentation(aggregate, refreshing);
+    return value === 'calculating' ? 'Calculating…' : value === 'partial' ? '—' : money(value);
+  };
+  const realizedPresentation = dashboardPeriodAggregatePresentation(snapshot.period.realizedCapitalGains, refreshing);
+  const estimatedTaxMoney = realizedPresentation === 'calculating'
+    ? 'Calculating…' : realizedPresentation === 'partial' ? '—' : money(snapshot.estimatedTax);
 
   const openCategory = (category: DashboardPeriodCategory) => {
     const aggregate = snapshot.period[category];
@@ -352,39 +607,42 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
     return next;
   });
 
-  return <div className="space-y-5">
+  return <><DashboardLiveStatus status={refreshFailed ? 'error' : refreshing ? 'refreshing' : 'complete'} />
+  <div className="space-y-5" aria-busy={refreshing || undefined}>
+    {refreshFailed && <p role="alert" className="rounded-xl border border-loss/30 bg-loss/5 p-4 text-sm text-loss">Dashboard refresh failed; showing previous values.</p>}
+    {refreshing && <p className="text-sm text-low">Refreshing dashboard…</p>}
     <output
       className="sr-only"
       data-testid="dashboard-holdings-generation"
-      data-input-revision={publication.inputRevision.token}
-      data-transaction-count={input.transactions.length}
+      data-input-revision={displayedPublication.inputRevision.token}
+      data-transaction-count={displayedInput.transactions.length}
       data-btc-quantity={btcQuantity}
-    >Dashboard snapshot revision {publication.inputRevision.token}</output>
+    >Dashboard snapshot revision {displayedPublication.inputRevision.token}</output>
     <output
       className="sr-only"
       data-testid="dashboard-deferred-generation"
-      data-input-revision={publication.inputRevision.token}
-      data-transaction-count={input.transactions.length}
+      data-input-revision={displayedPublication.inputRevision.token}
+      data-transaction-count={displayedInput.transactions.length}
       data-chart-point-count={snapshot.chart.length}
       data-chart-end-t={chartEndpoint?.timestamp ?? 'none'}
       data-chart-end-cost={chartEndpoint?.costBasis ?? 'none'}
       data-chart-end-market={chartEndpoint?.value ?? 'none'}
-      data-chart-revision={`${publication.inputRevision.token}:${snapshot.chart.length}:${chartEndpoint?.timestamp ?? 'none'}:${chartEndpoint?.costBasis ?? 'none'}`}
-    >Dashboard chart revision {publication.inputRevision.token}</output>
+      data-chart-revision={`${displayedPublication.inputRevision.token}:${snapshot.chart.length}:${chartEndpoint?.timestamp ?? 'none'}:${chartEndpoint?.costBasis ?? 'none'}`}
+    >Dashboard chart revision {displayedPublication.inputRevision.token}</output>
     <header><h2 className="page-title">Dashboard</h2><p className="page-subtitle">Your whole crypto position, at a glance.</p></header>
     <section aria-label="Selected-period financial dashboard" data-testid="dashboard-hero" className="rounded-[20px] border border-primary/35 bg-gradient-to-br from-elev-2 to-elev-3 p-5 shadow-card sm:p-7">
-      <PeriodControls selection={period} jurisdiction={jurisdiction} nowMs={input.revision.readAt} onSelect={selectPeriod} />
+      <PeriodControls selection={period} jurisdiction={jurisdiction} nowMs={displayedInput.revision.readAt} onSelect={selectPeriod} />
       <div className="mt-6 grid gap-4 border-t border-hi/10 pt-5 md:grid-cols-3">
         <div className="md:border-r md:border-hi/10 md:pr-5">
           <div className="flex items-center justify-between"><p className="text-xs font-bold uppercase tracking-wider text-low">Total Net Worth</p><button type="button" onClick={togglePrivacy} aria-label={hideBalances ? 'Show balances' : 'Hide balances'} className="grid min-h-11 min-w-11 place-items-center rounded-lg text-low hover:bg-elev-3">{hideBalances ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}</button></div>
-          <p data-testid="dashboard-total-net-worth" className="mt-1 text-3xl font-bold tabular-figures text-hi sm:text-4xl">{money(snapshot.totalNetWorth.value)}</p>
-          {partial && <p className="mt-2 text-xs text-low">Based on available ledger history, cost evidence, and eligible prices.</p>}
+          <p data-testid="dashboard-total-net-worth" className="mt-1 text-3xl font-bold tabular-figures text-hi sm:text-4xl">{aggregateMoney(snapshot.totalNetWorth)}</p>
+          {partial && <p className="mt-2 text-xs text-low">Not fully valued. Based on available ledger history, cost evidence, and eligible prices.</p>}
         </div>
-        <div className="md:border-r md:border-hi/10 md:px-5"><p className="text-xs font-bold uppercase tracking-wider text-low">Cost Basis</p><p className="mt-2 text-2xl font-bold text-hi">{money(snapshot.costBasis.value)}</p><p className="mt-1 text-xs text-low">Remaining basis</p></div>
-        <div className="md:pl-5"><p className="text-xs font-bold uppercase tracking-wider text-low">Unrealized P&amp;L</p><p className={cn('mt-2 text-2xl font-bold', hideBalances ? 'text-hi' : snapshot.unrealizedPnl.value >= 0 ? 'text-gain' : 'text-loss')}>{money(snapshot.unrealizedPnl.value)}</p></div>
+        <div className="md:border-r md:border-hi/10 md:px-5"><p className="text-xs font-bold uppercase tracking-wider text-low">Cost Basis</p><p className="mt-2 text-2xl font-bold text-hi">{aggregateMoney(snapshot.costBasis)}</p><p className="mt-1 text-xs text-low">Remaining basis</p></div>
+        <div className="md:pl-5"><p className="text-xs font-bold uppercase tracking-wider text-low">Unrealized P&amp;L</p><p className={cn('mt-2 text-2xl font-bold', hideBalances || typeof dashboardAggregatePresentation(snapshot.unrealizedPnl, refreshing) !== 'number' ? 'text-hi' : snapshot.unrealizedPnl.value >= 0 ? 'text-gain' : 'text-loss')}>{aggregateMoney(snapshot.unrealizedPnl)}</p></div>
       </div>
       <div className="mt-6 border-t border-hi/10 pt-5"><h3 className="text-sm font-bold text-hi">Portfolio history</h3>{chartPoints.length > 1 ? <NetWorthChart points={chartPoints} mode="market" currency={snapshot.reportingCurrency} jurisdiction={jurisdiction} mask={hideBalances} /> : <p className="py-8 text-sm text-low">Not enough history for a chart.</p>}</div>
-      <div className="mt-6 grid gap-2 border-t border-hi/10 pt-5 sm:grid-cols-2 lg:grid-cols-6">{(Object.keys(CATEGORY_LABELS) as DashboardPeriodCategory[]).map((category) => <button key={category} type="button" onClick={() => openCategory(category)} className="rounded-xl border border-hi/10 bg-elev-1 p-3 text-left hover:border-primary/40"><span className="text-[0.6875rem] font-bold uppercase tracking-wider text-low">{CATEGORY_LABELS[category]}</span><span className="mt-1 block font-bold tabular-figures text-hi">{money(snapshot.period[category].value)}</span><span className="mt-1 block text-[0.6875rem] text-primary">View transactions →</span></button>)}</div>
+      <div className="mt-6 grid gap-2 border-t border-hi/10 pt-5 sm:grid-cols-2 lg:grid-cols-6">{(Object.keys(CATEGORY_LABELS) as DashboardPeriodCategory[]).map((category) => <button key={category} type="button" onClick={() => openCategory(category)} className="rounded-xl border border-hi/10 bg-elev-1 p-3 text-left hover:border-primary/40"><span className="text-[0.6875rem] font-bold uppercase tracking-wider text-low">{CATEGORY_LABELS[category]}</span><span className="mt-1 block font-bold tabular-figures text-hi">{periodMoney(snapshot.period[category])}</span><span className="mt-1 block text-[0.6875rem] text-primary">View transactions →</span></button>)}</div>
     </section>
 
     {(!snapshot.currentEndpoint || partial) && <details className="rounded-xl border border-hi/10 bg-elev-2 px-5 py-4">
@@ -399,10 +657,10 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
     </section>
 
     <div className="grid items-start gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">
-      <HoldingTable rows={snapshot.contributors} current={snapshot.currentEndpoint} mask={hideBalances} money={money} />
+      <HoldingTable rows={contributorRows} current={snapshot.currentEndpoint} mask={hideBalances} money={money} />
       <aside className="space-y-4 xl:sticky xl:top-24" aria-label="Tax summary">
-        <section className="rounded-2xl border border-hi/10 bg-elev-2 p-5 shadow-card"><p className="text-xs font-bold uppercase tracking-wider text-low">Estimated Tax · {period.taxLabel}</p>{jurisdiction === 'IN' ? <><p className="mt-2 text-2xl font-bold text-hi">{money(snapshot.estimatedTax)}</p><dl className="mt-4 space-y-2 border-t border-hi/10 pt-4 text-sm"><div className="flex justify-between gap-3"><dt className="text-mid">Sec. 115BBH tax</dt><dd className="font-semibold text-hi">30%</dd></div><div className="flex justify-between gap-3"><dt className="text-mid">Health &amp; education cess</dt><dd className="font-semibold text-hi">4%</dd></div><div className="flex justify-between gap-3"><dt className="text-mid">Taxable capital gains</dt><dd className="font-semibold tabular-figures text-hi">{money(snapshot.period.realizedCapitalGains.value)}</dd></div><div className="flex justify-between gap-3"><dt className="text-mid">TDS recorded</dt><dd className="font-semibold tabular-figures text-hi">{money(snapshot.tds)}</dd></div></dl>{period.id === 'this-tax-year' && <p className="mt-3 text-xs text-low">Current FY estimate through the cutoff, not a full-year forecast.</p>}{period.id === 'custom' && <p className="mt-3 text-xs text-low">Estimate for this custom period, not a filing-year total.</p>}</> : <><p className="mt-2 text-2xl font-bold text-hi">Not calculated</p><p className="mt-3 text-sm text-low">Dashboard tax estimates are not available for {JURISDICTION_LABELS[jurisdiction]}.</p></>}<button type="button" onClick={() => goTo('capital-gains')} className="mt-4 min-h-11 text-sm font-bold text-primary hover:underline">View Capital Gains →</button></section>
+        <section className="rounded-2xl border border-hi/10 bg-elev-2 p-5 shadow-card"><p className="text-xs font-bold uppercase tracking-wider text-low">Estimated Tax · {period.taxLabel}</p>{jurisdiction === 'IN' ? <><p className="mt-2 text-2xl font-bold text-hi">{estimatedTaxMoney}</p><dl className="mt-4 space-y-2 border-t border-hi/10 pt-4 text-sm"><div className="flex justify-between gap-3"><dt className="text-mid">Sec. 115BBH tax</dt><dd className="font-semibold text-hi">30%</dd></div><div className="flex justify-between gap-3"><dt className="text-mid">Health &amp; education cess</dt><dd className="font-semibold text-hi">4%</dd></div><div className="flex justify-between gap-3"><dt className="text-mid">Taxable capital gains</dt><dd className="font-semibold tabular-figures text-hi">{periodMoney(snapshot.period.realizedCapitalGains)}</dd></div><div className="flex justify-between gap-3"><dt className="text-mid">TDS recorded</dt><dd className="font-semibold tabular-figures text-hi">{money(snapshot.tds)}</dd></div></dl>{period.id === 'this-tax-year' && <p className="mt-3 text-xs text-low">Current FY estimate through the cutoff, not a full-year forecast.</p>}{period.id === 'custom' && <p className="mt-3 text-xs text-low">Estimate for this custom period, not a filing-year total.</p>}</> : <><p className="mt-2 text-2xl font-bold text-hi">Not calculated</p><p className="mt-3 text-sm text-low">Dashboard tax estimates are not available for {JURISDICTION_LABELS[jurisdiction]}.</p></>}<button type="button" onClick={() => goTo('capital-gains')} className="mt-4 min-h-11 text-sm font-bold text-primary hover:underline">View Capital Gains →</button></section>
       </aside>
     </div>
-  </div>;
+  </div></>;
 }

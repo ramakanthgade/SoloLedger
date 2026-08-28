@@ -219,6 +219,30 @@ describe('dashboard as-of projection', () => {
     });
   });
 
+  it('marks realized gains partial when a disposal has no priced proceeds', () => {
+    const result = projectDashboardAsOf(baseInput({
+      transactions: [
+        tx('known-basis', {
+          timestamp: START - DAY, type: 'buy', asset: 'BTC', amount: 1, fiatValue: 100
+        }),
+        tx('unpriced-sale', {
+          timestamp: START + 1, type: 'sell', asset: 'BTC', amount: 1, fiatValue: undefined
+        })
+      ],
+      openingBalances: [], priceCache: []
+    }));
+
+    expect(result.period.realizedCapitalGains).toMatchObject({
+      value: 0,
+      valuationStatus: 'unavailable',
+      valuationCompleteness: 'partial',
+      missingAssetCount: 1,
+      transactionIds: ['unpriced-sale'],
+      affectedAssetKeys: ['BTC'],
+      reasons: ['unpriced']
+    });
+  });
+
   it('recomputes historical totals after opening/price remediation', () => {
     const initial = projectDashboardAsOf(baseInput());
     const changed = projectDashboardAsOf(baseInput({
@@ -363,12 +387,20 @@ describe('dashboard as-of projection', () => {
       transactions: [], openingBalances: [], nominalEnd: NOW, effectiveEnd: NOW,
       authoritySnapshots: [custodySnapshot], authorityAssets: [], sourceCoverage: [],
       defiPositionSnapshots: snapshots,
-      defiPositionRows: [{
-        id: 'debt-only', snapshotId: 'position:aave-v3-ethereum', protocolId: 'aave-v3-ethereum',
-        reserveKey: contract, role: 'debt', quantity: 2, rawQuantity: '2000000', debtRateMode: 'variable',
-        underlying: { chainId: 1, contractAddress: contract, symbol: 'USDC', decimals: 6 },
-        protocolToken: { chainId: 1, contractAddress: debtToken, symbol: 'variableDebtUSDC', decimals: 6 }
-      }],
+      defiPositionRows: [
+        {
+          id: 'variable-debt', snapshotId: 'position:aave-v3-ethereum', protocolId: 'aave-v3-ethereum',
+          reserveKey: contract, role: 'debt', quantity: 2, rawQuantity: '2000000', debtRateMode: 'variable',
+          underlying: { chainId: 1, contractAddress: contract, symbol: 'USDC', decimals: 6 },
+          protocolToken: { chainId: 1, contractAddress: debtToken, symbol: 'variableDebtUSDC', decimals: 6 }
+        },
+        {
+          id: 'stable-debt', snapshotId: 'position:aave-v3-ethereum', protocolId: 'aave-v3-ethereum',
+          reserveKey: contract, role: 'debt', quantity: 1, rawQuantity: '1000000', debtRateMode: 'stable',
+          underlying: { chainId: 1, contractAddress: contract, symbol: 'USDC', decimals: 6 },
+          protocolToken: { chainId: 1, contractAddress: `${debtToken.slice(0, -1)}4`, symbol: 'stableDebtUSDC', decimals: 6 }
+        }
+      ],
       walletDefiRefreshManifests: [{
         accountIdentityScope: scope, custodyScopeId: scope, custodySnapshotId: 'custody', custodyGeneration: 1,
         custodyAsOf: NOW, blockNumber: 99, capturedAt: NOW,
@@ -377,10 +409,14 @@ describe('dashboard as-of projection', () => {
       priceCache: [{ key: `spot:ctr:ethereum:${contract}:INR`, price: 100, fetchedAt: NOW }]
     }));
     expect(result.currentAuthority).toMatchObject({ status: 'authoritative', comparable: true });
-    expect(result.contributors.find((row) => row.kind === 'liability')).toMatchObject({
-      asset: 'USDC', signedQuantity: -2, marketValue: -200
-    });
-    expect(result.totalNetWorth.value).toBe(-200);
+    expect(result.contributors.filter((row) => row.kind === 'liability').map((row) => ({
+      asset: row.asset, signedQuantity: row.signedQuantity, marketValue: row.marketValue,
+      debtRateMode: row.debtRateMode
+    }))).toEqual(expect.arrayContaining([
+      { asset: 'USDC', signedQuantity: -2, marketValue: -200, debtRateMode: 'variable' },
+      { asset: 'USDC', signedQuantity: -1, marketValue: -100, debtRateMode: 'stable' }
+    ]));
+    expect(result.totalNetWorth.value).toBe(-300);
 
     const supplyContract = '0x2222222222222222222222222222222222222222';
     const partial = projectDashboardAsOf(baseInput({
@@ -409,8 +445,12 @@ describe('dashboard as-of projection', () => {
       priceCache: [{ key: `spot:ctr:ethereum:${supplyContract}:INR`, price: 100, fetchedAt: NOW }]
     }));
     expect(partial.currentAuthority).toMatchObject({ status: 'unavailable', comparable: false });
-    expect(partial.contributors.find((row) => row.asset === 'SUP')).toMatchObject({ marketValue: 100 });
-    expect(partial.contributors.find((row) => row.asset === 'DEBT')).toMatchObject({ marketValue: undefined });
+    expect(partial.contributors.find((row) => row.asset === 'SUP')).toMatchObject({
+      marketValue: 100, isCollateral: true
+    });
+    expect(partial.contributors.find((row) => row.asset === 'DEBT')).toMatchObject({
+      marketValue: undefined, debtRateMode: 'variable'
+    });
     expect(partial.totalNetWorth).toMatchObject({ value: 100, valuationCompleteness: 'partial', missingLiabilityCount: 1 });
   });
 

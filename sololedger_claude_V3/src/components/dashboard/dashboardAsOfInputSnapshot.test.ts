@@ -132,6 +132,43 @@ describe('subscribeDashboardAsOfInputSnapshots', () => {
     expect(snapshots[1].settings.reportingCurrency).toBe('USD');
     expect(snapshots[1].revision.token).not.toBe(snapshots[0].revision.token);
   });
+
+  it('refreshes one complete transactional revision without invalidation and stops publishing after unsubscribe', async () => {
+    const database = await testDatabase();
+    const snapshots: DashboardAsOfInputSnapshot[] = [];
+    let readAt = 10;
+    const subscription = subscribeDashboardAsOfInputSnapshots({
+      next: (snapshot) => snapshots.push(snapshot)
+    }, { database, now: () => readAt++ });
+
+    await vi.waitFor(() => expect(snapshots).toHaveLength(1));
+    await subscription.refresh();
+
+    expect(snapshots).toHaveLength(2);
+    expect(snapshots[1].revision.readAt).toBeGreaterThan(snapshots[0].revision.readAt);
+    expect(snapshots[1].revision.token).not.toBe(snapshots[0].revision.token);
+
+    subscription.unsubscribe();
+    await subscription.refresh();
+    expect(snapshots).toHaveLength(2);
+  });
+
+  it('routes an explicit reread failure to the observer error callback', async () => {
+    const database = await testDatabase();
+    const errors: unknown[] = [];
+    const subscription = subscribeDashboardAsOfInputSnapshots({
+      next: () => undefined,
+      error: (error) => errors.push(error)
+    }, { database });
+
+    await vi.waitFor(() => expect(database.isOpen()).toBe(true));
+    const failure = new Error('atomic reread failed');
+    vi.spyOn(database, 'transaction').mockRejectedValueOnce(failure);
+    await subscription.refresh();
+
+    expect(errors).toEqual([failure]);
+    subscription.unsubscribe();
+  });
 });
 
 function input(token: string): DashboardAsOfInputSnapshot {
