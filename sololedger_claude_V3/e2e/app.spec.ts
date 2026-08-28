@@ -126,7 +126,8 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
   await expect(dashboardTotal).toContainText('₹1,72,38,558.14');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('WBTC');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('USDC');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('Borrowed · Variable rate');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('Borrowed · Stable rate');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('1.4975');
   await expect(page.getByTestId('dashboard-holdings')).not.toContainText('spWBTC');
   await expect(page.getByTestId('dashboard-holdings')).not.toContainText('aEthWBTC');
