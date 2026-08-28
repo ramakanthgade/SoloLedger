@@ -173,6 +173,8 @@ export interface DashboardAsOfInputObserver {
 
 export interface DashboardAsOfInputSubscription {
   unsubscribe(): void;
+  /** Re-read one complete transactional input view even without a Dexie invalidation. */
+  refresh(): Promise<void>;
 }
 
 /** One live query tracks and invalidates the complete transactional input read. */
@@ -180,7 +182,22 @@ export function subscribeDashboardAsOfInputSnapshots(
   observer: DashboardAsOfInputObserver,
   options: DashboardAsOfInputReadOptions = {}
 ): DashboardAsOfInputSubscription {
-  return liveQuery(() => readDashboardAsOfInputSnapshot(options)).subscribe(observer);
+  let active = true;
+  const subscription = liveQuery(() => readDashboardAsOfInputSnapshot(options)).subscribe(observer);
+  return {
+    unsubscribe() {
+      active = false;
+      subscription.unsubscribe();
+    },
+    async refresh() {
+      try {
+        const snapshot = await readDashboardAsOfInputSnapshot(options);
+        if (active) observer.next(snapshot);
+      } catch (error) {
+        if (active) observer.error?.(error);
+      }
+    }
+  };
 }
 
 export type DashboardAsOfPublicationState<TSnapshot> =

@@ -82,7 +82,8 @@ async function assertCoreRenderedState(page: import('@playwright/test').Page) {
   await expect(page.getByTestId('dashboard-total-net-worth')).toContainText('₹1,72,38,558.14');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('WBTC');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('USDC');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('Borrowed · Variable rate');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('Borrowed · Stable rate');
   await page.getByRole('tab', { name: 'Transactions', exact: true }).first().click();
   await expect(page.locator('[data-transaction-id="exact-out"]')).toContainText(/internal/i);
   await expect(page.locator('[data-transaction-id="b6-classified"]')).toContainText(/Staking|reward/i);
@@ -125,7 +126,8 @@ test('seeded v16 state drives rendered Dashboard, Connections, Transactions, att
   await expect(dashboardTotal).toContainText('₹1,72,38,558.14');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('WBTC');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('USDC');
-  await expect(page.getByTestId('dashboard-holdings')).toContainText(/Liabilit(?:y|ies)/);
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('Borrowed · Variable rate');
+  await expect(page.getByTestId('dashboard-holdings')).toContainText('Borrowed · Stable rate');
   await expect(page.getByTestId('dashboard-holdings')).toContainText('1.4975');
   await expect(page.getByTestId('dashboard-holdings')).not.toContainText('spWBTC');
   await expect(page.getByTestId('dashboard-holdings')).not.toContainText('aEthWBTC');

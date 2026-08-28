@@ -31,6 +31,14 @@ export interface DashboardLedgerContributor extends DashboardEvidenceMetadata {
   assetKey: string;
   asset: string;
   kind: 'asset' | 'liability';
+  /** Current-endpoint economic role; projection arithmetic remains unchanged. */
+  positionRole?: 'liquid' | 'supply' | 'liability';
+  /** Exact protocol authority that produced a supply/liability row. */
+  protocolId?: string;
+  /** Whether a supplied protocol position is enabled as collateral. */
+  isCollateral?: boolean;
+  /** Borrow rate mode reported by the protocol authority. */
+  debtRateMode?: 'stable' | 'variable';
   signedQuantity: number;
   accountScopes: readonly Readonly<{ scopeId: string; accountClass: AccountClass }>[];
   chain?: string;
