@@ -259,12 +259,25 @@ function contributorPositionLabel(row: DashboardLedgerContributor): string | und
   return row.kind === 'liability' ? 'Liability' : undefined;
 }
 
+const DASHBOARD_CURRENCY_PRECISION = 100;
+
+/** A zero-value holding is one whose known market value renders as 0.00. */
+function isZeroValueDashboardContributor(row: DashboardLedgerContributor): boolean {
+  return row.marketValue != null &&
+    Math.round(Math.abs(row.marketValue) * DASHBOARD_CURRENCY_PRECISION) === 0;
+}
+
 function HoldingTable({ rows, current, mask, money }: {
   rows: readonly DashboardLedgerContributor[];
   current: boolean;
   mask: boolean;
   money: (value: number | undefined) => string;
 }) {
+  const [showZeroValueRows, setShowZeroValueRows] = useState(false);
+  // Privacy mode must not reveal which rows are value-derived zeroes or their count.
+  const zeroValueRows = mask ? [] : rows.filter(isZeroValueDashboardContributor);
+  const visibleRows = mask || showZeroValueRows
+    ? rows : rows.filter((row) => !isZeroValueDashboardContributor(row));
   const headings = current
     ? ['Asset', 'Quantity / value', 'Avg cost', 'Current price', 'Unrealized P&L']
     : ['Asset', 'Balance', 'Cost', 'Market Value', 'ROI'];
@@ -286,9 +299,11 @@ function HoldingTable({ rows, current, mask, money }: {
   return <section id="dashboard-holdings" data-testid="dashboard-holdings" className="overflow-hidden rounded-2xl border border-hi/10 bg-elev-2 shadow-card">
     <div className="border-b border-hi/10 px-5 py-4"><h3 className="font-bold text-hi">Holdings &amp; protocol positions</h3></div>
     {rows.length === 0 ? <p className="p-5 text-sm text-low">No holdings at this cutoff.</p> : <>
+      <div id="dashboard-holdings-list">
+      {visibleRows.length === 0 ? <p className="p-5 text-sm text-low">All holdings at this cutoff have a zero value.</p> : <>
       <div className="hidden overflow-x-auto md:block"><table className="w-full table-fixed text-sm">
         <thead><tr className="border-b border-hi/10 text-xs uppercase tracking-wider text-low">{headings.map((heading, index) => <th key={heading} scope="col" className={cn('px-4 py-3', index === 0 ? 'text-left' : 'text-right')}>{heading}</th>)}</tr></thead>
-        <tbody>{rows.map((row) => {
+        <tbody>{visibleRows.map((row) => {
           const rowValues = values(row);
           return <tr key={`${row.kind}:${row.assetKey}`} className="border-b border-hi/10 last:border-0">
             <th scope="row" className="px-4 py-4 text-left"><span className="flex items-center gap-3"><AssetIcon symbol={row.asset} size={32} /><span><span className="block font-semibold text-hi">{row.asset}</span>{contributorPositionLabel(row) && <small className="text-low">{contributorPositionLabel(row)}</small>}</span></span></th>
@@ -296,10 +311,23 @@ function HoldingTable({ rows, current, mask, money }: {
           </tr>;
         })}</tbody>
       </table></div>
-      <div className="divide-y divide-hi/10 md:hidden">{rows.map((row) => <article key={`${row.kind}:${row.assetKey}`} className="p-4">
+      <div className="divide-y divide-hi/10 md:hidden">{visibleRows.map((row) => <article key={`${row.kind}:${row.assetKey}`} className="p-4">
         <h4 className="flex items-center gap-3 font-semibold text-hi"><AssetIcon symbol={row.asset} size={32} /><span>{row.asset}{contributorPositionLabel(row) && <small className="block text-low">{contributorPositionLabel(row)}</small>}</span></h4>
         <dl className="mt-3 grid grid-cols-2 gap-3">{headings.slice(1).map((heading, index) => <div key={heading}><dt className="text-[0.6875rem] font-bold uppercase tracking-wider text-low">{heading}</dt><dd className="mt-1 tabular-figures text-mid">{values(row)[index]}</dd></div>)}</dl>
       </article>)}</div>
+      </>}
+      </div>
+      {zeroValueRows.length > 0 && <div className="border-t border-hi/10 px-5 py-4 text-center">
+        <button
+          type="button"
+          aria-expanded={showZeroValueRows}
+          aria-controls="dashboard-holdings-list"
+          onClick={() => setShowZeroValueRows((currentValue) => !currentValue)}
+          className="min-h-11 rounded-lg px-3 text-sm font-semibold text-primary hover:bg-primary/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+        >
+          {showZeroValueRows ? 'Show less' : `Show more (${zeroValueRows.length} zero-value ${zeroValueRows.length === 1 ? 'holding' : 'holdings'})`}
+        </button>
+      </div>}
     </>}
   </section>;
 }

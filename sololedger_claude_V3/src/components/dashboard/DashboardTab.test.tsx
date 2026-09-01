@@ -361,6 +361,68 @@ describe('DashboardTab coherent as-of integration', () => {
     expect(screen.queryByRole('button', { name: /add transactions/i })).not.toBeInTheDocument();
   });
 
+  it('collapses known holdings that round to zero and lets the user reveal and hide them again', async () => {
+    const base = snapshot().contributors[0];
+    projectMock.mockImplementation(() => snapshot({ contributors: [
+      { ...base, assetKey: 'asset:BTC', asset: 'BTC', marketValue: 100 },
+      { ...base, assetKey: 'asset:GONE', asset: 'GONE', signedQuantity: 1, marketValue: 0, price: 0 },
+      { ...base, assetKey: 'asset:DUST', asset: 'DUST', signedQuantity: 0.000001, marketValue: 0.004, price: 4_000 },
+      { ...base, assetKey: 'asset:UNKNOWN', asset: 'UNKNOWN', marketValue: undefined, price: undefined }
+    ] }));
+
+    await renderDashboard();
+    const holdings = screen.getByTestId('dashboard-holdings');
+    expect(within(holdings).getAllByText('BTC').length).toBeGreaterThan(0);
+    expect(within(holdings).getAllByText('UNKNOWN').length).toBeGreaterThan(0);
+    expect(within(holdings).queryByText('GONE')).not.toBeInTheDocument();
+    expect(within(holdings).queryByText('DUST')).not.toBeInTheDocument();
+
+    const showMore = within(holdings).getByRole('button', { name: 'Show more (2 zero-value holdings)' });
+    expect(showMore).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(showMore);
+
+    expect(within(holdings).getAllByText('GONE').length).toBeGreaterThan(0);
+    expect(within(holdings).getAllByText('DUST').length).toBeGreaterThan(0);
+    const showLess = within(holdings).getByRole('button', { name: 'Show less' });
+    expect(showLess).toHaveAttribute('aria-expanded', 'true');
+    expect(holdings.lastElementChild).toContainElement(showLess);
+    fireEvent.click(showLess);
+
+    expect(within(holdings).queryByText('GONE')).not.toBeInTheDocument();
+    expect(within(holdings).queryByText('DUST')).not.toBeInTheDocument();
+    expect(within(holdings).getByRole('button', { name: 'Show more (2 zero-value holdings)' })).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('shows the collapsed control when every known holding rounds to zero', async () => {
+    const base = snapshot().contributors[0];
+    projectMock.mockImplementation(() => snapshot({ contributors: [
+      { ...base, assetKey: 'asset:GONE', asset: 'GONE', marketValue: 0, price: 0 }
+    ] }));
+
+    await renderDashboard();
+    const holdings = screen.getByTestId('dashboard-holdings');
+    expect(within(holdings).getByText('All holdings at this cutoff have a zero value.')).toBeVisible();
+    expect(within(holdings).getByRole('button', { name: 'Show more (1 zero-value holding)' })).toBeVisible();
+  });
+
+  it('does not leak zero-value classification or counts while balances are hidden', async () => {
+    const base = snapshot().contributors[0];
+    projectMock.mockImplementation(() => snapshot({ contributors: [
+      { ...base, assetKey: 'asset:BTC', asset: 'BTC', marketValue: 100 },
+      { ...base, assetKey: 'asset:GONE', asset: 'GONE', marketValue: 0, price: 0 }
+    ] }));
+
+    await renderDashboard();
+    expect(screen.queryByText('GONE')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Hide balances' }));
+
+    const holdings = screen.getByTestId('dashboard-holdings');
+    expect(within(holdings).getAllByText('BTC').length).toBeGreaterThan(0);
+    expect(within(holdings).getAllByText('GONE').length).toBeGreaterThan(0);
+    expect(within(holdings).queryByRole('button', { name: /Show more|Show less/ })).not.toBeInTheDocument();
+    expect(within(holdings).queryByText(/zero-value/)).not.toBeInTheDocument();
+  });
+
   it('holds the previous settled snapshot through active import revisions and waits for a post-import revision', async () => {
     let projected = snapshot();
     projectMock.mockImplementation(() => projected);
