@@ -84,6 +84,91 @@ describe('dashboard as-of projection', () => {
     expect(result.chart.map((point) => point.costBasis)).toEqual([100, 70]);
   });
 
+  it('keeps average cost proportional when non-taxable transfers reduce displayed custody', () => {
+    const quantity = 1.0128;
+    const acquiredQuantity = 260;
+    const acquisitionCost = 59_460_893.7396;
+    const unitCost = acquisitionCost / acquiredQuantity;
+    const result = projectDashboardAsOf(baseInput({
+      transactions: [
+        tx('eth-buy', {
+          timestamp: START - DAY, type: 'buy', asset: 'ETH', amount: acquiredQuantity,
+          fiatValue: acquisitionCost
+        }),
+        tx('eth-transfer-out', {
+          timestamp: START, type: 'transfer_out', asset: 'ETH',
+          amount: acquiredQuantity - quantity, fiatValue: undefined
+        })
+      ],
+      openingBalances: [],
+      chartSamples: [START - DAY, START, END],
+      priceCache: [{ key: 'sym:ETH:03-04-2026:INR', price: 229_171, fetchedAt: 1 }]
+    }));
+
+    const eth = result.contributors.find((row) => row.asset === 'ETH');
+    expect(eth?.price).toBe(229_171);
+    expect(eth?.signedQuantity).toBeCloseTo(quantity, 12);
+    expect(eth!.costBasis).toBeCloseTo(quantity * unitCost, 6);
+    expect(eth!.costBasis! / eth!.signedQuantity).toBeCloseTo(228_695.745152, 6);
+    expect(eth!.roi).toBeCloseTo(0.0020781097, 8);
+    expect(result.costBasis.value).toBeCloseTo(231_623.05069, 5);
+    expect(result.unrealizedPnl.value).toBeCloseTo(481.33811, 5);
+    expect(result.chart[result.chart.length - 1]?.costBasis).toBeCloseTo(result.costBasis.value, 8);
+    expect(result.chart.map((point) => point.costBasis)).toEqual([
+      acquisitionCost, expect.closeTo(231_623.05069, 5), expect.closeTo(231_623.05069, 5)
+    ]);
+  });
+
+  it('does not reuse exported lot basis for a later valued inbound transfer', () => {
+    const result = projectDashboardAsOf(baseInput({
+      transactions: [
+        tx('buy', { timestamp: START - 2 * DAY, type: 'buy', asset: 'ETH', amount: 1, fiatValue: 200_000 }),
+        tx('out', { timestamp: START - DAY, type: 'transfer_out', asset: 'ETH', amount: 1, fiatValue: undefined }),
+        tx('unknown-in', { timestamp: START, type: 'transfer_in', asset: 'ETH', amount: 1, fiatValue: 250_000 })
+      ],
+      openingBalances: [],
+      priceCache: [{ key: 'sym:ETH:03-04-2026:INR', price: 250_000, fetchedAt: 1 }]
+    }));
+
+    expect(result.contributors.find((row) => row.asset === 'ETH')).toMatchObject({
+      signedQuantity: 1, marketValue: 250_000, costBasis: undefined, roi: undefined
+    });
+    expect(result.costBasis).toMatchObject({ value: 0, valuationCompleteness: 'partial', missingAssetCount: 1 });
+    expect(result.unrealizedPnl).toMatchObject({ value: 0, valuationCompleteness: 'partial' });
+  });
+
+  it('preserves known basis subtotal alongside unknown inbound custody', () => {
+    const result = projectDashboardAsOf(baseInput({
+      transactions: [
+        tx('known-buy', { timestamp: START - DAY, type: 'buy', asset: 'BTC', amount: 1, fiatValue: 50 }),
+        tx('unknown-in', { timestamp: START, type: 'transfer_in', asset: 'BTC', amount: 1, fiatValue: 100 })
+      ],
+      openingBalances: [],
+      priceCache: [{ key: 'sym:BTC:03-04-2026:INR', price: 100, fetchedAt: 1 }]
+    }));
+
+    expect(result.contributors.find((row) => row.asset === 'BTC')).toMatchObject({
+      signedQuantity: 2, marketValue: 200, costBasis: undefined, roi: undefined
+    });
+    expect(result.costBasis).toMatchObject({ value: 50, valuationCompleteness: 'partial', missingAssetCount: 1 });
+    expect(result.chart[result.chart.length - 1]?.costBasis).toBe(50);
+  });
+
+  it('recognizes a zero-basis mining lot without inventing missing basis', () => {
+    const result = projectDashboardAsOf(baseInput({
+      transactions: [tx('mine', {
+        timestamp: START, type: 'income', category: 'mining', asset: 'BTC', amount: 1, fiatValue: undefined
+      })],
+      openingBalances: [],
+      priceCache: [{ key: 'sym:BTC:03-04-2026:INR', price: 100, fetchedAt: 1 }]
+    }));
+
+    expect(result.contributors.find((row) => row.asset === 'BTC')).toMatchObject({
+      signedQuantity: 1, marketValue: 100, costBasis: 0, roi: undefined
+    });
+    expect(result.costBasis).toMatchObject({ value: 0, valuationCompleteness: 'complete', missingAssetCount: 0 });
+  });
+
   it.each([
     ['US', 'USD'], ['CA', 'CAD'], ['AE', 'AED']
   ] as const)('does not expose India tax or INR TDS totals for %s', (jurisdiction, reportingCurrency) => {
@@ -454,6 +539,82 @@ describe('dashboard as-of projection', () => {
     expect(partial.totalNetWorth).toMatchObject({ value: 100, valuationCompleteness: 'partial', missingLiabilityCount: 1 });
   });
 
+  it('carries underlying lot basis through a DeFi receipt token into its supply row', () => {
+    const address = `0x${'3'.repeat(40)}`;
+    const scope = `wallet:evm:${address}`;
+    const underlying = '0x3333333333333333333333333333333333333334';
+    const receiptToken = '0x3333333333333333333333333333333333333335';
+    const snapshot: AuthoritySnapshotRow = {
+      snapshotId: 'defi-custody', generation: 1, scopeId: scope, authorityKind: 'rpc',
+      authorityClass: 'wallet_balance', accountClass: 'wallet', coveredAccountClasses: ['wallet'],
+      asOf: NOW, capturedAt: NOW, sourceIdentityId: 'wallet', status: 'complete',
+      endpointProof: {
+        authorityKind: 'rpc', provider: 'fixture', operation: 'balances', parametersClass: 'full',
+        requestedAccountClasses: ['wallet'], provenAccountClasses: ['wallet'], exhaustiveBalances: true
+      }
+    };
+    const positionSnapshots = (['aave-v2-ethereum', 'aave-v3-ethereum', 'spark-v1-ethereum'] as const)
+      .map((protocolId) => ({
+        snapshotId: `defi-position:${protocolId}`, generation: 1, accountIdentityScope: scope,
+        protocolId, chainId: 1 as const, status: 'complete' as const,
+        capturedAt: NOW, blockNumber: 99,
+        evidence: [{ provider: 'ethereum-rpc' as const, status: 'complete' as const, blockNumber: 99, detail: 'fixture' }]
+      }));
+    const aaveSnapshot = positionSnapshots.find((row) => row.protocolId === 'aave-v3-ethereum')!;
+    const projectionInput = baseInput({
+      transactions: [
+        tx('underlying-buy', {
+          timestamp: START - DAY, type: 'buy', asset: 'USDC', amount: 2, fiatValue: 200,
+          chain: 'ethereum', contractAddress: underlying, walletAddress: address, source: 'rpc:ethereum'
+        }),
+        tx('aave-deposit', {
+          timestamp: START, type: 'defi_deposit', asset: 'USDC', amount: 2, fiatValue: 200,
+          chain: 'ethereum', contractAddress: underlying, walletAddress: address, source: 'rpc:ethereum',
+          counterAsset: 'aUSDC', counterAmount: 2, raw: { counterContractAddress: receiptToken }
+        })
+      ],
+      openingBalances: [], nominalEnd: NOW, effectiveEnd: NOW,
+      authoritySnapshots: [snapshot],
+      authorityAssets: [{
+        id: 'receipt-authority', snapshotId: snapshot.snapshotId, generation: 1, scopeId: scope,
+        accountClass: 'wallet', assetKey: `evm:1:${receiptToken}`, asset: 'aUSDC', quantity: 2
+      }],
+      sourceCoverage: [],
+      defiPositionSnapshots: positionSnapshots,
+      defiPositionRows: [{
+        id: 'aave-supply', snapshotId: aaveSnapshot.snapshotId, protocolId: 'aave-v3-ethereum',
+        reserveKey: underlying, role: 'supply', quantity: 2, rawQuantity: '2000000', isCollateral: true,
+        underlying: { chainId: 1, contractAddress: underlying, symbol: 'USDC', decimals: 6 },
+        protocolToken: { chainId: 1, contractAddress: receiptToken, symbol: 'aUSDC', decimals: 6 }
+      }],
+      walletDefiRefreshManifests: [{
+        accountIdentityScope: scope, custodyScopeId: scope, custodySnapshotId: snapshot.snapshotId,
+        custodyGeneration: 1, custodyAsOf: NOW, blockNumber: 99, capturedAt: NOW,
+        protocolSnapshotIds: Object.fromEntries(positionSnapshots.map((row) => [row.protocolId, row.snapshotId]))
+      }],
+      priceCache: [{ key: `spot:ctr:ethereum:${underlying}:INR`, price: 150, fetchedAt: NOW }]
+    }) as Parameters<typeof projectDashboardAsOf>[0];
+    const result = projectDashboardAsOf(projectionInput);
+
+    expect(result.contributors.find((row) => row.positionRole === 'supply')).toMatchObject({
+      asset: 'USDC', signedQuantity: 2, marketValue: 300, costBasis: 200, roi: 0.5,
+      basisAssetKey: `evm:1:${underlying}`
+    });
+    expect(result.costBasis).toMatchObject({ value: 200, valuationCompleteness: 'complete' });
+    expect(result.unrealizedPnl.value).toBe(100);
+
+    const retained = projectDashboardAsOf({
+      ...projectionInput,
+      priceCache: [],
+      preparedPriceRows: { rows: [], parsedByKey: new Map() }
+    });
+    expect(retained.contributors.find((row) => row.basisAssetKey === `evm:1:${underlying}`)).toMatchObject({
+      signedQuantity: 2, costBasis: 200,
+      basisAssetKey: `evm:1:${underlying}`
+    });
+    expect(retained.costBasis).toMatchObject({ value: 200, valuationCompleteness: 'complete' });
+  });
+
   it('uses current authority at now but never rewinds it into a historical point', () => {
     const proof: EndpointProof = {
       authorityKind: 'api', provider: 'binance', operation: 'balance', parametersClass: 'spot',
@@ -496,6 +657,19 @@ describe('dashboard as-of projection', () => {
     });
     expect(current.contributors.find((row) => row.asset === 'BTC')?.signedQuantity).toBe(7);
     expect(current.currentAuthority).toMatchObject({ status: 'authoritative', comparable: true });
+
+    const reducedAuthority = projectDashboardAsOf({
+      ...shared, nominalEnd: NOW, effectiveEnd: NOW,
+      authorityAssets: [{ ...asset, quantity: 1 }],
+      chartSamples: [NOW],
+      priceCache: [{ key: 'spot:sym:BTC:INR', price: 100, fetchedAt: NOW }]
+    });
+    expect(reducedAuthority.contributors.find((row) => row.asset === 'BTC')).toMatchObject({
+      signedQuantity: 1, costBasis: 50, marketValue: 100, roi: 1
+    });
+    expect(reducedAuthority.costBasis.value).toBe(50);
+    expect(reducedAuthority.unrealizedPnl.value).toBe(50);
+    expect(reducedAuthority.chart[reducedAuthority.chart.length - 1]?.costBasis).toBe(50);
 
     const methodTransactions = [
       tx('cheap', { timestamp: START - 2 * DAY, type: 'buy', asset: 'BTC', amount: 1, fiatValue: 100,

@@ -29,6 +29,8 @@ export interface DashboardEvidenceMetadata {
 
 export interface DashboardLedgerContributor extends DashboardEvidenceMetadata {
   assetKey: string;
+  /** Canonical tax-lot identity when a protocol row uses a position-specific key. */
+  basisAssetKey?: string;
   asset: string;
   kind: 'asset' | 'liability';
   /** Current-endpoint economic role; projection arithmetic remains unchanged. */
