@@ -262,6 +262,21 @@ describe('DashboardTab coherent as-of integration', () => {
     expect(screen.getByText('How this was calculated')).toBeVisible();
   });
 
+  it('renders the represented ETH unit cost instead of the full tax-lot basis', async () => {
+    projectMock.mockImplementation(() => snapshot({
+      contributors: [{
+        ...snapshot().contributors[0], assetKey: 'asset:ETH', asset: 'ETH', signedQuantity: 1.0128,
+        price: 229_171, marketValue: 232_104.3888, costBasis: 231_623.05069,
+        roi: 0.0020781097
+      }]
+    }));
+    await renderDashboard();
+
+    expect(screen.getAllByText('₹2,28,695.75')).toHaveLength(2);
+    expect(screen.queryByText('₹5,87,09,413.25')).not.toBeInTheDocument();
+    expect(screen.getAllByText('+0.2%')).toHaveLength(2);
+  });
+
   it('validates custom ranges and atomically requests a new projection', async () => {
     await renderDashboard();
     fireEvent.click(screen.getByRole('radio', { name: 'Custom range' }));

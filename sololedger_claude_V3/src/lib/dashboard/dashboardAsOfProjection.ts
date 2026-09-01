@@ -16,7 +16,7 @@ import {
 } from '@/lib/portfolio/holdingsProjection';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
 import { EVM_CHAIN_NUMERIC_IDS } from '@/lib/ledger/chainNamespace';
-import { transactionLegAssetKey } from '@/lib/ledger/assetKey';
+import { assetKey, transactionLegAssetKey } from '@/lib/ledger/assetKey';
 import type { DefiPositionRow, DefiPositionSnapshot, WalletDefiRefreshManifest } from '@/lib/defi/types';
 import { projectScopedEconomicExposure } from '@/lib/portfolio/economicExposureProjection';
 import { isExcludedSafetyState } from '@/lib/safety/types';
@@ -236,25 +236,91 @@ function remainingCostByAsset(
   };
 }
 
-function remainingCostTotalsAtSamples(
+function remainingCostByAssetAtSamples(
   cost: Pick<ReturnType<typeof remainingCostByAsset>, 'lots' | 'inventoryDisposals'>,
   samples: readonly number[]
-): ReadonlyMap<number, number> {
+): ReadonlyMap<number, ReadonlyMap<string, { cost: number; quantity: number }>> {
+  const lotAssets = new Map(cost.lots.map((lot) => [lot.id, lot.assetKey ?? `asset:${lot.asset.toUpperCase()}`]));
   const events = [
-    ...cost.lots.map((lot) => ({ at: lot.acquiredAt, delta: lot.costBasisTotal })),
-    ...cost.inventoryDisposals.map((disposal) => ({ at: disposal.disposedAt, delta: -disposal.costBasis }))
+    ...cost.lots.map((lot) => ({
+      at: lot.acquiredAt, assetKey: lot.assetKey ?? `asset:${lot.asset.toUpperCase()}`,
+      costDelta: lot.costBasisTotal, quantityDelta: lot.amountOriginal
+    })),
+    ...cost.inventoryDisposals.flatMap((disposal) => disposal.lotConsumption.map((consumption) => ({
+      at: disposal.disposedAt,
+      assetKey: lotAssets.get(consumption.lotId) ?? `asset:${disposal.asset.toUpperCase()}`,
+      costDelta: -consumption.costBasis,
+      quantityDelta: -consumption.amount
+    })))
   ].sort((left, right) => left.at - right.at);
-  const totals = new Map<number, number>();
+  const totals = new Map<number, ReadonlyMap<string, { cost: number; quantity: number }>>();
+  const byAsset = new Map<string, { cost: number; quantity: number }>();
   let eventIndex = 0;
-  let total = 0;
   for (const sample of samples) {
     while (eventIndex < events.length && events[eventIndex].at <= sample) {
-      total += events[eventIndex].delta;
+      const event = events[eventIndex];
+      const current = byAsset.get(event.assetKey) ?? { cost: 0, quantity: 0 };
+      byAsset.set(event.assetKey, {
+        cost: current.cost + event.costDelta,
+        quantity: current.quantity + event.quantityDelta
+      });
       eventIndex += 1;
     }
-    totals.set(sample, total);
+    totals.set(sample, new Map([...byAsset].map(([assetKey, value]) => [assetKey, { ...value }])));
   }
   return totals;
+}
+
+interface BasisCustodyQuantity { known: number; unknown: number }
+
+function basisCustodyByAssetAtSamples(
+  transactions: readonly Transaction[],
+  replay: PreparedHistoricalLedgerReplay,
+  samples: readonly number[],
+  knownAcquisitionIds: ReadonlySet<string>,
+  reportingCurrency: string
+): ReadonlyMap<number, ReadonlyMap<string, BasisCustodyQuantity>> {
+  const byTransaction = new Map(transactions.map((transaction) => [transaction.id, transaction]));
+  const balances = new Map<string, BasisCustodyQuantity>();
+  const result = new Map<number, ReadonlyMap<string, BasisCustodyQuantity>>();
+  let postingIndex = 0;
+  for (const sample of samples) {
+    while (postingIndex < replay.preparedPostings.ordered.length &&
+      replay.preparedPostings.ordered[postingIndex].effectiveAt <= sample) {
+      const posting = replay.preparedPostings.ordered[postingIndex++];
+      const transaction = posting.transactionId ? byTransaction.get(posting.transactionId) : undefined;
+      if (transaction?.isInternalTransfer || transaction?.type === 'defi_deposit' || transaction?.type === 'defi_withdraw') continue;
+      const balance = balances.get(posting.assetKey) ?? { known: 0, unknown: 0 };
+      if (posting.role === 'opening_balance') {
+        balance.known = 0;
+        balance.unknown = Math.max(0, posting.signedQuantity);
+      } else if (posting.signedQuantity > 0) {
+        if (transaction && (knownAcquisitionIds.has(transaction.id) ||
+          posting.assetKey === `asset:${reportingCurrency.toUpperCase()}`)) {
+          balance.known += posting.signedQuantity;
+        } else {
+          balance.unknown += posting.signedQuantity;
+        }
+      } else if (posting.signedQuantity < 0) {
+        const total = balance.known + balance.unknown;
+        if (total > 0) {
+          const remainingRatio = Math.max(0, total + posting.signedQuantity) / total;
+          balance.known *= remainingRatio;
+          balance.unknown *= remainingRatio;
+        }
+      }
+      balances.set(posting.assetKey, balance);
+    }
+    result.set(sample, new Map([...balances].map(([assetKey, balance]) => [assetKey, { ...balance }])));
+  }
+  return result;
+}
+
+function representedKnownQuantity(displayedQuantity: number, custody: BasisCustodyQuantity | undefined): number {
+  if (!custody || displayedQuantity <= 0) return 0;
+  const extraUnknown = Math.max(0, displayedQuantity - custody.known - custody.unknown);
+  const effectiveUnknown = custody.unknown + extraUnknown;
+  return Math.max(0, Math.min(custody.known, displayedQuantity - effectiveUnknown));
 }
 
 export function projectLedgerBasisNetWorthAtCutoff(input: {
@@ -267,6 +333,7 @@ export function projectLedgerBasisNetWorthAtCutoff(input: {
   cutoff: number;
   costBasisByAsset?: ReadonlyMap<string, number>;
   costBasisQuantityByAsset?: ReadonlyMap<string, number>;
+  basisCustodyByAsset?: ReadonlyMap<string, BasisCustodyQuantity>;
   identities?: ReadonlyMap<string, HistoricalIdentity>;
   groupedBalances?: ReadonlyMap<string, HistoricalGroupedBalance>;
   metrics?: { groupedPostingVisits: number };
@@ -298,11 +365,15 @@ export function projectLedgerBasisNetWorthAtCutoff(input: {
     }, input.cutoff);
     const signedQuantity = kind === 'liability' ? -Math.abs(groupedBalance.quantity) : groupedBalance.quantity;
     const totalAssetCost = input.costBasisByAsset?.get(assetKey);
-    const totalAssetQuantity = positiveQuantityByAsset.get(assetKey);
-    const basisCoveredQuantity = input.costBasisQuantityByAsset?.get(assetKey) ?? 0;
-    const fullyBasisCovered = totalAssetQuantity != null && basisCoveredQuantity + 1e-9 >= totalAssetQuantity;
-    const costBasis = kind === 'asset' && groupedBalance.quantity > 0 && fullyBasisCovered && totalAssetCost != null && totalAssetQuantity
-      ? totalAssetCost * groupedBalance.quantity / totalAssetQuantity
+    const displayedQuantity = positiveQuantityByAsset.get(assetKey);
+    const remainingLotQuantity = input.costBasisQuantityByAsset?.get(assetKey) ?? 0;
+    const knownDisplayedQuantity = representedKnownQuantity(
+      displayedQuantity ?? 0, input.basisCustodyByAsset?.get(assetKey)
+    );
+    const hasBasisForDisplayedQuantity = displayedQuantity != null && remainingLotQuantity + 1e-9 >= displayedQuantity &&
+      knownDisplayedQuantity + 1e-9 >= displayedQuantity;
+    const costBasis = kind === 'asset' && groupedBalance.quantity > 0 && hasBasisForDisplayedQuantity && totalAssetCost != null && remainingLotQuantity > 0
+      ? totalAssetCost * groupedBalance.quantity / remainingLotQuantity
       : undefined;
     const unexplainedNegativeCustody = kind === 'asset' && signedQuantity < 0;
     const marketValue = mark.price == null || unexplainedNegativeCustody ? undefined : signedQuantity * mark.price;
@@ -310,7 +381,7 @@ export function projectLedgerBasisNetWorthAtCutoff(input: {
     if (unexplainedNegativeCustody) reasons.push('missing_opening_balance');
     if (mark.reason) reasons.push(mark.reason);
     contributors.push({
-      assetKey, asset: identity.asset, kind, signedQuantity,
+      assetKey, basisAssetKey: assetKey, asset: identity.asset, kind, signedQuantity,
       accountScopes: groupedBalance.scopes, chain: identity.chain, contractAddress: identity.contractAddress,
       price: mark.price, marketValue, costBasis,
       roi: kind === 'asset' && marketValue != null && costBasis != null && costBasis > 0
@@ -341,7 +412,7 @@ function currentContributors(
     const reasons: DashboardEvidenceReason[] = unavailableAuthority ? ['current_authority_incomplete'] : ['current_authority'];
     if (mark.reason && !reasons.includes(mark.reason)) reasons.push(mark.reason);
     return {
-      assetKey: holding.assetKey, asset: holding.asset, kind: 'asset' as const,
+      assetKey: holding.assetKey, basisAssetKey: holding.assetKey, asset: holding.asset, kind: 'asset' as const,
       positionRole: 'liquid' as const,
       signedQuantity: holding.quantity,
       accountScopes: holding.sourceVerification.map((source) => ({ scopeId: source.scopeId, accountClass: source.accountClass })),
@@ -359,20 +430,31 @@ function currentContributors(
 function applyConfiguredRemainingCost(
   contributors: readonly DashboardLedgerContributor[],
   costByAsset: ReadonlyMap<string, number>,
-  costQuantityByAsset: ReadonlyMap<string, number>
+  costQuantityByAsset: ReadonlyMap<string, number>,
+  basisCustodyByAsset: ReadonlyMap<string, BasisCustodyQuantity>
 ): DashboardLedgerContributor[] {
   const quantityByAsset = new Map<string, number>();
   for (const row of contributors) {
     if (row.kind !== 'asset' || row.signedQuantity <= 0) continue;
-    quantityByAsset.set(row.assetKey, (quantityByAsset.get(row.assetKey) ?? 0) + row.signedQuantity);
+    const basisAssetKey = row.basisAssetKey ?? row.assetKey;
+    quantityByAsset.set(basisAssetKey, (quantityByAsset.get(basisAssetKey) ?? 0) + row.signedQuantity);
   }
   return contributors.map((row) => {
     if (row.kind !== 'asset' || row.signedQuantity <= 0) return row;
-    const totalCost = costByAsset.get(row.assetKey);
-    const totalQuantity = quantityByAsset.get(row.assetKey);
-    const fullyBasisCovered = totalQuantity != null && (costQuantityByAsset.get(row.assetKey) ?? 0) + 1e-9 >= totalQuantity;
-    const costBasis = fullyBasisCovered && totalCost != null && totalQuantity
-      ? totalCost * row.signedQuantity / totalQuantity : undefined;
+    const basisAssetKey = row.basisAssetKey ?? row.assetKey;
+    const totalCost = costByAsset.get(basisAssetKey);
+    const displayedQuantity = quantityByAsset.get(basisAssetKey);
+    const remainingLotQuantity = costQuantityByAsset.get(basisAssetKey) ?? 0;
+    const knownDisplayedQuantity = representedKnownQuantity(
+      displayedQuantity ?? 0, basisCustodyByAsset.get(basisAssetKey)
+    );
+    const hasBasisForDisplayedQuantity = displayedQuantity != null && remainingLotQuantity + 1e-9 >= displayedQuantity &&
+      knownDisplayedQuantity + 1e-9 >= displayedQuantity;
+    // Tax lots intentionally ignore non-taxable transfers, while custody does
+    // not. Allocate only the represented custody quantity at the remaining
+    // lot unit cost instead of compressing every open lot's basis into it.
+    const costBasis = hasBasisForDisplayedQuantity && totalCost != null && remainingLotQuantity > 0
+      ? totalCost * row.signedQuantity / remainingLotQuantity : undefined;
     return {
       ...row,
       costBasis,
@@ -398,6 +480,14 @@ function applyCurrentDefiAuthority(
     return { contributors: [...contributors], comparable: true };
   }
   const originalById = new Map(walletContributors.map((row) => [row.assetKey, row]));
+  const underlyingBasisKeyByProtocolToken = new Map((input.defiPositionRows ?? []).map((position) => [
+    position.protocolToken.contractAddress.toLowerCase(),
+    assetKey({
+      asset: position.underlying.symbol,
+      chain: 'ethereum',
+      contractAddress: position.underlying.contractAddress
+    })
+  ]));
   const prices = new Map<string, number>();
   for (const row of walletContributors) {
     if (row.contractAddress && row.price != null) prices.set(row.contractAddress.toLowerCase(), row.price);
@@ -447,6 +537,11 @@ function applyCurrentDefiAuthority(
     const marketValue = row.contribution ?? undefined;
     return {
       assetKey: kind === 'liability' ? `liability:${row.protocolId ?? 'defi'}:${row.id}` : row.id,
+      basisAssetKey: kind === 'asset'
+        ? underlyingBasisKeyByProtocolToken.get(row.contractAddress?.toLowerCase() ?? '') ?? assetKey({
+            asset: row.symbol, chain: original?.chain ?? 'ethereum', contractAddress: row.contractAddress
+          })
+        : undefined,
       asset: row.symbol,
       kind,
       positionRole: row.kind,
@@ -620,6 +715,7 @@ export function projectDashboardAsOf(
   let replay: PreparedHistoricalLedgerReplay;
   let contributors: DashboardLedgerContributor[];
   let totalNetWorth: DashboardAggregate;
+  let basisCustodyAtEnd: ReadonlyMap<string, BasisCustodyQuantity>;
   let currentComparable = true;
   if (currentEndpoint) {
     const holdingsInput = {
@@ -630,22 +726,32 @@ export function projectDashboardAsOf(
     };
     const holdings = buildHoldingsProjection(holdingsInput);
     replay = { postings: holdings.postings, preparedPostings: holdings.preparedPostings };
+    basisCustodyAtEnd = basisCustodyByAssetAtSamples(
+      policyTransactions, replay, [input.effectiveEnd], new Set(cost.lots.map((lot) => lot.sourceTxId)),
+      input.settings.reportingCurrency
+    ).get(input.effectiveEnd) ?? new Map();
     const failedKeys = new Set(holdings.slices.filter((slice) =>
       slice.verificationStatus !== 'verified_authority').map((slice) => slice.assetKey));
     currentComparable = failedKeys.size === 0;
     contributors = currentContributors(projectionInput, holdings.holdings, failedKeys);
     const defi = applyCurrentDefiAuthority(projectionInput, contributors);
-    contributors = applyConfiguredRemainingCost(defi.contributors, cost.byAsset, cost.quantityByAsset);
+    contributors = applyConfiguredRemainingCost(
+      defi.contributors, cost.byAsset, cost.quantityByAsset, basisCustodyAtEnd
+    );
     currentComparable &&= defi.comparable;
     totalNetWorth = aggregateContributors(contributors, input.effectiveEnd);
   } else {
     replay = prepareHistoricalLedgerReplay(projectionInput);
+    basisCustodyAtEnd = basisCustodyByAssetAtSamples(
+      policyTransactions, replay, [input.effectiveEnd], new Set(cost.lots.map((lot) => lot.sourceTxId)),
+      input.settings.reportingCurrency
+    ).get(input.effectiveEnd) ?? new Map();
     const historical = projectLedgerBasisNetWorthAtCutoff({
       replay, transactions: policyTransactions, priceCache: input.priceCache,
       preparedPriceRows: projectionInput.preparedPriceRows,
       reportingCurrency: input.settings.reportingCurrency, safetyDecisions,
       cutoff: input.effectiveEnd, costBasisByAsset: cost.byAsset,
-      costBasisQuantityByAsset: cost.quantityByAsset
+      costBasisQuantityByAsset: cost.quantityByAsset, basisCustodyByAsset: basisCustodyAtEnd
     });
     contributors = historical.contributors;
     totalNetWorth = historical.aggregate;
@@ -654,15 +760,23 @@ export function projectDashboardAsOf(
   const contributorQuantityByAsset = new Map<string, number>();
   for (const row of contributors) {
     if (row.kind !== 'asset' || row.signedQuantity <= 0) continue;
-    contributorQuantityByAsset.set(row.assetKey, (contributorQuantityByAsset.get(row.assetKey) ?? 0) + row.signedQuantity);
+    const basisAssetKey = row.basisAssetKey ?? row.assetKey;
+    contributorQuantityByAsset.set(basisAssetKey, (contributorQuantityByAsset.get(basisAssetKey) ?? 0) + row.signedQuantity);
   }
   const undercoveredCostAssets = new Set([...contributorQuantityByAsset].filter(([assetKey, quantity]) =>
     (cost.quantityByAsset.get(assetKey) ?? 0) + 1e-9 < quantity).map(([assetKey]) => assetKey));
   const assetsMissingCost = contributors.filter((row) =>
     row.kind === 'asset' && row.signedQuantity > 0 &&
-    (row.costBasis == null || undercoveredCostAssets.has(row.assetKey)));
+    (row.costBasis == null || undercoveredCostAssets.has(row.basisAssetKey ?? row.assetKey)));
+  const representedCostBasis = [...cost.byAsset].reduce((sum, [assetKey, totalCost]) => {
+    const basisQuantity = cost.quantityByAsset.get(assetKey) ?? 0;
+    const representedQuantity = contributorQuantityByAsset.get(assetKey) ?? 0;
+    if (basisQuantity <= 0 || representedQuantity <= 0) return sum;
+    const knownQuantity = representedKnownQuantity(representedQuantity, basisCustodyAtEnd.get(assetKey));
+    return sum + totalCost * Math.min(knownQuantity, basisQuantity) / basisQuantity;
+  }, 0);
   const costBasis = {
-    ...emptyAggregate(input.effectiveEnd), value: cost.total,
+    ...emptyAggregate(input.effectiveEnd), value: representedCostBasis,
     contributorIds: contributors.filter((row) => row.costBasis != null).map((row) => row.assetKey),
     valuationStatus: assetsMissingCost.length > 0 ? 'unavailable' as const : 'authoritative' as const,
     valuationCompleteness: assetsMissingCost.length > 0 ? 'partial' as const : 'complete' as const,
@@ -671,32 +785,48 @@ export function projectDashboardAsOf(
     reasons: assetsMissingCost.length > 0 ? ['missing_opening_balance' as const] : []
   };
   const pnlContributors = contributors.filter((row) => row.marketValue != null && row.costBasis != null &&
-    row.kind === 'asset' && !undercoveredCostAssets.has(row.assetKey));
+    row.kind === 'asset' && !undercoveredCostAssets.has(row.basisAssetKey ?? row.assetKey));
   const unrealizedPnl = {
     ...emptyAggregate(input.effectiveEnd, currentEndpoint ? 'authoritative' : 'estimated'),
     value: pnlContributors.reduce((sum, row) => sum + row.marketValue! - row.costBasis!, 0),
     contributorIds: pnlContributors.map((row) => row.assetKey),
     valuationCompleteness: pnlContributors.length === contributors.filter((row) => row.kind === 'asset').length ? 'complete' as const : 'partial' as const,
     affectedAssetKeys: contributors.filter((row) => row.kind === 'asset' &&
-      (row.marketValue == null || row.costBasis == null || undercoveredCostAssets.has(row.assetKey))).map((row) => row.assetKey)
+      (row.marketValue == null || row.costBasis == null || undercoveredCostAssets.has(row.basisAssetKey ?? row.assetKey))).map((row) => row.assetKey)
   };
   const period = periodAggregates(projectionInput, cost);
   const chartSamples = [...new Set((input.chartSamples ?? [input.effectiveEnd])
     .filter((sample) => sample <= input.effectiveEnd))].sort((a, b) => a - b);
   const prepareChart = () => {
-    const costAtSample = remainingCostTotalsAtSamples(cost, chartSamples);
+    const costAtSample = remainingCostByAssetAtSamples(cost, chartSamples);
+    const basisCustodyAtSample = basisCustodyByAssetAtSamples(
+      policyTransactions, replay, chartSamples, new Set(cost.lots.map((lot) => lot.sourceTxId)),
+      input.settings.reportingCurrency
+    );
     const groupedAtSample = measureChartPreparation
       ? measureChartPreparation(() => groupedBalancesAtSamples(replay, chartSamples))
       : groupedBalancesAtSamples(replay, chartSamples);
     return chartSamples.map((timestamp): DashboardChartPoint => {
-      if (timestamp === input.effectiveEnd) return { ...totalNetWorth, timestamp, costBasis: cost.total };
+      if (timestamp === input.effectiveEnd) return { ...totalNetWorth, timestamp, costBasis: costBasis.value };
       const point = projectLedgerBasisNetWorthAtCutoff({
         replay, transactions: policyTransactions, priceCache: input.priceCache,
         preparedPriceRows: projectionInput.preparedPriceRows,
         reportingCurrency: input.settings.reportingCurrency, safetyDecisions,
         cutoff: timestamp, identities, groupedBalances: groupedAtSample.get(timestamp)
       });
-      return { ...point.aggregate, timestamp, costBasis: costAtSample.get(timestamp) ?? 0 };
+      const grouped = groupedAtSample.get(timestamp) ?? new Map();
+      const representedCost = [...(costAtSample.get(timestamp) ?? new Map())].reduce(
+        (sum, [assetKey, lot]) => {
+          const displayedQuantity = Math.max(0, grouped.get(assetKey)?.quantity ?? 0);
+          const knownQuantity = representedKnownQuantity(
+            displayedQuantity, basisCustodyAtSample.get(timestamp)?.get(assetKey)
+          );
+          return lot.quantity > 0
+            ? sum + lot.cost * Math.min(knownQuantity, lot.quantity) / lot.quantity
+            : sum;
+        }, 0
+      );
+      return { ...point.aggregate, timestamp, costBasis: representedCost };
     });
   };
   const chart = prepareChart();
