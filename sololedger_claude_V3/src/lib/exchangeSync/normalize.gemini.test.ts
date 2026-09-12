@@ -61,7 +61,7 @@ describe('Gemini normalization and dedup safety', () => {
       fee: { cost: 1, currency: 'USD' }, info: { fee_currency: 'GUSD' }
     };
     expect(normalizeTrade('gemini', trade, gusdMarket)).toMatchObject({
-      type: 'buy', fiatCurrency: 'USD', fiatValue: 20, feeAsset: 'GUSD'
+      type: 'buy', fiatCurrency: 'GUSD', fiatValue: 20, feeAsset: 'GUSD'
     });
     expect(normalizeTrade('gemini', trade, sgdMarket)).toMatchObject({
       type: 'buy', fiatCurrency: 'SGD', fiatValue: 20

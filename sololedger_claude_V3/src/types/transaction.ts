@@ -90,7 +90,8 @@ export interface Transaction {
   fiatValue?: number;           // value of the amount at time of tx, in fiatCurrency
                                  // (required for buy/sell/trade/income; optional for transfers)
   executionQuote?: { amount: number; currency: string; timestamp: number };
-  fxProvenance?: { provider: string; rate: number; requestedDate: string; rateDate: string; from: string; to: string };
+  fxProvenance?: { provider: string; rate: number; requestedDate: string; rateDate: string; from: string; to: string; reference?: string };
+  manualValuation?: { method: 'rate' | 'total'; enteredAt: number; reference?: string };
   counterAsset?: string;        // for trades: the asset received/given in exchange
   counterAmount?: number;
   source: string;               // "coinbase" | "binance" | "manual" | "rpc:<chain>" etc.

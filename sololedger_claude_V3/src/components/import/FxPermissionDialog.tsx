@@ -6,6 +6,7 @@ export function FxPermissionDialog({ requests, currency, onDecision }: {
   requests: string[]; currency: string; onDecision: (allowed: boolean) => void;
 }) {
   return <Dialog open onClose={() => onDecision(false)} labelledBy="fx-permission-title" className="max-w-xl">
+    <button type="button" aria-label="Decline and close currency lookup" onClick={() => onDecision(false)} className="float-right ml-3 rounded px-2 py-1 text-low hover:text-hi">×</button>
     <h2 id="fx-permission-title" className="font-display text-2xl font-bold text-hi">Allow historical currency lookup?</h2>
     <p className="mt-3 text-sm text-mid">For this import or recovery batch only. Frankfurter receives the currencies and dates below, directly from your browser. No SoloLedger relay is used.</p>
     <ul className="my-4 max-h-40 overflow-auto rounded-xl border border-hi/10 bg-elev-1 p-3 font-mono text-xs text-hi">

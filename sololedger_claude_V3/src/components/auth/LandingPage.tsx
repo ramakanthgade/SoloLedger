@@ -488,6 +488,7 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
                 Continue without an account
               </Button>
             </div>
+            <p className="mt-3 max-w-xl text-xs leading-relaxed text-low">An account is not a backup or cross-device sync. Your ledger stays in this browser; keep a secure copy of sensitive, unencrypted JSON backups. Without an account, historical currency lookups ask permission for each batch; decline to enter a rate or total manually.</p>
             <div className="mt-5 flex flex-wrap gap-x-5 gap-y-1.5 text-sm text-low">
               {HERO_CHECKMARKS.map((item) => (
                 <span key={item} className="inline-flex items-center gap-1.5">

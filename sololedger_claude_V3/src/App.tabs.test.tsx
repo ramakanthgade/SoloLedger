@@ -97,7 +97,7 @@ describe('App tab navigation (a11y)', () => {
       </ModeProvider>
     );
     // Enter the app via the account-free local path.
-    fireEvent.click(await screen.findByRole('button', { name: /start locally/i }));
+    fireEvent.click((await screen.findAllByRole('button', { name: /continue without an account/i }))[0]);
     // Wait for the tablist to mount (dbReady resolves on a microtask).
     return waitFor(() => screen.getByRole('tablist', { name: 'Sections' }));
   }
@@ -221,7 +221,7 @@ describe('App tab navigation (a11y)', () => {
       </ModeProvider>
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /start locally/i }));
+    fireEvent.click((await screen.findAllByRole('button', { name: /continue without an account/i }))[0]);
     expect(screen.queryByTestId('panel-dashboard')).not.toBeInTheDocument();
     expect(screen.getByText('Loading your workspace…')).toBeInTheDocument();
 

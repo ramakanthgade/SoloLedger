@@ -34,9 +34,9 @@ describe('Onboarding — skip + switch-mode escape hatches', () => {
     localStorage.setItem(APP_MODE_SELECTED_KEY, '1');
   });
 
-  it('always shows a "Switch mode" control (reachable from onboarding)', () => {
+  it('always shows a "Account options" control (reachable from onboarding)', () => {
     renderOnboarding();
-    expect(screen.getByRole('button', { name: /switch mode/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /account options/i })).toBeInTheDocument();
   });
 
   it('shows the "Skip setup" link on step 1 when onSkip is provided', () => {

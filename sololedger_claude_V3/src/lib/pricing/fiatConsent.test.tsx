@@ -14,12 +14,13 @@ async function allow() { fireEvent.click(await screen.findByRole('button', { nam
 
 describe('historical currency permission integration', () => {
   it('denial and Escape make no requests, retain execution quote and allow manual INR total', async () => {
-    for (const deny of ['button', 'escape']) {
+    for (const deny of ['button', 'escape', 'close']) {
       const pending = convertOrNormalizeForImport([row()], settings, true);
       const dialog = await screen.findByRole('dialog');
       expect(dialog.textContent).toContain('Frankfurter');
       expect(dialog.textContent).toContain('IP address');
       if (deny === 'button') fireEvent.click(screen.getByRole('button', { name: 'Enter totals manually' }));
+      else if (deny === 'close') fireEvent.click(screen.getByRole('button', { name: 'Decline and close currency lookup' }));
       else fireEvent.keyDown(dialog, { key: 'Escape' });
       const result = await pending;
       expect(result.transactions[0]).toMatchObject({ fiatCurrency: 'INR', executionQuote: { amount: 420.5, currency: 'USD' } });

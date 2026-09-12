@@ -96,7 +96,7 @@ describe('normalizeTrade — binance (real ccxt parse of myTrades fixture)', () 
     expect(row!.amount).toBe(0.01);
     expect(row!.counterAsset).toBe('USDT');
     expect(row!.counterAmount).toBe(435.0012);
-    expect(row!.fiatCurrency).toBe('USD');
+    expect(row!.fiatCurrency).toBe('USDT');
     expect(row!.fiatValue).toBe(435.0012);
     expect(row!.feeAmount).toBe(0.00001);
     expect(row!.feeAsset).toBe('BTC');

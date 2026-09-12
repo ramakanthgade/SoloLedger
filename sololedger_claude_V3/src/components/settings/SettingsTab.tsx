@@ -303,7 +303,7 @@ export function SettingsTab() {
                 )}
               </CardHeader>
               <CardContent className="py-2">
-                <p className="text-sm text-low">Without an account, imports and calculations run locally. Historical currency lookups ask permission for each batch; use Review to enter total values instead. Managed wallet and price lookups require an account. Legacy provider keys are disabled.</p><div className="divide-y divide-hi/10">
+                <p className="text-sm text-low">Without an account, imports and calculations run locally. Historical currency lookups ask permission for each batch; use Review to enter total values instead. Managed wallet and price lookups require an account. Legacy provider keys are disabled.</p>{saas && <div className="divide-y divide-hi/10">
                   <div className="py-4">
                     <ToggleRow
                       title="Live price lookup"
@@ -333,7 +333,7 @@ export function SettingsTab() {
                     />
 
                   </div>
-                </div>
+                </div>}
               </CardContent>
             </Card>
           </div>

@@ -132,10 +132,8 @@ describe('SettingsTab — account-free network controls', () => {
     await screen.findByText(/Legacy provider keys are disabled/);
     expect(screen.queryByRole('checkbox', { name: /AI Tax Advisor/i })).toBeNull();
     expect(screen.queryByText(/OpenRouter API key/)).toBeNull();
-    const lookup = screen.getByRole('checkbox', { name: /Live price lookup/i });
-    expect(lookup).not.toBeChecked();
-    fireEvent.click(lookup);
-    expect(lookup).not.toBeChecked();
+    expect(screen.queryByRole('checkbox', { name: /Live price lookup/i })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Wallet address lookup/i })).toBeNull();
   });
 });
 

@@ -206,7 +206,7 @@ describe('LandingPage — account-first behavior', () => {
     renderLanding();
     fireEvent.click(screen.getAllByRole('button', { name: 'Continue without an account' })[0]);
     expect(onSelectMode).toHaveBeenCalledWith('local');
-    expect(screen.getByText(/An account is not a backup/)).toBeInTheDocument();
+    expect(screen.getAllByText(/An account is not a backup/).length).toBeGreaterThan(0);
   });
   it('Sign in keeps the existing auth entrypoint', () => {
     renderLanding();

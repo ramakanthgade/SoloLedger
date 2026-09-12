@@ -82,13 +82,11 @@ describe('SettingsTab — section styling hooks', () => {
     ).toBeInTheDocument();
   });
 
-  it('keeps network features as labelled checkboxes with honest captions', async () => {
+  it('hides unavailable local network controls and explains account requirements', async () => {
     render(<SettingsTab />);
-    const price = await screen.findByRole('checkbox', { name: /Live price lookup/i });
-    const rpc = screen.getByRole('checkbox', { name: /Wallet address lookup/i });
-    expect(price).toBeInTheDocument();
-    expect(rpc).toBeInTheDocument();
-    expect(screen.getAllByText(/Leaves your device:/)).toHaveLength(2);
+    await screen.findByText(/Managed wallet and price lookups require an account/);
+    expect(screen.queryByRole('checkbox', { name: /Live price lookup/i })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Wallet address lookup/i })).toBeNull();
   });
 
   it('confirms a settings change with a "Settings saved" toast', async () => {

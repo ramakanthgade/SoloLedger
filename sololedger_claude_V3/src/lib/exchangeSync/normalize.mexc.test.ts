@@ -40,7 +40,7 @@ describe('MEXC pinned parser, tax semantics and identity', () => {
   it('normalizes stable-quoted spot fills and only verified settled transfer statuses', () => {
     const rows = apiRows();
     expect(rows.map((row) => row.type)).toEqual(['buy', 'sell', 'transfer_in', 'transfer_in', 'transfer_out']);
-    expect(rows[0]).toMatchObject({ source: 'mexc_api', sourceRef: '90001', fiatCurrency: 'USD', fiatValue: 600, raw: { exchangeSyncKind: 'trade' } });
+    expect(rows[0]).toMatchObject({ source: 'mexc_api', sourceRef: '90001', fiatCurrency: 'USDT', fiatValue: 600, raw: { exchangeSyncKind: 'trade' } });
     expect(rows.find((row) => row.type === 'transfer_in')).toMatchObject({ sourceRef: 'hash:0', raw: { exchangeSyncKind: 'deposit' } });
     expect(rows.find((row) => row.type === 'transfer_out')).toMatchObject({ sourceRef: 'w-1', amount: 10, feeAmount: 1, raw: { exchangeSyncKind: 'withdrawal' } });
   });

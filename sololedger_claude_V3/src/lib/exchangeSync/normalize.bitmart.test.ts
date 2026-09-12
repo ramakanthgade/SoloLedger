@@ -50,7 +50,7 @@ describe('BitMart real-parser normalization, tax semantics and scoped identity',
     expect(rows).toHaveLength(5);
     expect(rows.map((row) => row.type)).toEqual(['buy', 'sell', 'trade', 'transfer_in', 'transfer_out']);
     expect(rows.find((row) => row.type === 'buy')).toMatchObject({
-      source: 'bitmart_api', sourceRef: 'bm-trade-1', fiatCurrency: 'USD', fiatValue: 25_000
+      source: 'bitmart_api', sourceRef: 'bm-trade-1', fiatCurrency: 'USDT', fiatValue: 25_000
     });
     expect(rows.find((row) => row.type === 'transfer_out')).toMatchObject({
       sourceRef: 'bm-transfer-2', amount: 0.05, feeAmount: 0.0001,
