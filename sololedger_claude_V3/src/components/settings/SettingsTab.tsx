@@ -1,3 +1,4 @@
+import { LegacyLedgerRecovery } from './LegacyLedgerRecovery';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getSettings, saveSettings, clearAllData } from '@/lib/storage/db';
 import { exportFullBackup, importFullBackup } from '@/lib/storage/backup';
@@ -6,7 +7,6 @@ import type { TaxSettings, Jurisdiction } from '@/types/transaction';
 import { Badge, Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Toast, ToastViewport } from '@/components/ui/toast';
-import { ApiKeyField } from './ApiKeyField';
 import { AdminServerSettings } from './AdminServerSettings';
 import { SubscriptionCard } from './SubscriptionCard';
 import { isSaasMode } from '@/lib/saas/config';
@@ -123,7 +123,7 @@ export function SettingsTab() {
     // Every mode gets the personal lookup toggles — hosted defaults them ON
     // (seeded on first sign-in) and the user can turn them off anytime.
     list.push({ id: 'settings-network', label: 'Network features', icon: Globe });
-    if (!isAdmin) list.push({ id: 'settings-ai', label: 'AI advisor', icon: Sparkles });
+    if (saas && !isAdmin) list.push({ id: 'settings-ai', label: 'AI advisor', icon: Sparkles });
     list.push({ id: 'settings-data', label: 'Your data', icon: Database });
     if (saas && !isAdmin) list.push({ id: 'settings-subscription', label: 'Subscription', icon: Star });
     if (!saas) list.push({ id: 'settings-registries', label: 'Address registries', icon: Wallet });
@@ -303,12 +303,12 @@ export function SettingsTab() {
                 )}
               </CardHeader>
               <CardContent className="py-2">
-                <div className="divide-y divide-hi/10">
+                <p className="text-sm text-low">Without an account, imports and calculations run locally. Historical currency lookups ask permission for each batch; use Review to enter total values instead. Managed wallet and price lookups require an account. Legacy provider keys are disabled.</p>{saas && <div className="divide-y divide-hi/10">
                   <div className="py-4">
                     <ToggleRow
                       title="Live price lookup"
-                      checked={settings.priceApiEnabled}
-                      onChange={(v) => update({ priceApiEnabled: v })}
+                      checked={saas && settings.priceApiEnabled}
+                      onChange={(v) => { if (saas) update({ priceApiEnabled: v }); }}
                       caption={
                         <PrivacyCaption>
                           <strong className="text-mid">Leaves your device:</strong> asset symbol + date only, to
@@ -316,37 +316,13 @@ export function SettingsTab() {
                         </PrivacyCaption>
                       }
                     />
-                    {settings.priceApiEnabled && !saas && (
-                      <div className="mt-3 space-y-4 rounded-xl border border-hi/10 bg-elev-1/70 p-4">
-                        <ApiKeyField
-                          label="CoinGecko Pro API key"
-                          value={settings.coingeckoApiKey}
-                          onSave={(key) => update({ coingeckoApiKey: key })}
-                          onDelete={() => update({ coingeckoApiKey: undefined })}
-                          placeholder="Paste your CoinGecko Pro API key"
-                        />
-                        <ApiKeyField
-                          label="Birdeye API key (Solana pricing)"
-                          value={settings.birdeyeApiKey}
-                          onSave={(key) => update({ birdeyeApiKey: key })}
-                          onDelete={() => update({ birdeyeApiKey: undefined })}
-                          placeholder="Paste your Birdeye API key"
-                        />
-                        <ApiKeyField
-                          label="Noves API key (DeFi classification)"
-                          value={settings.novesApiKey}
-                          onSave={(key) => update({ novesApiKey: key })}
-                          onDelete={() => update({ novesApiKey: undefined })}
-                          placeholder="Paste your Noves API key"
-                        />
-                      </div>
-                    )}
+
                   </div>
                   <div className="py-4">
                     <ToggleRow
                       title="Wallet address lookup"
-                      checked={settings.rpcLookupEnabled}
-                      onChange={(v) => update({ rpcLookupEnabled: v })}
+                      checked={saas && settings.rpcLookupEnabled}
+                      onChange={(v) => { if (saas) update({ rpcLookupEnabled: v }); }}
                       caption={
                         <PrivacyCaption>
                           <strong className="text-mid">Leaves your device:</strong> the public address you look up,
@@ -355,107 +331,14 @@ export function SettingsTab() {
                         </PrivacyCaption>
                       }
                     />
-                    {settings.rpcLookupEnabled && !saas && (
-                      <div className="mt-3 space-y-4 rounded-xl border border-hi/10 bg-elev-1/70 p-4">
-                        <ApiKeyField
-                          label="Helius API key — PRIMARY for Solana"
-                          value={settings.heliusApiKey}
-                          onSave={(key) => update({ heliusApiKey: key })}
-                          onDelete={() => update({ heliusApiKey: undefined })}
-                          placeholder="Paste your Helius API key"
-                        />
-                        <ApiKeyField
-                          label="Moralis API key — PRIMARY for EVM chains"
-                          value={settings.moralisApiKey}
-                          onSave={(key) => update({ moralisApiKey: key })}
-                          onDelete={() => update({ moralisApiKey: undefined })}
-                          placeholder="Paste your Moralis API key"
-                        />
-                        <ApiKeyField
-                          label="Alchemy API key (fallback)"
-                          value={settings.alchemyApiKey}
-                          onSave={(key) => update({ alchemyApiKey: key })}
-                          onDelete={() => update({ alchemyApiKey: undefined })}
-                          placeholder="Paste your Alchemy API key"
-                        />
-                        <ApiKeyField
-                          label="Etherscan API key (optional fallback)"
-                          value={settings.customExplorerApiKey}
-                          onSave={(key) => update({ customExplorerApiKey: key })}
-                          onDelete={() => update({ customExplorerApiKey: undefined })}
-                          placeholder="Paste an Etherscan-family API key"
-                        />
-                      </div>
-                    )}
+
                   </div>
-                </div>
+                </div>}
               </CardContent>
             </Card>
           </div>
 
-          {!saas && (
-            <div id="settings-ai" className="scroll-mt-24">
-              <Card>
-                <CardHeader className="flex items-center gap-3">
-                  <CardTitle>AI Tax Advisor</CardTitle>
-                  {settings.aiConsentGranted ? (
-                    <Badge tone="gain" className="ml-auto">
-                      <Sparkles className="h-3 w-3" aria-hidden="true" />
-                      Opted in
-                    </Badge>
-                  ) : (
-                    <Badge tone="neutral" className="ml-auto">
-                      Off by default
-                    </Badge>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <ToggleRow
-                    title="AI Tax Advisor"
-                    checked={Boolean(settings.aiConsentGranted)}
-                    onChange={(v) => update({ aiConsentGranted: v })}
-                    caption={
-                      <span className="mt-1 block text-xs leading-relaxed text-low">
-                        Off by default — check to opt in. The advisor stays off until you explicitly enable it here
-                        or from its panel.
-                      </span>
-                    }
-                  />
-                  <ApiKeyField
-                    label="OpenRouter API key"
-                    value={settings.aiApiKey}
-                    onSave={(key) => update({ aiApiKey: key })}
-                    onDelete={() => update({ aiApiKey: undefined })}
-                    placeholder="sk-or-v1-…"
-                  />
-                  <div className="rounded-xl border border-primary/25 bg-primary/[0.06] p-4 text-xs leading-relaxed text-low">
-                    <p className="flex items-center gap-2 font-semibold text-hi">
-                      <span className="inline-flex h-6 w-6 items-center justify-center rounded-lg bg-aurora text-on-aurora">
-                        <Sparkles className="h-3.5 w-3.5" aria-hidden="true" />
-                      </span>
-                      How your AI data travels
-                    </p>
-                    <p className="mt-2">
-                      <strong className="text-accent">With your own OpenRouter key (this build):</strong> the
-                      aggregated summary goes <strong className="text-mid">directly</strong> to OpenRouter —
-                      SoloLedger never sees it.
-                    </p>
-                    <p className="mt-1">
-                      <strong className="text-primary">On the hosted SoloLedger app with no key:</strong> the same
-                      summary is <strong className="text-mid">relayed</strong> through SoloLedger's server to
-                      OpenRouter.
-                    </p>
-                    <p className="mt-1">
-                      Either way, only an aggregated summary (holdings, cost basis, realized gains, jurisdiction)
-                      and your typed question leave the device — never raw wallet addresses or transaction hashes.
-                      The advisor is off until you opt in, and you can revoke consent any time from its panel or
-                      here.
-                    </p>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          )}
+
 
           {saas && !isAdmin && (
             <div id="settings-ai" className="scroll-mt-24">
@@ -528,9 +411,11 @@ export function SettingsTab() {
                   </label>
                 </div>
                 <p className="mt-3 text-xs leading-relaxed text-low">
-                  Everything lives in this browser's IndexedDB — a backup file is the only copy. Keep one somewhere
+                  Your ledger lives in this browser’s IndexedDB, not your account. Sign-in and sign-out do not back it up or remove it. JSON backups are sensitive and unencrypted; encryption is a separate, deferred feature. Keep backups somewhere
                   safe.
                 </p>
+
+                <LegacyLedgerRecovery />
 
                 {pendingRestore && (
                   <div className="mt-4 rounded-xl border border-warn/30 bg-warn/10 p-4">

@@ -9,7 +9,6 @@ import {
   IndianRupee,
   Lock,
   Monitor,
-  Play,
   RefreshCw,
   Shield,
   ShieldCheck,
@@ -79,7 +78,7 @@ const WHATS_NEW: FeatureCard[] = [
     tile: 'bg-aurora text-on-aurora',
     title: 'AI tax advisor',
     isNew: true,
-    body: 'Ask “why is my TDS this high?” in plain words. Everyday answers run on-device; heavy reasoning runs in a hardware-isolated enclave. Your raw data is never the payload.'
+    body: 'Optional account AI sends an aggregated financial summary and your question through SoloLedger to OpenRouter. Review what you share; this is not on-device AI.'
   },
   {
     icon: TrendingUp,
@@ -111,11 +110,11 @@ const WHATS_NEW: FeatureCard[] = [
 const STATS = [
   { n: '26', label: 'filing-ready report forms, incl. Schedule VDA & TDS' },
   { n: '200+', label: 'import sources — exchanges, wallets, chains' },
-  { n: '100%', label: 'private by default — no account, no upload' }
+  { n: '100%', label: 'local tax calculations' }
 ];
 
 const NET_STATES = [
-  { label: '100% Local', tone: 'border-gain/30 bg-gain/10 text-gain' },
+  { label: 'Local calculations', tone: 'border-gain/30 bg-gain/10 text-gain' },
   { label: 'Local + network on', tone: 'border-accent/30 bg-accent/10 text-accent' },
   { label: 'Local + relay', tone: 'border-primary/30 bg-primary/10 text-primary' }
 ];
@@ -142,8 +141,8 @@ const PRIVACY_CARDS: FeatureCard[] = [
   {
     icon: ShieldCheck,
     tile: 'bg-warn/10 text-warn',
-    title: 'You hold the keys',
-    body: 'Cross-device backups are encrypted on your device first. Read-only API keys only — trading stays off.'
+    title: 'Keep a secure backup',
+    body: 'Your account is not a backup. Exported JSON backups are sensitive and unencrypted; store them securely. Backup encryption is a separate, deferred feature.'
   }
 ];
 
@@ -155,7 +154,7 @@ const AI_LANES: AiLane[] = [
     tile: 'bg-gain/10 text-gain',
     checkTone: 'text-gain',
     title: 'On-device insights',
-    body: 'Everyday answers — lot lookups, gain explainers, TDS reconciliation — computed by models running inside your browser. Zero upload, works offline, instant.',
+    body: 'Tax calculations, lot lookups and reconciliation run in your browser. These are local calculations, not an on-device language model.',
     bullets: [
       '“Which lots make up this gain?”',
       'TDS & Section 115BBH nudges as you trade',
@@ -166,10 +165,10 @@ const AI_LANES: AiLane[] = [
     icon: Shield,
     tile: 'bg-aurora text-on-aurora',
     checkTone: 'text-primary',
-    title: 'Confidential enclave for heavy reasoning',
-    body: 'Multi-year what-ifs run inside a hardware-isolated confidential-computing enclave: encrypted in, computed where no one — not even SoloLedger — can read it, deleted after the answer.',
+    title: 'Optional hosted AI advisor',
+    body: 'With account AI enabled, an aggregated financial summary and your question pass through the SoloLedger relay to OpenRouter. No confidential-computing enclave is claimed.',
     bullets: [
-      'Hardware-attested isolation, memory wiped after use',
+      'Check the sharing disclosure before using AI',
       'Aggregated numbers in — never raw transaction lines',
       'Every answer shows exactly what was used'
     ]
@@ -185,8 +184,8 @@ const AI_GUARANTEES = [
 type CompareRow = { feature: string; us: string; them: string; themTone: 'no' | 'mid' };
 
 const COMPARE_ROWS: CompareRow[] = [
-  { feature: 'Data never leaves your device', us: 'Always', them: 'Uploaded by default', themTone: 'no' },
-  { feature: 'AI that never sees your raw data', us: 'On-device + enclave', them: 'History sent to AI cloud', themTone: 'no' },
+  { feature: 'Local ledger and tax calculations', us: 'Browser storage', them: 'Uploaded by default', themTone: 'no' },
+  { feature: 'Optional hosted AI', us: 'Summary + question shared', them: 'History sent to AI cloud', themTone: 'no' },
   { feature: 'Free tier, no account required', us: 'Free forever', them: 'Limited trials', themTone: 'mid' },
   { feature: 'Exchange auto-sync (read-only, deduped)', us: 'Included', them: 'Often a paid add-on', themTone: 'mid' },
   { feature: 'AI tax advisor', us: 'Built-in, private', them: 'Rare, cloud-only', themTone: 'no' },
@@ -203,9 +202,6 @@ function scrollToId(id: string) {
 }
 
 /** Every "start free" CTA lands on the mode chooser — unchanged behavior. */
-function scrollToChoose() {
-  scrollToId('choose');
-}
 
 /**
  * Static product illustration for the hero (presentational — not a live app).
@@ -228,7 +224,7 @@ function HeroPreview() {
           </span>
           <span className="ml-auto inline-flex shrink-0 items-center gap-1.5 rounded-full border border-gain/30 bg-gain/10 px-2.5 py-1 font-mono text-[0.625rem] font-semibold text-gain">
             <span className="h-1.5 w-1.5 rounded-full bg-gain" />
-            100% Local
+            Local calculations
           </span>
         </div>
 
@@ -341,10 +337,10 @@ function HeroPreview() {
         </div>
       </div>
 
-      {/* Floating "0 bytes uploaded" chip */}
+      {/* Floating "Example local ledger" chip */}
       <span className="absolute -right-1 top-16 inline-flex rotate-[1.5deg] items-center gap-1.5 rounded-full border border-gain/30 bg-elev-1 px-3 py-1.5 font-mono text-[0.625rem] font-semibold text-gain shadow-pop sm:-right-3 lg:-right-5">
         <span className="h-1.5 w-1.5 rounded-full bg-gain" />
-        0 bytes uploaded
+        Example local ledger
       </span>
 
       {/* Floating on-device AI note (aurora-bordered — the AI brand moment) */}
@@ -357,12 +353,12 @@ function HeroPreview() {
       >
         <div className="flex items-center gap-1.5 text-[0.625rem] font-extrabold uppercase tracking-widest">
           <Sparkles className="h-3.5 w-3.5 text-primary" aria-hidden="true" />
-          <span className="bg-aurora bg-clip-text text-transparent">AI advisor · on-device</span>
+          <span className="bg-aurora bg-clip-text text-transparent">Local tax calculation</span>
         </div>
         <p className="mt-2 text-[0.8125rem] font-bold leading-snug text-hi">
           ₹18,240 TDS deducted this FY — reconcile with Form 26AS so you don't lose the credit.
         </p>
-        <p className="mt-1 text-[0.6875rem] text-low">Computed in this tab · nothing sent anywhere</p>
+        <p className="mt-1 text-[0.6875rem] text-low">Local calculation example</p>
       </div>
     </div>
   );
@@ -430,7 +426,7 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
             <Button variant="ghost" onClick={onSignIn} className="hidden sm:inline-flex">
               Sign in
             </Button>
-            <Button onClick={scrollToChoose} className="px-3.5 sm:px-5">
+            <Button onClick={() => onSelectMode('hosted')} className="px-3.5 sm:px-5">
               Get started free
             </Button>
           </div>
@@ -455,13 +451,13 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
             <h1 className="mt-7 font-display text-5xl font-extrabold leading-[1.06] tracking-tight text-hi sm:text-6xl">
               Crypto taxes in minutes.{' '}
               <span className="bg-aurora bg-clip-text text-transparent">
-                Nothing ever leaves your device.
+                Your ledger stays in your browser.
               </span>
             </h1>
             <p className="mt-6 max-w-xl text-lg leading-relaxed text-mid">
               SoloLedger imports from 200+ exchanges, wallets and chains, reviews every transaction
-              with a private AI advisor, and exports filing-ready India tax reports — all inside
-              your browser tab.
+              with local calculations, and exports India tax reports. Optional connected services
+              and the hosted AI advisor disclose what they share.
             </p>
             <div className="mt-8 flex flex-wrap items-center gap-y-3" aria-label="How it works">
               {HERO_STEPS.map((step, i) => (
@@ -479,20 +475,20 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
               ))}
             </div>
             <div className="mt-9 flex flex-wrap gap-3.5">
-              <Button size="lg" onClick={scrollToChoose} className="px-7 text-base">
-                Start free — no account needed
+              <Button size="lg" onClick={() => onSelectMode('hosted')} className="px-7 text-base">
+                Create account
                 <ArrowRight className="h-5 w-5" aria-hidden="true" />
               </Button>
               <Button
                 size="lg"
                 variant="secondary"
-                onClick={() => scrollToId('new')}
+                onClick={() => onSelectMode('local')}
                 className="px-7 text-base"
               >
-                <Play className="h-4 w-4" aria-hidden="true" />
-                See how it works
+                Continue without an account
               </Button>
             </div>
+            <p className="mt-3 max-w-xl text-xs leading-relaxed text-low">An account is not a backup or cross-device sync. Your ledger stays in this browser; keep a secure copy of sensitive, unencrypted JSON backups. Without an account, historical currency lookups ask permission for each batch; decline to enter a rate or total manually.</p>
             <div className="mt-5 flex flex-wrap gap-x-5 gap-y-1.5 text-sm text-low">
               {HERO_CHECKMARKS.map((item) => (
                 <span key={item} className="inline-flex items-center gap-1.5">
@@ -566,7 +562,7 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
               Privacy, verifiably
             </div>
             <h2 className="mt-3 font-display text-4xl font-extrabold leading-[1.14] tracking-tight text-hi sm:text-[2.375rem]">
-              Your data never leaves your device.
+              Your ledger stays in this browser.
             </h2>
             <p className="mt-5 max-w-xl text-base leading-relaxed text-mid">
               SoloLedger is a full tax engine living in a browser tab. Imports, cost-basis math and
@@ -624,12 +620,11 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
               Private AI
             </div>
             <h2 className="mt-3 font-display text-4xl font-extrabold leading-[1.14] tracking-tight text-hi sm:text-[2.375rem]">
-              Your AI never sees your data.
+              Know what AI receives.
             </h2>
             <p className="mt-4 text-base leading-relaxed text-mid">
-              Most tax AI works by uploading your entire trade history to someone else's cloud.
-              SoloLedger's advisor is built the other way around — the intelligence comes to your
-              data, never the reverse.
+              The optional advisor sends your aggregated financial summary and typed question through
+              SoloLedger to OpenRouter. Local imports and tax calculations do not require AI.
             </p>
           </div>
           <div className="mt-12 grid gap-4 lg:grid-cols-2">
@@ -776,10 +771,10 @@ export function LandingPage({ onSelectMode, onSignIn }: LandingPageProps) {
           {/* Charcoal button holds AA on the ember (light) and peach (dark) bands. */}
           <button
             type="button"
-            onClick={scrollToChoose}
+            onClick={() => onSelectMode('hosted')}
             className="mt-9 inline-flex h-[52px] items-center justify-center gap-2 rounded-lg bg-[#171310] px-8 text-[0.9375rem] font-bold text-white shadow-pop transition-all duration-150 hover:-translate-y-px hover:bg-[#2C241D] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 focus-visible:ring-offset-2 focus-visible:ring-offset-transparent"
           >
-            Get started free — no account
+            Create account
             <ArrowRight className="h-5 w-5" aria-hidden="true" />
           </button>
         </div>

@@ -26,9 +26,9 @@ describe('hasAiAdvisor — drives the AI-mapping caller gate', () => {
     expect(hasAiAdvisor(settings())).toBe(true);
   });
 
-  it('is true in local/byok mode when a BYOK AI key is set', () => {
+  it('is false for a legacy local AI key', () => {
     setMode('byok');
-    expect(hasAiAdvisor(settings({ aiApiKey: 'sk-test' }))).toBe(true);
+    expect(hasAiAdvisor(settings({ aiApiKey: 'sk-test' }))).toBe(false);
   });
 
   it('is false in local/byok mode with no key', () => {

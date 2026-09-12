@@ -160,6 +160,7 @@ export function resolveFiat(
     const cur =
       (mapping.fiatCurrency && row[mapping.fiatCurrency]?.trim().toUpperCase()) ||
       quoteToFiatCurrency(quote) ||
+      quote?.trim().toUpperCase() ||
       'USD';
     return { fiatValue: explicit, fiatCurrency: cur };
   }
@@ -167,16 +168,16 @@ export function resolveFiat(
   const totalRaw = mapping.totalValue ? optionalNumber(row[mapping.totalValue]) : undefined;
   if (totalRaw != null) {
     const total = Math.abs(totalRaw);
-    return { fiatValue: total, fiatCurrency: quoteToFiatCurrency(quote) ?? 'USD' };
+    return { fiatValue: total, fiatCurrency: quoteToFiatCurrency(quote) ?? (quote?.trim().toUpperCase() || 'USD') };
   }
 
   const qty = Math.abs(safeNumber(row[mapping.amount]));
   const price = mapping.pricePerUnit ? safeNumber(row[mapping.pricePerUnit]) : 0;
   if (price > 0 && qty > 0) {
-    return { fiatValue: price * qty, fiatCurrency: quoteToFiatCurrency(quote) ?? 'USD' };
+    return { fiatValue: price * qty, fiatCurrency: quoteToFiatCurrency(quote) ?? (quote?.trim().toUpperCase() || 'USD') };
   }
 
-  return { fiatCurrency: quoteToFiatCurrency(quote) ?? 'USD' };
+  return { fiatCurrency: quoteToFiatCurrency(quote) ?? (quote?.trim().toUpperCase() || 'USD') };
 }
 
 export function parseWithMapping(

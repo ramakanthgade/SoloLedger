@@ -6,7 +6,7 @@
     "amount": 0.01,
     "counterAsset": "USDT",
     "counterAmount": 500,
-    "fiatCurrency": "USD",
+    "fiatCurrency": "USDT",
     "fiatValue": 500,
     "source": "wazirx_ledger",
     "sourceRef": "wazirx:1748759400000:buy:BTC:0.010000",

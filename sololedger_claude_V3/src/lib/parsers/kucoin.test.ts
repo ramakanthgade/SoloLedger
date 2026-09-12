@@ -9,7 +9,7 @@ describe('kucoinParser', () => {
   it('maps trades, transfers and staking', () => {
     const result = kucoinParser.parse([row('buy'), row('sell', '-2'), row('deposit'), row('withdraw'), row('staking')]);
     expect(result.transactions.map((t) => t.type)).toEqual(['buy', 'sell', 'transfer_in', 'transfer_out', 'income']);
-    expect(result.transactions[0]).toMatchObject({ asset: 'ETH', counterAsset: 'USDT', fiatCurrency: 'USD', fiatValue: 5000, feeAmount: 5, source: 'kucoin' });
+    expect(result.transactions[0]).toMatchObject({ asset: 'ETH', counterAsset: 'USDT', fiatCurrency: 'USDT', fiatValue: 5000, feeAmount: 5, source: 'kucoin' });
     expect(result.transactions[2].flags).toContain('possible_internal_transfer');
   });
   it('warns when a row is skipped', () => { const result = kucoinParser.parse([row('unknown')]); expect(result.skippedRows).toBe(1); expect(result.warnings).toHaveLength(1); });

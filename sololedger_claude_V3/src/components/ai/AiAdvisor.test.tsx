@@ -29,7 +29,7 @@ vi.mock('@/lib/ai/openrouter', async (importActual) => {
     ...actual,
     streamChatCompletion: vi.fn(async function* () {
       const { recordNetworkActivity } = await import('@/lib/networkActivity');
-      recordNetworkActivity('direct'); // BYO-key build → direct
+      recordNetworkActivity('relay'); // Account AI uses the relay
       yield 'Here is your answer.';
     })
   };
@@ -50,6 +50,7 @@ async function seedSettings(consent: boolean) {
 
 describe('AiAdvisor consent gate (A2)', () => {
   beforeEach(async () => {
+    setMode('hosted');
     setBulkActionsActive(false);
     resetNetworkActivity();
     await db.settings.clear();
@@ -74,7 +75,7 @@ describe('AiAdvisor consent gate (A2)', () => {
     expect(enable).toBeDisabled();
   });
 
-  it('after consent, an AI send flips the badge to the expected (direct) mode', async () => {
+  it('after consent, an AI send flips the badge to the expected (relay) mode', async () => {
     await seedSettings(true);
     render(<AiAdvisor />);
 
@@ -88,7 +89,7 @@ describe('AiAdvisor consent gate (A2)', () => {
     fireEvent.click(question);
 
     // The mocked transport records a direct call — badge flips to direct.
-    await waitFor(() => expect(getNetworkMode()).toBe('direct'));
+    await waitFor(() => expect(getNetworkMode()).toBe('relay'));
   });
 
   it('keeps the available FAB above mobile navigation until the lg breakpoint', async () => {
@@ -203,14 +204,13 @@ describe('AiAdvisor consent — mode-dependent defaults (item 7)', () => {
     );
   });
 
-  it('local: consent defaults OFF when aiConsentGranted is unset (opt-in model)', async () => {
-    await seedRawSettings({ aiApiKey: 'sk-or-test-key' });
+  it('local: a legacy AI key and stored consent cannot reactivate the advisor', async () => {
+    await seedRawSettings({ aiApiKey: 'sk-or-test-key', aiConsentGranted: true });
     render(<AiAdvisor />);
-
-    const fab = await screen.findByTitle('AI Tax Advisor — ask about your taxes');
+    const fab = await screen.findByTitle('AI Tax Advisor — not configured on server');
     fireEvent.click(fab);
-
-    expect(await screen.findByText('Enable AI Advisor')).toBeInTheDocument();
+    expect(await screen.findByText(/AI Tax Advisor requires an account/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('Ask about your taxes…')).toBeNull();
+    expect(getNetworkMode()).toBe('local');
   });
 });

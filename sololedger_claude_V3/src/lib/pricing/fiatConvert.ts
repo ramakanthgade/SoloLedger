@@ -1,299 +1,102 @@
-/**
- * Convert imported fiat values (e.g. USDT/USD from Binance) into the user's
- * reporting currency (INR, CAD, AED, USD) using historical FX rates — same
- * approach as wallet price fetch (CoinGecko USDT rate on transaction date).
- */
+import { requestFxPermission } from '@/components/import/FxPermissionDialog';
+/** Historical execution-quote conversion. Fiat USD is not a stablecoin peg. */
 import type { Transaction, TaxSettings } from '@/types/transaction';
 import { normalizeFiatMagnitude } from '@/lib/parsers/types';
-import { usdToCurrencyRate } from './coingecko';
+import { isSaasMode } from '@/lib/saas/config';
 import { recordNetworkActivity, resolveMode } from '@/lib/networkActivity';
 
-const USD_EQUIVALENT = new Set(['USD', 'USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI']);
-const SUPPORTED_REPORTING_FIAT = new Set(['USD', 'INR', 'CAD', 'AED']);
-const AED_USD_PEG = 3.6725;
+const FIAT = new Set(['USD', 'INR', 'EUR', 'GBP', 'CAD', 'AUD', 'JPY', 'CHF', 'SGD', 'HKD', 'CNY']);
+type Rate = { rate: number; date: string };
+const cache = new Map<string, Rate>();
+export const normalizeFiatCurrency = (code: string): string => code.trim().toUpperCase();
+export const needsFiatConversion = (from: string, to: string): boolean => normalizeFiatCurrency(from) !== normalizeFiatCurrency(to);
+const day = (timestamp: number) => new Date(timestamp).toISOString().slice(0, 10);
 
-const frankfurterCache = new Map<string, number>();
-
-function clearLegacyPricingFlags(t: Transaction) {
-  return (t.flags ?? []).filter((flag) =>
-    flag !== 'missing_market_value' && flag !== 'missing_cost_basis'
-  );
-}
-
-/** Free historical fiat FX fallback when CoinGecko is unavailable (no API key). */
-async function usdToCurrencyRateFrankfurter(
-  timestampMs: number,
-  currency: string
-): Promise<number | null> {
-  const to = currency.toUpperCase();
-  if (to === 'USD') return 1;
-
-  const d = new Date(timestampMs);
-  const date = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-  const key = `${date}:${to}`;
-  if (frankfurterCache.has(key)) return frankfurterCache.get(key)!;
-
+async function historicalRate(from: string, to: string, timestamp: number): Promise<Rate | null> {
+  if (!FIAT.has(from) || !FIAT.has(to) || !Number.isFinite(timestamp)) return null;
+  const date = day(timestamp);
+  const key = `${from}:${to}:${date}`;
+  if (cache.has(key)) return cache.get(key)!;
   try {
-    // Frankfurter FX API — public, no key, called directly.
     recordNetworkActivity(resolveMode(false));
-    const res = await fetch(`https://api.frankfurter.dev/v1/${date}?from=USD&to=${to}`);
-    if (!res.ok) return null;
-    const data = (await res.json()) as { rates?: Record<string, number> };
-    const rate = data.rates?.[to];
-    if (rate == null || !Number.isFinite(rate)) return null;
-    frankfurterCache.set(key, rate);
-    return rate;
-  } catch {
-    return null;
-  }
-}
-
-/** Historical fiat-to-fiat rate via Frankfurter. */
-async function fiatToFiatRateFrankfurter(
-  timestampMs: number,
-  fromCurrency: string,
-  toCurrency: string
-): Promise<number | null> {
-  const from = fromCurrency.toUpperCase();
-  const to = toCurrency.toUpperCase();
-  if (from === to) return 1;
-
-  const d = new Date(timestampMs);
-  const date = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(d.getUTCDate()).padStart(2, '0')}`;
-  const key = `${date}:${from}->${to}`;
-  if (frankfurterCache.has(key)) return frankfurterCache.get(key)!;
-
-  try {
-    // Frankfurter FX API — public, no key, called directly.
-    recordNetworkActivity(resolveMode(false));
-    const res = await fetch(`https://api.frankfurter.dev/v1/${date}?from=${from}&to=${to}`);
-    if (!res.ok) return null;
-    const data = (await res.json()) as { rates?: Record<string, number> };
-    const rate = data.rates?.[to];
-    if (rate == null || !Number.isFinite(rate)) return null;
-    frankfurterCache.set(key, rate);
-    return rate;
-  } catch {
-    return null;
-  }
-}
-
-async function resolveUsdToReportingRate(
-  timestampMs: number,
-  reportingCurrency: string,
-  coingeckoApiKey?: string
-): Promise<number | null> {
-  const to = reportingCurrency.toUpperCase();
-  if (to === 'USD') return 1;
-  const cg = await usdToCurrencyRate(timestampMs, to, coingeckoApiKey);
-  if (cg != null) return cg;
-  const ff = await usdToCurrencyRateFrankfurter(timestampMs, to);
-  if (ff != null) return ff;
-  // UAE dirham is pegged to USD; keep imports moving when FX providers miss AED.
-  if (to === 'AED') return AED_USD_PEG;
-  return null;
-}
-
-/** Convert FROM fiat currency to USD at historical date. */
-async function resolveFiatToUsdRate(
-  timestampMs: number,
-  fromCurrency: string,
-  coingeckoApiKey?: string
-): Promise<number | null> {
-  const from = fromCurrency.toUpperCase();
-  if (from === 'USD') return 1;
-
-  const ff = await fiatToFiatRateFrankfurter(timestampMs, from, 'USD');
-  if (ff != null) return ff;
-
-  // AED peg fallback if provider misses it.
-  if (from === 'AED') return 1 / AED_USD_PEG;
-
-  // As a last resort, derive via CoinGecko by inverting USD->FROM.
-  const usdToFrom = await usdToCurrencyRate(timestampMs, from, coingeckoApiKey);
-  if (usdToFrom != null && usdToFrom !== 0) return 1 / usdToFrom;
-  return null;
-}
-
-/** Treat stablecoins as USD for FX conversion. */
-export function normalizeFiatCurrency(code: string): string {
-  const c = code.trim().toUpperCase();
-  if (USD_EQUIVALENT.has(c)) return 'USD';
-  return c;
-}
-
-export function needsFiatConversion(fiatCurrency: string, reportingCurrency: string): boolean {
-  return normalizeFiatCurrency(fiatCurrency) !== reportingCurrency.toUpperCase();
-}
-
-/**
- * Convert a fiat amount from import currency to reporting currency on a given date.
- * Returns null if the historical rate could not be fetched.
- */
-export async function convertFiatAmount(
-  amount: number,
-  fromCurrency: string,
-  reportingCurrency: string,
-  timestampMs: number,
-  coingeckoApiKey?: string
-): Promise<{ amount: number; currency: string } | null> {
-  const from = normalizeFiatCurrency(fromCurrency);
-  const to = reportingCurrency.toUpperCase();
-  if (from === to) return { amount, currency: to };
-
-  // Explicitly support our current target jurisdictions (US/IN/CA/AE).
-  // For other currencies we still attempt best-effort conversion below.
-  const target = SUPPORTED_REPORTING_FIAT.has(to) ? to : to;
-
-  // Prefer direct fiat-to-fiat for real fiat codes (e.g. CAD -> INR).
-  // Stablecoins normalize to USD above and skip this branch.
-  const directRate = await fiatToFiatRateFrankfurter(timestampMs, from, to);
-  if (directRate != null) {
-    return { amount: amount * directRate, currency: target };
-  }
-
-  // Source is USD-equivalent (Binance USDT totals, Coinbase USD, etc.)
-  if (from === 'USD') {
-    const rate = await resolveUsdToReportingRate(timestampMs, target, coingeckoApiKey);
-    if (rate == null) return null;
-    return { amount: amount * rate, currency: target };
-  }
-
-  // EUR/GBP in file — convert via USD bridge
-  if (from === 'EUR' || from === 'GBP') {
-    const toTarget = await resolveUsdToReportingRate(timestampMs, target, coingeckoApiKey);
-    const fromUsd = await resolveUsdToReportingRate(timestampMs, from, coingeckoApiKey);
-    if (toTarget == null || fromUsd == null || fromUsd === 0) return null;
-    const usdAmount = amount / fromUsd;
-    return { amount: usdAmount * toTarget, currency: target };
-  }
-
-  // Generic fiat bridge path (e.g. CAD -> AED, AED -> INR).
-  const fromToUsd = await resolveFiatToUsdRate(timestampMs, from, coingeckoApiKey);
-  const usdToTarget = await resolveUsdToReportingRate(timestampMs, target, coingeckoApiKey);
-  if (fromToUsd != null && usdToTarget != null) {
-    return { amount: amount * fromToUsd * usdToTarget, currency: target };
-  }
-
-  return null;
-}
-
-export interface FiatConvertResult {
-  transactions: Transaction[];
-  converted: number;
-  failed: number;
-}
-
-/**
- * Rewrite fiatValue/fiatCurrency on transactions whose values are not yet in
- * the user's reporting currency (e.g. Binance USDT → INR for India jurisdiction).
- */
-export async function convertTransactionsToReportingCurrency(
-  transactions: Transaction[],
-  settings: Pick<TaxSettings, 'reportingCurrency' | 'coingeckoApiKey'>
-): Promise<FiatConvertResult> {
-  const reporting = settings.reportingCurrency.toUpperCase();
-  let converted = 0;
-  let failed = 0;
-
-  const out: Transaction[] = [];
-  for (const t of transactions) {
-    const magnitude = normalizeFiatMagnitude(t.fiatValue);
-    if (magnitude == null) {
-      out.push(t);
-      continue;
-    }
-    if (!needsFiatConversion(t.fiatCurrency, reporting)) {
-      out.push(normalizeReportingRow(t, magnitude, reporting));
-      continue;
-    }
-
-    const result = await convertFiatAmount(
-      magnitude,
-      t.fiatCurrency,
-      reporting,
-      t.timestamp,
-      settings.coingeckoApiKey
-    );
-
-    if (result == null) {
-      failed++;
-      out.push(t);
-      continue;
-    }
-
-    converted++;
-    out.push({
-      ...t,
-      fiatValue: result.amount,
-      fiatCurrency: result.currency,
-      flags: clearLegacyPricingFlags(t)
+    const response = await fetch(`https://api.frankfurter.dev/v1/${date}?from=${from}&to=${to}`, {
+      credentials: 'omit', referrerPolicy: 'no-referrer', signal: AbortSignal.timeout(12000)
     });
+    if (!response.ok) return null;
+    const data = await response.json() as { base?: string; date?: string; rates?: Record<string, number> };
+    const rate = data.rates?.[to];
+    // Reference rates may use the previous business day, never a future/latest fallback.
+    const actual = Date.parse(data.date ?? '');
+    const age = Date.parse(date) - actual;
+    if (data.base !== from || !data.date || !Number.isFinite(actual) || age < 0 || age > 7 * 86400000 || typeof rate !== 'number' || !Number.isFinite(rate) || rate <= 0) return null;
+    const result = { rate, date: data.date };
+    cache.set(key, result);
+    return result;
+  } catch { return null; }
+}
+
+export interface FiatConvertResult { transactions: Transaction[]; converted: number; failed: number }
+function clearFlags(t: Transaction) { return (t.flags ?? []).filter(f => f !== 'missing_market_value' && f !== 'missing_cost_basis'); }
+export function sourceQuote(t: Transaction) {
+  if (t.executionQuote) return t.executionQuote;
+  const amount = normalizeFiatMagnitude(t.fiatValue);
+  if (amount != null) return { amount, currency: normalizeFiatCurrency(t.fiatCurrency), timestamp: t.timestamp };
+  // Recover old local imports whose reporting value was cleared but execution
+  // consideration survived. Never reinterpret an already priced INR row.
+  const counter = normalizeFiatMagnitude(t.counterAmount);
+  if (counter != null && t.counterAsset && ['buy', 'sell', 'trade'].includes(t.type)) {
+    return { amount: counter, currency: normalizeFiatCurrency(t.counterAsset), timestamp: t.timestamp };
   }
-
-  return { transactions: out, converted, failed };
+  return undefined;
 }
-
-/** Stamp a row that is already in (or normalizes to) the reporting currency. */
-function normalizeReportingRow(
-  t: Transaction,
-  magnitude: number,
-  reporting: string
-): Transaction {
-  return { ...t, fiatValue: magnitude, fiatCurrency: reporting, flags: clearLegacyPricingFlags(t) };
-}
-
-/**
- * No-network variant used when Live price lookup is OFF (local/BYOK without the
- * flag). Rows whose fiat currency already equals the reporting currency are
- * normalized in place WITHOUT any network call. Rows in a foreign fiat currency
- * cannot be converted without a network FX lookup, so their fiatValue is cleared
- * — they surface as "price unavailable" in Review instead of showing a raw
- * foreign-currency number as if it were the reporting currency. fiatCurrency is
- * set to the reporting currency so a manually entered Review value is stored in
- * the reporting currency (saveFiat only writes fiatValue).
- */
-export function normalizeFiatToReportingCurrencyLocal(
-  transactions: Transaction[],
-  reportingCurrency: string
-): Transaction[] {
-  const reporting = reportingCurrency.toUpperCase();
-  return transactions.map((t) => {
-    const magnitude = normalizeFiatMagnitude(t.fiatValue);
-    if (magnitude == null) return t;
-    if (!needsFiatConversion(t.fiatCurrency, reporting)) {
-      return normalizeReportingRow(t, magnitude, reporting);
+export function normalizeFiatToReportingCurrencyLocal(transactions: Transaction[], reportingCurrency: string): Transaction[] {
+  const to = normalizeFiatCurrency(reportingCurrency);
+  return transactions.map(t => {
+    const amount = normalizeFiatMagnitude(t.fiatValue);
+    if (amount == null) {
+      const quote = sourceQuote(t);
+      return { ...t, executionQuote: quote, fiatCurrency: to,
+        ...(quote?.currency === to ? { fiatValue: quote.amount, flags: clearFlags(t) } : {}) };
     }
-    // Currency conversion cannot change a confirmed zero magnitude. Preserve
-    // that source-present fact and normalize its currency without an FX lookup.
-    if (magnitude === 0) return normalizeReportingRow(t, magnitude, reporting);
-    // Foreign fiat without live lookup — leave unpriced (no network conversion),
-    // but stamp the reporting currency so a manual Review entry lands in it.
-    return { ...t, fiatValue: undefined, fiatCurrency: reporting };
+    if (!needsFiatConversion(t.fiatCurrency, to) || amount === 0) return { ...t, fiatValue: amount, fiatCurrency: to, flags: clearFlags(t) };
+    return { ...t, executionQuote: sourceQuote(t), fiatValue: undefined, fiatCurrency: to };
   });
 }
 
-/**
- * Single entry point for the import pipeline's fiat handling.
- * When Live price lookup is ON, converts foreign-fiat values to the reporting
- * currency via historical FX (network). When OFF, no network egress: rows already
- * in the reporting currency are normalized in place; foreign-fiat rows are left
- * unpriced and surface as "price unavailable" in Review.
- */
-export async function convertOrNormalizeForImport(
-  transactions: Transaction[],
-  settings: Pick<TaxSettings, 'reportingCurrency' | 'coingeckoApiKey'>,
-  priceApiEnabled: boolean
-): Promise<FiatConvertResult> {
-  if (priceApiEnabled) {
-    return convertTransactionsToReportingCurrency(transactions, settings);
+async function convertBatch(transactions: Transaction[], reportingCurrency: string): Promise<FiatConvertResult> {
+  const to = normalizeFiatCurrency(reportingCurrency);
+  let converted = 0, failed = 0;
+  const batchRates = new Map<string, Promise<Rate | null>>();
+  const out: Transaction[] = [];
+  for (const t of transactions) {
+    // Existing reporting totals (including zero) are authoritative.
+    if (t.fiatValue != null && (!needsFiatConversion(t.fiatCurrency, to) || t.fiatValue === 0)) {
+      out.push(...normalizeFiatToReportingCurrencyLocal([t], to)); continue;
+    }
+    const quote = sourceQuote(t);
+    if (!quote) { out.push(t); continue; }
+    const key = `${quote.currency}:${to}:${Number.isFinite(quote.timestamp) ? day(quote.timestamp) : 'invalid'}`;
+    if (!batchRates.has(key)) batchRates.set(key, historicalRate(quote.currency, to, quote.timestamp));
+    const rate = await batchRates.get(key)!;
+    if (!rate || !Number.isFinite(quote.amount * rate.rate)) { failed++; out.push(...normalizeFiatToReportingCurrencyLocal([t], to)); continue; }
+    converted++;
+    out.push({ ...t, executionQuote: quote, fiatValue: quote.amount * rate.rate, fiatCurrency: to, flags: clearFlags(t),
+      fxProvenance: { provider: 'Frankfurter', rate: rate.rate, requestedDate: day(quote.timestamp), rateDate: rate.date, from: quote.currency, to } });
   }
-  return {
-    transactions: normalizeFiatToReportingCurrencyLocal(
-      transactions,
-      settings.reportingCurrency
-    ),
-    converted: 0,
-    failed: 0
-  };
+  return { transactions: out, converted, failed };
+}
+export async function convertTransactionsToReportingCurrency(transactions: Transaction[], settings: Pick<TaxSettings, 'reportingCurrency'>): Promise<FiatConvertResult> {
+  if (!isSaasMode()) return { transactions: normalizeFiatToReportingCurrencyLocal(transactions, settings.reportingCurrency), converted: 0, failed: 0 };
+  return convertBatch(transactions, settings.reportingCurrency);
+}
+
+/** Permission is fresh per batch, before even consulting the rate cache. Cancel/Escape is denial. */
+export async function convertOrNormalizeForImport(transactions: Transaction[], settings: Pick<TaxSettings, 'reportingCurrency'>, priceApiEnabled: boolean): Promise<FiatConvertResult> {
+  if (isSaasMode()) return priceApiEnabled ? convertBatch(transactions, settings.reportingCurrency) : { transactions: normalizeFiatToReportingCurrencyLocal(transactions, settings.reportingCurrency), converted: 0, failed: 0 };
+  const quotes = transactions.filter(t => t.fiatValue == null || needsFiatConversion(t.fiatCurrency, settings.reportingCurrency)).map(sourceQuote).filter(q => q && q.amount !== 0);
+  const requests = [...new Set(quotes.filter(q => q && q.currency !== settings.reportingCurrency.toUpperCase() && FIAT.has(q.currency) && Number.isFinite(q.timestamp)).map(q => `${q!.currency} → ${settings.reportingCurrency}: ${day(q!.timestamp)}`))];
+  if (requests.length && await requestFxPermission(requests, settings.reportingCurrency)) {
+    return convertBatch(transactions, settings.reportingCurrency);
+  }
+  return { transactions: normalizeFiatToReportingCurrencyLocal(transactions, settings.reportingCurrency), converted: 0, failed: quotes.length };
 }

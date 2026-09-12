@@ -273,3 +273,47 @@ describe('fetchMissingPricesForAllTransactions', () => {
     });
   });
 });
+
+describe('persisted currency conversion evidence', () => {
+  it.each([true, false])('atomically retains the execution quote and provenance for provider success=%s', async success => {
+    const { setMode } = await import('@/lib/saas/mode');
+    setMode('hosted');
+    await db.transactions.clear();
+    const fetchSpy = vi.fn().mockResolvedValue({ ok: success, json: async () => ({ base: 'USD', date: success ? '2024-07-23' : '2024-07-24', rates: { INR: 83.6 } }) });
+    vi.stubGlobal('fetch', fetchSpy);
+    const original = { ...tx('fx-persist', 'HNT'), timestamp: Date.parse(success ? '2024-07-23' : '2024-07-24'), fiatValue: 420.5, fiatCurrency: 'USD' };
+    await db.transactions.put(original);
+    await fetchMissingPricesForAllTransactions({ reportingCurrency: 'INR' });
+    const stored = await db.transactions.get(original.id);
+    expect(stored?.fiatCurrency).toBe('INR');
+    expect(stored?.executionQuote).toMatchObject({ amount: 420.5, currency: 'USD', timestamp: original.timestamp });
+    if (success) {
+      expect(stored?.fiatValue).toBeCloseTo(420.5 * 83.6);
+      expect(stored?.fxProvenance).toMatchObject({ provider: 'Frankfurter', rateDate: '2024-07-23', requestedDate: '2024-07-23' });
+    } else {
+      expect(stored?.fiatValue).toBeUndefined();
+      expect(stored?.fxProvenance).toBeUndefined();
+    }
+    setMode('local');
+  });
+
+  it('does not attach stale FX evidence over a concurrent manual valuation', async () => {
+    const { setMode } = await import('@/lib/saas/mode');
+    setMode('hosted');
+    await db.transactions.clear();
+    let complete!: (response: unknown) => void;
+    const fetchSpy = vi.fn(() => new Promise(resolve => { complete = resolve; }));
+    vi.stubGlobal('fetch', fetchSpy);
+    await db.transactions.put({ ...tx('fx-race', 'HNT'), timestamp: Date.parse('2024-07-25'), fiatValue: 420.5, fiatCurrency: 'USD' });
+    const pending = fetchMissingPricesForAllTransactions({ reportingCurrency: 'INR' });
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalled());
+    await db.transactions.update('fx-race', { fiatValue: 35000, fiatCurrency: 'INR', executionQuote: undefined, fxProvenance: undefined });
+    complete({ ok: true, json: async () => ({ base: 'USD', date: '2024-07-25', rates: { INR: 83.6 } }) });
+    await pending;
+    const stored = await db.transactions.get('fx-race');
+    expect(stored?.fiatValue).toBe(35000);
+    expect(stored?.fxProvenance).toBeUndefined();
+    expect(stored?.executionQuote).toBeUndefined();
+    setMode('local');
+  });
+});

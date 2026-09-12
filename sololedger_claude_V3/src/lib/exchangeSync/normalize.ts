@@ -28,7 +28,7 @@ import { requiresMarketValue } from '@/lib/transactions/requiresMarketValue';
 /** Quotes treated as fiat-equivalent for fiatValue purposes (§B-5a). */
 const STABLE_QUOTES = new Set(['USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI']);
 const GEMINI_FIAT_QUOTES = new Map([
-  ['USD', 'USD'], ['GUSD', 'USD'], ['EUR', 'EUR'], ['GBP', 'GBP'], ['SGD', 'SGD']
+  ['USD', 'USD'], ['GUSD', 'GUSD'], ['EUR', 'EUR'], ['GBP', 'GBP'], ['SGD', 'SGD']
 ]);
 
 /** Kraken fiat quotes (kraken.ts FIAT_ASSETS — intentionally NO stablecoins). */

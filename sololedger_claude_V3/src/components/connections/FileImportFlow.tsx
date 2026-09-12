@@ -72,7 +72,7 @@ function conversionNoteText(converted: number, failed: number, currency: string)
       ? `Converted ${converted} value${converted === 1 ? '' : 's'} to ${currency} using historical exchange rates.`
       : null,
     failed > 0
-      ? `${failed} value${failed === 1 ? '' : 's'} could not be converted to ${currency} — edit in Review if needed.`
+      ? `${failed} execution quote${failed === 1 ? '' : 's'} still need ${currency} conversion — enter total values in Review. USD and USDT are different.`
       : null
   ]
     .filter(Boolean)

@@ -4,7 +4,7 @@
     "type": "transfer_in",
     "asset": "USDC",
     "amount": 1989.8,
-    "fiatCurrency": "USD",
+    "fiatCurrency": "USDC",
     "fiatValue": 1989.8,
     "source": "hyperliquid_deposits",
     "sourceRef": "hyperliquid:1780792016000:transfer_in:USDC:1989.8000",

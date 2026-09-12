@@ -40,7 +40,7 @@ describe('LandingPage — hero (mockup content)', () => {
 
     const h1 = screen.getByRole('heading', { level: 1 });
     expect(h1).toHaveTextContent('Crypto taxes in minutes.');
-    expect(h1).toHaveTextContent('Nothing ever leaves your device.');
+    expect(h1).toHaveTextContent('Your ledger stays in your browser.');
 
     expect(
       screen.getByText(/imports from 200\+ exchanges, wallets and chains/)
@@ -51,9 +51,9 @@ describe('LandingPage — hero (mockup content)', () => {
     expect(screen.getByText('Export')).toBeInTheDocument();
 
     expect(
-      screen.getByRole('button', { name: /start free — no account needed/i })
+      screen.getAllByRole('button', { name: 'Create account' })[0]
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /see how it works/i })).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: /continue without an account/i })[0]).toBeInTheDocument();
 
     expect(screen.getByText('Free forever tier')).toBeInTheDocument();
     expect(screen.getByText('No credit card')).toBeInTheDocument();
@@ -64,12 +64,12 @@ describe('LandingPage — hero (mockup content)', () => {
     renderLanding();
 
     expect(screen.getByText('sololedger.app — this tab is the whole app')).toBeInTheDocument();
-    expect(screen.getByText('0 bytes uploaded')).toBeInTheDocument();
+    expect(screen.getByText('Example local ledger')).toBeInTheDocument();
     expect(
       screen.getByText(/₹18,240 TDS deducted this FY — reconcile with Form 26AS/)
     ).toBeInTheDocument();
     expect(
-      screen.getByText(/Computed in this tab · nothing sent anywhere/)
+      screen.getByText(/Local calculation example/)
     ).toBeInTheDocument();
 
     // §115BBH: VDA losses cannot offset gains — the landing never pitches harvesting.
@@ -108,8 +108,8 @@ describe('LandingPage — navigation & sections', () => {
     expect(within(table).getByText('Typical cloud tools')).toBeInTheDocument();
 
     for (const feature of [
-      'Data never leaves your device',
-      'AI that never sees your raw data',
+      'Local ledger and tax calculations',
+      'Optional hosted AI',
       'Free tier, no account required',
       'Exchange auto-sync (read-only, deduped)',
       'AI tax advisor',
@@ -126,7 +126,7 @@ describe('LandingPage — navigation & sections', () => {
     expect(pricing).not.toBeNull();
 
     const scope = within(pricing as HTMLElement);
-    expect(scope.getByText('Choose how you want to use SoloLedger')).toBeInTheDocument();
+    expect(scope.getByText('Start your crypto tax review')).toBeInTheDocument();
     expect(scope.getByText('Pick a plan. Start free.')).toBeInTheDocument();
     // The chooser keeps its scroll target id so existing CTAs still land there.
     expect(pricing?.querySelector('#choose')).not.toBeNull();
@@ -143,7 +143,7 @@ describe('LandingPage — CTA band & footer', () => {
       screen.getByText('Your taxes are your business. File them like it.')
     ).toBeInTheDocument();
     expect(
-      screen.getByRole('button', { name: 'Get started free — no account' })
+      screen.getAllByRole('button', { name: 'Create account' })[0]
     ).toBeInTheDocument();
   });
 
@@ -194,31 +194,23 @@ describe('LandingPage — CTA band & footer', () => {
   });
 });
 
-describe('LandingPage — behavior invariants', () => {
-  it('start-free CTAs scroll to the mode chooser and never select a mode directly', () => {
+describe('LandingPage — account-first behavior', () => {
+  it('primary account CTAs select hosted directly, with no architecture chooser', () => {
     renderLanding();
-
-    fireEvent.click(screen.getByRole('button', { name: /start free — no account needed/i }));
-    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
-    expect(onSelectMode).not.toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Get started free — no account' }));
-    expect(onSelectMode).not.toHaveBeenCalled();
+    for (const button of screen.getAllByRole('button', { name: 'Create account' })) fireEvent.click(button);
+    expect(onSelectMode).toHaveBeenCalledWith('hosted');
+    expect(screen.queryByText('BYOK')).toBeNull();
+    expect(screen.queryByText(/three ways/)).toBeNull();
   });
-
-  it('"See how it works" scrolls to the What\'s new section', () => {
+  it('secondary no-account actions select local and disclose account is not backup', () => {
     renderLanding();
-    fireEvent.click(screen.getByRole('button', { name: /see how it works/i }));
-    expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
+    fireEvent.click(screen.getAllByRole('button', { name: 'Continue without an account' })[0]);
+    expect(onSelectMode).toHaveBeenCalledWith('local');
+    expect(screen.getAllByText(/An account is not a backup/).length).toBeGreaterThan(0);
   });
-
-  it('header Sign in goes to hosted auth; path cards still pick modes', () => {
+  it('Sign in keeps the existing auth entrypoint', () => {
     renderLanding();
-
     fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     expect(onSignIn).toHaveBeenCalledTimes(1);
-
-    fireEvent.click(screen.getByRole('button', { name: /start locally/i }));
-    expect(onSelectMode).toHaveBeenCalledWith('local');
   });
 });

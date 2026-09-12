@@ -183,10 +183,12 @@ describe('ReviewTab — grammar fix: needs-price banner is plural-aware', () => 
 
 describe('ReviewTab — market value and acquisition basis are distinct', () => {
   it('clears only missing market value after manual pricing and labels the total field accurately', () => {
-    expect(source).toContain('parseManualMarketValue(editValue)');
-    expect(source).toContain("f !== 'missing_market_value'");
-    expect(source).not.toContain("f !== 'missing_cost_basis'");
-    expect(source).toContain('aria-label="Total transaction market value"');
+    const editor = readFileSync(resolve(here, 'ManualValuationEditor.tsx'), 'utf8');
+    expect(source).toContain('<ManualValuationEditor');
+    expect(editor).toContain('parseManualMarketValue(input)');
+    expect(editor).toContain("flag !== 'missing_market_value'");
+    expect(editor).not.toContain("flag !== 'missing_cost_basis'");
+    expect(editor).toContain('Total transaction market value');
     expect(source).toContain('Add market value');
   });
 

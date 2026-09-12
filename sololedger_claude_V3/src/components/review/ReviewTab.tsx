@@ -1,6 +1,7 @@
+import { sourceQuote, convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSpecIdHints, deleteTransactionsByIds, setTransactionSafetyVisibility } from '@/lib/storage/db';
+import { db, getSettings, getSpecIdHints, deleteTransactionsByIds, setTransactionSafetyVisibility } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -75,7 +76,7 @@ import { buildReconciliationEvidenceIndexes, projectReconciliationCoverage } fro
 import { setBulkActionsActive } from '@/lib/ui/floatingOverlayActivity';
 import { decideSuggestedTransferPair, unlinkTransferPair } from '@/lib/internalTransfers/persistence';
 import { buildTransactionCostAnalysisIndexes, buildTransactionCostAnalysisModel } from './transactionCostAnalysisModel';
-import { parseManualMarketValue } from './manualMarketValue';
+import { ManualValuationEditor } from './ManualValuationEditor';
 import { buildReviewReconciliationEvidence } from './reviewReconciliationEvidence';
 import { TransactionDetailPanel, type DetailTab } from './TransactionDetailPanel';
 import { LotPicker } from './LotPicker';
@@ -626,18 +627,16 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   const [applyingBulk, setApplyingBulk] = useState(false);
   const [dcaGroups, setDcaGroups] = useState<Awaited<ReturnType<typeof detectDcaGroups>>>([]);
   const [applyingDca, setApplyingDca] = useState(false);
-  const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
+  const settingsRow = useLiveQuery(() => getSettings(), []);
   const settings = useMemo(() => {
     if (!settingsRow) return null;
-    const { id: _id, ...rest } = settingsRow;
-    return rest;
+    return settingsRow;
   }, [settingsRow]);
   const [detailTabByTxId, setDetailTabByTxId] = useState<Record<string, DetailTab>>({});
   const [fetchingPrices, setFetchingPrices] = useState(false);
   const [priceProgress, setPriceProgress] = useState<{ done: number; total: number } | null>(null);
   const [priceErrors, setPriceErrors] = useState<string[]>([]);
   const [editingFiat, setEditingFiat] = useState<string | null>(null);
-  const [editValue, setEditValue] = useState('');
   const [swapDetectMsg, setSwapDetectMsg] = useState<string | null>(null);
   const [resolvingSymbols, setResolvingSymbols] = useState(false);
   // Phase 2: DefiLlama reward-income suggestions (user-gated fetch).
@@ -982,22 +981,11 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     }
   };
 
-  const startEditFiat = (txId: string, current?: number) => {
+  const startEditFiat = (txId: string, _current?: number) => {
     setEditingFiat(txId);
-    setEditValue(current != null ? String(current) : '');
     // The inline editor lives in the Details panel — open the row so the
     // input the user just asked for is actually on screen.
     setExpandedId(txId);
-  };
-
-  const saveFiat = async (tx: (typeof transactions)[number]) => {
-    const parsed = parseManualMarketValue(editValue);
-    if (parsed == null) return;
-    await db.transactions.update(tx.id, {
-      fiatValue: parsed,
-      flags: (tx.flags ?? []).filter((f) => f !== 'missing_market_value')
-    });
-    setEditingFiat(null);
   };
 
   const assets = useMemo(
@@ -1946,15 +1934,21 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-warn/20 bg-warn/10 px-5 py-2 text-xs font-semibold text-mid sm:pl-[4.5rem]">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warn" aria-hidden="true" />
             <span>
-              No market price found for <span className="font-bold text-hi">{assetLabel}</span> on{' '}
+              {sourceQuote(t) ? `Execution quote known: ${sourceQuote(t)!.amount} ${sourceQuote(t)!.currency}; ${t.fiatCurrency} conversion missing. ` : 'No market price found for '}<span className="font-bold text-hi">{assetLabel}</span> on{' '}
               {formatGroupDateLabel(new Date(t.timestamp).toISOString().slice(0, 10))} — value stays unset until priced.
             </span>
+            {sourceQuote(t) && !isSaasMode() && <button type="button" className="font-bold text-primary hover:underline" onClick={async () => {
+              const settings = await getSettings();
+              const result = await convertOrNormalizeForImport([t], settings, false);
+              await db.transactions.put(result.transactions[0]);
+              if (result.transactions[0].fiatValue == null) startEditFiat(t.id, undefined);
+            }}>Review currency conversion</button>}
             <button
               type="button"
               onClick={() => startEditFiat(t.id, t.fiatValue)}
               className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
             >
-              Add market value
+              Enter total {t.fiatCurrency} value
             </button>
           </div>
         )}
@@ -2057,33 +2051,15 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               </DetailRow>
               <DetailRow label="From">{endpointFact(fromAddr, ownSide === 'from' || ownSide === 'both')}</DetailRow>
               <DetailRow label="To">{endpointFact(toAddr, ownSide === 'to' || ownSide === 'both')}</DetailRow>
+              {t.executionQuote && <DetailRow label="Execution quote">{t.executionQuote.amount} {t.executionQuote.currency}</DetailRow>}
+              {t.fxProvenance && <DetailRow label="Currency rate">{t.fxProvenance.rate} {t.fxProvenance.to}/{t.fxProvenance.from} · {t.fxProvenance.provider} · rate date {t.fxProvenance.rateDate} (requested {t.fxProvenance.requestedDate}){t.fxProvenance.reference && ` · ${t.fxProvenance.reference}`}</DetailRow>}
+              {t.manualValuation && <DetailRow label="Manual valuation">{t.manualValuation.method} · saved {new Date(t.manualValuation.enteredAt).toLocaleDateString()}{t.manualValuation.reference && ` · ${t.manualValuation.reference}`}</DetailRow>}
               <DetailRow label="Value">
                 {isEditing ? (
-                  <span className="flex items-center gap-1">
-                    <input
-                      autoFocus
-                      value={editValue}
-                      onChange={(e) => setEditValue(e.target.value)}
-                      inputMode="decimal"
-                      className="h-9 w-28 rounded-md border border-primary/60 bg-elev-1 px-2 text-right text-xs tabular-figures text-hi focus:outline-none focus:ring-2 focus-visible:ring-primary/30"
-                      placeholder="0.00"
-                    aria-label="Total transaction market value"
-                    />
-                    <button
-                      onClick={() => saveFiat(t)}
-                      className="grid h-9 w-9 place-items-center rounded-md text-gain transition-colors hover:bg-gain/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                      aria-label="Save"
-                    >
-                      <Check className="h-4 w-4" />
-                    </button>
-                    <button
-                      onClick={() => setEditingFiat(null)}
-                      className="grid h-9 w-9 place-items-center rounded-md text-low transition-colors hover:bg-elev-3 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
-                      aria-label="Cancel"
-                    >
-                      <X className="h-4 w-4" />
-                    </button>
-                  </span>
+                  <ManualValuationEditor key={t.id} transaction={t} onCancel={() => setEditingFiat(null)} onSave={async patch => {
+                    await db.transactions.update(t.id, patch);
+                    setEditingFiat(null);
+                  }} />
                 ) : (
                   <button
                     onClick={() => startEditFiat(t.id, t.fiatValue)}
@@ -2365,7 +2341,9 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
                   ? rpcTransferCount > 0
                     ? 'Wallet imports are included — click the button to fetch historical prices. Swaps auto-detected as trades will feed cost basis after prices are filled.'
                     : 'Automatic historical-price lookup is enabled; use the button to retry anything still missing.'
-                  : 'Turn on "Live price lookup" in Settings, or open any row below and type the value in yourself.'}
+                  : hosted
+                    ? 'Turn on "Live price lookup" in Settings, or open any row below and type the value in yourself.'
+                    : 'Enter a total transaction value in Review. For a known fiat quote, use "Review currency conversion" to approve a lookup for that batch; stablecoins require a documented manual value.'}
               </p>
             </div>
           </div>

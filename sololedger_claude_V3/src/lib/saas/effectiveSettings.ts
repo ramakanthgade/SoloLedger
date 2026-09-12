@@ -23,7 +23,7 @@ async function getServerConfig(): Promise<PublicServerConfig | null> {
 /** Settings merged with admin-controlled network features in SaaS mode. API keys never returned. */
 export async function getEffectiveSettings(): Promise<TaxSettings> {
   const local = await getSettings();
-  if (!isSaasMode()) return local;
+  if (!isSaasMode()) return { ...local, priceApiEnabled: false, rpcLookupEnabled: false, aiConsentGranted: false };
 
   const server = await getServerConfig();
   // The server flags are a CAPABILITY gate (an admin can switch a feature
@@ -44,19 +44,19 @@ export async function getEffectiveSettings(): Promise<TaxSettings> {
   };
 }
 
-export function hasWalletLookupKeys(settings: TaxSettings): boolean {
+export function hasWalletLookupKeys(_settings: TaxSettings): boolean {
   if (isSaasMode()) return true;
-  return Boolean(settings.heliusApiKey || settings.moralisApiKey || settings.alchemyApiKey);
+  return false;
 }
 
-export function hasPriceLookupKeys(settings: TaxSettings): boolean {
+export function hasPriceLookupKeys(_settings: TaxSettings): boolean {
   if (isSaasMode()) return true;
-  return Boolean(settings.coingeckoApiKey || settings.alchemyApiKey || settings.birdeyeApiKey);
+  return false;
 }
 
-export function hasAiAdvisor(settings: TaxSettings): boolean {
+export function hasAiAdvisor(_settings: TaxSettings): boolean {
   if (isSaasMode()) return true;
-  return Boolean(settings.aiApiKey);
+  return false;
 }
 
 /**
@@ -68,8 +68,7 @@ export function hasAiAdvisor(settings: TaxSettings): boolean {
  *   import flow doesn't offer a proxy call the server will reject (403/503).
  */
 export async function isAiMappingAvailable(): Promise<boolean> {
-  const local = await getSettings();
-  if (!isSaasMode()) return Boolean(local.aiApiKey);
+  if (!isSaasMode()) return false;
   const server = await getServerConfig();
   return Boolean(server?.aiAdvisorEnabled);
 }

@@ -120,30 +120,20 @@ describe('SettingsTab — AI Advisor consent (hosted, opt-out)', () => {
 
     await waitFor(async () => expect((await getSettings()).jurisdiction).toBe('US'));
     const row = await getSettings();
-    expect(row.aiApiKey).toBe('sk-or-local-key'); // local-only field survived
+    expect(row.aiApiKey).toBeUndefined(); // retired provider keys stay disabled
     expect(row.reportingCurrency).toBe(JURISDICTIONS.US.currency); // side-patch landed
   });
 });
 
-describe('SettingsTab — AI Advisor consent (local, opt-in)', () => {
-  it('is OFF by default when aiConsentGranted was never set', async () => {
-    await seedSettings();
+describe('SettingsTab — account-free network controls', () => {
+  it('does not offer provider keys or a local AI toggle', async () => {
+    await seedSettings({ aiApiKey: 'legacy', priceApiEnabled: true });
     render(<SettingsTab />);
-
-    const checkbox = await screen.findByRole('checkbox', { name: /AI Tax Advisor/i });
-    expect(checkbox).not.toBeChecked();
-    // Copy aligned with the new control: revoke "from its panel or here".
-    expect(screen.getByText(/from its panel or here/)).toBeInTheDocument();
-  });
-
-  it('checking the box persists the explicit opt-in', async () => {
-    await seedSettings();
-    render(<SettingsTab />);
-
-    const checkbox = await screen.findByRole('checkbox', { name: /AI Tax Advisor/i });
-    fireEvent.click(checkbox);
-    expect(checkbox).toBeChecked();
-    await waitFor(async () => expect((await getSettings()).aiConsentGranted).toBe(true));
+    await screen.findByText(/Legacy provider keys are disabled/);
+    expect(screen.queryByRole('checkbox', { name: /AI Tax Advisor/i })).toBeNull();
+    expect(screen.queryByText(/OpenRouter API key/)).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Live price lookup/i })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: /Wallet address lookup/i })).toBeNull();
   });
 });
 

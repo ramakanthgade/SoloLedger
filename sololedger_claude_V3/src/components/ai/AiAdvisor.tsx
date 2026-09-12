@@ -56,13 +56,12 @@ export function AiAdvisor() {
   const saas = isSaasMode();
   const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
   const transactions = useLiveQuery(() => db.transactions.toArray(), []) ?? [];
-  const localAiApiKey = settingsRow?.aiApiKey;
   const aiModel = settingsRow?.aiModel ?? DEFAULT_AI_MODEL;
   const jurisdiction = (settingsRow?.jurisdiction ?? 'IN') as Jurisdiction;
 
   const [serverAiEnabled, setServerAiEnabled] = useState(!saas);
-  const aiAvailable = saas ? serverAiEnabled : Boolean(localAiApiKey);
-  const aiApiKey = saas ? 'saas-proxy' : (localAiApiKey ?? '');
+  const aiAvailable = saas && serverAiEnabled;
+  const aiApiKey = saas ? 'saas-proxy' : '';
 
   // AI consent (A2) — dual semantics by mode:
   // - Hosted SaaS: ON by default for subscribers (like automatic price
@@ -71,7 +70,7 @@ export function AiAdvisor() {
   // Either way, no AI request runs while consent is not granted.
   const consentGranted = saas
     ? settingsRow?.aiConsentGranted !== false
-    : Boolean(settingsRow?.aiConsentGranted);
+    : false;
 
   // Transport disclosure (A1): BYO key talks directly to OpenRouter; a hosted
   // SaaS build with no user key is relayed through SoloLedger. `networkMode`
@@ -242,8 +241,7 @@ export function AiAdvisor() {
                 </>
               ) : (
                 <>
-                  AI Tax Advisor needs an <strong className="text-hi">OpenRouter API key</strong> in Settings → AI
-                  Advisor.
+                  AI Tax Advisor requires an account. Local imports and tax calculations do not need AI.
                 </>
               )}
             </p>
@@ -460,7 +458,7 @@ function ModeBadge({ mode }: { mode: 'direct' | 'relay' }) {
         }
       : {
           label: 'Direct to OpenRouter',
-          detail: 'Your own OpenRouter key — the summary goes straight to OpenRouter; SoloLedger never sees it.',
+          detail: 'Account AI sends the summary and question through SoloLedger to OpenRouter.',
           cls: 'border-accent/30 bg-accent/[0.08] text-accent',
           dot: 'bg-accent'
         };

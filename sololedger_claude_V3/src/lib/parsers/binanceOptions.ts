@@ -145,7 +145,7 @@ export const binanceOptionsParser: ExchangeParser = {
         type: shape.type,
         asset,
         amount,
-        fiatCurrency: 'USD',
+        fiatCurrency: stable ? asset : 'USD',
         fiatValue: stable ? amount : undefined,
         source: 'binance_options',
         sourceRef: occurrence === 1 ? baseRef : `${baseRef}~${occurrence}`,

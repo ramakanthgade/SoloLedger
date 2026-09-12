@@ -550,3 +550,22 @@ describe('FileImportFlow — multi-file batch handling', () => {
     );
   });
 });
+
+it('file import waits for real FX permission; denial saves known quote without any requests', async () => {
+  const { setMode } = await import('@/lib/saas/mode');
+  setMode('local');
+  const real = await vi.importActual<typeof import('@/lib/pricing/fiatConvert')>('@/lib/pricing/fiatConvert');
+  const fetchSpy = vi.fn(); vi.stubGlobal('fetch', fetchSpy);
+  mocks.convertOrNormalizeForImport.mockImplementationOnce(txs => real.convertOrNormalizeForImport(
+    txs.map(t => ({ ...t, fiatCurrency: 'USD', fiatValue: 420.5 })), { reportingCurrency: 'INR' }, false
+  ));
+  mocks.parseImportFile.mockResolvedValue(recognized(1, 'consent.csv'));
+  const { container } = renderFlow();
+  fireEvent.change(container.querySelector('input[type="file"]')!, { target: { files: [makeFile('consent.csv', 'consent')] } });
+  fireEvent.click(await screen.findByRole('button', { name: 'Enter totals manually' }));
+  await waitFor(() => expect(mocks.bulkPut).toHaveBeenCalled());
+  const rows = mocks.bulkPut.mock.calls[0][0] as Transaction[];
+  expect(rows[0].fiatValue).toBeUndefined();
+  expect(rows[0].executionQuote).toMatchObject({ amount: 420.5, currency: 'USD' });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});

@@ -24,8 +24,8 @@ describe('runtime mode store (mode.ts)', () => {
 
   it('setMode persists the mode and marks it as an explicit selection', () => {
     setMode('byok');
-    expect(getMode()).toBe('byok');
-    expect(localStorage.getItem(APP_MODE_KEY)).toBe('byok');
+    expect(getMode()).toBe('local');
+    expect(localStorage.getItem(APP_MODE_KEY)).toBe('local');
     expect(localStorage.getItem(APP_MODE_SELECTED_KEY)).toBe('1');
     expect(hasSelectedMode()).toBe(true);
   });
