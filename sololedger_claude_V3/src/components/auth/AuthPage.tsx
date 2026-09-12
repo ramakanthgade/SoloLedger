@@ -51,7 +51,7 @@ function PasswordField({ label, value, onChange, autoComplete, placeholder }: Pa
 }
 
 const STORY_BULLETS = [
-  { icon: Shield, text: 'Local-first — CSV import is 100% on-device' },
+  { icon: Shield, text: 'Signing in keeps this browser’s ledger — an account is not a backup' },
   { icon: Lock, text: 'Encrypted in transit · no wallet logging on our servers' },
   { icon: Mail, text: 'Free Starter tier — up to 100 transactions' }
 ];

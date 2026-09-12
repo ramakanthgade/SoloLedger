@@ -26,7 +26,7 @@
     "amount": 0.5,
     "counterAsset": "USDT",
     "counterAmount": 1500,
-    "fiatCurrency": "USD",
+    "fiatCurrency": "USDT",
     "fiatValue": 1500,
     "feeAmount": 1.5,
     "feeAsset": "USDT",

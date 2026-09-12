@@ -1,3 +1,4 @@
+import { setMode } from './mode';
 import 'fake-indexeddb/auto';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { db, DEFAULT_SETTINGS, getSettings, saveSettings } from '@/lib/storage/db';
@@ -32,6 +33,7 @@ describe('HOSTED_LOOKUP_DEFAULTS', () => {
 
 describe('applyHostedLookupDefaults', () => {
   it('hosted first run (no settings row) seeds both lookups ON', async () => {
+    setMode('hosted');
     expect(await applyHostedLookupDefaults(true)).toBe(true);
     const s = await getSettings();
     expect(s.priceApiEnabled).toBe(true);

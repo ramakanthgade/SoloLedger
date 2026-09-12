@@ -34,7 +34,7 @@ describe('ZebPay parser (C1-India)', () => {
     const buy = transactions.find((t) => t.type === 'buy')!;
     expect(buy.asset).toBe('XRP');
     expect(buy.counterAsset).toBe('USDT');
-    expect(buy.fiatCurrency).toBe('USD');
+    expect(buy.fiatCurrency).toBe('USDT');
 
     const wd = transactions.find((t) => t.type === 'transfer_out')!;
     expect(wd.asset).toBe('INR');

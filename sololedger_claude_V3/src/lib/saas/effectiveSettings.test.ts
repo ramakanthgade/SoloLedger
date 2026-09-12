@@ -51,11 +51,11 @@ describe('getEffectiveSettings — local / BYOK', () => {
     expect(mocks.fetchPublicConfig).not.toHaveBeenCalled();
   });
 
-  it('byok also returns the raw row untouched', async () => {
+  it('legacy keys and enabled lookups cannot reactivate local networking', async () => {
     await seedRow({ priceApiEnabled: true, rpcLookupEnabled: false });
     setMode('byok');
     const s = await getEffectiveSettings();
-    expect(s.priceApiEnabled).toBe(true);
+    expect(s.priceApiEnabled).toBe(false);
     expect(s.rpcLookupEnabled).toBe(false);
     expect(mocks.fetchPublicConfig).not.toHaveBeenCalled();
   });

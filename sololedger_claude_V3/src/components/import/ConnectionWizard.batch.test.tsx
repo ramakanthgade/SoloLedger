@@ -555,3 +555,21 @@ describe('ConnectionWizard — multi-file batch flow', () => {
     expect(mocks.onComplete).toHaveBeenCalledWith(123);
   });
 });
+
+it('guided import waits for real FX permission; Escape saves the quote with no requests', async () => {
+  const { setMode } = await import('@/lib/saas/mode');
+  setMode('local');
+  const real = await vi.importActual<typeof import('@/lib/pricing/fiatConvert')>('@/lib/pricing/fiatConvert');
+  const fetchSpy = vi.fn(); vi.stubGlobal('fetch', fetchSpy);
+  mocks.convertOrNormalizeForImport.mockImplementationOnce(txs => real.convertOrNormalizeForImport(
+    txs.map(t => ({ ...t, fiatCurrency: 'USD', fiatValue: 420.5 })), { reportingCurrency: 'INR' }, false
+  ));
+  await dropFiles([makeFile('consent.csv', 'consent')]);
+  await confirmTransactions(1);
+  fireEvent.keyDown(await screen.findByRole('dialog', { name: 'Allow historical currency lookup?' }), { key: 'Escape' });
+  await vi.waitFor(() => expect(mocks.bulkPut).toHaveBeenCalled());
+  const rows = mocks.bulkPut.mock.calls[0][0] as Transaction[];
+  expect(rows[0].fiatValue).toBeUndefined();
+  expect(rows[0].executionQuote).toMatchObject({ amount: 420.5, currency: 'USD' });
+  expect(fetchSpy).not.toHaveBeenCalled();
+});

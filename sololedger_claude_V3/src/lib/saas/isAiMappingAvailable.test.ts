@@ -36,10 +36,10 @@ describe('isAiMappingAvailable — hosted mode honors server aiAdvisorEnabled', 
     fetchPublicConfigMock.mockReset();
   });
 
-  it('is true in local/byok when a BYOK AI key is set', async () => {
+  it('is false for a legacy local AI key', async () => {
     setMode('byok');
     getSettingsMock.mockResolvedValue(settings({ aiApiKey: 'sk-test' }));
-    expect(await isAiMappingAvailable()).toBe(true);
+    expect(await isAiMappingAvailable()).toBe(false);
   });
 
   it('is false in local/byok when no AI key is set', async () => {

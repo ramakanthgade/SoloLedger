@@ -1,11 +1,22 @@
 # SoloLedger — Private Crypto Tax
 
-A fully client-side crypto capital gains and tax reporting tool. Everything —
-parsing, calculation, storage, and report generation — runs in your browser.
-There is no backend, and no data is transmitted anywhere unless you explicitly
-export a file or turn on one of the two optional network features (live price
-lookup, RPC wallet lookup), both off by default and clearly indicated by the
-badge in the top-right of the app at all times.
+Import parsing, tax calculations, ledger storage and report generation run in your browser.
+Create an account for managed connected services, or continue without an account for local
+file imports and calculations. Provider-key mode is retired; legacy keys are disabled.
+
+Local historical fiat conversion asks permission for each import/recovery batch before
+using Frankfurter directly. Only currency codes and dates are sent, along with ordinary
+connection metadata (IP address and browser headers); amounts, addresses and raw files
+are not sent. Decline/dismiss makes no lookup requests, including no cache-based conversion.
+USD and USDT remain different. Unsupported/unavailable rates stay unset for manual totals
+in Review. Actual reference-rate dates and provider provenance are retained.
+
+Your account is **not a backup or cross-device sync**. Signing in or out retains the selected
+same-origin browser ledger. Existing hosted database files are not deleted or merged.
+JSON backups are **sensitive and unencrypted**. Encryption is a separate deferred security
+feature. Restore replaces local data; export a current copy before restoring or changing
+browser/device. Optional AI shares financial summaries and your question via the relay to
+OpenRouter; no on-device language model or confidential enclave is claimed.
 
 ## What's implemented
 
@@ -16,16 +27,8 @@ badge in the top-right of the app at all times.
   - Manual column-mapping form for any other CSV shape (map headers + map
     each distinct "type" value in your file to a SoloLedger transaction type)
   - Manual single-transaction entry form
-  - Optional read-only wallet lookup covering Bitcoin, Ethereum, Polygon,
-    Arbitrum, Base, BNB Smart Chain, Optimism, Avalanche, and Solana — off
-    by default. Bitcoin uses Blockstream/mempool.space (free, no key).
-    Every other chain runs on one free Alchemy API key (entered once in
-    Settings, reused everywhere), plus a manual Etherscan-compatible
-    fallback for anything else. Paste in multiple addresses at once (one
-    per line) and it queries all of them in a single job. Every explorer,
-    free or paid, sees the address you query — there's no way around that
-    for any hosted lookup service; the only true alternative is running
-    your own full node. See the in-app warning and Settings for specifics.
+  - Managed read-only wallet lookup requires an account. Providers receive queried
+    addresses and normal connection metadata. No customer provider keys are required.
 - **Dashboard**: one coherent, cutoff-aware financial snapshot powers Total Net
   Worth, remaining Cost Basis, Unrealized P&L, chart, allocation, holdings,
   selected-period activity, and India tax/TDS. FY and Custom selections retain
@@ -43,10 +46,9 @@ badge in the top-right of the app at all times.
   The Transactions tab's "match lots" picker lets you choose which lots a Specific
   ID disposal draws from; anything you don't explicitly order falls back to
   oldest-lots-first for the remainder.
-- **Price backfill**: optional historical lookup via CoinGecko's public API
-  (Settings → "Live price lookup"). Only an asset symbol and a date are sent —
-  never wallet addresses, amounts, or anything else. A "Fetch missing prices"
-  button appears in Transactions whenever rows are missing a fiat value.
+- **Valuation**: imported reporting-currency totals and confirmed zeros are retained.
+  Foreign execution quotes stay available for explicit historical fiat conversion or
+  manual reporting-currency totals in Review. Managed asset pricing requires an account.
 - **Jurisdictions**: India (default), US, Canada, UAE — each a small pure-
   function rules module layered on the same disposal data, so adding a new
   country doesn't touch the calculation core.
@@ -85,7 +87,7 @@ badge in the top-right of the app at all times.
 - **Solana lookups** fetch each transaction individually after listing
   signatures (`getSignaturesForAddress` + `getTransaction`), paced to stay
   under free-tier throughput — large histories will take a little while.
-- **"Other EVM chain" fallback** needs an Etherscan-family API key from
+- **"Other EVM chain" fallback** is a legacy developer integration, not a customer key setup. Historically used keys from
   whichever explorer you point it at (Etherscan itself now paywalls some
   chains on its free tier — see the note on this in Settings).
 
@@ -99,7 +101,7 @@ npm run dev
 Then open the printed local URL (typically `http://localhost:5173`). No
 environment variables or accounts are required — the app works fully
 offline after the first load (PWA service worker caches assets), aside from
-the two opt-in network features described above.
+optional historical fiat lookup. Account services require a network connection.
 
 To build a production bundle:
 

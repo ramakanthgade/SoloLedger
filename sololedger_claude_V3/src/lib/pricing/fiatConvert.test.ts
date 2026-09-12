@@ -1,3 +1,4 @@
+vi.mock('@/components/import/FxPermissionDialog', () => ({ requestFxPermission: vi.fn(async () => false) }));
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 
@@ -120,7 +121,7 @@ describe('convertOrNormalizeForImport', () => {
       false
     );
     expect(result.converted).toBe(0);
-    expect(result.failed).toBe(0);
+    expect(result.failed).toBe(1);
     expect(result.transactions[0].fiatValue).toBe(5000);
     expect(result.transactions[1].fiatValue).toBeUndefined();
     expect(result.transactions[1].fiatCurrency).toBe('INR');

@@ -39,9 +39,9 @@ interface StateConfig {
 const STATES: Record<NetworkMode, StateConfig> = {
   local: {
     label: 'Local',
-    title: '100% Local',
+    title: 'Local calculations',
     disclosure:
-      'Nothing has left this device — every import, calculation and report runs right here in your browser.',
+      'No tracked lookup has run in this session. Your ledger and calculations are local; optional lookups disclose currencies, dates and connection metadata before use. This badge is not a complete network audit.',
     pill: 'bg-gain/10 border-gain/30 text-gain',
     dot: 'bg-gain',
     dotGlow: 'shadow-[0_0_8px_rgb(var(--gain-rgb)/0.8)]',
@@ -49,10 +49,10 @@ const STATES: Record<NetworkMode, StateConfig> = {
   },
   direct: {
     label: 'Network on',
-    suffix: '· your keys, direct',
+    suffix: '· direct lookup',
     title: 'Local + network on',
     disclosure:
-      'Your data still lives on this device — you turned on network features, so only your browser talks to the source directly, and SoloLedger never sees it.',
+      'A direct lookup was used. The provider receives requested currencies or assets, dates and connection metadata such as IP address and browser headers. Your ledger remains stored in this browser.',
     pill: 'bg-accent/10 border-accent/30 text-accent',
     dot: 'bg-accent',
     dotGlow: 'shadow-[0_0_8px_rgb(var(--accent-rgb)/0.8)]',

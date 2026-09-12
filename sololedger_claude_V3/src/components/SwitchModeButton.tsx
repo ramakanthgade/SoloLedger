@@ -29,11 +29,11 @@ export function SwitchModeButton({ className }: { className?: string }) {
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/60 focus-visible:ring-offset-2 focus-visible:ring-offset-canvas',
         className
       )}
-      title="Return to the landing page to switch mode (Local / BYOK / Hosted)"
+      title="Account options — local ledger is retained"
     >
       <ArrowLeftRight className="h-3.5 w-3.5" aria-hidden="true" />
       {/* Label drops below 2xl so the six tabs always fit the header. */}
-      <span className="hidden 2xl:inline">Switch mode</span>
+      <span className="hidden 2xl:inline">Account options</span>
     </button>
   );
 }

@@ -24,7 +24,7 @@ describe('LocalOnlyBadge', () => {
     const pill = screen.getByRole('button');
     // Top-bar overlap fix: the pill is icon + short label; full text in title.
     expect(pill).toHaveTextContent('Local');
-    expect(pill).toHaveAttribute('title', '100% Local — details');
+    expect(pill).toHaveAttribute('title', 'Local calculations — details');
     // The status dot carries the gain token fill.
     expect(pill.querySelector('.bg-gain')).not.toBeNull();
   });
@@ -34,7 +34,7 @@ describe('LocalOnlyBadge', () => {
     render(<LocalOnlyBadge />);
     const pill = screen.getByRole('button');
     expect(pill).toHaveTextContent('Network on');
-    expect(pill).toHaveAttribute('title', 'Local + network on· your keys, direct — details');
+    expect(pill).toHaveAttribute('title', 'Local + network on· direct lookup — details');
     expect(pill.querySelector('.bg-accent')).not.toBeNull();
   });
 
@@ -63,7 +63,7 @@ describe('LocalOnlyBadge', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
     fireEvent.click(screen.getByRole('button'));
     const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByText(/Nothing has left this device/i)).not.toBeNull();
+    expect(within(dialog).getByText(/No tracked lookup has run/i)).not.toBeNull();
   });
 
   it('is keyboard-accessible: the pill is a focusable button and toggles aria-expanded', () => {

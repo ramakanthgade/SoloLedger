@@ -1,26 +1,3 @@
-/**
- * Runtime app-mode store.
- *
- * "Mode" used to be a build-time constant (`VITE_SAAS_MODE`). To let every
- * visitor pick how they run SoloLedger from a single landing page, mode is now
- * RUNTIME state with three values:
- *
- *   - 'local'  — 100% on-device, no account, no keys.
- *   - 'byok'   — bring your own API keys (entered in Settings). Same transport
- *                as 'local' (direct/local calls); the only difference is that
- *                the user supplied keys, already handled by effectiveSettings.
- *   - 'hosted' — managed SaaS: server proxy + auth required.
- *
- * The current mode lives as a MODULE-LEVEL singleton (not only React context)
- * because many transport call sites are plain modules that cannot read React
- * context. localStorage is read synchronously at module load so the singleton
- * is correct before the first transport call, regardless of import order.
- *
- * Back-compat: `isSaasMode()` (in ./config) returns `getMode() === 'hosted'`.
- * 'local' and 'byok' BOTH map to non-hosted and share the exact same transport
- * branch — no new code path is added to the ~13 transport call sites.
- */
-
 export type AppMode = 'local' | 'byok' | 'hosted';
 
 export const APP_MODE_KEY = 'sololedger_app_mode';
@@ -47,6 +24,10 @@ function seedMode(): AppMode {
 function readStoredMode(): AppMode | null {
   try {
     const raw = localStorage.getItem(APP_MODE_KEY);
+    if (raw === 'byok') {
+      try { localStorage.setItem(APP_MODE_KEY, 'local'); } catch { /* read-only storage */ }
+      return 'local';
+    }
     return isAppMode(raw) ? raw : null;
   } catch {
     // localStorage may be unavailable (e.g. SSR / privacy mode) — fall through.
@@ -75,9 +56,9 @@ export function getMode(): AppMode {
 
 /** Update the singleton and persist the choice to localStorage. */
 export function setMode(mode: AppMode): void {
-  currentMode = mode;
+  currentMode = mode === 'byok' ? 'local' : mode;
   try {
-    localStorage.setItem(APP_MODE_KEY, mode);
+    localStorage.setItem(APP_MODE_KEY, currentMode);
     // Any persisted mode is, by definition, an explicit user choice — the
     // seeded default is never written here (it only lives in the singleton).
     localStorage.setItem(APP_MODE_SELECTED_KEY, '1');

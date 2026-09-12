@@ -89,6 +89,8 @@ export interface Transaction {
   fiatCurrency: string;         // user's reporting currency, e.g. "INR", "USD"
   fiatValue?: number;           // value of the amount at time of tx, in fiatCurrency
                                  // (required for buy/sell/trade/income; optional for transfers)
+  executionQuote?: { amount: number; currency: string; timestamp: number };
+  fxProvenance?: { provider: string; rate: number; requestedDate: string; rateDate: string; from: string; to: string };
   counterAsset?: string;        // for trades: the asset received/given in exchange
   counterAmount?: number;
   source: string;               // "coinbase" | "binance" | "manual" | "rpc:<chain>" etc.

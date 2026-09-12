@@ -1,3 +1,4 @@
+import { getMode } from '@/lib/saas/mode';
 import Dexie, { type Table } from 'dexie';
 import type {
   Transaction, Lot, Disposal, TaxSettings, InternalTransferDecision, InternalTransferMatchMethod
@@ -841,26 +842,34 @@ export function createDb(name: string): SoloLedgerDB {
   return new SoloLedgerDB(name);
 }
 
-/** Active IndexedDB — swapped per user in SaaS mode. */
-export let db = createDb(LOCAL_DB_NAME);
-
-let activeUserId: string | null = null;
-
-export function getActiveDatabaseUserId(): string | null {
-  return activeUserId;
-}
-
-/** In SaaS mode each account gets an isolated database. Standalone uses one shared local DB. */
-export async function switchUserDatabase(userId: string | null): Promise<void> {
-  const nextName = userId ? `sololedger_${userId}` : LOCAL_DB_NAME;
-  if (activeUserId === userId && db.name === nextName) return;
+/** Authentication does not relocate or clear this browser's ledger. */
+const ACTIVE_LEDGER_KEY = 'sololedger_active_ledger';
+function storedLedgerName(): string {
   try {
-    await db.close();
-  } catch {
-    /* first open */
-  }
+    const name = localStorage.getItem(ACTIVE_LEDGER_KEY);
+    return name?.startsWith('sololedger_') ? name : LOCAL_DB_NAME;
+  } catch { return LOCAL_DB_NAME; }
+}
+export let db = createDb(storedLedgerName());
+let activeUserId: string | null = null;
+export function getActiveDatabaseUserId(): string | null { return activeUserId; }
+
+export async function switchUserDatabase(userId: string | null): Promise<void> {
   activeUserId = userId;
-  db = createDb(nextName);
+  // Existing hosted ledgers are retained, not merged or deleted. Only adopt an
+  // old account DB when this browser has no selected/populated local ledger.
+  let selected = false;
+  try { selected = Boolean(localStorage.getItem(ACTIVE_LEDGER_KEY)); } catch { /* unavailable */ }
+  if (userId && !selected && db.name === LOCAL_DB_NAME && await db.transactions.count() === 0 && await db.csvImports.count() === 0) {
+    const legacyName = `sololedger_${userId}`;
+    if (await Dexie.exists(legacyName)) {
+      db.close();
+      db = createDb(legacyName);
+    }
+  }
+  if (userId) {
+    try { localStorage.setItem(ACTIVE_LEDGER_KEY, db.name); } catch { /* best effort */ }
+  }
   await db.open();
 }
 
@@ -876,6 +885,15 @@ export async function getSettings(): Promise<TaxSettings> {
   const row = await db.settings.get('singleton');
   if (!row) return DEFAULT_SETTINGS;
   const { id: _id, ...settings } = row;
+  // Legacy provider keys must never silently reactivate, including after restore.
+  for (const key of Object.keys(settings)) {
+    if (key.endsWith('ApiKey')) delete (settings as unknown as Record<string, unknown>)[key];
+  }
+  if (getMode() !== 'hosted') {
+    settings.priceApiEnabled = false;
+    settings.rpcLookupEnabled = false;
+    settings.aiConsentGranted = false;
+  }
   return settings;
 }
 

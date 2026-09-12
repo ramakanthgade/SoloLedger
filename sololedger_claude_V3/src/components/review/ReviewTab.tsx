@@ -1,6 +1,7 @@
+import { sourceQuote, convertOrNormalizeForImport } from '@/lib/pricing/fiatConvert';
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { db, getSpecIdHints, deleteTransactionsByIds, setTransactionSafetyVisibility } from '@/lib/storage/db';
+import { db, getSettings, getSpecIdHints, deleteTransactionsByIds, setTransactionSafetyVisibility } from '@/lib/storage/db';
 import { Badge } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog';
@@ -626,11 +627,10 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
   const [applyingBulk, setApplyingBulk] = useState(false);
   const [dcaGroups, setDcaGroups] = useState<Awaited<ReturnType<typeof detectDcaGroups>>>([]);
   const [applyingDca, setApplyingDca] = useState(false);
-  const settingsRow = useLiveQuery(() => db.settings.get('singleton'), []);
+  const settingsRow = useLiveQuery(() => getSettings(), []);
   const settings = useMemo(() => {
     if (!settingsRow) return null;
-    const { id: _id, ...rest } = settingsRow;
-    return rest;
+    return settingsRow;
   }, [settingsRow]);
   const [detailTabByTxId, setDetailTabByTxId] = useState<Record<string, DetailTab>>({});
   const [fetchingPrices, setFetchingPrices] = useState(false);
@@ -995,6 +995,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
     if (parsed == null) return;
     await db.transactions.update(tx.id, {
       fiatValue: parsed,
+      fxProvenance: undefined,
+      executionQuote: sourceQuote(tx),
       flags: (tx.flags ?? []).filter((f) => f !== 'missing_market_value')
     });
     setEditingFiat(null);
@@ -1946,15 +1948,21 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-t border-warn/20 bg-warn/10 px-5 py-2 text-xs font-semibold text-mid sm:pl-[4.5rem]">
             <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-warn" aria-hidden="true" />
             <span>
-              No market price found for <span className="font-bold text-hi">{assetLabel}</span> on{' '}
+              {sourceQuote(t) ? `Execution quote known: ${sourceQuote(t)!.amount} ${sourceQuote(t)!.currency}; ${t.fiatCurrency} conversion missing. ` : 'No market price found for '}<span className="font-bold text-hi">{assetLabel}</span> on{' '}
               {formatGroupDateLabel(new Date(t.timestamp).toISOString().slice(0, 10))} — value stays unset until priced.
             </span>
+            {sourceQuote(t) && !isSaasMode() && <button type="button" className="font-bold text-primary hover:underline" onClick={async () => {
+              const settings = await getSettings();
+              const result = await convertOrNormalizeForImport([t], settings, false);
+              await db.transactions.put(result.transactions[0]);
+              if (result.transactions[0].fiatValue == null) startEditFiat(t.id, undefined);
+            }}>Review currency conversion</button>}
             <button
               type="button"
               onClick={() => startEditFiat(t.id, t.fiatValue)}
               className="rounded font-bold text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/60"
             >
-              Add market value
+              Enter total {t.fiatCurrency} value
             </button>
           </div>
         )}
@@ -2057,6 +2065,8 @@ export function ReviewTab({ navigationIntent, navigationResetToken, onNavigation
               </DetailRow>
               <DetailRow label="From">{endpointFact(fromAddr, ownSide === 'from' || ownSide === 'both')}</DetailRow>
               <DetailRow label="To">{endpointFact(toAddr, ownSide === 'to' || ownSide === 'both')}</DetailRow>
+              {t.executionQuote && <DetailRow label="Execution quote">{t.executionQuote.amount} {t.executionQuote.currency}</DetailRow>}
+              {t.fxProvenance && <DetailRow label="Currency rate">{t.fxProvenance.rate} {t.fxProvenance.to}/{t.fxProvenance.from} · {t.fxProvenance.provider} · rate date {t.fxProvenance.rateDate} (requested {t.fxProvenance.requestedDate})</DetailRow>}
               <DetailRow label="Value">
                 {isEditing ? (
                   <span className="flex items-center gap-1">
