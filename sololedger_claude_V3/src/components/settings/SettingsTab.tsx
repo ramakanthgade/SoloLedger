@@ -1,3 +1,4 @@
+import { LegacyLedgerRecovery } from './LegacyLedgerRecovery';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { getSettings, saveSettings, clearAllData } from '@/lib/storage/db';
 import { exportFullBackup, importFullBackup } from '@/lib/storage/backup';
@@ -413,6 +414,8 @@ export function SettingsTab() {
                   Your ledger lives in this browser’s IndexedDB, not your account. Sign-in and sign-out do not back it up or remove it. JSON backups are sensitive and unencrypted; encryption is a separate, deferred feature. Keep backups somewhere
                   safe.
                 </p>
+
+                <LegacyLedgerRecovery />
 
                 {pendingRestore && (
                   <div className="mt-4 rounded-xl border border-warn/30 bg-warn/10 p-4">

@@ -12,7 +12,10 @@ USD and USDT remain different. Unsupported/unavailable rates stay unset for manu
 in Review. Actual reference-rate dates and provider provenance are retained.
 
 Your account is **not a backup or cross-device sync**. Signing in or out retains the selected
-same-origin browser ledger. Existing hosted database files are not deleted or merged.
+same-origin browser ledger. Existing hosted database files are not deleted or merged. In Settings → Your data, use
+**Discover browser ledgers** to explicitly open an older local or account ledger, then
+export its backup. Selection reloads the app; it does not combine ledgers or overwrite
+other databases. You can return to the previous ledger through the same control.
 JSON backups are **sensitive and unencrypted**. Encryption is a separate deferred security
 feature. Restore replaces local data; export a current copy before restoring or changing
 browser/device. Optional AI shares financial summaries and your question via the relay to

@@ -141,8 +141,8 @@ const PRIVACY_CARDS: FeatureCard[] = [
   {
     icon: ShieldCheck,
     tile: 'bg-warn/10 text-warn',
-    title: 'You hold the keys',
-    body: 'Cross-device backups are encrypted on your device first. Read-only API keys only — trading stays off.'
+    title: 'Keep a secure backup',
+    body: 'Your account is not a backup. Exported JSON backups are sensitive and unencrypted; store them securely. Backup encryption is a separate, deferred feature.'
   }
 ];
 

@@ -2,13 +2,6 @@ vi.mock('@/components/import/FxPermissionDialog', () => ({ requestFxPermission: 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import type { Transaction } from '@/types/transaction';
 
-// Guard: the no-network normalization path must never touch the network FX transports.
-vi.mock('./coingecko', () => ({
-  usdToCurrencyRate: vi.fn(() => {
-    throw new Error('network call attempted in local mode');
-  })
-}));
-
 const fetchSpy = vi.fn(() => {
   throw new Error('network fetch attempted in local mode');
 });

@@ -76,3 +76,35 @@ describe('historical currency permission integration', () => {
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
   });
 });
+
+it('memoizes unavailable rates only within the consented batch, including 1000 duplicate rows', async () => {
+  fetchSpy.mockResolvedValue({ ok: false });
+  const batch = Array.from({ length: 1000 }, (_, i) => row({ id: `failed-${i}`, timestamp: Date.parse('2024-07-22') }));
+  const pending = convertOrNormalizeForImport(batch, settings, false);
+  await allow();
+  expect((await pending).failed).toBe(1000);
+  expect(fetchSpy).toHaveBeenCalledTimes(1);
+  const retry = convertOrNormalizeForImport(batch.slice(0, 1), settings, false);
+  await allow();
+  await retry;
+  expect(fetchSpy).toHaveBeenCalledTimes(2);
+});
+
+it('Binance Options and Hyperliquid parser outputs never request fiat USD rates for USDT/USDC', async () => {
+  const { binanceOptionsParser } = await import('@/lib/parsers/binanceOptions');
+  const { hyperliquidTradesParser } = await import('@/lib/parsers/hyperliquidTrades');
+  const { hyperliquidDepositsParser } = await import('@/lib/parsers/hyperliquidDeposits');
+  const options = binanceOptionsParser.parse([{ Time: '2024-07-17 10:00:00', Type: 'premium', Amount: '-420.5', Asset: 'USDT' }]).transactions;
+  const trades = hyperliquidTradesParser.parse([
+    { time: '07/17/2024 - 10:00:00', coin: 'HNT', dir: 'Close Long', fee: '0.5', closedPnl: '30', px: '4', sz: '10' },
+    { time: '07/17/2024 - 11:00:00', coin: 'HNT', dir: 'Close Short', fee: '0.3', closedPnl: '-20', px: '4', sz: '10' }
+  ]).transactions;
+  const deposits = hyperliquidDepositsParser.parse([{ time: '07/17/2024 - 10:00:00', action: 'deposit', source: 'arbitrum', destination: 'trading', accountValueChange: '50 USDC', fee: '0.2 USDC' }]).transactions;
+  expect(options).toHaveLength(1); expect(options[0].fiatCurrency).toBe('USDT');
+  expect(trades).toHaveLength(4); expect(trades.every(t => t.fiatCurrency === 'USDC')).toBe(true);
+  expect(deposits).toHaveLength(1); expect(deposits[0].fiatCurrency).toBe('USDC');
+  const result = await convertOrNormalizeForImport([...options, ...trades, ...deposits, row({ fiatCurrency: 'INR', fiatValue: 9900 })], settings, false);
+  expect(result.transactions.slice(0, -1).every(t => t.fiatValue == null && t.executionQuote)).toBe(true);
+  expect(result.transactions[result.transactions.length - 1]?.fiatValue).toBe(9900);
+  expect(fetchSpy).not.toHaveBeenCalled();
+});

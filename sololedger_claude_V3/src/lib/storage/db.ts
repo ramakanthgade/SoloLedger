@@ -873,6 +873,32 @@ export async function switchUserDatabase(userId: string | null): Promise<void> {
   await db.open();
 }
 
+export interface BrowserLedger { name: string; transactionCount: number; active: boolean }
+
+/** Explicit local discovery only; never creates, merges, clears or relocates ledgers. */
+export async function listBrowserLedgers(): Promise<BrowserLedger[]> {
+  const names = await Dexie.getDatabaseNames();
+  const ledgers: BrowserLedger[] = [];
+  for (const name of names.filter(name => name === LOCAL_DB_NAME || name.startsWith('sololedger_'))) {
+    const active = name === db.name;
+    const candidate = active ? db : new Dexie(name);
+    try {
+      await candidate.open();
+      if (candidate.tables.some(table => table.name === 'transactions')) {
+        ledgers.push({ name, transactionCount: await candidate.table('transactions').count(), active });
+      }
+    } finally { if (!active) candidate.close(); }
+  }
+  return ledgers.sort((a, b) => Number(b.active) - Number(a.active) || a.name.localeCompare(b.name));
+}
+
+/** Selection takes effect on reload so every live query binds to the same DB. */
+export async function selectBrowserLedgerForReload(name: string): Promise<void> {
+  const available = await listBrowserLedgers();
+  if (!available.some(ledger => ledger.name === name)) throw new Error('This browser ledger is unavailable. No data was changed.');
+  localStorage.setItem(ACTIVE_LEDGER_KEY, name);
+}
+
 export const DEFAULT_SETTINGS: TaxSettings = {
   jurisdiction: 'IN',
   reportingCurrency: 'INR',

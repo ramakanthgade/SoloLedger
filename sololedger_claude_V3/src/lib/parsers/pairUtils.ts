@@ -1,6 +1,6 @@
 /** Common quote currencies in exchange trading pairs (longest first for matching). */
 const QUOTE_SUFFIXES = [
-  'USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI', 'USD', 'EUR', 'GBP',
+  'USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI', 'GUSD', 'PYUSD', 'RLUSD', 'USD', 'EUR', 'GBP',
   'BTC', 'ETH', 'BNB', 'SOL', 'INR', 'TRY', 'AUD', 'BRL'
 ];
 
@@ -24,7 +24,7 @@ export function parseTradingPair(pair: string): { base: string; quote?: string }
 export function quoteToFiatCurrency(quote?: string): string | undefined {
   if (!quote) return undefined;
   const q = quote.toUpperCase();
-  if (['USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI', 'USD'].includes(q)) return q;
+  if (['USDT', 'USDC', 'BUSD', 'TUSD', 'USDP', 'FDUSD', 'DAI', 'GUSD', 'PYUSD', 'RLUSD', 'USD'].includes(q)) return q;
   if (q === 'EUR') return 'EUR';
   if (q === 'GBP') return 'GBP';
   if (q === 'INR') return 'INR';

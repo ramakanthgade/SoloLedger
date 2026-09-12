@@ -16,7 +16,7 @@ describe('Hyperliquid deposits — non-USDC valuation (C1)', () => {
     const { transactions } = hyperliquidDepositsParser.parse(rows);
     const usdc = transactions.find((t) => t.asset === 'USDC')!;
     expect(usdc.fiatValue).toBe(1989.8);
-    expect(usdc.fiatCurrency).toBe('USD');
+    expect(usdc.fiatCurrency).toBe('USDC');
     expect(usdc.flags).not.toContain('missing_cost_basis');
   });
 

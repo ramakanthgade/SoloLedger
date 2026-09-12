@@ -33,11 +33,11 @@ function mapAction(raw: string): TxType | null {
   return null;
 }
 
-/** USD-equivalent collateral assets whose amount ≈ USD fiat value 1:1. */
-const USD_EQUIVALENT = new Set(['USD', 'USDC', 'USDT', 'DAI', 'USDP', 'BUSD', 'TUSD', 'FDUSD']);
+/** Recognized collateral denominations; preserve each token rather than assuming a USD peg. */
+const COLLATERAL_DENOMINATIONS = new Set(['USD', 'USDC', 'USDT', 'DAI', 'USDP', 'BUSD', 'TUSD', 'FDUSD']);
 
-function isUsdEquivalent(asset: string): boolean {
-  return USD_EQUIVALENT.has(asset.toUpperCase());
+function isKnownCollateral(asset: string): boolean {
+  return COLLATERAL_DENOMINATIONS.has(asset.toUpperCase());
 }
 
 export const hyperliquidDepositsParser: ExchangeParser = {
@@ -105,19 +105,17 @@ export const hyperliquidDepositsParser: ExchangeParser = {
         continue;
       }
 
-      // Only USD/USDC-equivalent collateral can be valued 1:1 in USD. For any
-      // other asset (e.g. a token deposit) the change amount is a token
-      // quantity, NOT a USD value — leave it unpriced and flag for a price
-      // lookup instead of silently mis-stating fiatValue = amount.
-      const usdEquivalent = isUsdEquivalent(asset);
-      const fiatValue = usdEquivalent ? amount : undefined;
+      // Preserve recognized collateral amounts in their original denomination.
+      // Other asset quantities are not fiat values and need market valuation.
+      const knownCollateral = isKnownCollateral(asset);
+      const fiatValue = knownCollateral ? amount : undefined;
       const flags: FlagReason[] = ['possible_internal_transfer'];
 
       const notesParts = [
         mapped === 'transfer_in' ? 'HL deposit' : 'HL withdraw',
         source && dest ? `${source} → ${dest}` : source || dest,
         fee > 0 ? `fee ${fee} ${asset}` : '',
-        usdEquivalent ? '' : `${asset} value not in USD — fetch price`
+        knownCollateral ? '' : `${asset} value not in USD — fetch price`
       ].filter(Boolean);
 
       transactions.push({
@@ -126,7 +124,7 @@ export const hyperliquidDepositsParser: ExchangeParser = {
         type: mapped,
         asset,
         amount,
-        fiatCurrency: 'USD',
+        fiatCurrency: knownCollateral ? asset : 'USD',
         fiatValue,
         source: 'hyperliquid_deposits',
         sourceRef: exchangeSourceRef('hyperliquid', timestamp, mapped, asset, amount),

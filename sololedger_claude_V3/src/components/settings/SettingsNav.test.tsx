@@ -49,7 +49,6 @@ describe('SettingsTab — Ember & Slate sub-nav', () => {
     expect(links.map((l) => l.textContent)).toEqual([
       'Tax defaults',
       'Network features',
-      'AI advisor',
       'Your data',
       'Address registries',
       'Appearance'

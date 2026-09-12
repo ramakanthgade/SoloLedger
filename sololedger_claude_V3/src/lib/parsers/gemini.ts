@@ -11,7 +11,7 @@ function parseGeminiPair(value: string): { base: string; quote?: string } {
   return quote ? { base: pair.slice(0, -quote.length), quote } : parseTradingPair(value);
 }
 function geminiQuoteFiat(quote?: string): string | undefined {
-  if (quote === 'GUSD') return 'USD';
+  if (quote === 'GUSD') return 'GUSD';
   if (quote === 'SGD') return 'SGD';
   return quoteToFiatCurrency(quote);
 }

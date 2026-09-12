@@ -35,15 +35,6 @@ async function historicalRate(from: string, to: string, timestamp: number): Prom
   } catch { return null; }
 }
 
-export async function convertFiatAmount(amount: number, fromCurrency: string, reportingCurrency: string, timestampMs: number, _key?: string): Promise<{ amount: number; currency: string } | null> {
-  const from = normalizeFiatCurrency(fromCurrency), to = normalizeFiatCurrency(reportingCurrency);
-  if (from === to || amount === 0) return { amount, currency: to };
-  // This lower-level legacy API must not become a local consent bypass.
-  if (!isSaasMode()) return null;
-  const rate = await historicalRate(from, to, timestampMs);
-  return rate ? { amount: amount * rate.rate, currency: to } : null;
-}
-
 export interface FiatConvertResult { transactions: Transaction[]; converted: number; failed: number }
 function clearFlags(t: Transaction) { return (t.flags ?? []).filter(f => f !== 'missing_market_value' && f !== 'missing_cost_basis'); }
 export function sourceQuote(t: Transaction) {
@@ -75,6 +66,7 @@ export function normalizeFiatToReportingCurrencyLocal(transactions: Transaction[
 async function convertBatch(transactions: Transaction[], reportingCurrency: string): Promise<FiatConvertResult> {
   const to = normalizeFiatCurrency(reportingCurrency);
   let converted = 0, failed = 0;
+  const batchRates = new Map<string, Promise<Rate | null>>();
   const out: Transaction[] = [];
   for (const t of transactions) {
     // Existing reporting totals (including zero) are authoritative.
@@ -83,7 +75,9 @@ async function convertBatch(transactions: Transaction[], reportingCurrency: stri
     }
     const quote = sourceQuote(t);
     if (!quote) { out.push(t); continue; }
-    const rate = await historicalRate(quote.currency, to, quote.timestamp);
+    const key = `${quote.currency}:${to}:${Number.isFinite(quote.timestamp) ? day(quote.timestamp) : 'invalid'}`;
+    if (!batchRates.has(key)) batchRates.set(key, historicalRate(quote.currency, to, quote.timestamp));
+    const rate = await batchRates.get(key)!;
     if (!rate || !Number.isFinite(quote.amount * rate.rate)) { failed++; out.push(...normalizeFiatToReportingCurrencyLocal([t], to)); continue; }
     converted++;
     out.push({ ...t, executionQuote: quote, fiatValue: quote.amount * rate.rate, fiatCurrency: to, flags: clearFlags(t),
@@ -91,13 +85,13 @@ async function convertBatch(transactions: Transaction[], reportingCurrency: stri
   }
   return { transactions: out, converted, failed };
 }
-export async function convertTransactionsToReportingCurrency(transactions: Transaction[], settings: Pick<TaxSettings, 'reportingCurrency' | 'coingeckoApiKey'>): Promise<FiatConvertResult> {
+export async function convertTransactionsToReportingCurrency(transactions: Transaction[], settings: Pick<TaxSettings, 'reportingCurrency'>): Promise<FiatConvertResult> {
   if (!isSaasMode()) return { transactions: normalizeFiatToReportingCurrencyLocal(transactions, settings.reportingCurrency), converted: 0, failed: 0 };
   return convertBatch(transactions, settings.reportingCurrency);
 }
 
 /** Permission is fresh per batch, before even consulting the rate cache. Cancel/Escape is denial. */
-export async function convertOrNormalizeForImport(transactions: Transaction[], settings: Pick<TaxSettings, 'reportingCurrency' | 'coingeckoApiKey'>, priceApiEnabled: boolean): Promise<FiatConvertResult> {
+export async function convertOrNormalizeForImport(transactions: Transaction[], settings: Pick<TaxSettings, 'reportingCurrency'>, priceApiEnabled: boolean): Promise<FiatConvertResult> {
   if (isSaasMode()) return priceApiEnabled ? convertBatch(transactions, settings.reportingCurrency) : { transactions: normalizeFiatToReportingCurrencyLocal(transactions, settings.reportingCurrency), converted: 0, failed: 0 };
   const quotes = transactions.filter(t => t.fiatValue == null || needsFiatConversion(t.fiatCurrency, settings.reportingCurrency)).map(sourceQuote).filter(q => q && q.amount !== 0);
   const requests = [...new Set(quotes.filter(q => q && q.currency !== settings.reportingCurrency.toUpperCase() && FIAT.has(q.currency) && Number.isFinite(q.timestamp)).map(q => `${q!.currency} → ${settings.reportingCurrency}: ${day(q!.timestamp)}`))];

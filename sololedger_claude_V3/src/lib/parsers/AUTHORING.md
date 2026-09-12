@@ -60,7 +60,7 @@ From `pairUtils.ts`:
 
 - `parseTradingPair("BTCINR")` → `{ base: "BTC", quote: "INR" }` (splits on
   known quote suffixes; strips `-_/.` separators).
-- `quoteToFiatCurrency(quote)` → `"USD"` for USD-pegged stablecoins, `"INR"`,
+- `quoteToFiatCurrency(quote)` → the actual stablecoin code for stablecoin quotes, `"INR"`,
   `"EUR"`, `"GBP"`, else `undefined` (i.e. the quote is a crypto leg).
 
 ## Required field mapping
@@ -71,7 +71,7 @@ From `pairUtils.ts`:
 | `type`             | `buy` / `sell` for trades; `transfer_in` / `transfer_out` for deposits/withdrawals.              |
 | `asset` / `amount` | base asset + absolute quantity moved.                                                            |
 | `counterAsset/Amount` | trade quote leg (from `parseTradingPair` + the row's total/price×qty).                        |
-| `fiatCurrency`     | reporting fiat (`INR` default; `USD` for USD-pegged quotes).                                      |
+| `fiatCurrency`     | execution denomination (`INR`, genuine `USD`, or the actual stablecoin such as `USDT`; never peg a token to USD).                                      |
 | `fiatValue`        | set **only** when a fiat/stablecoin quote gives a real value; otherwise leave undefined.         |
 | `flags`            | `['missing_cost_basis']` when no `fiatValue`; `['possible_internal_transfer']` on transfers.     |
 | `feeAmount/Asset`  | consume the fee **once** (do not also emit a separate fee row here).                              |

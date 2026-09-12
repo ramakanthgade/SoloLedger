@@ -85,6 +85,7 @@ interface PricingPatch {
   onlyIfUnpriced?: boolean;
   expectedFiatValue?: number;
   expectedFiatCurrency?: string;
+  conversionEvidence?: Pick<Transaction, 'executionQuote' | 'fxProvenance'>;
 }
 
 interface LinkedPricingPatch {
@@ -142,6 +143,7 @@ async function applyPricingPatches(
       ) continue;
       merged.push({
         ...row,
+        ...patch.conversionEvidence,
         fiatValue: patch.fiatValue,
         fiatCurrency: patch.fiatCurrency,
         flags: patch.removeMissingMarketValue
@@ -226,6 +228,7 @@ export async function fetchMissingPricesForAllTransactions(
         id: row.id,
         fiatValue: row.fiatValue,
         fiatCurrency: row.fiatCurrency,
+        conversionEvidence: { executionQuote: row.executionQuote, fxProvenance: row.fxProvenance },
         removeMissingMarketValue:
           original.flags.includes('missing_market_value') && !row.flags.includes('missing_market_value'),
         expectedFiatValue: original.fiatValue,

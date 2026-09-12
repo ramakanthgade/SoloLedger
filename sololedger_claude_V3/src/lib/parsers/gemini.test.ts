@@ -28,7 +28,7 @@ describe('geminiParser', () => {
       { ...row('Buy'), Symbol: 'BTCGUSD' },
       { ...row('Sell'), Symbol: 'ETHSGD' }
     ]).transactions;
-    expect(parsed[0]).toMatchObject({ asset: 'BTC', counterAsset: 'GUSD', fiatCurrency: 'USD', fiatValue: 15000 });
+    expect(parsed[0]).toMatchObject({ asset: 'BTC', counterAsset: 'GUSD', fiatCurrency: 'GUSD', fiatValue: 15000 });
     expect(parsed[1]).toMatchObject({ asset: 'ETH', counterAsset: 'SGD', fiatCurrency: 'SGD', fiatValue: 15000 });
   });
 });
