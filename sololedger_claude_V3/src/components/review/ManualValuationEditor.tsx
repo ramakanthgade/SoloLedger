@@ -33,7 +33,7 @@ export function ManualValuationEditor({ transaction: tx, onSave, onCancel }: {
   const [saving, setSaving] = useState(false);
   const patch = manualValuationPatch(tx, method, input, rateDate, reference);
   const fieldClass = 'mt-1 w-full rounded-md border border-hi/20 bg-elev-1 px-2 py-2 text-sm text-hi';
-  return <div className="w-full max-w-md space-y-3 rounded-lg border border-hi/10 p-3 text-sm text-mid">
+  return <div className="w-full max-w-md space-y-3 rounded-lg border border-hi/10 p-3 text-sm text-mid break-normal">
     {quote && <p>Execution quote: <strong>{quote.amount} {quote.currency}</strong> · transaction date {quoteDate || 'unavailable'}. {quote.currency === 'USDT' && 'USDT is not USD.'}</p>}
     <div className="flex flex-wrap gap-2" role="group" aria-label="Manual valuation method">
       <button type="button" aria-pressed={method === 'total'} className="rounded border border-hi/20 px-3 py-1" onClick={() => { setMethod('total'); setInput(''); setError(''); }}>Enter total {tx.fiatCurrency}</button>
