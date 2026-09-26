@@ -16,6 +16,7 @@ import type { TaxSettings, Transaction } from '@/types/transaction';
 import { defiUnderlyingPriceMap } from '@/lib/portfolio/defiUnderlyingPrices';
 import { presentWalletEconomicExposure } from '@/lib/portfolio/walletDefiProjection';
 import type { EconomicExposureProjection } from '@/lib/portfolio/economicExposureProjection';
+import { walletPriceSettingsKey } from './walletPriceRefreshInputs';
 import type { ConnectionCardData } from './connectionModel';
 import {
   buildConnectionWorkspaceFromCard,
@@ -57,7 +58,7 @@ export interface WalletChainCollectionInput {
   defiPositionRows?: readonly DefiPositionRow[];
   walletDefiRefreshManifests?: readonly WalletDefiRefreshManifest[];
   defiNetWorthEnabled?: boolean;
-  settings?: Pick<TaxSettings, 'reportingCurrency'>;
+  settings?: Pick<TaxSettings, 'reportingCurrency'> & Partial<Pick<TaxSettings, 'priceApiEnabled' | 'coingeckoApiKey' | 'lookupPrefsExplicit'>>;
   metrics?: ConnectionWorkspaceMetrics;
 }
 
@@ -67,6 +68,7 @@ export interface WalletChainCollectionEvidence extends Omit<WalletChainCollectio
   transactionById: ReadonlyMap<string, Transaction>;
   currency: string;
   preparedAt: number;
+  pricingSettingsKey: string;
 }
 
 function currentChainValue(
@@ -148,6 +150,7 @@ export function prepareWalletChainCollectionEvidence(
     priceIndex: buildPriceIndex([...input.priceRows], input.settings?.reportingCurrency ?? 'INR'),
     transactionById: new Map(input.transactions.map((transaction) => [transaction.id, transaction])),
     currency: input.settings?.reportingCurrency ?? 'INR',
+    pricingSettingsKey: walletPriceSettingsKey(input.settings),
     preparedAt: Date.now()
   };
 }
