@@ -4,9 +4,12 @@ import {
   claimAccountOwnershipPrompt,
   ensureAccountIdentity,
   getLookupAddresses,
+  getSettings,
+  saveSettings,
   updateAccountOwnership
 } from '@/lib/storage/db';
-import { getEffectiveSettings, hasWalletLookupKeys } from '@/lib/saas/effectiveSettings';
+import { getEffectiveSettings, hasWalletLookupKeys, invalidateServerConfigCache } from '@/lib/saas/effectiveSettings';
+import { mergeLookupPreferences } from '@/lib/saas/lookupPreferences';
 import { buildLookupConfig } from '@/lib/saas/lookupConfig';
 import { isSaasMode } from '@/lib/saas/config';
 import { CHAINS, DROPDOWN_HIDDEN_CHAINS, isEvmChain, type ChainId } from '@/lib/rpc/providers';
@@ -119,6 +122,8 @@ export function WalletAddressForm({
   onContinueInBackground
 }: WalletAddressFormProps) {
   const [settings, setSettings] = useState<Awaited<ReturnType<typeof getEffectiveSettings>> | null>(null);
+  const [enablingLookup, setEnablingLookup] = useState(false);
+  const [lookupMessage, setLookupMessage] = useState('');
   const [chainId, setChainId] = useState<ChainId>(preselectChain ?? 'solana');
   const [addressText, setAddressText] = useState('');
   /** One address by default; the checkbox reveals the multi-line box. */
@@ -365,7 +370,28 @@ export function WalletAddressForm({
   if (!settings.rpcLookupEnabled) {
     return (
       <div className="rounded-lg border border-hi/10 bg-elev-2 p-4 text-sm text-low">
-        Wallet lookup is off. Enable "Wallet address lookup via public RPC/explorer" in Settings.
+        {isSaasMode() ? <>
+          <p>Wallet lookup is off for this browser or unavailable on the server. Server defaults and your personal lookup preference are separate.</p>
+          <Button className="mt-3" disabled={enablingLookup} onClick={async () => {
+            setEnablingLookup(true);
+            setLookupMessage('');
+            try {
+              const local = await getSettings();
+              await saveSettings(mergeLookupPreferences(local, { rpcLookupEnabled: true }, true));
+              // Retry fresh capability flags without losing a known server restriction on failure.
+              invalidateServerConfigCache(true);
+              const effective = await getEffectiveSettings();
+              setSettings(effective);
+              if (!effective.rpcLookupEnabled) setLookupMessage('Your preference is enabled, but wallet lookup is disabled on the server. Check the admin network settings.');
+            } catch {
+              setLookupMessage('Could not enable wallet lookup. Please try again.');
+            } finally {
+              setEnablingLookup(false);
+            }
+          }}>{enablingLookup ? 'Enabling…' : 'Enable wallet lookup'}</Button>
+          <p className="mt-2 text-xs">Looking up an address sends it to the configured wallet providers through SoloLedger.</p>
+          {lookupMessage && <p role="status" className="mt-2">{lookupMessage}</p>}
+        </> : <p>Sign in to use wallet address lookup. Without an account, you can import transaction files instead.</p>}
       </div>
     );
   }

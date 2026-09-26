@@ -119,4 +119,15 @@ describe('getEffectiveSettings — hosted', () => {
     expect(explicitOff.priceApiEnabled).toBe(false);
     expect(explicitOff.rpcLookupEnabled).toBe(false);
   });
+
+  it('preserves a known server-off gate if wallet recovery refresh fails', async () => {
+    mocks.fetchPublicConfig.mockResolvedValue({ priceApiEnabled: true, rpcLookupEnabled: false, aiAdvisorEnabled: true });
+    await seedRow({ rpcLookupEnabled: false, lookupPrefsExplicit: true });
+    expect((await getEffectiveSettings()).rpcLookupEnabled).toBe(false);
+    await seedRow({ rpcLookupEnabled: true, lookupPrefsExplicit: true });
+    invalidateServerConfigCache(true);
+    mocks.fetchPublicConfig.mockRejectedValue(new Error('offline'));
+    expect((await getEffectiveSettings()).rpcLookupEnabled).toBe(false);
+    expect(mocks.fetchPublicConfig).toHaveBeenCalledTimes(2);
+  });
 });
