@@ -11,6 +11,7 @@ import { AdminServerSettings } from './AdminServerSettings';
 import { SubscriptionCard } from './SubscriptionCard';
 import { isSaasMode } from '@/lib/saas/config';
 import { getEffectiveSettings } from '@/lib/saas/effectiveSettings';
+import { mergeLookupPreferences } from '@/lib/saas/lookupPreferences';
 import { useAuth } from '@/lib/saas/authContext';
 import { AddressRegistrySettingsSection } from './AddressRegistrySettings';
 import { AppearanceSettings } from './AppearanceSettings';
@@ -189,11 +190,7 @@ export function SettingsTab() {
     // Toggling a lookup flag is an explicit user choice — stamp it so hosted
     // mode's effective settings can tell "user turned this off" apart from a
     // legacy default-off row (see lookupPrefsExplicit in types/transaction).
-    const stamped =
-      'priceApiEnabled' in patch || 'rpcLookupEnabled' in patch
-        ? { ...patch, lookupPrefsExplicit: true }
-        : patch;
-    await saveSettings({ ...local, ...stamped });
+    await saveSettings(mergeLookupPreferences(local, patch, saas));
     setSettings(await loadSettings());
     pushToast('gain', 'Settings saved');
   };
