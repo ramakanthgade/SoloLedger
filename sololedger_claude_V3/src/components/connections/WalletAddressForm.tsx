@@ -378,7 +378,8 @@ export function WalletAddressForm({
             try {
               const local = await getSettings();
               await saveSettings(mergeLookupPreferences(local, { rpcLookupEnabled: true }, true));
-              invalidateServerConfigCache();
+              // Retry fresh capability flags without losing a known server restriction on failure.
+              invalidateServerConfigCache(true);
               const effective = await getEffectiveSettings();
               setSettings(effective);
               if (!effective.rpcLookupEnabled) setLookupMessage('Your preference is enabled, but wallet lookup is disabled on the server. Check the admin network settings.');

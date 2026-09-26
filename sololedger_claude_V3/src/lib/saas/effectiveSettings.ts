@@ -73,8 +73,8 @@ export async function isAiMappingAvailable(): Promise<boolean> {
   return Boolean(server?.aiAdvisorEnabled);
 }
 
-export function invalidateServerConfigCache(): void {
-  cachedConfig = null;
+export function invalidateServerConfigCache(preserveLastKnown = false): void {
+  if (!preserveLastKnown) cachedConfig = null;
   configFetchedAt = 0;
 }
 
