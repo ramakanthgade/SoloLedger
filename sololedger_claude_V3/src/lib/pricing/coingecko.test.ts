@@ -1,7 +1,7 @@
 import 'fake-indexeddb/auto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { db, buildPriceCacheKey } from '@/lib/storage/db';
-import { fetchCurrentContractPrices, fetchHistoricalPrice, fetchHistoricalPricesBatch } from './coingecko';
+import { fetchCurrentContractPrices, fetchCurrentPrices, fetchHistoricalPrice, fetchHistoricalPricesBatch } from './coingecko';
 
 describe('CoinGecko canonical symbol mappings', () => {
   afterEach(async () => {
@@ -242,36 +242,108 @@ describe('CoinGecko canonical symbol mappings', () => {
     ]);
   });
 
-  it('retries transient exact-contract throttling without losing other successes', async () => {
-    const attempts = new Map<string, number>();
-    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
-      const url = new URL(String(input));
-      const pathParts = url.pathname.split('/');
-      const platform = pathParts[pathParts.length - 1];
-      const attempt = (attempts.get(platform) ?? 0) + 1;
-      attempts.set(platform, attempt);
-      if (platform === 'ethereum' && attempt === 1) {
-        return new Response('', { status: 429, headers: { 'retry-after': '0' } });
-      }
-      if (platform === 'polygon-pos') return new Response('', { status: 404 });
-      const addresses = url.searchParams.get('contract_addresses')!.split(',');
-      return new Response(JSON.stringify(Object.fromEntries(
-        addresses.map((address) => [address, { usd: 7 }])
-      )), { status: 200 });
-    });
+  it.each([401, 403, 429])('stops contract requests on HTTP %s without retry or fan-out', async (status) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ status: { error_code: 10012 } }), { status }));
     vi.stubGlobal('fetch', fetchMock);
-
     const results = await fetchCurrentContractPrices([
       { platform: 'ethereum', contractAddress: '0x1' },
-      { platform: 'polygon-pos', contractAddress: '0x2' },
-      { platform: 'ethereum', contractAddress: '0x3' }
-    ], 'USD');
-
-    expect(attempts).toEqual(new Map([['ethereum', 2], ['polygon-pos', 1]]));
-    expect(results).toEqual([
-      expect.objectContaining({ asset: '0x1', price: 7 }),
-      expect.objectContaining({ asset: '0x2', price: null, error: 'Price API returned 404 for contract lookup' }),
-      expect.objectContaining({ asset: '0x3', price: 7 })
-    ]);
+      { platform: 'ethereum', contractAddress: '0x2' },
+      { platform: 'polygon-pos', contractAddress: '0x3' }
+    ], 'INR');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results).toHaveLength(3);
+    expect(results.every((row) => row.price === null && row.failure?.httpStatus === status)).toBe(true);
   });
+
+  it('only falls back for explicit batch-limit errors, with a global singleton cap', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input));
+      const addresses = url.searchParams.get('contract_addresses')!.split(',');
+      if (addresses.length > 1) return new Response(JSON.stringify({ status: { error_code: 10012 } }), { status: 400 });
+      return new Response(JSON.stringify({ [addresses[0]]: { inr: 42 } }));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const requests = Array.from({ length: 65 }, (_, i) => ({
+      platform: i < 40 ? 'ethereum' : 'polygon-pos', contractAddress: `0x${i}`
+    }));
+    const results = await fetchCurrentContractPrices([...requests, requests[0]], 'INR');
+    expect(fetchMock).toHaveBeenCalledTimes(31); // one rejected batch, 30 singletons
+    expect(results.filter((row) => row.price === 42)).toHaveLength(31); // duplicate preserves identity
+    expect(results[30].failure?.category).toBe('batch_limit');
+    expect(results[65]).toEqual(results[0]);
+    expect(results[0]).toMatchObject({ platform: 'ethereum', asset: '0x0', currency: 'INR' });
+  });
+
+  it.each([{}, { status: { error_code: 10010 } }])('does not split a generic HTTP400', async (body) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(body), { status: 400 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await fetchCurrentContractPrices([
+      { platform: 'ethereum', contractAddress: '0x1' },
+      { platform: 'ethereum', contractAddress: '0x2' }
+    ], 'USD');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results.every((row) => row.failure?.category === 'provider')).toBe(true);
+  });
+
+  it('stops singleton fallback at a rate limit and preserves earlier successes', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ status: { error_code: 10012 } }), { status: 400 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ '0x1': { usd: 7 } })))
+      .mockResolvedValueOnce(new Response('', { status: 429 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await fetchCurrentContractPrices([1, 2, 3].map((i) => ({ platform: 'ethereum', contractAddress: `0x${i}` })), 'USD');
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(results[0].price).toBe(7);
+    expect(results.slice(1).every((row) => row.failure?.category === 'rate_limit')).toBe(true);
+  });
+
+  it('sanitizes network errors and does not retry', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('secret-key-in-url'));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await fetchCurrentContractPrices([{ platform: 'ethereum', contractAddress: '0x1' }], 'USD');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results[0].failure?.category).toBe('network');
+    expect(JSON.stringify(results)).not.toContain('secret-key');
+  });
+
+  it.each([{}, { '0x1': { usd: '1' } }, { '0x1': { usd: -1 } }, { '0x1': { usd: 0 } }])('leaves absent/invalid prices unknown without pegging', async (body) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(body)));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await fetchCurrentContractPrices([{ platform: 'ethereum', contractAddress: '0x1' }], 'USD');
+    expect(results[0].price).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([401, 403, 429])('returns safe symbol HTTP %s failure without retry', async (status) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('secret-provider-body', { status }));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await fetchCurrentPrices(['ETH', 'USDC'], 'INR');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results.every((row) => row.failure?.httpStatus === status)).toBe(true);
+    expect(JSON.stringify(results)).not.toContain('secret-provider-body');
+  });
+
+  it('reports unknown-symbol search authentication failure without retry', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('', { status: 401 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await fetchCurrentPrices(['UNLISTED_TEST_AUTH_SYMBOL'], 'USD');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results[0].failure?.category).toBe('authentication');
+  });
+  it.each([0, -1, NaN, Infinity])('keeps invalid symbol quote %s and empty coverage unknown', async (price) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ethereum: { usd: price } }))));
+    const results = await fetchCurrentPrices(['ETH', 'USDC'], 'USD');
+    expect(results.map((row) => row.price)).toEqual([null, null]);
+    expect(results.every((row) => !row.failure)).toBe(true);
+  });
+
+  it('sanitizes symbol network failure without retry', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('secret-key-in-url'));
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await fetchCurrentPrices(['ETH'], 'USD');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(results[0].failure?.category).toBe('network');
+    expect(JSON.stringify(results)).not.toContain('secret-key');
+  });
+
 });

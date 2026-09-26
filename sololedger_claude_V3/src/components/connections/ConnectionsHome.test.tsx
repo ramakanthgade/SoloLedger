@@ -35,6 +35,7 @@ const mocks = vi.hoisted(() => ({
   runWalletImport: vi.fn(async (_addresses: string[], _chain: { id: string }, _settings?: unknown, _config?: unknown, _isSync?: boolean) => {}),
   getEffectiveSettings: vi.fn(async () => ({ rpcLookupEnabled: true, priceApiEnabled: false, coingeckoApiKey: undefined as string | undefined })),
   refreshCurrentHoldingPrices: vi.fn(async () => {}),
+  custodyHoldings: { current: [] as Array<Record<string, unknown>> },
   defiRows: { current: [] as Array<Record<string, unknown>> },
   connections: { current: [] as ExchangeConnectionView[] },
   csvImports: { current: [] as unknown[] },
@@ -108,6 +109,7 @@ vi.mock('./walletChainModel', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./walletChainModel')>();
   return {
     ...actual,
+    walletCustodyPriceHoldings: vi.fn(() => mocks.custodyHoldings.current),
     buildWalletChainSummaries: vi.fn((card: { walletRows?: Array<Record<string, unknown>> }) =>
       (card.walletRows ?? []).map((row) => ({
         row,
@@ -336,12 +338,33 @@ beforeEach(() => {
   mocks.defiRows.current = [];
   mocks.getEffectiveSettings.mockResolvedValue({ rpcLookupEnabled: true, priceApiEnabled: false, coingeckoApiKey: undefined });
   mocks.refreshCurrentHoldingPrices.mockResolvedValue(undefined);
+  mocks.custodyHoldings.current = [];
   mocks.exchangeJob.current = { ...IDLE_JOB };
   mocks.walletJob.current = { ...IDLE_WALLET_JOB };
   importJob.reset();
 });
 
 describe('ConnectionsHome — header & pills', () => {
+  it('discloses disabled pricing and retries only after effective settings allow it', async () => {
+    mocks.custodyHoldings.current = [{ asset: 'ETH', chain: 'ethereum', quantity: 2, amount: 2, costBasis: 0 }];
+    render(<ConnectionsHome />);
+    await waitFor(() => expect(screen.getByTestId('wallet-pricing-status')).toHaveTextContent('Price lookups disabled'));
+    expect(mocks.refreshCurrentHoldingPrices).not.toHaveBeenCalled();
+    mocks.getEffectiveSettings.mockResolvedValue({ rpcLookupEnabled: true, priceApiEnabled: true, coingeckoApiKey: undefined });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry prices' }));
+    await waitFor(() => expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledWith(mocks.custodyHoldings.current, 'INR', undefined));
+  });
+
+  it('refreshes canonical custody on the initial home visit without detail navigation', async () => {
+    mocks.getEffectiveSettings.mockResolvedValue({ rpcLookupEnabled: true, priceApiEnabled: true, coingeckoApiKey: undefined });
+    mocks.custodyHoldings.current = [{ asset: 'ETH', chain: 'ethereum', quantity: 2, amount: 2, costBasis: 0 }];
+    render(<ConnectionsHome />);
+    await waitFor(() => expect(mocks.refreshCurrentHoldingPrices).toHaveBeenCalledWith(
+      mocks.custodyHoldings.current, 'INR', undefined
+    ));
+    expect(screen.queryByTestId('connection-detail')).not.toBeInTheDocument();
+  });
+
   it('refreshes exact DeFi underlying marks used by wallet card liabilities', async () => {
     mocks.getEffectiveSettings.mockResolvedValue({
       rpcLookupEnabled: true, priceApiEnabled: true, coingeckoApiKey: 'configured'

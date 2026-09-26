@@ -300,6 +300,7 @@ export function SettingsTab() {
                 )}
               </CardHeader>
               <CardContent className="py-2">
+                {isAdmin && <p className="mb-2 text-sm text-low">Admin sessions enable managed wallet and price lookups automatically at sign-in or session refresh. You can pause them below for this session. Server restrictions still apply; AI consent is separate.</p>}
                 <p className="text-sm text-low">Without an account, imports and calculations run locally. Historical currency lookups ask permission for each batch; use Review to enter total values instead. Managed wallet and price lookups require an account. Legacy provider keys are disabled.</p>{saas && <div className="divide-y divide-hi/10">
                   <div className="py-4">
                     <ToggleRow

@@ -97,11 +97,11 @@ export function WalletConnectionCard({
               {evidence ? (total == null ? '—' : formatLedgerCurrency(total, currency)) : card.txLine}
             </strong>
             {evidence ? hasUnpricedLiabilities
-              ? 'Known subtotal · liability unpriced'
+              ? total == null ? 'Value unavailable · liability unpriced' : 'Known subtotal · liability unpriced'
               : economic?.enabled && economic.status !== 'complete' && total != null
                 ? 'Known subtotal · DeFi evidence incomplete'
               : total == null
-                ? 'Current wallet value unknown'
+                ? 'Value unavailable'
                 : unpriced > 0 ? `${unpriced} unpriced · known subtotal` : 'Current wallet value' : 'Across all chains'}
           </span>
         </button>
@@ -172,11 +172,11 @@ export function WalletConnectionCard({
                   </strong>
                   <small className="block text-[10px] text-low">
                     {chain.hasUnpricedLiabilities
-                      ? 'Known subtotal · liability unpriced'
+                      ? chain.currentValue == null ? 'Value unavailable · liability unpriced' : 'Known subtotal · liability unpriced'
                       : chain.economicEnabled && chain.economicStatus !== 'complete' && chain.currentValue != null
                         ? 'Known subtotal · DeFi evidence incomplete'
                       : chain.currentValue == null
-                      ? 'Current value unknown'
+                      ? 'Value unavailable'
                       : chain.unpricedAssetCount > 0
                         ? `${chain.unpricedAssetCount} unpriced · known subtotal`
                         : 'Current chain value'}

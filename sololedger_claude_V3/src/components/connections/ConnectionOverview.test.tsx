@@ -399,6 +399,9 @@ describe('ConnectionOverview', () => {
     const holdings = screen.getByTestId('detail-holdings');
     expect(within(holdings).getByRole('heading', { level: 2, name: 'Holdings' })).toBeInTheDocument();
     expect(holdings).toHaveAttribute('aria-labelledby', 'detail-holdings-title');
+    expect(screen.getByTestId('detail-holdings-total')).toHaveTextContent('—');
+    expect(screen.getAllByText('Value unavailable').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('detail-chain-total')).toHaveTextContent('—');
     expect(screen.getByText('UNKNOWN').closest('li')).toHaveTextContent('—');
     expect(screen.queryByRole('button', { name: 'Show all Ethereum assets' })).not.toBeInTheDocument();
   });

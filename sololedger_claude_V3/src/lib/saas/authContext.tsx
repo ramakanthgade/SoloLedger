@@ -28,11 +28,11 @@ async function bindUserSession(u: PublicUser | null): Promise<void> {
   if (!isSaasMode()) return;
   await switchUserDatabase(u?.id ?? null);
   // Hosted first run: turn live price + wallet (RPC) lookup ON by default.
-  // Seeds only when the per-user DB has no settings row yet, so a user who
-  // later turns the lookups off in Settings is never re-enabled. Skipped on
+  // Subscribers retain explicit preferences; admin sessions restore managed
+  // lookup defaults on existing ledgers too. Skipped on
   // logout (u === null): the shared local DB stays opt-in. Awaited before
   // dbReady flips so no tab can render a pre-seed state.
-  if (u) await applyHostedLookupDefaults(isSaasMode());
+  if (u) await applyHostedLookupDefaults(isSaasMode(), u.role === 'admin');
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {

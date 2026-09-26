@@ -53,7 +53,7 @@ interface AddressGroupView {
   scopeIds: readonly string[];
   visibleAssets: WalletAssetView[];
   hiddenAssets: WalletAssetView[];
-  total: number;
+  total: number | null;
   unpriced: number;
 }
 
@@ -213,19 +213,22 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, re
     );
     const hiddenAssets = assets.filter((asset) => Math.abs(asset.amount) <= 1e-9);
     const scopeIds = new Set(assets.map((asset) => canonicalDefiAccountScope(asset.scopeId)));
+    const contributions = [...walletEconomicExposure.assets, ...walletEconomicExposure.liabilities]
+      .filter((row) => scopeIds.has(canonicalDefiAccountScope(row.scopeId ?? '')))
+      .map((row) => row.contribution ?? (row.kind === 'liquid'
+        ? assets.find((asset) => asset.economicId === row.id)?.value ?? null : null));
+    const total = contributions.length === 0 || contributions.some((value) => value != null)
+      ? contributions.reduce<number>((sum, value) => sum + (value ?? 0), 0) : null;
     return {
       key: normalizeDisplayChain(assets[0].chain) ?? assets[0].chain,
       chain: assets[0].chain,
       scopeIds: [...scopeIds],
       visibleAssets,
       hiddenAssets,
-      total: [...walletEconomicExposure.assets, ...walletEconomicExposure.liabilities]
-        .filter((row) => scopeIds.has(canonicalDefiAccountScope(row.scopeId ?? '')))
-        .reduce((sum, row) => sum + (row.contribution ??
-          (row.kind === 'liquid' ? assets.find((asset) => asset.economicId === row.id)?.value ?? 0 : 0)), 0),
+      total,
       unpriced: assets.filter((asset) => asset.value == null).length
     };
-  }).sort((left, right) => right.total - left.total);
+  }).sort((left, right) => (right.total ?? -Infinity) - (left.total ?? -Infinity));
   const valuedHoldings = new Map(snapshot.overview.holdings.map((holding, index) =>
     [holding.assetKey, valuedRows[index]]));
   const sourceAssets: SourceAssetView[] = card.kind === 'wallet' ? [] : snapshot.overview.holdings.filter((holding) =>
@@ -282,7 +285,7 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, re
     counts.set(key, (counts.get(key) ?? 0) + 1);
     return counts;
   }, new Map<string, number>());
-  const walletDisplayedTotal = walletEconomicPresentation.knownSubtotal;
+  const walletDisplayedTotal = walletEconomicPresentation.displaySubtotal;
   const walletHasCurrentScope = (card.walletRows?.length ?? 0) > 0 &&
     (allWalletAssets.length > 0 || walletEconomicExposure.status === 'complete');
   const walletAssetCount = addressGroups.reduce((sum, group) => sum + group.visibleAssets.length + group.hiddenAssets.length, 0);
@@ -325,7 +328,7 @@ export function ConnectionOverview({ card, snapshot, priceIndex, formatMoney, re
           <div><h2 id="detail-holdings-title" className="text-[0.6875rem] font-bold uppercase tracking-[0.08em] text-faint">Holdings</h2><p className="mt-1 text-lg font-bold tabular-figures text-hi" data-testid="detail-holdings-total" data-defi-feature-enabled={defiNetWorthEnabled ? 'true' : 'false'} data-defi-shadow-status={walletEconomicExposure.status}>{card.kind === 'wallet' ? walletHasCurrentScope && walletDisplayedTotal != null ? formatMoney(walletDisplayedTotal) : '—' : sourceAssets.length > 0 || zeroAssets.length > 0 ? formatMoney(sourceTotal) : '—'}</p>
             {card.kind === 'wallet' && walletAllCurrentAuthority && latestCurrentBalanceAsOf != null && <p className="mt-0.5 text-[0.6875rem] text-faint" data-testid="detail-wallet-authority-status">{plural(walletAssetCount, 'asset')} · on-chain balances as of {relativeTime(latestCurrentBalanceAsOf)}</p>}
           </div>
-          <div className="text-right text-[0.6875rem] leading-relaxed text-faint">{card.kind === 'wallet' && walletEconomicExposure.hasUnpricedLiabilities ? <p className="font-semibold text-warn" data-testid="detail-liability-subtotal-label">Known subtotal · liability unpriced</p> : card.kind === 'wallet' && defiNetWorthEnabled && walletEconomicExposure.status !== 'complete' && walletDisplayedTotal != null && <p className="font-semibold text-warn" data-testid="detail-defi-subtotal-label">Known subtotal · DeFi evidence incomplete</p>}{card.kind === 'wallet' && walletAtCost && <p>Some assets valued at cost — no live price cached yet.</p>}{card.kind === 'wallet' && walletUnpriced > 0 && <p>{walletUnpriced} asset{walletUnpriced === 1 ? '' : 's'} without a price — not in the total.</p>}{card.kind !== 'wallet' && sourceAtCost && <p>Valued at cost where no live price is cached.</p>}{card.kind === 'file' && card.csvImport?.optionsBalanceUnavailable && <p className="text-warn" data-testid="detail-options-balance-unavailable">Options balance unavailable — add a current-balance authority to include it.</p>}</div>
+          <div className="text-right text-[0.6875rem] leading-relaxed text-faint">{card.kind === 'wallet' && walletDisplayedTotal == null && <p>Value unavailable</p>}{card.kind === 'wallet' && walletDisplayedTotal != null && walletUnpriced > 0 && <p className="font-semibold text-warn">Known subtotal · pricing incomplete</p>}{card.kind === 'wallet' && walletEconomicExposure.hasUnpricedLiabilities ? <p className="font-semibold text-warn" data-testid="detail-liability-subtotal-label">{walletDisplayedTotal == null ? 'Value unavailable · liability unpriced' : 'Known subtotal · liability unpriced'}</p> : card.kind === 'wallet' && defiNetWorthEnabled && walletEconomicExposure.status !== 'complete' && walletDisplayedTotal != null && <p className="font-semibold text-warn" data-testid="detail-defi-subtotal-label">Known subtotal · DeFi evidence incomplete</p>}{card.kind === 'wallet' && walletAtCost && <p>Some assets valued at cost — no live price cached yet.</p>}{card.kind === 'wallet' && walletUnpriced > 0 && <p>{walletUnpriced} asset{walletUnpriced === 1 ? '' : 's'} without a price — not in the total.</p>}{card.kind !== 'wallet' && sourceAtCost && <p>Valued at cost where no live price is cached.</p>}{card.kind === 'file' && card.csvImport?.optionsBalanceUnavailable && <p className="text-warn" data-testid="detail-options-balance-unavailable">Options balance unavailable — add a current-balance authority to include it.</p>}</div>
         </div>
         {card.kind === 'wallet' && walletEconomicExposure.hasUnpricedLiabilities && <p className="border-b border-warn/20 bg-warn/10 px-5 py-2.5 text-xs text-warn" role="status" data-testid="detail-defi-net-worth-incomplete">Adjusted total unavailable because a known liability has no verified price; raw custody is not presented as debt-free.</p>}
         {card.kind === 'wallet' ? allWalletAssets.length === 0 ? <WalletEmpty syncing={syncing} disabled={syncDisabled} onSync={onSync} /> : addressGroups.length > 0 ? <div>{addressGroups.map((group) => <WalletChainSection key={group.key} group={group} expanded={expandedWalletChains.has(group.key)} onExpandedChange={(expanded) => setExpandedWalletChains((current) => { const next = new Set(current); if (expanded) next.add(group.key); else next.delete(group.key); return next; })} formatMoney={formatMoney} />)}</div> : null : sourceAssets.length === 0 && zeroAssets.length === 0 ? <div className="px-6 py-12 text-center" data-testid="detail-empty-balances"><p className="text-sm font-bold text-hi">No holdings from this source yet</p><p className="mx-auto mt-1.5 max-w-xs text-xs leading-relaxed text-low">{card.kind === 'file' ? 'The imported file has no open positions.' : 'Sync to pull this exchange’s current activity.'}</p></div> : visibleSourceAssets.length > 0 ? <ul>{visibleSourceAssets.map((asset) => {
@@ -352,7 +355,7 @@ function WalletChainSection({ group, expanded, onExpandedChange, formatMoney }: 
   return <section className="border-b-[10px] border-canvas last:border-b-0" data-testid="detail-address-group" data-chain={group.chain}>
     <header className="flex items-center justify-between gap-3 border-b border-hi/10 bg-elev-1/60 px-5 py-3">
       <div className="flex min-w-0 items-center gap-2.5"><BrandIcon id={chainIconId(group.chain)} fallback={label} size={30} /><div className="min-w-0"><h3 className="truncate text-sm font-extrabold text-hi">{label}</h3><p className="mt-0.5 text-[0.6875rem] text-low">{plural(group.visibleAssets.length + group.hiddenAssets.length, 'asset')}</p></div></div>
-      <div className="text-right"><p className="text-[0.625rem] font-bold uppercase tracking-[0.08em] text-faint">Chain subtotal</p><p className="mt-0.5 text-base font-extrabold tabular-figures text-hi" data-testid="detail-chain-total">{formatMoney(group.total)}</p></div>
+      <div className="text-right"><p className="text-[0.625rem] font-bold uppercase tracking-[0.08em] text-faint">Chain subtotal</p><p className="mt-0.5 text-base font-extrabold tabular-figures text-hi" data-testid="detail-chain-total">{group.total == null ? '—' : formatMoney(group.total)}</p>{group.total == null && <p className="text-[0.625rem] text-faint">Value unavailable</p>}{group.total != null && group.unpriced > 0 && <p className="text-[0.625rem] text-warn">Known subtotal · pricing incomplete</p>}</div>
     </header>
     {assets.length > 0 && <ul>{assets.map((asset) => <WalletAssetRow key={asset.key} asset={asset} formatMoney={formatMoney} />)}</ul>}
     {group.hiddenAssets.length > 0 && <div className="flex min-h-11 flex-wrap items-center justify-between gap-2 bg-elev-1/50 px-5 py-1 text-xs text-low" data-testid="zero-balance-control" data-chain={group.chain}>

@@ -41,9 +41,12 @@ import { importJob, runWalletImport, useImportJob } from '@/lib/importJob';
 import { FirstSyncPreview } from '@/components/import/FirstSyncPreview';
 import { AddDataCard, ConnectionCard } from './ConnectionCard';
 import { ConnectionDetail } from './ConnectionDetail';
+import { useWalletPriceRefresh } from './useWalletPriceRefresh';
+import { WalletPricingStatus } from './WalletPricingStatus';
 import { WalletConnectionCard } from './WalletConnectionCard';
 import {
   buildWalletChainSummaries,
+  walletCustodyPriceHoldings,
   prepareWalletChainCollectionEvidence
 } from './walletChainModel';
 import type { CardMenuItem } from './CardMenu';
@@ -62,7 +65,6 @@ import type { FlowKind } from './WhatStep';
 import { normalizeSourceTarget, resolveSourceTarget, type SourceNavigationIntent } from '@/lib/navigationIntent';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import { defiUnderlyingPriceHoldings } from '@/lib/portfolio/defiUnderlyingPrices';
-import { refreshCurrentHoldingPrices } from '@/lib/pricing/currentPrices';
 import { DataHealthWorkspace, type DataHealthViewState } from './dataHealth/DataHealthWorkspace';
 import { buildDataHealthModel } from './dataHealth/dataHealthModel';
 import {
@@ -248,20 +250,6 @@ export function ConnectionsHome({
     };
   }, []);
 
-  useEffect(() => {
-    const rows = liveWalletEvidence?.defiPositionRows ?? [];
-    if (rows.length === 0) return;
-    let cancelled = false;
-    getEffectiveSettings().then((effective) => {
-      if (cancelled || !effective.priceApiEnabled) return;
-      void refreshCurrentHoldingPrices(
-        defiUnderlyingPriceHoldings(rows),
-        liveWalletEvidence!.currency,
-        effective.coingeckoApiKey
-      ).catch(() => undefined);
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [liveWalletEvidence, priceRefreshTick]);
 
   const [removeExchange, setRemoveExchange] = useState<ExchangeConnectionView | null>(null);
   const [removeFile, setRemoveFile] = useState<CsvImportRow | null>(null);
@@ -295,6 +283,17 @@ export function ConnectionsHome({
       }),
     [connections, csvImports, walletRows, manualCount, exchangeJob.connectionId, exchangeJob.active]
   );
+  const priceHoldings = useMemo(() => liveWalletEvidence
+    ? [...walletCustodyPriceHoldings(cards, liveWalletEvidence),
+        ...defiUnderlyingPriceHoldings(liveWalletEvidence.defiPositionRows ?? [])]
+    : [], [cards, liveWalletEvidence]);
+  const pricingMessage = useWalletPriceRefresh(
+    priceHoldings,
+    liveWalletEvidence?.currency ?? 'INR',
+    liveWalletEvidence?.pricingSettingsKey ?? '',
+    priceRefreshTick
+  );
+
   const counts = useMemo(() => pillCounts(cards), [cards]);
   const walletEvidenceByCardId = useMemo(() => {
     const byCard = new Map<string, { currency: string; summaries: ReturnType<typeof buildWalletChainSummaries> }>();
@@ -615,6 +614,7 @@ export function ConnectionsHome({
 
   return (
     <div className="space-y-5" data-testid="connections-home">
+      {!detail && <WalletPricingStatus message={pricingMessage} onRetry={() => setPriceRefreshTick((tick) => tick + 1)} />}
       {detailLoading ? (
         <div className="rounded-2xl border border-hi/10 bg-elev-2 px-6 py-12 text-center" role="status">
           <Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" aria-hidden="true" />

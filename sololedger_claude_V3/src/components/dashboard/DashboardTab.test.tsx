@@ -3,6 +3,7 @@ import { StrictMode } from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TabNavProvider } from '@/lib/tabNav';
 import type { DashboardAsOfSnapshot } from '@/lib/dashboard/dashboardAsOfModel';
+import type { CurrentPriceRefreshOutcome } from '@/lib/pricing/currentPrices';
 
 const projectMock = vi.hoisted(() => vi.fn());
 const subscriptionState = vi.hoisted(() => ({
@@ -17,7 +18,7 @@ const lifecycleMocks = vi.hoisted(() => ({
   importState: { active: false, batchActive: false, phase: 'idle' },
   exchangeState: { active: false, connectionId: null, connectionLabel: '', phase: 'idle', progress: null, result: null, preview: null, warnings: [], error: null },
   getEffectiveSettings: vi.fn(async (): Promise<{ priceApiEnabled: boolean; reportingCurrency: string; coingeckoApiKey?: string }> => ({ priceApiEnabled: false, reportingCurrency: 'INR' })),
-  refreshCurrentHoldingPrices: vi.fn(async (_holdings: unknown[], _currency: string, _coingeckoApiKey?: string) => undefined)
+  refreshCurrentHoldingPrices: vi.fn(async (_holdings: unknown[], _currency: string, _coingeckoApiKey?: string): Promise<CurrentPriceRefreshOutcome | undefined> => undefined)
 }));
 const input = vi.hoisted(() => ({
   revision: { token: 'revision-1', readAt: Date.UTC(2026, 7, 11, 18, 30) },
@@ -527,11 +528,13 @@ describe('DashboardTab coherent as-of integration', () => {
         projected = snapshot({ totalNetWorth: aggregate(1_000_000) });
         subscriptionState.observer?.next({ ...input, revision: { ...input.revision, token: 'revision-trusted-cache' } });
         await trustedPending;
+        return undefined;
       })
       .mockImplementationOnce(async () => {
         projected = snapshot({ totalNetWorth: aggregate(7_000_000) });
         subscriptionState.observer?.next({ ...input, revision: { ...input.revision, token: 'revision-broad-cache' } });
         await broadPending;
+        return undefined;
       });
 
     await act(async () => { window.dispatchEvent(new Event('focus')); await Promise.resolve(); await Promise.resolve(); });
@@ -632,6 +635,32 @@ describe('DashboardTab coherent as-of integration', () => {
       })
     ]));
     expect(lifecycleMocks.refreshCurrentHoldingPrices.mock.calls[0].slice(1)).toEqual(['INR', 'configured']);
+  });
+
+  it('displays a provider failure and retries without treating it as a zero valuation', async () => {
+    lifecycleMocks.getEffectiveSettings.mockResolvedValue({ priceApiEnabled: true, reportingCurrency: 'INR' });
+    lifecycleMocks.refreshCurrentHoldingPrices.mockResolvedValue({ attempted: 1, priced: 0, cached: 0, unpriced: 1, errors: [{ category: 'rate_limit', message: 'Rate limited', httpStatus: 429 }] });
+    projectMock.mockImplementation(() => snapshot({
+      contributors: [{ ...snapshot().contributors[0], price: undefined, marketValue: undefined }],
+      totalNetWorth: { ...aggregate(0), valuationCompleteness: 'partial', missingAssetCount: 1 }
+    }));
+    await renderDashboard();
+    await waitFor(() => expect(screen.getByTestId('wallet-pricing-status')).toHaveTextContent('Price provider rate limited'));
+    expect(screen.getByTestId('dashboard-total-net-worth')).toHaveTextContent('—');
+    const calls = lifecycleMocks.refreshCurrentHoldingPrices.mock.calls.length;
+    lifecycleMocks.refreshCurrentHoldingPrices.mockResolvedValue({ attempted: 1, priced: 1, cached: 0, unpriced: 0, errors: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry prices' }));
+    await waitFor(() => expect(screen.getByTestId('wallet-pricing-status')).toHaveTextContent('Price coverage: 1 of 1'));
+    expect(lifecycleMocks.refreshCurrentHoldingPrices.mock.calls.length).toBe(calls + 2);
+    expect(screen.getByTestId('wallet-pricing-status')).not.toHaveTextContent('rate limited');
+  });
+
+  it('reports disabled pricing without making a provider call, including retry', async () => {
+    await renderDashboard();
+    await waitFor(() => expect(screen.getByTestId('wallet-pricing-status')).toHaveTextContent('Automatic price lookup is off'));
+    fireEvent.click(screen.getByRole('button', { name: 'Retry prices' }));
+    await waitFor(() => expect(lifecycleMocks.getEffectiveSettings.mock.calls.length).toBeGreaterThan(1));
+    expect(lifecycleMocks.refreshCurrentHoldingPrices).not.toHaveBeenCalled();
   });
 
   it('reorders holdings after a refreshed Dashboard revision without mutating projection order', async () => {

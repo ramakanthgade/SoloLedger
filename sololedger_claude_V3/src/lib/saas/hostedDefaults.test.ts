@@ -32,6 +32,18 @@ describe('HOSTED_LOOKUP_DEFAULTS', () => {
 });
 
 describe('applyHostedLookupDefaults', () => {
+  it('restores managed admin lookups on existing ledgers without changing consent or tax preferences', async () => {
+    setMode('hosted');
+    await saveSettings({ ...DEFAULT_SETTINGS, lookupPrefsExplicit: true, aiConsentGranted: false, reportingCurrency: 'CAD' });
+    expect(await applyHostedLookupDefaults(true, true)).toBe(true);
+    expect(await getSettings()).toMatchObject({ priceApiEnabled: true, rpcLookupEnabled: true, lookupPrefsExplicit: true, aiConsentGranted: false, reportingCurrency: 'CAD' });
+    expect(await applyHostedLookupDefaults(true, true)).toBe(false);
+  });
+
+  it('never applies admin defaults outside an account session', async () => {
+    expect(await applyHostedLookupDefaults(false, true)).toBe(false);
+    expect(await db.settings.get('singleton')).toBeUndefined();
+  });
   it('hosted first run (no settings row) seeds both lookups ON', async () => {
     setMode('hosted');
     expect(await applyHostedLookupDefaults(true)).toBe(true);

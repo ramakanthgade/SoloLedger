@@ -8,7 +8,7 @@ import { syncNow, useExchangeSyncJob } from '@/lib/exchangeSync';
 import { runWalletImport, useImportJob } from '@/lib/importJob';
 import { canonicalWalletIdentity } from '@/lib/ledger/chainNamespace';
 import type { ExchangeSourceIdentity } from '@/lib/ledger/derivedPostings';
-import { refreshCurrentHoldingPrices, SPOT_TTL_MS } from '@/lib/pricing/currentPrices';
+import { SPOT_TTL_MS } from '@/lib/pricing/currentPrices';
 import { defiUnderlyingPriceHoldings } from '@/lib/portfolio/defiUnderlyingPrices';
 import { CHAINS } from '@/lib/rpc/providers';
 import { useAuth } from '@/lib/saas/authContext';
@@ -25,6 +25,9 @@ import {
   prepareConnectionWorkspaceFromCard,
   type ConnectionWorkspaceMetrics
 } from './connectionWorkspaceModel';
+import { useWalletPriceRefresh } from './useWalletPriceRefresh';
+import { walletPriceSettingsKey } from './walletPriceRefreshInputs';
+import { WalletPricingStatus } from './WalletPricingStatus';
 import { ConnectionOverview } from './ConnectionOverview';
 import { ConnectionSyncHistory } from './ConnectionSyncHistory';
 import { ConnectionOpeningBalances } from './ConnectionOpeningBalances';
@@ -305,20 +308,14 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
     };
   }, [currency, priceRefreshNow, priceRows, snapshot?.overview.holdings.length]);
 
-  useEffect(() => {
-    if (!snapshot || (snapshot.overview.holdings.length === 0 &&
-      (defiPositionEvidenceQuery?.rows.length ?? 0) === 0)) return;
-    let cancelled = false;
-    getEffectiveSettings().then((effective) => {
-      if (!cancelled && effective.priceApiEnabled) {
-        void refreshCurrentHoldingPrices([
-          ...snapshot.overview.holdings,
-          ...defiUnderlyingPriceHoldings(defiPositionEvidenceQuery?.rows ?? [])
-        ], currency, effective.coingeckoApiKey);
-      }
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [snapshot, currency, priceRefreshNow, defiPositionEvidenceQuery?.rows]);
+  const [priceRetryTick, setPriceRetryTick] = useState(0);
+  const priceHoldings = useMemo(() => settings ? [
+    ...(snapshot?.overview.holdings ?? []),
+    ...defiUnderlyingPriceHoldings(defiPositionEvidenceQuery?.rows ?? [])
+  ] : [], [snapshot, defiPositionEvidenceQuery?.rows, settings]);
+  const pricingMessage = useWalletPriceRefresh(
+    priceHoldings, currency, walletPriceSettingsKey(settings), `${priceRefreshNow}:${priceRetryTick}`
+  );
 
   const [walletSyncing, setWalletSyncing] = useState(false);
   const syncingThisWallet = walletJob.active || walletSyncing;
@@ -459,6 +456,7 @@ export function ConnectionDetail({ card, onBack, onImportFile, workspaceMetrics,
 
   return (
     <div className="space-y-5" data-testid="connection-detail">
+      <WalletPricingStatus message={pricingMessage} onRetry={() => setPriceRetryTick((tick) => tick + 1)} />
       <SourceOwnershipDialog
         open={editingOwnership !== null}
         mode="edit"

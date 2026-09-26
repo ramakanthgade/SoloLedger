@@ -130,6 +130,8 @@ export function presentWalletEconomicExposure(input: {
   projection: EconomicExposureProjection;
   shadow: DefiNetWorthShadowComparison;
   knownSubtotal: number;
+  /** Null when no priced contribution or positive cost evidence exists. */
+  displaySubtotal: number | null;
 } {
   const custody = walletDefiCustodyFromHoldings(input.holdings, input.valued);
   const shadow = projectManifestSelectedWalletDefi({
@@ -156,9 +158,17 @@ export function presentWalletEconomicExposure(input: {
       custodyCostFallbackById.set(`${slice.scopeId}:${holding.assetKey}`, holding.costBasis * ratio);
     }
   }
+  const knownSubtotal = knownWalletEconomicSubtotal(projection, custodyCostFallbackById);
+  const rows = [...projection.assets, ...projection.liabilities];
+  const replaced = new Set(rows.flatMap((row) => row.replacedCustodyId ? [row.replacedCustodyId] : []));
+  const hasKnownContribution = rows.some((row) =>
+    !(row.kind === 'liquid' && replaced.has(row.id)) &&
+    (row.contribution != null || (row.kind === 'liquid' && (custodyCostFallbackById.get(row.id) ?? 0) > 0))
+  );
   return {
     projection,
     shadow,
-    knownSubtotal: knownWalletEconomicSubtotal(projection, custodyCostFallbackById)
+    knownSubtotal,
+    displaySubtotal: projection.netWorth != null || hasKnownContribution ? knownSubtotal : null
   };
 }
