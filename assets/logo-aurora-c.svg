@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48" fill="none" role="img" aria-label="SoloLedger">
+  <defs>
+    <linearGradient id="auc" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#7C5CFF"/>
+      <stop offset="0.5" stop-color="#4EA8FF"/>
+      <stop offset="1" stop-color="#22E1C3"/>
+    </linearGradient>
+  </defs>
+  <!-- Filled Aurora chip -->
+  <rect x="0" y="0" width="48" height="48" rx="14" fill="url(#auc)"/>
+  <!-- Dark mark on the aurora fill -->
+  <path d="M24 4 38 10v13c0 8.5-14 17.5-14 17.5S10 31.5 10 23V10L24 4Z"
+    stroke="#0A0B1A" stroke-width="1.9" stroke-linejoin="round"/>
+  <path d="M24 13v20" stroke="#0A0B1A" stroke-width="1.35" stroke-linecap="round" opacity="0.45"/>
+  <path d="M13.5 17h8.5M13.5 21h8M13.5 25h7.5M13.5 29h7"
+    stroke="#0A0B1A" stroke-width="1.25" stroke-linecap="round" opacity="0.85"/>
+  <path d="M26 17h8.5M26.5 21h8M27 25h7.5M27.5 29h7"
+    stroke="#0A0B1A" stroke-width="1.25" stroke-linecap="round" opacity="0.85"/>
+  <path d="M29.5 35.5 33.5 39.5 41.5 29.5"
+    stroke="#0A0B1A" stroke-width="2.75" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>
