@@ -306,7 +306,7 @@ describe('CoinGecko canonical symbol mappings', () => {
     expect(JSON.stringify(results)).not.toContain('secret-key');
   });
 
-  it.each([{}, { '0x1': { usd: '1' } }, { '0x1': { usd: -1 } }])('leaves absent/invalid prices unknown without pegging', async (body) => {
+  it.each([{}, { '0x1': { usd: '1' } }, { '0x1': { usd: -1 } }, { '0x1': { usd: 0 } }])('leaves absent/invalid prices unknown without pegging', async (body) => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(body)));
     vi.stubGlobal('fetch', fetchMock);
     const results = await fetchCurrentContractPrices([{ platform: 'ethereum', contractAddress: '0x1' }], 'USD');
@@ -330,10 +330,10 @@ describe('CoinGecko canonical symbol mappings', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(results[0].failure?.category).toBe('authentication');
   });
-  it('keeps empty symbol coverage unknown and accepts an actual numeric zero', async () => {
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ethereum: { usd: 0 } }))));
+  it.each([0, -1, NaN, Infinity])('keeps invalid symbol quote %s and empty coverage unknown', async (price) => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ethereum: { usd: price } }))));
     const results = await fetchCurrentPrices(['ETH', 'USDC'], 'USD');
-    expect(results.map((row) => row.price)).toEqual([0, null]);
+    expect(results.map((row) => row.price)).toEqual([null, null]);
     expect(results.every((row) => !row.failure)).toBe(true);
   });
 

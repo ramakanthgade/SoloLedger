@@ -165,7 +165,7 @@ describe('refreshCurrentHoldingPrices', () => {
   });
   it('returns counts and deduplicated safe failures without caching unknowns', async () => {
     mocks.fetchCurrentPrices.mockResolvedValue([
-      { asset: 'ETH', price: 0, currency: 'INR' },
+      { asset: 'ETH', price: 1e-8, currency: 'INR' },
       { asset: 'USDC', price: null, currency: 'INR', failure: { category: 'rate_limit', message: 'Price API returned 429.', httpStatus: 429 } },
       { asset: 'DAI', price: null, currency: 'INR', failure: { category: 'rate_limit', message: 'Price API returned 429.', httpStatus: 429 } }
     ]);
@@ -175,7 +175,7 @@ describe('refreshCurrentHoldingPrices', () => {
       errors: [{ category: 'rate_limit', message: 'Price API returned 429.', httpStatus: 429 }]
     });
     expect(mocks.rows.size).toBe(1);
-    expect(mocks.rows.get('spot:sym:ETH:INR')?.price).toBe(0);
+    expect(mocks.rows.get('spot:sym:ETH:INR')?.price).toBe(1e-8);
   });
 
   it('reports fresh marks separately without network calls', async () => {
@@ -214,6 +214,39 @@ describe('refreshCurrentHoldingPrices', () => {
     resolve([{ asset: 'ETH', price: 3000, currency: 'USD' }]);
     expect((await first).cached).toBe(0);
     expect((await second).cached).toBe(1);
+  });
+
+  it.each([0, -1, NaN, Infinity])('refetches invalid fresh symbol and contract cache price %s', async (price) => {
+    const symbolKey = 'spot:sym:ETH:USD';
+    const contractKey = 'spot:ctr:ethereum:0x123:USD';
+    for (const key of [symbolKey, contractKey]) mocks.rows.set(key, { key, price, fetchedAt: Date.now() });
+    mocks.fetchCurrentPrices.mockResolvedValue([{ asset: 'ETH', price: null, currency: 'USD' }]);
+    mocks.fetchCurrentContractPrices.mockResolvedValue([{ asset: '0x123', platform: 'ethereum', price: null, currency: 'USD' }]);
+    const result = await refreshCurrentHoldingPrices([
+      { asset: 'ETH', amount: 1, costBasis: 0 },
+      { asset: 'TOKEN', chain: 'ethereum', contractAddress: '0x123', safetyState: 'trusted', amount: 1, costBasis: 0 }
+    ], 'USD');
+    expect(result).toMatchObject({ attempted: 2, cached: 0, priced: 0, unpriced: 2, errors: [{ category: 'unavailable' }] });
+    expect(mocks.fetchCurrentPrices).toHaveBeenCalledTimes(1);
+    expect(mocks.fetchCurrentContractPrices).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([0, -1, NaN, Infinity])('does not write or count invalid provider price %s', async (price) => {
+    mocks.fetchCurrentPrices.mockResolvedValue([{ asset: 'ETH', price, currency: 'USD' }]);
+    mocks.fetchCurrentContractPrices.mockResolvedValue([{ asset: '0x123', platform: 'ethereum', price, currency: 'USD' }]);
+    const result = await refreshCurrentHoldingPrices([
+      { asset: 'ETH', amount: 1, costBasis: 0 },
+      { asset: 'TOKEN', chain: 'ethereum', contractAddress: '0x123', safetyState: 'trusted', amount: 1, costBasis: 0 }
+    ], 'USD');
+    expect(result).toMatchObject({ attempted: 2, cached: 0, priced: 0, unpriced: 2, errors: [{ category: 'unavailable' }] });
+    expect(mocks.rows.size).toBe(0);
+  });
+
+  it('allows a positive quote for a genuinely zero quantity', async () => {
+    mocks.fetchCurrentPrices.mockResolvedValue([{ asset: 'ETH', price: 3000, currency: 'USD' }]);
+    const result = await refreshCurrentHoldingPrices([{ asset: 'ETH', amount: 0, costBasis: 0 }], 'USD');
+    expect(result).toMatchObject({ attempted: 1, priced: 1, unpriced: 0 });
+    expect(mocks.rows.get('spot:sym:ETH:USD')?.price).toBe(3000);
   });
 
 });

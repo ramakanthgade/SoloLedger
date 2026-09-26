@@ -310,7 +310,7 @@ function currentHttpFailure(status: number): CurrentPriceFailure {
 }
 
 function validSpotPrice(value: unknown): number | null {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : null;
 }
 
 export interface CurrentPriceResult {
