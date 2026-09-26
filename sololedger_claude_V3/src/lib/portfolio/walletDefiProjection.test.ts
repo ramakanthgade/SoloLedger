@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { DefiPositionSnapshot, ProtocolId } from '@/lib/defi/types';
-import { projectManifestSelectedWalletDefi, walletDefiCustodyFromHoldings } from './walletDefiProjection';
+import { presentWalletEconomicExposure, projectManifestSelectedWalletDefi, walletDefiCustodyFromHoldings } from './walletDefiProjection';
 
 const ADDRESS = `0x${'1'.repeat(40)}`;
 const EMPTY_ADDRESS = `0x${'2'.repeat(40)}`;
@@ -42,6 +42,19 @@ function manifest(scope: string) {
 }
 
 describe('manifest-selected wallet DeFi projection', () => {
+  it.each([null, 0, 100])('distinguishes an unavailable display subtotal from a genuine priced value (%s)', (valueNow) => {
+    const result = presentWalletEconomicExposure({
+      holdings: [{ assetKey: 'evm:1:native', asset: 'ETH', chain: 'ethereum', quantity: 2,
+        costBasis: 0, sourceVerification: [{ scopeId: SCOPE, quantity: 2 }] }],
+      valued: [{ asset: 'ETH', chain: 'ethereum', amount: 2, costBasis: 0, avgCost: 0,
+        valueNow, priceNow: valueNow == null ? null : valueNow / 2, priceAsOf: 1,
+        dayChangePct: null, unrealized: valueNow, unrealizedPct: null }],
+      snapshots: [], rows: [], custodyAuthoritySnapshots: [], refreshManifests: [],
+      reportingCurrency: 'INR', enabled: false
+    });
+    expect(result.displaySubtotal).toBe(valueNow);
+  });
+
   it('preserves missing current valuation instead of substituting cost basis or zero', () => {
     const custody = walletDefiCustodyFromHoldings([{
       assetKey: 'ethereum:token', asset: 'TOK', chain: 'ethereum', contractAddress: USDC,

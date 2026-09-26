@@ -252,7 +252,9 @@ function saveStoredCoinId(symbol: string, coinId: string): void {
 }
 
 /** Resolve ticker → CoinGecko coin id via built-in map, then /search fallback. */
-async function resolveCoinGeckoId(symbol: string, coingeckoApiKey?: string): Promise<string | null> {
+async function resolveCoinGeckoId(
+  symbol: string, coingeckoApiKey?: string, onFailure?: (failure: CurrentPriceFailure) => void
+): Promise<string | null> {
   const upper = symbol.toUpperCase();
   if (SYMBOL_TO_ID[upper]) return SYMBOL_TO_ID[upper];
   if (runtimeCoinIdCache.has(upper)) return runtimeCoinIdCache.get(upper)!;
@@ -268,9 +270,9 @@ async function resolveCoinGeckoId(symbol: string, coingeckoApiKey?: string): Pro
     const base = coingeckoBase(coingeckoApiKey);
     const res = await fetchWithRetry(
       `${base}/search?query=${encodeURIComponent(symbol)}`,
-      coingeckoHeaders(coingeckoApiKey)
+      coingeckoHeaders(coingeckoApiKey), onFailure ? 0 : 2
     );
-    if (!res.ok) return null;
+    if (!res.ok) { onFailure?.(currentHttpFailure(res.status)); return null; }
     const data = (await res.json()) as {
       coins?: { id: string; symbol: string; market_cap_rank?: number }[];
     };
@@ -283,8 +285,32 @@ async function resolveCoinGeckoId(symbol: string, coingeckoApiKey?: string): Pro
     saveStoredCoinId(upper, id);
     return id;
   } catch {
+    onFailure?.({ category: 'network', message: 'Price network request failed.' });
     return null;
   }
+}
+
+export type CurrentPriceErrorCategory =
+  | 'authentication' | 'forbidden' | 'rate_limit' | 'batch_limit'
+  | 'provider' | 'network' | 'unavailable';
+
+export interface CurrentPriceFailure {
+  category: CurrentPriceErrorCategory;
+  message: string;
+  httpStatus?: number;
+}
+
+function currentHttpFailure(status: number): CurrentPriceFailure {
+  return {
+    category: status === 401 ? 'authentication' : status === 403 ? 'forbidden'
+      : status === 429 ? 'rate_limit' : 'provider',
+    message: `Price API returned ${status}.`,
+    httpStatus: status
+  };
+}
+
+function validSpotPrice(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
 export interface CurrentPriceResult {
@@ -292,6 +318,7 @@ export interface CurrentPriceResult {
   price: number | null;
   currency: string;
   error?: string;
+  failure?: CurrentPriceFailure;
   /** Present only for exact-contract current price responses. */
   platform?: string;
 }
@@ -304,30 +331,35 @@ export async function fetchCurrentPrices(
 ): Promise<CurrentPriceResult[]> {
   const unique = [...new Set(assets.map((asset) => asset.toUpperCase()))];
   const resolved = await Promise.all(
-    unique.map(async (asset) => ({ asset, id: await resolveCoinGeckoId(asset, coingeckoApiKey) }))
+    unique.map(async (asset) => {
+      let failure: CurrentPriceFailure | undefined;
+      const id = await resolveCoinGeckoId(asset, coingeckoApiKey, (error) => { failure = error; });
+      return { asset, id, failure };
+    })
   );
   const ids = [...new Set(resolved.flatMap((row) => row.id ? [row.id] : []))];
   if (ids.length === 0) {
-    return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error: 'CoinGecko asset not found.' }));
+    return resolved.map(({ asset, failure }) => ({ asset, price: null, currency: fiatCurrency, error: failure?.message ?? 'CoinGecko asset not found.', failure }));
   }
   try {
     const base = coingeckoBase(coingeckoApiKey);
     const currency = fiatCurrency.toLowerCase();
     const url = `${base}/simple/price?ids=${encodeURIComponent(ids.join(','))}&vs_currencies=${encodeURIComponent(currency)}`;
-    const res = await fetchWithRetry(url, coingeckoHeaders(coingeckoApiKey));
+    const res = await fetchWithRetry(url, coingeckoHeaders(coingeckoApiKey), 0);
     if (!res.ok) {
-      return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error: `Price API returned ${res.status}` }));
+      return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error: `Price API returned ${res.status}`, failure: currentHttpFailure(res.status) }));
     }
     const data = await res.json() as Record<string, Record<string, number | undefined> | undefined>;
-    return resolved.map(({ asset, id }) => ({
+    return resolved.map(({ asset, id, failure }) => ({
       asset,
-      price: id ? data[id]?.[currency] ?? null : null,
+      price: id ? validSpotPrice(data?.[id]?.[currency]) : null,
       currency: fiatCurrency,
-      error: id ? undefined : 'CoinGecko asset not found.'
+      error: id ? undefined : failure?.message ?? 'CoinGecko asset not found.',
+      failure
     }));
-  } catch (err) {
-    const error = err instanceof Error ? err.message : 'Network request failed.';
-    return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error }));
+  } catch {
+    const error = 'Price network request failed.';
+    return resolved.map(({ asset }) => ({ asset, price: null, currency: fiatCurrency, error, failure: { category: 'network', message: error } }));
   }
 }
 
@@ -355,9 +387,7 @@ export async function fetchCurrentContractPrices(
     if (!addresses.has(address)) addresses.set(address, index);
     byPlatform.set(platform, addresses);
   });
-  // CoinGecko's endpoint is natively multi-contract. One request per platform
-  // avoids spending the public/relay rate budget on each held token separately
-  // (which could leave later genuine assets, such as Ethereum ZRO, unpriced).
+  // Prefer batches, but public plans may explicitly reject multi-contract calls.
   const batches = [...byPlatform].flatMap(([platform, addressIndexes]) => {
     const entries = [...addressIndexes];
     return Array.from({ length: Math.ceil(entries.length / CURRENT_CONTRACT_PRICE_BATCH_SIZE) }, (_, index) => ({
@@ -369,29 +399,57 @@ export async function fetchCurrentContractPrices(
       firstInputIndex: entries[index * CURRENT_CONTRACT_PRICE_BATCH_SIZE][1]
     }));
   }).sort((left, right) => left.firstInputIndex - right.firstInputIndex);
-  for (const { platform, addresses } of batches) {
+  // A refresh may fan out at most 30 singleton calls across all platforms.
+  // Never recursively split, retry failed singles, or multiply a rate-limit failure.
+  let singletonBudget = CURRENT_CONTRACT_PRICE_BATCH_SIZE;
+  let singletonOnly = false;
+  let stopFailure: CurrentPriceFailure | undefined;
+  const budgetFailure: CurrentPriceFailure = {
+    category: 'batch_limit', message: 'Price API contract limit reached; remaining prices were not requested.'
+  };
+  const lookup = async (platform: string, addresses: string[]): Promise<void> => {
+    const fail = (failure: CurrentPriceFailure) => {
+      for (const address of addresses) results.set(`${platform}:${address}`, {
+        asset: address, platform, price: null, currency: fiatCurrency,
+        error: failure.message, failure
+      });
+    };
+    if (stopFailure) { fail(stopFailure); return; }
+    if (singletonOnly && addresses.length > 1) {
+      for (const address of addresses) await lookup(platform, [address]);
+      return;
+    }
+    if (singletonOnly && singletonBudget-- <= 0) { fail(budgetFailure); return; }
     try {
       const base = coingeckoBase(coingeckoApiKey);
       const url = `${base}/simple/token_price/${encodeURIComponent(platform)}?contract_addresses=${encodeURIComponent(addresses.join(','))}&vs_currencies=${encodeURIComponent(currency)}`;
-      const res = await fetchWithRetry(url, coingeckoHeaders(coingeckoApiKey));
+      const res = await fetchWithRetry(url, coingeckoHeaders(coingeckoApiKey), 0);
       if (!res.ok) {
-        for (const address of addresses) results.set(`${platform}:${address}`, {
-          asset: address, platform, price: null, currency: fiatCurrency,
-          error: `Price API returned ${res.status} for contract lookup`
-        });
-        continue;
+        // Only the documented batch-limit code permits fan-out. Do not inspect
+        // arbitrary error text or expose response bodies (which may contain keys).
+        if (res.status === 400 && addresses.length > 1) {
+          const body = await res.json().catch(() => null);
+          if (Number(body?.status?.error_code ?? body?.error_code) === 10012) {
+            singletonOnly = true;
+            for (const address of addresses) await lookup(platform, [address]);
+            return;
+          }
+        }
+        const failure = currentHttpFailure(res.status);
+        if ([401, 403, 429].includes(res.status)) stopFailure = failure;
+        fail(failure);
+        return;
       }
       const data = await res.json() as Record<string, Record<string, number | undefined> | undefined>;
       for (const address of addresses) results.set(`${platform}:${address}`, {
-        asset: address, platform, price: data[address]?.[currency] ?? null, currency: fiatCurrency
+        asset: address, platform, price: validSpotPrice(data?.[address]?.[currency]), currency: fiatCurrency
       });
-    } catch (err) {
-      for (const address of addresses) results.set(`${platform}:${address}`, {
-          asset: address, platform, price: null, currency: fiatCurrency,
-          error: err instanceof Error ? err.message : 'Network request failed.'
-        });
+    } catch {
+      stopFailure = { category: 'network', message: 'Price network request failed.' };
+      fail(stopFailure);
     }
-  }
+  };
+  for (const { platform, addresses } of batches) await lookup(platform, addresses);
   return normalized.map(({ address, platform }) => results.get(`${platform}:${address}`)!);
 }
 

@@ -41,9 +41,11 @@ import { importJob, runWalletImport, useImportJob } from '@/lib/importJob';
 import { FirstSyncPreview } from '@/components/import/FirstSyncPreview';
 import { AddDataCard, ConnectionCard } from './ConnectionCard';
 import { ConnectionDetail } from './ConnectionDetail';
+import { WalletPricingStatus, walletPricingMessage } from './WalletPricingStatus';
 import { WalletConnectionCard } from './WalletConnectionCard';
 import {
   buildWalletChainSummaries,
+  walletCustodyPriceHoldings,
   prepareWalletChainCollectionEvidence
 } from './walletChainModel';
 import type { CardMenuItem } from './CardMenu';
@@ -173,6 +175,7 @@ export function ConnectionsHome({
   const toastId = useRef(0);
   const [syncAllActive, setSyncAllActive] = useState(false);
   const [navigationError, setNavigationError] = useState<string | null>(null);
+  const [pricingMessage, setPricingMessage] = useState<string | null>(null);
   const [priceRefreshTick, setPriceRefreshTick] = useState(0);
   const acknowledgedIntent = useRef<string | null>(null);
   const missingDetailTargetIntent = useRef<string | null>(null);
@@ -248,20 +251,6 @@ export function ConnectionsHome({
     };
   }, []);
 
-  useEffect(() => {
-    const rows = liveWalletEvidence?.defiPositionRows ?? [];
-    if (rows.length === 0) return;
-    let cancelled = false;
-    getEffectiveSettings().then((effective) => {
-      if (cancelled || !effective.priceApiEnabled) return;
-      void refreshCurrentHoldingPrices(
-        defiUnderlyingPriceHoldings(rows),
-        liveWalletEvidence!.currency,
-        effective.coingeckoApiKey
-      ).catch(() => undefined);
-    }).catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [liveWalletEvidence, priceRefreshTick]);
 
   const [removeExchange, setRemoveExchange] = useState<ExchangeConnectionView | null>(null);
   const [removeFile, setRemoveFile] = useState<CsvImportRow | null>(null);
@@ -295,6 +284,29 @@ export function ConnectionsHome({
       }),
     [connections, csvImports, walletRows, manualCount, exchangeJob.connectionId, exchangeJob.active]
   );
+  useEffect(() => {
+    if (!liveWalletEvidence) return;
+    const holdings = [...walletCustodyPriceHoldings(cards, liveWalletEvidence),
+      ...defiUnderlyingPriceHoldings(liveWalletEvidence.defiPositionRows ?? [])];
+    if (holdings.length === 0) return;
+    let cancelled = false;
+    getEffectiveSettings().then((effective) => {
+      if (cancelled) return;
+      if (!effective.priceApiEnabled) {
+        setPricingMessage('Price lookups disabled. Enable price lookups in Settings to refresh values.');
+        return;
+      }
+      void refreshCurrentHoldingPrices(
+        holdings,
+        liveWalletEvidence!.currency,
+        effective.coingeckoApiKey
+      ).then((outcome) => {
+        if (!cancelled) setPricingMessage(walletPricingMessage(outcome));
+      }).catch(() => { if (!cancelled) setPricingMessage('Price provider unavailable. Cached values may be incomplete.'); });
+    }).catch(() => { if (!cancelled) setPricingMessage('Price settings unavailable. Retry to check pricing.'); });
+    return () => { cancelled = true; };
+  }, [cards, liveWalletEvidence, priceRefreshTick]);
+
   const counts = useMemo(() => pillCounts(cards), [cards]);
   const walletEvidenceByCardId = useMemo(() => {
     const byCard = new Map<string, { currency: string; summaries: ReturnType<typeof buildWalletChainSummaries> }>();
@@ -615,6 +627,7 @@ export function ConnectionsHome({
 
   return (
     <div className="space-y-5" data-testid="connections-home">
+      {!detail && <WalletPricingStatus message={pricingMessage} onRetry={() => setPriceRefreshTick((tick) => tick + 1)} />}
       {detailLoading ? (
         <div className="rounded-2xl border border-hi/10 bg-elev-2 px-6 py-12 text-center" role="status">
           <Loader2 className="mx-auto h-5 w-5 animate-spin text-primary" aria-hidden="true" />

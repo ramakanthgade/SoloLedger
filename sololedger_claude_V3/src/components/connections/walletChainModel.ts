@@ -35,6 +35,7 @@ export interface WalletChainSummary {
   /** Provider-supplied partial/failure detail when persisted. */
   coverageReason?: string;
   currentValue: number | null;
+  hasCurrentAuthority?: boolean;
   economicStatus: EconomicExposureProjection['status'];
   economicEnabled: boolean;
   hasUnpricedLiabilities: boolean;
@@ -73,7 +74,7 @@ function currentChainValue(
   evidence: WalletChainCollectionEvidence,
   scopeFilter: ReadonlySet<string>,
   now: number
-): Pick<WalletChainSummary, 'currentValue' | 'economicStatus' | 'economicEnabled' | 'hasUnpricedLiabilities' | 'pricedAssetCount' | 'unpricedAssetCount'> {
+): Pick<WalletChainSummary, 'currentValue' | 'hasCurrentAuthority' | 'economicStatus' | 'economicEnabled' | 'hasUnpricedLiabilities' | 'pricedAssetCount' | 'unpricedAssetCount'> {
   const hasCurrentExhaustiveAuthority = snapshot.scopes.some((scope) =>
     scope.accountClass === 'wallet' &&
     scope.authority.status === 'current' &&
@@ -106,7 +107,8 @@ function currentChainValue(
     now
   });
   return {
-    currentValue: hasCurrentExhaustiveAuthority ? economic.knownSubtotal : null,
+    currentValue: hasCurrentExhaustiveAuthority ? economic.displaySubtotal : null,
+    hasCurrentAuthority: hasCurrentExhaustiveAuthority,
     economicStatus: economic.projection.status,
     economicEnabled,
     hasUnpricedLiabilities: economic.projection.hasUnpricedLiabilities,
@@ -151,8 +153,14 @@ export function prepareWalletChainCollectionEvidence(
 }
 
 export function aggregateWalletCurrentValue(summaries: readonly WalletChainSummary[]): number | null {
-  if (summaries.some((summary) => summary.currentValue == null)) return null;
-  return summaries.reduce((sum, summary) => sum + summary.currentValue!, 0);
+  const unknown = summaries.filter((summary) => summary.currentValue == null);
+  if (unknown.length > 0) {
+    // Missing balance authority is not equivalent to a known, unpriced asset.
+    if (unknown.some((summary) => summary.hasCurrentAuthority === false || summary.unpricedAssetCount === 0)) return null;
+    if (!summaries.some((summary) => summary.currentValue != null &&
+      (summary.pricedAssetCount > 0 || summary.currentValue !== 0))) return null;
+  }
+  return summaries.reduce((sum, summary) => sum + (summary.currentValue ?? 0), 0);
 }
 
 export function aggregateWalletEconomicEvidence(summaries: readonly WalletChainSummary[]): {
@@ -238,4 +246,26 @@ export function buildWalletChainSummaries(
       ]), now)
     };
   });
+}
+
+/** Price the same safety-filtered canonical custody shown on connection cards. */
+export function walletCustodyPriceHoldings(
+  cards: readonly ConnectionCardData[],
+  evidence: WalletChainCollectionEvidence
+) {
+  return cards.filter((card) => card.kind === 'wallet').flatMap((card) =>
+    buildConnectionWorkspaceFromCard({
+      card,
+      transactions: evidence.transactions,
+      exchangeConnections: evidence.exchangeConnections,
+      openingBalances: evidence.openingBalances,
+      snapshots: evidence.snapshots,
+      assets: evidence.assets,
+      sourceCoverage: evidence.sourceCoverage,
+      safetyDecisions: evidence.safetyDecisions,
+      now: evidence.preparedAt,
+      liveWalletRows: evidence.liveWalletRows,
+      collectionIndex: evidence.collectionIndex
+    }).overview.holdings
+  );
 }

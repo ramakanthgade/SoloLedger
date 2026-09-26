@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { WalletPricingStatus, walletPricingMessage } from '@/components/connections/WalletPricingStatus';
 import { ChevronDown, Eye, EyeOff } from 'lucide-react';
 import { AssetIcon } from '@/components/portfolio/AssetIcon';
 import { Button } from '@/components/ui/button';
@@ -342,6 +343,7 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
   const [settled, setSettled] = useState<SettledDashboard>();
   const [priceRefreshTick, setPriceRefreshTick] = useState(0);
   const [priceRefreshing, setPriceRefreshing] = useState(false);
+  const [priceMessage, setPriceMessage] = useState<string | null>(null);
   const requestedPeriod = useRef<DashboardPeriodSelection>();
   const previousJurisdiction = useRef<Jurisdiction>();
   const publisherRef = useRef<DashboardAsOfAtomicPublisher<DashboardPeriodSelection, PublishedDashboard>>();
@@ -527,7 +529,12 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
         const effective = await withDashboardTimeout(
           getEffectiveSettings(), controller.signal, 'Dashboard price settings'
         );
-        if (cancelled || !effective.priceApiEnabled || candidates.length === 0) return;
+        if (cancelled) return;
+        if (!effective.priceApiEnabled) {
+          setPriceMessage('Automatic price lookup is off or unavailable. Check your account and network settings.');
+          return;
+        }
+        if (candidates.length === 0) { setPriceMessage(null); return; }
         await withDashboardTimeout(
           refreshCurrentHoldingPrices(
             candidates.filter((holding) => holding.safetyState === 'trusted'),
@@ -537,13 +544,17 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
           controller.signal,
           'Dashboard trusted price refresh'
         ).catch(() => undefined);
-        if (!cancelled) await withDashboardTimeout(
+        if (!cancelled) {
+          const outcome = await withDashboardTimeout(
           refreshCurrentHoldingPrices(candidates, snapshot.reportingCurrency, effective.coingeckoApiKey),
           controller.signal,
           'Dashboard broad price refresh'
-        ).catch(() => undefined);
+          );
+          if (!cancelled) setPriceMessage(walletPricingMessage(outcome));
+        }
       } catch {
         // Optional settings and price services cannot make the Dashboard dishonest.
+        if (!cancelled) setPriceMessage('Current prices could not be refreshed. Available values are retained; retry prices.');
       } finally {
         if (!cancelled && generation === priceLifecycleGeneration.current) {
           priceLifecycleActive.current = false;
@@ -637,6 +648,7 @@ export function DashboardTab({ instrumentation, onDashboardNavigationIntent }: D
 
   return <><DashboardLiveStatus status={refreshFailed ? 'error' : refreshing ? 'refreshing' : 'complete'} />
   <div className="space-y-5" aria-busy={refreshing || undefined}>
+    {snapshot.currentEndpoint && <WalletPricingStatus message={priceMessage} onRetry={() => setPriceRefreshTick((tick) => tick + 1)} />}
     {refreshFailed && <p role="alert" className="rounded-xl border border-loss/30 bg-loss/5 p-4 text-sm text-loss">Dashboard refresh failed; showing previous values.</p>}
     {refreshing && <p className="text-sm text-low">Refreshing dashboard…</p>}
     <output

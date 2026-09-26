@@ -2,12 +2,20 @@ import { canonicalCustodyPriceAsset, resolvePriceAsset } from '@/lib/assets/reso
 import type { PortfolioHolding } from '@/lib/portfolio/portfolioCompute';
 import { isNativeSolHolding } from '@/lib/portfolio/solBalance';
 import { buildCurrentContractPriceCacheKey, buildCurrentPriceCacheKey, db } from '@/lib/storage/db';
-import { fetchCurrentContractPrices, fetchCurrentPrices } from './coingecko';
+import { fetchCurrentContractPrices, fetchCurrentPrices, type CurrentPriceFailure } from './coingecko';
 import type { SafetyState } from '@/lib/safety/types';
 import { COINGECKO_PLATFORM, type ChainId } from '@/lib/rpc/providers';
 
 export const SPOT_TTL_MS = 5 * 60_000;
-const inFlight = new Map<string, Promise<void>>();
+export interface CurrentPriceRefreshOutcome {
+  attempted: number;
+  priced: number;
+  unpriced: number;
+  cached: number;
+  errors: CurrentPriceFailure[];
+}
+
+const inFlight = new Map<string, Promise<CurrentPriceRefreshOutcome>>();
 
 /**
  * Refresh current marks for held assets. These rows are valuation-only: they
@@ -17,7 +25,7 @@ export async function refreshCurrentHoldingPrices(
   holdings: Array<PortfolioHolding & { safetyState?: SafetyState }>,
   currency: string,
   coingeckoApiKey?: string
-): Promise<void> {
+): Promise<CurrentPriceRefreshOutcome> {
   const assets = [...new Set(holdings.flatMap((holding) => {
     if (holding.safetyState === 'high_confidence_spam' || holding.safetyState === 'user_hidden') return [];
     const controlledIdentity = canonicalCustodyPriceAsset(holding.chain, holding.contractAddress);
@@ -45,7 +53,8 @@ export async function refreshCurrentHoldingPrices(
     candidate.key,
     { platform: candidate.platform, contractAddress: candidate.contractAddress }
   ])).values()];
-  if (assets.length === 0 && contractRequests.length === 0) return;
+  const empty: CurrentPriceRefreshOutcome = { attempted: 0, priced: 0, unpriced: 0, cached: 0, errors: [] };
+  if (assets.length === 0 && contractRequests.length === 0) return empty;
 
   const now = Date.now();
   const rows = await Promise.all(
@@ -59,13 +68,15 @@ export async function refreshCurrentHoldingPrices(
     const row = rows[assets.length + index];
     return !row || now - row.fetchedAt >= SPOT_TTL_MS;
   });
-  if (staleAssets.length === 0 && staleContracts.length === 0) return;
+  const attempted = staleAssets.length + staleContracts.length;
+  const cached = assets.length + contractRequests.length - attempted;
+  if (attempted === 0) return { ...empty, cached };
 
   const requestKey = `${currency.toUpperCase()}:${[
     ...staleAssets, ...staleContracts.map((request) => `${request.platform}:${request.contractAddress}`)
   ].sort().join(',')}`;
   const existing = inFlight.get(requestKey);
-  if (existing) return existing;
+  if (existing) return existing.then((outcome) => ({ ...outcome, cached }));
 
   const request = (async () => {
     const [symbolPrices, contractPrices] = await Promise.all([
@@ -85,6 +96,14 @@ export async function refreshCurrentHoldingPrices(
           fetchedAt
         }))
     );
+    const priced = prices.filter((row) => row.price != null).length;
+    const errors = [...new Map(prices.filter((row) => row.price == null).map((row) => {
+      const failure: CurrentPriceFailure = row.failure ?? {
+        category: 'unavailable', message: 'No current price available for some assets.'
+      };
+      return [`${failure.category}:${failure.httpStatus ?? ''}`, failure];
+    })).values()];
+    return { attempted, priced, unpriced: attempted - priced, cached, errors };
   })().finally(() => {
     inFlight.delete(requestKey);
   });

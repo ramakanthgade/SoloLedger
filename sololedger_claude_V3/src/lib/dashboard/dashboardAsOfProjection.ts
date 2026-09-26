@@ -37,6 +37,7 @@ import type {
   DashboardPeriodAggregate,
   DashboardPeriodCategory
 } from './dashboardAsOfModel';
+import { groupedBalancesAtSamples, type HistoricalGroupedBalance } from './chartBalanceSamples';
 import {
   dashboardRealizedGainSummary,
   transactionMatchesDashboardCategory
@@ -70,53 +71,6 @@ interface HistoricalIdentity {
   contractAddress?: string;
   source?: string;
   safetyState: SafetyState;
-}
-
-interface HistoricalGroupedBalance {
-  quantity: number;
-  scopes: Array<{ scopeId: string; accountClass: DerivedPosting['accountClass'] }>;
-  scopeQuantities: Map<string, number>;
-  scopeIds?: Set<string>;
-}
-
-function groupedBalancesAtSamples(
-  replay: PreparedHistoricalLedgerReplay,
-  samples: readonly number[],
-  metrics?: { groupedPostingVisits: number }
-): ReadonlyMap<number, ReadonlyMap<string, HistoricalGroupedBalance>> {
-  const ordered = replay.preparedPostings.ordered;
-  const byScope = new Map<string, number>();
-  const grouped = new Map<string, HistoricalGroupedBalance>();
-  const result = new Map<number, ReadonlyMap<string, HistoricalGroupedBalance>>();
-  let postingIndex = 0;
-  for (const sample of samples) {
-    while (postingIndex < ordered.length && ordered[postingIndex].effectiveAt <= sample) {
-      const posting = ordered[postingIndex++];
-      if (metrics) metrics.groupedPostingVisits += 1;
-      const scopeKey = `${posting.accountScopeId}\u001f${posting.accountClass}\u001f${posting.assetKey}`;
-      const previous = byScope.get(scopeKey) ?? 0;
-      const next = posting.role === 'opening_balance' ? posting.signedQuantity : previous + posting.signedQuantity;
-      byScope.set(scopeKey, next);
-      const asset: HistoricalGroupedBalance = grouped.get(posting.assetKey) ?? {
-        quantity: 0, scopes: [], scopeQuantities: new Map(), scopeIds: new Set()
-      };
-      const scopeId = `${posting.accountScopeId}\u001f${posting.accountClass}`;
-      if (!asset.scopeIds!.has(scopeId)) {
-        asset.scopeIds!.add(scopeId);
-        asset.scopes.push({ scopeId: posting.accountScopeId, accountClass: posting.accountClass });
-      }
-      asset.scopeQuantities.set(scopeKey, next);
-      asset.quantity += next - previous;
-      grouped.set(posting.assetKey, asset);
-    }
-    result.set(sample, new Map([...grouped].map(([key, value]) => [key, {
-      quantity: value.quantity,
-      scopes: [...value.scopes],
-      scopeQuantities: value.scopeQuantities,
-      scopeIds: value.scopeIds
-    }])));
-  }
-  return result;
 }
 
 function platformFor(chain?: string): string | undefined {

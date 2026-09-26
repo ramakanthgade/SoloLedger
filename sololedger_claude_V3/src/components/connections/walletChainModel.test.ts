@@ -11,6 +11,7 @@ import {
   aggregateWalletCurrentValue,
   aggregateWalletEconomicEvidence,
   buildWalletChainSummaries,
+  walletCustodyPriceHoldings,
   prepareWalletChainCollectionEvidence
 } from './walletChainModel';
 
@@ -142,13 +143,59 @@ describe('wallet chain summaries', () => {
     expect(summary).toMatchObject({ currentValue: null, pricedAssetCount: 0, unpricedAssetCount: 0 });
   });
 
-  it('shows a safe known subtotal when exhaustive current holdings are wholly unpriced', () => {
+  it('keeps exhaustive wholly unpriced holdings unavailable', () => {
     const target = card(ADDRESS, ['ethereum']);
     const current = authority('ethereum', ADDRESS, [{ asset: 'UNKNOWN', quantity: 2 }]);
     const [summary] = buildWalletChainSummaries(target, evidence({
       card: target, authorities: [current], transactions: [transaction({ asset: 'UNKNOWN' })]
     }), NOW);
-    expect(summary).toMatchObject({ currentValue: 0, pricedAssetCount: 0, unpricedAssetCount: 1 });
+    expect(summary).toMatchObject({ currentValue: null, pricedAssetCount: 0, unpricedAssetCount: 1 });
+  });
+
+  it.each([250_000])('keeps the known partial INR subtotal (%s)', (price) => {
+    vi.setSystemTime(NOW);
+    const target = card(ADDRESS, ['ethereum']);
+    const current = authority('ethereum', ADDRESS, [{ asset: 'ETH', quantity: 2 }, { asset: 'UNKNOWN', quantity: 3 }]);
+    const prepared = evidence({ card: target, authorities: [current], transactions: [transaction(), transaction({ id: 'unknown-in', asset: 'UNKNOWN', amount: 3 })], priceRows: [
+      { key: 'spot:sym:ETH:INR', price, fetchedAt: NOW - 1_000 },
+      { key: 'spot:sym:UNKNOWN:USD', price: 99, fetchedAt: NOW - 1_000 }
+    ] });
+    expect(buildWalletChainSummaries(target, prepared, NOW)[0]).toMatchObject({
+      currentValue: price * 2, pricedAssetCount: 1, unpricedAssetCount: 1
+    });
+    expect(walletCustodyPriceHoldings([target], prepared)).toEqual(expect.arrayContaining([
+      expect.objectContaining({ asset: 'ETH', chain: 'ethereum', quantity: 2 })
+    ]));
+    vi.useRealTimers();
+  });
+
+  it('uses production-shaped chain and contract INR marks without same-symbol cross-chain leakage', () => {
+    vi.setSystemTime(NOW);
+    const contract = '0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48';
+    const target = card(ADDRESS, ['ethereum', 'polygon']);
+    const authorities = target.walletRows!.map((row) => {
+      const current = authority(row.chain, ADDRESS, [{ asset: 'USDC', quantity: 3 }]);
+      current.assets[0].assetKey = `evm:${row.chain === 'ethereum' ? 1 : 137}:${contract}`;
+      return current;
+    });
+    const prepared = evidence({ card: target, authorities, transactions: target.walletRows!.map((row) =>
+      transaction({ id: row.chain, chain: row.chain, asset: 'USDC', contractAddress: contract, amount: 3 })
+    ), priceRows: [
+      { key: `spot:ctr:ethereum:${contract}:INR`, price: 83, fetchedAt: NOW - 1000 },
+      { key: 'spot:sym:USDC:INR', price: 999, fetchedAt: NOW - 1000 },
+      { key: `spot:ctr:polygon-pos:${contract}:USD`, price: 999, fetchedAt: NOW - 1000 }
+    ] });
+    const summaries = buildWalletChainSummaries(target, prepared, NOW);
+    expect(summaries[0].currentValue).toBe(249);
+    expect(summaries[1].currentValue).toBeNull();
+    expect(aggregateWalletCurrentValue(summaries)).toBe(249);
+    expect(aggregateWalletCurrentValue([summaries[0], { ...summaries[1], hasCurrentAuthority: false }])).toBeNull();
+    const holdings = walletCustodyPriceHoldings([target], prepared);
+    expect(holdings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ chain: 'ethereum', contractAddress: contract }),
+      expect.objectContaining({ chain: 'polygon', contractAddress: contract })
+    ]));
+    vi.useRealTimers();
   });
 
   it('does not present a stale exhaustive snapshot or posting fallback as current value', () => {
